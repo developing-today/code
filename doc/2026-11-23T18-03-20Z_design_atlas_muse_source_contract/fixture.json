@@ -1,0 +1,33 @@
+{
+  "schema": "atlas-muse-reconciliation-fixture/v1",
+  "states": {
+    "first": {"general": {"main/msg":"m1","main/shared":"a"}, "restricted_extra": {"main/private":"a"}},
+    "edited": {"general": {"main/msg":"m2","main/shared":"a"}, "restricted_extra": {"main/private":"a"}},
+    "retired_one": {"general": {"main/msg":"m2","main/shared":"a"}, "restricted_extra": {}},
+    "retired_both": {"general": {"main/msg":"m2"}, "restricted_extra": {}},
+    "other_scope": {"general": {"main/msg":"m2","other/msg":"different"}, "restricted_extra": {}}
+  },
+  "batches": {
+    "initial": {"scope":"main","sequence":10,"coverage":"complete","objects":{"msg":["general","m1"],"shared":["general","a"],"private":["restricted","a"]}},
+    "edit": {"scope":"main","sequence":11,"coverage":"delta","objects":{"msg":["general","m2"]}},
+    "explicit_delete": {"scope":"main","sequence":12,"coverage":"delta","objects":{"private":null}},
+    "delayed_update": {"scope":"main","sequence":9,"coverage":"delta","objects":{"private":["general","stale"]}},
+    "partial": {"scope":"main","sequence":13,"coverage":"partial","objects":{}},
+    "complete": {"scope":"main","sequence":14,"coverage":"complete","objects":{"msg":["general","m2"]}},
+    "delayed_inventory": {"scope":"main","sequence":10,"coverage":"complete","objects":{"msg":["general","m1"],"shared":["general","a"],"private":["restricted","a"]}},
+    "collision": {"scope":"main","sequence":14,"coverage":"delta","objects":{"msg":["general","conflict"]}},
+    "second_scope": {"scope":"other","sequence":1,"coverage":"delta","objects":{"msg":["general","different"]}}
+  },
+  "steps": [
+    ["initial","applied","first"],
+    ["edit","applied","edited"],
+    ["edit","replayed","edited"],
+    ["explicit_delete","applied","retired_one"],
+    ["delayed_update","unchanged","retired_one"],
+    ["partial","unchanged","retired_one"],
+    ["complete","applied","retired_both"],
+    ["delayed_inventory","unchanged","retired_both"],
+    ["collision","conflict","retired_both"],
+    ["second_scope","applied","other_scope"]
+  ]
+}
