@@ -47,7 +47,10 @@ pub fn write_durable(path: &Path, tmp: &Path, bytes: &[u8]) -> Result<(), Durabl
     write_durable_with_parent_sync(path, tmp, bytes, |dir| File::open(dir)?.sync_all())
 }
 
-fn write_durable_with_parent_sync(
+/// [`write_durable`] with the parent-directory sync step supplied by
+/// the caller, so a caller can observe — and a test can inject — the
+/// post-rename sync failure that [`WriteStage::AfterRename`] reports.
+pub fn write_durable_with_parent_sync(
     path: &Path,
     tmp: &Path,
     bytes: &[u8],
