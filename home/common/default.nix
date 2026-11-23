@@ -891,29 +891,14 @@ in
     };
   };
 
-  # Fleet broker roles (epic #5412 step 2, #5430): the secrets
-  # broker as a `fleet serve <role>` unit, as it has run since
-  # code#5362. This is the home-module pattern ported from
-  # dezren39/nix PR #1459 (closed as superseded by ruling D1) into
-  # this tree, now consuming this flake's own pkgs/fleet instead of
-  # a vendored copy. The queue-broker unit that used to sit beside
-  # it moved to the deploy registry on 2026-11-17 (#5769 M2:
-  # pkgs/deploy/services.nix owns queue-broker; the deploy tool
-  # activates it on the laptop). The secrets-broker definition
-  # stays here until its deploy activation can pass the deploy
-  # health probe (code#11170), then it follows queue-broker.
-  systemd.user.services.secrets-broker = {
-    Unit = {
-      Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
-      After = [ "network-online.target" ];
-    };
-    Service = {
-      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
-      Restart = "on-failure";
-      RestartSec = 5;
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
+  # Fleet broker roles (epic #5412 step 2, #5430) moved to the
+  # deploy registry (#5769 M2): pkgs/deploy/services.nix owns the
+  # secrets-broker and queue-broker definitions, and the deploy
+  # tool activates them on the laptop. The home-manager units that
+  # ran the brokers since code#5362 are removed — queue-broker in
+  # #11172 (2026-11-17), secrets-broker here, after its deploy
+  # activation passed the 120s health probe (code#11170) on
+  # 2026-11-22.
 
   systemd.user.services.sync-models = {
     Unit = {
