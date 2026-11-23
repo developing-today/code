@@ -421,13 +421,20 @@ def build_dump(client, exported_at):
     _split_row_insert), for post-import verification.
     """
     schema = read_schema(client)
-    counts = table_counts(client, schema)
+    tables = [(name, sql) for kind, name, _t, sql in schema if kind == "table"]
+    # Counts are taken from the rows actually emitted below, never from
+    # a separate COUNT(*) pass: on the live store the two reads smear
+    # (rows land between them), which made the exporter's read-back
+    # check fail on a faithful copy and left the meta describing no
+    # copy that ever existed (live run 4, #8584). Emitted counts make
+    # the meta, the read-back check and the restore drill all describe
+    # the same artifact.
+    counts = {name: 0 for name, _sql in tables}
     lines = [
         "-- fleet-queue-backup export (#8584)",
         f"-- exported_at: {exported_at}",
-        f"-- source tables: {len(counts)}",
+        f"-- source tables: {len(tables)}",
     ]
-    tables = [(name, sql) for kind, name, _t, sql in schema if kind == "table"]
     # Drop every object the dump recreates, dependents first, so the
     # dump is idempotent against a target already holding a copy
     # (re-import is the scheduled refresh path, not an error).
@@ -444,6 +451,7 @@ def build_dump(client, exported_at):
         ncols = len(colnames)
         pk_cols = _pk_columns(sql)
         for row in read_table_quoted(client, name, ncols):
+            counts[name] += 1
             stmt = f'INSERT INTO "{name}" VALUES (' + ", ".join(row) + ");"
             if len(stmt.encode("utf-8")) <= MAX_IMPORT_STATEMENT_BYTES:
                 lines.append(stmt)
