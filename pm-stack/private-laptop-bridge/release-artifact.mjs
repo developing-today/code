@@ -8,6 +8,7 @@ const required=(name)=>{const value=process.env[name];if(!value)throw new Error(
 const json=async path=>JSON.parse(await readFile(path,'utf8'));
 const privateProof=()=>{try{return JSON.parse(required('OWNER_PROOF_JSON'));}catch{throw new Error('OWNER_PROOF_JSON is missing or invalid JSON');}};
 const proofDigest=()=>createHash('sha256').update(required('OWNER_PROOF_JSON')).digest('hex');
+const accountDigest=account=>createHash('sha256').update(account).digest('hex');
 const write=(path,value)=>writeFile(path,JSON.stringify(value,null,2)+'\n',{mode:0o600});
 const root=process.cwd();
 
@@ -42,12 +43,12 @@ if(action==='preflight') {
  if(!handoffPath||!runPath||!jobsPath) throw new Error('usage: provenance <handoff.json> <run.json> <jobs.json>');
  const artifact=await json(handoffPath),run=await json(runPath),jobs=await json(jobsPath),worker=required('TARGET_WORKER'),environment=required('TARGET_ENV'),account=required('CF_ACCOUNT_ID'),mode=required('TARGET_MODE');
  const expectedMode=worker==='private-laptop-bridge-staging'?'bridge':worker==='private-laptop-bridge-smoke'?'default':null;
- if(!expectedMode||artifact.worker!==worker||artifact.environment!==environment||artifact.account_id!==account||artifact.mode!==expectedMode||mode!==expectedMode) throw new Error('upload artifact target/environment/account/mode mismatch');
+ if(!expectedMode||artifact.worker!==worker||artifact.environment!==environment||artifact.account_id_sha256!==accountDigest(account)||artifact.mode!==expectedMode||mode!==expectedMode) throw new Error('upload artifact target/environment/account/mode mismatch');
  assertUploadRun(run,jobs,artifact); console.log(artifact.source_sha);
 } else if(action==='current-proof') {
  const [handoffPath]=args; if(!handoffPath) throw new Error('usage: current-proof <handoff.json>');
  const artifact=await json(handoffPath),account=required('CF_ACCOUNT_ID'),worker=required('TARGET_WORKER'),environment=required('TARGET_ENV');
- if(artifact.account_id!==account||artifact.worker!==worker||artifact.environment!==environment) throw new Error('current owner proof target differs from upload artifact');
+ if(artifact.account_id_sha256!==accountDigest(account)||artifact.worker!==worker||artifact.environment!==environment) throw new Error('current owner proof target differs from upload artifact');
  const proof=privateProof(); assertPreflight(proof,{accountId:account,worker,environment});
  const preflight_digest=proofDigest();
  if(preflight_digest!==artifact.preflight_digest) throw new Error('current main owner proof changed since upload; upload a new candidate');
@@ -57,7 +58,7 @@ if(action==='preflight') {
  if(!handoffPath||!runPath||!jobsPath||!versionsPath||!deployablePath) throw new Error('usage: verify-handoff <handoff.json> <run.json> <jobs.json> <versions.json> <deployable.json>');
  const artifact=await json(handoffPath), run=await json(runPath),jobs=await json(jobsPath), target=required('TARGET_WORKER'), account=required('CF_ACCOUNT_ID'), env=required('TARGET_ENV'), mode=required('TARGET_MODE');
  const expectedMode=target==='private-laptop-bridge-staging'?'bridge':'default';
- if(artifact.worker!==target||artifact.account_id!==account||artifact.environment!==env||artifact.mode!==expectedMode||mode!==expectedMode) throw new Error('promotion target/environment/account/mode differs from handoff');
+ if(artifact.worker!==target||artifact.account_id_sha256!==accountDigest(account)||artifact.environment!==env||artifact.mode!==expectedMode||mode!==expectedMode) throw new Error('promotion target/environment/account/mode differs from handoff');
  assertUploadRun(run,jobs,artifact);
  const proof=privateProof(); assertPreflight(proof,{accountId:account,worker:target,environment:env});
  const config_digest=await digestFiles(root),preflight_digest=proofDigest(),build_digest=await digestTree(resolve(root,'.cloudflare/output/v1'));

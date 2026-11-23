@@ -97,8 +97,9 @@ header denials, and disabled/invalid/expired/future/overlong-window denials.
 The test oracle is the fixed response or exact denial status. It never calls
 AMD, Cloudflare or an origin. Independent review corrected the exported entrypoint
 to Cloudflare's required `GatewayMiddleware` and added rejection of accidental
-bridge credential headers. `wrangler.smoke.jsonc` dry run bundles 1.96 KiB
-(0.98 KiB gzip), with only disabled non-secret configuration variables.
+bridge credential headers. The historical smoke bundle dry run bundled 1.96 KiB (0.98 KiB gzip), with only
+disabled non-secret configuration variables. Its separate Wrangler JSONC fixture
+has since been removed; `cloudflare.config.ts` is now the sole config source.
 
 The final commit is tested again after committing; exact SHA and command results
 are recorded in the draft PR checkpoint to avoid a self-referential commit hash.
@@ -132,13 +133,13 @@ not evidence of target existence or a live Cloudflare deployment.
 
 The lockfile pins `cf@1.0.0-rc.1`. Its installed package metadata records
 `@cloudflare/deploy-helpers@0.27.2`, and its bundled Versions upload code
-contains the missing-Worker rejection, the pending-DO-migration rejection, and
+contains the missing-Worker rejection, legacy pending-migration rejection, and
 the API error handler for a binding to an export that has not yet been
-provisioned. It states that declarative exports are reconciled when the version
-is deployed. Cloudflare's [deployment management docs](https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/)
-also require a deploy command for the first upload and for lifecycle-changing
-DO exports/migrations. Current scope permits only Versions uploads, so the
-workflow has no first-Worker bootstrap fallback and refuses absent Workers.
+provisioned. The helper rejects missing Workers and refuses to apply Durable Object lifecycle
+changes during Versions upload. Cloudflare documents `cf deploy` for the initial
+deployment and for declarative DO export creation; ordinary releases continue to
+use Versions upload plus explicit promotion. The bridge release workflow refuses
+absent Workers and has no automatic first-deployment fallback.
 
 The pinned `cf workers versions create` record is written to
 `WRANGLER_OUTPUT_FILE_PATH`, not stdout; the workflow sets that path, clears it
@@ -150,11 +151,13 @@ provenance digest on that exact UUID's version annotations in the exact Worker
 version list.
 
 The separate `Versions release proof` test accepts a synthetic snapshot only
-when the bridge Worker already exists and its `BRIDGE` binding matches the same
-Worker's created SQLite `PrivateLaptopBridge` namespace at completed migration
-`v1`. It separately rejects absent Workers, namespace/class/Worker mismatches,
-an uncreated export, a different migration tag, and pending migrations. The
-smoke preflight requires its existing Worker but no DO. The tracked staging
+when the bridge Worker already exists, its declarative export says
+`PrivateLaptopBridge: created/sqlite`, its `BRIDGE` binding references the same
+Worker namespace, and the account namespace readback agrees on script, class, and
+SQLite storage. It rejects missing Workers, wrong exports, storage types, binding
+IDs, or namespace ownership. This contract follows `cloudflare.config.ts`; it does
+not use legacy migration tags. The
+Smoke preflight requires its existing Worker but no DO. The tracked staging
 proof remains `verified: false`; these tests validate the fail-closed gate and
 do not assert live account state.
 
@@ -162,8 +165,9 @@ Owner evidence is supplied only through separate protected environment
 secrets: `CF_BRIDGE_ACCOUNT_ID`, `CF_BRIDGE_API_TOKEN`,
 `CF_BRIDGE_OWNER_PROOF_JSON` or their `CF_SMOKE_*` equivalents. No generic
 repository secret fallback is used. The public fixture contains no reviewer
-email or account/namespace identifiers; the private proof requires an opaque
-evidence reference, not a person's email. Promotion re-parses and revalidates
+email or account/namespace identifiers; candidate handoff receipts use schema 2
+and carry only a SHA-256 digest of the account ID. The private proof requires an opaque evidence
+reference, not a person's email. Promotion re-parses and revalidates
 the current private proof immediately before creating a deployment and requires
 its digest to equal the candidate's protected proof digest.
 
@@ -266,7 +270,7 @@ bridge payload's fixed target, disabled flags, absent routes/previews/triggers,
 CPU/observability limits, and SQLite Durable Object binding. No Cloudflare
 credentials were supplied and no API write or live provider read was made.
 `staging-preflight.json` remains `verified:false` and the target remains recorded
-as absent; same-Worker namespace/migration, account ownership, no-public-route,
+as absent; same-Worker declarative export/namespace, account ownership, no-public-route,
 Gateway caller inventory, and protected environment evidence are still required
 before upload/promotion. No deployment, Gateway change, laptop change, traffic,
 or cutover was attempted. `actionlint` was unavailable locally, and the repo's

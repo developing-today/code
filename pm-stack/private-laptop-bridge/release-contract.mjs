@@ -7,7 +7,7 @@ const SHA=/^[0-9a-f]{40}$/;
 const DIGEST=/^[0-9a-f]{64}$/;
 const NAMESPACE=/^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 const WORKFLOW='.github/workflows/private-laptop-bridge-release.yml';
-export const releaseConfigFiles=['cloudflare.config.ts','wrangler.jsonc','wrangler.staging.jsonc','wrangler.smoke.jsonc','package.json','package-lock.json','staging-preflight.json'];
+export const releaseConfigFiles=['cloudflare.config.ts','package.json','package-lock.json','staging-preflight.json'];
 const fail=(message)=>{throw new Error(message);};
 const digest=(bytes)=>createHash('sha256').update(bytes).digest('hex');
 const stable=(value)=>Array.isArray(value)?value.map(stable):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])])):value;
@@ -74,24 +74,27 @@ export function assertExactVersion({stdout,versionsJson,worker,sourceSha,configD
   return id;
 }
 
-const HANDOFF_KEYS=['schema','action','repository','workflow','upload_run_id','upload_run_attempt','source_sha','worker','environment','account_id','mode','version_id','tag','config_digest','build_digest','preflight_digest','provenance_digest','expected_disabled'];
+const HANDOFF_KEYS=['schema','action','repository','workflow','upload_run_id','upload_run_attempt','source_sha','worker','environment','account_id_sha256','mode','version_id','tag','config_digest','build_digest','preflight_digest','provenance_digest','expected_disabled'];
 export function makeHandoff(fields) {
-  const handoff={schema:1,action:'upload',...fields};
+  const {account_id,...safeFields}=fields;
+  if(typeof account_id!=='string'||!/^[0-9a-f]{32}$/.test(account_id)) fail('handoff account identity is invalid');
+  const handoff={schema:2,action:'upload',...safeFields,account_id_sha256:digest(account_id)};
   validateHandoffShape(handoff); return Object.fromEntries(HANDOFF_KEYS.map(k=>[k,handoff[k]]));
 }
 function validateHandoffShape(h) {
   if(!h||typeof h!=='object'||Array.isArray(h)||Object.keys(h).sort().join(',')!==[...HANDOFF_KEYS].sort().join(',')) fail('handoff fields are missing or unexpected');
-  if(h.schema!==1||h.action!=='upload'||h.workflow!==WORKFLOW||!/^\d+$/.test(String(h.upload_run_id))||!Number.isInteger(h.upload_run_attempt)||h.upload_run_attempt<1||!SHA.test(h.source_sha)||!UUID.test(h.version_id)||!DIGEST.test(h.config_digest)||!DIGEST.test(h.build_digest)||!DIGEST.test(h.preflight_digest)||!DIGEST.test(h.provenance_digest)||h.provenance_digest!==provenanceDigest({worker:h.worker,sourceSha:h.source_sha,configDigest:h.config_digest,buildDigest:h.build_digest,preflightDigest:h.preflight_digest})||h.expected_disabled!==true) fail('handoff has invalid provenance or digest fields');
+  if(h.schema!==2||h.action!=='upload'||h.workflow!==WORKFLOW||!/^\d+$/.test(String(h.upload_run_id))||!Number.isInteger(h.upload_run_attempt)||h.upload_run_attempt<1||!SHA.test(h.source_sha)||!UUID.test(h.version_id)||!DIGEST.test(h.account_id_sha256)||!DIGEST.test(h.config_digest)||!DIGEST.test(h.build_digest)||!DIGEST.test(h.preflight_digest)||!DIGEST.test(h.provenance_digest)||h.provenance_digest!==provenanceDigest({worker:h.worker,sourceSha:h.source_sha,configDigest:h.config_digest,buildDigest:h.build_digest,preflightDigest:h.preflight_digest})||h.expected_disabled!==true) fail('handoff has invalid provenance or digest fields');
   if(h.repository!=='developing-today/code') fail('handoff repository mismatch');
   const target=h.worker==='private-laptop-bridge-staging'?'cloudflare-staging':h.worker==='private-laptop-bridge-smoke'?'cloudflare-staging-smoke':null;
   if(!target||h.environment!==target) fail('handoff Worker/environment mismatch');
   const mode=h.worker==='private-laptop-bridge-staging'?'bridge':'default';
-  if(h.mode!==mode||h.tag!==h.source_sha||! /^[0-9a-f]{32}$/.test(h.account_id)) fail('handoff target/account/source mismatch');
+  if(h.mode!==mode||h.tag!==h.source_sha) fail('handoff target/account/source mismatch');
 }
 
 export function verifyPromotionProvenance(handoff, expected) {
   validateHandoffShape(handoff);
-  for(const key of ['repository','workflow','upload_run_id','upload_run_attempt','source_sha','worker','environment','account_id','mode','version_id','config_digest','build_digest','preflight_digest','provenance_digest']) {
+  if(typeof expected.account_id!=='string'||!/^[0-9a-f]{32}$/.test(expected.account_id)||handoff.account_id_sha256!==digest(expected.account_id)) fail('promotion provenance mismatch: account identity');
+  for(const key of ['repository','workflow','upload_run_id','upload_run_attempt','source_sha','worker','environment','mode','version_id','config_digest','build_digest','preflight_digest','provenance_digest']) {
     if(handoff[key]!==expected[key]) fail(`promotion provenance mismatch: ${key}`);
   }
   if(expected.action!=='upload'||expected.event!=='workflow_dispatch'||expected.branch!=='main'||expected.status!=='completed'||expected.conclusion!=='success'||expected.workflow_path!==WORKFLOW||expected.head_sha!==handoff.source_sha||expected.run_attempt!==handoff.upload_run_attempt||expected.repository!==handoff.repository) fail('upload run is not a successful trusted main-branch upload run');
@@ -159,7 +162,7 @@ export function assertPreflight(proof,{accountId,worker,environment,now=Date.now
   const target=proof.targets?.[worker];
   const expectedVars=worker==='private-laptop-bridge-staging'?{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''}:{ENABLED:'false',GATEWAY_HOST:'private-bridge-smoke.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',START_MS:'',END_MS:''};
   if(!target||target.environment!==environment||target.exists!==true||target.script_id!==worker||target.account_id!==accountId||target.workers_dev!==false||target.preview_urls!==false||!Array.isArray(target.routes)||target.routes.length!==0||!Array.isArray(target.custom_domains)||target.custom_domains.length!==0||target.application_enabled!==false||target.observability?.enabled!==false||target.observability?.logs!==false||target.observability?.traces!==false||target.limits?.cpu_ms!==10||!Array.isArray(target.gateway_forward_policy_ids)||target.gateway_forward_policy_ids.length!==0||!Array.isArray(target.gateway_caller_ids)||target.gateway_caller_ids.length!==0||JSON.stringify(Object.fromEntries(Object.entries(target.variables??{}).sort()))!==JSON.stringify(Object.fromEntries(Object.entries(expectedVars).sort()))||!Array.isArray(target.bindings)) fail('owner read-only proof does not verify the exact private disabled target');
-  if(worker==='private-laptop-bridge-staging'&&(target.bindings.length!==1||target.bindings[0]?.name!=='BRIDGE'||target.bindings[0]?.type!=='durable_object_namespace'||target.bindings[0]?.class_name!=='PrivateLaptopBridge'||target.bindings[0]?.namespace_id!==target.do?.namespace_id||target.do?.worker_name!==worker||target.do?.class_name!=='PrivateLaptopBridge'||target.do?.storage!=='sqlite'||target.do?.export_state!=='created'||target.do?.migration_tag!=='v1'||target.do?.pending_migrations!==false||!NAMESPACE.test(target.do?.namespace_id??''))) fail('owner read-only proof does not verify the same-Worker SQLite Durable Object namespace and completed v1 migration state');
+  if(worker==='private-laptop-bridge-staging'&&(target.bindings.length!==1||target.bindings[0]?.name!=='BRIDGE'||target.bindings[0]?.type!=='durable_object_namespace'||target.bindings[0]?.class_name!=='PrivateLaptopBridge'||target.bindings[0]?.namespace_id!==target.do?.id||!same(target.declarative_exports,{PrivateLaptopBridge:{state:'created',storage:'sqlite'}})||target.do?.script!==worker||target.do?.class!=='PrivateLaptopBridge'||target.do?.use_sqlite!==true||!NAMESPACE.test(target.do?.id??''))) fail('owner read-only proof does not verify the same-Worker SQLite Durable Object export and namespace');
   if(worker==='private-laptop-bridge-smoke'&&(target.bindings.length!==0||target.do!==null)) fail('smoke target unexpectedly has a Durable Object namespace or binding');
   return true;
 }

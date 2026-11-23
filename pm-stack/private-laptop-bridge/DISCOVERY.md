@@ -46,7 +46,7 @@ or implemented here. A successful owner-run smoke alone does not make Aster read
 ## Separate smoke implementation
 
 `smoke.mjs` exports `GatewayMiddleware` for trusted Gateway RPC and denies ordinary
-HTTP. `wrangler.smoke.jsonc` is disabled with blank IDs and `.invalid` hostname;
+HTTP. `cloudflare.config.ts` default mode is disabled with blank IDs and an `.invalid` hostname;
 no public routes, workers.dev, preview URLs, DO, secrets, storage, service bindings,
 observability or upstream are configured. It accepts only `GET /smoke/v1` at the
 pinned HTTPS host, from the pinned Gateway account/policy context, during an
@@ -68,7 +68,8 @@ Offline reproduction (Node 24, from this directory):
 ```sh
 npm ci
 node --test smoke.test.mjs
-WRANGLER_SEND_METRICS=false npx wrangler deploy --dry-run --config wrangler.smoke.jsonc --outdir .wrangler/smoke-dry-run
+cf build
+cf workers versions create --worker private-laptop-bridge-smoke --tag offline --message offline --prebuilt --dry-run
 npm run rehearse
 ```
 
@@ -175,8 +176,7 @@ an explicit promotion of a recorded known-good retained UUID. Fix-forward upload
 a new version and separately promotes it. These actions do not apply Gateway
 routes, Workers routes/domains, DNS, TLS settings or access policies.
 
-**Target existence is not verified.** The tracked Wrangler configs and `cf`
-config give only the proposed names `private-laptop-bridge-smoke` and
+**Target existence is not verified.** The tracked `cf` config gives only the proposed names `private-laptop-bridge-smoke` and
 `private-laptop-bridge-staging`; they prove neither is present in Cloudflare.
 No current account ID or live metadata was obtained. The first workflow step calls `cf workers get` and fails
 closed if the selected exact target is absent; it never bootstraps, creates
@@ -250,31 +250,33 @@ Versions upload cold-start path. That compatibility remains a separate check:
 `cf` can be run only after the init action has successfully completed, and this
 work did not dispatch either action or access Cloudflare.
 
-The real bridge has an additional Versions API constraint. Its Build Output
-declares `PrivateLaptopBridge` as a new SQLite Durable Object export and binds
-`BRIDGE` to that export. The pinned upload helper rejects pending Durable Object
-migrations because Versions upload cannot apply them. It also handles
-`ACTOR_BINDING_DEPENDS_ON_EXPORT_CODE` with the explicit explanation that
-declarative exports are reconciled only when a version is deployed, so a
-namespace for an unprovisioned export cannot exist at upload time. Therefore
-the bridge can use this Versions-only release path only if an owner has already
-verified that the exact existing `private-laptop-bridge-staging` Worker owns a
-created SQLite `PrivateLaptopBridge` namespace and has completed the `v1`
-migration, with no pending migration. The `BRIDGE` binding namespace ID must
-match that same Worker namespace. The smoke Worker has no Durable Object and
-still must already exist.
+The real bridge has a separate initial-deployment constraint. The current config
+uses `exports.durableObject({storage: "sqlite"})`, Cloudflare's declarative
+Durable Object lifecycle. The pinned `cf workers versions create` path is only
+for an existing Worker whose namespace is already provisioned; it cannot create
+the first Worker or apply a new export lifecycle. Official `cf` docs direct the
+initial deployment and new export creation through `cf deploy`. The first deploy
+therefore needs a separately reviewed, one-time manual owner path using the same
+`cloudflare.config.ts` Build Output; it must not add a Beta API create, raw PUT,
+Wrangler deploy, or legacy `migrations` fallback.
 
-`staging-preflight.json` is currently intentionally unverified and empty. CI
-checks only validate a future owner-supplied read-only snapshot; the new contract
-tests reject a missing Worker, mismatched namespace/class/Worker, an uncreated
-export, a different migration tag, and pending migrations. An offline `cf
-workers versions create --prebuilt --dry-run` does not exercise these remote
-checks: the pinned helper skips API preflight on dry-run, and dry-run builds can
-prove only the local Build Output. No live Worker, namespace, migration, route,
-Gateway, or Cloudflare account was queried in this session. If the exact target
-or completed namespace state is absent or cannot be proven, this workflow has
-no allowed path forward; stop for Drew to decide whether the release scope
-should change.
+That first deploy is not authorized or runnable yet. It must be preceded and
+followed by a fresh independent read-only inventory proving the exact account,
+fixed Worker name, complete zone/route inventory, Worker domains, workers.dev
+and preview flags, Gateway rules/callers, bindings, versions/deployment, and
+Durable Object namespace/export. It must refuse an existing Worker before the
+write, deploy with `ENABLED=false`, empty registry/Gateway identifiers, no
+runtime secrets, no routes/domains/triggers, `workersDev:false`, and
+`previewUrls:false`, then verify the same SQLite namespace ID from both the
+Worker binding and account namespace listing. Any unexpected resource, route,
+preview, binding, export, or deployment state stops the sequence; no automatic
+delete or fallback is allowed.
+
+The existing routine Versions-only release must stay blocked until the post-first
+deploy readback is independently recorded as a fresh owner proof and the
+protected environment and token scopes are actually established. The current
+`staging-preflight.json` remains `verified:false`; no live Worker, namespace,
+route, Gateway or account state was read in this session.
 
 Do not create or store a Workers-product/whole-account token in GitHub. If the
 required targets and bridge namespace are already in place and independently
@@ -289,9 +291,10 @@ Offline results on the current follow-up commit (recorded in the PR): Node 24.22
 `cf workers versions create --prebuilt --dry-run`. The bridge dry-run reports
 only the DO namespace binding `BRIDGE -> PrivateLaptopBridge`, disabled
 `ENABLED=false`, placeholder Gateway identifiers and empty registry; it creates
-nothing. `deployment-config.test.mjs` compares the local/staging Wrangler DO
-class and SQLite migration declarations against the cf config. Gateway runtime
-unit tests and smoke tests pass. These results prove local Build Output and
+nothing. `deployment-config.test.mjs` verifies that the `cf` config is the sole
+declarative DO lifecycle source and contains the expected SQLite export. It
+does not prove provider state. Gateway runtime unit tests and smoke tests pass.
+These results prove local Build Output and
 configuration consistency, not Cloudflare account reachability, live target
 existence, deployment, Gateway routing or laptop readiness.
 

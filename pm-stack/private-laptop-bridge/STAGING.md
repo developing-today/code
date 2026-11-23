@@ -16,28 +16,106 @@ artifact and then serves it only after explicit promotion. There is no cold
 Worker/bootstrap fallback in this release path. The already-merged
 `private-laptop-bridge-smoke-init.yml` and `private-laptop-bridge-smoke-upload.yml`
 are a separate synthetic smoke lifecycle and do not select or provision the
-bridge target. The `wrangler*.jsonc` files remain parity fixtures for offline
-contract tests; they are not release inputs.
+bridge target. `cloudflare.config.ts` is the only deployment lifecycle source;
+no Wrangler JSONC deployment or migration fallback is kept.
 
 The bridge config currently has `ENABLED=false`, empty registry and Gateway
 placeholders, no routes/domains/triggers, workers.dev and preview URLs disabled,
 10 ms CPU limit, and observability/logging/traces off. It binds the staging
-Worker to its own SQLite `PrivateLaptopBridge` Durable Object export. The
-tracked `staging-preflight.json` remains `verified:false`, `exists:false`, with
+Worker to its own declarative SQLite `PrivateLaptopBridge` Durable Object
+export. The tracked `staging-preflight.json` remains `verified:false`, `exists:false`, with
 empty account, namespace and evidence IDs. Local config/build tests prove only
 that this disabled artifact is internally shaped as expected; they do not prove
 a live Worker or namespace exists, that Gateway cannot reach it, or that the
 route is private. No staging Worker was provisioned and no activation was
 approved or attempted.
 
-Before any bridge upload or promotion, an owner must supply reviewed protected
-environment evidence for the exact account/Worker, existing same-Worker SQLite
-namespace and completed migration, disabled/no-public resource inventory,
-Gateway caller inventory, protected-main/environment rules, and approved
-credential scope. Before enablement, Drew must separately approve the specific
-activation permissions and the credential-free private transport check must
-pass from the intended Aster runner and AMD laptop. Keep the fallback until the
-end-to-end authorized Fleet operations pass on Drew's laptop.
+The candidate handoff receipt is schema 2 and carries an account-ID SHA-256
+digest instead of the account ID itself. The protected proof still checks the
+full ID inside the gated environment; this redaction does not weaken target
+matching. Schema 1 receipts are rejected.
+
+### First disabled deployment plan
+
+Routine releases remain versions-only and must refuse an absent Worker or
+Durable Object namespace. A one-time first deployment, if later authorized,
+must use the same `cloudflare.config.ts` `bridge` mode and pinned `cf` Build
+Output. Cloudflare's `cf` guidance uses `cf deploy` to create the initial
+Worker and apply the declarative DO export lifecycle; this is the initial
+deployment step, not a second configuration or a legacy migration fallback.
+[cf project deploy](https://developers.cloudflare.com/cf/projects/) ·
+[cf and Durable Object lifecycle](https://developers.cloudflare.com/cf/wrangler/reference/#convert-durable-object-migrations)
+
+The only proposed command sequence is a manual owner-controlled procedure, not
+a GitHub workflow:
+
+```sh
+npm ci --ignore-scripts --no-audit --no-fund
+./node_modules/.bin/cf build --mode bridge
+./node_modules/.bin/cf deploy --mode bridge --prebuilt --dry-run
+# Only after the separate approval and all preflight gates:
+./node_modules/.bin/cf deploy --mode bridge --prebuilt
+```
+
+The final command writes a deployment and provisions the `PrivateLaptopBridge`
+SQLite export. It must run only with `ENABLED=false`, empty Gateway IDs and
+registry, no runtime secrets, no routes/domains/triggers, `workersDev:false`,
+`previewUrls:false`, logs/traces off, and the 10 ms CPU limit from the reviewed
+build. Do not pass `--force`, `--secrets-file`, or `--dispatch-namespace`. A
+successful local `--dry-run` proves config shape only; it is not permission to
+run the write.
+
+Before the write, a separately authenticated read-only reviewer must confirm the
+exact account and that the exact Worker name is absent; inventory every account
+zone and its routes; list account Worker domains; read Gateway rules and callers;
+and verify there is no name collision or existing binding to the class. Record
+complete pagination and timestamps. If the Worker exists, an API response is
+ambiguous, any pagination is incomplete, or any route/domain/Gateway path could
+reach the target, stop without changing it.
+
+Immediately after the write, independently repeat the full inventory and verify
+the same Worker identity and account, no routes/domains/triggers or Gateway
+caller/Forward rule, workers.dev and preview URLs disabled, no runtime secrets,
+and the exact disabled variables and resource limits. Verify the Worker's
+declarative export is `PrivateLaptopBridge` with `state=created` and
+`storage=sqlite`; verify the `BRIDGE` binding's namespace ID matches exactly one
+account namespace whose script is `private-laptop-bridge-staging`, class is
+`PrivateLaptopBridge`, and `use_sqlite=true`; then verify the returned version
+and deployment readback. The official APIs expose these fields through [Worker
+metadata and script settings](https://developers.cloudflare.com/api/resources/workers/),
+[Worker subdomain settings](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/subdomain/),
+[Worker domains](https://developers.cloudflare.com/api/resources/workers/subresources/domains/),
+[zone routes](https://developers.cloudflare.com/api/resources/workers/subresources/routes/),
+[Durable Object namespaces](https://developers.cloudflare.com/api/resources/durable_objects/subresources/namespaces/),
+and [Gateway rules](https://developers.cloudflare.com/api/resources/zero_trust/subresources/gateway/subresources/rules/).
+Any mismatch means stop and keep the Worker disabled and unrouted; do not
+automatically delete it, retry deployment, or create a replacement namespace.
+
+No automated first-deploy workflow is prepared yet. The `cloudflare-staging`
+GitHub environment is absent; GitHub creates an unconfigured environment when a
+workflow references a missing one, so no new workflow may reference it until a
+repository admin creates and verifies its protection rules. The tracked proof
+fixture records branch protection/reviews and environment reviewers as false.
+The read-only branch-protection API request returned HTTP 403 for this GitHub
+integration, so this session could not independently inspect the live branch
+rule. Before a workflow exists, repository settings must require a fresh PR
+approval on `main`, prevent admin bypass and force pushes, and configure a
+dedicated `cloudflare-staging-bootstrap` environment with required reviewers,
+self-review disabled, only `main` allowed, and an environment-only short-lived
+deployment credential. Then configure a separate `cloudflare-staging`
+environment for routine versions upload/promotion. GitHub's docs confirm that
+missing environments are automatically created without protection rules.
+[GitHub protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) ·
+[GitHub environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
+
+Fresh provider readback cannot currently run in Actions: there is no protected
+environment or independently scoped read-only credential. The eventual audit
+credential needs Worker metadata read, complete zone/route read, and Zero Trust
+read scopes, separated from the one-time deployment credential. The existing
+Individual Worker Editor release token does not establish account-wide route or
+Gateway state. Keep uploads and promotion blocked until this independent readback
+is available, and keep the fallback until Drew separately approves bridge
+activation and end-to-end authorized Fleet operations pass on his laptop.
 
 ## Selected ingress and the remaining feasibility gate
 

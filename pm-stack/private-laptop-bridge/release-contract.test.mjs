@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import {assertDeployable,assertDeploymentCreated,assertDryRunPayload,assertEffectivePayload,assertExactVersion,assertLatestServing,assertPreflight,assertUploadRun,assertVersionStillMatches,makeHandoff,provenanceDigest,verifyPromotionProvenance} from './release-contract.mjs';
 
 const uuid='01234567-89ab-cdef-0123-456789abcdef', old='11111111-2222-3333-4444-555555555555';
@@ -27,11 +28,14 @@ test('exact version must bind full SHA, exact config and actual Build Output dig
  for(const v of [{...version,annotations:{...version.annotations,'workers/tag':sha.slice(0,12)}},{...version,annotations:{...version.annotations,'workers/message':`release provenance=${'e'.repeat(64)}`}},{...version,annotations:{...version.annotations,'workers/message':`release provenance=${'e'.repeat(64)}`}}]) assert.throws(()=>assertExactVersion({stdout:cfVersionResponse(),versionsJson:list([v]),worker:'private-laptop-bridge-staging',sourceSha:sha,configDigest:cd,buildDigest:bd,preflightDigest:pd}));
 });
 
-test('promotion handoff binds exact source, Worker, environment, account, upload run and attempt',()=>{
+test('promotion handoff binds exact source, Worker, environment, account digest, upload run and attempt',()=>{
  const h=handoff();
+ assert.equal(h.schema,2); assert.equal(h.account_id_sha256,createHash('sha256').update(acct).digest('hex')); assert.equal('account_id' in h,false); assert.equal(JSON.stringify(h).includes(acct),false);
  const base={repository:'developing-today/code',workflow:'.github/workflows/private-laptop-bridge-release.yml',upload_run_id:'501',upload_run_attempt:1,source_sha:sha,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',account_id:acct,mode:'bridge',version_id:uuid,config_digest:cd,build_digest:bd,preflight_digest:pd,provenance_digest:proof,action:'upload',event:'workflow_dispatch',branch:'main',status:'completed',conclusion:'success',workflow_path:'.github/workflows/private-laptop-bridge-release.yml',head_sha:sha,run_attempt:1};
  assert.equal(verifyPromotionProvenance(h,base),true);
- for(const [key,value] of [['upload_run_id','502'],['worker','private-laptop-bridge-smoke'],['environment','cloudflare-staging-smoke'],['account_id','e'.repeat(32)],['config_digest','f'.repeat(64)],['build_digest','f'.repeat(64)],['preflight_digest','f'.repeat(64)],['provenance_digest','f'.repeat(64)],['upload_run_attempt',2],['event','pull_request'],['branch','feature'],['status','in_progress'],['conclusion','failure'],['head_sha','f'.repeat(40)],['workflow_path','other.yml']]) assert.throws(()=>verifyPromotionProvenance(h,{...base,[key]:value}),undefined,key);
+ for(const [key,value] of [['upload_run_id','502'],['worker','private-laptop-bridge-smoke'],['environment','cloudflare-staging-smoke'],['config_digest','f'.repeat(64)],['build_digest','f'.repeat(64)],['preflight_digest','f'.repeat(64)],['provenance_digest','f'.repeat(64)],['upload_run_attempt',2],['event','pull_request'],['branch','feature'],['status','in_progress'],['conclusion','failure'],['head_sha','f'.repeat(40)],['workflow_path','other.yml']]) assert.throws(()=>verifyPromotionProvenance(h,{...base,[key]:value}),undefined,key);
+ assert.throws(()=>verifyPromotionProvenance({...h,account_id_sha256:'f'.repeat(64)},base),/account identity/);
+ assert.throws(()=>verifyPromotionProvenance({...h,schema:1},base),/invalid provenance/);
  const bad={...h,expected_disabled:false}; assert.throws(()=>verifyPromotionProvenance(bad,base),/invalid provenance/);
 });
 
@@ -80,14 +84,33 @@ test('deployment create response must return the exact 100 percent deployment id
 
 test('read-only owner proof fails closed for missing, stale, public or unexpected callers',()=>{
  const now=Date.parse('2026-11-22T12:00:00Z');
- const good={schema:1,verified:true,account_id:acct,verified_at:'2026-11-22T11:00:00Z',expires_at:'2026-11-22T13:00:00Z',evidence_ref:'review-1',release_policy:{repository:'developing-today/code',branch:'main',branch_protected:true,required_pull_request_reviews:true,force_push_disabled:true,admin_bypass_disabled:true,environment_reviewers_required:{'cloudflare-staging':true,'cloudflare-staging-smoke':true},self_review_disabled:{'cloudflare-staging':true,'cloudflare-staging-smoke':true},allowed_environment_branches:{'cloudflare-staging':['main'],'cloudflare-staging-smoke':['main']},evidence_ref:'policy-review-1'},targets:{'private-laptop-bridge-staging':{environment:'cloudflare-staging',exists:true,script_id:'private-laptop-bridge-staging',account_id:acct,application_enabled:false,workers_dev:false,preview_urls:false,routes:[],custom_domains:[],observability:{enabled:false,logs:false,traces:false},limits:{cpu_ms:10},gateway_forward_policy_ids:[],gateway_caller_ids:[],variables:{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''},bindings:[{name:'BRIDGE',type:'durable_object_namespace',class_name:'PrivateLaptopBridge',namespace_id:'1'.repeat(32)}],do:{worker_name:'private-laptop-bridge-staging',class_name:'PrivateLaptopBridge',storage:'sqlite',export_state:'created',migration_tag:'v1',pending_migrations:false,namespace_id:'1'.repeat(32)}}}};
+ const good={schema:1,verified:true,account_id:acct,verified_at:'2026-11-22T11:00:00Z',expires_at:'2026-11-22T13:00:00Z',evidence_ref:'review-1',release_policy:{repository:'developing-today/code',branch:'main',branch_protected:true,required_pull_request_reviews:true,force_push_disabled:true,admin_bypass_disabled:true,environment_reviewers_required:{'cloudflare-staging':true,'cloudflare-staging-smoke':true},self_review_disabled:{'cloudflare-staging':true,'cloudflare-staging-smoke':true},allowed_environment_branches:{'cloudflare-staging':['main'],'cloudflare-staging-smoke':['main']},evidence_ref:'policy-review-1'},targets:{'private-laptop-bridge-staging':{environment:'cloudflare-staging',exists:true,script_id:'private-laptop-bridge-staging',account_id:acct,application_enabled:false,workers_dev:false,preview_urls:false,routes:[],custom_domains:[],observability:{enabled:false,logs:false,traces:false},limits:{cpu_ms:10},gateway_forward_policy_ids:[],gateway_caller_ids:[],variables:{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''},bindings:[{name:'BRIDGE',type:'durable_object_namespace',class_name:'PrivateLaptopBridge',namespace_id:'1'.repeat(32)}],declarative_exports:{PrivateLaptopBridge:{state:'created',storage:'sqlite'}},do:{id:'1'.repeat(32),class:'PrivateLaptopBridge',script:'private-laptop-bridge-staging',use_sqlite:true}}}};
  assert.equal(assertPreflight(good,{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),true);
  assert.throws(()=>assertPreflight({...good,verified:false},{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),/absent, expired, or invalid/);
  assert.throws(()=>assertPreflight({...good,expires_at:'2026-11-22T11:59:59Z'},{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),/absent, expired, or invalid/);
  assert.throws(()=>assertPreflight({...good,evidence_ref:''},{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),/absent, expired, or invalid/);
  assert.throws(()=>assertPreflight({...good,release_policy:{...good.release_policy,branch_protected:false}},{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),/protected-main/);
  assert.throws(()=>assertPreflight({...good,release_policy:{...good.release_policy,environment_reviewers_required:{'cloudflare-staging':false}}},{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}),/protected-main/);
- for(const change of [{gateway_caller_ids:['unexpected-caller']},{routes:['https://public.example/*']},{custom_domains:['public.example']},{workers_dev:true},{preview_urls:true},{gateway_forward_policy_ids:['unexpected-policy']},{observability:{enabled:false,logs:true,traces:false}},{limits:{cpu_ms:50}},{application_enabled:true},{variables:{...good.targets['private-laptop-bridge-staging'].variables,ENABLED:'true'}},{bindings:[]},{do:{...good.targets['private-laptop-bridge-staging'].do,worker_name:'other-worker'}},{do:{...good.targets['private-laptop-bridge-staging'].do,export_state:'pending'}},{do:{...good.targets['private-laptop-bridge-staging'].do,migration_tag:'v0'}},{do:{...good.targets['private-laptop-bridge-staging'].do,pending_migrations:true}}]) {
+ for(const change of [
+   {gateway_caller_ids:['unexpected-caller']},
+   {routes:['https://public.example/*']},
+   {custom_domains:['public.example']},
+   {workers_dev:true},
+   {preview_urls:true},
+   {gateway_forward_policy_ids:['unexpected-policy']},
+   {observability:{enabled:false,logs:true,traces:false}},
+   {limits:{cpu_ms:50}},
+   {application_enabled:true},
+   {variables:{...good.targets['private-laptop-bridge-staging'].variables,ENABLED:'true'}},
+   {bindings:[]},
+   {do:{...good.targets['private-laptop-bridge-staging'].do,script:'other-worker'}},
+   {do:{...good.targets['private-laptop-bridge-staging'].do,class:'OtherClass'}},
+   {do:{...good.targets['private-laptop-bridge-staging'].do,use_sqlite:false}},
+   {do:{...good.targets['private-laptop-bridge-staging'].do,id:''}},
+   {declarative_exports:{PrivateLaptopBridge:{state:'deleted',storage:'sqlite'}}},
+   {declarative_exports:{PrivateLaptopBridge:{state:'created',storage:'legacy-kv'}}},
+   {declarative_exports:{PrivateLaptopBridge:{state:'created',storage:'sqlite'},Unexpected:{state:'created',storage:'sqlite'}}},
+ ]) {
    const target={...good.targets['private-laptop-bridge-staging'],...change};
    assert.throws(()=>assertPreflight({...good,targets:{...good.targets,'private-laptop-bridge-staging':target}},{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now}));
  }
@@ -98,20 +121,22 @@ test('read-only owner proof fails closed for missing, stale, public or unexpecte
 test('Versions release proof separately requires an existing Worker and its ready same-Worker DO namespace',()=>{
  const now=Date.parse('2026-11-22T12:00:00Z');
  const policy={repository:'developing-today/code',branch:'main',branch_protected:true,required_pull_request_reviews:true,force_push_disabled:true,admin_bypass_disabled:true,environment_reviewers_required:{'cloudflare-staging':true},self_review_disabled:{'cloudflare-staging':true},allowed_environment_branches:{'cloudflare-staging':['main']},evidence_ref:'policy-review-1'};
- const bridge={environment:'cloudflare-staging',exists:true,script_id:'private-laptop-bridge-staging',account_id:acct,application_enabled:false,workers_dev:false,preview_urls:false,routes:[],custom_domains:[],observability:{enabled:false,logs:false,traces:false},limits:{cpu_ms:10},gateway_forward_policy_ids:[],gateway_caller_ids:[],variables:{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''},bindings:[{name:'BRIDGE',type:'durable_object_namespace',class_name:'PrivateLaptopBridge',namespace_id:'1'.repeat(32)}],do:{worker_name:'private-laptop-bridge-staging',class_name:'PrivateLaptopBridge',storage:'sqlite',export_state:'created',migration_tag:'v1',pending_migrations:false,namespace_id:'1'.repeat(32)}};
+ const bridge={environment:'cloudflare-staging',exists:true,script_id:'private-laptop-bridge-staging',account_id:acct,application_enabled:false,workers_dev:false,preview_urls:false,routes:[],custom_domains:[],observability:{enabled:false,logs:false,traces:false},limits:{cpu_ms:10},gateway_forward_policy_ids:[],gateway_caller_ids:[],variables:{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''},bindings:[{name:'BRIDGE',type:'durable_object_namespace',class_name:'PrivateLaptopBridge',namespace_id:'1'.repeat(32)}],declarative_exports:{PrivateLaptopBridge:{state:'created',storage:'sqlite'}},do:{id:'1'.repeat(32),class:'PrivateLaptopBridge',script:'private-laptop-bridge-staging',use_sqlite:true}};
  const makeProof=(target=bridge)=>({schema:1,verified:true,account_id:acct,verified_at:'2026-11-22T11:00:00Z',expires_at:'2026-11-22T13:00:00Z',evidence_ref:'worker-review-1',release_policy:policy,targets:{'private-laptop-bridge-staging':target}});
  const check=(proof)=>assertPreflight(proof,{accountId:acct,worker:'private-laptop-bridge-staging',environment:'cloudflare-staging',now});
  assert.equal(check(makeProof()),true);
  assert.throws(()=>check(makeProof({...bridge,exists:false})),/exact private disabled target/);
  for(const change of [
-   {do:{...bridge.do,worker_name:'private-laptop-bridge-smoke'}},
-   {do:{...bridge.do,export_state:'missing'}},
-   {do:{...bridge.do,migration_tag:'v0'}},
-   {do:{...bridge.do,pending_migrations:true}},
-   {do:{...bridge.do,namespace_id:''}},
+   {do:{...bridge.do,script:'private-laptop-bridge-smoke'}},
+   {do:{...bridge.do,class:'OtherClass'}},
+   {do:{...bridge.do,use_sqlite:false}},
+   {do:{...bridge.do,id:''}},
+   {declarative_exports:{PrivateLaptopBridge:{state:'deleted',storage:'sqlite'}}},
+   {declarative_exports:{PrivateLaptopBridge:{state:'created',storage:'legacy-kv'}}},
+   {declarative_exports:{PrivateLaptopBridge:{state:'created',storage:'sqlite'},Unexpected:{state:'created',storage:'sqlite'}}},
    {bindings:[{...bridge.bindings[0],namespace_id:'2'.repeat(32)}]},
    {bindings:[{...bridge.bindings[0],class_name:'OtherClass'}]},
- ]) assert.throws(()=>check(makeProof({...bridge,...change})),/same-Worker SQLite Durable Object namespace and completed v1 migration state/);
+ ]) assert.throws(()=>check(makeProof({...bridge,...change})),/same-Worker SQLite Durable Object export and namespace/);
 });
 
 test('tracked preflight fixture is redacted and never substitutes for private owner proof',async()=>{
@@ -122,7 +147,7 @@ test('tracked preflight fixture is redacted and never substitutes for private ow
  assert.doesNotMatch(text,/@/);
  for(const target of Object.values(fixture.targets)) {
    assert.equal(target.account_id,'');
-   assert.equal(target.do?.namespace_id??'','');
+   assert.equal(target.do?.id??'','');
    assert.ok(target.bindings.every(binding=>binding.namespace_id===''));
  }
 });

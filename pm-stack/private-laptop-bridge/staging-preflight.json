@@ -12,9 +12,18 @@
     "required_pull_request_reviews": false,
     "force_push_disabled": false,
     "admin_bypass_disabled": false,
-    "environment_reviewers_required": {"cloudflare-staging": false, "cloudflare-staging-smoke": false},
-    "self_review_disabled": {"cloudflare-staging": false, "cloudflare-staging-smoke": false},
-    "allowed_environment_branches": {"cloudflare-staging": [], "cloudflare-staging-smoke": []},
+    "environment_reviewers_required": {
+      "cloudflare-staging": false,
+      "cloudflare-staging-smoke": false
+    },
+    "self_review_disabled": {
+      "cloudflare-staging": false,
+      "cloudflare-staging-smoke": false
+    },
+    "allowed_environment_branches": {
+      "cloudflare-staging": [],
+      "cloudflare-staging-smoke": []
+    },
     "evidence_ref": ""
   },
   "targets": {
@@ -28,11 +37,24 @@
       "preview_urls": false,
       "routes": [],
       "custom_domains": [],
-      "observability": {"enabled": false, "logs": false, "traces": false},
-      "limits": {"cpu_ms": 10},
+      "observability": {
+        "enabled": false,
+        "logs": false,
+        "traces": false
+      },
+      "limits": {
+        "cpu_ms": 10
+      },
       "gateway_forward_policy_ids": [],
       "gateway_caller_ids": [],
-      "variables": {"ENABLED": "false", "GATEWAY_HOST": "private-bridge-smoke.invalid", "GATEWAY_ACCOUNT_ID": "", "GATEWAY_POLICY_ID": "", "START_MS": "", "END_MS": ""},
+      "variables": {
+        "ENABLED": "false",
+        "GATEWAY_HOST": "private-bridge-smoke.invalid",
+        "GATEWAY_ACCOUNT_ID": "",
+        "GATEWAY_POLICY_ID": "",
+        "START_MS": "",
+        "END_MS": ""
+      },
       "bindings": [],
       "do": null
     },
@@ -46,13 +68,40 @@
       "preview_urls": false,
       "routes": [],
       "custom_domains": [],
-      "observability": {"enabled": false, "logs": false, "traces": false},
-      "limits": {"cpu_ms": 10},
+      "observability": {
+        "enabled": false,
+        "logs": false,
+        "traces": false
+      },
+      "limits": {
+        "cpu_ms": 10
+      },
       "gateway_forward_policy_ids": [],
       "gateway_caller_ids": [],
-      "variables": {"ENABLED": "false", "GATEWAY_HOST": "private-bridge-staging.invalid", "GATEWAY_ACCOUNT_ID": "", "GATEWAY_POLICY_ID": "", "GATEWAY_IDENTITY_EMAIL": "", "GATEWAY_POSTURE_ID": "", "BRIDGE_REGISTRY": ""},
-      "bindings": [{"name": "BRIDGE", "type": "durable_object_namespace", "class_name": "PrivateLaptopBridge", "namespace_id": ""}],
-      "do": {"worker_name": "private-laptop-bridge-staging", "class_name": "PrivateLaptopBridge", "storage": "sqlite", "export_state": "", "migration_tag": "", "pending_migrations": false, "namespace_id": ""}
+      "variables": {
+        "ENABLED": "false",
+        "GATEWAY_HOST": "private-bridge-staging.invalid",
+        "GATEWAY_ACCOUNT_ID": "",
+        "GATEWAY_POLICY_ID": "",
+        "GATEWAY_IDENTITY_EMAIL": "",
+        "GATEWAY_POSTURE_ID": "",
+        "BRIDGE_REGISTRY": ""
+      },
+      "bindings": [
+        {
+          "name": "BRIDGE",
+          "type": "durable_object_namespace",
+          "class_name": "PrivateLaptopBridge",
+          "namespace_id": ""
+        }
+      ],
+      "do": {
+        "id": "",
+        "class": "PrivateLaptopBridge",
+        "script": "private-laptop-bridge-staging",
+        "use_sqlite": false
+      },
+      "declarative_exports": {}
     }
   }
 }
