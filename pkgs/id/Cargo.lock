@@ -4960,6 +4960,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek 3.0.0",
+ "id-caps",
+ "id-config",
+ "id-core",
+ "id-directory",
+ "id-events",
+ "id-groups",
+ "id-store",
+ "id-sync",
+ "rand 0.10.3",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "id-config"
 version = "0.1.0"
 dependencies = [
