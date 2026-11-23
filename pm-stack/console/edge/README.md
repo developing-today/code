@@ -55,6 +55,17 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   Android app this side knows of (`androidRelease`), beside the copy of
   the laptop's build (`androidBuild`): that is how either arriving here
   is checked from outside.
+- **No class keeps the platform's `fetch` itself.** In the Worker
+  runtime `fetch` refuses to be called as a method of another object
+  ("Illegal invocation"), and bun does not mind, so no test under bun
+  could see it: for the first day every notification the edge sent and
+  every read of the Android release failed that way. Each class keeps a
+  plain caller (`../src/plain.ts`); the tests hand the classes a fetch
+  that refuses as the runtime does (`asThePlatformFetch`); and the
+  deploy's run of the bundle in the runtime itself checks that the
+  state can make a request of its own. `/console/health` says why the
+  release could not be read when it could not
+  (`androidReleaseTrouble`).
 - **The laptop reports** to `POST /console/edge/sync`: the sections of
   state that changed, how current each unchanged one is, and what became
   of anything held for it. The answer says whether anyone is looking, and

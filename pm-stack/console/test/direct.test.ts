@@ -9,6 +9,7 @@ import { readConfig } from "../src/config.ts";
 import { directClasses, directConfig, directRead, edgeRun } from "../edge/src/direct.ts";
 import type { Fetch } from "../src/ops.ts";
 import type { EdgeConfig } from "../src/edge-proto.ts";
+import { asThePlatformFetch } from "./support.ts";
 
 const cfg = readConfig({ HOME: "/h", PM_CONSOLE_OWNER_EMAILS: "owner@example.com" });
 const edgeConfig: EdgeConfig = {
@@ -37,8 +38,10 @@ function harness() {
     calls.push({ url, init });
     return { ok: answer.ok, status: answer.status, json: async () => answer.body };
   }) as unknown as Fetch;
-  const run = edgeRun(directConfig(edgeConfig), { githubToken: "gh-test", queueToken: "queue-test" }, fetchImpl);
-  return { calls, answer, fetchImpl, run };
+  // As the Worker runtime's fetch is: not to be called as a method.
+  const strict = asThePlatformFetch(fetchImpl) as typeof fetchImpl;
+  const run = edgeRun(directConfig(edgeConfig), { githubToken: "gh-test", queueToken: "queue-test" }, strict);
+  return { calls, answer, fetchImpl: strict, run };
 }
 
 describe("the edge's run: GitHub through REST", () => {
