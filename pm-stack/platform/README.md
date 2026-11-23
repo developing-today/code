@@ -33,7 +33,8 @@ A Worker has joined when all of these are true:
 After that, Workers that do one job together are merged where merging
 removes a moving part: the decision events and the queue's alert into
 the PM console's own state, the fleet's doors behind the console's
-sign-in. Each merge is its own issue.
+sign-in. Each merge is its own issue. What is left is tracked in
+developing-today/code#13504.
 
 ## Keeping the list true
 

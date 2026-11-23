@@ -642,6 +642,18 @@ reads had failed once on GitHub's rate limit and stood as failed for
 the hour, on the Cloudflare screen too. A check in which something
 could not be read is now made again in five minutes.
 
+**Every gap is an issue.** Sixteen, under the tracker #13504: the
+edge's own GitHub allowance (#13489), queue tasks from Cloudflare
+(#13490), questions and sessions with no machine (#13491), a message
+to an agent with no machine (#13502), the ordering case left out
+(#13398), a second machine (#13492), the twelve Workers deployed from
+Actions (#13493), the edge checking each Worker (#13494), platform
+settings from Actions (#13495), the stores managed from the app
+(#13496), the fold-in of two Workers (#13503), roadmap files for fleet
+and atlas (#13497), a type check (#13498), the signed-in flows in the
+real runtime (#13499), the Android app on a device (#13500), and what
+is left of offline (#13501). The PM stack's roadmap file has the rows.
+
 Checked: 357 tests under bun, 4 beside the list. In a real Chrome
 against both demos, light and dark: the Platform screen's counts,
 groups, each kind of row and its links. axe-core over 22 screens: no
