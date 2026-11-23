@@ -61,6 +61,7 @@ func (links chapterLinks) destination(raw, origin, output string, html bool) str
 // Inline and reference-style chapter destinations supported by this book.
 // Opaque code spans and fenced/indented examples are copied verbatim.
 var mdDestination = regexp.MustCompile(`(\]\([ \t]*|^ {0,3}\[[^\]]+\]:[ \t]*)(<[^>\n]+>|[^\s)<>]+)`)
+var listMarker = regexp.MustCompile(`^ *(?:[-+*]|[0-9]{1,9}[.)])[ \t]+`)
 var codeRun = regexp.MustCompile("`+")
 var fenceStart = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
 var anchorHref = regexp.MustCompile(`(?i)(<a\s+[^>]*?\bhref=")([^"]*)(")`)
@@ -68,6 +69,7 @@ var anchorHref = regexp.MustCompile(`(?i)(<a\s+[^>]*?\bhref=")([^"]*)(")`)
 func (links chapterLinks) markdown(content, origin, output string) string {
 	var out strings.Builder
 	var fence, span string
+	listIndent := 0
 	for line := range strings.SplitAfterSeq(content, "\n") {
 		if marker := fenceStart.FindStringSubmatch(line); marker != nil && span == "" {
 			if fence == "" {
@@ -81,7 +83,22 @@ func (links chapterLinks) markdown(content, origin, output string) string {
 				continue
 			}
 		}
-		if fence != "" || strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
+		if fence != "" {
+			out.WriteString(line)
+			continue
+		}
+		// Four-space continuation text inside a nested list is prose.
+		// Count code indentation from the enclosing list content column.
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if strings.TrimSpace(line) != "" && indent < listIndent {
+			listIndent = 0
+		}
+		if indent < listIndent+4 {
+			if marker := listMarker.FindString(line); marker != "" {
+				listIndent = len(marker)
+			}
+		}
+		if indent >= listIndent+4 || strings.HasPrefix(line, "\t") {
 			out.WriteString(line)
 			continue
 		}

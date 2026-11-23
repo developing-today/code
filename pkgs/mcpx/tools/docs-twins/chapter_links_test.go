@@ -22,7 +22,7 @@ func TestPublishedChapterDestinations(t *testing.T) {
 	page := filepath.Join(out, "sub", "child.html")
 	write(page, "<html><head></head><body><a href=\"README.html#x\">Directory</a></body></html>")
 	sample := "`[inline](README.md)`\n\n~~~text\n[example](README.md)\n~~~\n"
-	write(filepath.Join(docs, "sub", "child.md"), "# Child\n\n[Directory](./README.md?x=1#x) [local](#part) [site](https://example.org/README.md)\n\n[r]: <../guide.md#top>\n\n"+sample)
+	write(filepath.Join(docs, "sub", "child.md"), "# Child\n\n[Directory](./README.md?x=1#x) [local](#part) [site](https://example.org/README.md)\n\n[r]: <../guide.md#top>\n\n- outer\n  - inner\n    [nested](README.md)\n\n"+sample)
 	cfg := config{docsDir: docs, agentsDir: agents, outDir: out}
 	if err := runEmit(cfg); err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestPublishedChapterDestinations(t *testing.T) {
 		}
 	}
 	check("sub/child.html", `href="index.html#x"`)
-	check("sub/child.html.md", "[Directory](index.html.md?x=1#x)", "[local](#part)", "[r]: <../guide.html.md#top>", sample)
+	check("sub/child.html.md", "[Directory](index.html.md?x=1#x)", "[local](#part)", "[r]: <../guide.html.md#top>", "[nested](index.html.md)", sample)
 	check("llms-full.txt", "[Directory](sub/index.html.md?x=1#x)", "[local](sub/child.html.md#part)", "[child](sub/child.html.md?mode=a#intro)", "[r]: <guide.html.md#top>", "[site](https://example.org/README.md)", sample)
 	if err := runCheck(cfg); err != nil {
 		t.Fatal(err)
