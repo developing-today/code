@@ -222,7 +222,12 @@ pub fn check_schema_version(index: &serde_json::Value) -> Result<u32, Option<u64
 /// Why one world's journal could not be projected.
 #[derive(Debug)]
 enum WorldFailure {
-    Malformed,
+    /// A journal line does not parse, repeats the header, or needs a
+    /// newer version than its header declares.
+    Malformed {
+        /// One-based line number.
+        line: u64,
+    },
     WrongWorld,
     UnsupportedVersion,
 }
@@ -238,17 +243,15 @@ fn next_line<R: BufRead>(
 ) -> Result<Option<bool>, WorldFailure> {
     buf.clear();
     let cap = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
-    let read = journal
-        .by_ref()
-        .take(cap)
+    let read = <&mut R as io::Read>::take(journal, cap)
         .read_until(b'\n', buf)
-        .map_err(|_| WorldFailure::Malformed)?;
+        .map_err(|_| WorldFailure::Malformed { line })?;
     if read == 0 {
         return Ok(None);
     }
     let terminated = buf.last() == Some(&b'\n');
     if buf.len() > max || (!terminated && read as u64 == cap) {
-        return Err(WorldFailure::Malformed);
+        return Err(WorldFailure::Malformed { line });
     }
     Ok(Some(terminated))
 }
@@ -315,7 +318,7 @@ fn project_world<R: BufRead>(
             continue;
         }
         let entry: JournalEntry =
-            serde_json::from_slice(text).map_err(|_| WorldFailure::Malformed)?;
+            serde_json::from_slice(text).map_err(|_| WorldFailure::Malformed { line })?;
         summary.entries += 1;
         let Some(version) = summary.header_version else {
             let JournalEntry::Created {
@@ -323,7 +326,7 @@ fn project_world<R: BufRead>(
                 version,
             } = entry
             else {
-                return Err(WorldFailure::Malformed);
+                return Err(WorldFailure::Malformed { line });
             };
             if found != world_id {
                 return Err(WorldFailure::WrongWorld);
@@ -336,10 +339,10 @@ fn project_world<R: BufRead>(
         };
         let required = journal_version_required_by(&entry);
         if required > version {
-            return Err(WorldFailure::Malformed);
+            return Err(WorldFailure::Malformed { line });
         }
         match entry {
-            JournalEntry::Created { .. } => return Err(WorldFailure::Malformed),
+            JournalEntry::Created { .. } => return Err(WorldFailure::Malformed { line }),
             JournalEntry::Issued {
                 participant,
                 issued_at,
@@ -378,7 +381,7 @@ fn project_world<R: BufRead>(
     }
 
     if summary.header_version.is_none() {
-        return Err(WorldFailure::Malformed);
+        return Err(WorldFailure::Malformed { line });
     }
     Ok(AuthorIndexWorld {
         world_id: world_id.to_owned(),
@@ -443,7 +446,7 @@ pub fn build<S: WorldJournalSource>(
             }
             Ok(journal) => match project_world(world_id, journal, modified, limits) {
                 Ok(world) => world,
-                Err(WorldFailure::Malformed) => {
+                Err(WorldFailure::Malformed { .. }) => {
                     directory_only(world_id, DirectoryOnlyReason::JournalMalformed, modified)
                 }
                 Err(WorldFailure::WrongWorld) => {
