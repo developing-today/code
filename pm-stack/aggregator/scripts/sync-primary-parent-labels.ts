@@ -124,7 +124,7 @@ export function planPrimaryParentLabels(labels: GhLabel[]): {
       slug,
       name: target,
       color: (label.color ?? "").replace(/^#/, "") || "5319e7",
-      description: `Primary parent epic (design §3): marks epic/${slug} when the native sub-issue parent cannot carry it`,
+      description: `Primary parent epic ${slug} (design §3)`,
     });
     taken.add(target);
   }

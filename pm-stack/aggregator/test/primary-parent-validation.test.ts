@@ -158,7 +158,7 @@ describe("planPrimaryParentLabels (label family registry)", () => {
     expect(existing).toEqual(["primary-parent/already-there"]);
     expect(plan.map((entry) => entry.name)).toEqual(["primary-parent/id-crate-split", "primary-parent/pm-stack"]);
     expect(plan[1]?.color).toBe("1d76db");
-    expect(plan[0]?.description).toContain("epic/id-crate-split");
+    expect(plan[0]?.description).toContain("id-crate-split");
   });
 
   test("a slug too long for GitHub's 50-character label limit is skipped, not truncated", () => {
