@@ -44,7 +44,7 @@ cargo test -p id-native-shell    # unit + transcript + parity tests
     played through both the native loop and a terminal-style raw
     client, with the host journal as the oracle).
 - Steps 3–4 (rich 3D/audio/widget surfaces) are conditional on the
-  design's Q1 decision for Drew and are **not** in this crate.
+  design's Q1 decision for the user and are **not** in this crate.
 
 ## Capability statement
 

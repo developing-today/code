@@ -102,7 +102,7 @@ argue with it.
 ## What CI actually runs
 
 House policy is CI on `main` only: workflows are not merge gates, and
-Atlas's run on the nightly-plus-dispatch pattern Drew set on 2026-11-16.
+Atlas's run on the nightly-plus-dispatch pattern the user set on 2026-11-16.
 State the triggers as they are in the files, not as the filenames or
 headers claim — all three Atlas workflows disagree with their own
 presentation somewhere, and the `on:` block is the truth in each case.

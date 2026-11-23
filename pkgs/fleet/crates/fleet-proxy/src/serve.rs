@@ -1073,7 +1073,18 @@ fn parse_port(frame: &serde_json::Value) -> Result<Option<u16>, String> {
     Ok(Some(n as u16))
 }
 
-fn serve_session(broker: &Broker, mut stream: UnixStream) {
+fn serve_session(broker: &Broker, stream: UnixStream) {
+    serve_session_with_read_timeout(broker, stream, crate::tunnel::TUNNEL_READ_TIMEOUT);
+}
+
+fn serve_session_with_read_timeout(
+    broker: &Broker,
+    mut stream: UnixStream,
+    read_timeout: Duration,
+) {
+    if stream.set_read_timeout(Some(read_timeout)).is_err() {
+        return;
+    }
     let mut client_supports_raw_splice = false;
     let first = match read_frame(&mut stream) {
         Ok(f) => f,
@@ -1175,6 +1186,12 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
                             )
                             .is_err()
                             {
+                                return;
+                            }
+                            // Session framing is bounded, but the raw
+                            // relay carries long-lived connections that
+                            // may legitimately remain idle for hours.
+                            if stream.set_read_timeout(None).is_err() {
                                 return;
                             }
                             // A raw relay can be the broker's only
@@ -1497,6 +1514,33 @@ mod tests {
         assert!(!conn.reusable());
         server.join().unwrap();
         conn
+    }
+
+    #[test]
+    fn stalled_accepted_session_is_dropped_within_read_timeout() {
+        let broker = Arc::new(Broker {
+            config: Config::default(),
+            egress: None,
+            cf_egress: None,
+            pool: TunnelPool::new(0),
+            recovery: RecoveryGate::new(),
+            last_used: AtomicU64::new(now_secs()),
+        });
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let timeout = Duration::from_millis(200);
+        let started = Instant::now();
+
+        std::thread::spawn(move || {
+            serve_session_with_read_timeout(&broker, stream, timeout);
+            let _ = done_tx.send(());
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stalled accepted stream should time out and return");
+        assert!(started.elapsed() >= timeout);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     const PORT: u16 = 4799;

@@ -39,11 +39,11 @@ The service is never a public listener in its own right.
 
 Service configuration lives in **`~/.local/state/atlas-search/service.json`**, mode 0600, written by `atlas-search init`. It holds the listen address and the per-client token table: each named client has its own bearer token (named here, never valued) and a **ceiling cap** — the highest sensitivity ceiling that client may ever search under. The state directory also holds the model snapshot (`model/`), traces, and feedback records; nothing else writes there.
 
-The clamp is the security property: the server computes `effective = min(requested, token ceiling cap)`, records the effective ceiling on the job, and reports it in the result envelope. Raising a cap is a local edit by Drew in that file — never something a request can do. The v1 client set and caps, as designed and configured:
+The clamp is the security property: the server computes `effective = min(requested, token ceiling cap)`, records the effective ceiling on the job, and reports it in the result envelope. Raising a cap is a local edit by the user in that file — never something a request can do. The v1 client set and caps, as designed and configured:
 
 | Client | Ceiling cap |
 |---|---|
-| Drew's CLI on the laptop (`drew-cli`) | `secret-bearing` |
+| The user's CLI on the laptop (`drew-cli`) | `secret-bearing` |
 | OpenChamber sessions | `personal` |
 | Fork / OpenCode agents | `personal` |
 | Sandbox scripts and Muse lanes via the tailnet (`sandbox-scripts`) | `personal` |

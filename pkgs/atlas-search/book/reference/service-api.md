@@ -78,12 +78,12 @@ The v1 client table written by `atlas-search init` is:
 
 | Identity | Ceiling cap | Intended caller |
 |---|---|---|
-| `drew-cli` | `secret-bearing` | Drew's own CLI on the laptop. |
+| `drew-cli` | `secret-bearing` | The user's own CLI on the laptop. |
 | `openchamber` | `personal` | OpenChamber sessions. |
 | `fork-server` | `personal` | Fork / OpenCode agents. |
 | `sandbox-scripts` | `personal` | Sandbox scripts and Muse lanes, over the tailnet. |
 
-One later identity exists beyond the `init` table: `cf-worker`, cap `personal`, whose token the Cloudflare Worker presents when it calls this service (see [The Worker HTTP API](worker-api.md)). Raising any cap is a local edit to `service.json` by Drew; there is no API for it.
+One later identity exists beyond the `init` table: `cf-worker`, cap `personal`, whose token the Cloudflare Worker presents when it calls this service (see [The Worker HTTP API](worker-api.md)). Raising any cap is a local edit to `service.json` by the user; there is no API for it.
 
 A missing or invalid bearer token fails with an unauthorised error in the shared error envelope (see "Errors"), on every authenticated route, in the same shape.
 

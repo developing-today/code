@@ -1,0 +1,215 @@
+{
+  "fixture_set": "atlas-metadata-version-conformance",
+  "issue": "developing-today/code#9095",
+  "surface": "atlas",
+  "version_key": "schema_version",
+  "current_version": 1,
+  "source_design": "doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/note.md",
+  "notes": "Cases with executable=true and a stage_row are asserted by the atlas-core conformance test (pkgs/atlas-search/crates/atlas-core/tests/metadata_conformance.rs): the row is inserted into a provisioned atlas_stage v1 database and read back through list_staged_items; meta must round-trip byte-exact and the database schema version must be 1. Cases with executable=false carry doctrine_projection: the recorded oracle for the projection behavior in design section 7 slices 2 and 6, not asserted against any current reader.",
+  "cases": [
+    {
+      "id": "atlas-stage-v1-producer-meta",
+      "historical_source": "The meta bag atlas_core::stage::stage_artifact writes today (atlas_stage v1, pkgs/atlas-search/schema/atlas_stage_v1.sql): an unversioned open JSON bag. This is the historical shape every staged item in the wild carries; the staging reader returns it byte-exact.",
+      "object": {
+        "repo": "developing-today/code",
+        "path": "pkgs/atlas-search/README.md",
+        "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        "kind": "prose",
+        "language": "md",
+        "unit": "whole-file",
+        "embedded_at": "2026-11-04T00:00:00Z",
+        "chunks": 3
+      },
+      "stage_row": {
+        "unit_id": "fixture-9095",
+        "kind": "prose",
+        "source": "developing-today/code:pkgs/atlas-search/README.md@0123456789abcdef0123456789abcdef01234567",
+        "sensitivity": "internal",
+        "text": "fixture body text",
+        "meta": "{\"chunks\":3,\"commit_sha\":\"0123456789abcdef0123456789abcdef01234567\",\"embedded_at\":\"2026-11-04T00:00:00Z\",\"kind\":\"prose\",\"language\":\"md\",\"path\":\"pkgs/atlas-search/README.md\",\"repo\":\"developing-today/code\",\"unit\":\"whole-file\"}"
+      },
+      "executable": true
+    },
+    {
+      "id": "atlas-v1-item-envelope",
+      "historical_source": "The doctrine v1 envelope (design section 2) for a corpus item: identity, content hash, source, chunking, provenance, extras. Rides the staging items.meta bag until the Atlas producer profile adopts it natively.",
+      "object": {
+        "schema_version": 1,
+        "fields": {
+          "identity": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "source": "developing-today/code:pkgs/atlas-search/README.md@0123456789abcdef0123456789abcdef01234567",
+          "kind": "prose",
+          "sensitivity": "internal",
+          "chunking": {
+            "strategy": "boundary-safe",
+            "chunk_count": 3
+          },
+          "provenance": {
+            "producer": "atlas-stage",
+            "staged_at": "2026-11-21T00:00:00Z"
+          }
+        },
+        "extras": {}
+      },
+      "stage_row": {
+        "unit_id": "fixture-9095",
+        "kind": "prose",
+        "source": "developing-today/code:pkgs/atlas-search/README.md@0123456789abcdef0123456789abcdef01234567",
+        "sensitivity": "internal",
+        "text": "fixture body text",
+        "meta": "{\"extras\":{},\"fields\":{\"chunking\":{\"chunk_count\":3,\"strategy\":\"boundary-safe\"},\"content_hash\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"identity\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"kind\":\"prose\",\"provenance\":{\"producer\":\"atlas-stage\",\"staged_at\":\"2026-11-21T00:00:00Z\"},\"sensitivity\":\"internal\",\"source\":\"developing-today/code:pkgs/atlas-search/README.md@0123456789abcdef0123456789abcdef01234567\"},\"schema_version\":1}"
+      },
+      "executable": true
+    },
+    {
+      "id": "atlas-v1-embed-record",
+      "historical_source": "Per-embed record (issue scope: identity, content hash, source, chunking, embedder identity + model revision). The model named is the promotion-time embedder of record (atlas-stage book reference).",
+      "object": {
+        "schema_version": 1,
+        "fields": {
+          "item": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "chunk": {
+            "index": 0,
+            "of": 3
+          },
+          "embedder": {
+            "id": "atlas-aggregator",
+            "model": "Snowflake/snowflake-arctic-embed-m-v2.0",
+            "model_revision": "v2.0"
+          },
+          "dims": 1024,
+          "provenance": {
+            "embedded_at": "2026-11-21T00:00:00Z"
+          }
+        },
+        "extras": {}
+      },
+      "stage_row": {
+        "unit_id": "fixture-9095",
+        "kind": "prose",
+        "source": "developing-today/code:pkgs/atlas-search/README.md@0123456789abcdef0123456789abcdef01234567",
+        "sensitivity": "internal",
+        "text": "fixture body text",
+        "meta": "{\"extras\":{},\"fields\":{\"chunk\":{\"index\":0,\"of\":3},\"content_hash\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"dims\":1024,\"embedder\":{\"id\":\"atlas-aggregator\",\"model\":\"Snowflake/snowflake-arctic-embed-m-v2.0\",\"model_revision\":\"v2.0\"},\"item\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"provenance\":{\"embedded_at\":\"2026-11-21T00:00:00Z\"}},\"schema_version\":1}"
+      },
+      "executable": true
+    },
+    {
+      "id": "atlas-v1-classification-record",
+      "historical_source": "Classification record per workstream D: the strict core enums kind/area/group/sensitivity with a ladder sensitivity value (shareable < personal < local-only < secret-bearing).",
+      "object": {
+        "schema_version": 1,
+        "fields": {
+          "item": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "kind": "prose",
+          "area": "atlas",
+          "group": "ingest",
+          "sensitivity": "local-only",
+          "classifications": [
+            {
+              "scheme": "workstream-d",
+              "label": "documentation"
+            }
+          ],
+          "provenance": {
+            "classifier": "atlas-classify",
+            "classified_at": "2026-11-21T00:00:00Z"
+          }
+        },
+        "extras": {}
+      },
+      "stage_row": {
+        "unit_id": "fixture-9095",
+        "kind": "prose",
+        "source": "developing-today/code:pkgs/atlas-search/README.md@0123456789abcdef0123456789abcdef01234567",
+        "sensitivity": "internal",
+        "text": "fixture body text",
+        "meta": "{\"extras\":{},\"fields\":{\"area\":\"atlas\",\"classifications\":[{\"label\":\"documentation\",\"scheme\":\"workstream-d\"}],\"group\":\"ingest\",\"item\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"kind\":\"prose\",\"provenance\":{\"classified_at\":\"2026-11-21T00:00:00Z\",\"classifier\":\"atlas-classify\"},\"sensitivity\":\"local-only\"},\"schema_version\":1}"
+      },
+      "executable": true
+    },
+    {
+      "id": "atlas-v1-invalid-sensitivity",
+      "historical_source": "A typo'd sensitivity token from a producer ('secrit'). Doctrine rule 5 / design section 3.1: sensitivity is safety-critical and closed; an invalid value resolves to the most restrictive ladder value and the original is retained in extras for correction.",
+      "object": {
+        "schema_version": 1,
+        "fields": {
+          "kind": "prose",
+          "sensitivity": "secrit"
+        },
+        "extras": {}
+      },
+      "executable": false,
+      "doctrine_projection": {
+        "fields": {
+          "kind": "prose",
+          "sensitivity": "secret-bearing"
+        },
+        "extras": {
+          "sensitivity": "secrit"
+        },
+        "reason": "unknown-enum"
+      }
+    },
+    {
+      "id": "atlas-v1-coercion",
+      "historical_source": "Type-directed handling (doctrine rule 4 / design section 3.2): an integer array offered to a string-array field converts losslessly; a string array that does not fully convert to an integer array relocates to extras unchanged. Partial conversion is forbidden.",
+      "object": {
+        "schema_version": 1,
+        "fields": {
+          "tags": [
+            1,
+            2,
+            3
+          ],
+          "counts": [
+            "10",
+            "x"
+          ]
+        },
+        "extras": {}
+      },
+      "executable": false,
+      "doctrine_projection": {
+        "fields": {
+          "tags": [
+            "1",
+            "2",
+            "3"
+          ]
+        },
+        "extras": {
+          "counts": [
+            "10",
+            "x"
+          ]
+        },
+        "reason": "unconvertible"
+      }
+    },
+    {
+      "id": "atlas-v1-unknown-closed-enum",
+      "historical_source": "An unknown value in the closed kind enum. Doctrine rule 5 / design section 3.1: preserve the original in extras with its source path and report unclassified; never substitute a guessed category.",
+      "object": {
+        "schema_version": 1,
+        "fields": {
+          "kind": "hologram",
+          "sensitivity": "personal"
+        },
+        "extras": {}
+      },
+      "executable": false,
+      "doctrine_projection": {
+        "fields": {
+          "sensitivity": "personal"
+        },
+        "extras": {
+          "kind": "hologram"
+        },
+        "reason": "unknown-enum"
+      }
+    }
+  ]
+}

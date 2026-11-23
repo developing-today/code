@@ -29,12 +29,15 @@ import {
   machineSaid,
   machinesMark,
   phaseHeading,
+  platformCounts,
   prCheck,
   runSaid,
   sentSaid,
   servingSaid,
   subscriptionState,
   testSaid,
+  whySaid,
+  workerSaid,
 } from "../public/app.js";
 import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
@@ -656,6 +659,7 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "queue?status=claimed&q=",
     "queue?status=parked&q=",
     "releases",
+    "platform",
     "messages?limit=15",
     "push",
     "devices",
@@ -679,6 +683,7 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "queue?status=claimed&q=",
     "queue?status=parked&q=",
     "releases",
+    "platform",
     "messages?limit=15",
     "push",
     "devices",
@@ -873,4 +878,91 @@ test("the Machines screen is drawn again when what it shows has changed, and not
   expect(machinesMark(quiet, now + 60_000)).not.toBe(machinesMark(quiet, now));
   // An answer that is not one is not a crash.
   expect(machinesMark(null, now)).toBe(machinesMark({}, now));
+});
+
+test("a Worker's line on the Platform screen: how it gets into service, and how its last deploy went", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const run = (state: string, more: Record<string, unknown> = {}) => ({
+    commit: "0123456789ab",
+    state,
+    at: "2026-11-23T10:00:00Z",
+    url: "https://github.com/x/y/actions/runs/1",
+    ...more,
+  });
+  // One whose deploy workflow puts what it ran on into service when it succeeds.
+  const from = (more: Record<string, unknown>) => ({
+    state: "in service",
+    deploy: "actions",
+    runDeploys: true,
+    run: null,
+    ...more,
+  });
+  // One that deploys in steps: a run that succeeded may only have uploaded a version.
+  const steps = (more: Record<string, unknown>) => ({ ...from(more), runDeploys: false });
+  expect(workerSaid(steps({ run: run("success") }), now)).toEqual({
+    text: "In service. The last run of its deploy workflow, 2 h ago, succeeded (0123456). It deploys in steps, so that run may not be what is serving.",
+    tone: "",
+  });
+  expect(workerSaid(steps({ run: run("failure") }), now)).toEqual({
+    text: "In service. The last run of its deploy workflow, 2 h ago, did not finish (failure) (0123456). It deploys in steps, so that run may not be what is serving.",
+    tone: "warn",
+  });
+  expect(workerSaid(steps({ run: run("in_progress") }), now).text).toContain("2 h ago, is in progress (0123456)");
+  expect(workerSaid(steps({ run: run("success") }), now).text).not.toContain("Last deploy");
+  expect(workerSaid(from({ run: run("success") }), now)).toEqual({
+    text: "In service. Last deploy 2 h ago, of 0123456.",
+    tone: "good",
+  });
+  // One that did not finish is said, and marked.
+  expect(workerSaid(from({ run: run("failure") }), now)).toEqual({
+    text: "In service. Its last deploy, 2 h ago, did not finish (failure).",
+    tone: "warn",
+  });
+  expect(workerSaid(from({ run: run("timed_out") }), now).text).toContain("did not finish (timed out)");
+  // One under way is neither good nor bad yet.
+  expect(workerSaid(from({ run: run("in_progress") }), now)).toEqual({
+    text: "In service. A deploy of 0123456 is in progress, started 2 h ago.",
+    tone: "",
+  });
+  expect(workerSaid(from({ run: { error: "rate limited" } }), now)).toEqual({
+    text: "In service. Deployed from Actions; its last run could not be read (rate limited).",
+    tone: "warn",
+  });
+  expect(workerSaid(from({}), now).text).toBe("In service. Deployed from Actions; it has not run on main yet.");
+  // By hand, from a machine: in service, and marked as what is left to do.
+  expect(workerSaid({ state: "in service", deploy: "by hand", run: null }, now)).toEqual({
+    text: "In service. Deployed by hand, from a machine.",
+    tone: "warn",
+  });
+  expect(workerSaid({ state: "not deployed", deploy: "none", run: null }, now)).toEqual({
+    text: "Not deployed.",
+    tone: "",
+  });
+  // The counts the screen opens with.
+  expect(
+    platformCounts([
+      { state: "in service", deploy: "actions" },
+      { state: "in service", deploy: "by hand" },
+      { state: "in service", deploy: "by hand" },
+      { state: "not deployed", deploy: "none" },
+    ]),
+  ).toEqual({ all: 4, live: 3, actions: 1, byHand: 2, idle: 1 });
+  expect(platformCounts([])).toEqual({ all: 0, live: 0, actions: 0, byHand: 0, idle: 0 });
+});
+
+test("why something could not be read is said in the owner's words where the reason is a known one", () => {
+  // As GitHub says it, through the fleet binary: seen in service on 2026-11-23.
+  const limited =
+    'fleet gh failed (exit 1): {"message":"API rate limit exceeded for user ID 11225574. If you reach out to GitHub Support for help, please include the request ID 312C:3E98FD:129EC6:13D870:6B047542","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api","status":"403"}';
+  const said = whySaid(limited);
+  expect(said).toBe(
+    "GitHub's allowance for the hour is used up on this account, which the agents share; it is asked again every few minutes and answers when the hour turns",
+  );
+  // None of the raw answer is shown: no JSON, no request number, no user number.
+  expect(/[{}"]|request ID|11225574/.test(said)).toBe(false);
+  expect(whySaid("You have exceeded a secondary rate limit")).toBe(said);
+  // Anything else is said as it came, and nothing is said as "no reason given".
+  expect(whySaid("connection refused")).toBe("connection refused");
+  expect(whySaid("  timed out \n")).toBe("timed out");
+  for (const none of ["", null, undefined, "   "]) expect([none, whySaid(none)]).toEqual([none, "no reason given"]);
 });

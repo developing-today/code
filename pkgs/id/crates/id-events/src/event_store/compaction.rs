@@ -29,6 +29,13 @@
 //! before the table existed gains it on the first compaction, so no format
 //! change is needed.
 
+//! Composition with the two older paths that predate residue (#13401):
+//! range sync does not advertise compacted positions — the advertisement
+//! is exactly the set whose bytes `sync_bytes` can serve, since an
+//! unservable offer aborts the session — and `prune_behind_cut` refuses a
+//! store that holds any residue until prune's erasure is composed with
+//! compaction's presence by a deliberate ruling (see that function).
+
 use std::collections::{HashMap, HashSet};
 
 use p2panda_core::{Hash, SeqNum};
@@ -335,7 +342,11 @@ fn compact_in(txn: &WriteTransaction, policy: &CompactionPolicy) -> Result<usize
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::cast_possible_truncation
+)]
 mod tests {
     use super::*;
     use crate::event_store::{Ingest, Validity};
@@ -862,5 +873,67 @@ mod tests {
             store.fork_proof(&author(&bob)).unwrap().is_some(),
             "the fork proof survived the reopen"
         );
+    }
+    /// Oracle (#13401): the refusal error and the store's observable
+    /// state. A prune over a store with residue fails with
+    /// [`StoreError::PruneOverResidue`] naming the residue count, and
+    /// changes nothing: the chain, the advertised sync set, the stored
+    /// head and the residue itself are all as they were.
+    #[test]
+    fn prune_refuses_a_store_with_residue_and_changes_nothing() {
+        let (_dir, mut store) = open_temp();
+        let signer = key(51);
+        let who = author(&signer);
+        let events = chain_of(&signer, 6, "chat.message.v1");
+        ingest_all(&mut store, &events);
+        assert_eq!(
+            store.compact(&policy(&["chat.message.v1"], 2)).unwrap(),
+            4,
+            "seqs 0..3 are residue, seqs 4 and 5 stay stored"
+        );
+        let chain_before = store.chain(&who).unwrap();
+        let entries_before = store.sync_entries().unwrap().len();
+        let err = store
+            .prune_behind_cut(&[events[5].id], &[])
+            .expect_err("a prune over residue was not refused");
+        assert!(
+            matches!(err, StoreError::PruneOverResidue(4)),
+            "unexpected refusal: {err}"
+        );
+        assert_eq!(store.chain(&who).unwrap(), chain_before);
+        assert_eq!(store.sync_entries().unwrap().len(), entries_before);
+        assert!(
+            store
+                .event(&who, events[5].header.seq_num)
+                .unwrap()
+                .is_some(),
+            "the stored head is untouched"
+        );
+        assert!(
+            store
+                .event(&who, events[0].header.seq_num)
+                .unwrap()
+                .is_none(),
+            "the residue is untouched: its bytes stay reclaimed"
+        );
+        store.check_invariants().unwrap();
+    }
+
+    /// Oracle (#13401): a compaction pass that compacted nothing leaves
+    /// no residue, so the guard does not fire and the prune runs exactly
+    /// as it did before residue existed.
+    #[test]
+    fn prune_runs_when_compaction_compacted_nothing() {
+        let (_dir, mut store) = open_temp();
+        let events = chain_of(&key(52), 4, "chat.message.v1");
+        ingest_all(&mut store, &events);
+        assert_eq!(
+            store.compact(&policy(&["didit.record"], 0)).unwrap(),
+            0,
+            "no event matches the policy, so nothing is residue"
+        );
+        let pruned = store.prune_behind_cut(&[events[3].id], &[]).unwrap();
+        assert_eq!(pruned, 4);
+        store.check_invariants().unwrap();
     }
 }

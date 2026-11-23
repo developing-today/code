@@ -2,7 +2,7 @@
 
 Source: [pkgs/atlas-search/crates/atlas-core/src/bin/atlas-github-comments.rs](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/bin/atlas-github-comments.rs) and [pkgs/atlas-search/crates/atlas-core/src/github_comments.rs](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/github_comments.rs) (extraction feed #6023; the writer is #10688).
 
-`atlas-github-comments` is a one-verb writer: it extracts GitHub comments — issue comments, pull-request review comments, and pull-request reviews — from the repositories Drew controls, and appends them as `atlas-github-comment/v1` records to a JSONL file, so the comments become a corpus source (source class `github comments`, source id `github-comments`). There are no subcommands and no other mode; the single invocation below is the whole tool.
+`atlas-github-comments` is a one-verb writer: it extracts GitHub comments — issue comments, pull-request review comments, and pull-request reviews — from the repositories the user controls, and appends them as `atlas-github-comment/v1` records to a JSONL file, so the comments become a corpus source (source class `github comments`, source id `github-comments`). There are no subcommands and no other mode; the single invocation below is the whole tool.
 
 The complete surface exists only in the source header. `--help` / `-h` prints the usage line to stdout, exit 0, and `--version` / `-V` prints `atlas-github-comments 0.1.0` — and, stated plainly, because it surprises everyone: **every failure in this binary exits 1, including pure argument errors**. There is no exit-2 path.
 

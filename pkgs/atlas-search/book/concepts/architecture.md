@@ -2,7 +2,7 @@
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/lib.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/backend.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/shards/mod.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/index.ts, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/service.ts, https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-search/src/lib.rs
 
-Atlas is a unified search index over every corpus Drew produces: AI-client
+Atlas is a unified search index over every corpus the user produces: AI-client
 conversations first, and — through the same staging discipline — notes, repo
 docs, GitHub comments, query traces, and research. One logical pipeline carries
 every source from raw material to a searchable chunk, and one retrieval core
@@ -220,12 +220,12 @@ boundaries, in the order data crosses them:
    check: the destination surface's ceiling intersects the caller's, and
    cached or paged payloads inherit the filter because the served set is
    collected from the rendered envelope.
-8. **The embedder boundary.** Embedding happens in-process, on hardware Drew
+8. **The embedder boundary.** Embedding happens in-process, on hardware the user
    controls. Secret-tier text is never sent to a hosted embedder — a rule
    stated in full in [Sensitivity tiers and client ceilings](sensitivity.md).
 
 Consumers sit outside every boundary above and inherit the strictest one they
-cross: Drew's own CLI is the only identity granted the `secret-bearing`
+cross: The user's own CLI is the only identity granted the `secret-bearing`
 ceiling; agents on the sandbox seat search at `personal`; hosted callers
 arrive through the Worker at `personal` under the `hosted-per-user`
 disclosure context. Who consumes Atlas, and by which path, is the subject of

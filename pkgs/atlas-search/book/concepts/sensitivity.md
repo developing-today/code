@@ -2,8 +2,8 @@
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/filters.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/disclosure.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/manifest.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/shards/mod.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/space.ts
 
-Atlas holds Drew's own conversations, notes, and working records, and it
-serves them to callers that are not equally trusted: Drew himself, his
+Atlas holds the user's own conversations, notes, and working records, and it
+serves them to callers that are not equally trusted: the user himself, his
 agents, and hosted surfaces reachable from outside the laptop. Sensitivity
 is therefore not a label for tidiness — it is the access-control model, and
 it is enforced by the server, inside the search queries, before anything is
@@ -35,6 +35,14 @@ stated at the end of this chapter.
 
 **Client ceilings** — how much a caller may see. Four levels, in ascending
 order, named in code (`SENS_ORDER`) `shareable < personal < local-only < secret-bearing`.
+The canonical terminology for the four classes is
+`public < internal < private < sensitive`, in the same order — `shareable`
+is public, `personal` is internal, `local-only` is private, and
+`secret-bearing` is sensitive. Where this book speaks of the classes
+themselves it uses the canonical names; where it quotes a flag value, a
+config cap, or a stored label it spells the value as the code does, because
+the code spellings remain the literal values until the identifier rename
+(#13506) lands with alias/migration handling for the stored values.
 A *ceiling* is a maximum: a search run at ceiling `personal` may return
 chunks classified `shareable` or `personal`, and nothing above. The default
 ceiling is `personal` — a caller who asks for nothing gets `personal`, and
@@ -43,12 +51,12 @@ above the default is both requested and granted.
 
 The mapping between the ladders is fixed:
 
-| Client ceiling | Corpus tier it reaches |
-|---|---|
-| `shareable` | `public` |
-| `personal` | `internal` |
-| `local-only` | `internal` |
-| `secret-bearing` | `secret` |
+| Client ceiling (code spelling) | Canonical name | Corpus tier it reaches |
+|---|---|---|
+| `shareable` | `public` | `public` |
+| `personal` | `internal` | `internal` |
+| `local-only` | `private` | `internal` |
+| `secret-bearing` | `sensitive` | `secret` |
 
 Note the deliberate pinch in the middle: two ceiling levels map to the
 internal tier. The ceiling ladder is finer-grained than physical placement,
@@ -58,7 +66,11 @@ staging database's `sensitivity` column speaks tier words and defaults to
 `internal`, while the published `chunks` and `session_labels` columns speak
 ceiling words — and the translation happens at promotion, in the aggregator,
 in one direction, and at shard selection, in the other. No schema declares
-the mapping; the two code points above are where it lives.
+the mapping; the two code points above are where it lives. Whether the tier
+vocabulary and the ceiling vocabulary are one ladder or two is a deliberate
+open decision, recorded on #13506: the canonical ceiling names now share
+`public` and `internal` with the tiers, which makes the question sharper,
+not settled.
 
 A third, related vocabulary appears at the output boundary: the
 *disclosure context*, which names the destination surface rather than the
@@ -82,14 +94,14 @@ identities in service today:
 
 | Client identity | Who it is | Ceiling cap |
 |---|---|---|
-| `drew-cli` | Drew's own CLI on the laptop | `secret-bearing` |
+| `drew-cli` | The user's own CLI on the laptop | `secret-bearing` |
 | `sandbox-scripts` | Muse lanes and scripts on the sandbox seat, via the tailnet | `personal` |
 | `cf-worker` | The Cloudflare Worker, calling the service | `personal` |
 
-The design of record's v1 client set matches this shape: Drew's CLI is the
+The design of record's v1 client set matches this shape: the user's CLI is the
 only identity capped above `personal`; OpenChamber sessions and fork /
 OpenCode agents were likewise specified at `personal`. Raising a cap is a
-local edit to the service configuration by Drew — there is no request a
+local edit to the service configuration by the user — there is no request a
 client can make that raises its own cap.
 
 Enforcement happens at three depths, so that no single layer's failure is
@@ -158,7 +170,7 @@ deleted after the scan.
 
 **The Layer-1 review (#10412, closed).** The scan's candidates were then
 reviewed one by one: 47 candidate chunks carrying 67 findings, plus 45
-candidate messages, each ruled on and the review closed under Drew's
+candidate messages, each ruled on and the review closed under the user's
 2026-11-22 Atlas order. It is a review record, not a design statement —
 its value to this chapter is that the secret tier's membership has had a
 human-scale pass over its boundary cases, not only automated scans.
@@ -185,7 +197,7 @@ most restrictive tier.
 
 Embedding is the one step that would ordinarily send text to an outside
 service, so it has its own rule: **secret text is never sent to a hosted
-embedder.** Atlas's production embedder runs in-process on Drew's hardware,
+embedder.** Atlas's production embedder runs in-process on the user's hardware,
 which satisfies the rule for the corpus as built; the rule's teeth are in
 ingest. Until a dedicated local secret-tier embedder lands (#6059, designed
 but not built), secret-tier source classes are held out of automated
@@ -207,7 +219,7 @@ caller is *served* from those stores, but the physical placement boundary
 The remediation is filed (#12406: inventory, a verified destination copy
 and re-embed, a visibility switch, replica and cache purge, trace-safe
 tombstones, and post-run absence checks), but the threshold decision —
-purge the monolith copies, or reclassify — is **Drew's, and it is
+purge the monolith copies, or reclassify — is **the user's, and it is
 undecided**. This book records the defect and the options; it does not
 pick one. Any claim that Atlas's tier boundary fully holds should be read
 with #8479 attached until that decision is made and the migration has run.

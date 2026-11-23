@@ -52,7 +52,7 @@ The classifier's route decides where retrieval happens:
 
 - **By source and corpus** — a query about code goes to the code shards, a memory-recall query to the memory corpora, a statistics question to the statistics source. Routing is a recall *and* a cost decision: shards outside the route are not scanned.
 - **By intent** — an exact-fact lookup, an error investigation, and a conceptual question demand different branch weights, pool depths, and transforms. The route carries those choices; the branches themselves stay generic.
-- **By sensitivity tier** — routing respects the caller's ceiling as a hard boundary, exactly as retrieval does today: filters and ceilings are applied inside the branch queries, before ranking. The planner may narrow a route below the caller's ceiling (a public-surface answer routes only to shareable material); it may never widen one. The planner is not a place where tier discipline can leak — it inherits the ceiling from the request and can only intersect with it.
+- **By sensitivity tier** — routing respects the caller's ceiling as a hard boundary, exactly as retrieval does today: filters and ceilings are applied inside the branch queries, before ranking. The planner may narrow a route below the caller's ceiling (a public-surface answer routes only to public material — the lowest rung, spelled `shareable` in code); it may never widen one. The planner is not a place where tier discipline can leak — it inherits the ceiling from the request and can only intersect with it.
 
 ### Structured filter extraction
 

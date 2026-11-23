@@ -401,7 +401,8 @@ const demoRun: Run = async (argv) => {
   // The plan's screens: the roadmap files are the repository's own, read
   // from this checkout; the issues under them are made up.
   const answer = (out: unknown) => ({ code: 0, stdout: JSON.stringify(out), stderr: "" });
-  const contents = /\/contents\/(planning\/roadmaps\/[a-z-]+\.md)$/.exec(path);
+  // So is the list of Workers the Platform screen is drawn from.
+  const contents = /\/contents\/(planning\/roadmaps\/[a-z-]+\.md|pm-stack\/platform\/workers\.json)$/.exec(path);
   if (contents) {
     const text = await Bun.file(`${import.meta.dir}/../../../${contents[1]}`).text();
     return answer({ content: Buffer.from(text, "utf8").toString("base64") });

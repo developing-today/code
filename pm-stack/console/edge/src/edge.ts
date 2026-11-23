@@ -166,6 +166,10 @@ const REFUSED_READ = "Cloudflare was turned away when it read this, and no machi
 const OUTWARD_KEPT = 200;
 /** How often the self-check may run again. */
 const SELF_CHECK_EVERY_MS = 60 * 60_000;
+/** A check in which something could not be read is made again this
+ * soon: what stopped it (one request too many, a moment's outage) has
+ * usually passed, and a failure should not stand for an hour. */
+const SELF_CHECK_AGAIN_MS = 5 * 60_000;
 const KEY_FETCH_EVERY_MS = 30_000;
 const STATIC: Record<string, string> = {
   "app.js": "text/javascript; charset=utf-8",
@@ -244,6 +248,11 @@ export interface EdgeOptions {
   setAlarm?: (at: number) => Promise<void>;
   /** Work that may finish after the answer has gone. */
   later?: (work: Promise<unknown>) => void;
+  /** How often the object's own clock wakes to read again what the
+   * owner is told about, in milliseconds. A local run shortens it so
+   * a smoke run can watch an alarm fire; where this is deployed it
+   * is left unset and the minute stands. */
+  ownClockMs?: number;
 }
 
 /** An action this side tried and its token was refused for, with
@@ -283,6 +292,7 @@ export class Edge {
   /** The time this object last asked to be woken at. */
   private alarmFor = 0;
   private later: (work: Promise<unknown>) => void;
+  private ownClockMs: number;
   /** The last self-check: one direct read of each kind, and how it went. */
   private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
@@ -330,6 +340,7 @@ export class Edge {
       await setAlarm(at);
     };
     this.later = options.later ?? (() => {});
+    this.ownClockMs = options.ownClockMs ?? OWN_CLOCK_MS;
     this.syncRefused = new KeyedLimiter(SYNC_REFUSALS, 60_000, this.now);
     this.docs = new Docs(
       Object.fromEntries(
@@ -987,7 +998,8 @@ export class Edge {
   }
 
   /** The self-check: one direct read of each kind, run when the
-   * capability arrives and at most once an hour after, its result kept
+   * capability arrives and at most once an hour after (five minutes
+   * after one in which something could not be read), its result kept
    * for health. It proves the path without taking the laptop down. */
   private async maybeSelfCheck(cfg: EdgeConfig | null): Promise<void> {
     const direct = this.mine(cfg);
@@ -996,7 +1008,8 @@ export class Edge {
     const stored = (await this.kv.get("selfcheck")) as
       | { at: number; kinds: Record<string, { ok: boolean; error?: string }> }
       | undefined;
-    if (stored && now - stored.at < SELF_CHECK_EVERY_MS) {
+    const allRead = stored !== undefined && Object.values(stored.kinds).every((kind) => kind.ok);
+    if (stored && now - stored.at < (allRead ? SELF_CHECK_EVERY_MS : SELF_CHECK_AGAIN_MS)) {
       this.selfCheckResult = stored;
       return;
     }
@@ -1355,7 +1368,7 @@ export class Edge {
       // not be told, soon again.
       wakes.push(Math.max(this.hostSeen + SILENT_MS + 1000, now + ALARM_RETRY_MS));
     }
-    if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + OWN_CLOCK_MS));
+    if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + this.ownClockMs));
     // Something the owner is told about that this side was turned away
     // for is tried again when its time is up; with nobody looking and
     // no machine reporting, only a wake would notice that it is.
@@ -1397,7 +1410,7 @@ export class Edge {
         // Leave the transition pending so a later alarm can retry it.
       }
     }
-    if (now - this.clockAt >= OWN_CLOCK_MS && (await this.clockWanted(cfg))) {
+    if (now - this.clockAt >= this.ownClockMs && (await this.clockWanted(cfg))) {
       this.clockAt = now;
       // Read again what is stale, and wait for it: this wake is the
       // only thing looking. Twice, because the first look of an object

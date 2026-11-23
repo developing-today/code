@@ -96,7 +96,7 @@ reason. The bytes survived; the provenance did not.
 
 Issue #3125 — the provenance registry, content-addressed extracts, and
 multi-database vector resolution programme — is the corrective. Its rules,
-set by Drew on 2026-10-31, are: keep all data (only byte-identical duplicates
+set by the user on 2026-10-31, are: keep all data (only byte-identical duplicates
 are cleaned; backups are kept); keep backups *and* plain extracts for every
 corpus; and record, for every chunk, *every* place it was found. That last
 rule is the `chunk_occurrences` table: one row per occurrence, mapping a
@@ -115,6 +115,15 @@ recording its canonical text hash, source locator, byte span, and staged
 observation time. That slice is explicitly not the full criterion —
 historical occurrence recovery, canonical dedup identity, and the
 CAS/source-root registry remain open work.
+A further slice landed the same day: the in-repo source registry
+('s  module) — stable source-root and
+locator registration, where a root is a named origin (a pinned
+repository, an extracts corpus) and locators hang from it.
+Registration is idempotent and additive only: a repeat returns the
+first registration unchanged, re-pointing a root or registering a
+locator under an unknown root is refused, and registration never
+alters existing chunk or occurrence data — each property pinned by
+oracle tests.
 
 **Phase 2 — the extracts store and its backfill (landed 2026-11-23).** The
 extracts store lives on the laptop under `~/atlas/extracts/`. Objects are
