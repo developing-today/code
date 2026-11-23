@@ -179,7 +179,13 @@ describe("caution-margin class", () => {
       win({ forecastsScored: 269, precision: 0.529, recall: 0.647, wallErrorMin: { count: 110, meanSignedMin: 3194, medianSignedMin: 4741, medianAbsMin: 4741, p90AbsMin: 6000 } }),
     ]);
 
-  test("fires when weekly walls arrive early across pools with a precision anchor", () => {
+  test("fires DOWNWARD when weekly walls arrive early across pools with a precision anchor", () => {
+    // Oracle: derive.ts poolState — a pool reads "near" at
+    // windowPercent >= NEAR_PCT. Walls arriving early (positive
+    // median signed error) must enter caution EARLIER, which is
+    // a LOWER threshold: 85 → 80. (The pre-fix generator stepped
+    // 85 → 90 on this same evidence — caution later, the exact
+    // opposite of its rationale; Felix's review of PR #12761.)
     const run = buildReweightProposals({
       ledger: ledger([
         anthropic(),
@@ -191,15 +197,98 @@ describe("caution-margin class", () => {
     });
     const p = run.proposals.find((x) => x.proposalClass === "caution-margin");
     expect(p).toBeDefined();
-    expect(p?.key).toBe("caution-margin:NEAR_PCT:85->90");
+    expect(p?.key).toBe("caution-margin:NEAR_PCT:85->80");
     expect(p?.target.file).toBe("pm-stack/aggregator/src/derive.ts");
     expect(p?.target.find).toBe("export const NEAR_PCT = 85;");
-    expect(p?.target.replace).toBe("export const NEAR_PCT = 90;");
-    // the pack carries the grounding rows' numbers verbatim
+    expect(p?.target.replace).toBe("export const NEAR_PCT = 80;");
+    expect(p?.title).toContain("lower the caution threshold");
+    expect(p?.title).not.toContain("widen");
+    // the pack carries the grounding rows' numbers verbatim,
+    // and the rationale states the mechanism: caution entered
+    // at a lower measured percent
     const pack = renderEvidencePack(p as NonNullable<typeof p>);
     expect(pack).toContain("anthropic:claude-pro");
     expect(pack).toContain("+795");
     expect(pack).toContain("4741");
+    expect(pack).toContain("lower measured");
+    expect(pack).not.toContain("widen");
+  });
+
+  test("fires UPWARD when weekly walls arrive systematically late across pools", () => {
+    // Mirror oracle: walls arriving late (negative median
+    // signed error) mean caution is being spent early; the
+    // threshold steps UP — caution entered at a higher
+    // measured percent, later in the window: 85 → 90.
+    const run = buildReweightProposals({
+      ledger: ledger([
+        pool("meta", [
+          win({ forecastsScored: 269, precision: 0.9, recall: 0.9, wallErrorMin: { count: 110, meanSignedMin: -3000, medianSignedMin: -3000, medianAbsMin: 3000, p90AbsMin: 5000 } }),
+        ]),
+        pool("opendesign", [
+          win({ forecastsScored: 200, precision: 1, recall: 0.95, wallErrorMin: { count: 50, meanSignedMin: -2000, medianSignedMin: -2000, medianAbsMin: 2000, p90AbsMin: 3000 } }),
+        ]),
+      ]),
+      routes: [],
+      nearPctCurrent: 85,
+    });
+    const p = run.proposals.find((x) => x.proposalClass === "caution-margin");
+    expect(p).toBeDefined();
+    expect(p?.key).toBe("caution-margin:NEAR_PCT:85->90");
+    expect(p?.target.find).toBe("export const NEAR_PCT = 85;");
+    expect(p?.target.replace).toBe("export const NEAR_PCT = 90;");
+    expect(p?.title).toContain("raise the caution threshold");
+    const pack = renderEvidencePack(p as NonNullable<typeof p>);
+    expect(pack).toContain("higher measured");
+    expect(pack).not.toContain("widen");
+  });
+
+  test("materially mixed signs — both sides fully gated — are a named gap, not a proposal", () => {
+    const run = buildReweightProposals({
+      ledger: ledger([
+        anthropic(),
+        meta(),
+        pool("opendesign", [
+          win({ forecastsScored: 200, precision: 1, recall: 0.9, wallErrorMin: { count: 50, meanSignedMin: -2000, medianSignedMin: -2000, medianAbsMin: 2000, p90AbsMin: 3000 } }),
+        ]),
+        pool("_openai.main", [
+          win({ forecastsScored: 180, precision: 1, recall: 0.9, wallErrorMin: { count: 60, meanSignedMin: -1500, medianSignedMin: -1500, medianAbsMin: 1500, p90AbsMin: 2500 } }),
+        ]),
+      ]),
+      routes: [],
+      nearPctCurrent: 85,
+    });
+    expect(run.proposals.filter((x) => x.proposalClass === "caution-margin")).toHaveLength(0);
+    const gap = run.gaps.find((g) => g.reason === "counter-evidence-present");
+    expect(gap).toBeDefined();
+    expect(gap?.detail).toContain("anthropic:claude-pro");
+    expect(gap?.detail).toContain("opendesign");
+  });
+
+  test("a downward step stops at the floor with a named gap", () => {
+    const run = buildReweightProposals({
+      ledger: ledger([anthropic(), meta()]),
+      routes: [],
+      nearPctCurrent: 50,
+    });
+    expect(run.proposals.filter((x) => x.proposalClass === "caution-margin")).toHaveLength(0);
+    expect(run.gaps.some((g) => g.reason === "margin-at-floor")).toBe(true);
+  });
+
+  test("an upward step stops at the ceiling with a named gap", () => {
+    const run = buildReweightProposals({
+      ledger: ledger([
+        pool("meta", [
+          win({ forecastsScored: 269, precision: 0.9, recall: 0.9, wallErrorMin: { count: 110, meanSignedMin: -3000, medianSignedMin: -3000, medianAbsMin: 3000, p90AbsMin: 5000 } }),
+        ]),
+        pool("opendesign", [
+          win({ forecastsScored: 200, precision: 1, recall: 0.95, wallErrorMin: { count: 50, meanSignedMin: -2000, medianSignedMin: -2000, medianAbsMin: 2000, p90AbsMin: 3000 } }),
+        ]),
+      ]),
+      routes: [],
+      nearPctCurrent: 95,
+    });
+    expect(run.proposals.filter((x) => x.proposalClass === "caution-margin")).toHaveLength(0);
+    expect(run.gaps.some((g) => g.reason === "margin-at-ceiling")).toBe(true);
   });
 
   test("does not fire on a single qualifying pool", () => {

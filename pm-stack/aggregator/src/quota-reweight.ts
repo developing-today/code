@@ -48,13 +48,19 @@
 //   their "weights" are tier keys, not traffic shares (the config
 //   says so itself), so re-weighting them is a different class.
 // - caution-margin: when the weekly calibration shows walls
-//   arriving systematically early across pools (the S2 headline:
-//   linear pace under-calls accelerating weekly burn), propose
-//   widening the caution margin NEAR_PCT (derive.ts) by one step.
-//   D4 reserves margin changes to this mechanism. The margin is
-//   global, so the rule demands breadth: at least two qualifying
-//   pools, at least one whose wall calls are trustworthy
-//   (precision anchor), and no strong counter-evidence.
+//   arriving systematically off the forecast across pools (the
+//   S2 headline: linear pace under-calls accelerating weekly
+//   burn), propose moving the caution threshold NEAR_PCT
+//   (derive.ts) one step in the direction the signed wall
+//   error indicates — early walls (positive median) step it
+//   DOWN so pools enter caution at a lower measured percent,
+//   late walls step it UP. D4 reserves margin changes to this
+//   mechanism. The margin is global, so the rule demands
+//   breadth: at least two qualifying pools on one side, at
+//   least one whose wall calls are trustworthy (precision
+//   anchor), and no counter-evidence on the other side —
+//   materially disagreeing signs are a named gap, not a
+//   proposal in either direction.
 //
 // Pure functions over plain values — no I/O, no clock reads except
 // through arguments. The CLI is scripts/quota-reweight-proposals.ts.
@@ -71,7 +77,9 @@ export const MIN_WALL_SAMPLES = 20;
 /** Median signed wall error (minutes) at/above which walls count
  * as arriving systematically early: +12h. Sign convention is S2's:
  * projectedWallAt − realizedWallAt, so positive means the wall
- * arrived BEFORE the projection — the forecast ran late. */
+ * arrived BEFORE the projection — the forecast ran late. The
+ * same magnitude at/below −720 counts as walls arriving
+ * systematically late — the forecast ran early. */
 export const LATE_WALL_MEDIAN_MIN = 720;
 /** A late-wall signal needs wall calls that are real when made. */
 export const LATE_WALL_PRECISION_MIN = 0.9;
@@ -80,9 +88,13 @@ export const LATE_WALL_RECALL_MAX = 0.7;
 /** Headroom evidence: trustworthy calls, no late-wall pattern. */
 export const HEADROOM_PRECISION_MIN = 0.9;
 export const HEADROOM_RECALL_MIN = 0.85;
-/** One margin step, in percentage points, and its ceiling. */
+/** One margin step, in percentage points, and the threshold's
+ * bounds: never proposed past 95 (leaving a 5-point caution band
+ * below the wall at 100) or below 50 (under half the window,
+ * "near" stops discriminating near-limit from ordinary use). */
 export const MARGIN_STEP_PTS = 5;
 export const MARGIN_MAX_PCT = 95;
+export const MARGIN_MIN_PCT = 50;
 /** A late-wall member keeps at least this weight after a shift. */
 export const WEIGHT_FLOOR = 0.5;
 /** Fraction of a late-wall member's weight proposed to move. */
@@ -472,8 +484,16 @@ function poolWeightProposals(args: {
   return proposals;
 }
 
-/** Class caution-margin: walls arriving systematically early on
- * weekly windows across pools → widen NEAR_PCT by one step. */
+/** Class caution-margin: walls arriving systematically off the
+ * forecast on weekly windows across pools → move NEAR_PCT one
+ * step in the direction the signed wall error indicates. The
+ * sign convention is S2's (projected − realized): a positive
+ * median means walls arrive EARLY, so the threshold steps DOWN
+ * — a pool reads "near" at windowPercent >= NEAR_PCT
+ * (derive.ts), so a lower threshold enters caution at a lower
+ * measured percent, earlier in the window. A negative median
+ * (walls arrive late) steps the threshold UP, entering caution
+ * at a higher measured percent, later in the window. */
 function cautionMarginProposal(args: {
   ledger: ForecastAccuracyLedger;
   forecast: QuotaForecastFile | null;
@@ -491,20 +511,41 @@ function cautionMarginProposal(args: {
   const considered = weekly.filter(
     ({ window: w }) => w.scoreable && w.forecastsScored >= MIN_SCORED_FORECASTS,
   );
-  const qualifying = considered.filter(
+  // The step direction comes from the sign of the grounding
+  // pools' median signed wall error — never from the word
+  // "margin": NEAR_PCT is the measured percent at which a pool
+  // enters the caution tier, so which way the number moves
+  // decides whether caution starts earlier or later in the
+  // window. Both sides are gated identically; the grounding
+  // side is the one with breadth and no counter-evidence.
+  const early = considered.filter(
     ({ pool, window: w }) =>
       !AGGREGATE_POOLS_EXCLUDED.has(pool.pool) &&
       w.wallErrorMin !== null &&
       w.wallErrorMin.count >= MIN_WALL_SAMPLES &&
       w.wallErrorMin.medianSignedMin >= LATE_WALL_MEDIAN_MIN,
   );
-  const anchors = qualifying.filter(({ window: w }) => w.precision !== null && w.precision >= LATE_WALL_PRECISION_MIN);
-  const counter = considered.filter(
+  const late = considered.filter(
     ({ pool, window: w }) =>
       !AGGREGATE_POOLS_EXCLUDED.has(pool.pool) &&
       w.wallErrorMin !== null &&
+      w.wallErrorMin.count >= MIN_WALL_SAMPLES &&
       w.wallErrorMin.medianSignedMin <= -LATE_WALL_MEDIAN_MIN,
   );
+  // Counter-evidence is counted at any volume on the side
+  // opposite a direction: even a thin pool whose walls land on
+  // the other side of the forecast means the calibration
+  // disagrees with itself, and a global threshold move is not
+  // grounded while it does.
+  const counterTo = (side: "early" | "late") =>
+    considered.filter(
+      ({ pool, window: w }) =>
+        !AGGREGATE_POOLS_EXCLUDED.has(pool.pool) &&
+        w.wallErrorMin !== null &&
+        (side === "early"
+          ? w.wallErrorMin.medianSignedMin <= -LATE_WALL_MEDIAN_MIN
+          : w.wallErrorMin.medianSignedMin >= LATE_WALL_MEDIAN_MIN),
+    );
   const excluded = considered.filter(({ pool }) => AGGREGATE_POOLS_EXCLUDED.has(pool.pool));
   for (const { pool, window: w } of excluded) {
     args.gaps.push({
@@ -516,25 +557,50 @@ function cautionMarginProposal(args: {
         `(S2) and never ground a proposal; it is reported here, not counted.`,
     });
   }
+  const direction: "early" | "late" | null =
+    early.length >= 2 && counterTo("early").length === 0
+      ? "early"
+      : late.length >= 2 && counterTo("late").length === 0
+        ? "late"
+        : null;
+  const grounding = direction === "early" ? early : direction === "late" ? late : [];
+  const anchors = grounding.filter(
+    ({ window: w }) => w.precision !== null && w.precision >= LATE_WALL_PRECISION_MIN,
+  );
   args.examined.push(
     `caution-margin: ${considered.length} weekly baselines over the volume gate, ` +
-      `${qualifying.length} qualifying late-wall, ${anchors.length} precision anchors, ${counter.length} counter-evidence`,
+      `${early.length} qualifying early-wall, ${late.length} qualifying late-wall` +
+      (direction
+        ? `, direction ${direction === "early" ? "down (walls arrive early)" : "up (walls arrive late)"} ` +
+          `on ${grounding.length} grounding pools, ${anchors.length} precision anchors`
+        : `, no direction grounded`),
   );
-  if (qualifying.length < 2 || anchors.length < 1 || counter.length > 0) {
-    if (qualifying.length > 0 && counter.length > 0) {
+  if (!direction || anchors.length < 1) {
+    // Materially disagreeing signs are a named gap, not a
+    // proposal in either direction.
+    if (early.length > 0 && counterTo("early").length > 0) {
       args.gaps.push({
         scope: "caution-margin",
         reason: "counter-evidence-present",
         detail:
-          `weekly walls arrive early in ${qualifying.map((q) => q.pool.pool).join(", ")} but late in ` +
-          `${counter.map((c) => c.pool.pool).join(", ")}; a global margin change is not grounded while the ` +
+          `weekly walls arrive early in ${early.map((q) => q.pool.pool).join(", ")} but late in ` +
+          `${counterTo("early").map((c) => c.pool.pool).join(", ")}; a global margin change is not grounded while the ` +
+          `calibration disagrees with itself.`,
+      });
+    } else if (late.length > 0 && counterTo("late").length > 0) {
+      args.gaps.push({
+        scope: "caution-margin",
+        reason: "counter-evidence-present",
+        detail:
+          `weekly walls arrive late in ${late.map((q) => q.pool.pool).join(", ")} but early in ` +
+          `${counterTo("late").map((c) => c.pool.pool).join(", ")}; a global margin change is not grounded while the ` +
           `calibration disagrees with itself.`,
       });
     }
     return null;
   }
   const from = args.nearPctCurrent;
-  const to = from + MARGIN_STEP_PTS;
+  const to = direction === "early" ? from - MARGIN_STEP_PTS : from + MARGIN_STEP_PTS;
   if (to > MARGIN_MAX_PCT) {
     args.gaps.push({
       scope: "caution-margin",
@@ -543,14 +609,25 @@ function cautionMarginProposal(args: {
     });
     return null;
   }
+  if (to < MARGIN_MIN_PCT) {
+    args.gaps.push({
+      scope: "caution-margin",
+      reason: "margin-at-floor",
+      detail: `NEAR_PCT is already ${from}; the generator does not propose below ${MARGIN_MIN_PCT}.`,
+    });
+    return null;
+  }
   const rows = considered
     .filter(({ pool }) => !AGGREGATE_POOLS_EXCLUDED.has(pool.pool))
     .map(({ pool, window: w }) => evidenceRow(pool.pool, w));
-  const names = qualifying.map((q) => q.pool.pool).join(", ");
+  const names = grounding.map((q) => q.pool.pool).join(", ");
   return {
     key: `caution-margin:NEAR_PCT:${from}->${to}`,
     proposalClass: "caution-margin",
-    title: `proposal(quota-plane): widen the caution margin NEAR_PCT ${from} → ${to} (weekly walls arrive systematically early)`,
+    title:
+      direction === "early"
+        ? `proposal(quota-plane): lower the caution threshold NEAR_PCT ${from} → ${to} — pools enter caution at a lower measured percent (weekly walls arrive systematically early)`
+        : `proposal(quota-plane): raise the caution threshold NEAR_PCT ${from} → ${to} — pools enter caution at a higher measured percent (weekly walls arrive systematically late)`,
     target: {
       description: "the caution margin NEAR_PCT (derive.ts), the threshold at which a pool enters the caution/near tier",
       file: "pm-stack/aggregator/src/derive.ts",
@@ -560,15 +637,23 @@ function cautionMarginProposal(args: {
       proposedValue: `${to}`,
     },
     rationale:
-      `Weekly walls arrive systematically earlier than the linear pace projects: ` +
-      `${qualifying
+      (direction === "early"
+        ? `Weekly walls arrive systematically earlier than the linear pace projects: `
+        : `Weekly walls arrive systematically later than the linear pace projects: `) +
+      `${grounding
         .map(
           ({ pool, window: w }) =>
-            `${pool.pool} (median signed wall error +${w.wallErrorMin?.medianSignedMin} min over ${w.forecastsScored} scored forecasts, precision ${w.precision}, recall ${w.recall})`,
+            `${pool.pool} (median signed wall error ${fmtSigned(w.wallErrorMin?.medianSignedMin ?? null)} min over ${w.forecastsScored} scored forecasts, precision ${w.precision}, recall ${w.recall})`,
         )
         .join("; ")}. ` +
-      `The caution tier is entered on measured percent at NEAR_PCT; widening it by one step (${from} → ${to}) puts ` +
-      `pools under caution discipline earlier in exactly the windows whose walls the forecast under-calls. ` +
+      (direction === "early"
+        ? `A pool enters the caution tier when a window's measured percent reaches NEAR_PCT (derive.ts); ` +
+          `lowering the threshold by one step (${from} → ${to}) means pools enter caution at a lower measured ` +
+          `percent — earlier in the window — in exactly the windows whose walls the forecast under-calls. `
+        : `A pool enters the caution tier when a window's measured percent reaches NEAR_PCT (derive.ts); ` +
+          `raising the threshold by one step (${from} → ${to}) means pools enter caution at a higher measured ` +
+          `percent — later in the window — so caution discipline is not spent early in the windows whose ` +
+          `walls the forecast over-calls. `) +
       `D4 reserves margin changes to this proposal mechanism; the #1342 controlled A/B gate applies before the ` +
       `margin class becomes routine.`,
     evidence: {
@@ -578,17 +663,25 @@ function cautionMarginProposal(args: {
       rows,
       forecastSummary: forecastSummaryFor(
         args.forecast,
-        qualifying.map((q) => q.pool.pool),
+        grounding.map((q) => q.pool.pool),
       ),
       shadowSummary: shadowSummaryFor(args.shadow, "caution-margin", args.nearPctCurrent),
     },
     expectedEffect: {
       statement:
-        `In the four weeks after this lands, the fraction of realized weekly walls in the grounding pools ` +
-        `(${names}) that were preceded by at least one gatherer tick with the pool in the caution/near state ` +
-        `rises versus the pre-change baseline computed the same way, and no scoreable weekly baseline's ` +
-        `wall-before-reset precision falls below 0.5.`,
-      metric: "caution-tier lead coverage of realized weekly walls (shadow history × realized wall instants)",
+        direction === "early"
+          ? `In the four weeks after this lands, the fraction of realized weekly walls in the grounding pools ` +
+            `(${names}) that were preceded by at least one gatherer tick with the pool in the caution/near state ` +
+            `rises versus the pre-change baseline computed the same way, and no scoreable weekly baseline's ` +
+            `wall-before-reset precision falls below 0.5.`
+          : `In the four weeks after this lands, the grounding pools (${names}) spend a smaller share of ` +
+            `gatherer ticks in the caution/near state than the pre-change baseline computed the same way, ` +
+            `while the fraction of their realized weekly walls preceded by at least one caution/near tick ` +
+            `does not fall — the walls arrive later than projected, so the later caution entry still precedes them.`,
+      metric:
+        direction === "early"
+          ? "caution-tier lead coverage of realized weekly walls (shadow history × realized wall instants)"
+          : "caution-tier occupancy and lead coverage of realized weekly walls (shadow history × realized wall instants)",
       scoredBy: "the S7 weekly review, from quota-shadow-placement-history.jsonl and the accuracy ledger",
     },
   };
