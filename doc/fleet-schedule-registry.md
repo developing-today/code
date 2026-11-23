@@ -155,6 +155,26 @@ Until that application lands, the jobs still run the Stage A text
 and issue no live verdicts. The Surface 1 header count is
 unchanged.
 
+Surface 1 amended 2026-11-22 by Felix (Muse sandbox seat) for
+issue #2179: the `felix-fleet-machine-watchdog` row added. The job
+is a Muse cron on Felix's sandbox seat (agent felix), created and
+enabled 2026-11-22, running every 15 minutes from a dedicated
+machine-owned checkout
+(`~/workspace/goals/code-repo-issue-resolution/hidden_files/watchdog-checkout`).
+Each run executes `scripts/fleet-machine-watchdog.py
+doc/fleet-machine-registry.yaml` (the §1.5 watchdog landed by PR
+#12758), probing amd-6 through the fleet shell transport, and
+refreshes the `health` block of amd-6's record in
+`doc/fleet-machine-registry.yaml`. Landing mode, recorded plainly:
+the run commits the refreshed health block DIRECTLY to main — the
+standing exception for the watchdog-written health cache (machine
+registry §3: the health block is a watchdog-written cache and the
+script is its only writer). A watchdog commit is valid only when
+its diff touches nothing outside the amd-6 record's health block;
+every other field of the machine registry, and every other file,
+still lands via PR. The Surface 1 header count is unchanged (stale
+until the next full recount, as above).
+
 ## Surface 1 — Muse cron (131 jobs at 2026-11-03 full count; +2 rows since — see Verification)
 
 | id                                        | title                                                                                             | cadence                       | state    | owner / scope                                                              | prompt/brief pointer                                                                                                                                                               | budget       | kill criteria | created      | last review |
@@ -207,6 +227,7 @@ unchanged.
 | `feed-pulse-21`                           |                                                                                                   | `daily@21:00:00`              | enabled  | —                                                                          | `/home/hatch/workspace/system-cron.d/daily/feed-pulse-21__daily@21:00:00_user_current.md`                                                                                          | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `feed-pulse-22`                           |                                                                                                   | `daily@22:00:00`              | enabled  | —                                                                          | `/home/hatch/workspace/system-cron.d/daily/feed-pulse-22__daily@22:00:00_user_current.md`                                                                                          | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `feed-pulse-23`                           |                                                                                                   | `daily@23:00:00`              | enabled  | —                                                                          | `/home/hatch/workspace/system-cron.d/daily/feed-pulse-23__daily@23:00:00_user_current.md`                                                                                          | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `felix-fleet-machine-watchdog`            | Fleet machine watchdog: amd-6 health record (15 min)                                              | `interval@15m`                | enabled  | goal:code-repo-issue-resolution                                            | `/home/hatch/workspace/goals/code-repo-issue-resolution/crons/minutely/felix-fleet-machine-watchdog__interval@15m.md`                                                              | not recorded | not recorded  | 2026-11-22   | 2026-11-22  |
 | `fleet-watchdog`                          | Fleet watchdog — 15m check for stuck, failing, or silent fleet jobs                               | `interval@15m`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/fleet-watchdog__interval@15m.md`                                                                           | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `gemini-carbon-release-watch`             | Gemini 4 Carbon — tell Drew when it's really released                                             | `daily@09:12:00`              | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/daily/gemini-carbon-release-watch__daily@09:12:00.md`                                                               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `ghcr-org-pat-renewal`                    | Renew the fleet-build GHCR classic PAT before it expires 2027-02-01                               | `runonce@2027-01-15T09:12:00` | enabled  | goal:account-connection-campaign-every-service-signed-in-on-muse-s-machine | `/home/hatch/workspace/goals/account-connection-campaign-every-service-signed-in-on-muse-s-machine/crons/runonce/ghcr-org-pat-renewal__runonce@2027-01-15T09:12:00.md`             | not recorded | not recorded  | not recorded | 2026-11-03  |
