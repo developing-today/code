@@ -103,14 +103,13 @@ impl JsonlTraceSink {
         JsonlTraceSink { dir }
     }
 
-    /// `~/.local/state/atlas-search/traces` — the same state root
-    /// as the service config and model store.
+    /// `~/.local/state/atlas-search/traces` - the same state root
+    /// as the service config and model store. Resolved through
+    /// the crate's home-resolution contract (issues #5640 /
+    /// #5762): a missing or empty HOME fails loudly naming HOME,
+    /// never a CWD-relative substitute (issue #13279).
     pub fn default_dir() -> PathBuf {
-        let home = std::env::var_os("HOME")
-            .filter(|h| !h.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        home.join(".local/state/atlas-search/traces")
+        crate::require_home().join(".local/state/atlas-search/traces")
     }
 }
 

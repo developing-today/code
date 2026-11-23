@@ -1412,6 +1412,8 @@
         "pkgs/id/crates/id-core/tests/screen_parity.rs",
         "pkgs/id/crates/id-core/tests/signer_bound_space.rs",
         "pkgs/id/crates/id-core/tests/stream_lifecycle_model.rs",
+        "pkgs/id/crates/id-core/tests/carried_comment_projection.rs",
+        "pkgs/id/crates/id-core/tests/social_graph_traversal.rs",
         "pkgs/id/crates/id-core/tests/succeeds_dag.rs",
         "pkgs/id/crates/id-core/tests/swarm_bench.rs",
         "pkgs/id/crates/id-core/tests/typed_value.rs"
