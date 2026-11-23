@@ -269,7 +269,7 @@ var EffectExemptions = map[string]string{
 	"daemon.tsnetUpTimeout":  "tsnet bring-up needs a tailnet the harness does not have",
 	"daemon.tsnet.hostname":  "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"http.streamBufferInit":  "Scanner allocation-capacity hint only; changing it does not change emitted events or line limits, and allocation size is not a stable e2e behavior oracle",
-	"embeddings.wasmPath":    "embeddings backend: needs a live embeddings service or a wasm model fixture the harness does not provide",
+	"embeddings.wasmPath":    "embeddings backend: needs a compiled wasm model fixture the harness does not provide; the Go wasm runtime (wazero) can compile a module but no embed-exporting model ships with the repo, so the setting's effect (wasm embedder availability) is not observable end to end",
 	"daemon.inlineStartPoll": "daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically",
 	"plugin.bin":             "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
 	"plugin.binArgs":         "read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host",
