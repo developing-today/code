@@ -10,14 +10,16 @@
 // Run: npm run smoke
 
 import { dispatch } from "../src/router.ts";
+import { FixtureSessionRegistry } from "../src/sessions.ts";
 import { bearerReq, makeHarness } from "../test/helpers.ts";
 
 const h = await makeHarness();
+const deps = { ...h.deps, sessions: new FixtureSessionRegistry() };
 const base = "https://fleet-hosted.test";
 let failures = 0;
 
 async function check(name, req, wantStatus, want) {
-  const res = await dispatch(req, h.deps);
+  const res = await dispatch(req, deps);
   const body = await res.json();
   const okStatus = res.status === wantStatus;
   const okBody = want ? want(body) : true;
@@ -52,6 +54,48 @@ await check(
   bearerReq("/v1/stamps", token, { method: "POST" }),
   501,
   (b) => b.error === "not_implemented",
+);
+
+// Session registry (#12584): open -> resolve -> close -> resolve
+// refused, through the real router.
+const sessionPost = (path, body) =>
+  bearerReq(path, token, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+const opened = await check(
+  "POST /v1/sessions (open)",
+  sessionPost("/v1/sessions", {
+    lane: "code-a",
+    model: "model-x",
+    lane_start_issues: ["developing-today/code#12584"],
+  }),
+  201,
+  (b) => /^ses_[0-9a-f]{32}$/.test(b.session_id) && b.closed_at === null,
+);
+console.log(`     minted session: ${opened.session_id}`);
+
+await check(
+  "POST /v1/sessions/resolve (open session)",
+  sessionPost("/v1/sessions/resolve", { session_id: opened.session_id }),
+  200,
+  (b) => b.session_id === opened.session_id && b.lane === "code-a",
+);
+
+await check(
+  "POST /v1/sessions/close",
+  sessionPost("/v1/sessions/close", { session_id: opened.session_id }),
+  200,
+  (b) => typeof b.closed_at === "string",
+);
+
+await check(
+  "POST /v1/sessions/resolve (closed session refused)",
+  sessionPost("/v1/sessions/resolve", { session_id: opened.session_id }),
+  409,
+  (b) => b.error === "session_closed",
 );
 
 if (failures > 0) {

@@ -35,6 +35,7 @@
 import type { HostedConfig } from "./config.ts";
 import { FailClosed } from "./errors.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
+import type { SessionRegistry } from "./sessions.ts";
 
 export type CallerKind = "rp" | "agent" | "service";
 
@@ -56,6 +57,9 @@ export interface AuthDeps {
   config: HostedConfig;
   jwksFetcher?: JwksFetcher;
   now?: () => number;
+  /** Session registry (#12584, src/sessions.ts). Absent → the
+   * session routes fail closed with 503, like unconfigured auth. */
+  sessions?: SessionRegistry;
 }
 
 export async function sha256Hex(text: string): Promise<string> {
