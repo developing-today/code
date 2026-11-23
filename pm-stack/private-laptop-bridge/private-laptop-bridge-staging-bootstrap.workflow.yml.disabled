@@ -46,9 +46,6 @@ jobs:
     if: needs.verify-environment-before-assignment.result == 'success' && needs.verify-environment-before-assignment.outputs.environment == 'cloudflare-staging'
     environment:
       name: ${{ needs.verify-environment-before-assignment.outputs.environment }}
-    env:
-      CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
-      CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -76,15 +73,12 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify disabled bridge build and deploy dry run
         working-directory: pm-stack/private-laptop-bridge
-        env:
-          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
-          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
         run: |
           set -euo pipefail
           node --test deployment-config.test.mjs release-contract.test.mjs staging-bootstrap.test.mjs
-          ./node_modules/.bin/cf build --mode bridge
-          ./node_modules/.bin/cf deploy --mode bridge --prebuilt --dry-run > "$RUNNER_TEMP/bridge-deploy-dry-run.log" 2>&1
-          node staging-bootstrap.mjs validate-build
+          ./node_modules/.bin/cf build --mode bridge-init
+          ./node_modules/.bin/cf deploy --mode bridge-init --prebuilt --dry-run > "$RUNNER_TEMP/bridge-init-dry-run.log" 2>&1
+          BUILD_MODE=bridge-init node staging-bootstrap.mjs validate-build
       - name: Read current provider state and require absence or exact inert namespace
         id: provider
         working-directory: pm-stack/private-laptop-bridge
@@ -94,8 +88,6 @@ jobs:
           CF_BRIDGE_ZONE_IDS: ${{ secrets.CF_BRIDGE_ZONE_IDS }}
           CF_BRIDGE_READ_TOKEN: ${{ secrets.CF_BRIDGE_READ_TOKEN }}
           CF_BRIDGE_GATEWAY_READ_TOKEN: ${{ secrets.CF_BRIDGE_GATEWAY_READ_TOKEN }}
-          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
-          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
           GITHUB_SHA: ${{ github.sha }}
         run: node staging-bootstrap.mjs preflight
       - name: Deploy only the pinned disabled declarative Worker and SQLite export
@@ -107,12 +99,10 @@ jobs:
           CF_BRIDGE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
-          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
-          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
         run: |
           set -euo pipefail
           node staging-bootstrap.mjs assert-distinct-credentials
-          ./node_modules/.bin/cf deploy --mode bridge --prebuilt --provision --tag "$GITHUB_SHA" --message "disabled bridge first deployment $GITHUB_SHA" > "$RUNNER_TEMP/bridge-deploy.log" 2>&1
+          ./node_modules/.bin/cf deploy --mode bridge-init --prebuilt --provision --tag "$GITHUB_SHA" --message "disabled bridge no-ingress initialization $GITHUB_SHA" > "$RUNNER_TEMP/bridge-init-deploy.log" 2>&1
       - name: Independently verify no ingress and exact serving namespace
         if: steps.provider.outputs.status == 'deploy'
         working-directory: pm-stack/private-laptop-bridge
@@ -122,7 +112,5 @@ jobs:
           CF_BRIDGE_ZONE_IDS: ${{ secrets.CF_BRIDGE_ZONE_IDS }}
           CF_BRIDGE_READ_TOKEN: ${{ secrets.CF_BRIDGE_READ_TOKEN }}
           CF_BRIDGE_GATEWAY_READ_TOKEN: ${{ secrets.CF_BRIDGE_GATEWAY_READ_TOKEN }}
-          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
-          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
           GITHUB_SHA: ${{ github.sha }}
-        run: node staging-bootstrap.mjs postflight
+        run: node staging-bootstrap.mjs init-postflight

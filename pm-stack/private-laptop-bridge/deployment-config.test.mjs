@@ -7,7 +7,9 @@ const read = name => readFile(new URL(name, import.meta.url), 'utf8');
 test('cf declarative bridge config is the sole lifecycle source and remains disabled', async () => {
   const config = await read('./cloudflare.config.ts');
   assert.match(config, /name:\s*'private-laptop-bridge-staging'/);
-  assert.match(config, /mode\s*===\s*'bridge'/);
+  assert.match(config, /mode\s*===\s*'bridge'\s*\|\|\s*mode\s*===\s*'bridge-init'/);
+  assert.match(config, /domains:\s*mode\s*===\s*'bridge-init'\s*\?\s*\[\]\s*:\s*\[BRIDGE_HOST\]/);
+  assert.match(config, /ACCESS_ISSUER:\s*bindings\.text\(mode\s*===\s*'bridge-init'\s*\?\s*''/);
   assert.match(config, /entrypoint:\s*bridge/);
   assert.match(config, /PrivateLaptopBridge:\s*exports\.durableObject\(\{storage:\s*'sqlite'\}\)/);
   assert.match(config, /BRIDGE:\s*bindings\.durableObject\(\{worker:\s*'private-laptop-bridge-staging',\s*exportName:\s*'PrivateLaptopBridge'\}\)/);

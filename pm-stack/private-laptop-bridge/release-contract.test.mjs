@@ -163,6 +163,7 @@ test('tracked preflight fixture is redacted and never substitutes for private ow
 test('CI dry-run verifies the effective private Build Output but does not claim account route proof',()=>{
  const bridge='env.BRIDGE (PrivateLaptopBridge, defined in private-laptop-bridge-staging)\nenv.ENABLED ("false")\nenv.BRIDGE_REGISTRY ("")\n--dry-run: exiting now.';
  assert.equal(assertDryRunPayload(bridge,{worker:'private-laptop-bridge-staging',mode:'bridge'}),true);
+ assert.equal(assertDryRunPayload(bridge,{worker:'private-laptop-bridge-staging',mode:'bridge-init'}),true);
  assert.throws(()=>assertDryRunPayload(bridge.replace('env.ENABLED ("false")','env.ENABLED ("true")'),{worker:'private-laptop-bridge-staging',mode:'bridge'}));
  assert.throws(()=>assertDryRunPayload(bridge.replace('env.BRIDGE (','env.OTHER ('),{worker:'private-laptop-bridge-staging',mode:'bridge'}));
  assert.throws(()=>assertDryRunPayload('no output',{worker:'private-laptop-bridge-staging',mode:'bridge'}));
@@ -175,6 +176,14 @@ test('effective Build Output explicitly fixes CPU, observability, routes, previe
  assert.throws(()=>assertEffectivePayload(base,{...bridgeArgs,accessIssuer:'',accessAudience:''}),/requires the exact protected Access issuer and audience/);
  for(const mutation of [x=>x.limits.cpuMs=30,x=>x.observability.enabled=true,x=>x.workersDev=true,x=>x.previewUrls=true,x=>x.domains.push('public.example'),x=>x.triggers.push({route:'public.example/*'}),x=>x.env.ENABLED.value='true',x=>x.env.EXTRA={type:'text',value:'secret'},x=>x.env.BRIDGE.worker='other-worker',x=>x.exports.PrivateLaptopBridge.storage='kv',x=>x.forwardPolicies=['unexpected']]) {
    const mutated=structuredClone(base); mutation(mutated); assert.throws(()=>assertEffectivePayload(mutated,bridgeArgs));
+ }
+ const bridgeInit=structuredClone(base);
+ bridgeInit.domains=[];
+ bridgeInit.env.ACCESS_ISSUER.value='';
+ bridgeInit.env.ACCESS_AUDIENCE.value='';
+ assert.equal(assertEffectivePayload(bridgeInit,{worker:'private-laptop-bridge-staging',mode:'bridge-init',accessIssuer:'',accessAudience:''}),true);
+ for(const mutation of [x=>x.domains.push(BRIDGE_HOST),x=>x.workersDev=true,x=>x.previewUrls=true,x=>x.env.ENABLED.value='true',x=>x.env.ACCESS_ISSUER.value='https://team.cloudflareaccess.com',x=>x.env.ACCESS_AUDIENCE.value='audience-with-exact-length-012345',x=>x.triggers.push({route:'public.example/*'})]) {
+   const mutated=structuredClone(bridgeInit);mutation(mutated);assert.throws(()=>assertEffectivePayload(mutated,{worker:'private-laptop-bridge-staging',mode:'bridge-init',accessIssuer:'',accessAudience:''}));
  }
  const smoke={name:'private-laptop-bridge-smoke',compatibilityDate:'2026-07-30',domains:[],triggers:[],limits:{cpuMs:10},observability:{enabled:false,logs:{enabled:false},traces:{enabled:false}},workersDev:false,previewUrls:false,env:{ENABLED:{type:'text',value:'false'},GATEWAY_HOST:{type:'text',value:'private-bridge-smoke.invalid'},GATEWAY_ACCOUNT_ID:{type:'text',value:''},GATEWAY_POLICY_ID:{type:'text',value:''},START_MS:{type:'text',value:''},END_MS:{type:'text',value:''}},manifest:{type:'complete',mainModule:'smoke.js',modules:{'smoke.js':{type:'esm'},'smoke.js.map':{type:'sourcemap'}}}};
  assert.equal(assertEffectivePayload(smoke,{worker:'private-laptop-bridge-smoke',mode:'default'}),true);

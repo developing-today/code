@@ -54,8 +54,6 @@ test('first-deploy workflow remains dormant, fixed-target, and checks protection
   assert.match(workflow,/needs: verify-environment-before-assignment/);
   assert.match(workflow,/CF_BRIDGE_RELEASE_REVIEWER_IDS: \$\{\{ vars\.CF_BRIDGE_RELEASE_REVIEWER_IDS \}\}/);
   assert.match(workflow,/CF_BRIDGE_WORKER_ID: \$\{\{ vars\.CF_BRIDGE_WORKER_ID \}\}/);
-  assert.match(workflow,/CF_BRIDGE_ACCESS_ISSUER: \$\{\{ vars\.CF_BRIDGE_ACCESS_ISSUER \}\}/);
-  assert.match(workflow,/CF_BRIDGE_ACCESS_AUDIENCE: \$\{\{ vars\.CF_BRIDGE_ACCESS_AUDIENCE \}\}/);
   const gate=workflow.split('  deploy-disabled-bridge:',1)[0];
   assert.doesNotMatch(gate,/secrets\./);
   const provider=workflow.split('      - name: Read current provider state')[1].split('      - name: Deploy only')[0];
@@ -63,7 +61,11 @@ test('first-deploy workflow remains dormant, fixed-target, and checks protection
   assert.match(provider,/CF_BRIDGE_WORKER_ID: \$\{\{ vars\.CF_BRIDGE_WORKER_ID \}\}/);
   assert.doesNotMatch(workflow,/CF_BRIDGE_BOOTSTRAP_WRITE_TOKEN|CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID/);
   assert.match(workflow,/staging-bootstrap\.mjs assert-distinct-credentials/);
-  assert.match(workflow,/cf deploy --mode bridge --prebuilt --provision --tag "\$GITHUB_SHA"/);
+  assert.match(workflow,/cf build --mode bridge-init/);
+  assert.match(workflow,/cf deploy --mode bridge-init --prebuilt --provision --tag "\$GITHUB_SHA"/);
+  assert.match(workflow,/node staging-bootstrap\.mjs init-postflight/);
+  assert.doesNotMatch(workflow,/cf deploy --mode bridge --prebuilt --provision/);
+  assert.doesNotMatch(workflow,/CF_BRIDGE_ACCESS_ISSUER|CF_BRIDGE_ACCESS_AUDIENCE/);
   assert.doesNotMatch(workflow,/wrangler deploy|workers versions (create|deploy)|--dispatch-namespace/);
   for(const fixed of [WORKER_NAME,'CF_BRIDGE_ACCOUNT_ID','CF_BRIDGE_ZONE_IDS',ENVIRONMENT_NAME]) assert.ok(workflow.includes(fixed));
 });
@@ -156,10 +158,16 @@ test('exact empty locally created Worker is the only first-deploy candidate; all
   assert.throws(()=>verifyDistinctWriteCredential(readToken,gatewayToken,gatewayToken),/separate/);
 });
 
-test('existing Worker is a no-op only when disabled ingress, exact SQLite namespace, binding and serving version agree',()=>{
+test('bootstrap only accepts disabled no-ingress state; routed postflight verifies the Access-host phase',()=>{
   const good=snapshot();
-  assert.equal(verifyProviderState(good,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'already-ready');
+  assert.throws(()=>verifyProviderState(good,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/empty Worker already has a custom domain/);
   assert.equal(verifyProviderState(good,{phase:'postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'verified');
+  const noIngress=snapshot();noIngress.domains=[];
+  assert.equal(verifyProviderState(noIngress,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'already-initialized-no-ingress');
+  assert.equal(verifyProviderState(noIngress,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),'verified-no-ingress');
+  assert.throws(()=>verifyProviderState(good,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/empty Worker already has a custom domain/);
+  const reverseRef=snapshot();reverseRef.domains=[];reverseRef.worker=structuredClone(worker);reverseRef.worker.references.domains=[{hostname:'private-laptop-bridge-staging.security.cab'}];
+  assert.throws(()=>verifyProviderState(reverseRef,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain reference/);
   assert.throws(()=>verifyProviderState(good,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:'c'.repeat(40),expectedWorkerId:workerId}),/exact reviewed source SHA/);
   for(const mutate of [
     s=>{s.zoneIds=[];},
@@ -189,6 +197,8 @@ test('existing Worker is a no-op only when disabled ingress, exact SQLite namesp
 test('postflight readback verifies deployed identity via independent API data and never writes',async()=>{
   const f=cloudflareFixture({target:'existing',namespaces:[ns()],domains:[domain()]});
   assert.equal(await verifyBootstrapPostflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:f.fetchImpl}),'verified');
+  const init=cloudflareFixture({target:'existing',namespaces:[ns()],domains:[]});
+  assert.equal(await verifyBootstrapPostflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,phase:'init-postflight',fetchImpl:init.fetchImpl}),'verified-no-ingress');
   assert.ok(f.calls.every(call=>call.method==='GET'&&call.token===`Bearer ${call.url.pathname.endsWith('/gateway/rules')?gatewayToken:readToken}`));
   const bad=cloudflareFixture({target:'existing',namespaces:[ns()],domains:[domain()],versionRecord:{...version(),annotations:{'workers/tag':'c'.repeat(40)}}});
   await assert.rejects(verifyBootstrapPostflight({accountId,workerId,readToken,gatewayToken,expectedZoneIds:[zoneId],sourceSha:sha,fetchImpl:bad.fetchImpl}),/exact reviewed source SHA/);

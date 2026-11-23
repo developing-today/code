@@ -322,7 +322,7 @@ async function readSnapshot({accountId, token, gatewayToken, expectedZoneIds, fe
 }
 
 export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha, expectedWorkerId}) {
-  if (!['preflight', 'postflight'].includes(phase)) fail('provider verification phase is invalid');
+  if (!['preflight', 'init-postflight', 'postflight'].includes(phase)) fail('provider verification phase is invalid');
   const expected = parseIds(expectedZoneIds, 'approved zone inventory');
   if (!snapshot || !Array.isArray(snapshot.namespaces) || !Array.isArray(snapshot.domains) || !Array.isArray(snapshot.zoneIds) ||
       snapshot.zoneIds.length !== expected.length || snapshot.zoneIds.some((id, index) => id !== expected[index])) fail('provider inventory snapshot is incomplete or has the wrong account zones');
@@ -333,6 +333,7 @@ export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha
   if (Array.isArray(snapshot.deployments) && snapshot.deployments.length === 0) {
     exactBridgeDomains(snapshot.domains, {deployed: false, zoneIds: expected});
     if (phase !== 'preflight' || snapshot.namespaces.length !== 0 ||
+        snapshot.worker.references.domains.length !== 0 ||
         snapshot.subdomain?.enabled !== false || snapshot.subdomain?.previews_enabled !== false ||
         !Array.isArray(snapshot.schedules) || snapshot.schedules.length !== 0 || !snapshot.settings ||
         snapshot.settings.logpush !== false || snapshot.settings.observability?.enabled !== false ||
@@ -347,7 +348,9 @@ export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha
       snapshot.settings?.observability?.enabled !== false || !Array.isArray(snapshot.settings?.tail_consumers) || snapshot.settings.tail_consumers.length !== 0) {
     fail('existing Worker is not fully verified as disabled and serving safely');
   }
-  exactBridgeDomains(snapshot.domains, {deployed: true, zoneIds: expected});
+  const noIngress=phase==='init-postflight'||phase==='preflight';
+  exactBridgeDomains(snapshot.domains, {deployed: !noIngress, zoneIds: expected});
+  if(noIngress&&snapshot.worker.references.domains.length!==0) fail('no-ingress Worker still has a reverse domain reference');
   if (snapshot.namespaces.length !== 1) fail('existing Worker SQLite namespace inventory is unexpected');
   const namespace = snapshot.namespaces[0];
   if (!ID.test(namespace?.id ?? '') && !UUID.test(namespace?.id ?? '')) fail('Durable Object namespace ID is invalid');
@@ -360,7 +363,7 @@ export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha
   if (!/^[a-f0-9]{40}$/.test(sourceSha ?? '') || snapshot.version.annotations?.['workers/tag'] !== sourceSha) {
     fail('latest serving version is not tagged to this exact reviewed source SHA');
   }
-  return phase === 'preflight' ? 'already-ready' : 'verified';
+  return phase === 'preflight' ? 'already-initialized-no-ingress' : noIngress ? 'verified-no-ingress' : 'verified';
 }
 
 export async function verifyBootstrapPreflight({accountId, workerId, readToken, gatewayToken, expectedZoneIds, sourceSha, fetchImpl = fetch}) {
@@ -378,12 +381,12 @@ export function verifyDistinctWriteCredential(readToken, gatewayToken, writeToke
   return true;
 }
 
-export async function verifyBootstrapPostflight({accountId, workerId, readToken, gatewayToken, expectedZoneIds, sourceSha, fetchImpl = fetch}) {
+export async function verifyBootstrapPostflight({accountId, workerId, readToken, gatewayToken, expectedZoneIds, sourceSha, phase='postflight', fetchImpl = fetch}) {
   if (!ID.test(accountId ?? '') || typeof readToken !== 'string' || readToken.length < 20 ||
       typeof gatewayToken !== 'string' || gatewayToken.length < 20 || readToken === gatewayToken) fail('protected read-only provider identities are missing');
   const zones = parseIds(expectedZoneIds, 'approved zone inventory');
   const snapshot = await readSnapshot({accountId, token: readToken, gatewayToken, expectedZoneIds: zones, fetchImpl});
-  return verifyProviderState(snapshot, {phase: 'postflight', expectedZoneIds: zones, sourceSha, expectedWorkerId: workerId});
+  return verifyProviderState(snapshot, {phase, expectedZoneIds: zones, sourceSha, expectedWorkerId: workerId});
 }
 
 export async function validateLocalBuild({buildOutput, mode = 'bridge'}) {
@@ -438,7 +441,7 @@ async function providerCheck(phase) {
     : await verifyBootstrapPostflight({accountId: process.env.CF_BRIDGE_ACCOUNT_ID, workerId: process.env.CF_BRIDGE_WORKER_ID,
       readToken: process.env.CF_BRIDGE_READ_TOKEN, gatewayToken: process.env.CF_BRIDGE_GATEWAY_READ_TOKEN,
       expectedZoneIds: process.env.CF_BRIDGE_ZONE_IDS,
-      sourceSha: process.env.GITHUB_SHA});
+      sourceSha: process.env.GITHUB_SHA,phase});
   if (phase === 'preflight') {
     if (!path) fail('workflow output channel is unavailable');
     await writeFile(path, `status=${result}\n`, {flag: 'a', mode: 0o600});
@@ -448,18 +451,19 @@ async function providerCheck(phase) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (args.length !== 0) fail(`usage: staging-bootstrap.mjs <github-environment-bootstrap|github-environment-release|preflight|postflight|assert-distinct-credentials|validate-build>`);
+  if (args.length !== 0) fail(`usage: staging-bootstrap.mjs <github-environment-bootstrap|github-environment-release|preflight|init-postflight|postflight|assert-distinct-credentials|validate-build>`);
   if (command === 'github-environment-bootstrap') await githubEnvironmentGate('bootstrap');
   else if (command === 'github-environment-release') await githubEnvironmentGate('release');
   else if (command === 'preflight') await providerCheck('preflight');
+  else if (command === 'init-postflight') await providerCheck('init-postflight');
   else if (command === 'postflight') await providerCheck('postflight');
   else if (command === 'assert-distinct-credentials') {
     verifyDistinctWriteCredential(process.env.CF_BRIDGE_READ_TOKEN, process.env.CF_BRIDGE_GATEWAY_READ_TOKEN,
       process.env.CF_BRIDGE_API_TOKEN);
     console.log('separate read and write credentials verified');
   }
-  else if (command === 'validate-build') await validateLocalBuild({buildOutput: process.env.BUILD_OUTPUT ?? '.cloudflare/output/v1'});
-  else fail('usage: staging-bootstrap.mjs <github-environment-bootstrap|github-environment-release|preflight|postflight|assert-distinct-credentials|validate-build>');
+  else if (command === 'validate-build') await validateLocalBuild({buildOutput: process.env.BUILD_OUTPUT ?? '.cloudflare/output/v1',mode:process.env.BUILD_MODE??'bridge'});
+  else fail('usage: staging-bootstrap.mjs <github-environment-bootstrap|github-environment-release|preflight|init-postflight|postflight|assert-distinct-credentials|validate-build>');
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {

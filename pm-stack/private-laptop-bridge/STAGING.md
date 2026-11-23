@@ -19,11 +19,14 @@ are a separate synthetic smoke lifecycle and do not select or provision the
 bridge target. `cloudflare.config.ts` is the only deployment lifecycle source;
 no Wrangler JSONC deployment or migration fallback is kept.
 
-The bridge config currently has `ENABLED=false`, empty registry and Gateway
-placeholders, exactly one proposed Access hostname (`laptop-bridge-staging.security.cab`),
-no routes or triggers, workers.dev and preview URLs disabled, 10 ms CPU limit,
-and observability/logging/traces off. Access issuer/audience remain blank until
-the exact app is independently verified. It binds the staging
+The routed `bridge` config has `ENABLED=false`, empty registry and Gateway
+placeholders, exactly one proposed Access hostname
+(`laptop-bridge-staging.security.cab`), no routes or triggers, workers.dev and
+preview URLs disabled, 10 ms CPU limit, and observability/logging/traces off.
+The new `bridge-init` config instead has no custom hostname and blank Access
+issuer/audience; it exists only for the separately gated SQLite first deploy.
+Access issuer/audience in `bridge` remain blank until the exact app is
+independently verified. Both modes bind the staging
 Worker to its own declarative SQLite `PrivateLaptopBridge` Durable Object
 export. The tracked `staging-preflight.json` remains `verified:false`, `exists:false`, with
 empty account, namespace and evidence IDs. Local config/build tests prove only
@@ -44,8 +47,14 @@ Durable Object namespace. For first activation, the owner must first create
 only the fixed metadata-only Worker locally, read its immutable ID, and pin that
 ID in the protected `cloudflare-staging` environment. Actions must reject an
 absent Worker and any same-name/different-ID takeover; it must not receive
-account-wide create permission. Only then could the same `cloudflare.config.ts`
-`bridge` mode and pinned `cf` Build Output initialize the SQLite export.
+account-wide create permission. The first SQLite initialization now has its
+own `bridge-init` mode in `cloudflare.config.ts`: it keeps the disabled Worker
+and SQLite export but renders `domains: []`, blank Access issuer/audience,
+`workersDev:false`, preview URLs off, no routes/triggers, and no telemetry. The
+separate `bridge` mode retains the proposed custom hostname and requires the
+reviewed Access configuration. No initialization run may attach the hostname;
+Access setup and any later hostname association require a separate reviewed
+phase. This init object is not an Aster endpoint.
 [cf project deploy](https://developers.cloudflare.com/cf/projects/) ·
 [cf and Durable Object lifecycle](https://developers.cloudflare.com/cf/wrangler/reference/#convert-durable-object-migrations)
 
@@ -68,20 +77,20 @@ reviewer, disallow self-review, allow only `main`, and pin the exact reviewed
 full source SHA and immutable Worker ID. The template fails closed if any part
 is missing or differs.
 
-The deploy job runs the local build and pinned `cf deploy --dry-run`, verifies
-the effective disabled Build Output, then uses separate read-only and
-write-only credentials. Before its only possible provider write, read-only
+The deploy job runs the `bridge-init` build and pinned `cf deploy --dry-run`,
+verifies the effective disabled, no-domain Build Output, then uses separate
+read-only and write-only credentials. Before its only possible provider write, read-only
 checks inventory the full account zone set and every zone's Worker routes,
 account Worker domains, the pinned Worker ID and SQLite namespace, schedules,
 subdomain/preview flags, settings, versions and deployments. It refuses an
 unknown or partial inventory, any unexpected route/domain, an orphan namespace,
 an absent or mismatched Worker ID, shared read/write tokens, or any effective
 config that differs from the disabled artifact. Only an exact, precreated
-metadata-only Worker with zero deployments and no domain/namespace can proceed.
-A second read-only pass checks the exact serving version, single 100-percent
-deployment, source-SHA tag, disabled settings, the sole approved host with
-preview routing off, and the same SQLite namespace ID in the export and account
-inventory. It never changes Gateway or routes.
+metadata-only Worker with zero deployments, zero domain references, and no
+namespace can proceed. A second read-only pass proves that the deployment is
+disabled, has the exact source-SHA version and SQLite namespace binding, and
+still has zero custom domains and reverse domain references. It never changes
+Gateway or routes.
 
 The checked-in template has not been registered, dispatched, or run against
 Cloudflare. The current protected environment, reviewer IDs, exact account,
@@ -91,8 +100,10 @@ available in this checkout. Their secret values were not accessed. The pinned
 Worker, and whether an Individual Workers Editor can perform that exact
 operation without changing other state, have not been verified against
 Cloudflare. Do not claim compatibility or enable the workflow until that exact
-provider contract is confirmed. It has no fallback that creates a Worker or
-silently changes its identity.
+provider contract is confirmed. The no-domain payload only closes the initial
+ingress gap; it does not create the Access app or provide a later domain-attach
+workflow. It has no fallback that creates a Worker or silently changes its
+identity.
 The read credential needs complete account zone/route inventory, Worker
 metadata/settings/versions/deployments/domains, and Durable Object namespace
 read. If those exact read scopes or an individual Worker write scope cannot be
@@ -102,20 +113,23 @@ The offline command sequence the workflow will use is:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
-./node_modules/.bin/cf build --mode bridge
-./node_modules/.bin/cf deploy --mode bridge --prebuilt --dry-run
+./node_modules/.bin/cf build --mode bridge-init
+./node_modules/.bin/cf deploy --mode bridge-init --prebuilt --dry-run
 # The live command exists only in the dormant, environment-gated workflow.
 # Never run it from a developer checkout.
 ```
 
-The final command writes a deployment, may attach the exact approved custom
-hostname, and provisions the `PrivateLaptopBridge` SQLite export. It must run
-only with `ENABLED=false`, empty Gateway IDs and registry, no runtime secrets,
-no routes or extra domains/triggers, `workersDev:false`,
+The dormant first-deploy workflow instead uses `cf build --mode bridge-init`
+and `cf deploy --mode bridge-init --prebuilt --provision`. This writes a
+disabled, unrouted version and provisions the `PrivateLaptopBridge` SQLite
+export without a custom hostname. It must run only with `ENABLED=false`, empty
+Access and Gateway configuration, empty registry, no runtime secrets, no routes,
+domains, or triggers, `workersDev:false`,
 `previewUrls:false`, logs/traces off, and the 10 ms CPU limit from the reviewed
-build. Do not pass `--force`, `--secrets-file`, or `--dispatch-namespace`. A
-successful local `--dry-run` proves config shape only; it is not permission to
-run the write.
+build. The separate `bridge` mode is reserved for a later phase after Access
+policy and the custom hostname have been independently verified. Do not pass
+`--force`, `--secrets-file`, or `--dispatch-namespace`. A successful local
+`--dry-run` proves config shape only; it is not permission to run the write.
 
 Before the write, the protected workflow's separate read-only credential must
 confirm the exact account and that the exact Worker name is absent; inventory
@@ -131,9 +145,9 @@ changing it.
 
 Immediately after the write, independently repeat the full zone/route and
 Worker inventory and verify the same Worker identity and account, no
-routes/schedules, only the exact approved custom domain with previews disabled,
-no Gateway binding, workers.dev and preview URLs disabled, no runtime secrets,
-and the exact disabled variables and resource limits. This is not proof about
+routes/schedules, no custom domain or Worker domain reference, no Gateway
+binding, workers.dev and preview URLs disabled, no runtime secrets, and the
+exact disabled variables and resource limits. This is not proof about
 account-level Gateway rules or caller identity.
 Verify the Worker's
 declarative export is `PrivateLaptopBridge` with `state=created` and

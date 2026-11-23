@@ -19,8 +19,10 @@ existing Turso-backed queue. No endpoint claims, dispatches, changes tasks,
 restarts services, reads arbitrary files, fetches arbitrary URLs, executes a
 command, or accepts scripts. Builds/tests are deliberately outside this version.
 
-The Worker is default-disabled, has only the proposed fixed custom hostname,
-workers.dev and preview URLs disabled, and contains no private keys. Device and caller identities are independently pinned
+The routed `bridge` mode is default-disabled, has only the proposed fixed
+custom hostname, and keeps workers.dev and preview URLs disabled. The separate
+`bridge-init` mode has no ingress while the SQLite namespace is initialized.
+Neither mode contains private keys. Device and caller identities are independently pinned
 public keys with separate roles, device binding, operation scopes, expiration and
 revocation. Possession of a device key does not grant caller permissions. A
 request signature covers its audience, endpoint, method, timestamp, nonce and
@@ -221,7 +223,10 @@ JWT, maps its signed client ID to one principal, then forwards the independently
 signed request to the bridge. The earlier Gateway path is historical only; see
 [ACCESS-STAGING.md](ACCESS-STAGING.md) for the current no-WARP design.
 
-The one-time disabled first-deployment workflow is a reviewed template with a
+The one-time disabled first-deployment workflow uses the strict `bridge-init`
+configuration mode: disabled SQLite initialization, no custom domain, blank
+Access config, no routes or public previews. The routed `bridge` mode is a
+separate Access-reviewed phase. The workflow is a reviewed template with a
 `.disabled` suffix outside `.github/workflows`; GitHub does not register it.
 It remains dormant until the exact protected environment, reviewer policy,
 source pin, immutable owner-created Worker ID, exact Access app and narrowly

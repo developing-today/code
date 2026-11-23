@@ -76,9 +76,13 @@ different route, so it is not used for this Worker control plane.
 
 ## Resource and identity checklist
 
-- Worker: `private-laptop-bridge-staging`; fixed hostname above, Access app
+- Routed Worker: `private-laptop-bridge-staging`; fixed hostname above, Access app
   restricted to service-token authentication, `workers_dev=false`, previews
   false, no schedules or other routes/domains.
+- First `bridge-init` deployment has no custom hostname and blank Access
+  issuer/audience. Attaching the routed `bridge` configuration is a later
+  separately reviewed action after Access is configured and independently read
+  back.
 - Access issuer and audience: provisioned for that exact app, stored as
   non-secret Worker configuration from protected environment variables
   `CF_BRIDGE_ACCESS_ISSUER` and `CF_BRIDGE_ACCESS_AUDIENCE`. They are required

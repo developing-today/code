@@ -16,10 +16,12 @@ const isolated = () => ({
 // until owner-approved account, namespace, Gateway, and laptop preflight is
 // complete.
 // The default mode exists only for the separately managed synthetic smoke Worker.
-export default defineConfig(({mode}) => mode === 'bridge' ? ({
+export default defineConfig(({mode}) => mode === 'bridge' || mode === 'bridge-init' ? ({
   worker: {
     ...isolated(),
-    domains: [BRIDGE_HOST],
+    // The first SQLite namespace initialization must have no custom hostname.
+    // `bridge` is reserved for the separately Access-reviewed routed release.
+    domains: mode === 'bridge-init' ? [] : [BRIDGE_HOST],
     name: 'private-laptop-bridge-staging',
     compatibilityDate: '2026-07-30',
     entrypoint: bridge,
@@ -30,8 +32,8 @@ export default defineConfig(({mode}) => mode === 'bridge' ? ({
       GATEWAY_ACCOUNT_ID: bindings.text(''), GATEWAY_POLICY_ID: bindings.text(''),
       GATEWAY_IDENTITY_EMAIL: bindings.text(''), GATEWAY_POSTURE_ID: bindings.text(''),
       BRIDGE_HOST: bindings.text(BRIDGE_HOST),
-      ACCESS_ISSUER: bindings.text(process.env.CF_BRIDGE_ACCESS_ISSUER ?? ''),
-      ACCESS_AUDIENCE: bindings.text(process.env.CF_BRIDGE_ACCESS_AUDIENCE ?? ''),
+      ACCESS_ISSUER: bindings.text(mode === 'bridge-init' ? '' : process.env.CF_BRIDGE_ACCESS_ISSUER ?? ''),
+      ACCESS_AUDIENCE: bindings.text(mode === 'bridge-init' ? '' : process.env.CF_BRIDGE_ACCESS_AUDIENCE ?? ''),
       BRIDGE_REGISTRY: bindings.text(''),
       BRIDGE: bindings.durableObject({worker: 'private-laptop-bridge-staging', exportName: 'PrivateLaptopBridge'}),
     },

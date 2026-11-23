@@ -344,7 +344,8 @@ custom domain or namespace; deployed readback requires only the exact proposed
 host with preview routing disabled and the same immutable Worker ID. CI has no
 account-wide create credential.
 
-Current local checks on this working tree:
+Historical local checks from the earlier bridge-mode draft (not evidence for the
+current source head):
 
 ```text
 npm test
@@ -378,3 +379,20 @@ Access application, two service identities, public-key registry, exact
 hostname, protected environment/reviewer set, and laptop/Aster network/runtime
 path also remain owner-side prerequisites. Keep all workflows dormant until
 these are independently verified.
+
+## Follow-up: no-ingress first-deploy mode — 2026-11-23
+
+The first-deploy template now uses a separate `bridge-init` mode. Its rendered
+Worker payload must have `domains: []`, blank Access issuer/audience, disabled
+service, no routes/triggers, workers.dev/previews off, and the declared SQLite
+export. The init postflight requires zero account domains and Worker reverse
+domain references, plus the exact disabled source-tagged version and namespace.
+The routed `bridge` mode remains separate; no Access setup or hostname attach
+workflow was added. `private-laptop-bridge-staging-bootstrap.workflow.yml.disabled`
+remains outside `.github/workflows` and was not dispatched.
+
+This source update has not been tested locally. The hosted `npm test` run for
+the preceding Gateway-context revision `b58e91a345d738a3c364c7adb8fbc1852312d067`
+failed at its execute step; the run log endpoint returned 403, so the exact test
+failure is not known. It does not verify this follow-up source. A distinct
+remote-only guard test/build is required on the eventual pushed head.

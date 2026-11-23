@@ -67,9 +67,7 @@
       "workers_dev": false,
       "preview_urls": false,
       "routes": [],
-      "custom_domains": [
-        "laptop-bridge-staging.security.cab"
-      ],
+      "custom_domains": [],
       "observability": {
         "enabled": false,
         "logs": false,

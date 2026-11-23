@@ -193,7 +193,7 @@ export function assertPreflight(proof,{accountId,worker,environment,now=Date.now
 export function assertDryRunPayload(text,{worker,mode}) {
   if(typeof text!=='string'||!text.includes('--dry-run: exiting now.')) fail('cf prebuilt dry-run did not complete successfully');
   if(worker==='private-laptop-bridge-staging') {
-    if(mode!=='bridge'||!text.includes('env.BRIDGE (PrivateLaptopBridge')||!text.includes('env.ENABLED ("false")')||!text.includes('env.BRIDGE_REGISTRY ("")')) fail('effective bridge Build Output does not match disabled DO target');
+    if(!['bridge','bridge-init'].includes(mode)||!text.includes('env.BRIDGE (PrivateLaptopBridge')||!text.includes('env.ENABLED ("false")')||!text.includes('env.BRIDGE_REGISTRY ("")')) fail('effective bridge Build Output does not match disabled DO target');
   } else if(worker==='private-laptop-bridge-smoke') {
     if(mode!=='default'||!text.includes('env.ENABLED ("false")')||!text.includes('env.GATEWAY_HOST ("private-bridge-smoke.invalid")')) fail('effective smoke Build Output does not match disabled target');
   } else fail('unknown Worker in Build Output verification');
@@ -202,13 +202,15 @@ export function assertDryRunPayload(text,{worker,mode}) {
 
 export function assertEffectivePayload(config,{worker,mode,accessIssuer=process.env.CF_BRIDGE_ACCESS_ISSUER??'',accessAudience=process.env.CF_BRIDGE_ACCESS_AUDIENCE??''}) {
   const bridge=worker==='private-laptop-bridge-staging';
+  const bridgeInit=bridge&&mode==='bridge-init';
   const smoke=worker==='private-laptop-bridge-smoke';
-  if((!bridge&&!smoke)||(bridge&&mode!=='bridge')||(smoke&&mode!=='default')) fail('Build Output mode does not match the fixed target');
-  if(bridge&&!validAccess(accessIssuer,accessAudience)) fail('bridge Build Output requires the exact protected Access issuer and audience');
+  if((!bridge&&!smoke)||(bridge&&!['bridge','bridge-init'].includes(mode))||(smoke&&mode!=='default')) fail('Build Output mode does not match the fixed target');
+  if(bridge&&!bridgeInit&&!validAccess(accessIssuer,accessAudience)) fail('bridge Build Output requires the exact protected Access issuer and audience');
+  if(bridgeInit&&(accessIssuer!==''||accessAudience!=='')) fail('first-deploy Build Output must not contain Access configuration before ingress is separately approved');
   const common={
     name:worker,
     compatibilityDate:'2026-07-30',
-    domains:bridge?[BRIDGE_HOST]:[],
+    domains:bridge&&!bridgeInit?[BRIDGE_HOST]:[],
     triggers:[],
     limits:{cpuMs:10},
     observability:{enabled:false,logs:{enabled:false},traces:{enabled:false}},
@@ -217,7 +219,7 @@ export function assertEffectivePayload(config,{worker,mode,accessIssuer=process.
   };
   const variables=bridge?{
     ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',
-    GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_HOST,ACCESS_ISSUER:accessIssuer,ACCESS_AUDIENCE:accessAudience,BRIDGE_REGISTRY:'',
+    GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_HOST,ACCESS_ISSUER:bridgeInit?'':accessIssuer,ACCESS_AUDIENCE:bridgeInit?'':accessAudience,BRIDGE_REGISTRY:'',
   }:{
     ENABLED:'false',GATEWAY_HOST:'private-bridge-smoke.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',START_MS:'',END_MS:'',
   };

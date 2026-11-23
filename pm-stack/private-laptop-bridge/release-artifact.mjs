@@ -24,7 +24,7 @@ if(action==='preflight') {
  const worker=required('TARGET_WORKER'), mode=required('TARGET_MODE');
  assertDryRunPayload(await readFile(required('DRY_RUN_OUTPUT'),'utf8'),{worker,mode});
  const metadata=await json(resolve(root,'.cloudflare/output/v1/config.json'));
- if(metadata.producer?.name!=='wrangler'||metadata.producer?.version!=='4.166.0'||metadata.buildContext?.mode!==(mode==='bridge'?'bridge':undefined)) throw new Error('Build Output producer or mode does not match pinned release');
+ if(metadata.producer?.name!=='wrangler'||metadata.producer?.version!=='4.166.0'||metadata.buildContext?.mode!==(mode==='default'?undefined:mode)) throw new Error('Build Output producer or mode does not match pinned release');
  const payload=await json(resolve(root,'.cloudflare/output/v1/workers/default/worker.config.json'));
  assertEffectivePayload(payload,{worker,mode});
  console.log('effective Build Output validated for '+worker);
