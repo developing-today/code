@@ -22,14 +22,18 @@
 //!    style overrides, then presentation overrides per #5853) →
 //!    raw CSS (layer 5, web target only).
 //!
-//! Everything the cascade consumes beyond the validated IR is
-//! *data* supplied by the caller ([`ComposeData`]): the assertion
-//! sets (the `assert` slot's grammar is #5850's and is still
-//! carried opaquely by stages 1–2, per #5855 assumption A2), the
+//! Layer 3 has two inputs. The first is the source itself: each
+//! element's `assert` slot, validated against the #5850
+//! vocabulary by stage 2, enters as assertions at instance
+//! specificity — the slot binds to this element instance in the
+//! one source (#5854 §2.2). The second is *data* supplied by the
+//! caller ([`ComposeData`]): further assertion sets, the
 //! override map, and the theme tables. Elements are addressed by
 //! their document path (see [`element_path`]), a deterministic
 //! address derived from the IR itself — no source syntax is
-//! invented for bindings.
+//! invented for bindings. (#5855 assumption A2 carried the slot
+//! opaquely until #5850 settled; the record has settled and the
+//! deferral is discharged.)
 //!
 //! The output is the resolved IR for the one target
 //! ([`ComposedDocument`]): every element carries its final
@@ -51,6 +55,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::assertion_vocabulary;
 use crate::{BuildError, Document, Element, Node, RawRegion, Span};
 
 /// The facts about one target that composition may consult: the
@@ -487,12 +492,49 @@ impl ComposeCx<'_> {
         self.element_paths.insert(path.to_string());
         let mut by_property: BTreeMap<String, ResolvedProperty> = BTreeMap::new();
 
-        // Layer 3: assertions for this element.
+        // Layer 3: assertions for this element — the element's
+        // own `assert` slot at instance specificity, plus the
+        // caller-supplied data assertions bound to this path.
+        // The slot was validated by stage 2; a document that
+        // reaches compose unvalidated and carries a bad slot
+        // fails here with the same located errors rather than
+        // silently dropping the assertions.
+        let mut source_assertions: Vec<AssertionInput> = Vec::new();
+        if el.has_attr("assert") {
+            match el.attr("assert") {
+                Some(value) => match assertion_vocabulary::parse_assert_slot(value) {
+                    Ok(pairs) => {
+                        source_assertions.extend(pairs.into_iter().map(|pair| {
+                            AssertionInput {
+                                element_path: path.to_string(),
+                                property: pair.dimension,
+                                token: pair.token,
+                                specificity: Specificity::Instance,
+                            }
+                        }));
+                    }
+                    Err(problems) => {
+                        for problem in problems {
+                            self.errors
+                                .push(BuildError::new(problem, el.span.line, el.span.col));
+                        }
+                    }
+                },
+                None => {
+                    self.errors.push(BuildError::new(
+                        format!("attribute `assert` on <{}> requires a value", el.name),
+                        el.span.line,
+                        el.span.col,
+                    ));
+                }
+            }
+        }
         let assertions: Vec<&AssertionInput> = self
             .data
             .assertions
             .iter()
             .filter(|a| a.element_path == path)
+            .chain(source_assertions.iter())
             .collect();
         let mut properties: BTreeSet<String> = BTreeSet::new();
         for a in &assertions {
