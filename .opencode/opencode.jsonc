@@ -1334,7 +1334,7 @@
 
       }
     },
-    // ENABLED and routed (2026-11-23 correction, code#13677): an older note here claimed this door was OFF via disabled_providers -- stale since the 2026-11-15 free-provider pass. openrouter is NOT in disabled_providers, its credential-store row is active, and openrouter-free-plan below seats its :free shelf in scout and background. The block below is the live definition.
+    // ENABLED and routed (2026-11-23 correction, code#13677): an older note here claimed this door was OFF via disabled_providers -- stale since the 2026-11-15 free-provider pass. openrouter is NOT in disabled_providers, its credential-store row is active, and openrouter-free-plan below seats its :free shelf in scout and background. The block below is the live definition. Key rotated 2026-11-23 (code#13677): fresh key in Bitwarden `openrouter.api-key`, credential-store row synced to it; the old console key remains in the account, unused by this estate.
     "openrouter": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenRouter (Free Tier)",
@@ -1363,11 +1363,60 @@
             "output": 235929
           }
         },
-        "cohere/north-mini-code:free": {
-          "name": "North Mini Code (Free)",
+        "baidu/ernie-5.5-flash-preview:free": {
+          "name": "ERNIE 5.5 Flash Preview (Free)",
+          "limit": {
+            "context": 1024000,
+            "output": 921600
+          }
+        },
+        "dots-studio/dots-3-note-preview:free": {
+          "name": "Dots 3 Note Preview (Free)",
+          "limit": {
+            "context": 512000,
+            "output": 460800
+          }
+        },
+        "google/gemma-4-26b-a4b-it:free": {
+          "name": "Gemma 4 26B A4B IT (Free)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "google/gemma-4-31b-it:free": {
+          "name": "Gemma 4 31B IT (Free)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        },
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+          "name": "Nemotron 3 Nano Omni 30B (Free)",
           "limit": {
             "context": 256000,
-            "output": 64000
+            "output": 65536
+          }
+        },
+        "nvidia/nemotron-3.5-lightning:free": {
+          "name": "Nemotron 3.5 Lightning (Free)",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "nvidia/nemotron-3.5-super-vl:free": {
+          "name": "Nemotron 3.5 Super VL (Free)",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          }
+        },
+        "particle-ai/particle-1:free": {
+          "name": "Particle 1 (Free)",
+          "limit": {
+            "context": 1048576,
+            "output": 131072
           }
         }
       }
@@ -1528,6 +1577,21 @@
         }
       }
     },
+    // NVIDIA NIM free endpoint (integrate.api.nvidia.com).
+    // Key is ours: Bitwarden `nvidia.api-key` (escrowed
+    // 2026-11-23 from the credential-store row, code#13677),
+    // bound via the active credential-store row (integrationID
+    // nvidia). Model list = this account's live GET /v1/models
+    // on 2026-11-23 (32 ids) filtered by a per-model entitlement
+    // probe the same day: of the 25 chat-shaped ids, 15 answered
+    // 200, 6 answered 404 (listed but NOT entitled -- kept out),
+    // 1 answered 422 and 2 answered 500 (entitled, non-chat
+    // shapes), 1 timed out twice (not seated); the 7 embed ids
+    // are recorded on code#13677 for code#13675. No limit
+    // blocks on the new entries: NVIDIA's catalogue publishes
+    // no context/output limits for these ids (the two Nemotron
+    // entries with limits take them from OpenRouter's live
+    // catalogue entry for the same model).
     "nvidia": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "NVIDIA NIM (Free Endpoint)",
@@ -1535,13 +1599,6 @@
         "baseURL": "https://integrate.api.nvidia.com/v1"
       },
       "models": {
-        "deepseek-ai/deepseek-v4.1-flash": {
-          "name": "DeepSeek V4.1 Flash (NVIDIA)",
-          "limit": {
-            "context": 1000000,
-            "output": 131072
-          }
-        },
         "nvidia/nemotron-3-ultra-550b-a55b": {
           "name": "Nemotron 3 Ultra 550B (NVIDIA)",
           "limit": {
@@ -1569,6 +1626,47 @@
             "context": 1048576,
             "output": 131072
           }
+        },
+        "meta/muse-glimmer-30b": {
+          "name": "Muse Glimmer 30B (NVIDIA)"
+        },
+        "moonshotai/kimi-k3.1-pro": {
+          "name": "Kimi K3.1 Pro (NVIDIA)"
+        },
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": {
+          "name": "Nemotron 3 Nano Omni 30B (NVIDIA)",
+          "limit": {
+            "context": 256000,
+            "output": 65536
+          }
+        },
+        "nvidia/nemotron-3.5-bolt-e4b": {
+          "name": "Nemotron 3.5 Bolt E4B (NVIDIA)"
+        },
+        "nvidia/nemotron-3.5-lightning-30b-a3b": {
+          "name": "Nemotron 3.5 Lightning 30B (NVIDIA)"
+        },
+        "nvidia/nemotron-3.5-super-vl-120b-a12b": {
+          "name": "Nemotron 3.5 Super VL 120B (NVIDIA)",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          }
+        },
+        "poolside/laguna-xs-2.1": {
+          "name": "Laguna XS 2.1 (NVIDIA)"
+        },
+        "stepfun-ai/step-5-preview": {
+          "name": "Step 5 Preview (NVIDIA)"
+        },
+        "nvidia/ising-calibration-1.5-31b": {
+          "name": "Ising Calibration 1.5 31B (NVIDIA)"
+        },
+        "nvidia/llama-3.1-nemotron-safety-guard-8b-v3": {
+          "name": "Nemotron Safety Guard 8B v3 (NVIDIA)"
+        },
+        "nvidia/riva-translate-4b-instruct-v2": {
+          "name": "Riva Translate 4B Instruct v2 (NVIDIA)"
         }
       }
     },
@@ -3858,32 +3956,53 @@
       },
       "nvidia-free-plan": {
         "name": "NVIDIA NIM Free - plan providers",
-        // NEW 2026-11-15 (Drew): NVIDIA's free NIM endpoint (integrate.api.nvidia.com) as its own plan. Five chat models from its 83-model free catalog, each probe-verified live 2026-11-15 with our stored key (kimi-k2.6 and nemotron-3-super-120b are listed in the catalog but answer 404 'not found for account' — not seated). DeepSeek Flash, Nemotron Ultra and Mistral Large 4 carry ~1M context on this door; MiniMax Flash and Gemma are ~256k fallback-class. Background seat; the free endpoint is rate-limited per key and DeepSeek Flash cold-starts slowly (>90s first call).
+        // UPDATED 2026-11-23 (code#13677): full entitlement pass with the vault-held key (BWS `nvidia.api-key`). Twelve general chat models answered 200 to a minimal completion and are seated round-robin below (the 2026-11-15 five-model pass is superseded; its record stands in git history). Free-endpoint ceiling: a personal max of up to 40 RPM per key, enforced per model, no published daily cap -- background-class volume only. REMOVED: deepseek-ai/deepseek-v4.1-flash -- no longer in the account's model list, and a direct completion answered 410 (retired on this door). NOT seated: z-ai/glm-5.3-flash (listed, two probes timed out -- inconclusive, not a refusal); the block-only specialists (safety guard, riva translate, ising calibration) and the embed shelf are recorded on code#13677 for code#13675.
         "targets": [
-          "nvidia/deepseek-ai/deepseek-v4.1-flash",
           "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
           "nvidia/minimaxai/minimax-m3.1-flash",
           "nvidia/google/gemma-4-31b-it",
-          "nvidia/mistralai/mistral-large-4-1t-a52b"
+          "nvidia/mistralai/mistral-large-4-1t-a52b",
+          "nvidia/meta/muse-glimmer-30b",
+          "nvidia/moonshotai/kimi-k3.1-pro",
+          "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+          "nvidia/nvidia/nemotron-3.5-bolt-e4b",
+          "nvidia/nvidia/nemotron-3.5-lightning-30b-a3b",
+          "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b",
+          "nvidia/poolside/laguna-xs-2.1",
+          "nvidia/stepfun-ai/step-5-preview"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "nvidia/deepseek-ai/deepseek-v4.1-flash": 3,
           "nvidia/nvidia/nemotron-3-ultra-550b-a55b": 3,
           "nvidia/minimaxai/minimax-m3.1-flash": 3,
           "nvidia/google/gemma-4-31b-it": 3,
-          "nvidia/mistralai/mistral-large-4-1t-a52b": 3
+          "nvidia/mistralai/mistral-large-4-1t-a52b": 3,
+          "nvidia/meta/muse-glimmer-30b": 3,
+          "nvidia/moonshotai/kimi-k3.1-pro": 3,
+          "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": 3,
+          "nvidia/nvidia/nemotron-3.5-bolt-e4b": 3,
+          "nvidia/nvidia/nemotron-3.5-lightning-30b-a3b": 3,
+          "nvidia/nvidia/nemotron-3.5-super-vl-120b-a12b": 3,
+          "nvidia/poolside/laguna-xs-2.1": 3,
+          "nvidia/stepfun-ai/step-5-preview": 3
         }
       },
       "openrouter-free-plan": {
         "name": "OpenRouter Free - plan providers",
-        // NEW 2026-11-15 (Drew): OpenRouter's :free shelf as its own plan — chosen over Hugging Face (whose Inference Providers catalog is metered credit, not per-model free). Four models at $0/$0 pricing in OpenRouter's live catalog 2026-11-15, each probe-verified live the same day. Ling and Nemotron Ultra carry ~1M context, so this plan also joins scout's free cluster; Flint and North Mini Code are ~256k. NOT seated: inkling-2-small:free (403 'agentic harnesses only' on bare API calls, and already seated via Zen) and gemma-4-31b-it:free (upstream 429 at probe time — it answers on the NVIDIA door instead). Free tier: 50 requests/day without purchase. The block's old seats (minimax-m3.1-flash:free, laguna-s-2.1:free) rotated off the free shelf and were removed.
+        // UPDATED 2026-11-23 (code#13677): the :free shelf re-read from the live catalog (15 ids at $0/$0) with the rotated vault key (BWS `openrouter.api-key`); eleven general chat models are seated below. Completion probes for every candidate returned the account-level 429 (free-models-per-day: 50 of 50 already consumed by this account's own traffic; resets 2026-11-24T00:00Z) -- the three previously verified seats return the same 429, so it is a quota state, not a model verdict; the catalog-verified shelf is seated per the bench-don't-burn rule (opencode#2570) and the through-route 200 is owed after the reset. REMOVED: cohere/north-mini-code:free -- gone from the live catalog, probe answered 404. NOT seated: liquid/lfm-3-1.7b:free (1.7B, below scout usefulness), google/lyria-3-clip-preview + lyria-3-pro-preview (music generation, not chat), openrouter/free (router meta-model). Free tier: 50 requests/day without purchase; the $10 top-up that would raise it to 1000/day is NOT authorized (Drew, 2026-11-23). The 2026-11-15 four-model pass is superseded; its record stands in git history.
         "targets": [
           "openrouter/inclusionai/ling-3.2-flash:free",
           "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
           "openrouter/recursive/flint-v1.0:free",
-          "openrouter/cohere/north-mini-code:free"
+          "openrouter/baidu/ernie-5.5-flash-preview:free",
+          "openrouter/dots-studio/dots-3-note-preview:free",
+          "openrouter/google/gemma-4-26b-a4b-it:free",
+          "openrouter/google/gemma-4-31b-it:free",
+          "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "openrouter/nvidia/nemotron-3.5-lightning:free",
+          "openrouter/nvidia/nemotron-3.5-super-vl:free",
+          "openrouter/particle-ai/particle-1:free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -3891,7 +4010,14 @@
           "openrouter/inclusionai/ling-3.2-flash:free": 3,
           "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": 3,
           "openrouter/recursive/flint-v1.0:free": 3,
-          "openrouter/cohere/north-mini-code:free": 3
+          "openrouter/baidu/ernie-5.5-flash-preview:free": 3,
+          "openrouter/dots-studio/dots-3-note-preview:free": 3,
+          "openrouter/google/gemma-4-26b-a4b-it:free": 3,
+          "openrouter/google/gemma-4-31b-it:free": 3,
+          "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": 3,
+          "openrouter/nvidia/nemotron-3.5-lightning:free": 3,
+          "openrouter/nvidia/nemotron-3.5-super-vl:free": 3,
+          "openrouter/particle-ai/particle-1:free": 3
         }
       },
       "commandcode-free-plan": {
