@@ -1169,7 +1169,11 @@
       "instanceOf": "google",
       "name": "Google AI Studio (Gemini Free - muse project)",
       "options": {
-        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+        "endpoints": {
+          "decision": { "kind": "google-decisions", "path": "/decisions" },
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" }
+        }
       }
     },
     // gen-lang project -- Drew-supplied key 2026-11-16.
@@ -1180,7 +1184,11 @@
       "instanceOf": "google",
       "name": "Google AI Studio (Gemini Free - gen-lang project)",
       "options": {
-        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+        "endpoints": {
+          "decision": { "kind": "google-decisions", "path": "/decisions" },
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" }
+        }
       }
     },
     // personal project -- Drew-supplied key 2026-11-16.
@@ -1191,7 +1199,11 @@
       "instanceOf": "google",
       "name": "Google AI Studio (Gemini Free - personal project)",
       "options": {
-        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+        "endpoints": {
+          "decision": { "kind": "google-decisions", "path": "/decisions" },
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" }
+        }
       }
     },
     // Drew project -- Drew-supplied key 2026-11-16.
@@ -1202,7 +1214,11 @@
       "instanceOf": "google",
       "name": "Google AI Studio (Gemini Free - Drew project)",
       "options": {
-        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+        "endpoints": {
+          "decision": { "kind": "google-decisions", "path": "/decisions" },
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" }
+        }
       }
     },
     // developing-today project -- the PAYG door, grouped as
@@ -2602,6 +2618,37 @@
     "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
   ],
+  // Model designations (2026-11-23, code#13675): purpose +
+  // capability policy keyed by bare model id, the same
+  // top-level-policy pattern as model_route_windows inside
+  // experimental below. A designated model may be seated ONLY in
+  // pools whose declared "purpose" (a model_routes field, absent =
+  // chat) is in its purposes list; an absent entry is legacy
+  // unrestricted. Closed vocabularies -- purposes: chat, decision,
+  // embed, rerank, recommend, transcribe, speak, guard;
+  // capabilities: visual, pdf, audio-in, audio-bidir, tts, stt.
+  // Enforced by bin/check-opencode-route-rules.mjs over EVERY pool
+  // in model_routes (not only the four tiers): a designated model
+  // without chat can never resolve into a chat-purpose pool, which
+  // mechanises the systemone decision-only convention.
+  // Groq TTS note (2026-11-23): playai-tts is NOT designated or
+  // seated -- it is absent from the groq provider catalog above
+  // (Groq shut PlayAI TTS down; the catalog's TTS shelf is the
+  // Canopy Labs Orpheus pair designated here instead).
+  "model_designations": {
+    "jev-1.13-free": { "purposes": ["decision"] },
+    "jev-1.13": { "purposes": ["decision"] },
+    "gpt-6-luna-decision": { "purposes": ["decision"] },
+    "gemini-decision-1": { "purposes": ["decision"] },
+    "gemini-embedding-2": { "purposes": ["embed"] },
+    "gemini-embedding-001": { "purposes": ["embed"] },
+    "whisper-large-v3": { "purposes": ["transcribe"], "capabilities": ["stt", "audio-in"] },
+    "whisper-large-v3-turbo": { "purposes": ["transcribe"], "capabilities": ["stt", "audio-in"] },
+    "canopylabs/orpheus-v1-english": { "purposes": ["speak"], "capabilities": ["tts"] },
+    "canopylabs/orpheus-arabic-saudi": { "purposes": ["speak"], "capabilities": ["tts"] },
+    "meta-llama/llama-prompt-guard-2-22m": { "purposes": ["guard"] },
+    "meta-llama/llama-prompt-guard-2-86m": { "purposes": ["guard"] }
+  },
   "experimental": {
     "provider_routes": {
       // openai-plan (2026-11-01): the ChatGPT pair as ONE provider
@@ -3842,6 +3889,7 @@
       },
       "systemone": {
         "name": "System One - decision models (NOT a chat pool)",
+        "purpose": "decision",
         // NEW 2026-11-14 (Drew): the decision-model pool. System-1
         // models answer typed questions (noul/choice/score) over a
         // state payload — they are NOT chat models and chat calls to
@@ -3856,6 +3904,20 @@
         // "systemone" 2026-11-15 (Drew, direct order) to match the
         // endpoint spelling (/v1/systemone). The mill design
         // supplement calls the same pool "decision".
+        // Wired 2026-11-23 (code#13675): the pool now declares
+        // "purpose": "decision" and the decision-only convention is
+        // checker-enforced via model_designations (jev-1.13-free
+        // and gemini-decision-1 are designated decision-only, so
+        // neither can resolve into a chat-purpose pool). Second leg
+        // is Gemini Decision 1 through the google-free provider
+        // route -- the four free projects multiply the free daily
+        // bucket (~10k decisions/day per project). Endpoint +
+        // model id live-probed 2026-11-23 before seating: POST
+        // https://generativelanguage.googleapis.com/v1beta/decisions
+        // with the muse project key returned 200 with a noul
+        // answer (evidence on code#13675). The google.* aliases
+        // carry the native endpoint descriptors (options.endpoints)
+        // for this leg. The paid Zen legs below stay OFF.
         // Paid legs — OFF by Drew's ruling 2026-11-14, kept here in
         // paste-ready form. To enable, add to targets:
         //   "zen-plans/jev-1.13",
@@ -3866,12 +3928,91 @@
         //   "zen-plans/gpt-6-luna-decision": 3,
         //   "zen-plans/gemini-decision-1": 3
         "targets": [
-          "zen-plans/jev-1.13-free"
+          "zen-plans/jev-1.13-free",
+          "google-free/gemini-decision-1"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "zen-plans/jev-1.13-free": 3
+          "zen-plans/jev-1.13-free": 3,
+          "google-free/gemini-decision-1": 3
+        }
+      },
+      "gemini-embed-plan": {
+        "name": "Gemini Embedding - plan providers",
+        "purpose": "embed",
+        // NEW 2026-11-23 (code#13675): the embedding pool, so the
+        // embeddings endpoint has a real route. Both models are
+        // designated embed-only in model_designations and ride the
+        // google-free provider route (the four free projects);
+        // the google.* aliases carry the native google-embed
+        // endpoint descriptor (:embedContent) for this pool.
+        "targets": [
+          "google-free/gemini-embedding-2",
+          "google-free/gemini-embedding-001"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "google-free/gemini-embedding-2": 3,
+          "google-free/gemini-embedding-001": 3
+        }
+      },
+      "stt-plan": {
+        "name": "Speech-to-text (Whisper on Groq) - plan providers",
+        "purpose": "transcribe",
+        // NEW 2026-11-23 (code#13675): Groq's Whisper shelf,
+        // designated transcribe-only in model_designations
+        // (capabilities stt + audio-in; ids verified against the
+        // groq provider catalog above). NOT a chat pool.
+        "targets": [
+          "groq/whisper-large-v3",
+          "groq/whisper-large-v3-turbo"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "groq/whisper-large-v3": 3,
+          "groq/whisper-large-v3-turbo": 3
+        }
+      },
+      "tts-plan": {
+        "name": "Text-to-speech (Orpheus on Groq) - plan providers",
+        "purpose": "speak",
+        // NEW 2026-11-23 (code#13675): Groq's TTS shelf,
+        // designated speak-only in model_designations (capability
+        // tts). playai-tts is NOT seated: it is absent from the
+        // groq provider catalog above (Groq shut PlayAI TTS down);
+        // the catalog's verified TTS models are the Canopy Labs
+        // Orpheus pair seated here. NOT a chat pool.
+        "targets": [
+          "groq/canopylabs/orpheus-v1-english",
+          "groq/canopylabs/orpheus-arabic-saudi"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "groq/canopylabs/orpheus-v1-english": 3,
+          "groq/canopylabs/orpheus-arabic-saudi": 3
+        }
+      },
+      "prompt-guard-plan": {
+        "name": "Prompt Guard (Groq) - plan providers",
+        "purpose": "guard",
+        // NEW 2026-11-23 (code#13675): Groq's prompt-guard shelf,
+        // designated guard-only in model_designations (ids are the
+        // catalog's meta-llama/llama-prompt-guard-2-* entries,
+        // verified against the groq provider catalog above).
+        // NOT a chat pool.
+        "targets": [
+          "groq/meta-llama/llama-prompt-guard-2-22m",
+          "groq/meta-llama/llama-prompt-guard-2-86m"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "groq/meta-llama/llama-prompt-guard-2-22m": 3,
+          "groq/meta-llama/llama-prompt-guard-2-86m": 3
         }
       },
       "mimo-flash-plan": {
