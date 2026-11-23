@@ -101,6 +101,8 @@ mod game;
 pub use game::*;
 mod records;
 pub use records::*;
+mod subscription;
+pub use subscription::*;
 mod projection;
 pub use projection::*;
 
