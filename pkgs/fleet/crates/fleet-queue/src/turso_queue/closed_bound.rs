@@ -819,7 +819,11 @@ mod tests {
         // sweep event.
         let src = include_str!("core.rs");
         let flat = src.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(flat.contains("run_closed_bound_checks( t, req_i64(req, \"closed_bound_limit\")"));
+        // treefmt may lay the call out on one line or many (#13221:
+        // 5a70b6bdb97 collapsed it), so assert the pieces, not the
+        // spacing between "(" and "t".
+        assert!(flat.contains("run_closed_bound_checks("));
+        assert!(flat.contains("t, req_i64(req, \"closed_bound_limit\")"));
         assert!(src.contains("req_bool(req, \"closed_bound\")"));
         assert!(src.contains("out[\"closed_bound\"]"));
         assert!(src.contains("closed_bound_missing > 0"));
