@@ -525,6 +525,22 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
         }
         self.inner.message(message_id)
     }
+
+    /// #3125 rule 3 read side: resolve a canonical content hash
+    /// against every shard the caller's ceiling admits. Occurrence
+    /// rows live in the scan shards themselves (written at
+    /// promotion, aggregate.rs), so this is one indexed lookup per
+    /// shard — no content-store or monolith involvement. The
+    /// ceiling is the caller's, enforced inside
+    /// [`lookup_by_hash`] exactly as the vector fan-out enforces
+    /// it in [`ShardSet::select`].
+    fn occurrences(
+        &self,
+        canonical_hash: &str,
+        ceiling: TierCeiling,
+    ) -> Result<Vec<crate::occurrences::ChunkOccurrence>> {
+        crate::occurrences::lookup_by_hash(&self.current_set(), ceiling, canonical_hash)
+    }
 }
 
 #[cfg(test)]

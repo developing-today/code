@@ -21,6 +21,7 @@ use crate::trace::{TraceContext, TraceSink, build_trace_record, new_query_id};
 use crate::types::{
     BranchPools, BranchQuery, ChunkDetail, DEFAULT_MODEL, NeighborRow, VectorBackend, round6,
 };
+use crate::{classify::sha256_hex, shards::TierCeiling};
 
 /// The Python's `MESSAGE_TEXT_CAP`.
 pub const MESSAGE_TEXT_CAP: usize = 50_000;
@@ -694,6 +695,23 @@ pub fn run_get_chunk_with_context(
     out.insert("message".into(), Json::Object(msg));
     out.insert("session".into(), session_obj(d));
     out.insert("session_id".into(), Json::String(d.session_id.clone()));
+    // #3125 rule 3 read side: every recorded place this chunk's
+    // content was found. The lookup key is the canonical hash
+    // (content identity, not the per-shard chunk id); the caller's
+    // ceiling gates which tiers may contribute, exactly as the
+    // vector fan-out enforces it. Backends with no registry
+    // (monolith, local publish) report none, and the field is
+    // then absent rather than empty — same shape rule as `notes`.
+    let occurrences = backend.occurrences(
+        &sha256_hex(d.text.as_bytes()),
+        TierCeiling::from_sensitivity(context.ceiling()),
+    )?;
+    if !occurrences.is_empty() {
+        out.insert(
+            "occurrences".into(),
+            Json::Array(occurrences.iter().map(|o| o.to_json()).collect()),
+        );
+    }
     if neighbors > 0 {
         out.insert(
             "context".into(),

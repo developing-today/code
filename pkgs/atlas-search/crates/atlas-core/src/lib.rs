@@ -59,6 +59,7 @@ pub mod join;
 pub mod local;
 pub mod manifest;
 pub mod memory;
+pub mod occurrences;
 pub mod owner_inventory;
 pub mod search;
 pub mod shards;
@@ -134,6 +135,7 @@ pub use manifest::{
 pub use owner_inventory::{
     INVENTORY_FORMAT, OwnerInventory, OwnerInventoryFinding, PatternClass, SECRET_REFERENCE_ENV,
 };
+pub use occurrences::{ChunkOccurrence, lookup_by_hash};
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
     run_get_chunk_with_context, run_search, run_search_traced, run_search_with_executor,
