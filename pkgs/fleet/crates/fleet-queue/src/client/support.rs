@@ -202,6 +202,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   unblock <task-id> [--worker <id>] [--reason <text>] [--drop-dep <list>]\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
+  repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\
   cancel <task-id> [--worker <id>] --reason <text>\n\
   revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\
   fail <task-id> [--worker <id>] --error <text> [--reason-class <c>] [--execution <id>]\n\
@@ -267,6 +268,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "quarantine-recheck" => {
             "usage: repo-queue quarantine-recheck [--task <id>] [--limit <n>]\n\nRechecks quarantined tasks."
+        }
+        "repair" => {
+            "usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]\n\nRepairs a quarantined or malformed task packet in place: re-runs the packet validators and applies the deterministic repairs whose correct value can be re-derived (today the dedupe stamp, re-performed live — a live duplicate refuses). Unrepairable defects fail with the defect list and change nothing. --dry-run reports defects and planned repairs, writing nothing."
         }
         "cancel" => {
             "usage: repo-queue cancel <task-id> [--worker <id>] --reason <text>\n\nCancels a task. Without --worker, the cancellation is recorded under the default worker fleet-monitor."
