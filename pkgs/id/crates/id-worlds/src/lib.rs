@@ -169,3 +169,57 @@ pub(crate) mod test_transport {
         }
     }
 }
+
+#[cfg(test)]
+pub(crate) mod test_tracing {
+    /// Two-step defence for the audit-capture tests (#13200).
+    ///
+    /// The whole audit stream is emitted from one callsite
+    /// (`world::actor::emit_audit_record`). A callsite's interest is
+    /// computed once, when the callsite first registers, from
+    /// whichever dispatcher is current on the *registering thread*.
+    /// Any test that drives an actor without a capture dispatcher can
+    /// therefore register the audit callsite with `Interest::never`
+    /// (its thread's default is empty), and from then on the `info!`
+    /// macro skips the event before any dispatcher is consulted: a
+    /// capture test running in parallel silently loses audit records
+    /// — a few, or its whole capture. The flakes clustered at the
+    /// start of a capture (seed 1) and vanished standalone.
+    ///
+    /// Step 1, `register_audit_callsite`: before installing its
+    /// capture dispatcher, the test emits one warm-up record under a
+    /// throwaway dispatcher on its own thread. That registers the
+    /// audit callsite (registration happens exactly once per process)
+    /// under a real subscriber, so no foreign thread's first emission
+    /// can register it under an empty default later, mid-capture.
+    ///
+    /// Step 2, `rebuild_interest_cache`: if some earlier foreign
+    /// emission already registered the callsite with `never`, the
+    /// warm-up changes nothing — so immediately after `set_default`
+    /// installs the capture dispatcher, the test rebuilds the
+    /// interest cache on its own thread, recomputing the audit
+    /// callsite's interest from a dispatcher that wants it. After
+    /// that, the interest can only be recomputed by a full rebuild,
+    /// and every full rebuild (triggered by any new `Dispatch`)
+    /// includes this test's live dispatcher, so the capture stays
+    /// live for the test's duration.
+    pub(crate) fn register_audit_callsite() {
+        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry());
+        crate::world::emit_audit_record(&crate::world::AuditRecord {
+            schema_version: 2,
+            timestamp_ms: 0,
+            world_id: "capture-warmup".to_owned(),
+            actor: "test".to_owned(),
+            action: "capture_warmup".to_owned(),
+            parameters: serde_json::json!({}),
+            outcome: "warmup".to_owned(),
+            target: "capture-warmup".to_owned(),
+            correlation_id: "audit:0".to_owned(),
+        });
+    }
+
+    /// Step 2 of the audit-capture defence: see the module note above.
+    pub(crate) fn rebuild_interest_cache() {
+        tracing::callsite::rebuild_interest_cache();
+    }
+}
