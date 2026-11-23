@@ -1429,8 +1429,27 @@ pub(crate) fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         args.push(Arg::Text(queue));
     }
     if let Some(s) = req_str(req, "status") {
-        conds += " AND status = ?";
-        args.push(Arg::Text(s.to_string()));
+        match s {
+            // #13068: dep_blocked is a health counter, not a stored
+            // status — dep-blocked tasks are status='blocked' rows
+            // carrying a structured dep record (#8276), exactly the
+            // set verb_health's dep-blocked query counts. Filtering
+            // literally on status = 'dep_blocked' could never match
+            // a row, so the pool health counted was unenumerable.
+            "dep_blocked" => {
+                conds += " AND status = 'blocked' AND blocked_deps IS NOT NULL";
+            }
+            // at_cap_queued is the same class (#6528): a health
+            // counter over queued rows whose attempts are exhausted,
+            // not a stored status.
+            "at_cap_queued" => {
+                conds += " AND status = 'queued' AND attempts >= max_attempts";
+            }
+            _ => {
+                conds += " AND status = ?";
+                args.push(Arg::Text(s.to_string()));
+            }
+        }
     }
     // #5444: recover a lane's or worker's live claims before lease
     // expiry — list filters end-to-end (client -> broker -> here).

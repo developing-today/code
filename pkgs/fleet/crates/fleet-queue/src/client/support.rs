@@ -230,7 +230,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\nEnqueues a task packet."
         }
         "list" => {
-            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>]\n\nLists tasks; a bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked for actionable work."
+            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>]\n\nLists tasks; a bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked for actionable work. --status also accepts the health pools dep_blocked (blocked rows carrying a dep record, the set health counts separately) and at_cap_queued (queued rows out of attempts); --status blocked lists every blocked row, dep-blocked included."
         }
         "claim" => {
             "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."

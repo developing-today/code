@@ -334,6 +334,95 @@ mod tests {
         (format!("http://{addr}"), captured)
     }
 
+    /// A looping variant of the pipeline stub for verbs that issue
+    /// several pipeline requests per call (verb_list runs the rows
+    /// query and then the COUNT query): accepts connections until
+    /// the test process exits, records every request body, and
+    /// answers by SQL shape — a COUNT query gets one row n=1, any
+    /// other query gets one canned task row in the non-rich /list
+    /// column shape. The stub never evaluates SQL; the oracle is
+    /// the SQL text + args the verb sent, plus the envelope the
+    /// verb builds from the canned reply.
+    fn stub_pipeline_loop() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        std::thread::spawn(move || {
+            while let Ok((mut sock, _)) = listener.accept() {
+                let mut reader = BufReader::new(sock.try_clone().unwrap());
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = trimmed.split_once(':') {
+                        if name.trim().eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                if reader.read_exact(&mut body).is_err() {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&body).to_string();
+                let reply = if text.contains("COUNT(*)") {
+                    json!({"results": [
+                        {"type": "ok", "response": {"type": "execute", "result": {
+                            "cols": [{"name": "n"}],
+                            "rows": [[{"type": "integer", "value": "1"}]],
+                            "affected_row_count": 0,
+                            "last_insert_rowid": null}}},
+                        {"type": "ok", "response": {"type": "close"}}
+                    ]})
+                } else {
+                    json!({"results": [
+                        {"type": "ok", "response": {"type": "execute", "result": {
+                            "cols": [
+                                {"name": "id"}, {"name": "queue"}, {"name": "title"},
+                                {"name": "priority"}, {"name": "status"},
+                                {"name": "dedupe_key"}, {"name": "created_at"},
+                                {"name": "not_before"}, {"name": "platform"}
+                            ],
+                            "rows": [[
+                                {"type": "integer", "value": "4242"},
+                                {"type": "text", "value": "repo-health-code-pilot"},
+                                {"type": "text", "value": "pool fixture"},
+                                {"type": "integer", "value": "30"},
+                                {"type": "text", "value": "blocked"},
+                                {"type": "text", "value": "fixture:pool"},
+                                {"type": "text", "value": "2026-11-23T00:00:00Z"},
+                                {"type": "null"},
+                                {"type": "null"}
+                            ]],
+                            "affected_row_count": 0,
+                            "last_insert_rowid": null}}},
+                        {"type": "ok", "response": {"type": "close"}}
+                    ]})
+                }
+                .to_string();
+                sink.lock().unwrap().push(text);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    reply.len(),
+                    reply
+                );
+                if sock.write_all(resp.as_bytes()).is_err() {
+                    continue;
+                }
+            }
+        });
+        (format!("http://{addr}"), captured)
+    }
+
     /// A canned pipeline reply carrying one github_mirror_issues
     /// row whose labels column is `labels_json` (or no rows when
     /// None).
@@ -718,6 +807,100 @@ mod tests {
             seg.contains("if !queue.is_empty()"),
             "queue predicate is conditional on a named queue"
         );
+    }
+
+    #[test]
+    fn list_dep_blocked_returns_the_health_pool_13068() {
+        // #13068 acceptance oracle, at the verb: dep-blocked tasks
+        // are status='blocked' rows carrying a dep record (#8276) —
+        // the set verb_health counts as dep_blocked. Listing with
+        // --status dep_blocked must send THAT predicate, not a
+        // literal status = 'dep_blocked' (no row ever carries it,
+        // so the old filter returned (no tasks) at every limit
+        // while health counted ~177).
+        let (url, captured) = stub_pipeline_loop();
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let out = verb_list(
+            &backend,
+            &json!({"queue": "repo-health-code-pilot", "status": "dep_blocked", "limit": 500}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["total"], 1, "{out}");
+        let rows = out["rows"].as_array().expect("rows array");
+        assert_eq!(rows.len(), 1, "{out}");
+        assert_eq!(rows[0]["id"], 4242, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        for body in bodies.iter() {
+            assert!(
+                body.contains("status = 'blocked'") && body.contains("blocked_deps IS NOT NULL"),
+                "rows and count queries both carry the dep-blocked predicate: {body}"
+            );
+            assert!(
+                !body.contains("\"dep_blocked\""),
+                "no literal dep_blocked status arg is bound: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_at_cap_queued_returns_the_health_pool_13068() {
+        // Same class as dep_blocked (#13068 audit): at_cap_queued
+        // is a health counter (#6528) over queued rows whose
+        // attempts are exhausted, not a stored status — a literal
+        // status filter could never match it either.
+        let (url, captured) = stub_pipeline_loop();
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let out = verb_list(
+            &backend,
+            &json!({"queue": "repo-health-code-pilot", "status": "at_cap_queued", "limit": 500}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["total"], 1, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        for body in bodies.iter() {
+            assert!(
+                body.contains("status = 'queued'") && body.contains("attempts >= max_attempts"),
+                "rows and count queries both carry the at-cap predicate: {body}"
+            );
+            assert!(
+                !body.contains("\"at_cap_queued\""),
+                "no literal at_cap_queued status arg is bound: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_blocked_keeps_its_literal_meaning_13068() {
+        // #13068 acceptance: --status blocked keeps its current
+        // meaning — every blocked row, dep-blocked included (the
+        // same set health's blocked GROUP BY counts). The literal
+        // status filter must not grow the dep predicate.
+        let (url, captured) = stub_pipeline_loop();
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let out = verb_list(
+            &backend,
+            &json!({"queue": "repo-health-code-pilot", "status": "blocked", "limit": 500}),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["total"], 1, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        for body in bodies.iter() {
+            assert!(
+                body.contains("status = ?"),
+                "blocked stays a literal status filter: {body}"
+            );
+            assert!(
+                body.contains("\"blocked\""),
+                "the blocked arg is bound: {body}"
+            );
+            assert!(
+                !body.contains("blocked_deps IS NOT NULL"),
+                "blocked does not narrow to the dep-blocked subset: {body}"
+            );
+        }
     }
 
     #[test]

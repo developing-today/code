@@ -238,7 +238,7 @@ pub(crate) fn bare_list_note(args: &Args, resolved_queue: Option<&str>) -> Optio
         None => "every queue".to_string(),
     };
     Some(format!(
-        "note: bare `list` shows {scope} in the broker's default ordering (newest terminal rows first) — not the actionable set. Use --status queued|parked|claimed|blocked for actionable work, --queue <name> to pick a stream (e.g. repo-health-code-pilot), --limit <n> to widen the window."
+        "note: bare `list` shows {scope} in the broker's default ordering (newest terminal rows first) — not the actionable set. Use --status queued|parked|claimed|blocked for actionable work, --status dep_blocked to enumerate the dep-blocked pool, --queue <name> to pick a stream (e.g. repo-health-code-pilot), --limit <n> to widen the window."
     ))
 }
 
