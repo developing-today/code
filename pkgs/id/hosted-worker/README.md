@@ -7,7 +7,7 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   resolved context (`X-Binding-Id`, `X-Jurisdiction`, set by the
   authenticated internal caller; the binding ceremony itself lives in
   `pkgs/id/src/hosted_binding.rs`), strips client-supplied internal
-  headers, and forwards to the per-user Durable Object.
+  headers, and forwards to the per-tenant Durable Object.
 - `src/routing.ts` — the only module that touches the raw `USERS`
   namespace. Objects are named by the stable `binding_id` minted at
   binding time (32 lowercase hex chars) — never email, never a provider
@@ -20,7 +20,7 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   (binding_id, jurisdiction); a common guard runs before every read or
   write and fails closed on unrouted requests, identity mismatch, or a
   runtime-reported jurisdiction mismatch. Routes: `GET /v1/state`,
-  `PUT|GET /v1/kv/<key>` (a minimal per-user store proving lazy
+  `PUT|GET /v1/kv/<key>` (a minimal per-tenant store proving lazy
   creation and isolation; R2 blobs, metering and caps are later
   #3811 steps and are out of scope here).
 
@@ -42,7 +42,7 @@ blocked pending Drew authorization).
 ## The signed-object bridge (#3818)
 
 The hosted half of the #2046 bridge: production HTTPS/WebSocket
-push/pull between native ID nodes and this per-user store. The
+push/pull between native ID nodes and this per-tenant store. The
 store is a sync peer — it holds signed objects and proof-carrying
 chain/fork evidence, assigns no order, re-signs nothing, and
 serves no authoritative snapshot.
