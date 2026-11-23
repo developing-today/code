@@ -247,7 +247,7 @@ from a synthetic API fixture.
 
 ## Main reconciliation checkpoint — 2026-11-23
 
-The bridge draft was reconciled against `main` at `40e0c2ac4418ecb4ecca021f809b87544aeabad0`. The smoke init workflow and its receipt verifier now match `main`; the smoke upload workflow and its active review paths were left exactly as on `main`. The bridge release workflow is now bridge-only, so smoke provisioning/upload remains in its separate main workflows.
+The bridge draft was reconciled against `main` at `438f7ad38bacd8c9f04952a6abf9c1cfc1066c0b` (including the intermediate reconciliation at `40e0c2ac4418ecb4ecca021f809b87544aeabad0`). The smoke init workflow and its receipt verifier now match `main`; the smoke upload workflow and its active review paths were left exactly as on `main`. The bridge release workflow is now bridge-only, so smoke provisioning/upload remains in its separate main workflows.
 
 Focused local verification on the reconciled tree:
 
