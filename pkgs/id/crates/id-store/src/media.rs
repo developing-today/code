@@ -417,15 +417,28 @@ impl MediaStream {
     }
 
     /// Accepts one frame. The frame is checked against the ceiling before the
-    /// window, so an oversize frame is refused even by a closed window.
+    /// window, so an oversize frame is refused even by a closed window; the
+    /// cumulative artifact ceiling is enforced before credit is consumed or
+    /// the assembly buffer grows, so the retained bytes never exceed what
+    /// [`finish_artifact`][MediaStream::finish_artifact] could ingest.
     ///
     /// # Errors
     ///
     /// Returns [`StreamError::AlreadyEnded`] after the end frame,
     /// [`StreamError::FrameTooLarge`] for a frame over
-    /// [`MAX_STREAM_FRAME_BYTES`], and [`StreamError::Backpressure`] when the
+    /// [`MAX_STREAM_FRAME_BYTES`], the artifact oversize refusal (as
+    /// [`StreamError::Media`]) when the frame would push the assembly past
+    /// [`MAX_MEDIA_BYTES`], and [`StreamError::Backpressure`] when the
     /// credit window is closed.
     pub fn push_frame(&mut self, frame: &[u8]) -> Result<(), StreamError> {
+        self.push_frame_capped(frame, MAX_MEDIA_BYTES)
+    }
+
+    /// Accepts one frame against an explicit cumulative ceiling. Production
+    /// callers pass [`MAX_MEDIA_BYTES`] through [`push_frame`][MediaStream::push_frame];
+    /// the parameter is the seam the boundary oracle tests with a small
+    /// synthetic limit.
+    fn push_frame_capped(&mut self, frame: &[u8], ceiling: u64) -> Result<(), StreamError> {
         if self.end.is_some() {
             return Err(StreamError::AlreadyEnded);
         }
@@ -434,6 +447,13 @@ impl MediaStream {
                 size: frame.len(),
                 max: MAX_STREAM_FRAME_BYTES,
             });
+        }
+        let total = len_of(&self.buffered).saturating_add(len_of(frame));
+        if total > ceiling {
+            return Err(StreamError::Media(MediaError::Oversize {
+                named: total,
+                max: ceiling,
+            }));
         }
         if self.credit == 0 {
             return Err(StreamError::Backpressure);
@@ -666,6 +686,32 @@ mod tests {
         stream.grant_credit(1);
         assert!(stream.push_frame(b"two").is_ok());
         assert_eq!(stream.buffered_bytes(), b"onetwo");
+    }
+
+    #[test]
+    fn test_the_stream_enforces_the_cumulative_artifact_ceiling() {
+        // The boundary oracle runs the stream against a small synthetic
+        // ceiling: exact fit is admitted, one byte over is refused with the
+        // artifact oversize refusal, the refusal consumes no credit and keeps
+        // the admitted bytes, and the admitted prefix still finalizes.
+        const CEILING: u64 = 10;
+        let mut stream =
+            MediaStream::new(MediaSort::Image, "image/png", Some(2), Some(3), None, 42, 4);
+        assert!(stream.push_frame_capped(b"12345", CEILING).is_ok());
+        assert!(stream.push_frame_capped(b"67890", CEILING).is_ok());
+        assert_eq!(stream.buffered_bytes(), b"1234567890");
+        let credit_before = stream.credit();
+        assert_eq!(
+            stream.push_frame_capped(b"!", CEILING),
+            Err(StreamError::Media(MediaError::Oversize {
+                named: 11,
+                max: CEILING,
+            }))
+        );
+        assert_eq!(stream.buffered_bytes(), b"1234567890");
+        assert_eq!(stream.credit(), credit_before);
+        let media = stream.finish_artifact().unwrap();
+        assert!(media.verify_content(b"1234567890").is_ok());
     }
 
     #[test]
