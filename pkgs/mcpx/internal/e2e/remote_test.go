@@ -123,6 +123,12 @@ func newRemoteEnv(t *testing.T, cfgBody string) *env {
 			"MCPX_CACHE_DIR="+filepath.Join(dir, "cache"),
 			"MCPX_CONFIG="+filepath.Join(dir, ".mcpx.json"),
 			"MCPX_DAEMON_ENDPOINT="+endpoint,
+			// The caller's working directory is a host path the daemon
+			// cannot see: with the default script.cwd=caller the CLI
+			// forwards it and the daemon's runner tries to start the
+			// script in a directory that does not exist on its side of
+			// the connection. workdir resolves on the daemon instead.
+			"MCPX_SCRIPT_CWD=workdir",
 			// Same reasoning as newEnv: the write policy gate defaults to
 			// ask, and no human answers for a test child.
 			"MCPX_POLICY_WRITE=allow",
