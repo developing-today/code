@@ -619,6 +619,8 @@
                   '';
                 };
                 doc = mkCheckCargoOnly "doc" "doc";
+                build = mkCheck "build" "build";
+                release = mkCheck "release" "release";
                 cargo-check = mkCheck "cargo-check" "cargo-check";
                 # Production module-size guard (#1411): fails when any
                 # production .rs file exceeds 2,500 production lines.
