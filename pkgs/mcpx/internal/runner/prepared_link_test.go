@@ -324,3 +324,120 @@ func TestPointRunAtPreparedEnvFailsClosedOnAMissingEnvironment(t *testing.T) {
 		t.Errorf("no link is left by the failed wiring, stat err = %v", err)
 	}
 }
+
+func TestPointRunAtPreparedEnvLinksTheManifestScope(t *testing.T) {
+	root := t.TempDir()
+	env := makePreparedEnv(t, root, "env-a")
+	work := filepath.Join(root, "work")
+	// The project: a manifest at its root and the entry script in a
+	// child directory, so the manifest's scope is a parent the
+	// beside-script link alone cannot cover -- a helper module in
+	// the manifest's directory resolves its bare imports from there.
+	manifestDir := filepath.Join(root, "proj")
+	scriptDir := filepath.Join(manifestDir, "tools")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(scriptDir, "main.ts")
+	if err := os.WriteFile(script, []byte("import 'left-pad'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{File: script, Deps: &Deps{ManifestDir: manifestDir}}
+	prepared := &preflight.PreparedSet{Dir: env, Key: "k", Packages: []preflight.ResolvedPackage{{Name: "left-pad", Version: "1.3.0"}}}
+
+	release, _, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, prepared, work, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if release == nil {
+		t.Fatal("the wiring holds the locks and the lease until release")
+	}
+	if got, want := besideTarget(t, scriptDir), filepath.Join(env, "node_modules"); got != want {
+		t.Errorf("the script's directory resolves against the prepared environment: got %s, want %s", got, want)
+	}
+	if got, want := besideTarget(t, manifestDir), filepath.Join(env, "node_modules"); got != want {
+		t.Errorf("the manifest's directory resolves against the prepared environment: got %s, want %s", got, want)
+	}
+	release()
+
+	// Releasing frees both directories' locks for the next run.
+	release2, _, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, prepared, work, false)
+	if err != nil {
+		t.Fatalf("after release the next run wires both placements again: %v", err)
+	}
+	release2()
+
+	// A run that prepared nothing clears the stale links at both
+	// placements.
+	release3, _, err := pointRunAtPreparedEnv(context.Background(), opts, KindNode, nil, work, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release3()
+	for _, dir := range []string{scriptDir, manifestDir} {
+		if _, err := os.Lstat(filepath.Join(dir, "node_modules")); !os.IsNotExist(err) {
+			t.Errorf("the stale prepared link at %s is cleared, stat err = %v", dir, err)
+		}
+	}
+
+	// A manifest in the script's own directory adds no second
+	// placement: the beside-script link is the only one, and the
+	// wiring still succeeds.
+	optsSame := Options{File: script, Deps: &Deps{ManifestDir: scriptDir}}
+	release4, _, err := pointRunAtPreparedEnv(context.Background(), optsSame, KindNode, prepared, work, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release4()
+	if got, want := besideTarget(t, scriptDir), filepath.Join(env, "node_modules"); got != want {
+		t.Errorf("a same-directory manifest keeps the beside-script placement: got %s, want %s", got, want)
+	}
+}
+
+func TestPointRunAtPreparedEnvManifestScopeUnderTheDepsLock(t *testing.T) {
+	root := t.TempDir()
+	env := makePreparedEnv(t, root, "env-a")
+	work := filepath.Join(root, "work")
+	manifestDir := filepath.Join(root, "proj")
+	scriptDir := filepath.Join(manifestDir, "tools")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(scriptDir, "main.ts")
+	if err := os.WriteFile(script, []byte("import 'left-pad'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{File: script, Deps: &Deps{ManifestDir: manifestDir}}
+	prepared := &preflight.PreparedSet{Dir: env, Key: "k", Packages: []preflight.ResolvedPackage{{Name: "left-pad", Version: "1.3.0"}}}
+
+	// The deps block locks the script's and the manifest's
+	// directories together; the prepared wiring under alreadyLocked
+	// must take neither again -- with both held and a short
+	// deadline, a second take would fail instead of wiring.
+	unlock, err := lockScriptDirs(context.Background(), scriptDir, manifestDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	release, _, err := pointRunAtPreparedEnv(ctx, opts, KindNode, prepared, work, true)
+	if err != nil {
+		t.Fatalf("already-locked wiring covers the manifest scope: %v", err)
+	}
+	release()
+	if got, want := besideTarget(t, manifestDir), filepath.Join(env, "node_modules"); got != want {
+		t.Errorf("the manifest's directory is linked under the deps lock: got %s, want %s", got, want)
+	}
+
+	// Under the same held locks, a run that prepared nothing clears
+	// both placements.
+	if _, _, err := pointRunAtPreparedEnv(ctx, opts, KindNode, nil, work, true); err != nil {
+		t.Fatalf("already-locked clearing covers the manifest scope: %v", err)
+	}
+	unlock()
+	for _, dir := range []string{scriptDir, manifestDir} {
+		if _, err := os.Lstat(filepath.Join(dir, "node_modules")); !os.IsNotExist(err) {
+			t.Errorf("the stale prepared link at %s is cleared, stat err = %v", dir, err)
+		}
+	}
+}
