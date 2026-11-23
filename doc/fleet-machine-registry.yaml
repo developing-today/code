@@ -58,29 +58,29 @@ machines:
       last_seen: '2026-11-23T18:54:16Z'
       status: unreachable
       checks:
-        reported_at: '2026-11-23T19:26:25Z'
+        reported_at: '2026-11-23T19:54:16Z'
         reachable:
           state: failed
           ssh: true
           opencode_server_http: null
         load_headroom:
-          state: ok
-          load15: 0.48
+          state: failed
+          load15: 300.77
           cpu_cores: 16
-          load15_per_core: 0.03
+          load15_per_core: 18.798
         disk_headroom:
           state: ok
           volume: worktree (home)
-          total_gb: 250
-          free_gb: 183
-          free_pct: 73.0
+          total_gb: 3371
+          free_gb: 435
+          free_pct: 12.9
         sessions:
           state: unknown
           reason: attach API HTTP None
           source: openchamber attach api
         last_queue_job:
           state: ok
-          task_id: '19201'
+          task_id: '21430'
           queue: repo-health-code-pilot
           worker: repo-worker-code
-          completed_at: '2026-11-23T19:13:30Z'
+          completed_at: '2026-11-23T19:49:35Z'
