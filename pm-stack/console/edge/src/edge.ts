@@ -131,6 +131,10 @@ export interface EdgeOptions {
   githubTokenConfigured?: boolean;
   /** Ask to be woken at a time: the check for a silent host. */
   setAlarm?: (at: number) => Promise<void>;
+  /** Work that may finish after the response has gone: the object's
+   * own waitUntil, so a background read is not cut off with the
+   * response. Defaults to letting it run unattended. */
+  later?: (work: Promise<unknown>) => void;
 }
 
 export class Edge {
@@ -138,9 +142,13 @@ export class Edge {
   private now: () => number;
   private fetchImpl: typeof fetch;
   private setAlarm: (at: number) => Promise<void>;
+  private later: (work: Promise<unknown>) => void;
   private freshRead?: EdgeOptions["freshRead"];
   private githubReadEnabled: boolean;
   private githubTokenConfigured: boolean;
+  /** A pull-request read already running: shared by every request
+   * while it runs, so a slow GitHub is asked once, not once a poll. */
+  private prsRefresh: Promise<void> | null = null;
   private cfg: EdgeConfig | null | undefined;
   private mirrors = new Map<string, Mirror | null>();
   private held: Held[] | null = null;
@@ -169,6 +177,7 @@ export class Edge {
     this.githubReadEnabled = options.githubReadEnabled ?? false;
     this.githubTokenConfigured = options.githubTokenConfigured ?? false;
     this.setAlarm = options.setAlarm ?? (async () => {});
+    this.later = options.later ?? ((work) => void work);
     this.docs = new Docs(
       Object.fromEntries(
         Object.entries(SECTIONS).map(([name, ttlMs]) => [
@@ -489,6 +498,26 @@ export class Edge {
     }
   }
 
+  /** Read pull requests from GitHub again without making a document
+   * wait for it: the read runs after the response, through the
+   * object's waitUntil, and a request that arrives while it runs
+   * shares it instead of starting another. */
+  private refreshPrs(cfg: EdgeConfig): void {
+    if (this.prsRefresh) return;
+    const read = this.freshRead;
+    if (!read) return;
+    this.prsRefresh = (async () => {
+      try {
+        this.docs.record("prs", await read("prs", cfg), this.now());
+      } catch (error) {
+        this.docs.recordFailure("prs", error);
+      } finally {
+        this.prsRefresh = null;
+      }
+    })();
+    this.later(this.prsRefresh);
+  }
+
   // ---- requests ----------------------------------------------------------
 
   async fetch(req: Request): Promise<Response> {
@@ -587,12 +616,17 @@ export class Edge {
           this.lastDocAt = this.now();
           // Pull requests are a read-only GitHub view. When the laptop is
           // quiet, refresh them directly if this Worker has that capability.
-          if (seg[1] === "ops" && this.freshRead && this.now() - (this.hostSeen ?? 0) >= DIRECT_READ_AFTER_MS) {
-            try {
-              this.docs.record("prs", await this.freshRead("prs", cfg), this.now());
-            } catch (error) {
-              this.docs.recordFailure("prs", error);
-            }
+          // The read runs in the background: the document answers at once
+          // from what is cached, and the fresh list arrives on the next
+          // poll. Only a stale section is refreshed, so GitHub is asked
+          // at most once per interval while the laptop is quiet.
+          if (
+            seg[1] === "ops" &&
+            this.freshRead &&
+            this.now() - (this.hostSeen ?? 0) >= DIRECT_READ_AFTER_MS &&
+            this.docs.isStale("prs")
+          ) {
+            this.refreshPrs(cfg);
           }
           const res = docResponse(req, await this.docs.doc(seg[1] as DocName));
           // When the host last reported, beside the document rather than

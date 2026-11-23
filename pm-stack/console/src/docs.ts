@@ -96,10 +96,15 @@ export class Docs {
         const loaded = await s.load();
         const now = this.now();
         // A copy read elsewhere is as old as that read, never newer than now.
-        s.data = loaded instanceof Stamped ? loaded.data : loaded;
-        s.goodAt = loaded instanceof Stamped ? Math.min(now, loaded.at) : now;
-        s.error = loaded instanceof Stamped ? loaded.error : null;
-        s.ok = s.error === null;
+        const loadedAt = loaded instanceof Stamped ? Math.min(now, loaded.at) : now;
+        // A read that finishes after a newer one must not put its older
+        // copy back: the section keeps the freshest data it has.
+        if (loadedAt >= s.goodAt) {
+          s.data = loaded instanceof Stamped ? loaded.data : loaded;
+          s.goodAt = loadedAt;
+          s.error = loaded instanceof Stamped ? loaded.error : null;
+          s.ok = s.error === null;
+        }
       } catch (error) {
         s.ok = false;
         s.error = (error as Error).message.slice(0, 300);
@@ -139,6 +144,12 @@ export class Docs {
 
   private stale(s: Section): boolean {
     return this.now() - s.at > s.ttlMs;
+  }
+
+  /** Whether a section is due a fresh read: never read, or older than its interval. */
+  isStale(name: string): boolean {
+    const s = this.sections.get(name);
+    return s !== undefined && this.stale(s);
   }
 
   /** One pass of the background loop: refresh what is stale, if anyone is looking. */

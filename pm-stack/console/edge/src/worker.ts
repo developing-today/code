@@ -41,6 +41,9 @@ export class PmEdge extends DurableObject<Env> {
         },
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
+      // The object's own waitUntil: a background read outlives the
+      // response that started it.
+      later: (work) => ctx.waitUntil(work),
       githubReadEnabled: env.GITHUB_READ_ENABLED === "on",
       githubTokenConfigured: Boolean(env.GITHUB_TOKEN),
       freshRead: env.GITHUB_READ_ENABLED === "on" && env.GITHUB_TOKEN

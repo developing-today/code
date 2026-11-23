@@ -87,6 +87,8 @@ async function setup(options: { freshRead?: (section: string, config: EdgeConfig
     },
   };
   const alarm = { at: 0 };
+  /** Work the edge schedules after a response: the stand-in for waitUntil. */
+  const later: Promise<unknown>[] = [];
   const makeEdge = () =>
     new Edge({
       kv,
@@ -96,6 +98,7 @@ async function setup(options: { freshRead?: (section: string, config: EdgeConfig
       setAlarm: async (at) => {
         alarm.at = at;
       },
+      later: (work) => later.push(work),
     });
   const edge = { now: makeEdge() };
 
@@ -218,7 +221,6 @@ async function setup(options: { freshRead?: (section: string, config: EdgeConfig
   };
 
   // ---- the Worker's routing, with the two wired together -----------------
-  const later: Promise<unknown>[] = [];
   const files = new Map([
     ["/console/index.html", "<!doctype html><title>PM</title>"],
     ["/console/app.js", "// app"],
@@ -463,13 +465,22 @@ describe("fresh GitHub reads while the host is away", () => {
 
     w.hostSaw.length = 0;
     w.net.hostUp = false;
-    w.now.t += 60_000;
+    // Past both the silence gate (60s) and the prs interval (90s).
+    w.now.t += 91_000;
+    // The document answers at once, from what the host last reported.
+    const first = await w.browse("/console/api/doc/ops");
+    expect((await first.json()).prs).toEqual([]);
+    // The fresh read finishes after the response, through waitUntil.
+    await Promise.all(w.later);
     const fresh = await w.browse("/console/api/doc/ops");
     expect((await fresh.json()).prs).toEqual([
       { number: 42, title: "Fresh PR", url: "https://example.test/pr/42" },
     ]);
     expect(reads).toEqual(["prs:developing-today/code"]);
     expect(w.hostSaw).toEqual([]);
+    // A second poll inside the interval asks GitHub for nothing more.
+    await w.browse("/console/api/doc/ops");
+    expect(reads).toEqual(["prs:developing-today/code"]);
   });
 });
 
