@@ -468,3 +468,43 @@ func TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment(t *testi
 		t.Fatalf("the plugin.instructions probe did not report a clean run:\n%s", out)
 	}
 }
+
+// TestPluginDisabledToolsHidesToolsFromTheEnvironment is the effect
+// probe for plugin.disabledTools (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: it
+// names the model-facing mcpx tools hidden from every session —
+// setup records the resolved list as a session's tool-filter policy
+// in ctx.storage on the session's first sighting, and the session
+// "context" hook deletes the named tools from the per-request tools
+// record from the next turn on
+// (plugin/opencode/v2/tool-filter.ts). No Go caller builds that
+// record, so the probe drives the host the way the plugin suite
+// does — bun, the real setupMcpxV2 with a stub context — and the
+// bun cases in plugin/opencode/v2/disabled-tools.test.ts assert the
+// observable with/without difference: unset hides nothing and seeds
+// no policy; a named tool is hidden from the second turn while its
+// siblings and the host tools stay; a separated list hides each
+// named tool; a name outside the mcpx_ namespace can never hide a
+// host tool; and the host option beats the environment in both
+// directions. The cases set the setting the way a user would —
+// MCPX_PLUGIN_DISABLED_TOOLS through resolveOptions, or the host
+// option. A run that skipped the cases is a run that did not check
+// what this probe exists to check, so skips fail it, as in
+// TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment.
+func TestPluginDisabledToolsHidesToolsFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/disabled-tools.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/disabled-tools.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.disabledTools probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.disabledTools probe did not report a clean run:\n%s", out)
+	}
+}
