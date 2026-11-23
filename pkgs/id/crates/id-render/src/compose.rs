@@ -504,13 +504,11 @@ impl ComposeCx<'_> {
             match el.attr("assert") {
                 Some(value) => match assertion_vocabulary::parse_assert_slot(value) {
                     Ok(pairs) => {
-                        source_assertions.extend(pairs.into_iter().map(|pair| {
-                            AssertionInput {
-                                element_path: path.to_string(),
-                                property: pair.dimension,
-                                token: pair.token,
-                                specificity: Specificity::Instance,
-                            }
+                        source_assertions.extend(pairs.into_iter().map(|pair| AssertionInput {
+                            element_path: path.to_string(),
+                            property: pair.dimension,
+                            token: pair.token,
+                            specificity: Specificity::Instance,
                         }));
                     }
                     Err(problems) => {

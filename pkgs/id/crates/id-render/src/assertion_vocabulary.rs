@@ -145,11 +145,7 @@ pub const DIMENSIONS: &[DimensionSpec] = &[
         name: "elevation",
         purpose: "Elevation (ordering) role",
         section: "§6",
-        tokens: &[
-            "elevation-flat",
-            "elevation-raised",
-            "elevation-overlay",
-        ],
+        tokens: &["elevation-flat", "elevation-raised", "elevation-overlay"],
     },
 ];
 

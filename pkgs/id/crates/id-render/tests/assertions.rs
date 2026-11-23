@@ -12,8 +12,7 @@ use id_render::assertion_vocabulary::{self, DIMENSIONS};
 use id_render::compose::{AssertionInput, ComposeData, OverrideInput, Specificity, TargetSpec};
 use id_render::lower_gui::{GuiData, GuiOverrideDef, PresentationKind};
 use id_render::{
-    compose_document, lower_document, lower_document_gui, lower_document_native,
-    parse_and_validate,
+    compose_document, lower_document, lower_document_gui, lower_document_native, parse_and_validate,
 };
 
 const BUTTON_PATH: &str = "document/page[0]/form[0]/button[0]";
@@ -92,10 +91,10 @@ fn assert_slot_unknown_dimension_fails_with_suggestions_decision_5850_s2() {
     let errors = parse_and_validate(&doc_with_assert("tonee accent"))
         .expect_err("a typo'd dimension must fail validation");
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("unknown assertion dimension `tonee`")
-                && e.message.contains("tone")),
+        errors.iter().any(
+            |e| e.message.contains("unknown assertion dimension `tonee`")
+                && e.message.contains("tone")
+        ),
         "{errors:?}"
     );
 }
@@ -131,9 +130,7 @@ fn assert_slot_rejects_raw_values_decision_5850_invariant_1() {
         let errors = parse_and_validate(&doc_with_assert(bad))
             .expect_err("a raw value must fail validation");
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("not a role name")),
+            errors.iter().any(|e| e.message.contains("not a role name")),
             "{bad}: {errors:?}"
         );
     }
@@ -167,9 +164,7 @@ fn assert_slot_duplicate_dimension_is_an_error_decision_5854_s2_2() {
     let errors = parse_and_validate(&doc_with_assert("tone accent, tone danger"))
         .expect_err("one dimension, asserted twice in one slot");
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("asserted twice")),
+        errors.iter().any(|e| e.message.contains("asserted twice")),
         "{errors:?}"
     );
 }
@@ -258,11 +253,7 @@ fn assertion_bearing_document_lowers_on_web_decision_5855_s2_1() {
     assert!(artefact.class_set.contains(&"bg-surface-base".to_string()));
     assert!(artefact.class_set.contains(&"shadow".to_string()));
     assert!(artefact.class_set.contains(&"p-space-3".to_string()));
-    assert!(
-        artefact
-            .class_set
-            .contains(&"text-step-plus-2".to_string())
-    );
+    assert!(artefact.class_set.contains(&"text-step-plus-2".to_string()));
     for (path, property, token) in [
         (BUTTON_PATH, "tone", "accent"),
         (BUTTON_PATH, "emphasis", "primary"),
@@ -270,9 +261,10 @@ fn assertion_bearing_document_lowers_on_web_decision_5855_s2_1() {
         (CARD_PATH, "pad", "space-3"),
     ] {
         assert!(
-            report.mapped.iter().any(|m| m.element_path == path
-                && m.property == property
-                && m.token == token),
+            report
+                .mapped
+                .iter()
+                .any(|m| m.element_path == path && m.property == property && m.token == token),
             "report must account {property}: {token} on {path} as mapped"
         );
     }
@@ -302,9 +294,12 @@ fn assertion_bearing_document_lowers_on_native_decision_5855_s2_1() {
         report.mapped
     );
     assert!(
-        report.defaulted.iter().any(|d| d.element_path == BUTTON_PATH
-            && d.property == "corner"
-            && d.token == "corner-rounded"),
+        report
+            .defaulted
+            .iter()
+            .any(|d| d.element_path == BUTTON_PATH
+                && d.property == "corner"
+                && d.token == "corner-rounded"),
         "{:?}",
         report.defaulted
     );
@@ -324,10 +319,13 @@ fn assertion_bearing_document_lowers_on_gui_decision_5855_s2_1() {
     let (_artefact, report) =
         lower_document_gui(&doc, &composed, &GuiData::default()).expect("lowers");
     assert!(
-        report.assertions.iter().any(|a| a.element_path == BUTTON_PATH
-            && a.property == "tone"
-            && a.token == "accent"
-            && a.disposition == "standard"),
+        report
+            .assertions
+            .iter()
+            .any(|a| a.element_path == BUTTON_PATH
+                && a.property == "tone"
+                && a.token == "accent"
+                && a.disposition == "standard"),
         "{:?}",
         report.assertions
     );
@@ -358,9 +356,12 @@ fn assertion_bearing_document_lowers_on_gui_decision_5855_s2_1() {
     };
     let (_artefact, report) = lower_document_gui(&doc, &composed, &gui_data).expect("lowers");
     assert!(
-        report.assertions.iter().any(|a| a.element_path == BUTTON_PATH
-            && a.property == "tone"
-            && a.disposition == "superseded-by-presentation"),
+        report
+            .assertions
+            .iter()
+            .any(|a| a.element_path == BUTTON_PATH
+                && a.property == "tone"
+                && a.disposition == "superseded-by-presentation"),
         "{:?}",
         report.assertions
     );
