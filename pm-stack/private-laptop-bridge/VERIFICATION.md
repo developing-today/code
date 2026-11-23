@@ -275,3 +275,50 @@ Gateway caller inventory, and protected environment evidence are still required
 before upload/promotion. No deployment, Gateway change, laptop change, traffic,
 or cutover was attempted. `actionlint` was unavailable locally, and the repo's
 automatic PR CI is disabled; these are local results, not hosted checks.
+
+## Disabled first-deployment workflow draft — 2026-11-23
+
+Added `staging-bootstrap.mjs` with synthetic provider and GitHub environment
+gates, and `private-laptop-bridge-staging-bootstrap.workflow.yml.disabled`.
+The template is outside `.github/workflows`, so it is not registered. Its
+no-secret pre-job verifies the exact existing protected
+`cloudflare-staging-bootstrap` environment and `main`-only branch policy before
+the deploy job receives the environment assignment. There are no workflow
+inputs or public URLs. The write step can only run the pinned declarative bridge
+`cf deploy --mode bridge --prebuilt --provision` after complete read-only zone,
+route, Worker-domain, target and namespace checks; postflight independently
+checks the exact disabled version, deployment, no-public-ingress settings and
+SQLite namespace binding. Existing served versions must carry the exact
+environment-pinned source SHA to pass the idempotent path. The preflight step
+receives only the read credential; the write credential is injected only into
+the conditional deploy step and checked for distinctness immediately before the
+write. Gateway rules are neither changed nor claimed as account-level verified
+by this initialization draft.
+
+Verification on this source state:
+
+| Check | Result |
+| --- | --- |
+| `node --test staging-bootstrap.test.mjs deployment-config.test.mjs release-contract.test.mjs` | 19 passed, including missing/existing Worker, exact source-SHA and workflow-boundary fixtures |
+| `npm test` from this package | 133 passed, 0 failed |
+| `cf build --mode bridge` with Node 24.19.0 and pinned `cf@1.0.0-rc.1` | Passed; 17.84 KiB upload, 5.31 KiB gzip |
+| `node staging-bootstrap.mjs validate-build` | Passed against the effective Build Output |
+| `cf deploy --mode bridge --prebuilt --dry-run` | Passed; output showed only the disabled vars and `BRIDGE -> PrivateLaptopBridge`; dry-run exited before upload |
+| Workflow YAML parse | Passed with Python PyYAML; expected two jobs found |
+| `actionlint` | Not installed in this environment |
+| `git diff --check` | Passed |
+
+The GitHub environment `cloudflare-staging-bootstrap`, its independent reviewer
+IDs and source SHA, exact account/zone inventory, and separate protected read
+and write credentials are not available or verified here. The required scope
+for first creation of this Worker also remains an owner-side permission review.
+No provider state was queried, no secret value was accessed, no workflow was
+registered or dispatched, and no Cloudflare write occurred. The draft must stay
+dormant until these exact prerequisites are independently established. The
+separate runtime acceptance still needs real Gateway `identity()` and
+`devicePosture()` checks from each AMD and Aster Node process; browser/DNS and
+credential-free synthetic smoke results are insufficient. See
+[`STAGING.md`](STAGING.md) for the direct-broker and no-fallback acceptance gate.
+The previously proposed `private-bridge-staging.security.cab` hostname is
+rejected because it matches an existing public wildcard; no replacement host
+or AMD/Aster Gateway path is verified.

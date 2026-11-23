@@ -1,0 +1,109 @@
+# Dormant reviewed template. GitHub ignores this non-workflow extension.
+# Enable only after `cloudflare-staging-bootstrap` exists with reviewers,
+# prevent_self_review=true, a main-only branch policy and the exact source pin.
+name: Private laptop bridge disabled staging bootstrap
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: private-laptop-bridge-staging-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  verify-environment-before-assignment:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.gate.outputs.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
+      - name: Verify existing protected environment without assigning it
+        id: gate
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          CF_BRIDGE_BOOTSTRAP_REVIEWER_IDS: ${{ vars.CF_BRIDGE_BOOTSTRAP_REVIEWER_IDS }}
+        run: node staging-bootstrap.mjs github-environment
+
+  deploy-disabled-bridge:
+    needs: verify-environment-before-assignment
+    if: needs.verify-environment-before-assignment.result == 'success' && needs.verify-environment-before-assignment.outputs.environment == 'cloudflare-staging-bootstrap'
+    environment:
+      name: ${{ needs.verify-environment-before-assignment.outputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
+          cache: npm
+          cache-dependency-path: pm-stack/private-laptop-bridge/package-lock.json
+      - name: Require the exact environment-approved source SHA
+        env:
+          APPROVED_SOURCE_SHA: ${{ vars.CF_BRIDGE_BOOTSTRAP_APPROVED_SHA }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == developing-today/code ]]
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$APPROVED_SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$APPROVED_SOURCE_SHA" == "$GITHUB_SHA" ]]
+      - name: Install locked dependencies
+        working-directory: pm-stack/private-laptop-bridge
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify disabled bridge build and deploy dry run
+        working-directory: pm-stack/private-laptop-bridge
+        run: |
+          set -euo pipefail
+          node --test deployment-config.test.mjs release-contract.test.mjs staging-bootstrap.test.mjs
+          ./node_modules/.bin/cf build --mode bridge
+          ./node_modules/.bin/cf deploy --mode bridge --prebuilt --dry-run > "$RUNNER_TEMP/bridge-deploy-dry-run.log" 2>&1
+          node staging-bootstrap.mjs validate-build
+      - name: Read current provider state and require absence or exact inert namespace
+        id: provider
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID }}
+          CF_BRIDGE_BOOTSTRAP_ZONE_IDS: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ZONE_IDS }}
+          CF_BRIDGE_BOOTSTRAP_READ_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_READ_TOKEN }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: node staging-bootstrap.mjs preflight
+      - name: Deploy only the pinned disabled declarative Worker and SQLite export
+        if: steps.provider.outputs.status == 'deploy'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_BRIDGE_BOOTSTRAP_READ_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_READ_TOKEN }}
+          CF_BRIDGE_BOOTSTRAP_WRITE_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_WRITE_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          node staging-bootstrap.mjs assert-distinct-credentials
+          ./node_modules/.bin/cf deploy --mode bridge --prebuilt --provision --tag "$GITHUB_SHA" --message "disabled bridge first deployment $GITHUB_SHA" > "$RUNNER_TEMP/bridge-deploy.log" 2>&1
+      - name: Independently verify no ingress and exact serving namespace
+        if: steps.provider.outputs.status == 'deploy'
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID }}
+          CF_BRIDGE_BOOTSTRAP_ZONE_IDS: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ZONE_IDS }}
+          CF_BRIDGE_BOOTSTRAP_READ_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_READ_TOKEN }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: node staging-bootstrap.mjs postflight

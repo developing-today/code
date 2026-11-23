@@ -218,6 +218,12 @@ Gateway RPC entrypoint can reach the signed bridge, after trusted-context
 checks. The real Gateway DNS, device enrollment and TLS-trust path still requires
 the approval packet's smoke.
 
+The one-time disabled first-deployment workflow is a reviewed template with a
+`.disabled` suffix outside `.github/workflows`; GitHub does not register it.
+It remains dormant until the exact protected environment, reviewer policy,
+source pin, and narrowly scoped read/write credentials are independently
+verified. See [STAGING.md](STAGING.md) for its fixed target and gates.
+
 No automatic PR CI or active schedule is added. The merged smoke init/upload
 workflows are manual; this branch retains a separate manual bridge release path
 that fails closed on missing owner proof. The optional process interval remains

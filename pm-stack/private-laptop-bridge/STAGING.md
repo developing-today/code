@@ -35,7 +35,7 @@ digest instead of the account ID itself. The protected proof still checks the
 full ID inside the gated environment; this redaction does not weaken target
 matching. Schema 1 receipts are rejected.
 
-### First disabled deployment plan
+### First disabled deployment workflow draft
 
 Routine releases remain versions-only and must refuse an absent Worker or
 Durable Object namespace. A one-time first deployment, if later authorized,
@@ -46,17 +46,58 @@ deployment step, not a second configuration or a legacy migration fallback.
 [cf project deploy](https://developers.cloudflare.com/cf/projects/) ·
 [cf and Durable Object lifecycle](https://developers.cloudflare.com/cf/wrangler/reference/#convert-durable-object-migrations)
 
-The proposed command sequence is a manual owner-controlled procedure, not a
-GitHub workflow. It has not been run in this turn; first validate the pinned
-CLI syntax/build with no credentials and stop if the pinned release differs
-from current Cloudflare documentation:
+The repository now contains a manual-only workflow template at
+`private-laptop-bridge-staging-bootstrap.workflow.yml.disabled` and a
+read-only gate/verification program in `staging-bootstrap.mjs`. The `.disabled`
+file is deliberately outside `.github/workflows`; GitHub does not register it
+and merging it cannot create or run a first-deploy job. It is a reviewable draft,
+not an active or completed deployment. It has no caller-supplied target, input,
+schedule, route, public hostname, Gateway policy, or runtime secret.
+
+If enabled after all listed prerequisites are independently established, the
+workflow accepts only a manual dispatch from `main` in `developing-today/code`.
+Its initial no-secret job reads the exact `cloudflare-staging-bootstrap`
+environment and branch policy and checks the reviewer set and source SHA. Only
+that successful check emits the fixed environment name for the later deploy job;
+this prevents GitHub from auto-creating a missing, unprotected environment when
+a job is assigned to it. The protected environment must require an independent
+reviewer, disallow self-review, allow only `main`, and pin the exact reviewed
+full source SHA. The template fails closed if any part is missing or differs.
+
+The deploy job runs the local build and pinned `cf deploy --dry-run`, verifies
+the effective disabled Build Output, then uses separate read-only and
+write-only credentials. Before its only possible provider write, read-only
+checks inventory the full account zone set and every zone's Worker routes,
+account Worker domains, the fixed Worker and SQLite namespace, schedules,
+subdomain/preview flags, settings, versions and deployments. It refuses an
+unknown or partial inventory, any route/domain, an orphan namespace, an
+unexpected existing Worker, shared read/write tokens, or any effective config
+that differs from the disabled artifact. Only when the Worker is absent and the
+namespace is absent does the gated step run the pinned declarative
+`cf deploy --mode bridge --prebuilt --provision` lifecycle. A second
+read-only pass checks the exact serving version, single 100-percent deployment,
+source-SHA tag, disabled settings, no ingress, and the same SQLite namespace
+ID in the export and account inventory. It never changes Gateway or routes.
+
+The checked-in template has not been registered, dispatched, or run against
+Cloudflare. The current protected environment, reviewer IDs, exact account and
+zone inventory, and the separate read/write credentials are not available in
+this checkout. Their secret values were not accessed. Cloudflare's narrowest
+write scope for first creation of this absent Worker still needs an owner-side
+permission review; do not silently broaden it or use a Workers-product token.
+The read credential needs complete account zone/route inventory, Worker
+metadata/settings/versions/deployments/domains, and Durable Object namespace
+read. If those exact read scopes or an individual Worker write scope cannot be
+provided, the workflow remains dormant and no provider change is allowed.
+
+The offline command sequence the workflow will use is:
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
 ./node_modules/.bin/cf build --mode bridge
 ./node_modules/.bin/cf deploy --mode bridge --prebuilt --dry-run
-# Only after the separate approval and all preflight gates:
-./node_modules/.bin/cf deploy --mode bridge --prebuilt
+# The live command exists only in the dormant, environment-gated workflow.
+# Never run it from a developer checkout.
 ```
 
 The final command writes a deployment and provisions the `PrivateLaptopBridge`
@@ -67,18 +108,24 @@ build. Do not pass `--force`, `--secrets-file`, or `--dispatch-namespace`. A
 successful local `--dry-run` proves config shape only; it is not permission to
 run the write.
 
-Before the write, a separately authenticated read-only reviewer must confirm the
-exact account and that the exact Worker name is absent; inventory every account
-zone and its routes; list account Worker domains; read Gateway rules and callers;
-and verify there is no name collision or existing binding to the class. Record
-complete pagination and timestamps. If the Worker exists, an API response is
-ambiguous, any pagination is incomplete, or any route/domain/Gateway path could
-reach the target, stop without changing it.
+Before the write, the protected workflow's separate read-only credential must
+confirm the exact account and that the exact Worker name is absent; inventory
+every account zone and its routes; list account Worker domains; and verify there
+is no namespace collision or existing binding to the class. It records no
+provider data in a public artifact. The declarative build contains no Gateway
+binding, Gateway identifiers, or external service binding. This preflight does
+not inventory account-level Gateway rules; those remain unconfigured by this
+workflow and must receive a separate read-only review before any later attempt
+to enable the bridge. If the Worker exists, an API response is ambiguous, any
+pagination is incomplete, or any route/domain can reach the target, stop without
+changing it.
 
-Immediately after the write, independently repeat the full inventory and verify
-the same Worker identity and account, no routes/domains/triggers or Gateway
-caller/Forward rule, workers.dev and preview URLs disabled, no runtime secrets,
-and the exact disabled variables and resource limits. Verify the Worker's
+Immediately after the write, independently repeat the full zone/route and
+Worker inventory and verify the same Worker identity and account, no
+routes/domains/schedules, no Gateway binding, workers.dev and preview URLs
+disabled, no runtime secrets, and the exact disabled variables and resource
+limits. This is not proof about account-level Gateway rules or caller identity.
+Verify the Worker's
 declarative export is `PrivateLaptopBridge` with `state=created` and
 `storage=sqlite`; verify the `BRIDGE` binding's namespace ID matches exactly one
 account namespace whose script is `private-laptop-bridge-staging`, class is
@@ -93,20 +140,18 @@ and [Gateway rules](https://developers.cloudflare.com/api/resources/zero_trust/s
 Any mismatch means stop and keep the Worker disabled and unrouted; do not
 automatically delete it, retry deployment, or create a replacement namespace.
 
-No automated first-deploy workflow is prepared yet. The `cloudflare-staging`
-GitHub environment is absent; GitHub creates an unconfigured environment when a
-workflow references a missing one, so no new workflow may reference it until a
-repository admin creates and verifies its protection rules. The tracked proof
-fixture records branch protection/reviews and environment reviewers as false.
-The read-only branch-protection API request returned HTTP 403 for this GitHub
-integration, so this session could not independently inspect the live branch
-rule. Before a workflow exists, repository settings must require a fresh PR
-approval on `main`, prevent admin bypass and force pushes, and configure a
-dedicated `cloudflare-staging-bootstrap` environment with required reviewers,
-self-review disabled, only `main` allowed, and an environment-only short-lived
-deployment credential. Then configure a separate `cloudflare-staging`
-environment for routine versions upload/promotion. GitHub's docs confirm that
-missing environments are automatically created without protection rules.
+`cloudflare-staging` remains absent, and the template uses the separate exact
+`cloudflare-staging-bootstrap` environment for its one-time first deployment.
+That bootstrap environment is also not verified as present or protected. The
+tracked proof fixture still records branch protection/reviews and environment
+reviewers as false. The read-only branch-protection API request returned HTTP
+403 for this GitHub integration, so this session could not independently inspect
+the live branch rule. Do not register the template until an authorized
+repository administrator creates and independently verifies the bootstrap
+environment and its protection. Routine `cloudflare-staging` versions upload
+and promotion stay separately gated. GitHub creates an unconfigured environment
+when a workflow references a missing one; the no-secret pre-job gate must stay
+before environment assignment.
 [GitHub protected branches](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) ·
 [GitHub environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments)
 
@@ -162,10 +207,11 @@ laptop reach a private Worker. Service bindings likewise do not supply a laptop
 transport. No Workers VPC binding, Tunnel, public route, or generic network proxy
 is proposed. [Workers VPC services](https://developers.cloudflare.com/workers-vpc/configuration/vpc-services/)
 
-**DNS/on-ramp gate is unresolved, not papered over.** Proposed host is
-`private-bridge-staging.security.cab`, subject to confirming owner control and
-absence of an existing record/wildcard route. Do not point it at `pm.security.cab`
-or any real application. The intended arrangement has no public A/AAAA/CNAME and
+**DNS/on-ramp gate is unresolved, not papered over.** The previously proposed
+`private-bridge-staging.security.cab` is rejected: it matches an existing public
+wildcard. Do not use or change it. Neither AMD nor the Aster caller has a
+verified Gateway path. No replacement hostname is selected. The eventual
+arrangement must have no public A/AAAA/CNAME and
 an exact-host Gateway DNS override to the non-serving documentation address
 `192.0.2.1` (proposed, not yet tested), with a 60-second DNS TTL where supported.
 No server or tunnel is attached to that address; confirm no local route repurposes it.
@@ -230,6 +276,20 @@ failed lookup must deny. Gateway identity is an additional gate, never a
 replacement for the independently pinned caller/device signing keys.
 [Available context](https://developers.cloudflare.com/cloudflare-one/traffic-controls/integrate-workers/available-context/)
 
+The existing credential-free Gateway smoke does not call `identity()` or
+`devicePosture()`. It proves handler behavior for synthetic trusted context only.
+The real `gateway.mjs` requires the configured exact email from
+`identity().email` and the configured posture UUID in
+`devicePosture().checks.passed`; an unregistered or unavailable posture check is
+empty and must deny. Browser login, a DNS resolution, or a synthetic smoke does
+not satisfy runtime acceptance. Before enabling any bridge reads, prove the
+Gateway Forward call separately from each actual AMD and Aster Node process,
+with each process's own identity and posture checks, and prove there is no
+normal public URL or fallback route. Acceptance requires a successful direct
+broker health/queue observation through the authorized path. A client-side
+user/session-proxy queue timeout or synthetic empty snapshot is not evidence of
+a successful direct broker check and cannot be reported as an idle queue.
+
 Deploy using the owner's existing approved short-lived administrative mechanism.
 Runtime principals need **no Cloudflare API permissions**. The deployment actor
 needs Workers script deployment permissions for the chosen account; an owner
@@ -241,7 +301,8 @@ minting a general automation token. No DNS-zone write permission is needed for
 the proposed Gateway-only override. No Access service token or Tunnel token is
 needed. [Gateway rule API](https://developers.cloudflare.com/api/go/resources/zero_trust/subresources/gateway/subresources/rules/methods/create/)
 
-Review-only Forward request shape (not executed; placeholders must be resolved,
+Historical review-only Forward request shape (rejected hostname; not executable
+or approved; a replacement hostname and all placeholders must be resolved,
 precedence compared against existing rules, then the exact diff approved):
 
 ```json

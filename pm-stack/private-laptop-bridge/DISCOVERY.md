@@ -255,25 +255,30 @@ uses `exports.durableObject({storage: "sqlite"})`, Cloudflare's declarative
 Durable Object lifecycle. The pinned `cf workers versions create` path is only
 for an existing Worker whose namespace is already provisioned; it cannot create
 the first Worker or apply a new export lifecycle. Official `cf` docs direct the
-initial deployment and new export creation through `cf deploy`. The first deploy
-therefore needs a separately reviewed, one-time manual owner path using the same
-`cloudflare.config.ts` Build Output; it must not add a Beta API create, raw PUT,
-Wrangler deploy, or legacy `migrations` fallback.
+initial deployment and new export creation through `cf deploy`. A manual-only
+first-deployment draft now uses that same pinned, declarative
+`cloudflare.config.ts` Build Output; it adds no Beta API create, raw PUT,
+Wrangler deploy, or legacy `migrations` fallback. The draft is stored outside
+`.github/workflows` with a `.disabled` suffix and is not registered by GitHub.
 
-That first deploy is not authorized or runnable yet. It must be preceded and
-followed by a fresh independent read-only inventory proving the exact account,
-fixed Worker name, complete zone/route inventory, Worker domains, workers.dev
-and preview flags, Gateway rules/callers, bindings, versions/deployment, and
-Durable Object namespace/export. It must refuse an existing Worker before the
-write, deploy with `ENABLED=false`, empty registry/Gateway identifiers, no
-runtime secrets, no routes/domains/triggers, `workersDev:false`, and
-`previewUrls:false`, then verify the same SQLite namespace ID from both the
-Worker binding and account namespace listing. Any unexpected resource, route,
-preview, binding, export, or deployment state stops the sequence; no automatic
+The draft is reviewable but cannot run in the current repository state. It
+requires a pre-existing, verified `cloudflare-staging-bootstrap` environment,
+an environment-owned source SHA and independent reviewer, complete account
+zone/route and Worker/namespace read permission, and separate narrowly scoped
+read and one-time write credentials. It first checks environment protections in
+a no-secret job before assigning the deploy job to the environment, so a missing
+environment cannot be auto-created without protection. Its provider preflight
+refuses an existing Worker, namespace collision, public route/domain, incomplete
+inventory, or unsafe config. The pinned deployment has `ENABLED=false`, empty
+registry/Gateway identifiers, no runtime secrets, routes/domains/schedules,
+`workersDev:false`, and `previewUrls:false`; independent readback checks the same
+SQLite namespace ID in the binding and account namespace list. Account-level
+Gateway rules are not modified or inventoried by this dormant initialization;
+their separate review is required before any later enablement. No automatic
 delete or fallback is allowed.
 
 The existing routine Versions-only release must stay blocked until the post-first
-deploy readback is independently recorded as a fresh owner proof and the
+deploy readback is independently recorded as a fresh owner proof and its
 protected environment and token scopes are actually established. The current
 `staging-preflight.json` remains `verified:false`; no live Worker, namespace,
 route, Gateway or account state was read in this session.
@@ -290,8 +295,10 @@ A prior pinned CLI rehearsal on `c20f3d96` (recorded in the PR) used Node
 24.22.0, cf 1.0.0-rc.1 and Wrangler 4.166.0; smoke and bridge both passed
 `cf build` and `cf workers versions create --prebuilt --dry-run`. The bridge
 dry-run reported only `BRIDGE -> PrivateLaptopBridge`, disabled `ENABLED=false`,
-placeholder Gateway identifiers and empty registry; it created nothing. This
-turn did not rerun the CLI because the checkout has no installed `cf` binary. `deployment-config.test.mjs` verifies that the `cf` config is the sole
+placeholder Gateway identifiers and empty registry; it created nothing. At that
+earlier checkpoint the CLI was not installed in the checkout. The current
+bootstrap draft has since rerun the pinned build and `cf deploy --dry-run`;
+current exact output is recorded in `VERIFICATION.md`. `deployment-config.test.mjs` verifies that the `cf` config is the sole
 declarative DO lifecycle source and contains the expected SQLite export. It
 does not prove provider state. Gateway runtime unit tests and smoke tests pass.
 These results prove local Build Output and
