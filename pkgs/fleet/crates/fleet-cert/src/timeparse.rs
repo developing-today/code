@@ -74,16 +74,26 @@ pub struct CalendarDuration {
 }
 
 impl CalendarDuration {
-    pub fn years(n: i64) -> Self {
+    pub const fn years(n: i64) -> Self {
         CalendarDuration {
             years: n,
-            ..Default::default()
+            months: 0,
+            weeks: 0,
+            days: 0,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
         }
     }
-    pub fn days(n: i64) -> Self {
+    pub const fn days(n: i64) -> Self {
         CalendarDuration {
+            years: 0,
+            months: 0,
+            weeks: 0,
             days: n,
-            ..Default::default()
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
         }
     }
 

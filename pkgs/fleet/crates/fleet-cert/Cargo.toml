@@ -22,6 +22,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 time = { version = "0.3", features = ["parsing", "formatting"] }
+# PKCS#8 key wrapper rcgen's loader takes (rustls-pki-types).
+rustls-pki-types = "1"
 
 [dev-dependencies]
 # Integration tests drive the built library API end to end and shell

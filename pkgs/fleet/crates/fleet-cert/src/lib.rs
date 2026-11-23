@@ -32,9 +32,15 @@
 //!   chain validator (§3.2).
 
 pub mod algorithm;
+pub mod bundle;
+pub mod chain;
 pub mod cli;
+pub mod engine;
 pub mod error;
+pub mod graph;
+pub mod model;
 pub mod naming;
+pub mod profile;
 pub mod timeparse;
 
 pub use error::{CertError, Result};
