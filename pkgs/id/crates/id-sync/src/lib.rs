@@ -34,6 +34,7 @@ pub mod envelope_outbox;
 pub mod fanout_answer;
 pub mod federation;
 pub mod fileops;
+pub mod forwarding_sink;
 pub mod graph_frontier;
 pub(crate) mod hex;
 pub mod host;
