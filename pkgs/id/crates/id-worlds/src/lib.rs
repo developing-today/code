@@ -71,6 +71,7 @@ pub mod world_hub;
 pub mod world_line;
 pub mod world_native;
 pub mod world_net;
+pub mod world_author_index;
 pub mod world_owner_report;
 pub mod world_records;
 pub mod world_replication_net;
