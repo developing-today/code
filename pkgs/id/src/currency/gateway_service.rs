@@ -308,7 +308,7 @@ impl GatewayIntent {
             op: op.name().to_owned(),
             state: IntentState::Posted,
             currency_id: Some(currency_id),
-            currency_key: currency_key.map(hex_encode),
+            currency_key: currency_key.map(|key| hex_encode(key)),
             ledger_id: Some(ledger_id),
             transfer: None,
             graph_stamp: None,
@@ -332,7 +332,7 @@ impl GatewayIntent {
             currency_id: self.currency_id.clone(),
             currency: self.currency_key.clone(),
             ledger_id: self.ledger_id,
-            transfer_id: self.transfer.map(|t| hex_encode(&t.id.to_be_bytes())),
+            transfer_id: self.transfer.as_ref().map(|t| hex_encode(&t.id.to_be_bytes())),
             graph_object: self.graph_object.clone(),
         }
     }
@@ -1326,7 +1326,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             record.currency_id.clone(),
             &op.currency,
             record.ledger_id,
-            transfer,
+            transfer.clone(),
             stamp,
             event.id.to_hex(),
         );
@@ -1390,7 +1390,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             record.currency_id.clone(),
             &op.currency,
             record.ledger_id,
-            transfer,
+            transfer.clone(),
             stamp,
             event.id.to_hex(),
         );
