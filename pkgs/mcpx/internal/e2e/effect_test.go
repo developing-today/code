@@ -220,6 +220,7 @@ var implementedEffectProbes = map[string]string{
 	"logging.trace":                      "TestLoggingTraceLogsEachCall",
 	"exec.where":                         "TestExecWhereRemoteRunsOnTheDaemon",
 	"paths.adapters":                     "TestPathsAdaptersFindsADeclarationFile",
+	"adapters.allowBare":                 "TestAdaptersAllowBareGatesABareDeclaration",
 	"paths.apis":                         "TestPathsAPIsFindsADeclarationFile",
 	"script.runtime":                     "TestScriptRuntimeSelectsTheRuntime",
 	"script.runtimeOrder":                "TestScriptRuntimeOrderRanksTheAutoPick",
@@ -458,6 +459,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestLoggingTraceLogsEachCall":                                                   TestLoggingTraceLogsEachCall,
 	"TestExecWhereRemoteRunsOnTheDaemon":                                             TestExecWhereRemoteRunsOnTheDaemon,
 	"TestPathsAdaptersFindsADeclarationFile":                                         TestPathsAdaptersFindsADeclarationFile,
+	"TestAdaptersAllowBareGatesABareDeclaration":                                     TestAdaptersAllowBareGatesABareDeclaration,
 	"TestPathsAPIsFindsADeclarationFile":                                             TestPathsAPIsFindsADeclarationFile,
 	"TestScriptRuntimeSelectsTheRuntime":                                             TestScriptRuntimeSelectsTheRuntime,
 	"TestScriptRuntimeOrderRanksTheAutoPick":                                         TestScriptRuntimeOrderRanksTheAutoPick,
@@ -2890,6 +2892,24 @@ func TestPathsAdaptersFindsADeclarationFile(t *testing.T) {
 	e.setenv("MCPX_PATHS_ADAPTERS=" + file)
 	if out := e.run("adapter", "list"); !strings.Contains(out, "probeadapter") {
 		t.Errorf("paths.adapters should declare probeadapter:\n%s", out)
+	}
+}
+
+// TestAdaptersAllowBareGatesABareDeclaration is the effect probe for
+// adapters.allowBare (#11147): a bare declaration file fails to load
+// while the setting is off (its default), with an error naming the
+// setting, and lists once the environment turns the setting on.
+func TestAdaptersAllowBareGatesABareDeclaration(t *testing.T) {
+	e := newEnv(t, oneServer)
+	file := filepath.Join(t.TempDir(), "adapters.json")
+	mustWrite(t, file, `{"adapters":[{"name":"probebare","command":"echo","description":"echo, passed straight through","bare":true}]}`)
+	e.setenv("MCPX_PATHS_ADAPTERS=" + file)
+	if out, err := e.try("adapter", "list"); err == nil || !strings.Contains(out, "adapters.allowBare") {
+		t.Errorf("with adapters.allowBare off, a bare declaration should fail to load naming the setting: %v\n%s", err, out)
+	}
+	e.setenv("MCPX_ADAPTERS_ALLOW_BARE=true")
+	if out := e.run("adapter", "list"); !strings.Contains(out, "probebare") {
+		t.Errorf("adapters.allowBare on should load the bare declaration:\n%s", out)
 	}
 }
 

@@ -20,6 +20,7 @@ func Registry() []Setting {
 	s = append(s, execSettings()...)
 	s = append(s, depsSettings()...)
 	s = append(s, pathSettings()...)
+	s = append(s, adapterSettings()...)
 	s = append(s, daemonSettings()...)
 	s = append(s, hookSettings()...)
 	s = append(s, outputSettings()...)
