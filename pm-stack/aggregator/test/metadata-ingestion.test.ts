@@ -132,6 +132,29 @@ describe("runMetadataCheck: the one check both watchers share", () => {
     expect(outcome.evidence.reasons[0]).toMatch(/ambiguous program/);
   });
 
+  test("a native parent takes precedence over a stale label parent", () => {
+    const outcome = runMetadataCheck(
+      item({
+        labels: ["primary-parent/atlas"],
+        nativeParent: { repo: "developing-today/code", number: 9123, kind: "issue" },
+      }),
+      CONTEXT,
+    );
+    expect(outcome.kind).toBe("generated");
+    if (outcome.kind !== "generated") return;
+    expect(outcome.record.parsed.indexes.directParentNumber).toBe(9123);
+  });
+
+  test("an epic cannot resolve itself as its direct parent", () => {
+    const outcome = runMetadataCheck(
+      item({ number: 9060, labels: ["kind/epic", "primary-parent/pm-board"] }),
+      CONTEXT,
+    );
+    expect(outcome.kind).toBe("needs-triage");
+    if (outcome.kind !== "needs-triage") return;
+    expect(outcome.evidence.reasons[0]).toMatch(/no resolvable parent/);
+  });
+
   test("an unparseable block is replaced by ascertainment, flagged on the outcome", () => {
     const outcome = runMetadataCheck(
       item({ body: "<!-- pm-metadata:start -->```json\n{broken\n```<!-- pm-metadata:end -->" }),

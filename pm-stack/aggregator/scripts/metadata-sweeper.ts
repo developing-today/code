@@ -10,6 +10,14 @@
 // targets: the scan covers all states, so quickly-merged PRs get their
 // Metadata completed retroactively.
 //
+// The scan is bounded: the default --limit of 50 covers only the newest
+// items per kind (issues and PRs listed separately). Older items are
+// reached with a larger --limit or with targeted --only <issue|pr:number>
+// runs. The epic catalog used for parent resolution is NOT bounded by
+// --limit: it is fetched independently (all kind/epic issues), so a
+// scanned item resolves its epic label even when that epic sits outside
+// the scan window.
+//
 // Argument contract (#3352): the whole command line is declared here and
 // parsed strictly before any subprocess, network, or file write. Unknown
 // flags, stray positionals, valueless or empty values, and --opt=value
@@ -100,8 +108,11 @@ function parseArgs(argv: string[]): Options {
       case "--only": {
         const raw = valueOf("--only");
         const match = /^(issue|pr):(\d+)$/.exec(raw.trim());
-        if (!match?.[1] || !match?.[2]) usageError(`--only must be issue:<n> or pr:<n> (got ${JSON.stringify(raw)})`);
-        only.push({ kind: match[1] as "issue" | "pr", number: Number(match[2]) });
+        const number = match?.[2] === undefined ? NaN : Number(match[2]);
+        if (!match?.[1] || !Number.isSafeInteger(number) || number < 1) {
+          usageError(`--only must be issue:<n> or pr:<n> with a positive safe integer (got ${JSON.stringify(raw)})`);
+        }
+        only.push({ kind: match[1] as "issue" | "pr", number });
         break;
       }
       case "--db":
@@ -236,17 +247,62 @@ async function listItems(repo: string, kind: "issue" | "pr", limit: number): Pro
   return items;
 }
 
-/** Best-effort native (sub-issue) parent lookup; null = none or unreachable. */
-async function fetchNativeParent(repo: string, number: number): Promise<{ repo: string; number: number; kind: string } | null> {
+/** Epic catalog for parent resolution, independent of the bounded item
+ * scan: `--limit` scopes how many items are processed, never which
+ * epics a label can resolve to. Targeted `--only` runs resolve against
+ * the same full catalog, so a scanned PR can resolve an epic label even
+ * when that epic sits outside the scan window. */
+async function fetchEpicSlugs(repo: string): Promise<EpicSlugMap> {
+  const stdout = await runFleet([
+    "gh",
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "all",
+    "--label",
+    "kind/epic",
+    "--limit",
+    "1000",
+    "--json",
+    "number,labels",
+  ]);
+  const parsed: unknown = JSON.parse(stdout);
+  if (!Array.isArray(parsed)) throw new Error(`unexpected epic list shape for ${repo}`);
+  const slugs: EpicSlugMap = new Map();
+  for (const row of parsed as { number?: unknown; labels?: (string | GhLabel)[] }[]) {
+    if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
+    for (const label of labelNames(row.labels)) {
+      const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
+      if (slug && !slugs.has(slug)) slugs.set(slug, { repo, number: row.number as number });
+    }
+  }
+  return slugs;
+}
+
+/** Native (sub-issue) parent lookup: the parent when found, null when the
+ * item has none, undefined when the lookup itself failed. Callers must
+ * not finalize a label-resolved parent on undefined — the next sweep
+ * retries — because a failed lookup proves nothing about the item. */
+async function fetchNativeParent(
+  repo: string,
+  number: number,
+): Promise<{ repo: string; number: number; kind: string } | null | undefined> {
+  let stdout: string;
   try {
-    const stdout = await runFleet(["gh", "api", `repos/${repo}/issues/${number}/parent`, "--jq", "{number: .number, repo_url: .repository_url}"]);
+    stdout = await runFleet(["gh", "api", `repos/${repo}/issues/${number}/parent`, "--jq", "{number: .number, repo_url: .repository_url}"]);
+  } catch {
+    return undefined;
+  }
+  try {
     const parsed = JSON.parse(stdout) as { number?: unknown; repo_url?: unknown };
     if (!Number.isSafeInteger(parsed.number) || typeof parsed.repo_url !== "string") return null;
     const match = /\/repos\/([^/]+\/[^/]+)$/.exec(parsed.repo_url);
     if (!match?.[1]) return null;
     return { repo: match[1], number: parsed.number as number, kind: "sub-issue" };
   } catch {
-    return null;
+    return undefined;
   }
 }
 
@@ -300,13 +356,23 @@ async function main(): Promise<void> {
             listItems(repo, "issue", options.limit),
             listItems(repo, "pr", options.limit),
           ]);
-          // One epic-slug query per repo: epics carry kind/epic plus their epic/<slug>.
-          const epicSlugs: EpicSlugMap = new Map();
-          for (const issue of issues) {
-            if (!issue.labels.includes("kind/epic")) continue;
-            for (const label of issue.labels) {
-              const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
-              if (slug && !epicSlugs.has(slug)) epicSlugs.set(slug, { repo, number: issue.number });
+          // Epic catalog independent of the bounded scan: --limit scopes
+          // items processed, never which epics a label may resolve to. On
+          // catalog failure fall back to the scanned window and say so —
+          // targeted --only runs still resolve against the full catalog
+          // when the fetch succeeds.
+          let epicSlugs: EpicSlugMap;
+          try {
+            epicSlugs = await fetchEpicSlugs(repo);
+          } catch (error) {
+            console.error(`metadata-sweeper: repo ${repo}: epic catalog fetch failed (${(error as Error).message}); falling back to scanned issues`);
+            epicSlugs = new Map();
+            for (const issue of issues) {
+              if (!issue.labels.includes("kind/epic")) continue;
+              for (const label of issue.labels) {
+                const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
+                if (slug && !epicSlugs.has(slug)) epicSlugs.set(slug, { repo, number: issue.number });
+              }
             }
           }
           const scanned = [...issues, ...prs];
@@ -323,12 +389,22 @@ async function main(): Promise<void> {
             counts.scanned++;
             try {
               let outcome = runMetadataCheck(item, { epicSlugs, ingestedBy: "metadata-sweeper" });
-              // Lazy native-parent retry: one extra call only for items
-              // that would otherwise be forwarded.
-              if (outcome.kind === "needs-triage" && item.kind === "issue" && !item.nativeParent) {
+              // Native parent is authoritative (see resolveAscertainedParent):
+              // consult it before finalizing any ascertained outcome, not
+              // just needs-triage ones, or a stale label would become the
+              // stored direct_parent. PRs skip this — sub-issue parents are
+              // an issue concept, so their label path stands. A failed
+              // lookup is an error for the next sweep to retry, never a
+              // finalized label parent and never triage spam: it proves
+              // nothing about the item either way.
+              if (item.kind === "issue" && !item.nativeParent && outcome.kind !== "current") {
                 const parent = await fetchNativeParent(repo, item.number);
                 if (parent) {
                   outcome = runMetadataCheck({ ...item, nativeParent: parent }, { epicSlugs, ingestedBy: "metadata-sweeper" });
+                } else if (parent === undefined) {
+                  counts.errors++;
+                  console.error(`metadata-sweeper: ${repo}#${item.number}: native-parent lookup failed; skipping (retry next sweep)`);
+                  continue;
                 }
               }
               if (outcome.kind === "needs-triage") {
@@ -348,11 +424,21 @@ async function main(): Promise<void> {
               } else {
                 counts.generated++;
                 if (options.writeBack && !options.dryRun) {
-                  const bodyPath = join(scratch, `body-${repo.replace("/", "-")}-${item.number}.md`);
-                  await writeFile(bodyPath, outcome.body);
-                  const command = item.kind === "issue" ? "issue" : "pr";
-                  await runFleet(["gh", command, "edit", String(item.number), "--repo", repo, "--body-file", bodyPath]);
-                  counts.writtenBack++;
+                  // Race-narrowing guard, not an atomic update: re-read the
+                  // body and only write back when it still matches the text
+                  // the check ran on. A changed (or unreadable) body skips
+                  // the edit and counts an error for the next sweep.
+                  const current = await fetchOne(repo, item.kind, item.number).catch(() => null);
+                  if (!current || current.body !== item.body) {
+                    counts.errors++;
+                    console.error(`metadata-sweeper: ${repo}#${item.number}: body changed since the check; skipping write-back`);
+                  } else {
+                    const bodyPath = join(scratch, `body-${repo.replace("/", "-")}-${item.number}.md`);
+                    await writeFile(bodyPath, outcome.body);
+                    const command = item.kind === "issue" ? "issue" : "pr";
+                    await runFleet(["gh", command, "edit", String(item.number), "--repo", repo, "--body-file", bodyPath]);
+                    counts.writtenBack++;
+                  }
                 }
               }
             } catch (error) {

@@ -155,23 +155,28 @@ export interface ResolvedParent {
 }
 
 /**
- * Resolve the ascertained direct parent: explicit native parent first,
- * then `primary-parent/<slug>` / `epic/<slug>` labels through the
- * caller's slug map. Null means none resolvable; `ambiguous` lists the
- * distinct slugs when more than one resolves to different epics.
+ * Resolve the ascertained direct parent: an explicit native parent is
+ * authoritative, then `primary-parent/<slug>` / `epic/<slug>` labels are
+ * resolved through the caller's slug map. Self-parent candidates are
+ * excluded. Null means none resolvable; `ambiguous` lists distinct label
+ * candidates when more than one resolves to different epics.
  */
 export function resolveAscertainedParent(
   item: IngestionItem,
   epicSlugs: EpicSlugMap,
 ): { parent: ResolvedParent | null; ambiguous: string[]; candidateSlugs: string[] } {
   const slugs = candidateSlugs(item.labels);
+  const isSelf = (parent: { repo: string; number: number }): boolean =>
+    parent.repo.toLowerCase() === item.repo.toLowerCase() && parent.number === item.number;
+  if (item.nativeParent && !isSelf(item.nativeParent)) {
+    return { parent: { ...item.nativeParent }, ambiguous: [], candidateSlugs: slugs };
+  }
   const resolved = new Map<string, ResolvedParent>();
   for (const slug of slugs) {
     const epic = epicSlugs.get(slug);
-    if (epic) resolved.set(`${epic.repo}#${epic.number}`, { repo: epic.repo, number: epic.number, kind: "epic" });
-  }
-  if (item.nativeParent) {
-    resolved.set(`${item.nativeParent.repo}#${item.nativeParent.number}`, { ...item.nativeParent });
+    if (epic && !isSelf(epic)) {
+      resolved.set(`${epic.repo}#${epic.number}`, { repo: epic.repo, number: epic.number, kind: "epic" });
+    }
   }
   if (resolved.size > 1) {
     return { parent: null, ambiguous: [...resolved.keys()].sort(), candidateSlugs: slugs };
