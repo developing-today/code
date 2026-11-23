@@ -2750,12 +2750,10 @@ fn ensure_stress_fixture(quick: bool) -> Result<StressFixture> {
 /// retained window and the bench program's snapshot, then the
 /// committed tail past the checkpoint. The shape mirrors what
 /// `WorldCore::checkpoint_entries` writes on compaction, in the
-/// legacy admin-history form (`admin_history: None`): the current
-/// form's `JournalAdminHistory` has crate-private fields and no
-/// public constructor, so a bench outside `id-worlds` cannot build
-/// one — restore supports the legacy form explicitly, and the
-/// retained window (the checkpoint's dominant term) is carried in
-/// full. The retained window at these sizes serializes under the
+/// legacy admin-history form (`admin_history: None`): restore
+/// supports the legacy form explicitly, and the retained window
+/// (the checkpoint's dominant term) is carried in full. The
+/// retained window at these sizes serializes under the
 /// writer's own inline bound (`MAX_CHECKPOINT_PART_BYTES`), so the
 /// single inline entry is the form the writer itself would choose
 /// for a checkpoint of this size without the admin window.
