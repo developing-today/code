@@ -94,6 +94,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use id_core::content_id::raw_content_id;
+use id_core::durable_write::DurableWriteError;
 use id_core::id_shape::{ContentId, HashProfile};
 use id_store::content_store::{BlobBackend, ContentStore, ContentStoreConfig, ContentStoreError};
 use iroh::{Endpoint, EndpointAddr};
@@ -164,6 +165,8 @@ pub enum RecordStoreError {
     Content(ContentStoreError),
     /// A filesystem operation failed.
     Io(std::io::Error),
+    /// Replacing the index failed; the error records whether rename already installed it.
+    DurableWrite(DurableWriteError),
     /// Opening the on-disk blob backend failed.
     Backend(String),
     /// A remote exchange (see
@@ -192,6 +195,7 @@ impl fmt::Display for RecordStoreError {
         match self {
             Self::Content(error) => write!(f, "content store failed: {error}"),
             Self::Io(error) => write!(f, "record store io failed: {error}"),
+            Self::DurableWrite(error) => write!(f, "record store durable write failed: {error}"),
             Self::Backend(error) => write!(f, "blob backend failed: {error}"),
             Self::Exchange(error) => write!(f, "remote exchange failed: {error}"),
             Self::Decode(what) => write!(f, "stored record does not decode: {what}"),
@@ -212,7 +216,16 @@ impl fmt::Display for RecordStoreError {
     }
 }
 
-impl std::error::Error for RecordStoreError {}
+impl std::error::Error for RecordStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DurableWrite(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::Content(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl From<ContentStoreError> for RecordStoreError {
     fn from(error: ContentStoreError) -> Self {
@@ -668,13 +681,8 @@ impl<B: BlobBackend + Sync> NodeStore<B> {
         // records together, so the index on disk never names a
         // version without the reports its admission changed.
         let tmp_path = self.index_path.with_extension("tmp");
-        let mut file = fs::File::create(&tmp_path)?;
-        use std::io::Write as _;
-        file.write_all(&self.index.encode())?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp_path, &self.index_path)?;
-        Ok(())
+        id_core::durable_write::write_durable(&self.index_path, &tmp_path, &self.index.encode())
+            .map_err(RecordStoreError::DurableWrite)
     }
 
     /// Snapshot the staged index entries, so a failed write-through
