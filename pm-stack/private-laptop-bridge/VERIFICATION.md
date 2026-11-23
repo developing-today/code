@@ -300,7 +300,7 @@ Verification on this source state:
 | Check | Result |
 | --- | --- |
 | `node --test staging-bootstrap.test.mjs deployment-config.test.mjs release-contract.test.mjs` | 19 passed, including missing/existing Worker, exact source-SHA and workflow-boundary fixtures |
-| `npm test` from this package | 133 passed, 0 failed |
+| `npm test` from this package | 134 passed, 0 failed |
 | `cf build --mode bridge` with Node 24.19.0 and pinned `cf@1.0.0-rc.1` | Passed; 17.84 KiB upload, 5.31 KiB gzip |
 | `node staging-bootstrap.mjs validate-build` | Passed against the effective Build Output |
 | `cf deploy --mode bridge --prebuilt --dry-run` | Passed; output showed only the disabled vars and `BRIDGE -> PrivateLaptopBridge`; dry-run exited before upload |
