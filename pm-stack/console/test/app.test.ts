@@ -36,6 +36,7 @@ import {
   servingSaid,
   subscriptionState,
   testSaid,
+  whySaid,
   workerSaid,
 } from "../public/app.js";
 import { androidRelease } from "../src/edge-proto.ts";
@@ -947,4 +948,21 @@ test("a Worker's line on the Platform screen: how it gets into service, and how 
     ]),
   ).toEqual({ all: 4, live: 3, actions: 1, byHand: 2, idle: 1 });
   expect(platformCounts([])).toEqual({ all: 0, live: 0, actions: 0, byHand: 0, idle: 0 });
+});
+
+test("why something could not be read is said in the owner's words where the reason is a known one", () => {
+  // As GitHub says it, through the fleet binary: seen in service on 2026-11-23.
+  const limited =
+    'fleet gh failed (exit 1): {"message":"API rate limit exceeded for user ID 11225574. If you reach out to GitHub Support for help, please include the request ID 312C:3E98FD:129EC6:13D870:6B047542","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api","status":"403"}';
+  const said = whySaid(limited);
+  expect(said).toBe(
+    "GitHub's allowance for the hour is used up on this account, which the agents share; it is asked again every few minutes and answers when the hour turns",
+  );
+  // None of the raw answer is shown: no JSON, no request number, no user number.
+  expect(/[{}"]|request ID|11225574/.test(said)).toBe(false);
+  expect(whySaid("You have exceeded a secondary rate limit")).toBe(said);
+  // Anything else is said as it came, and nothing is said as "no reason given".
+  expect(whySaid("connection refused")).toBe("connection refused");
+  expect(whySaid("  timed out \n")).toBe("timed out");
+  for (const none of ["", null, undefined, "   "]) expect([none, whySaid(none)]).toEqual([none, "no reason given"]);
 });
