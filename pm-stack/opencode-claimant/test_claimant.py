@@ -43,6 +43,8 @@ against the 307-line Slice-1 shadow stub that replaced it
 
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -1673,3 +1675,86 @@ class TestHandBackStep(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCodeSourceFireLog(unittest.TestCase):
+    """#12813: every fire log entry records the primary clone's
+    checked-out branch and commit (code_source), so a fire running
+    stale-branch code names itself. The read is fail-open: a clone
+    git cannot read yields state "unreadable", never an abort."""
+
+    def setUp(self):
+        claimant._code_source = None
+
+    def tearDown(self):
+        claimant._code_source = None
+
+    def _make_clone(self, tmp: str) -> Path:
+        clone = Path(tmp) / "clone"
+        clone.mkdir()
+        env = dict(os.environ)
+        env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            }
+        )
+        subprocess.run(
+            ["git", "init", "-b", "main", str(clone)],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        (clone / "f.txt").write_text("x")
+        subprocess.run(
+            ["git", "-C", str(clone), "add", "f.txt"],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        subprocess.run(
+            ["git", "-C", str(clone), "commit", "-m", "init"],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        return clone
+
+    def test_reads_branch_and_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = self._make_clone(tmp)
+            with patch.object(claimant, "PRIMARY_CLONE", clone):
+                source = claimant.read_code_source()
+        self.assertEqual(source["state"], "ok")
+        self.assertEqual(source["branch"], "main")
+        self.assertEqual(len(source["commit"]), 40)
+
+    def test_unreadable_clone_fails_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_repo = Path(tmp) / "nope"
+            not_a_repo.mkdir()
+            with patch.object(claimant, "PRIMARY_CLONE", not_a_repo):
+                source = claimant.read_code_source()
+        self.assertEqual(source["state"], "unreadable")
+        self.assertIsNone(source["branch"])
+        self.assertIsNone(source["commit"])
+
+    def test_fire_entry_carries_code_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = self._make_clone(tmp)
+            state_dir = Path(tmp) / "state"
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "PRIMARY_CLONE", clone),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                claimant.log_fire("live", [], [], 3, [])
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["code_source"]["branch"], "main")
+        self.assertEqual(entries[0]["code_source"]["state"], "ok")

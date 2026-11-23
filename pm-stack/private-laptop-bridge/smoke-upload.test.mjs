@@ -175,7 +175,8 @@ function builtSmokeFixture() {
     END_MS: { type: 'text', value: '' },
   };
   return {
-    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false, mode: '' } },
+    // Unset CF_MODE on a local build omits mode from the pinned output.
+    buildConfig: { producer: { name: 'wrangler', version: '4.166.0' }, buildContext: { isPreview: false } },
     workerNames: ['default'],
     bundleFiles: ['smoke.js', 'smoke.js.map'],
     workerConfig: {
@@ -185,6 +186,32 @@ function builtSmokeFixture() {
     },
   };
 }
+
+test('pinned Build Output accepts only the local and CI non-preview context shapes', () => {
+  // The hosted workflow sets CF_MODE explicitly to the empty string.
+  for (const context of [{ isPreview: false }, { isPreview: false, mode: '' }]) {
+    const fixture = builtSmokeFixture();
+    fixture.buildConfig.buildContext = context;
+    assert.equal(assertPrebuiltSmokePayload(fixture), true);
+  }
+  for (const context of [
+    null, [], {}, { mode: '' }, { isPreview: 'false' },
+    { isPreview: true }, { isPreview: true, mode: '' },
+    { isPreview: false, mode: null }, { isPreview: false, mode: false },
+    { isPreview: false, mode: 0 }, { isPreview: false, mode: 'production' },
+    { isPreview: false, mode: 'synthetic-secret-value' },
+    { isPreview: false, extra: 'synthetic-secret-value' },
+    { isPreview: false, mode: '', extra: 'synthetic-secret-value' },
+  ]) {
+    const invalid = builtSmokeFixture();
+    invalid.buildConfig.buildContext = context;
+    assert.throws(() => assertPrebuiltSmokePayload(invalid), error => {
+      assert.match(error.message, /sanitized metadata=/);
+      assert.doesNotMatch(error.message, /synthetic-secret-value/);
+      return true;
+    });
+  }
+});
 
 test('effective Build Output contract excludes routes, domains, triggers, previews, DOs, and extra executable modules', () => {
   const fixture = builtSmokeFixture();

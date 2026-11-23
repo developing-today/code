@@ -160,7 +160,6 @@ function sanitizedBuildMetadata(buildConfig) {
     ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item === null ? 'null' : Array.isArray(item) ? 'array' : typeof item]))
     : typeof value;
   const context = buildConfig?.buildContext;
-  const mode = context?.mode;
   return JSON.stringify({
     rootKeys: buildConfig && typeof buildConfig === 'object' && !Array.isArray(buildConfig) ? Object.keys(buildConfig).sort() : [],
     rootTypes: types(buildConfig),
@@ -171,15 +170,20 @@ function sanitizedBuildMetadata(buildConfig) {
     buildContextKeys: context && typeof context === 'object' && !Array.isArray(context) ? Object.keys(context).sort() : [],
     buildContextTypes: types(context),
     isPreview: typeof context?.isPreview === 'boolean' ? context.isPreview : '<non-boolean>',
-    mode: mode === '' ? '<empty>' : mode === 'production' || mode === 'development' ? mode : '<other>',
+    mode: context && Object.hasOwn(context, 'mode') ? (context.mode === '' ? '<empty>' : '<other>') : '<absent>',
   });
 }
 
 export function assertPrebuiltSmokePayload({ buildConfig, workerConfig, workerNames, bundleFiles }) {
   const exactKeys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) && same(Object.keys(value).sort(), [...expected].sort());
+  const context = buildConfig?.buildContext;
+  // Pinned cf emits no mode locally when CF_MODE is unset, but an empty
+  // mode in the hosted workflow where CF_MODE is explicitly set to ''.
+  const knownContext = exactKeys(context, ['isPreview']) ||
+    (exactKeys(context, ['isPreview', 'mode']) && context.mode === '');
   if (!exactKeys(buildConfig, ['producer', 'buildContext']) || !exactKeys(buildConfig.producer, ['name', 'version']) ||
       buildConfig.producer.name !== 'wrangler' || buildConfig.producer.version !== '4.166.0' ||
-      !exactKeys(buildConfig.buildContext, ['isPreview', 'mode']) || buildConfig.buildContext.isPreview !== false || buildConfig.buildContext.mode !== '') {
+      !knownContext || context.isPreview !== false) {
     fail(`prebuilt Build Output producer or context is not the pinned non-preview build; sanitized metadata=${sanitizedBuildMetadata(buildConfig)}`);
   }
   if (!Array.isArray(workerNames) || workerNames.length !== 1 || workerNames[0] !== 'default') fail('prebuilt Build Output must contain only its default Worker');

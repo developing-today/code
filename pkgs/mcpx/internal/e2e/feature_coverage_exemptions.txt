@@ -18,11 +18,9 @@ setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 
 setting	daemon.tsnetUpTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	http.streamBufferInit	allocation-capacity hint only; output and line ceiling are unchanged, so allocation size has no stable e2e behavior oracle
 setting	protoTasks.cancelGrace	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
-setting	plugin.binArgs	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.daemonTools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.disabledTools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.discoveryRetry	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
-setting	plugin.env	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.headless	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.instructions	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.remember	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test

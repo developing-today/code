@@ -270,6 +270,63 @@ def read_mode() -> str:
     return "shadow"
 
 
+# Which code this fire is running (#12813): the primary clone's
+# checked-out branch and commit, read once per process by
+# read_code_source() and written into every fires.jsonl entry by
+# log_fire(). The 2026-11-23 incident was the primary clone silently
+# sitting on a stale branch: every fire aborted cap_unknown and the
+# fire log named neither the branch nor the commit, so the cause had
+# to be reconstructed from the clone's reflog after the fact.
+# Recording both makes the next such incident name itself in the
+# first fire that hits it.
+_code_source: "Dict[str, Any] | None" = None
+
+
+def read_code_source() -> "Dict[str, Any]":
+    """Read the primary clone's checked-out branch and commit.
+
+    Fail-open by design: this is provenance for the fire log, never
+    a gate. Any git failure (no git binary, not a checkout, timeout)
+    yields state "unreadable" with branch/commit None rather than
+    raising - a fire must never abort because its own provenance
+    read failed. The result is cached per process: one fire is one
+    process, and the checkout does not change under a running fire.
+    """
+    global _code_source
+    if _code_source is not None:
+        return _code_source
+    source: Dict[str, Any] = {
+        "path": str(PRIMARY_CLONE),
+        "state": "ok",
+        "branch": None,
+        "commit": None,
+    }
+    _code_source = source
+    try:
+        branch = subprocess.run(
+            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        commit = subprocess.run(
+            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if branch.returncode != 0 or commit.returncode != 0:
+            source["state"] = "unreadable"
+            return source
+        source["branch"] = branch.stdout.strip() or None
+        source["commit"] = commit.stdout.strip() or None
+        if source["branch"] is None or source["commit"] is None:
+            source["state"] = "unreadable"
+    except Exception:
+        source["state"] = "unreadable"
+    return source
+
+
 def ensure_state_dir() -> None:
     """Ensure the state directory exists."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -306,6 +363,7 @@ def log_fire(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
         "mode_source": _mode_source,
+        "code_source": read_code_source(),
         "candidates_seen": candidates,
         "sessions_launched": launched,
         "cap_room": cap_room,

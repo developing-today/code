@@ -238,3 +238,58 @@ export async function consumeBreakGlassToken(input: {
       return { ok: false, error: "break-glass token expired" };
   }
 }
+
+export function breakGlassConsumptionAuditEvent(input: {
+  id: string;
+  consumedAt: string;
+}): NewAuditEvent {
+  return {
+    actor: `owner:break-glass:${input.id}`,
+    kind: "break-glass-token-consumed",
+    ref: `break-glass:${input.id}`,
+    summary: `Break-glass admin token consumed; authorizes exactly one admin request (consumed ${input.consumedAt})`,
+    attribution: { confidence: "authenticated", asserted: true },
+    source: { identity: "pm-aggregator", link: "#9608" },
+  };
+}
+
+/**
+ * The break-glass token presented on a request, if any: the
+ * `Authorization: Bearer <token>` convention the codebase already
+ * uses (see alertsIntakeAuthorized in server.ts). Returns "" when
+ * no token is presented.
+ */
+export function presentedBreakGlassToken(req: Request): string {
+  const header = req.headers.get("authorization") ?? "";
+  return header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
+}
+
+export type AuthorizeBreakGlassResult =
+  | { ok: true; id: string; auditActor: string }
+  | { ok: false; error: string };
+
+/**
+ * Consume a presented break-glass token and record the consumption
+ * as an audit event, mirroring issuance. Fail closed in both
+ * directions: consumption happens first (the token is burned), so
+ * if the audit write fails the request is NOT authorized and the
+ * token cannot be replayed for a second attempt.
+ */
+export async function authorizeWithBreakGlassToken(input: {
+  store: BreakGlassTokenStore;
+  events: BreakGlassAuditSink;
+  token: string;
+  now?: Date;
+}): Promise<AuthorizeBreakGlassResult> {
+  const now = input.now ?? new Date();
+  const consumed = await consumeBreakGlassToken({ store: input.store, token: input.token, now });
+  if (!consumed.ok) return { ok: false, error: consumed.error };
+  try {
+    await input.events.record(
+      breakGlassConsumptionAuditEvent({ id: consumed.id, consumedAt: now.toISOString() }),
+    );
+  } catch {
+    return { ok: false, error: "break-glass consumption audit write failed" };
+  }
+  return { ok: true, id: consumed.id, auditActor: `owner:break-glass:${consumed.id}` };
+}

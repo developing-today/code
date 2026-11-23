@@ -33,6 +33,7 @@ pub mod envelope_outbox;
 pub mod fanout_answer;
 pub mod federation;
 pub mod fileops;
+pub mod graph_frontier;
 pub(crate) mod hex;
 pub mod host;
 pub mod log_sync;

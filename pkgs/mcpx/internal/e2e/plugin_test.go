@@ -138,3 +138,72 @@ func TestPluginBinInvokesTheConfiguredExecutableFromTheEnvironment(t *testing.T)
 		t.Fatalf("the plugin.bin probe did not report a clean run:\n%s", out)
 	}
 }
+
+// TestPluginBinArgsPrependsTheConfiguredArgumentsFromTheEnvironment
+// is the effect probe for plugin.binArgs (#8472; the effect guard
+// is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host:
+// whenever a tool call takes the binary path, runBin spawns the
+// mcpx executable with the arguments MCPX_PLUGIN_BIN_ARGS names
+// prepended to the call's own argv — a JSON array when the value
+// starts with "[", whitespace-split otherwise. No Go caller
+// prepends them, so the probe drives the host the way the plugin
+// suite does — bun, the real tool executors, options resolved
+// from the environment, and crucially the real runBin — and the
+// bun cases in plugin/opencode/v2/bin-args.test.ts assert the
+// observable differences: the configured arguments arrive first,
+// in order; a space inside a JSON-form argument survives as one
+// argv element; and with the setting unset the executable sees
+// only the call's own argv. A run that skipped the cases is a
+// run that did not check what this probe exists to check, so
+// skips fail it, as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginBinArgsPrependsTheConfiguredArgumentsFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/bin-args.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/bin-args.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.binArgs probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.binArgs probe did not report a clean run:\n%s", out)
+	}
+}
+
+// TestPluginEnvLevelChangesShellEnvFromTheEnvironment is the effect
+// probe for plugin.env (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: the
+// level (minimal / standard / full, from MCPX_PLUGIN_ENV) gates the
+// shell.env hook — minimal injects only the session id, standard
+// adds the call/project/harness block, and full additionally
+// describes the session and injects the session block. No Go caller
+// produces those variables, so the probe drives the host the way
+// the plugin suite does — bun, the real session plugin, options
+// resolved from the environment — and the bun cases in
+// plugin/opencode/mcpx/env.test.ts assert the observable
+// with/without differences, including that the session is only
+// ever described at full. A run that skipped the cases is a run
+// that did not check what this probe exists to check, so skips
+// fail it, as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginEnvLevelChangesShellEnvFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/mcpx/env.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/mcpx/env.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.env probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.env probe did not report a clean run:\n%s", out)
+	}
+}
