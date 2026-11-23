@@ -83,7 +83,14 @@
 //!   plus issuer only (sunset must stay reachable from
 //!   frozen); the registry owns transition legality —
 //!   issuer-only there too, repeats idempotent, sunset
-//!   terminal ([`RegistryError::InvalidTransition`]).
+//!   terminal ([`RegistryError::InvalidTransition`]). A posted
+//!   transition the rebuilt registry refuses at replay — the
+//!   intent names a currency no register intent rebuilt, or the
+//!   move is no longer legal — does not abort the boot (#13620):
+//!   the refusal is appended to the durable findings log as
+//!   [`IntentFinding::LifecycleReplayRefused`] and replay
+//!   continues, so one dangling intent cannot brick restart for
+//!   every healthy currency.
 //!
 //! **Idempotency-key discipline.** The idempotency ID is a hash
 //! of (account, op, client request id). A client that reuses a
@@ -411,6 +418,26 @@ pub enum IntentFinding {
         ledger_id: u32,
         /// The graph stamp it carries.
         user_data_128: u128,
+    },
+    /// A posted lifecycle intent (`freeze`/`sunset`) that
+    /// restart replay could not apply to the rebuilt registry:
+    /// the currency is unknown to the rebuilt registry, the
+    /// account is not its issuer, or the transition is no
+    /// longer legal (#13620). [`GatewayService::open`] appends
+    /// the refusal here and boots anyway — one dangling intent
+    /// must not brick restart for every healthy currency. The
+    /// intent itself stays in the log, untouched; the finding
+    /// is the operator-visible record that it was skipped.
+    LifecycleReplayRefused {
+        /// The intent's idempotency ID.
+        idempotency: u128,
+        /// The lifecycle op the intent was executing
+        /// (`freeze` or `sunset`).
+        op: String,
+        /// The currency the intent named.
+        currency_id: String,
+        /// The registry's refusal, verbatim.
+        reason: String,
     },
 }
 
@@ -781,11 +808,17 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
     /// the intent log recorded (the allocator is deterministic;
     /// a divergence means the log and the registry disagree
     /// about history, and opening refuses rather than serving a
-    /// currency on the wrong ledger).
+    /// currency on the wrong ledger). A posted lifecycle
+    /// transition the rebuilt registry refuses is not a failure:
+    /// it is appended to the durable findings log as
+    /// [`IntentFinding::LifecycleReplayRefused`] and opening
+    /// continues (#13620) — failing to append that finding is
+    /// a store failure and does fail the open, so a refusal is
+    /// never silently dropped.
     pub fn open(
         backend: B,
         gateway_key: ed25519_dalek::SigningKey,
-        intents: I,
+        mut intents: I,
     ) -> Result<Self, ServiceError> {
         let mut currency_ids = BTreeMap::new();
         for (key, currency_id) in intents.bindings().map_err(ServiceError::IntentStore)? {
@@ -864,6 +897,17 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         // Frozen -> Sunset, sunset terminal), so applying every
         // posted freeze before every posted sunset reproduces
         // the pre-restart status whatever order they posted in.
+        //
+        // A transition the rebuilt registry refuses — the intent
+        // names a currency no register intent rebuilt, its
+        // account is not the rebuilt record's issuer, or the
+        // move is no longer legal — does not abort the boot
+        // (#13620): the refusal is collected and appended to the
+        // durable findings log below, and replay continues, so
+        // one dangling intent cannot brick restart for every
+        // healthy currency. The intent stays in the log; nothing
+        // is silently dropped.
+        let mut refused: Vec<IntentFinding> = Vec::new();
         for target_op in ["freeze", "sunset"] {
             for intent in &all {
                 if intent.state != IntentState::Posted || intent.op != target_op {
@@ -877,8 +921,29 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
                 } else {
                     registry.sunset_currency(currency_id, intent.account.clone())
                 };
-                moved.map_err(ServiceError::Registry)?;
+                if let Err(error) = moved {
+                    refused.push(IntentFinding::LifecycleReplayRefused {
+                        idempotency: intent.idempotency,
+                        op: target_op.to_owned(),
+                        currency_id: currency_id.clone(),
+                        reason: error.to_string(),
+                    });
+                }
             }
+        }
+        if !refused.is_empty() {
+            // `open` takes no caller clock (the service never
+            // reads a wall clock; every timed entry point takes
+            // the caller's time), so boot findings carry
+            // `run_at: 0` — the findings log's marker for "found
+            // at boot, before any timed run".
+            let records: Vec<FindingRecord> = refused
+                .into_iter()
+                .map(|finding| FindingRecord { run_at: 0, finding })
+                .collect();
+            intents
+                .append_findings(&records)
+                .map_err(ServiceError::IntentStore)?;
         }
         Ok(Self {
             registry,
@@ -2712,6 +2777,137 @@ mod tests {
         assert!(
             matches!(error, ServiceError::Gateway(GatewayError::InactiveCurrency)),
             "got {error:?}",
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// #13620: a dangling lifecycle intent in the log — one the
+    /// rebuilt registry refuses — must not brick restart. The
+    /// healthy currency's posted freeze still replays, and both
+    /// refusals land in the durable findings log.
+    #[test]
+    fn dangling_lifecycle_intents_do_not_brick_restart() {
+        let dir = temp_store_dir("dangling-lifecycle");
+        let mut fx = fixture_with(
+            InMemoryLedger::default(),
+            FileIntentStore::open(dir.clone()).expect("store opens"),
+        );
+        let (_register, currency, _definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        let freeze = CurrencyRequest {
+            client_request_id: 10,
+            op: CurrencyOp::Freeze(GwFreeze { currency: key }),
+        };
+        let device_key = fx.issuer.device_key.clone();
+        send(&mut fx, &device_key, &freeze, None).expect("freeze posts");
+        let issuer_account = fx.issuer.account.clone();
+        let mallory_account = fx.mallory.account.clone();
+        let backend = fx.svc.into_backend();
+
+        // Read the healthy currency's registry id back from the
+        // log, then inject two dangling lifecycle intents the
+        // way a divergent history would hold them: a freeze for
+        // a currency no register intent names, and a sunset of
+        // the healthy currency attempted by a non-issuer.
+        let currency_id = {
+            let store = FileIntentStore::open(dir.clone()).expect("store reopens");
+            store
+                .all()
+                .expect("intents read")
+                .iter()
+                .find(|intent| intent.op == "register_currency")
+                .and_then(|intent| intent.currency_id.clone())
+                .expect("the register intent names the currency")
+        };
+        {
+            let mut store = FileIntentStore::open(dir.clone()).expect("store reopens");
+            let dangling =
+                |idempotency: u128, account: String, op: &str, named: String| GatewayIntent {
+                    idempotency,
+                    account,
+                    op: op.to_owned(),
+                    state: IntentState::Posted,
+                    currency_id: Some(named),
+                    currency_key: None,
+                    ledger_id: None,
+                    transfer: None,
+                    graph_stamp: None,
+                    graph_object: None,
+                    minter: None,
+                    registration: None,
+                    receipt: None,
+                    failure: None,
+                };
+            store
+                .put(&dangling(
+                    9_001,
+                    issuer_account,
+                    "freeze",
+                    "cur-ghost".to_owned(),
+                ))
+                .expect("ghost freeze stored");
+            store
+                .put(&dangling(
+                    9_002,
+                    mallory_account,
+                    "sunset",
+                    currency_id.clone(),
+                ))
+                .expect("non-issuer sunset stored");
+        }
+
+        // Restart: the open succeeds despite both dangling
+        // intents, and the healthy freeze still replays — the
+        // refused sunset does not move the currency.
+        let fx = fixture_with(backend, FileIntentStore::open(dir.clone()).expect("reopen"));
+        assert_eq!(
+            fx.svc.registry_record(&key).map(|record| record.status),
+            Some(CurrencyStatus::Frozen),
+            "the healthy freeze replays; the non-issuer sunset does not",
+        );
+
+        // Both refusals are durable findings, never dropped.
+        // (The log is append-only and write-only — nothing in
+        // the store reads it back — so the test inspects the
+        // JSON lines directly; serde_json cannot deserialize
+        // the u128 ids the format carries.)
+        let logged = fs::read_to_string(dir.join("findings.jsonl")).expect("findings log written");
+        let records: Vec<serde_json::Value> = logged
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("finding line parses"))
+            .collect();
+        assert_eq!(records.len(), 2, "findings: {records:?}");
+        for record in &records {
+            assert_eq!(
+                record["run_at"], 0,
+                "boot findings carry run_at 0: {record}"
+            );
+            assert_eq!(
+                record["finding"]["finding"], "lifecycle_replay_refused",
+                "finding kind: {record}",
+            );
+        }
+        let ghost = records
+            .iter()
+            .find(|record| record["finding"]["idempotency"] == 9_001)
+            .expect("the ghost freeze is recorded");
+        assert_eq!(ghost["finding"]["op"], "freeze");
+        assert_eq!(ghost["finding"]["currency_id"], "cur-ghost");
+        assert_eq!(
+            ghost["finding"]["reason"],
+            "no currency registered as cur-ghost",
+        );
+        let sunset = records
+            .iter()
+            .find(|record| record["finding"]["idempotency"] == 9_002)
+            .expect("the non-issuer sunset is recorded");
+        assert_eq!(sunset["finding"]["op"], "sunset");
+        assert_eq!(sunset["finding"]["currency_id"], currency_id);
+        assert!(
+            sunset["finding"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("is not the issuer")),
+            "reason: {sunset}",
         );
         let _ = fs::remove_dir_all(&dir);
     }
