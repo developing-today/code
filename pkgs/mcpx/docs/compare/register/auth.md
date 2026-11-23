@@ -100,7 +100,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   drops the clause because sessions are gone. mcpx's `auth` type `query` exists to put a static credential in the URL
   (`Resolved.Query`); that is legitimate for API keys but would violate the query-string MUST if it ever carried an
   OAuth access token.
-- **Sources.** `2025-03-26/basic/authorization.mdx:270` "Authorization: Bearer <access-token>"; `2025-03-26/basic/authorization.mdx:276` "2. Access tokens **MUST NOT** be included in the URI query string"; `2026-07-28/basic/authorization/index.mdx:262` "1. MCP client **MUST** use the Authorization request header field defined in"; `internal/pool/pool.go:379` "Headers: p.cfg.Headers,"
+- **Sources.** `2025-03-26/basic/authorization.mdx:270` "Authorization: Bearer &lt;access-token&gt;"; `2025-03-26/basic/authorization.mdx:276` "2. Access tokens **MUST NOT** be included in the URI query string"; `2026-07-28/basic/authorization/index.mdx:262` "1. MCP client **MUST** use the Authorization request header field defined in"; `internal/pool/pool.go:379` "Headers: p.cfg.Headers,"
 
 ## AUTH-04 PKCE required; refuse AS without `code_challenge_methods_supported`
 
@@ -397,7 +397,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Effort.** M for a bearer token; L for a full OAuth resource server (AUTH-06).
 - **Risk.** High: remote code execution for anything that reaches the port.
 - **Detail.** If mcpx adds a 401 to `/mcp`, opencode v1 will read it as "needs OAuth": it moves the server to
-  `needs_auth` and toasts "Run: opencode mcp auth <name>", partly by matching "OAuth"/"registration"/"client_id" in error
+  `needs_auth` and toasts "Run: opencode mcp auth &lt;name&gt;", partly by matching "OAuth"/"registration"/"client_id" in error
   text. Users would need `oauth: false` and a static header in opencode's config.
 - **Sources.** `2024-11-05/basic/transports.mdx:57` "3. Servers **SHOULD** implement proper authentication for all connections"; `2026-07-28/basic/transports/streamable-http.mdx:65` "Servers **SHOULD** implement proper authentication"; `internal/cli/root.go:202` "the API is unauthenticated"; `v1:packages/opencode/src/mcp/index.ts:317`
 
