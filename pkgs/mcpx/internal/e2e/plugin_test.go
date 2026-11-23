@@ -175,6 +175,43 @@ func TestPluginBinArgsPrependsTheConfiguredArgumentsFromTheEnvironment(t *testin
 	}
 }
 
+// TestPluginToolsRegistersTheToolSetFromTheEnvironment is the
+// effect probe for plugin.tools (#8472; the effect guard is
+// #1971).
+//
+// The setting's whole effect lives in the opencode plugin host:
+// MCPX_PLUGIN_TOOLS is the opt-in that puts mcpx's own tool set
+// (discover / exec / observe) in front of the model — setup hands
+// the resolved value to registerTools as toolsEnabled, and the
+// same value feeds the daemon tools' default, so on also offers
+// the daemon tools while off registers nothing but the namespace.
+// No Go caller registers those tools, so the probe drives the
+// host the way the plugin suite does — bun, the real tool
+// runtime and the real registerTools, options resolved from the
+// environment, a recording editor as the oracle — and the bun
+// cases in plugin/opencode/v2/plugin-tools.test.ts assert the
+// observable differences: unset and explicit false register no
+// tools; true (and another truthy spelling) registers the full
+// set, daemon tools included. A run that skipped the cases is a
+// run that did not check what this probe exists to check, so
+// skips fail it, as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginToolsRegistersTheToolSetFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/plugin-tools.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/plugin-tools.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.tools probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.tools probe did not report a clean run:\n%s", out)
+	}
+}
+
 // TestPluginEnvLevelChangesShellEnvFromTheEnvironment is the effect
 // probe for plugin.env (#8472; the effect guard is #1971).
 //
