@@ -3053,10 +3053,15 @@ mod tests {
         terminal: &mut vt100::Parser,
         needle: &str,
     ) {
-        let _ = read_until_bytes(channel, terminal, needle).await;
+        let _ = read_until_screen_bytes(channel, terminal, needle).await;
     }
 
-    async fn read_until_bytes(
+    /// Read channel output, feeding the terminal, until the rendered
+    /// screen contains `needle`; panics on timeout or close. Returns the
+    /// raw bytes received along the way. Distinct from
+    /// `read_until_bytes`, which matches the raw byte stream and never
+    /// panics.
+    async fn read_until_screen_bytes(
         channel: &mut Channel<client::Msg>,
         terminal: &mut vt100::Parser,
         needle: &str,
@@ -3946,6 +3951,7 @@ mod tests {
             host_key,
             test_store(),
             MAX_CONNECTIONS,
+            SshServeOptions::default(),
         ));
         TwoTransports {
             world,
@@ -4994,15 +5000,15 @@ mod tests {
         let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
         let mut terminal = vt100::Parser::default();
-        let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
+        let initial = read_until_screen_bytes(&mut channel, &mut terminal, "count=0").await;
         assert!(initial.windows(3).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
         // The initial PTY resize may still be queued after the first view and
         // correctly forces one more full repaint. Consume that recovery frame
         // before checking a stable, consecutive update.
-        let _resize_recovery = read_until_bytes(&mut channel, &mut terminal, "count=1").await;
+        let _resize_recovery = read_until_screen_bytes(&mut channel, &mut terminal, "count=1").await;
         channel.data(&b"inc"[..]).await.unwrap();
-        let update = read_until_bytes(&mut channel, &mut terminal, "count=2").await;
+        let update = read_until_screen_bytes(&mut channel, &mut terminal, "count=2").await;
         assert!(
             !update.windows(3).any(|window| window == b"[2J"),
             "subsequent screen update should not clear and repaint the terminal"
