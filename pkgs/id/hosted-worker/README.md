@@ -37,7 +37,7 @@ design forbids. Residency on a real account can only be established by
 the deployed canary gated on #2285 (still open/escalated) — this
 package makes no residency claim and authorizes no deployment, no
 production binding/config, and no billable resource (#3403 stays
-blocked pending Drew authorization).
+blocked pending user authorization).
 
 ## The signed-object bridge (#3818)
 
@@ -100,7 +100,7 @@ serves no authoritative snapshot.
 ## Currency gateway PoC (#2298)
 
 `src/currency/` is the gated #2298 proof of concept (gates cleared
-2026-11-12/13; Drew ruling `hosted-boundary-2298`), flagged for a
+2026-11-12/13; the user's ruling `hosted-boundary-2298`), flagged for a
 review round — not the permanent currency service:
 
 - `ledger.ts` — in-process ledger stub behind the gateway interface

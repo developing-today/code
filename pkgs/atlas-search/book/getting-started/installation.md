@@ -172,7 +172,7 @@ freshly generated token and a ceiling cap: `drew-cli` (cap
 path and each client's cap; it never prints a token value. Running `init`
 when a config already exists is an error, exit 2; `--force` replaces the
 config and rotates every client token. Raising a client's cap afterwards
-is a local edit of this file by Drew — no verb does it.
+is a local edit of this file by the user — no verb does it.
 
 A seat that will use the service route needs the matching client side: its
 token is presented from the environment variable `ATLAS_SEARCH_TOKEN` when

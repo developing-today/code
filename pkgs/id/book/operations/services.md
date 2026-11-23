@@ -18,7 +18,7 @@ With no flags, serve:
 
 Serve runs until it is interrupted. There is no daemon mode, no service unit in the repository, and no stop verb: the operator runs the process in the foreground, in a terminal multiplexer, or under a supervisor of their own choosing. **Unverified:** this book found no systemd unit, launchd plist or other supervisor definition for `id serve` in the source tree.
 
-Two local nodes that Drew runs are recorded in the standing record, not in the source: a demo node on laptop loopback port `3210` and a production node on laptop port `3005`. **Unverified against source:** neither `3210` nor `3005` appears in `pkgs/id/` or in the home configuration in the checkout; both are web ports chosen by the operator at launch, presumably with `--port <PORT>`, and a fresh `id serve` does not use either number.
+Two local nodes that the user runs are recorded in the standing record, not in the source: a demo node on laptop loopback port `3210` and a production node on laptop port `3005`. **Unverified against source:** neither `3210` nor `3005` appears in `pkgs/id/` or in the home configuration in the checkout; both are web ports chosen by the operator at launch, presumably with `--port <PORT>`, and a fresh `id serve` does not use either number.
 
 ## Data directory selection
 

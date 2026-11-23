@@ -11,11 +11,11 @@ Classic recommender systems run on collaborative filtering — "users who liked 
 What a single-user corpus has instead is rich behavioural exhaust from that one user, plus the corpus's own structure:
 
 - every search session, and which results were opened;
-- saves, re-finds (a document Drew keeps returning to is a hub, whatever its text says), and dwell;
+- saves, re-finds (a document the user keeps returning to is a hub, whatever its text says), and dwell;
 - provenance — which documents derive from, cite, or were produced alongside which others;
 - co-occurrence in sessions, projects and time windows.
 
-The recommender in this design is therefore **content-based + session-based + recency-aware**, with the collaborative machinery repurposed: "items that go together" means items that appear together in *Drew's* sessions and work, not across users. The signals are also the behavioural layer of [Design: layered search characteristics on Snowflake](layered-search.md) — search and recommender are designed here as one loop, not two systems.
+The recommender in this design is therefore **content-based + session-based + recency-aware**, with the collaborative machinery repurposed: "items that go together" means items that appear together in *the user's* sessions and work, not across users. The signals are also the behavioural layer of [Design: layered search characteristics on Snowflake](layered-search.md) — search and recommender are designed here as one loop, not two systems.
 
 ## The signals
 
@@ -23,13 +23,13 @@ Four nominating signals, each cheap, each biased in a different direction — th
 
 ### 1. The profile centroid (content similarity)
 
-The user profile is a **weighted centroid of embeddings**: take the vectors — from the embedding index Atlas already maintains, see [Embeddings: Snowflake Arctic and the parity contract](../concepts/embeddings.md) — of the documents Drew opened, saved or searched for, weight each by the strength of the interaction, **decay the weights with age**, and average. Candidates are the embedding nearest neighbours of that centroid: "more like what I have been working on", with zero new infrastructure beyond the index and the interaction log.
+The user profile is a **weighted centroid of embeddings**: take the vectors — from the embedding index Atlas already maintains, see [Embeddings: Snowflake Arctic and the parity contract](../concepts/embeddings.md) — of the documents the user opened, saved or searched for, weight each by the strength of the interaction, **decay the weights with age**, and average. Candidates are the embedding nearest neighbours of that centroid: "more like what I have been working on", with zero new infrastructure beyond the index and the interaction log.
 
-Decay is the load-bearing detail. An undecayed centroid is a portrait of everything Drew has ever cared about, dominated by the largest past project; a decaying one tracks the current work, with the half-life a named, tunable parameter. Per-source profiles (one centroid for code work, one for notes, and so on) are a refinement the same shape supports when a single centroid proves too blunt.
+Decay is the load-bearing detail. An undecayed centroid is a portrait of everything the user has ever cared about, dominated by the largest past project; a decaying one tracks the current work, with the half-life a named, tunable parameter. Per-source profiles (one centroid for code work, one for notes, and so on) are a refinement the same shape supports when a single centroid proves too blunt.
 
 ### 2. Session co-occurrence (item-to-item, single-user)
 
-Documents opened or cited in the same session or task are related *for this user*, even when their texts are not similar — a specification and the incident log it eventually caused may share almost no vocabulary. Precomputing item→item neighbours offline from the session logs (pairs that co-occur, weighted by how often and how distinctively) is the strongest single-user analogue of Amazon-style item-to-item collaborative filtering, and the signal least replaceable by content similarity: it captures relationships that exist in Drew's work rather than in the text.
+Documents opened or cited in the same session or task are related *for this user*, even when their texts are not similar — a specification and the incident log it eventually caused may share almost no vocabulary. Precomputing item→item neighbours offline from the session logs (pairs that co-occur, weighted by how often and how distinctively) is the strongest single-user analogue of Amazon-style item-to-item collaborative filtering, and the signal least replaceable by content similarity: it captures relationships that exist in the user's work rather than in the text.
 
 The raw material is already recorded: every executed search mints a query trace (`atlas-query-trace/v1`) carrying the served results, and feedback records (`atlas-feedback/v1`) attach votes and `opened` flags to `(query_id, chunk_id)` pairs. Session co-occurrence is computed from that history, not from a new tracking system.
 
@@ -47,7 +47,7 @@ Production recommenders and production search have converged on one shape — **
 
 1. **Candidate generation (recall).** Union the nominators: embedding kNN against the profile centroid; item-to-item neighbours of recent items; recency/frequency leaders within active sources; graph/provenance neighbours. Each nominator is biased; the union covers the biases. Sensitivity ceilings and tier enforcement apply here, inside retrieval, exactly as in search — a recommendation is a disclosure, and the ceiling discipline of [Sensitivity tiers and client ceilings](../concepts/sensitivity.md) is inherited, not re-implemented.
 2. **Ranking (precision).** Score the union with the richest affordable model. The natural Atlas choice is the cross-encoder of [Design: the reranking stage](reranking.md), with the "query" being a profile/session summary — or, before that stage exists, a transparent feature score (similarity, recency, co-occurrence count, source) whose weights are named constants. Either way the ranker is a component with an evaluation (§ below), not a formula beyond inspection.
-3. **Re-ranking (the surface).** Enforce what raw relevance ignores: **diversity** via MMR (maximal marginal relevance — each next pick is penalised for near-duplication of picks already made), a **freshness** quota so the feed is not all old hubs, deduplication against already-seen items, and **exploration** slots — a small ε of deliberately novel items, without which the system collapses into a filter bubble of Drew's last topic and can never learn that his interests moved.
+3. **Re-ranking (the surface).** Enforce what raw relevance ignores: **diversity** via MMR (maximal marginal relevance — each next pick is penalised for near-duplication of picks already made), a **freshness** quota so the feed is not all old hubs, deduplication against already-seen items, and **exploration** slots — a small ε of deliberately novel items, without which the system collapses into a filter bubble of the user's last topic and can never learn that his interests moved.
 
 ## The two-tower question: overkill, deliberately
 

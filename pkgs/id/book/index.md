@@ -1,6 +1,6 @@
 # id
 
-ID is Drew's identity and graph platform. It started as a peer-to-peer file
+ID is the user's identity and graph platform. It started as a peer-to-peer file
 sharing tool and is now a local-first, federated, capability-based
 application platform built on the Iroh networking stack. The parts of the
 system are:
@@ -36,7 +36,7 @@ crates under `pkgs/id/crates/` — surveyed at commit `1ccb4a19457` on
 
 ## Why ID exists
 
-Before ID, each of Drew's tools kept its own store in its own shape, and
+Before ID, each of the user's tools kept its own store in its own shape, and
 each program that needed identity, files, or shared state built its own
 version of them. ID replaces those separate stores with one platform:
 
@@ -60,7 +60,7 @@ version of them. ID replaces those separate stores with one platform:
 
 ## Who it serves
 
-- **Drew, at the command line.** The `id` binary is the owner's tool:
+- **The user, at the command line.** The `id` binary is the owner's tool:
   file commands (`put`, `get`, `find`, `list`, `cat`, `show`, `peek`),
   the `tag` family, `serve`, the `world` client commands, `group`,
   `doc`, `claim`, `key`, and `keyset`. Running `id` with no subcommand

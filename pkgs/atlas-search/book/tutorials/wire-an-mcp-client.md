@@ -2,7 +2,7 @@
 
 Source: [pkgs/atlas-search/worker/src/index.ts](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/index.ts), [pkgs/atlas-search/worker/src/mcp.ts](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/mcp.ts), [pkgs/atlas-search/worker/src/space.ts](https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/space.ts), and [home/common/mcpx-settings.nix](https://github.com/developing-today/code/blob/main/home/common/mcpx-settings.nix) (issue #8625). Provenance only — this chapter is complete without following it.
 
-This tutorial wires one agent to Atlas through MCP (the Model Context Protocol, the protocol agents use to call external tools). By the end the agent can call one tool, `search`, over Drew's unified Atlas index. There is no per-agent account to create and no second search path to configure: the MCP endpoint and the Worker's REST search share one execution path, one cache, and one pinned ceiling. For the underlying surfaces see [The Atlas MCP server](../reference/mcp.md) and [The Worker HTTP API](../reference/worker-api.md).
+This tutorial wires one agent to Atlas through MCP (the Model Context Protocol, the protocol agents use to call external tools). By the end the agent can call one tool, `search`, over the user's unified Atlas index. There is no per-agent account to create and no second search path to configure: the MCP endpoint and the Worker's REST search share one execution path, one cache, and one pinned ceiling. For the underlying surfaces see [The Atlas MCP server](../reference/mcp.md) and [The Worker HTTP API](../reference/worker-api.md).
 
 ## What you are connecting to
 

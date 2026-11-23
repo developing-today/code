@@ -173,7 +173,7 @@ record. Changing the mandated model is not a source change; it is
 ## Step 6 — licensing and zone gates for external sources
 
 Everything above is the route for the estate's own sources. External
-content — anything not from Drew's own orgs and accounts — has two
+content — anything not from the user's own orgs and accounts — has two
 further gates, both policy gates, and both currently closed:
 
 - **Licensing (#6024, #6052, #6055).** External extraction is gated on

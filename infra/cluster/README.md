@@ -82,7 +82,7 @@ with PR review, sit next to this runbook and the
 [basement-cluster roadmap](../../planning/roadmaps/basement-cluster.md), and
 need no second repo with its own access model. (`infra/talos/01b.us/` is the
 torn-down v1.9-era test cluster — historical reference only.) If a separate
-cluster-config repo is ever preferred, that is a Drew decision; nothing in
+cluster-config repo is ever preferred, that is a user decision; nothing in
 the mechanism depends on it.
 
 ## Runbook
@@ -139,7 +139,7 @@ a provisioned volume (install-time evaluation, above).
 
 ## Local container-flow proof
 
-The flow is provable with no hardware, and that local proof is the one Drew
+The flow is provable with no hardware, and that local proof is the one the user
 already has partially working. Recorded flow (commands as run against a
 local Talos maintenance-mode container):
 
@@ -151,7 +151,7 @@ talm apply -n <node-addr> --dry-run    # diff shows install disk + patch only
 talm apply -n <node-addr>              # apply
 ```
 
-Observed (fleet record: Drew's local container runs, and the design
+Observed (fleet record: the user's local container runs, and the design
 verification in triage task 7746 on issue #1812, 2026-11-03):
 
 - `talm template -i` produces the node file with the modeline, the

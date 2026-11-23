@@ -1,6 +1,6 @@
 # atlas
 
-Atlas is Drew's unified search system: one search engine over the corpora Drew
+Atlas is the user's unified search system: one search engine over the corpora the user
 and his agents produce — AI-client conversations first, and, through the same
 staging discipline, notes, repository documents, GitHub comments, query traces,
 and reports. Every stored unit keeps its _provenance_ (where it came from: the
@@ -87,7 +87,7 @@ Atlas replaces the silos with one normalised store and one query surface:
 
 ## Who it serves
 
-- **Drew, at the command line.** The `atlas-search` binary is the owner's
+- **The user, at the command line.** The `atlas-search` binary is the owner's
   tool: standalone search and chunk fetch, the service's provisioning verbs
   (`init`, `fetch-model`), and the operator verbs for staging,
   classification, evaluation, and trace handling that the reference part of
@@ -102,12 +102,12 @@ Atlas replaces the silos with one normalised store and one query surface:
   [Consumers: fleet, agents, memory and ID](concepts/consumers.md) and
   [The Atlas MCP server](reference/mcp.md).
 - **The laptop service's named clients.** The service keeps a client table —
-  in version 1: Drew's CLI (ceiling cap `secret-bearing`), OpenChamber
+  in version 1: the user's CLI (ceiling cap `secret-bearing`), OpenChamber
   sessions (cap `personal`), fork/OpenCode agents (cap `personal`), and
   sandbox scripts (cap `personal`) — plus the Cloudflare Worker as the
   `cf-worker` client (cap `personal`). Each client presents its own token;
   the server clamps every request to that client's cap.
-- **ID, as a future consumer.** ID is Drew's identity and graph system. An
+- **ID, as a future consumer.** ID is the user's identity and graph system. An
   Atlas → ID publication format — corpus objects with their provenance and
   lineage relations, published as ID-graph objects — is designed, and the
   search-integration design work continues in this book's design part. ID is
