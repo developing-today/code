@@ -11,6 +11,7 @@
 // interrupted instead of being run a second time.
 import type { Docs } from "./docs.ts";
 import {
+  APK_LIMIT,
   type EdgeConfig,
   type Held,
   HOLDABLE,
@@ -50,6 +51,9 @@ export interface LinkOptions {
   run: (held: Held) => Promise<void>;
   /** The commit this console is running, if it could be found. */
   version?: string;
+  /** The signed Android build on this host, if there is one, and a way
+   * to read it when the edge asks for it. */
+  apk?: () => Promise<{ sha256: string; size: number; at: number; read: () => Promise<Uint8Array> } | null>;
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (line: string) => void;
@@ -185,10 +189,23 @@ export class EdgeLink {
       const sections = snapshot.filter((s) => this.sent.get(s.name) !== s.hash || this.want.has(s.name));
       const acks = [...this.acks];
       const at = Math.max(this.now(), this.lastAt + 1);
+      // The Android build: always what it is, and the build itself only
+      // when the edge has said it lacks this one.
+      const build = (await this.o.apk?.().catch(() => null)) ?? null;
+      const apk =
+        build && build.size <= APK_LIMIT
+          ? {
+              sha256: build.sha256,
+              size: build.size,
+              at: build.at,
+              ...(this.want.has("apk") ? { data: Buffer.from(await build.read()).toString("base64") } : {}),
+            }
+          : null;
       const message: SyncRequest & { acts: unknown } = {
         v: 1,
         at,
         ...(this.o.version ? { version: this.o.version } : {}),
+        ...(apk ? { apk } : {}),
         config: await this.o.config(),
         sections,
         have: Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at, error: s.error }])),

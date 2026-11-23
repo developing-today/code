@@ -57,6 +57,11 @@ export interface SyncRequest {
   v: 1;
   /** Milliseconds, later than every sync before it. */
   at: number;
+  /** The signed Android build the host has, if it has one: its
+   * fingerprint, size and date, and the build itself (base64) only in a
+   * report that follows the edge asking for it. The edge keeps a copy,
+   * so the app can be downloaded while the host is away. */
+  apk?: ApkReport;
   /** The commit the host's console is running. The edge says it in its
    * health answer, so whether a merge has reached the host can be seen
    * from anywhere, without reaching the host. */
@@ -89,6 +94,32 @@ export interface Held {
   /** Who took it, as the edge verified them. */
   who: string;
   at: string;
+}
+
+export interface ApkReport {
+  sha256: string;
+  size: number;
+  /** When the build was put in place on the host, in milliseconds. */
+  at: number;
+  data?: string;
+}
+
+/** The largest Android build that is carried in a report. */
+export const APK_LIMIT = 5 * 1024 * 1024;
+
+/** A build's description as a report may give it, or null. */
+export function apkReport(value: unknown): ApkReport | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(v.sha256)) return null;
+  if (typeof v.size !== "number" || !Number.isSafeInteger(v.size) || v.size <= 0 || v.size > APK_LIMIT) return null;
+  if (typeof v.at !== "number" || !Number.isFinite(v.at)) return null;
+  return {
+    sha256: v.sha256,
+    size: v.size,
+    at: v.at,
+    ...(typeof v.data === "string" ? { data: v.data } : {}),
+  };
 }
 
 export interface SyncResponse {
