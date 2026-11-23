@@ -61,7 +61,7 @@ core. New wants go under `## Proposed`. Within a release, append in merge order.
 A small addition can be a heading and two links:
 
 ```markdown
-### [feat(a11y): support for Teletypewriter](../docs/tty.md) #123
+### feat(a11y): support for Teletypewriter #123
 
 2026-10-02T11:30:00-05:00
 ```
