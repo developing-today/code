@@ -17,6 +17,8 @@
 //! verbatim on every mapping, so no projection can silently rename or
 //! drop it.
 
+use super::contracts::WorkRef;
+
 /// One stored Fleet queue task state: a value of `tasks.status` in the
 /// queue store (schema default `queued`). These spellings are the
 /// compatibility surface — never rename them here.
@@ -214,6 +216,148 @@ pub struct StateMapping {
     pub unmapped_reason: Option<&'static str>,
 }
 
+/// Provenance attached to one observed projection dimension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionProvenance {
+    /// The authoritative source that supplied this dimension.
+    pub source: String,
+    /// When the source observation was made, when available.
+    pub observed_at: Option<String>,
+    /// Source version or revision, when available.
+    pub version: Option<String>,
+}
+
+/// An observed value and its provenance, or an explicit unknown with
+/// provenance describing what was queried and why no value is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectionObservation<T> {
+    Known {
+        value: T,
+        provenance: ProjectionProvenance,
+    },
+    Unknown {
+        provenance: ProjectionProvenance,
+    },
+}
+
+/// Readiness is independent of workflow lifecycle state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadinessProjection {
+    pub eligible: bool,
+    pub reasons: Vec<String>,
+}
+
+/// Claim and execution evidence remain separate from workflow state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipExecutionProjection {
+    pub owner: Option<String>,
+    pub session: Option<String>,
+    pub lease_generation: Option<u64>,
+    pub lease_expires_at: Option<String>,
+    pub execution: ExecutionState,
+}
+
+/// Execution evidence does not follow from a live lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionState {
+    NotStarted,
+    Requested,
+    Delivered,
+    Acknowledged,
+    Started,
+    Checkpointed,
+    Terminal,
+}
+
+/// A provider-native linked resource observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteResourceProjection {
+    pub kind: String,
+    pub identity: String,
+    pub state: String,
+}
+
+/// Read-only aggregate projection. Its four independent dimensions
+/// carry source provenance and can remain unknown without guessing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkInspection {
+    pub identity: WorkRef,
+    pub workflow: ProjectionObservation<StateMapping>,
+    pub readiness: ProjectionObservation<ReadinessProjection>,
+    pub ownership_execution: ProjectionObservation<OwnershipExecutionProjection>,
+    pub remote_resources: ProjectionObservation<Vec<RemoteResourceProjection>>,
+}
+
+/// A lookup failure never substitutes a nearby result for the requested
+/// work identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkInspectionLookupError {
+    NotFoundById {
+        work_id: String,
+    },
+    NotFoundByRef {
+        requested: WorkRef,
+    },
+    Ambiguous {
+        work_id: String,
+        authorities: Vec<String>,
+    },
+}
+
+/// Resolve an unqualified work ID only when it names exactly one
+/// authority in the supplied read set. Cross-authority collisions are
+/// rejected instead of selecting the first result.
+pub fn resolve_work_inspection_by_id<'a>(
+    work_id: &str,
+    inspections: &'a [WorkInspection],
+) -> Result<&'a WorkInspection, WorkInspectionLookupError> {
+    let matches: Vec<&WorkInspection> = inspections
+        .iter()
+        .filter(|inspection| inspection.identity.work_id == work_id)
+        .collect();
+    match matches.as_slice() {
+        [] => Err(WorkInspectionLookupError::NotFoundById {
+            work_id: work_id.to_string(),
+        }),
+        [inspection] => Ok(*inspection),
+        _ => {
+            let mut authorities: Vec<String> = matches
+                .iter()
+                .map(|inspection| inspection.identity.authority_id.clone())
+                .collect();
+            authorities.sort();
+            authorities.dedup();
+            Err(WorkInspectionLookupError::Ambiguous {
+                work_id: work_id.to_string(),
+                authorities,
+            })
+        }
+    }
+}
+
+/// Resolve a fully qualified identity by exact pair equality. A result
+/// with the same numeric ID in another authority is never returned.
+pub fn resolve_work_inspection_by_ref<'a>(
+    requested: &WorkRef,
+    inspections: &'a [WorkInspection],
+) -> Result<&'a WorkInspection, WorkInspectionLookupError> {
+    let mut matches = inspections
+        .iter()
+        .filter(|inspection| inspection.identity == *requested);
+    let Some(inspection) = matches.next() else {
+        return Err(WorkInspectionLookupError::NotFoundByRef {
+            requested: requested.clone(),
+        });
+    };
+    if matches.next().is_some() {
+        return Err(WorkInspectionLookupError::Ambiguous {
+            work_id: requested.work_id.clone(),
+            authorities: vec![requested.authority_id.clone()],
+        });
+    }
+    Ok(inspection)
+}
+
 /// Project one stored queue state onto the V2 workflow dimension,
 /// loss-aware: each source state maps with its losses (or its required
 /// evidence) declared, or is explicitly unmapped with a reason.
@@ -310,6 +454,74 @@ pub fn map_queue_state(source: QueueState, evidence: ProjectionEvidence) -> Stat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unknown_observation<T>() -> ProjectionObservation<T> {
+        ProjectionObservation::Unknown {
+            provenance: ProjectionProvenance {
+                source: "test-fixture".to_string(),
+                observed_at: Some("2026-11-23T00:00:00Z".to_string()),
+                version: Some("fixture-v1".to_string()),
+            },
+        }
+    }
+
+    fn inspection(authority_id: &str, work_id: &str) -> WorkInspection {
+        WorkInspection {
+            identity: WorkRef::new(authority_id, work_id).unwrap(),
+            workflow: unknown_observation(),
+            readiness: unknown_observation(),
+            ownership_execution: unknown_observation(),
+            remote_resources: unknown_observation(),
+        }
+    }
+
+    /// Oracle: a bare work ID cannot select arbitrarily when the read
+    /// set contains that ID under multiple authorities. Each of the
+    /// four independent dimensions also has an explicit provenance
+    /// slot, including when its value is unknown.
+    #[test]
+    fn work_inspect_rejects_ambiguous_cross_repo_reference() {
+        let inspections = [
+            inspection("developing-today/code", "842"),
+            inspection("developing-today/fleet", "842"),
+        ];
+
+        assert_eq!(
+            resolve_work_inspection_by_id("842", &inspections),
+            Err(WorkInspectionLookupError::Ambiguous {
+                work_id: "842".to_string(),
+                authorities: vec![
+                    "developing-today/code".to_string(),
+                    "developing-today/fleet".to_string(),
+                ],
+            })
+        );
+        for observation in [
+            &inspections[0].workflow,
+            &inspections[0].readiness,
+            &inspections[0].ownership_execution,
+            &inspections[0].remote_resources,
+        ] {
+            assert!(matches!(
+                observation,
+                ProjectionObservation::Unknown { provenance }
+                    if provenance.source == "test-fixture"
+            ));
+        }
+    }
+
+    /// Oracle: an explicit identity must match both authority and work
+    /// ID; a same-number result from another repository is not a hit.
+    #[test]
+    fn work_inspect_by_id_rejects_nonmatching_result() {
+        let requested = WorkRef::new("developing-today/code", "842").unwrap();
+        let result_from_another_repo = [inspection("developing-today/fleet", "842")];
+
+        assert_eq!(
+            resolve_work_inspection_by_ref(&requested, &result_from_another_repo),
+            Err(WorkInspectionLookupError::NotFoundByRef { requested })
+        );
+    }
 
     const NO_EVIDENCE: ProjectionEvidence = ProjectionEvidence {
         verified_completion_receipt: false,
