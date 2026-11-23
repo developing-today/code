@@ -45,7 +45,7 @@ impl ToolDefinition {
     }
 }
 
-/// The seven approved v1 MCP tools, in their pinned wire order.
+/// The eight approved v1 MCP tools, in their pinned wire order.
 #[must_use]
 pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
     vec![
@@ -54,6 +54,7 @@ pub fn v1_tool_definitions() -> Vec<ToolDefinition> {
         ToolDefinition::new("screen.read", "screen.read", "screen.read"),
         ToolDefinition::new("screen.subscribe", "screen.subscribe", "screen.read"),
         ToolDefinition::new("object.inspect", "object.inspect", "screen.read"),
+        ToolDefinition::new("program.invoke", "input", "program.invoke"),
         ToolDefinition::new("chat.post", "chat.post", "chat.post"),
         ToolDefinition::new("presence.set", "presence.set", "presence"),
     ]
@@ -222,8 +223,9 @@ impl BridgeSession {
     ///
     /// Frame-backed tools produce [`ToolAction::SendFrame`] with the
     /// exact F13.1 client frame; `screen.read` and `object.inspect` are
-    /// answered from the frames observed so far; `world.leave` produces
-    /// [`ToolAction::Close`]. `presence.set` is refused with
+    /// answered from the frames observed so far; `program.invoke`
+    /// produces the single `input` frame that carries the invocation;
+    /// `world.leave` produces [`ToolAction::Close`]. `presence.set` is refused with
     /// [`BridgeError::NoFrameMapping`]: presence in the F13.1 contract
     /// is the join itself, so there is no presence frame to send.
     pub fn tool_action(
@@ -257,6 +259,10 @@ impl BridgeSession {
             "object.inspect" => {
                 self.require_joined("object.inspect")?;
                 Ok(ToolAction::Local(self.object_inspect(arguments)?))
+            }
+            "program.invoke" => {
+                self.require_joined("program.invoke")?;
+                Ok(ToolAction::SendFrame(invoke_frame(arguments)?))
             }
             "presence.set" => Err(BridgeError::NoFrameMapping {
                 tool: "presence.set",
@@ -446,6 +452,66 @@ fn chat_frame(arguments: &serde_json::Value) -> Result<serde_json::Value, Bridge
     Ok(frame)
 }
 
+/// Build the `input` frame for `program.invoke` (design section
+/// 4.6): the one bounded program interaction. The call names the
+/// program and the object it acts on; `arguments` is the invocation
+/// payload in the program's own input language — the argument schema
+/// is fixed in the role grant, and the spike's programs take a string
+/// input — delivered as the frame's hex-encoded data. One call builds
+/// exactly one frame: no chaining, and nothing else is sent. The
+/// stale-decision token rides along when supplied (section 4.3); the
+/// result returns as the host's view and semantic-diff frames, like
+/// any other world change.
+fn invoke_frame(arguments: &serde_json::Value) -> Result<serde_json::Value, BridgeError> {
+    // The names are validated here and enforced there: which program
+    // may be invoked is the policy point's allowlist call, and the
+    // audit record names the program from the same arguments.
+    for (field, problem) in [
+        ("program", "program must be a non-empty string"),
+        ("object", "object must be a non-empty string"),
+    ] {
+        if arguments
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|value| value.is_empty())
+        {
+            return Err(BridgeError::InvalidArguments {
+                tool: "program.invoke",
+                problem,
+            });
+        }
+    }
+    let payload = arguments
+        .get("arguments")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(BridgeError::InvalidArguments {
+            tool: "program.invoke",
+            problem: "arguments must be a string",
+        })?;
+    let mut frame = serde_json::json!({
+        "type": "input",
+        "data_hex": hex_encode(payload.as_bytes()),
+    });
+    if let Some(revision) = arguments
+        .get("screen_revision")
+        .and_then(serde_json::Value::as_u64)
+    {
+        frame["screen_revision"] = serde_json::json!(revision);
+    }
+    Ok(frame)
+}
+
+/// Lowercase hex, the wire encoding of the `input` frame's data.
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[usize::from(byte >> 4)] as char);
+        out.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    out
+}
+
 fn definition_hash(definitions: &[ToolDefinition]) -> Result<[u8; 32], BridgeError> {
     let bytes = serde_json::to_vec(definitions).map_err(|_| BridgeError::InvalidDefinitions)?;
     Ok(Sha256::digest(bytes).into())
@@ -508,6 +574,10 @@ mod tests {
             ("screen.read", json!({})),
             ("chat.post", json!({ "text": "hi" })),
             ("object.inspect", json!({ "entity_ref": 1 })),
+            (
+                "program.invoke",
+                json!({ "program": "tic-tac-toe", "object": "board", "arguments": "4" }),
+            ),
         ] {
             assert!(
                 matches!(
@@ -704,6 +774,63 @@ mod tests {
             session.tool_action("chat.post", &json!({ "text": "hi" })),
             Err(BridgeError::Terminated)
         );
+    }
+
+    #[test]
+    fn invoke_builds_one_input_frame_from_the_call() {
+        let mut session = joined();
+        assert_eq!(
+            session
+                .tool_action(
+                    "program.invoke",
+                    &json!({ "program": "tic-tac-toe", "object": "board", "arguments": "4" })
+                )
+                .unwrap(),
+            ToolAction::SendFrame(json!({ "type": "input", "data_hex": "34" }))
+        );
+        // The stale-decision token rides along when supplied.
+        assert_eq!(
+            session
+                .tool_action(
+                    "program.invoke",
+                    &json!({
+                        "program": "tic-tac-toe",
+                        "object": "board",
+                        "arguments": "0",
+                        "screen_revision": 5,
+                    })
+                )
+                .unwrap(),
+            ToolAction::SendFrame(json!({
+                "type": "input",
+                "data_hex": "30",
+                "screen_revision": 5,
+            }))
+        );
+    }
+
+    #[test]
+    fn invoke_refuses_an_unnamed_program_object_or_non_string_arguments() {
+        let mut session = joined();
+        for arguments in [
+            json!({ "object": "board", "arguments": "4" }),
+            json!({ "program": "", "object": "board", "arguments": "4" }),
+            json!({ "program": "tic-tac-toe", "arguments": "4" }),
+            json!({ "program": "tic-tac-toe", "object": "", "arguments": "4" }),
+            json!({ "program": "tic-tac-toe", "object": "board" }),
+            json!({ "program": "tic-tac-toe", "object": "board", "arguments": 4 }),
+        ] {
+            assert!(
+                matches!(
+                    session.tool_action("program.invoke", &arguments),
+                    Err(BridgeError::InvalidArguments {
+                        tool: "program.invoke",
+                        ..
+                    })
+                ),
+                "{arguments} must be refused"
+            );
+        }
     }
 
     #[test]
