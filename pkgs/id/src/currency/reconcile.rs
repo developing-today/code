@@ -34,7 +34,7 @@
 //! of aborting the run: a reconciliation report that hides its
 //! own blindness would read as a match over no evidence.
 
-use id_currency_registry::{account_spec, AccountKind, CurrencyRecord, PLATFORM_OWNER_ID};
+use id_currency_registry::{AccountKind, CurrencyRecord, PLATFORM_OWNER_ID, account_spec};
 use serde::{Deserialize, Serialize};
 
 use crate::currency::gateway_poc::GraphLog;
