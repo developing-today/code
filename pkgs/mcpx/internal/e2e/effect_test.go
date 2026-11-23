@@ -3408,15 +3408,18 @@ func TestAutostartConnectTimeoutBoundsTheWaitForADaemon(t *testing.T) {
 
 // TestAutostartPingTimeoutBoundsEachReadinessPing is the effect probe for
 // autostart.pingTimeout: the readiness ping answers at the default bound,
-// and none can at a one-nanosecond bound, so the start is given up on. Both
-// cases wait two seconds for the daemon, not the default, to stay quick;
-// two seconds is ample for it to start, as the first case shows.
+// and none can at a one-nanosecond bound, so the start is given up on. The
+// two cases use different connect waits on purpose. The default-ping case
+// waits generously: its assertion is that the daemon does start, and under
+// CPU contention startup can take far longer than a short wait allows.
+// The one-nanosecond case waits only two seconds: no ping can answer in a
+// nanosecond however fast the daemon starts, so the give-up is certain
+// and a short wait keeps the test quick.
 func TestAutostartPingTimeoutBoundsEachReadinessPing(t *testing.T) {
-	const wait = "MCPX_AUTOSTART_CONNECT_TIMEOUT=2s"
-	if failed, out := autostartFails(t, wait); failed {
+	if failed, out := autostartFails(t, "MCPX_AUTOSTART_CONNECT_TIMEOUT=60s"); failed {
 		t.Errorf("at the default autostart.pingTimeout the daemon should start:\n%s", out)
 	}
-	if failed, out := autostartFails(t, wait, "MCPX_AUTOSTART_PING_TIMEOUT=1ns"); !failed {
+	if failed, out := autostartFails(t, "MCPX_AUTOSTART_CONNECT_TIMEOUT=2s", "MCPX_AUTOSTART_PING_TIMEOUT=1ns"); !failed {
 		t.Errorf("autostart.pingTimeout=1ns should leave every ping unanswered:\n%s", out)
 	}
 }
