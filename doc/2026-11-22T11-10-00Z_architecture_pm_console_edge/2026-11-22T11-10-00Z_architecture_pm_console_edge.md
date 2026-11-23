@@ -219,3 +219,41 @@ Still open, and why:
   staged in #12561 and needs two protected environments with their own
   tokens before it can run.
 - The Android project is still on androidbrowserhelper 2.5.0.
+
+## 2026-11-23T01:25Z Update: the build never holds up a report
+
+The last three commits of the Android-build change (#12723) merged
+before any reviewer read them, so they were read again afterwards. Two
+real faults came out of that: one in how the build travels, one in how
+the edge keeps it.
+
+A report that carries the build is megabytes; every other report is
+kilobytes. The laptop gives a report twenty seconds. On a connection
+too slow to send the build in that time, the report failed, and the
+next was built the same way and failed too, for as long as the edge
+still lacked the build. In that time no report arrived at all, so the
+edge took the laptop for gone while it was there. Nothing of the kind
+could happen before the build was put into reports.
+
+- A report that carried the build and did not get through, whether cut
+  off or turned away, is followed at once by one without the build.
+  The build is tried again ten minutes later. At worst one report in
+  ten minutes is lost to it.
+- A build file that cannot be read is left out the same way, where it
+  used to stop the report.
+- Whether the build and the changed sections fit one report is now
+  measured on the report as sent, in bytes. It was estimated in
+  characters, and text outside ASCII is up to three bytes a character,
+  so the estimate could pass a report the edge then refused as too
+  large.
+- When the build goes alone, the sections it displaced follow at once
+  instead of at the next ordinary report.
+
+- The edge wrote a new build over the pieces of the old one and only
+  then recorded the new build. A write that stopped half-way left
+  pieces of two builds under the old record, and with the laptop away
+  those were handed out as the old build. The old record is now removed
+  before its pieces are touched, so a half-written copy is no copy: the
+  edge says it has none, hands nothing out, and asks for the build
+  again. Pieces left by a larger build are removed whether or not its
+  record survived.
