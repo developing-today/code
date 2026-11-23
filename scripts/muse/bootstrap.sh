@@ -30,7 +30,7 @@
 #             fleet linked (only /home/hatch survives a recycle)
 #   init      run the restored ~/tools/init.sh (units, services)
 #   check     fleet version/capabilities, laptop link, secrets broker,
-#             bridge hello as agent "muse" (group muse)
+#             bridge hello as the enrolling agent (its own groups, #12897)
 #
 # Secrets are fetched by name and never printed, logged or put in argv.
 # Exit: 0 ok, 1 a phase failed (the message names it), 2 usage.
@@ -52,6 +52,7 @@ LAPTOP_TAILNET_IP=100.99.113.103
 AGENT="${FLEET_AGENT:-muse}"
 AGENT_WAS_EXPLICIT=0
 [ "${FLEET_AGENT+x}" = x ] && AGENT_WAS_EXPLICIT=1
+AGENT_GROUPS="${FLEET_AGENT_GROUPS:-}"
 TS_HOSTNAME_OVERRIDE="${TS_HOSTNAME:-}"
 TS_STATE_OVERRIDE="${TS_STATE:-}"
 
@@ -715,7 +716,15 @@ except OSError:
     say "check: 1Password CLI/token did not verify (op is restored from ~/tools or login data is missing)"
     rc=1
   fi
-  if fleet bridge hello --agent "$AGENT" --groups muse >/dev/null 2>&1; then
+  # Bridge registration probe (#12897): use the enrolling agent's own
+  # groups when the caller supplies them (FLEET_AGENT_GROUPS); with
+  # none supplied, hello without --groups -- the bridge registers a
+  # new agent group-less and leaves an existing agent's groups
+  # untouched. Never hardcode another kind's group here: `fleet agent
+  # enroll` is the step that owns group assignment.
+  bridge_hello=(fleet bridge hello --agent "$AGENT")
+  [ -n "$AGENT_GROUPS" ] && bridge_hello+=(--groups "$AGENT_GROUPS")
+  if "${bridge_hello[@]}" >/dev/null 2>&1; then
     say "check: bridge hello as $AGENT ok; unread commands: $(fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
   else
     say "check: bridge hello failed"
