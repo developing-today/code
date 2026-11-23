@@ -769,10 +769,14 @@ except OSError:
   # new agent group-less and leaves an existing agent's groups
   # untouched. Never hardcode another kind's group here: `fleet agent
   # enroll` is the step that owns group assignment.
-  bridge_hello=(fleet bridge hello --agent "$AGENT")
+  # Both bridge calls are time-bounded (#13045): hello depends on the
+  # session broker in practice, so with init skipped (or a stale broker
+  # socket) an unbounded hello hangs check forever instead of reaching
+  # the named failure below. A timeout lands in the same else branch.
+  bridge_hello=(timeout 30 fleet bridge hello --agent "$AGENT")
   [ -n "$AGENT_GROUPS" ] && bridge_hello+=(--groups "$AGENT_GROUPS")
   if "${bridge_hello[@]}" >/dev/null 2>&1; then
-    say "check: bridge hello as $AGENT ok; unread commands: $(fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
+    say "check: bridge hello as $AGENT ok; unread commands: $(timeout 30 fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
   else
     say "check: bridge hello failed"
     rc=1
