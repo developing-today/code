@@ -4780,7 +4780,9 @@ describe("telling the owner, with no machine", () => {
     w.ghLimits.length = 0;
     w.now.t += 60_000;
     reply(w, 202, "Done while you were turned away.");
-    w.now.t = w.alarm.at;
+    // The prompts are tried again when their five minutes are up, not
+    // at the minute wake before that: the reply is news only then.
+    w.now.t = limitedAt + 5 * 60_000 + 1_000;
     await w.edge.now.alarm();
     expect(w.pushes).toHaveLength(1);
     expect(JSON.parse(await phone.open(w.pushes[0].body))).toMatchObject({ title: "The fleet replied on #202" });
