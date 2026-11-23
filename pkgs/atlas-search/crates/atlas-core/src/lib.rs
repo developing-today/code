@@ -37,6 +37,7 @@
 //! never per-request.
 
 pub mod aggregate;
+pub mod attestation;
 pub mod backend;
 pub mod boundary;
 pub mod c8_fingerprint;
