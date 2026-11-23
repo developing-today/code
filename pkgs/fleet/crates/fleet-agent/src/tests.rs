@@ -2088,7 +2088,7 @@ fn config() -> fleet_config::Config {
 fn auto_on_the_laptop_runs_here_without_probing() {
     let fake = Fake::new();
     fake.set_env("FLEET_LOCATION", "laptop");
-    let (target, because) = shell::resolve(&config(), &fake, "auto", None).unwrap();
+    let (target, because) = shell::resolve(&config(), &fake, "auto", None, None).unwrap();
     assert_eq!(target, Target::Local);
     assert!(because.contains("laptop"));
     assert!(fake.calls().is_empty());
@@ -2099,7 +2099,9 @@ fn auto_elsewhere_prefers_the_laptop_then_a_codespace_then_here() {
     let fake = Fake::new();
     fake.on("fleet laptop-agent health", vec![ok(json!({"ok": true}))]);
     assert_eq!(
-        shell::resolve(&config(), &fake, "auto", None).unwrap().0,
+        shell::resolve(&config(), &fake, "auto", None, None)
+            .unwrap()
+            .0,
         Target::Laptop
     );
 
@@ -2109,7 +2111,9 @@ fn auto_elsewhere_prefers_the_laptop_then_a_codespace_then_here() {
         vec![ok(json!([{"name": "sleepy", "state": "Shutdown"}, {"name": "awake", "state": "Available"}]))],
     );
     assert_eq!(
-        shell::resolve(&config(), &fake, "auto", None).unwrap().0,
+        shell::resolve(&config(), &fake, "auto", None, None)
+            .unwrap()
+            .0,
         Target::Codespace("awake".to_string()),
         "a running codespace is preferred over the first listed"
     );
@@ -2120,7 +2124,7 @@ fn auto_elsewhere_prefers_the_laptop_then_a_codespace_then_here() {
         vec![fail(3, "no leg answered")],
     )
     .on("gh codespace list", vec![fail(1, "HTTP 403")]);
-    let (target, because) = shell::resolve(&config(), &fake, "auto", None).unwrap();
+    let (target, because) = shell::resolve(&config(), &fake, "auto", None, None).unwrap();
     assert_eq!(target, Target::Local);
     assert!(because.contains("running here"), "{because}");
 }
@@ -2135,7 +2139,9 @@ fn an_explicit_target_is_never_swapped_for_another() {
     // Asked for the laptop while it is down: still the laptop, so the caller
     // sees the failure instead of a build quietly running in a sandbox.
     assert_eq!(
-        shell::resolve(&config(), &fake, "laptop", None).unwrap().0,
+        shell::resolve(&config(), &fake, "laptop", None, None)
+            .unwrap()
+            .0,
         Target::Laptop
     );
     assert!(fake.calls().is_empty(), "an explicit target is not probed");
@@ -2143,7 +2149,7 @@ fn an_explicit_target_is_never_swapped_for_another() {
     let fake = Fake::new();
     fake.on("gh codespace list", vec![ok(json!([]))]);
     assert!(matches!(
-        shell::resolve(&config(), &fake, "codespace", None),
+        shell::resolve(&config(), &fake, "codespace", None, None),
         Err(AgentError::Down(_))
     ));
 }
@@ -2153,17 +2159,21 @@ fn the_environment_can_pin_auto_and_a_bad_pin_is_refused() {
     let fake = Fake::new();
     fake.set_env("FLEET_SHELL_TARGET", "local");
     assert_eq!(
-        shell::resolve(&config(), &fake, "auto", None).unwrap().0,
+        shell::resolve(&config(), &fake, "auto", None, None)
+            .unwrap()
+            .0,
         Target::Local
     );
     fake.set_env("FLEET_SHELL_TARGET", "moon");
     assert!(matches!(
-        shell::resolve(&config(), &fake, "auto", None),
+        shell::resolve(&config(), &fake, "auto", None, None),
         Err(AgentError::Usage(_))
     ));
     // An explicit --target wins over the environment.
     assert_eq!(
-        shell::resolve(&config(), &fake, "laptop", None).unwrap().0,
+        shell::resolve(&config(), &fake, "laptop", None, None)
+            .unwrap()
+            .0,
         Target::Laptop
     );
 }
@@ -2188,6 +2198,7 @@ fn shell_runs_the_plan_or_prints_it() {
             assert!(command.contains("cargo check"));
         }
         shell::Done::Ran(_) => panic!("--print must not run"),
+        shell::Done::PrintedCode(_, _) => panic!("--print must not run"),
     }
     assert!(fake.attached.borrow().is_empty());
     let ran = shell::run(&config(), &fake, &argv(&["--", "uname", "-a"])).unwrap();
@@ -2201,6 +2212,297 @@ fn shell_runs_the_plan_or_prints_it() {
         shell::run(&config(), &fake, &argv(&["uname"])),
         Err(AgentError::Usage(_))
     ));
+}
+
+#[test]
+fn an_actions_plan_is_the_placement_dispatch() {
+    let plan = shell::plan(
+        Target::Actions("dezren39/fleet".to_string()),
+        "test".into(),
+        &words(&["cargo", "test", "-p", "fleet-agent"]),
+        &opts(),
+    )
+    .unwrap();
+    assert_eq!(plan.program, "fleet");
+    assert_eq!(
+        plan.args,
+        argv(&[
+            "queue",
+            "dispatch",
+            "--repo",
+            "dezren39/fleet",
+            "--command",
+            "cargo test -p fleet-agent",
+            "--dispatch",
+            "--json",
+        ])
+    );
+    let printed = plan.to_json();
+    assert_eq!(printed["target"], "actions");
+    assert_eq!(printed["repo"], "dezren39/fleet");
+    // No shell to open, no host build lock, no runner cwd.
+    assert!(matches!(
+        shell::plan(
+            Target::Actions("dezren39/fleet".into()),
+            "t".into(),
+            &[],
+            &opts()
+        ),
+        Err(AgentError::Usage(_))
+    ));
+    assert!(matches!(
+        shell::plan(
+            Target::Actions("dezren39/fleet".into()),
+            "t".into(),
+            &words(&["true"]),
+            &Options {
+                build: true,
+                ..opts()
+            },
+        ),
+        Err(AgentError::Usage(_))
+    ));
+    assert!(matches!(
+        shell::plan(
+            Target::Actions("dezren39/fleet".into()),
+            "t".into(),
+            &words(&["true"]),
+            &Options {
+                cwd: Some("/tmp".into()),
+                ..opts()
+            },
+        ),
+        Err(AgentError::Usage(_))
+    ));
+}
+
+#[test]
+fn actions_resolution_takes_the_flag_then_the_checkout_origin() {
+    let fake = Fake::new();
+    let (target, _) = shell::resolve(
+        &config(),
+        &fake,
+        "actions",
+        None,
+        Some("dezren39/fleet".into()),
+    )
+    .unwrap();
+    assert_eq!(target, Target::Actions("dezren39/fleet".to_string()));
+    assert!(fake.calls().is_empty(), "an explicit --repo is not probed");
+
+    // No flag: the checkout's origin, in either URL shape.
+    for url in [
+        "git@github.com:developing-today/code.git\n",
+        "https://github.com/developing-today/code.git\n",
+    ] {
+        let fake = Fake::new();
+        fake.on(
+            "git remote get-url origin",
+            vec![Out {
+                code: 0,
+                stdout: url.to_string(),
+                stderr: String::new(),
+            }],
+        );
+        let (target, _) = shell::resolve(&config(), &fake, "actions", None, None).unwrap();
+        assert_eq!(target, Target::Actions("developing-today/code".to_string()));
+    }
+
+    // No flag and no usable origin: a clear refusal, never a guess.
+    let fake = Fake::new();
+    fake.on("git remote get-url origin", vec![fail(128, "no remote")]);
+    assert!(matches!(
+        shell::resolve(&config(), &fake, "actions", None, None),
+        Err(AgentError::Down(_))
+    ));
+    // A malformed --repo is a usage error.
+    let fake = Fake::new();
+    assert!(matches!(
+        shell::resolve(&config(), &fake, "actions", None, Some("noslash".into())),
+        Err(AgentError::Usage(_))
+    ));
+    // auto never picks actions, even with a repo at hand.
+    let fake = Fake::new();
+    fake.set_env("FLEET_LOCATION", "laptop");
+    assert_eq!(
+        shell::resolve(
+            &config(),
+            &fake,
+            "auto",
+            None,
+            Some("dezren39/fleet".into())
+        )
+        .unwrap()
+        .0,
+        Target::Local
+    );
+}
+
+#[test]
+fn an_actions_run_dispatches_waits_and_reports_the_verdict() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet queue dispatch",
+        vec![ok(json!({"handle": "fp_test", "state": "queued", "run_url": "https://example.invalid/runs/1"}))],
+    )
+    .on(
+        "fleet queue session result",
+        vec![ok(json!({"handle": "fp_test", "state": "succeeded", "terminal": true, "run_url": "https://example.invalid/runs/1"}))],
+    );
+    let done = shell::run(
+        &config(),
+        &fake,
+        &argv(&[
+            "--target",
+            "actions",
+            "--repo",
+            "dezren39/fleet",
+            "--",
+            "cargo",
+            "test",
+        ]),
+    )
+    .unwrap();
+    match done {
+        shell::Done::PrintedCode(record, code) => {
+            assert_eq!(code, 0);
+            assert_eq!(record["state"], "succeeded");
+            assert_eq!(record["handle"], "fp_test");
+        }
+        _ => panic!("an actions run prints its record with the verdict code"),
+    }
+    assert!(fake.called("fleet queue dispatch --repo dezren39/fleet"));
+    assert!(fake.called("fleet queue session result fp_test --json"));
+    assert!(
+        fake.attached.borrow().is_empty(),
+        "nothing is attached locally"
+    );
+
+    // A failed run is exit 1, with the same record shape.
+    let fake = Fake::new();
+    fake.on(
+        "fleet queue dispatch",
+        vec![ok(json!({"handle": "fp_bad", "state": "queued"}))],
+    )
+    .on(
+        "fleet queue session result",
+        vec![ok(
+            json!({"handle": "fp_bad", "state": "failed", "terminal": true}),
+        )],
+    );
+    let done = shell::run(
+        &config(),
+        &fake,
+        &argv(&[
+            "--target",
+            "actions",
+            "--repo",
+            "dezren39/fleet",
+            "--",
+            "cargo",
+            "test",
+        ]),
+    )
+    .unwrap();
+    assert!(matches!(done, shell::Done::PrintedCode(_, 1)));
+}
+
+#[test]
+fn an_actions_detach_returns_the_handle_without_waiting() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet queue dispatch",
+        vec![ok(
+            json!({"handle": "fp_away", "state": "dispatched", "run_url": null}),
+        )],
+    );
+    let done = shell::run(
+        &config(),
+        &fake,
+        &argv(&[
+            "--target",
+            "actions",
+            "--repo",
+            "dezren39/fleet",
+            "--detach",
+            "--",
+            "cargo",
+            "build",
+        ]),
+    )
+    .unwrap();
+    match done {
+        shell::Done::Printed(record) => {
+            assert_eq!(record["handle"], "fp_away");
+            assert!(record["note"].as_str().unwrap().contains("session result"));
+        }
+        _ => panic!("a detached actions run prints the dispatch record"),
+    }
+    assert!(!fake.called("session result"), "detach never polls");
+}
+
+#[test]
+fn an_actions_wait_that_expires_names_the_reconnect() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet queue dispatch",
+        vec![ok(json!({"handle": "fp_slow", "state": "queued"}))],
+    )
+    .on(
+        "fleet queue session result",
+        vec![ok(
+            json!({"handle": "fp_slow", "state": "running", "terminal": false}),
+        )],
+    );
+    // A zero budget: the first non-terminal answer is already late.
+    let err = shell::run(
+        &config(),
+        &fake,
+        &argv(&[
+            "--target",
+            "actions",
+            "--repo",
+            "dezren39/fleet",
+            "--timeout",
+            "0",
+            "--",
+            "cargo",
+            "test",
+        ]),
+    );
+    match err {
+        Err(AgentError::Down(msg)) => {
+            assert!(msg.contains("fp_slow"), "{msg}");
+            assert!(msg.contains("session result"), "{msg}");
+        }
+        Err(e) => panic!("expected a Down error naming the reconnect, got: {e}"),
+        Ok(_) => panic!("expected a Down error naming the reconnect, got a result"),
+    }
+}
+
+#[test]
+fn the_targets_listing_names_actions_and_its_reachability() {
+    let fake = Fake::new();
+    fake.set_env("FLEET_LOCATION", "laptop");
+    fake.on(
+        "fleet queue surfaces",
+        vec![ok(
+            json!({"surfaces": [{"id": "x", "kind": "github-actions"}]}),
+        )],
+    );
+    let done = shell::run(&config(), &fake, &argv(&["targets"])).unwrap();
+    match done {
+        shell::Done::Printed(listing) => {
+            let actions = listing["targets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["target"] == "actions")
+                .expect("actions is listed");
+            assert_eq!(actions["reachable"], true);
+        }
+        _ => panic!("targets prints its listing"),
+    }
 }
 
 proptest! {
