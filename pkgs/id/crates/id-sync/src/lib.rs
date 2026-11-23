@@ -24,6 +24,7 @@
 pub mod announcement;
 pub mod artifact;
 pub mod bridge;
+pub mod bridge_http;
 pub mod chained_message;
 mod checked_json;
 pub mod dht;
