@@ -202,7 +202,8 @@ derived rows with measured-at-tier rows; the 100x run
 | Documents | 64 KiB each / 512 list items | codified | #6281 findings, limits inventory |
 | Compile inputs | 8 files / 256 KiB total | codified | #6281 findings, limits inventory |
 | SSH surface | 64 connections / 16 tunnel streams | codified | #6281 findings, limits inventory |
-| Per-world caps on entities / members / programs | **none codified** | gap | #6281 findings, Finding 1 |
+| Participants per world | 256 | codified | `WorldLimits::default().participants`, `crates/id-worlds/src/world/mod.rs` — found by the #13083 generator's restore verification (the 10x tier's 320-member hot world is refused); the generator caps the hot world at 256 and records the wall in its manifest |
+| Per-world caps on entities / programs | **none codified** | gap | #6281 findings, Finding 1 (the members part of that finding is superseded by the row above) |
 
 ## Host classes
 
