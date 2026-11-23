@@ -2,15 +2,42 @@
 
 This dated map covers open application and platform issues, adjacent families and broader search matches. Each row links to its own live issue. The working order follows the engineering dependencies and existing owners.
 
-## Scope
+## Current membership
 
-The November 23, 2026 GitHub REST search returned **20** open issues labelled app/mcpx and **44** labelled epic/mcpx-platform. **16** appeared in both, giving **48** unique labelled issues. The two-page open search for mcpx returned **124** unique issues, including **18** with status/blocked. A filing made during this pass is listed separately until it enters a fresh search result. [Application](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+is%3Aopen+label%3Aapp%2Fmcpx) · [Platform](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+is%3Aopen+label%3Aepic%2Fmcpx-platform) · [Mention search](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+is%3Aopen+mcpx)
+After filing, the same queries returned **24 app issues**, **44 platform issues**, **16 in both**, and **52 distinct labelled issues**. The broad search returned 130 open matches versus 124 before filing; the blocked-label search remained at 18. Six issues entered broad membership and none left. [App query](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+is%3Aopen+label%3Aapp%2Fmcpx) · [Platform query](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+is%3Aopen+label%3Aepic%2Fmcpx-platform)
+
+| Added issue | Scope | Next action |
+|---|---|---|
+| [#13544](https://github.com/developing-today/code/issues/13544) MCPX model profiles must stop on HTTP 402 payment refusal | app/mcpx | Run the two-provider 402 oracle through Fleet and retain 503 fallback coverage. |
+| [#13568](https://github.com/developing-today/code/issues/13568) mcpx book: repair broken internal links in published HTML, Markdown twins and llms text | adjacent | Gate HTML, Markdown twins and aggregate text on resolved staged links. |
+| [#13572](https://github.com/developing-today/code/issues/13572) mcpx docs: show the effect probe or exemption beside each setting | adjacent | Join the generated inventory to the declared probe or exemption and its source reference. |
+| [#13573](https://github.com/developing-today/code/issues/13573) mcpx: match semantic feedback to exact tool identities across call and proxy paths | app/mcpx | Test exact identity and historical feedback lookup. |
+| [#13575](https://github.com/developing-today/code/issues/13575) mcpx: reconcile hot embeddings.wasmPath updates with the active embedder and cached vectors | app/mcpx | Test hot embedder selection and cache invalidation with disposable fixtures. |
+| [#13577](https://github.com/developing-today/code/issues/13577) mcpx: separate decision audit metadata from retained feedback payloads | app/mcpx | Specify authorized audit and feedback fields, then check synthetic marker visibility. |
+
+## Baseline before the publication recheck
+
+The November 23, 2026 GitHub REST search returned **20** open issues labelled app/mcpx and **44** labelled epic/mcpx-platform. **16** appeared in both, giving **48** unique labelled issues. The two-page open search for mcpx returned **124** unique issues, including **18** with status/blocked. The publication recheck above captures the six new matches. [Application](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+is%3Aopen+label%3Aapp%2Fmcpx) · [Platform](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+is%3Aopen+label%3Aepic%2Fmcpx-platform) · [Mention search](https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+is%3Aopen+mcpx)
 
 Native blocked-by edges, program checklist membership, queue ownership and human approval gates have different meanings. The native edge column reports the direct API result at collection time. A latest-comment link provides an inspection starting point. Re-read all relevant claim and release comments, check the live queue and inspect open PRs before starting or merging.
 
+### Filed follow-ups
+
+| Issue | Queue receipt |
+|---|---|
+| [#13573](https://github.com/developing-today/code/issues/13573) mcpx: match semantic feedback to exact tool identities across call and proxy paths | 21396 |
+| [#13575](https://github.com/developing-today/code/issues/13575) mcpx: reconcile hot embeddings.wasmPath updates with the active embedder and cached vectors | 21397 |
+| [#13577](https://github.com/developing-today/code/issues/13577) mcpx: separate decision audit metadata from retained feedback payloads | 21398 |
+
+- [Published update on #9963](https://github.com/developing-today/code/issues/9963#issuecomment-7109706347)
+- [Published update on #8471](https://github.com/developing-today/code/issues/8471#issuecomment-7109710583)
+- [Published update on #13264](https://github.com/developing-today/code/issues/13264#issuecomment-7109712554)
+
+The concurrent implementation PRs are [#13548](https://github.com/developing-today/code/pull/13548), [#13571](https://github.com/developing-today/code/pull/13571) and [#13588](https://github.com/developing-today/code/pull/13588). Follow each PR for its verified ref, checks and merge state.
+
 ## Relationships and current decisions
 
-The snapshot includes 126 open rows. Direct blocked-by lists returned no dependencies on all 58 checked endpoints. A status/blocked label can therefore convey a real human or environment gate absent from GitHub’s dependency graph. Recheck the distinction before treating an issue as runnable. [Dependency example](https://api.github.com/repos/developing-today/code/issues/9963/dependencies/blocked_by)
+The baseline working map includes 129 open rows from the original survey and adjacent work. The 130 figure above counts broad search matches at the later recheck. Direct blocked-by lists returned no dependencies on all 58 checked endpoints. A status/blocked label can therefore convey a real human or environment gate absent from GitHub’s dependency graph. Recheck the distinction before treating an issue as runnable. [Dependency example](https://api.github.com/repos/developing-today/code/issues/9963/dependencies/blocked_by)
 
 | Parent | Native children, including closed |
 |---|---|
@@ -195,6 +222,14 @@ The updated program census and generator/workflow issues are closed. The five-ex
 | [#13481](https://github.com/developing-today/code/issues/13481) mcpx: full-suite health on main blocks #8465 close condition (conformance/daemon/defaults/e2e/execsvc/sdnotify) | app | — | None recorded | [Read](https://github.com/developing-today/code/issues/13481#issuecomment-7109479480) | Track in owning program. |
 | [#13459](https://github.com/developing-today/code/issues/13459) impl(backups): mesh leg — laptop-local DBs → Turso backup homes (inventory + appropriateness line) | adjacent | — | Unchecked | See issue | Track in owning program. |
 | [#13337](https://github.com/developing-today/code/issues/13337) fleet-build runner: vitest worker SIGSEGV on pkgs/id/web screen-codec.test.ts (pre-existing on main) | adjacent | status:in-review, status/triaged | Unchecked | See issue | Track in owning program. |
+
+## New or cross-program search matches
+
+| Issue | Scope | Status labels | Native blocked by | Latest comment | Next action |
+|---|---|---|---|---|---|
+| [#13577](https://github.com/developing-today/code/issues/13577) mcpx: separate decision audit metadata from retained feedback payloads | new filing | — | Unchecked | None | Triage the documented synthetic acceptance oracle and check current claims before implementation. |
+| [#13575](https://github.com/developing-today/code/issues/13575) mcpx: reconcile hot embeddings.wasmPath updates with the active embedder and cached vectors | new filing | — | Unchecked | None | Triage the documented synthetic acceptance oracle and check current claims before implementation. |
+| [#13573](https://github.com/developing-today/code/issues/13573) mcpx: match semantic feedback to exact tool identities across call and proxy paths | new filing | — | Unchecked | None | Triage the documented synthetic acceptance oracle and check current claims before implementation. |
 
 ## Refresh
 
