@@ -34,8 +34,9 @@
 
 import type { HostedConfig } from "./config.ts";
 import { FailClosed } from "./errors.ts";
-import type { GitHubItemSource, GitHubWriter } from "./github.ts";
+import type { GitHubCommentSurface, GitHubItemSource, GitHubWriter } from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
+import type { QueueDepProbe, QueueStore } from "./queue-store.ts";
 import type { SessionRegistry } from "./sessions.ts";
 import type { MetadataStore, QueueRecordSource } from "./stamping.ts";
 
@@ -80,6 +81,20 @@ export interface AuthDeps {
    * design §5 rule for work that is not queue-originated); the queue
    * front door (#12589) wires the real source behind this seam. */
   queueRecords?: QueueRecordSource;
+  /** Queue store (#12589, src/queue-store.ts): the queue door's
+   * backend — the production home is the existing fleet-queue
+   * Turso DB (#6741) behind the QueueStore interface. Absent → the
+   * queue door fails closed with 503, like unconfigured auth. */
+  queueStore?: QueueStore;
+  /** GitHub dep probe for the queue door's dep-recheck (#12589).
+   * Absent → the no-probe posture the native broker also runs:
+   * GitHub deps report unprobeable and stay blocked until their
+   * TTL; task deps resolve from the store either way. */
+  queueDepProbe?: QueueDepProbe;
+  /** GitHub comment surface (#12589, src/github.ts): the fallback
+   * claim protocol's transport. Absent → the fallback verbs fail
+   * closed with 503; the broker verbs do not need it. */
+  githubComments?: GitHubCommentSurface;
 }
 
 export async function sha256Hex(text: string): Promise<string> {

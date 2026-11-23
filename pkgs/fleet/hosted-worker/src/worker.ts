@@ -5,13 +5,15 @@
 // ingestion, sync) share the auth/tenancy plumbing in src/auth.ts,
 // src/jwt.ts and src/tenancy.ts. The skeleton (#12583) landed the
 // plumbing with stub doors; the session registry (#12584), the
-// stamping create path (#12585), and the Metadata query surface
-// (#12587) are real over the same plumbing. The remaining doors are
-// filled by their own issues (#12589 queue door, #12590 ingestion,
-// #12591 sync).
+// stamping create path (#12585), the Metadata query surface
+// (#12587), and the queue front door (#12589) are real over the
+// same plumbing. The remaining doors are filled by their own
+// issues (#12590 ingestion, #12591 sync).
 
 import { configFromEnv, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
+import { FixtureQueueStore } from "./queue-store.ts";
+import { StoreQueueRecordSource } from "./queue-records.ts";
 import { dispatch } from "./router.ts";
 import { FixtureSessionRegistry } from "./sessions.ts";
 import { FixtureMetadataStore } from "./stamping.ts";
@@ -30,6 +32,21 @@ const sessions = new FixtureSessionRegistry();
 // MetadataStore interface in src/stamping.ts.
 const metadataStore = new FixtureMetadataStore();
 
+// Queue store seam (#12589): the queue door's backend, behind the
+// QueueStore interface in src/queue-store.ts. The production home
+// is the existing fleet-queue Turso DB (#6741) — the same backend
+// the native broker serves — reached through a libSQL
+// implementation of the same interface; until it lands, one
+// fixture store at module scope, with the isolate-lifetime
+// semantics of the other seams.
+const queueStore = new FixtureQueueStore();
+
+// The queue record source (#12589 wires the seam #12585 left):
+// stamps that cite a session now read the queue's own claim
+// records through StoreQueueRecordSource; a session with no queue
+// binding still stamps its queue fields null (not queue-originated).
+const queueRecords = new StoreQueueRecordSource(queueStore, sessions);
+
 export default {
   async fetch(req: Request, env: HostedEnv): Promise<Response> {
     const config = configFromEnv(env);
@@ -37,16 +54,22 @@ export default {
     // configured, GitHub writes go through the App installation-token
     // rotation; without it, the fixture writer stands in (local/dev
     // semantics — this package is not deployed, see wrangler.toml).
-    // The queue record source is deliberately not wired: the queue
-    // front door (#12589) owns claim records and wires its source
-    // behind the QueueRecordSource seam; until then queue fields
-    // stamp null (not queue-originated).
     const githubWriter = config.github
       ? new AppRotationGitHubWriter(config.github)
       : new FixtureGitHubWriter();
-    // The query door's read path (#12587) is the same object: both
-    // writer classes also implement GitHubItemSource over the same
-    // rotation / recorded items.
-    return dispatch(req, { config, sessions, metadataStore, githubWriter, githubItems: githubWriter });
+    // The query door's read path (#12587) and the queue door's
+    // fallback-claim surface (#12589) are the same object: both
+    // writer classes also implement GitHubItemSource and
+    // GitHubCommentSurface over the same rotation / recorded state.
+    return dispatch(req, {
+      config,
+      sessions,
+      metadataStore,
+      githubWriter,
+      githubItems: githubWriter,
+      queueRecords,
+      queueStore,
+      githubComments: githubWriter,
+    });
   },
 };

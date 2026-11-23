@@ -24,7 +24,8 @@
 // doors are compiled in; a domain reports available only when its
 // filling issue has landed the business logic. The stamping create
 // path (#12585) made the hosted-transformed `gh` domain available,
-// and the query door (#12587) is live over the same domain; the
+// the query door (#12587) is live over the same domain, and the
+// queue door (#12589) made the `queue` domain available; the
 // remaining doors are still stubs, and the document says so.
 
 import { SERVICE_NAME, type HostedConfig } from "./config.ts";
@@ -40,7 +41,42 @@ export interface HostedDoor {
 export const HOSTED_DOORS: HostedDoor[] = [
   { id: "stamping", routes: ["POST /v1/stamps"], fillingIssue: "#12585", state: "live" },
   { id: "query", routes: ["GET /v1/query", "POST /v1/query"], fillingIssue: "#12587", state: "live" },
-  { id: "queue", routes: ["POST /v1/queue"], fillingIssue: "#12589" },
+  {
+    id: "queue",
+    routes: [
+      "POST /v1/queue/validate",
+      "POST /v1/queue/enqueue",
+      "POST /v1/queue/claim",
+      "POST /v1/queue/lane",
+      "POST /v1/queue/bind",
+      "POST /v1/queue/heartbeat",
+      "POST /v1/queue/checkpoint",
+      "POST /v1/queue/park",
+      "POST /v1/queue/release",
+      "POST /v1/queue/wake",
+      "POST /v1/queue/block",
+      "POST /v1/queue/unblock",
+      "POST /v1/queue/dep-recheck",
+      "POST /v1/queue/cancel",
+      "POST /v1/queue/fail",
+      "POST /v1/queue/complete",
+      "POST /v1/queue/list",
+      "POST /v1/queue/show",
+      "POST /v1/queue/timeline",
+      "POST /v1/queue/health",
+      "POST /v1/queue/revive",
+      "POST /v1/queue/events-append",
+      "POST /v1/queue/events-seen",
+      "POST /v1/queue/events-count",
+      "POST /v1/queue/events-prune",
+      "POST /v1/queue/fallback/status",
+      "POST /v1/queue/fallback/claim",
+      "POST /v1/queue/fallback/heartbeat",
+      "POST /v1/queue/fallback/release",
+    ],
+    fillingIssue: "#12589",
+    state: "live",
+  },
   { id: "ingestion", routes: ["POST /v1/ingestion/github"], fillingIssue: "#12590" },
   { id: "sync", routes: ["POST /v1/sync/project", "POST /v1/sync/queue-github"], fillingIssue: "#12591" },
 ];
@@ -66,6 +102,7 @@ const NATIVE_DOMAINS: NativeDomain[] = [
     capabilities: ["queue"],
     hosted: "hosted-front-door",
     fillingIssue: "#12589",
+    available: true,
   },
   {
     name: "serve",

@@ -3,9 +3,12 @@
 // plumbing. Every door route exists and refuses the unauthenticated
 // (401); the doors still awaiting their filling issue stub 501 naming
 // it for an authenticated caller; unknown paths are a plain 404. The
-// stamping door left the stub table when #12585 landed it, and the
-// query door when #12587 landed it — their behaviour is covered by
-// test/stamping.test.ts and test/query.test.ts.
+// stamping door left the stub table when #12585 landed it, the
+// query door when #12587 landed it, and the queue door when #12589
+// landed it (the queue door is a route per broker verb, so the
+// table carries one representative verb route) — their behaviour is
+// covered by test/stamping.test.ts, test/query.test.ts and
+// test/queue.test.ts.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -19,13 +22,15 @@ const DOOR_ROUTES: { method: string; path: string; fillingIssue: string }[] = [
   { method: "POST", path: "/v1/stamps", fillingIssue: "#12585" },
   { method: "GET", path: "/v1/query", fillingIssue: "#12587" },
   { method: "POST", path: "/v1/query", fillingIssue: "#12587" },
-  { method: "POST", path: "/v1/queue", fillingIssue: "#12589" },
+  { method: "POST", path: "/v1/queue/health", fillingIssue: "#12589" },
   { method: "POST", path: "/v1/ingestion/github", fillingIssue: "#12590" },
   { method: "POST", path: "/v1/sync/project", fillingIssue: "#12591" },
   { method: "POST", path: "/v1/sync/queue-github", fillingIssue: "#12591" },
 ];
 
-const STUB_ROUTES = DOOR_ROUTES.filter((r) => r.path !== "/v1/stamps" && r.path !== "/v1/query");
+const STUB_ROUTES = DOOR_ROUTES.filter(
+  (r) => r.path !== "/v1/stamps" && r.path !== "/v1/query" && r.path !== "/v1/queue/health",
+);
 
 test("every door route refuses an unauthenticated request", async () => {
   for (const r of DOOR_ROUTES) {
