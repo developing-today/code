@@ -166,7 +166,7 @@ export function windowPercent(w: QuotaWindow): number {
 }
 
 /** Near-limit threshold, in percent. */
-export const NEAR_PCT = 80;
+export const NEAR_PCT = 75;
 
 /** A pool is walled when any window is at or over its limit. */
 export function poolState(p: QuotaPool): "healthy" | "near" | "walled" {
