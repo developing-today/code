@@ -1187,6 +1187,15 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                 json!({"from_task": task_id, "at": now_iso()}),
                             );
                         }
+                        // #12744: carry the issue's labels onto the
+                        // follow-on from the GitHub mirror when the
+                        // triage payload carries none of its own, so
+                        // the band selection below sees them even
+                        // for triage rows enqueued before label
+                        // carriage landed. Best-effort by design:
+                        // the mirror never gates work, and the
+                        // inherited priority stands on any failure.
+                        let _ = enrich_payload_labels(t, &mut fpayload, Some(&triage_key));
                         let fprogress = match &terminal {
                             Some(pred) => json!({
                                 "triage_source_task": task_id,
@@ -1209,10 +1218,18 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                 arg_str(row.get("body").and_then(|v| v.as_str())),
                                 Arg::Text(fpayload.to_string()),
                                 Arg::Text(fix_key.clone()),
-                                row.get("priority")
-                                    .and_then(|v| v.as_i64())
-                                    .map(Arg::Int)
-                                    .unwrap_or(Arg::Null),
+                                // #12744: Drew's label band when the
+                                // follow-on payload carries a band
+                                // label, the triage row's stored
+                                // priority otherwise — the same
+                                // label-wins rule task_from_packet
+                                // applies at enqueue.
+                                band_or_inherited(
+                                    &fpayload,
+                                    row.get("priority").and_then(|v| v.as_i64()),
+                                )
+                                .map(Arg::Int)
+                                .unwrap_or(Arg::Null),
                                 Arg::Int(
                                     fpayload
                                         .get("max_attempts")
