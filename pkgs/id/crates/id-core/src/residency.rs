@@ -17,6 +17,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
+
 /// One of the four separately modelled boundaries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Plane {
@@ -41,7 +43,7 @@ impl Plane {
 }
 
 /// A jurisdiction label such as `"eu"`. Compared exactly; an empty label is never valid.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Jurisdiction(pub String);
 
 /// The service or resource a path uses: a store, host, relay or telemetry sink.
