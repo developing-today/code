@@ -691,6 +691,13 @@ Rules the implementation holds to:
   (`storeStatement`) translates the statements in
   `src/remote-stores.ts` to SQLite.
 
+- **Unchanged rows are not rewritten.** Action, comment and activity
+  UPSERTs compare their existing mutable fields in SQLite. The activity
+  tables' raw `updated_at` columns mark the last stored content change,
+  not the last attempted save; source status/checkpoint timestamps and
+  active gap windows still advance as before. The daily export is full
+  and ordered by primary key, not incremental by timestamp.
+
 Deploy with `PM_AGG_STORE_BACKEND=turso` (rendered by `install.sh` and
 set in the NixOS unit); the store token is resolved from Bitwarden by
 name (`src/turso-stores.ts`). The Supabase project these stores first
