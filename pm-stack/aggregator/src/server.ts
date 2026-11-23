@@ -53,6 +53,7 @@ import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
 import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
 import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
+import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -5509,6 +5510,15 @@ console.log(`freshness publisher listening on http://${freshnessIpcServer.hostna
 if (cfg.source === "live") {
   void freshnessReconciler.reconcile().catch(() => undefined);
   freshnessReconciler.start();
+}
+
+// #8570: pm-core consolidation — in live mode the quota gatherer and
+// the fleet-feed collector also run as in-process schedulers on the
+// seam's cadences (quota 15 minutes, fleet-feed 5 minutes), ahead of
+// the systemd timer-unit cutover (a later slice of this issue).
+// Shutdown is tied to process signals inside the wiring.
+if (cfg.source === "live") {
+  startPmCoreSchedulers({ feedFile: cfg.feedFile });
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
