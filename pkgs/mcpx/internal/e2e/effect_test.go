@@ -58,6 +58,10 @@ var implementedEffectProbes = map[string]string{
 	"script.devshell":                    "TestScriptDevshellIsReachableFromTheEnvironment",
 	"script.captureConsole":              "TestScriptCaptureConsoleOffDropsConsoleOutput",
 	"script.check":                       "TestScriptTypecheckOnRefusesATypeError",
+	"script.checkOnError":                "TestScriptCheckOnErrorDecidesOnACheckError",
+	"script.importsCrossProject":         "TestScriptImportsCrossProjectDecidesAForeignProjectEdge",
+	"script.importsOnMissing":            "TestScriptImportsOnMissingDecidesOnAMissingPackage",
+	"script.importsNetwork":              "TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage",
 	"logging.file":                       "TestLoggingFileOffWritesNoDurableLog",
 	"plumbing.strictUnknownKeys":         "TestStrictUnknownKeysRefusesATypo",
 	"paths.state":                        "TestStateDirectoryIsReachableAsASetting",
@@ -291,6 +295,10 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestScriptDevshellIsReachableFromTheEnvironment":                                TestScriptDevshellIsReachableFromTheEnvironment,
 	"TestScriptPrefixIsReachableFromTheEnvironment":                                  TestScriptPrefixIsReachableFromTheEnvironment,
 	"TestScriptTypecheckOnRefusesATypeError":                                         TestScriptTypecheckOnRefusesATypeError,
+	"TestScriptCheckOnErrorDecidesOnACheckError":                                     TestScriptCheckOnErrorDecidesOnACheckError,
+	"TestScriptImportsCrossProjectDecidesAForeignProjectEdge":                        TestScriptImportsCrossProjectDecidesAForeignProjectEdge,
+	"TestScriptImportsOnMissingDecidesOnAMissingPackage":                             TestScriptImportsOnMissingDecidesOnAMissingPackage,
+	"TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage":                 TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage,
 	"TestSearchLimitCapsTheResults":                                                  TestSearchLimitCapsTheResults,
 	"TestStateDirectoryIsReachableAsASetting":                                        TestStateDirectoryIsReachableAsASetting,
 	"TestStrictUnknownKeysRefusesATypo":                                              TestStrictUnknownKeysRefusesATypo,
@@ -592,6 +600,158 @@ func TestScriptTypecheckOnRefusesATypeError(t *testing.T) {
 	out, err := e.try("run", script)
 	if err == nil {
 		t.Fatalf("script.typecheck=on should refuse a type error:\n%s", out)
+	}
+}
+
+// TestScriptCheckOnErrorDecidesOnACheckError is the effect probe for
+// script.checkOnError. A script with a type error is checked under Deno.
+// Oracle: by default (fail) the run stops before running and reports the
+// error; warn reports it and still runs; run stays quiet and runs.
+func TestScriptCheckOnErrorDecidesOnACheckError(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	script := filepath.Join(e.dir, "bad.ts")
+	src := "const n: number = \"not a number\";\n" +
+		"export default function () { return n; }\n"
+	if err := os.WriteFile(script, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.setenv("MCPX_SCRIPT_CHECK=types")
+
+	if out, err := e.try("run", script); err == nil || !strings.Contains(out, "does not type check") {
+		t.Fatalf("default (fail) should refuse and report a type error (err=%v):\n%s", err, out)
+	}
+
+	e.setenv("MCPX_SCRIPT_CHECK_ON_ERROR=warn")
+	out, err := e.try("run", script)
+	if err != nil {
+		t.Fatalf("warn should run the script: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "does not type check") || !strings.Contains(out, "not a number") {
+		t.Fatalf("warn should report the error and run the script:\n%s", out)
+	}
+
+	e.setenv("MCPX_SCRIPT_CHECK_ON_ERROR=run")
+	out, err = e.try("run", script)
+	if err != nil {
+		t.Fatalf("run should run the script: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "does not type check") || !strings.Contains(out, "not a number") {
+		t.Fatalf("run should stay quiet and run the script:\n%s", out)
+	}
+}
+
+// TestScriptImportsCrossProjectDecidesAForeignProjectEdge is the effect
+// probe for script.importsCrossProject. A script in one project imports a
+// module from a second project whose manifest declares a package, so the
+// cross-project policy decides whether that foreign subset is isolated,
+// merged, or ignored.
+func TestScriptImportsCrossProjectDecidesAForeignProjectEdge(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	if err := os.MkdirAll(filepath.Join(e.dir, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(e.dir, "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "a", "main.ts"), []byte("import \"../b/helper.ts\";\nconsole.log(\"ran-main\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "b", "helper.ts"), []byte("import \"foreign-dep\";\nconsole.log(\"ran-helper\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "a", "package.json"), []byte(`{"dependencies":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "b", "package.json"), []byte(`{"dependencies":{"foreign-dep":"1.2.3"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(e.dir, "a", "main.ts")
+	e.setenv("MCPX_SCRIPT_CHECK=off")
+	e.setenv("MCPX_SCRIPT_IMPORTS_ON_MISSING=install")
+
+	run := func(mode string) string {
+		t.Helper()
+		e.setenv("MCPX_SCRIPT_IMPORTS_CROSS_PROJECT=" + mode)
+		out, _ := e.try("run", script)
+		return out
+	}
+
+	if out := run("isolate"); !strings.Contains(out, "isolated dependency subset") {
+		t.Fatalf("isolate should report an isolated foreign subset:\n%s", out)
+	}
+	if out := run("merge"); !strings.Contains(out, "resolved dependency set includes") {
+		t.Fatalf("merge should fold the foreign package into the root set:\n%s", out)
+	}
+	if out := run("ignore"); !strings.Contains(out, "ignored import") {
+		t.Fatalf("ignore should report the ignored foreign import:\n%s", out)
+	}
+}
+
+// TestScriptImportsOnMissingDecidesOnAMissingPackage is the effect probe
+// for script.importsOnMissing. A script imports a package declared (but
+// not installed) in its own manifest, so the missing-package policy
+// decides whether the run stops, warns, or records the set.
+func TestScriptImportsOnMissingDecidesOnAMissingPackage(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	if err := os.WriteFile(filepath.Join(e.dir, "main.ts"), []byte("import \"foreign-dep\";\nconsole.log(\"ran\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "package.json"), []byte(`{"dependencies":{"foreign-dep":"1.2.3"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(e.dir, "main.ts")
+	e.setenv("MCPX_SCRIPT_CHECK=off")
+	e.setenv("MCPX_SCRIPT_IMPORTS_NETWORK=off")
+
+	run := func(mode string) string {
+		t.Helper()
+		e.setenv("MCPX_SCRIPT_IMPORTS_ON_MISSING=" + mode)
+		out, _ := e.try("run", script)
+		return out
+	}
+
+	if out := run("fail"); !strings.Contains(out, "unresolved import") || !strings.Contains(out, "but is not installed") {
+		t.Fatalf("fail should report an unresolved, not-installed import:\n%s", out)
+	}
+	if out := run("warn"); !strings.Contains(out, "dependency was not installed") {
+		t.Fatalf("warn should report a non-fatal missing dependency:\n%s", out)
+	}
+	if out := run("install"); !strings.Contains(out, "stage 2 records the set but does not install it") {
+		t.Fatalf("install should record the set without installing:\n%s", out)
+	}
+}
+
+// TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage is the
+// effect probe for script.importsNetwork. A script imports a package
+// with no manifest entry, so the network policy decides whether mcpx
+// tries to pin it from the registry or refuses up front.
+func TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
+	e := newEnv(t, oneServer)
+	if err := os.WriteFile(filepath.Join(e.dir, "main.ts"), []byte("import \"undeclared-pkg-xyz\";\nconsole.log(\"ran\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.dir, "package.json"), []byte(`{"dependencies":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(e.dir, "main.ts")
+	e.setenv("MCPX_SCRIPT_CHECK=off")
+	e.setenv("MCPX_SCRIPT_IMPORTS_ON_MISSING=fail")
+
+	if out, _ := func() (string, error) {
+		e.setenv("MCPX_SCRIPT_IMPORTS_NETWORK=off")
+		return e.try("run", script)
+	}(); !strings.Contains(out, "script.importsNetwork is off") {
+		t.Fatalf("off should refuse up front naming the disabled network:\n%s", out)
+	}
+	if out, _ := func() (string, error) {
+		e.setenv("MCPX_SCRIPT_IMPORTS_NETWORK=on")
+		return e.try("run", script)
+	}(); !strings.Contains(out, "cannot pin") {
+		t.Fatalf("on should attempt to pin (and report the outcome):\n%s", out)
 	}
 }
 
