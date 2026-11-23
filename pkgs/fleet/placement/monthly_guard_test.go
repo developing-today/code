@@ -126,4 +126,48 @@ func TestMonthlyPaceGuard(t *testing.T) {
 			t.Fatalf("a fresh read with no monthly data must seat: %v", err)
 		}
 	})
+
+	// Regression (Codex P2 on PR #12895): the README documents that an E1
+	// exception bypasses the guard — the exception record itself is the
+	// required log line — but buildRecord applied the guard to exception
+	// records too, so a recorded exception choosing a pool-drawn option at
+	// or above the guard was rejected instead of recorded.
+	t.Run("E1 exception bypasses the guard", func(t *testing.T) {
+		rec, err := Evaluate(p, Answers{
+			Task:            "queue task test / issue #2732",
+			ExceptionID:     "E1-2026-11-22-2732",
+			ExceptionOption: "Muse",
+			PoolReadAt:      &fresh,
+			PoolID:          "chatgpt-plan",
+			PoolMonthlyPct:  pct(97.5),
+			PoolPacePph:     pace(1.2),
+			PoolHardStop:    true,
+		}, now)
+		if err != nil {
+			t.Fatalf("a recorded E1 exception must bypass the monthly guard: %v", err)
+		}
+		if rec.Rule != "exception" || rec.ExceptionID != "E1-2026-11-22-2732" || rec.Option != "Muse" {
+			t.Fatalf("bad exception record: %+v", rec)
+		}
+	})
+
+	// The bypass is the guard only: the quota-read checks (B5 freshness)
+	// still bind an exception seating exactly as they bind a ruled one.
+	t.Run("E1 exception still bound by the B5 freshness gate", func(t *testing.T) {
+		stale := now.Add(-2 * time.Hour)
+		_, err := Evaluate(p, Answers{
+			Task:            "queue task test / issue #2732",
+			ExceptionID:     "E1-2026-11-22-2732",
+			ExceptionOption: "Muse",
+			PoolReadAt:      &stale,
+			PoolID:          "chatgpt-plan",
+			PoolMonthlyPct:  pct(97.5),
+		}, now)
+		if err == nil {
+			t.Fatal("expected the B5 freshness gate to refuse a stale read even under an exception")
+		}
+		if msg := err.Error(); !strings.Contains(msg, "B5 gate") {
+			t.Fatalf("refusal %q does not cite the B5 gate", msg)
+		}
+	})
 }

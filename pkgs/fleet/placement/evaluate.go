@@ -210,8 +210,13 @@ func buildRecord(p *Policy, a Answers, ruleID, optionID string, excluded []strin
 	// the % read, and the guard source so the dispatcher log can score
 	// compliance from data. Unknown state never refuses: a B4 reliance
 	// returns above, and absent monthly data seats on the fresh read.
-	if reason := monthlyGuardRefusal(a); reason != "" {
-		return Record{}, fmt.Errorf("monthly-guard refusal: option %q on pool %q refused (%s)", optionID, guardPoolID(p, a, optionID), reason)
+	// A recorded E1 exception bypasses the guard (README: the exception
+	// record itself is the required log line) — but the quota-read checks
+	// above (B5 freshness, B4) apply to exceptions exactly as to rules.
+	if ruleID != "exception" {
+		if reason := monthlyGuardRefusal(a); reason != "" {
+			return Record{}, fmt.Errorf("monthly-guard refusal: option %q on pool %q refused (%s)", optionID, guardPoolID(p, a, optionID), reason)
+		}
 	}
 	return rec, nil
 }
