@@ -51,6 +51,11 @@ and `issued/<name>/` for leaves.
 
 ## Key handling
 
+- Escrowing a PEM value with the `bws` CLI needs the `--`
+  separator (`bws secret create -- <KEY> <VALUE> <PROJECT>`):
+  a PEM value starts with `-` characters, and without `--` the
+  argument parser eats it as an option and echoes it back in
+  the error. Pass the value argv-direct (no shell in between).
 - Private keys are generated on the CA host only. They are **never**
   committed to git, never printed, and never leave the host except into the
   secrets vault.
@@ -62,6 +67,10 @@ and `issued/<name>/` for leaves.
   root certificate, the issuing certificate, and the chain, exactly as
   generated, plus the provider signing certificates issued under Slice 2
   of the IdP story (`oidc-signing.crt.pem`, `saml-signing.crt.pem`) —
+  plus the Slice 5 rollover successor `oidc-signing-2.crt.pem`
+  (serial 1004, SHA-256 fingerprint
+  `59:EF:0E:3D:7E:61:91:D4:97:D2:AB:58:54:41:A5:71:B8:41:25:BB:27:E7:3A:A4:C5:1C:CD:84:34:C9:59:7A`;
+  its key is escrowed as `idp.oidc-signing-2.key`) —
   public certificates only; their private keys live in the vault, by name. Verify any copy against the fingerprints recorded on the story
   issue before trusting it.
 
