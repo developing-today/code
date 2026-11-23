@@ -120,6 +120,7 @@ describe("notifyPromptCompletion (#10035 S6)", () => {
       },
       noteSubscriptionGone: async (endpoint: string) => {
         gone.push(endpoint);
+        return "marked" as const;
       },
     };
     const send = async (target: PushTarget): Promise<PushOutcome> => {
@@ -150,7 +151,7 @@ describe("notifyPromptCompletion (#10035 S6)", () => {
         throw new Error("must not ledger a send that was never attempted");
       },
       noteSubscriptionAlive: async () => {},
-      noteSubscriptionGone: async () => {},
+      noteSubscriptionGone: async () => "marked" as const,
     };
     const summary = await notifyPromptCompletion(store, record({ status: "answered" }), ORIGIN, async () => {
       throw new Error("must not send");
