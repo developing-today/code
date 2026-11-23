@@ -14,6 +14,9 @@ cargo test
 ```
 
 Build the import-free guest with `./build.sh` after installing the
-`wasm32-unknown-unknown` target. The host load/play fixture and its Fleet
-verification remain a separate integration step; this crate's unit tests do
-not claim host-level permission or deduplication coverage.
+`wasm32-unknown-unknown` target. The checked-in `sketch.wasm` is what the
+host-side fixture `pkgs/id/tests/sketch_host_play.rs` loads: it plays the
+six-step vector through the regular ID host and asserts the literal
+projections, portable view, snapshot/restore and next-operation equivalence,
+with draft UI state, guest-domain records and host permissions kept distinct.
+Run it from `pkgs/id/` with `just test-sketch`.

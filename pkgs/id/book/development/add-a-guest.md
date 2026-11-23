@@ -20,6 +20,7 @@ Worked examples live in `pkgs/id/examples/`. Each app is a directory holding its
 | `examples/roc-cap-demo/` | A capability-dependent Roc library plus its app, with two compile-must-fail negative tests for the library import gate. |
 | `examples/roc-import-policy/` | Not an app: the compile-fixture matrix for the import gate, executed by the `id-caps` integration test `roc_import_policy`. |
 | `examples/rust-world/`, `examples/rust-counter/` | Not Roc: the Rust twin SDK (`plaza_sdk`) and its counter example, emitting the same Plaza exports. |
+| `examples/rust-sketch/` | Not Roc: the `sketch/redo-as-new-stroke` guest (#13608) on `plaza_sdk` — draft vertices stay transient, confirmed strokes are immutable, undo leaves a tombstone, and copy assigns a fresh ID with provenance. Its host load/play fixture is `tests/sketch_host_play.rs` (#13656); `just test-sketch` runs both. |
 | `apps/tic-tac-toe/` | The one packaged app, outside `examples/`: an `app.toml` plus `program/main.roc`. Packaging is an `app.toml` declaring `[program] kind = "roc-world"` and the `[interfaces.web]` binding where the app takes a web surface. |
 
 ## Scaffold a new app
