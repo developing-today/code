@@ -115,6 +115,10 @@ class TestRestore(unittest.TestCase):
         )
         copy = sqlite3.connect(":memory:")
         copy.executescript(dump)
+        # D1 adds its own _cf_KV table to every database; the drill
+        # must skip it (the live API prohibits even reading it).
+        copy.execute("CREATE TABLE _cf_KV (key TEXT PRIMARY KEY, value BLOB)")
+        copy.execute("INSERT INTO _cf_KV VALUES ('k', X'00')")
         target_conn = sqlite3.connect(":memory:")
         target = SqliteLibsqlAdapter(target_conn)
 
@@ -136,6 +140,12 @@ class TestRestore(unittest.TestCase):
                 del os.environ[name]
         self.assertEqual(result["tables"], 2)
         self.assertEqual(result["rows"], 5)
+        self.assertEqual(
+            target_conn.execute(
+                "SELECT count(*) FROM sqlite_master WHERE name='_cf_KV'"
+            ).fetchone()[0],
+            0,
+        )
         for table in ("tasks", "notes"):
             self.assertEqual(
                 target_conn.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall(),

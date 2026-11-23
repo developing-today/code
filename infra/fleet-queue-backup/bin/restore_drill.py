@@ -109,6 +109,11 @@ def restore(d1_name, target_url):
     schema = [
         (r["type"], r["name"], r["tbl_name"], r["sql"]) for r in d1_schema(d1, db_id)
     ]
+    # D1 keeps its own _cf_KV table in every database: it is not part
+    # of the backup, the query API prohibits reading it ("access to
+    # _cf_KV.key is prohibited: SQLITE_AUTH", seen live on the first
+    # drill run, #8584), and the target must not recreate it.
+    schema = [entry for entry in schema if entry[1] != "_cf_KV"]
     tables = [(name, sql) for kind, name, _t, sql in schema if kind == "table"]
     for name, _sql in tables:
         target.execute(f'DROP TABLE IF EXISTS "{name}"')
