@@ -54,10 +54,8 @@ pub fn classify_block(block_type: &str) -> BlockClass {
         // §2.5 clean rows, plus media (clean via §4) and child page /
         // database blocks (clean via §2.1 / §2.2).
         "paragraph" | "heading_1" | "heading_2" | "heading_3" | "bulleted_list_item"
-        | "numbered_list_item" | "to_do" | "quote" | "code" | "divider" | "bookmark"
-        | "image" | "video" | "file" | "audio" | "pdf" | "child_page" | "child_database" => {
-            BlockClass::Clean
-        }
+        | "numbered_list_item" | "to_do" | "quote" | "code" | "divider" | "bookmark" | "image"
+        | "video" | "file" | "audio" | "pdf" | "child_page" | "child_database" => BlockClass::Clean,
         // §2.5 clean-to-degraded and degraded rows; structural conversion
         // is slice 4, verbatim preservation is this slice.
         "toggle" | "callout" | "column_list" | "column" | "table" | "table_row" | "equation"
@@ -246,7 +244,10 @@ pub fn convert_page(
         .get(page_id)
         .with_context(|| format!("page {page_id} is not in the inventory"))?;
     if object.kind != "page" {
-        bail!("inventory object {page_id} is a {}, not a page", object.kind);
+        bail!(
+            "inventory object {page_id} is a {}, not a page",
+            object.kind
+        );
     }
     let note_id = manifest
         .page_id_to_note_id
@@ -644,8 +645,8 @@ impl Converter<'_> {
                         Err(error) => {
                             // The reason is persisted with the report, so
                             // the expiring URL is stripped from it (§6.5).
-                            let reason = format!("fetch failed: {error:#}")
-                                .replace(url, "<file-url>");
+                            let reason =
+                                format!("fetch failed: {error:#}").replace(url, "<file-url>");
                             self.missing_files.push(MissingFile {
                                 block_id: block_id.to_owned(),
                                 reason: reason.clone(),
@@ -677,11 +678,7 @@ impl Converter<'_> {
         Ok(())
     }
 
-    fn convert_rich_text(
-        &mut self,
-        items: Option<&Value>,
-        from_block_id: &str,
-    ) -> Vec<RichSpan> {
+    fn convert_rich_text(&mut self, items: Option<&Value>, from_block_id: &str) -> Vec<RichSpan> {
         let Some(items) = items.and_then(Value::as_array) else {
             return Vec::new();
         };
@@ -736,7 +733,11 @@ impl Converter<'_> {
 
     fn convert_mention(&mut self, item: &Value, from_block_id: &str, span: &mut RichSpan) {
         let mention = item.get("mention");
-        if mention.and_then(|value| value.get("type")).and_then(Value::as_str) != Some("page") {
+        if mention
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str)
+            != Some("page")
+        {
             // User and date mentions are plain text (people are
             // provenance, never principals, §7). Database mentions
             // resolve with slice 3's database notes.
@@ -850,13 +851,32 @@ mod tests {
 
     #[test]
     fn classifies_the_design_table() {
-        for clean in ["paragraph", "heading_2", "to_do", "code", "image", "child_page"] {
+        for clean in [
+            "paragraph",
+            "heading_2",
+            "to_do",
+            "code",
+            "image",
+            "child_page",
+        ] {
             assert_eq!(classify_block(clean), BlockClass::Clean, "{clean}");
         }
-        for degraded in ["toggle", "callout", "table", "equation", "synced_block", "embed"] {
+        for degraded in [
+            "toggle",
+            "callout",
+            "table",
+            "equation",
+            "synced_block",
+            "embed",
+        ] {
             assert_eq!(classify_block(degraded), BlockClass::Degraded, "{degraded}");
         }
-        for unsupported in ["table_of_contents", "breadcrumb", "template_button", "new_widget"] {
+        for unsupported in [
+            "table_of_contents",
+            "breadcrumb",
+            "template_button",
+            "new_widget",
+        ] {
             assert_eq!(
                 classify_block(unsupported),
                 BlockClass::Unsupported,

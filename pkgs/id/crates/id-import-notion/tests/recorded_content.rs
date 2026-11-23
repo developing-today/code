@@ -451,7 +451,10 @@ fn recorded_pages_convert_to_the_expected_content() {
         format!("note-{ALPHA}")
     );
     assert_eq!(manifest.block_id_to_identity["blk-h1"].1, "blk-h1");
-    assert_eq!(manifest.block_id_to_identity[BETA].0, format!("note-{ALPHA}"));
+    assert_eq!(
+        manifest.block_id_to_identity[BETA].0,
+        format!("note-{ALPHA}")
+    );
     assert_eq!(manifest.block_id_to_identity[BETA].1, BETA);
     assert_eq!(manifest.file_blobs.len(), 2);
     assert_eq!(manifest.file_blobs["blk-img"].blob_hash, expected_hash);

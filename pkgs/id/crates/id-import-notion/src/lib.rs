@@ -659,8 +659,8 @@ impl Manifest {
             if self.page_id_to_note_id.contains_key(&page_id) {
                 continue;
             }
-            let note_id = mint(&page_id)
-                .with_context(|| format!("mint note id for page {page_id}"))?;
+            let note_id =
+                mint(&page_id).with_context(|| format!("mint note id for page {page_id}"))?;
             if note_id.trim().is_empty() {
                 bail!("note id minter returned an empty id for page {page_id}");
             }
