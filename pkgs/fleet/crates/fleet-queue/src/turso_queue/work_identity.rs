@@ -15,9 +15,13 @@
 //! in any queue, files no new row: the reply carries the existing
 //! task (like a dedupe_key hit) plus a `work_identity_collision`
 //! naming its id, state and identity, so a generator can route its
-//! follow-up onto it. Terminal tasks never block a new filing
-//! (re-queue after failure is unaffected; a fresh already-done
-//! verdict is the claim-time staleness check's job, #10626).
+//! follow-up onto it. Failed and cancelled tasks never block a new
+//! filing (re-queue after failure is unaffected). A COMPLETED task
+//! does block (#13091): the claim-time staleness check (#10626)
+//! fails open by standing rule, so during a probe degradation
+//! completed work was served again and completed a second time;
+//! the broker knows its own verified completions locally and
+//! absorbs the re-filing itself, no probe involved.
 //!
 //! Only kinds that work one issue one way take part: small_fix,
 //! triage, and pr_shepherd (per PR set). ci_investigation,
@@ -129,17 +133,29 @@ pub fn dedupe_override(packet: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Whether a live row holds `identity` and may absorb a new filing:
-/// same identity, and not a quarantined (invalid) row.
-pub fn holds_identity(row: &Value, identity: &WorkIdentity) -> bool {
+/// Whether a row in one of `statuses` holds `identity` and may
+/// absorb a new filing: same identity, and not a quarantined
+/// (invalid) row.
+fn holds_identity_in(row: &Value, identity: &WorkIdentity, statuses: &[&str]) -> bool {
     let status = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
-    if !LIVE_STATUSES.contains(&status) {
+    if !statuses.contains(&status) {
         return false;
     }
     if work_identity(row).as_ref() != Some(identity) {
         return false;
     }
     claim_guard_reason(row).is_none()
+}
+
+/// Whether a live row holds `identity` and may absorb a new filing:
+/// same identity, and not a quarantined (invalid) row.
+pub fn holds_identity(row: &Value, identity: &WorkIdentity) -> bool {
+    holds_identity_in(row, identity, &LIVE_STATUSES)
+}
+
+/// Whether a completed row holds `identity` (#13091).
+fn holds_completed_identity(row: &Value, identity: &WorkIdentity) -> bool {
+    holds_identity_in(row, identity, &["done"])
 }
 
 /// The live task already holding `identity`, oldest first, in any
@@ -161,6 +177,31 @@ pub(crate) fn live_identity_holder(
         &TASK_JSON_COLS,
     )?;
     Ok(rows.into_iter().find(|row| holds_identity(row, identity)))
+}
+
+/// The completed task already holding `identity`, oldest first, in
+/// any queue (#13091): the same match as live_identity_holder over
+/// done rows. Only completion absorbs — failed and cancelled rows
+/// are re-queueable by design (#10627).
+pub(crate) fn done_identity_holder(
+    t: &TursoBackend,
+    identity: &WorkIdentity,
+    kind: &str,
+) -> Result<Option<Value>, TErr> {
+    let rows = t.query_objs(
+        &format!(
+            "SELECT {TASK_COLS} FROM tasks \
+             WHERE status = 'done' \
+               AND json_extract(payload, '$.kind') = ? \
+               AND CAST(json_extract(payload, '$.issue.number') AS INTEGER) = ? \
+             ORDER BY id ASC"
+        ),
+        &[Arg::Text(kind.to_string()), Arg::Int(identity.issue)],
+        &TASK_JSON_COLS,
+    )?;
+    Ok(rows
+        .into_iter()
+        .find(|row| holds_completed_identity(row, identity)))
 }
 
 /// The machine-readable collision a deduped enqueue reports.

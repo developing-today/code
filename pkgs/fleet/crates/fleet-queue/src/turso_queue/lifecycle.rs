@@ -874,7 +874,7 @@ pub(crate) fn budget_skip_sql(scope_sql: &str) -> String {
          AND (((status = 'queued' AND attempts < max_attempts \
            AND (not_before IS NULL OR not_before <= ?)) \
          OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
-           OR wait_kind = 'capacity'))) \
+           OR wait_kind = 'capacity') AND {PARKED_TERM_EXCLUSION})) \
          AND {req_expr} IS NOT NULL \
          AND {req_expr} > COALESCE(?, -1)){scope_sql}"
     )
@@ -935,7 +935,7 @@ pub(crate) fn no_claim_counts_sql(scope_sql: &str) -> String {
          COALESCE(SUM(CASE WHEN status = 'queued' AND attempts < max_attempts \
            AND not_before IS NOT NULL AND not_before > ? THEN 1 ELSE 0 END), 0) AS queued_not_yet_due, \
          COALESCE(SUM(CASE WHEN status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
-           OR wait_kind = 'capacity') THEN 1 ELSE 0 END), 0) AS parked_due \
+           OR wait_kind = 'capacity') AND {PARKED_TERM_EXCLUSION} THEN 1 ELSE 0 END), 0) AS parked_due \
          FROM tasks \
          WHERE payload IS NOT NULL AND payload <> '' AND payload <> '{{}}'{scope_sql}"
     )
