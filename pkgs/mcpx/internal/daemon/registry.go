@@ -2102,7 +2102,15 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 		// Combined hybrid score: 60% semantic cosine, 40% keyword
 		combined := float32(kwScore)*0.4 + (sim*100.0)*0.6
 		if fb := r.FeedbackStore(); fb != nil {
-			execMult, retrMult := fb.ToolFeedbackAdjustment(t.Function)
+			// Feedback recorded by the call path is keyed by the server
+			// identity, while ranking asks by this view's function name;
+			// pass the server identity as an alias so both spellings of
+			// the same tool share one feedback history.
+			alias := ""
+			if t.Server != "" {
+				alias = t.Server + "." + t.Tool
+			}
+			execMult, retrMult := fb.ToolFeedbackAdjustment(t.Function, alias)
 			combined = combined * retrMult * (0.5 + 0.5*execMult)
 		}
 		if combined > 15.0 || kwScore > 0 {
