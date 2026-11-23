@@ -516,7 +516,11 @@
         checks = {
           # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
           # NixOS VM integration tests (Linux only): nixos-serve nixos-e2e
-          default = mkCheck "ci" "ci";
+          default = mkCheckWith {
+            name = "ci";
+            justCmd = "ci";
+            extraNativeBuildInputs = [ pkgs.biome ];
+          };
 
           # Individual checks
           cargo-fmt-check = mkCheckRustOnly "cargo-fmt-check" "cargo-fmt-check";
