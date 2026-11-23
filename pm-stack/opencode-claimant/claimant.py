@@ -344,6 +344,7 @@ def log_fire(
     supervision: "List[Dict] | None" = None,
     babysitter: "Dict | None" = None,
     nudges: "Dict | None" = None,
+    gate_diagnostic: "Dict | None" = None,
 ) -> None:
     """Append a fire log entry to fires.jsonl.
 
@@ -374,42 +375,79 @@ def log_fire(
         "supervision": supervision,
         "babysitter": babysitter,
         "nudges": nudges,
+        "gate_diagnostic": gate_diagnostic,
     }
 
     with FIRES_FILE.open("a") as f:
         f.write(json.dumps(fire_entry) + "\n")
 
 
-def run_poll() -> Dict[str, Any]:
-    """Run poll.py to discover candidates and get system state."""
-    poll_script = PRIMARY_CLONE / "pm-stack" / "opencode-claimant" / "poll.py"
+# Preserve #13134’s production poll window; queue health has its own 15s cap.
+POLL_MAX_SECONDS = 300
+GATE_MAX_SECONDS = 315
+_POLL_PHASES = ("session_census", "active_sessions", "broker_reads", "ledger_read", "snapshot")
+_gate_diagnostic = None
 
-    if not poll_script.exists():
-        raise FileNotFoundError(f"poll.py not found at {poll_script}")
 
-    # Run poll.py from the primary clone. The 300s ceiling covers the
-    # aggregate of poll.py's per-call timeouts (15s server GET, 30s broker
-    # POSTs) plus the growing OpenCode session store (28k+ root sessions
-    # made the full poll take ~51s on 2026-11-22, permanently above the
-    # old 30s cap, so every live fire failed its own gate as
-    # "gate_unknown" -- #3026 fire log 2026-11-23T01:48Z/01:53Z).
-    # Single-instance lock keeps overlapping fires impossible; a slow poll
-    # only delays the fire, it cannot double-launch.
-    result = subprocess.run(
-        ["python3", str(poll_script)],
-        cwd=str(PRIMARY_CLONE),
-        capture_output=True,
-        text=True,
-        timeout=300,
+class PollFailure(RuntimeError):
+    def __init__(self, category, phase):
+        self.category = category
+        self.phase = phase
+        super().__init__(f"{category} during {phase}")
+
+
+def _poll_last_phase(stderr):
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    phases = {
+        f"claimant-poll-phase:{phase}": phase for phase in _POLL_PHASES
+    }
+    return next(
+        (phases[line] for line in reversed((stderr or "").splitlines()) if line in phases),
+        "poll_start",
     )
 
-    if result.returncode != 0:
-        raise RuntimeError(f"poll.py failed: {result.stderr}")
 
+def run_poll(*, timeout=POLL_MAX_SECONDS) -> Dict[str, Any]:
+    """Read a snapshot within one deadline; never log child output on error."""
+    poll_script = PRIMARY_CLONE / "pm-stack" / "opencode-claimant" / "poll.py"
+    if timeout <= 0:
+        raise PollFailure("deadline", "poll_start")
+    if not poll_script.exists():
+        raise PollFailure("entrypoint_missing", "poll_start")
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"poll.py returned invalid JSON: {e}")
+        result = subprocess.run(
+            ["python3", str(poll_script)],
+            cwd=str(PRIMARY_CLONE),
+            env={**os.environ, "OPENCODE_CLAIMANT_POLL_SECONDS": str(timeout)},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise PollFailure("deadline", _poll_last_phase(e.stderr)) from None
+    except OSError:
+        raise PollFailure("spawn_error", "poll_start") from None
+    phase = _poll_last_phase(result.stderr)
+    if result.returncode != 0:
+        raise PollFailure("child_exit", phase)
+    try:
+        data = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        raise PollFailure("invalid_snapshot", phase) from None
+    if not isinstance(data, dict) or not isinstance(data.get("candidates"), list):
+        raise PollFailure("invalid_snapshot", phase)
+    if type(data.get("cap_room")) is not int or data["cap_room"] < 0:
+        raise PollFailure("incomplete_snapshot", "session_census")
+    queues = data.get("queues")
+    if not isinstance(queues, dict) or any(
+        not isinstance(queues.get(q), dict) or queues[q].get("read_ok") is not True
+        for q in QUEUES
+    ):
+        raise PollFailure("incomplete_snapshot", "broker_reads")
+    if data.get("ledger_readable") is not True:
+        raise PollFailure("incomplete_snapshot", "ledger_read")
+    return data
 
 
 _poll_module = None
@@ -908,11 +946,14 @@ def gate_step() -> Optional[bool]:
     (`_fire_candidates`) that main() threads into every log_fire
     call and launch_step's candidate set.
     """
-    global _fire_candidates, _fire_health
+    global _fire_candidates, _fire_health, _gate_diagnostic
+    _gate_diagnostic = None
+    started = time.monotonic()
     _fire_candidates = None
     _fire_health = run_queue_health()
     try:
-        poll_data = run_poll()
+        remaining = GATE_MAX_SECONDS - (time.monotonic() - started)
+        poll_data = run_poll(timeout=min(POLL_MAX_SECONDS, remaining))
         candidates = poll_data.get("candidates", [])
         _fire_candidates = list(candidates)
 
@@ -947,7 +988,17 @@ def gate_step() -> Optional[bool]:
 
         return False
     except Exception as e:
-        print(f"Gate check failed: {e}")
+        category, phase = (
+            (e.category, e.phase)
+            if isinstance(e, PollFailure)
+            else ("unexpected_error", "gate")
+        )
+        _gate_diagnostic = {
+            "category": category,
+            "phase": phase,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        }
+        print(f"Gate check failed: {category} during {phase}")
         return None
 
 
@@ -2014,6 +2065,7 @@ def _fire(mode: str):
             [],
             None,
             [{"reason": "gate_unknown"}],
+            gate_diagnostic=_gate_diagnostic,
             health=fire_health,
             supervision=supervision_records,
             babysitter=babysitter_record,
