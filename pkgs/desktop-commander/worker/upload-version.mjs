@@ -126,13 +126,19 @@ if (dryRun) {
   process.stdout.write(output);
   console.log(`dry run: ${config.worker} version is valid; nothing uploaded`);
 } else {
-  const version = unwrapJson(output);
+  // cf's versions-create stdout is a human panel in this build, not
+  // JSON — resolve the uploaded version by its unique tag instead of
+  // parsing that output. Exactly one version may carry the tag.
+  const listed = cfJson(["workers", "versions", "list", "--worker-id", config.worker, "--per-page", "50"]);
+  const allVersions = Array.isArray(listed) ? listed : listed?.versions ?? listed?.items ?? [];
+  const matches = allVersions.filter((v) => v.annotations?.["workers/tag"] === tag);
+  if (matches.length !== 1) {
+    throw new Error(`expected exactly one uploaded version with tag ${tag}, found ${matches.length}; refusing to emit provenance`);
+  }
+  const version = matches[0];
   const versionId = version.id ?? version.version_id;
   if (typeof versionId !== "string" || !versionId) {
     throw new Error("cf did not return the uploaded version ID; refusing to emit provenance");
-  }
-  if (version.annotations?.["workers/tag"] && version.annotations["workers/tag"] !== tag) {
-    throw new Error("cf returned an uploaded version with an unexpected tag");
   }
   if (baselineDeployment) {
     const deployment = firstDeployment(cfJson(["workers", "deployments", "list", "--worker", config.worker, "--per-page", "1"]));

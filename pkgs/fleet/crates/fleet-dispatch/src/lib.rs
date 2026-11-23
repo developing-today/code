@@ -258,7 +258,9 @@ fn read_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>)> {
     // present-but-invalid Content-Length or Transfer-Encoding is
     // refused, never silently treated as absent — a partial body
     // can be valid JSON, so lenient framing would make truncation
-    // invisible to the caller.
+    // invisible to the caller. The four-dimension contract (type,
+    // range, arithmetic, count) is stated in fleet-proxy's http.rs
+    // module doc; this reader follows it.
     let mut content_length: Option<usize> = None;
     let mut transfer_codings: Vec<String> = Vec::new();
     for line in head.lines().skip(1) {

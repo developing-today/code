@@ -32,6 +32,33 @@ policy itself, not a second copy of the table:
 The command exits non-zero when no valid record can be emitted: a dispatch
 that cannot produce a record does not proceed unrecorded.
 
+## Live quota read (#2732)
+
+The monthly guard needs a live monthly percent, not a hand-supplied one.
+Pass `--quota-current <quota-current.json> --pool <serviceId>` and the
+tool fills `pool_monthly_pct`, `pool_read_at`, and `pool_id` from the
+quota gatherer's monthly window for that pool — the gatherer
+(`pm-stack/aggregator/scripts/gather-quota.ts`) writes `quota-current.json`
+every 15 minutes, and the reader (`ReadQuotaCurrent`) takes the newest
+`ok` entry for the serviceId under the policy's B5 bound (60 minutes).
+A missing, stale, or failed read is a non-zero exit, never a silent
+unguarded record; an out-of-range monthly percent drops instead of
+clamping. An entry the gatherer retained after a failed tick
+(`retainedFromFailedTick`) counts as stale, never as a live read. A
+successful live read also clears any `pool_read_unobtainable` B4
+fallback recorded in the answers file, and explicitly empty
+`--quota-current` / `--pool` values are a usage error, never a silent
+fall back to the hand-supplied inputs. A seating against a pool at or above 97% monthly then refuses
+with the `monthly-guard refusal` line the weekly audit counts
+(`placement-audit --log`), so the refusal is countable from
+dispatcher-log data:
+
+```sh
+placement-record --policy placement-policy.yaml --answers answers.json \
+  --quota-current quota-current.json --pool chatgpt-plan
+# placement-record: monthly-guard refusal: option "Muse" on pool "chatgpt-plan" refused (monthly 98.4% at/above 97% threshold [source: monthly-guard])
+```
+
 ## Tests
 
 `go test ./...` evaluates the real policy of record (the tests load the
@@ -98,4 +125,11 @@ review decision, not something the PoC pre-judges.
 
 - Wiring into the live fleet queue client or the OpenChamber dispatcher
   (the second named path) — that is the permanent rollout, gated on review
-  of this PoC per the #2024 program rule.
+  of this PoC per the #2024 program rule. The producer and the call shape
+  for that wiring are now named: the quota-current producer is the
+  gatherer's `quota-current.json` (read by `ReadQuotaCurrent`, with the
+  `--quota-current` / `--pool` flags on `placement-record`), and the
+  dispatcher invokes `placement-record` before seating and captures its
+  refusal stderr into the dispatcher log, where `placement-audit --log`
+  counts it. What remains is the invocation itself — the queue client or
+  dispatcher calling the tool on the seating path.
