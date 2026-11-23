@@ -136,6 +136,9 @@ export class GitHubClient {
   constructor(
     private appId: string | null,
     private appPrivateKeyPem: string | null,
+    /** gh CLI fallback binary; a constructor seam so tests can point the
+     * fallback at a fake `gh` (Bun.spawn does not re-read a mutated PATH). */
+    private ghBinary = "gh",
   ) {}
 
   get appConfigured(): boolean {
@@ -204,7 +207,7 @@ export class GitHubClient {
   // --- gh CLI fallback -------------------------------------------------------
 
   private async gh(args: string[], input?: string, timeoutMs = GH_SUBPROCESS_TIMEOUT_MS): Promise<string> {
-    const proc = Bun.spawn(["gh", ...args], {
+    const proc = Bun.spawn([this.ghBinary, ...args], {
       stdin: input !== undefined ? new Blob([input]) : "ignore",
       stdout: "pipe",
       stderr: "pipe",

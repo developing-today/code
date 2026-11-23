@@ -290,10 +290,10 @@ describe("GitHubClient create-issue timeout (#10849)", () => {
 describe("gh CLI fallback bound (#6992)", () => {
   // The fetch routes are bounded (#10825) but the gh subprocess fallback
   // was not: a gh call parked on API rate-limit retries held the launch
-  // handler open indefinitely. These tests put a fake `gh` on PATH — a
-  // sleeper for the timeout, an echo for the control — and call the
-  // private fallback with a short bound, in the cast style of
-  // fetch-timeout.test.ts.
+  // handler open indefinitely. These tests point the client's ghBinary
+  // seam at a fake `gh` — a sleeper for the timeout, an echo for the
+  // control — and call the private fallback with a short bound, in the
+  // cast style of fetch-timeout.test.ts.
   const ghOf = (c: GitHubClient) =>
     (
       c as unknown as {
@@ -303,45 +303,34 @@ describe("gh CLI fallback bound (#6992)", () => {
 
   function fakeGh(script: string): string {
     const dir = mkdtempSync(join(tmpdir(), "dispatch-gh-test-"));
-    writeFileSync(join(dir, "gh"), script, { mode: 0o755 });
-    return dir;
-  }
-
-  async function withPath<T>(dir: string, fn: () => Promise<T>): Promise<T> {
-    const prev = process.env.PATH;
-    process.env.PATH = `${dir}:${prev ?? ""}`;
-    try {
-      return await fn();
-    } finally {
-      process.env.PATH = prev;
-    }
+    const bin = join(dir, "gh");
+    writeFileSync(bin, script, { mode: 0o755 });
+    return bin;
   }
 
   test("a gh call that outlives the bound is killed and surfaces as a GitHubError naming the timeout", async () => {
-    const dir = fakeGh("#!/bin/sh\nsleep 30\n");
+    const bin = fakeGh("#!/bin/sh\nsleep 30\n");
     try {
       const started = Date.now();
-      const err = await withPath(dir, () =>
-        ghOf(client())(["api", "repos/x/y"], undefined, 150).then(
-          () => null,
-          (e: unknown) => e,
-        ),
+      const err = await ghOf(new GitHubClient("12345", pem, bin))(["api", "repos/x/y"], undefined, 150).then(
+        () => null,
+        (e: unknown) => e,
       );
       expect(err).toBeInstanceOf(GitHubError);
       expect((err as Error).message).toContain("timed out after 150 ms");
       expect(Date.now() - started).toBeLessThan(10_000);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(join(bin, ".."), { recursive: true, force: true });
     }
   });
 
   test("a gh call inside the bound returns its stdout unchanged", async () => {
-    const dir = fakeGh("#!/bin/sh\necho fake-gh-output\n");
+    const bin = fakeGh("#!/bin/sh\necho fake-gh-output\n");
     try {
-      const out = await withPath(dir, () => ghOf(client())(["--version"], undefined, 5_000));
+      const out = await ghOf(new GitHubClient("12345", pem, bin))(["--version"], undefined, 5_000);
       expect(out).toContain("fake-gh-output");
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(join(bin, ".."), { recursive: true, force: true });
     }
   });
 });
