@@ -54,6 +54,25 @@ export function ago(iso, now = Date.now()) {
   return `${Math.round(s / 86400)} d ago`;
 }
 
+/** What a pull request's check found, in one line, from whatever of it
+ * GitHub gave: a part it did not give is left out, not shown as
+ * "undefined". */
+export function prCheck(d) {
+  if (!d || typeof d !== "object") return "GitHub did not say.";
+  const state = d.mergeable_state ? ` (${d.mergeable_state})` : "";
+  const parts = [
+    d.mergeable === true ? `can merge${state}` : d.mergeable === false ? `cannot merge${state}` : "mergeability not known yet",
+    Number.isFinite(d.additions) && Number.isFinite(d.deletions)
+      ? `+${d.additions} −${d.deletions}${Number.isFinite(d.changed_files) ? ` in ${d.changed_files} ${d.changed_files === 1 ? "file" : "files"}` : ""}`
+      : null,
+    Number.isFinite(d.review_comments) ? `${d.review_comments} review ${d.review_comments === 1 ? "comment" : "comments"}` : null,
+  ];
+  return parts.filter(Boolean).join(" · ");
+}
+
+/** A word with its first letter raised, for a button. */
+export const capital = (word) => (word ? word[0].toUpperCase() + word.slice(1) : "");
+
 /** The queue's priority bands, in words. */
 export function band(priority) {
   const p = Number(priority);
@@ -135,12 +154,18 @@ async function api(path, body) {
     throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
   }
   let data = null;
+  let read = true;
   try {
     data = await res.json();
   } catch {
+    read = false;
     if (res.status === 401 || res.status === 403) signedOut = true;
   }
   if (!res.ok) throw new Error((data && data.error) || `http ${res.status}`);
+  // Every read answers with JSON. Something else (an empty answer, a
+  // page from something in between) is no answer, and saying so here
+  // keeps each screen from tripping over it in its own way.
+  if (body === undefined && (!read || data === null)) throw new Error("the answer could not be read");
   return data;
 }
 
@@ -372,7 +397,7 @@ const RANKS = ["expedite", "priority/critical", "now", "priority/high", "next", 
 function issueCard(i) {
   return card(
     h("h3", {}, ext(i.url, `#${i.number}`), ` ${i.title}`),
-    h("p", { class: "meta" }, `updated ${i.updated?.replace("T", " ")} · ${i.comments} comments`),
+    h("p", { class: "meta" }, `${i.updated ? `updated ${ago(i.updated)} · ` : ""}${i.comments} comments`),
     h(
       "div",
       { class: "row end" },
@@ -448,13 +473,17 @@ function flushPending() {
   }
 }
 
-async function sendAnswer(kind, args, key) {
+async function sendAnswer(kind, args, key, said) {
   try {
     const { result, held } = await api("act", { kind, args });
     if (result?.refused?.length) toast(`Not recorded: ${result.refused[0].why}`, true);
     else {
       answeredHere.add(key);
+      // A choice was already acknowledged when it was made (with its
+      // Undo); anything else says so now, or the question would simply
+      // vanish.
       if (held) toast(HELD_NOTE);
+      else if (said) toast(said);
     }
     picks.delete(key);
     if (docs.questions?.questions) {
@@ -549,7 +578,7 @@ function questionCard(q) {
           class: "small ghost",
           onclick: async () => {
             const text = await ask({ title: "Your own answer", text: q.q, label: "Answer", okLabel: "Send", required: true });
-            if (text) sendAnswer("question.answer", { ...id, text }, key);
+            if (text) sendAnswer("question.answer", { ...id, text }, key, "Answer sent");
           },
         },
         "Write an answer",
@@ -1102,6 +1131,7 @@ async function viewSignin() {
   const id = h("input", { type: "text", placeholder: "Client ID", autocomplete: "off", autocapitalize: "none", spellcheck: false });
   const secret = h("input", { type: "password", placeholder: "Client secret", autocomplete: "off" });
   const send = async (e) => {
+    if (!id.value.trim() || !secret.value.trim()) return toast("Paste both values from Google first", true);
     const done = await act("sso.google", { clientId: id.value.trim(), clientSecret: secret.value.trim() }, "Google sign-in is on", e.target);
     secret.value = "";
     if (done) draw();
@@ -1150,7 +1180,7 @@ async function viewPhone(sub) {
   const devices = await api("devices");
   // Where a download would come from. Only the edge can say; the
   // laptop serving the app itself has no such answer.
-  const android = await api("android").catch(() => null);
+  const android = me.edge ? await api("android").catch(() => null) : null;
   // The phone has collected its token: the request is finished.
   if (linkApprovedAt !== null && devices.length > linkApprovedAt) {
     linkRequest = null;
@@ -1303,7 +1333,7 @@ async function viewQueue() {
       ? data.tasks.map((t) =>
           card(
             h("h3", {}, t.title),
-            h("p", { class: "meta" }, `${band(t.priority)} · updated ${String(t.updated ?? "").replace("T", " ")}`),
+            h("p", { class: "meta" }, [band(t.priority), t.updated ? `updated ${ago(t.updated)}` : ""].filter(Boolean).join(" · ")),
             t.why ? h("p", { class: "why" }, String(t.why)) : null,
             h(
               "div",
@@ -1359,9 +1389,7 @@ function viewPrs() {
               e.target.disabled = true;
               try {
                 const d = await api(`prs/${p.number}`);
-                detail.replaceChildren(
-                  h("p", { class: d.mergeable ? "meta" : "why" }, `${d.mergeable === null ? "mergeability not known yet" : d.mergeable ? "can merge" : "cannot merge"} (${d.mergeable_state}) · +${d.additions} −${d.deletions} in ${d.changed_files} files · ${d.review_comments} review comments`),
-                );
+                detail.replaceChildren(h("p", { class: d?.mergeable === false ? "why" : "meta" }, prCheck(d)));
               } catch (error) {
                 toast(error.message, true);
               }
@@ -1416,7 +1444,7 @@ async function viewAgents() {
     h(
       "div",
       { class: "row end" },
-      h("label", { for: "cmd", class: "row meta" }, command, "Send as a command"),
+      h("label", { for: "cmd", class: "row check meta" }, command, "Send as a command"),
       h(
         "button",
         {
@@ -1428,10 +1456,14 @@ async function viewAgents() {
     ),
   );
   let recent = [];
+  // The roster below is still useful without the log; but a log that
+  // could not be read is not the same as one with nothing in it.
+  let unread = "";
   try {
-    recent = await api("messages?limit=15");
-  } catch {
-    // the roster below is still useful without the log
+    const log = await api("messages?limit=15");
+    if (Array.isArray(log)) recent = log;
+  } catch (error) {
+    unread = error.message;
   }
   return [
     compose,
@@ -1442,7 +1474,7 @@ async function viewAgents() {
     h("h2", {}, "Recent messages"),
     ...(recent.length
       ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
-      : [empty("No messages.")]),
+      : [empty(unread ? `The messages could not be read just now: ${unread}` : "No messages.")]),
   ];
 }
 
@@ -1457,11 +1489,11 @@ function viewServices() {
         {
           class: `small${danger ? " ghost" : ""}`,
           onclick: async (e) => {
-            const yes = await ask({ title: `${action} ${u.unit}?`, okLabel: action, danger });
+            const yes = await ask({ title: `${capital(action)} ${u.unit}?`, okLabel: capital(action), danger });
             if (yes !== null) act("unit.act", { unit: u.unit, action }, `${u.unit}: ${action} done`, e.target);
           },
         },
-        action,
+        capital(action),
       );
     return h(
       "div",
@@ -1526,6 +1558,10 @@ const VIEWS = {
 };
 let route = "now";
 let drawSeq = 0;
+/** The screen whose content the view holds, once it has been drawn. */
+let drawn = null;
+/** A screen that takes longer than this to fetch says it is loading. */
+const LOADING_AFTER_MS = 150;
 
 function parse(hash) {
   const r = hash.replace(/^#/, "");
@@ -1581,14 +1617,33 @@ async function draw() {
   drawFresh();
   if (!docs.core) return view.replaceChildren(empty("Loading…"));
   if (extra && !docs[extra]) loadDoc(extra).then(() => seq === drawSeq && draw()).catch(() => {});
+  // Moving to another screen: what the last one showed must not sit
+  // under this one's name while this one is fetched. A screen that has
+  // everything it needs is drawn before this fires, so nothing flickers;
+  // a screen being drawn again keeps what it shows until the new is in.
+  const moved = drawn !== route;
+  const waiting = moved
+    ? setTimeout(() => {
+        if (seq !== drawSeq) return;
+        view.replaceChildren(empty(`Loading ${title}…`));
+        scrollTo(0, 0);
+      }, LOADING_AFTER_MS)
+    : null;
   try {
     const nodes = await render(sub);
-    if (seq === drawSeq) view.replaceChildren(...nodes.filter(Boolean));
+    if (seq !== drawSeq) return;
+    view.replaceChildren(...nodes.filter(Boolean));
+    if (moved) scrollTo(0, 0);
+    drawn = route;
   } catch (error) {
     if (seq !== drawSeq) return;
     view.replaceChildren(
       card(h("h3", {}, "This section could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => (signedOut ? location.reload() : draw()) }, signedOut ? "Reload" : "Try again"))),
     );
+    if (moved) scrollTo(0, 0);
+    drawn = route;
+  } finally {
+    if (waiting) clearTimeout(waiting);
   }
 }
 

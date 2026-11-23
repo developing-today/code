@@ -456,11 +456,13 @@ export class Ops {
 
   async messages(limit: unknown) {
     const n = limit === undefined || limit === null || limit === "" ? 30 : Math.min(id(limit, "limit"), 200);
-    return (
+    const log = (
       JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "log", "--limit", String(n), "--order", "desc"])) as {
-        messages: unknown[];
-      }
-    ).messages;
+        messages?: unknown;
+      } | null
+    )?.messages;
+    // A log with nothing in it is an empty list, never no answer at all.
+    return Array.isArray(log) ? log : [];
   }
 
   /** Send a message or a command to agents, groups, or everyone. */
