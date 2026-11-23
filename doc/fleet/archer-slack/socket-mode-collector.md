@@ -117,3 +117,41 @@ not a reconstruction.
 The review job's cadence, prompt, and authority; the puller's
 watermark contract; the store schema. Quiet-day agent cost reaches ~0
 only when S3+S5 land — S1 alone changes no live behaviour, by design.
+
+## S2 deployment (2026-11-22)
+
+The deployment form, all in this repo:
+
+- **Package:** `pkgs/fleet/archer-slack/collector/package.nix`
+  (interpreter + websockets + `launcher.sh`, the service entry point:
+  token by name via `fleet secrets get`, store directory ensured,
+  then exec). `nix build .#archer-slack-collector` is the package
+  check (lib/default.nix `make-archer-slack`).
+- **Module:** `nixos/services/archer-slack/default.nix`
+  (`services.archer-slack-collector`), a home-manager user service
+  like the pm-stack units; enabled for the laptop host (`amd`) in
+  `nixos/hosts/default.nix`. The unit sets `ARCHER_SLACK_DB` to the
+  store path the review job reads
+  (`~/workspace/archer-slack/puller/state/archer-slack.db`, the
+  laptop-local copy the parallel run writes) and
+  `ARCHER_WATCH_CHANNELS` to the PoC channel; Restart=on-failure.
+- **Registry:** the unit's row is in `doc/fleet-schedule-registry.md`
+  Surface 2b, added in the same change as the unit.
+
+First activation was a narrow unit-level install on the laptop (the
+unit file home-manager will generate, installed directly) because a
+full `./rebuild` had other work pending; the landing note on #2137
+records the exact start time of the 3-day parallel run and the
+rollback step. A later rebuild from a main that includes this change
+must preserve: the same unit (home-manager takes over the path,
+renaming any hand file to `*.backup`), the store file (outside
+home-manager's management; it persists), and the verified-live state
+— re-check `systemctl --user status archer-slack-collector` and its
+journal after that rebuild, since a unit that comes back wrong
+invalidates the parallel-run window it interrupts.
+
+The reaction gap from decision 3 stands: no `reaction_added`
+subscription, no `reactions:read` scope — reaction capture remains
+event-starved until the workspace owner amends the app manifest and
+reinstalls. S2 deploys with the subscriptions that exist (messages
+and mentions), which is what the parallel run measures.
