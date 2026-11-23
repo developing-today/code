@@ -5010,6 +5010,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-hw-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id",
+ "id-worlds",
+ "iroh",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "id-import-notion"
 version = "0.1.0"
 dependencies = [

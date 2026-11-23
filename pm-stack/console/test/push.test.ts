@@ -93,7 +93,9 @@ describe("the message a phone receives", () => {
       }));
       // It still holds both devices, each known by its mark and not by its address.
       const marks = [await endpointMark(a.subscription.endpoint), await endpointMark(m.subscription.endpoint)];
-      expect(await again.status()).toEqual({ ...status, devices: 2, known: marks });
+      // And what came of the send above, which a restart does not lose.
+      const last = { at: new Date(NOW).toISOString(), class: "replies", sent: 2, gone: 0, failed: 0, refused: [] };
+      expect(await again.status()).toEqual({ ...status, devices: 2, known: marks, last });
       expect(status.known).toEqual([]);
       expect(marks[0]).toMatch(/^[A-Za-z0-9_-]{16}$/);
       expect(marks[0]).not.toBe(marks[1]);
@@ -142,10 +144,94 @@ describe("the message a phone receives", () => {
     }
   });
 
+  test("what came of the last send is kept: how many it was taken for, and which push service refused", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pm-push-"));
+    try {
+      const a = await browser(); // Google's
+      const m = await browser("updates.push.services.mozilla.com");
+      const w = await browser("web.push.apple.com");
+      const MSG = { title: "t", body: "b", url: "/console/" };
+      let answer: (url: string) => number = () => 201;
+      let now = Date.parse("2026-11-23T05:00:00Z");
+      const file = join(dir, "push.json");
+      const make = () =>
+        new Push(
+          fileStore(file),
+          "mailto:o@example.com",
+          async (url) => {
+            const status = answer(url);
+            if (status < 0) throw new Error("no route to the push service");
+            return { status };
+          },
+          () => now,
+        );
+      const push = make();
+      expect((await push.status()).last).toBeNull(); // nothing has been sent
+      await push.send("replies", MSG);
+      expect((await push.status()).last).toBeNull(); // with nobody to send to, nothing was
+      for (const b of [a, m, w]) await push.subscribe(b.subscription, "");
+      await push.send("replies", MSG);
+      expect((await push.status()).last).toEqual({
+        at: "2026-11-23T05:00:00.000Z",
+        class: "replies",
+        sent: 3,
+        gone: 0,
+        failed: 0,
+        refused: [],
+      });
+      // One service refuses, one cannot be reached, one says the device is gone.
+      answer = (url) => (url === a.subscription.endpoint ? 403 : url === m.subscription.endpoint ? -1 : 410);
+      now += 60_000;
+      await push.send("test", MSG);
+      const last = (await make().status()).last; // as a restarted service reads it back
+      expect(last).toEqual({
+        at: "2026-11-23T05:01:00.000Z",
+        class: "test",
+        sent: 0,
+        gone: 1,
+        failed: 2,
+        refused: [
+          { host: "fcm.googleapis.com", status: 403 },
+          { host: "updates.push.services.mozilla.com", status: 0 },
+        ],
+      });
+      // It names the service, never the device: no address, no key.
+      for (const secret of ["abc123", a.subscription.keys.auth, a.subscription.keys.p256dh]) {
+        expect(JSON.stringify(await push.status())).not.toContain(secret);
+      }
+      // A class that is switched off sends nothing, and the account stays as it was.
+      await push.setClass("needs", false);
+      now += 60_000;
+      await push.send("needs", MSG);
+      expect((await push.status()).last?.at).toBe("2026-11-23T05:01:00.000Z");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("the server only posts to push services", async () => {
     const good = (await browser()).subscription;
     expect(validSubscription(good)).toEqual(good);
+    // What browsers really name. The second Google host is the one a
+    // Chrome off the stable channel gives (a real Chrome 153 did, when
+    // this was checked against Google's service); both are in Chromium's
+    // push_messaging_constants.cc.
     for (const endpoint of [
+      "https://fcm.googleapis.com/fcm/send/dQw:APA91b",
+      "https://fcm.googleapis.com/wp/dQw:APA91b",
+      "https://jmt17.google.com/fcm/send/dQw:APA91b",
+      "https://updates.push.services.mozilla.com/wpush/v2/gAAAA",
+      "https://web.push.apple.com/QGx",
+      "https://wns2-by3p.notify.windows.com/w/?token=AwYAAAB",
+    ]) {
+      expect(validSubscription({ ...good, endpoint })?.endpoint).toBe(endpoint);
+    }
+    for (const endpoint of [
+      "https://jmt17.google.com.evil.example/fcm/send/x",
+      "https://x.jmt17.google.com/fcm/send/x",
+      "https://jmt18.google.com/fcm/send/x",
+      "https://www.google.com/fcm/send/x",
+      "https://google.com/fcm/send/x",
       "http://fcm.googleapis.com/fcm/send/x", // not https
       "https://127.0.0.1:4870/api/alerts", // this machine
       "https://fcm.googleapis.com.evil.example/x",

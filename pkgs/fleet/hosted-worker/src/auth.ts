@@ -34,7 +34,13 @@
 
 import type { HostedConfig } from "./config.ts";
 import { FailClosed } from "./errors.ts";
-import type { GitHubCommentSurface, GitHubItemSource, GitHubWriter } from "./github.ts";
+import type {
+  GitHubBodyEditor,
+  GitHubCommentSurface,
+  GitHubItemSource,
+  GitHubProjectSurface,
+  GitHubWriter,
+} from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
 import type { QueueDepProbe, QueueStore } from "./queue-store.ts";
 import type { SessionRegistry } from "./sessions.ts";
@@ -95,6 +101,17 @@ export interface AuthDeps {
    * claim protocol's transport. Absent → the fallback verbs fail
    * closed with 503; the broker verbs do not need it. */
   githubComments?: GitHubCommentSurface;
+  /** GitHub body editor (#12590, src/github.ts): ingestion's
+   * write-back of ascertained Metadata blocks. Absent → the
+   * ingestion check stores ascertained blocks DB-only and reports
+   * writeback "not_attempted"; the store stays the required
+   * dependency. */
+  githubEditor?: GitHubBodyEditor;
+  /** GitHub project surface (#12591, src/github.ts): the sync
+   * door's project-sync backend — Projects V2 state and writes
+   * over the rotation. Absent → the project-sync route fails
+   * closed with 503, like unconfigured auth. */
+  githubProjects?: GitHubProjectSurface;
 }
 
 export async function sha256Hex(text: string): Promise<string> {

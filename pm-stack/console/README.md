@@ -49,6 +49,18 @@ subscribes under More, Notifications, and chooses what reaches it: a
 reply to something asked, something new that needs the owner, new
 questions, a failed unit. The Android app shows them as its own.
 
+The screen says "On for this device" only when the sender holds this
+device too: a browser that said yes while the sender refused or lost its
+address is shown as not finished, with one button to finish. It also
+says what came of the last notification: how many devices the push
+services took it for, and which service refused and with what status.
+"Took" is the word, because a push service accepting a message is not
+the phone showing it.
+
+Addresses are accepted only at the push services browsers really name:
+Google's (`fcm.googleapis.com`, and `jmt17.google.com`, which a Chrome
+off the stable channel gives), Mozilla's, Apple's and Microsoft's.
+
 A unit that runs on a timer (a service with a timer of the same name,
 such as `pm-git-sync`) is treated differently from one that stays up.
 Between runs it shows as failed whenever its last run failed, so one bad
@@ -159,7 +171,7 @@ app's link to this origin), and the two phone paths under
 ## Run
 
 ```bash
-bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only; and its two timers
+bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only; and its three timers
 python3 pm-stack/console/scripts/expose.py --owner you@example.com   # first time: Access, console env, tunnel route, DNS, the edge's route
 python3 pm-stack/console/scripts/expose.py --check   # what public exposure would change
 python3 pm-stack/console/scripts/expose.py           # later runs (the timer's): the owner is remembered

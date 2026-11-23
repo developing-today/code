@@ -68,6 +68,10 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // find the question stack) promotes it to primary — a curation
   // ruling recorded here like the others.
   decisions: "primary",
+  // Post-#1497 addition (#12491, 2026-11-22): the report-conflict
+  // review page enters at dropdown tier — no curation ruling promotes
+  // it, and new pages do not take primary slots without one.
+  reports: "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {

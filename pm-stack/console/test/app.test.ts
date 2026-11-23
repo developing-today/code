@@ -9,10 +9,14 @@ import {
   awayState,
   band,
   capital,
+  deliveryNote,
   deviceLabel,
+  deviceState,
   endpointMark,
+  levelHeadings,
   prCheck,
   subscriptionState,
+  testSaid,
 } from "../public/app.js";
 import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
@@ -217,4 +221,84 @@ test("a pull request's check says what GitHub said, and nothing it did not", () 
 
 test("a button's word starts with a capital", () => {
   expect(["start", "restart", "stop", "", "Logs"].map(capital)).toEqual(["Start", "Restart", "Stop", "", "Logs"]);
+});
+
+test("the Notifications screen says 'on' only when something would arrive here", () => {
+  // The browser being subscribed is half of it. The other half is the
+  // sender holding this device: without it nothing arrives, and saying
+  // "On" would be untrue (a refused address left it so before).
+  expect(deviceState("granted", true, "keep")).toBe("on");
+  expect(deviceState("granted", true, "again")).toBe("unfinished");
+  expect(deviceState("granted", true, "renew")).toBe("unfinished");
+  expect(deviceState("granted", false, "keep")).toBe("off");
+  expect(deviceState("default", true, "keep")).toBe("off");
+  expect(deviceState("denied", true, "keep")).toBe("off");
+});
+
+test("what came of the last notification is said in plain words, and never as 'delivered'", () => {
+  const NOW = Date.parse("2026-11-23T05:10:00Z");
+  expect(deliveryNote(null, NOW)).toBe("Nothing has been sent yet.");
+  expect(
+    deliveryNote({ at: "2026-11-23T05:05:00.000Z", class: "test", sent: 1, gone: 0, failed: 0, refused: [] }, NOW),
+  ).toBe("Last sent 5 min ago: a test. The push service took it for 1 device.");
+  expect(
+    deliveryNote(
+      {
+        at: "2026-11-23T03:10:00.000Z",
+        class: "replies",
+        sent: 2,
+        gone: 1,
+        failed: 1,
+        refused: [{ host: "fcm.googleapis.com", status: 403 }],
+      },
+      NOW,
+    ),
+  ).toBe(
+    "Last sent 2 h ago: a reply from the fleet. The push service took it for 2 devices. Not taken for 1 device: fcm.googleapis.com answered 403. 1 device no longer subscribed was forgotten.",
+  );
+  // A service that could not be reached at all, and a class this page does not know.
+  expect(
+    deliveryNote(
+      {
+        at: "2026-11-23T05:09:30.000Z",
+        class: "later",
+        sent: 0,
+        gone: 2,
+        failed: 2,
+        refused: [{ host: "updates.push.services.mozilla.com", status: 0 }],
+      },
+      NOW,
+    ),
+  ).toBe(
+    "Last sent just now: a notification. Not taken for 2 devices: updates.push.services.mozilla.com did not answer. 2 devices no longer subscribed were forgotten.",
+  );
+  // An older sender's record without the list of refusals still reads.
+  expect(deliveryNote({ at: "2026-11-23T05:09:30.000Z", class: "needs", sent: 0, gone: 0, failed: 1 }, NOW)).toBe(
+    "Last sent just now: something that needs you. Not taken for 1 device.",
+  );
+  expect(testSaid({ sent: 2, gone: 0, failed: 0 })).toBe("Test sent to 2 devices");
+  expect(testSaid({ sent: 1, gone: 0, failed: 1 })).toBe("Test sent to 1 device; not taken for 1 device");
+  expect(testSaid({ sent: 0, gone: 0, failed: 1 })).toBe("The push service did not take the test");
+  expect(testSaid({ sent: 0, gone: 1, failed: 0 })).toBe("No device took the test");
+});
+
+test("a card's title is not announced as a skipped heading level", () => {
+  // The screen's title is level one. Card titles are h3: fine under a
+  // section's h2, a skipped level when the screen has no section above them.
+  const heading = (tagName: string) => {
+    const attrs: Record<string, string> = {};
+    return { tagName, attrs, setAttribute: (k: string, v: string) => void (attrs[k] = v) };
+  };
+  const levels = (tags: string[]) => {
+    const els = tags.map(heading);
+    levelHeadings(els);
+    return els.map((e) => e.attrs["aria-level"] ?? null);
+  };
+  // No sections: every card title is said to be level two.
+  expect(levels(["H3", "H3"])).toEqual(["2", "2"]);
+  // Cards before the first section are level two; under a section they stay level three.
+  expect(levels(["H3", "H2", "H3", "H3", "H2", "H3"])).toEqual(["2", null, null, null, null, null]);
+  // Sections first: nothing is changed.
+  expect(levels(["H2", "H3"])).toEqual([null, null]);
+  expect(levels([])).toEqual([]);
 });

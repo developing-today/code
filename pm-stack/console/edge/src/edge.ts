@@ -55,6 +55,7 @@ import {
   SECURITY,
   sameSiteWrite,
 } from "../../src/http.ts";
+import { plain } from "../../src/plain.ts";
 import { Notifier } from "../../src/notify.ts";
 import { contact, Push } from "../../src/push.ts";
 import type { Store } from "../../src/store.ts";
@@ -204,9 +205,9 @@ export class Edge {
   private keptApk: (ApkMeta & { chunks: number }) | null | undefined;
   /** The build that could not be kept when it was last sent, and when. */
   private apkFailed: { sha256: string; at: number } | null = null;
-  /** What GitHub last said of the released build, when, and whether it
-   * could be asked at all. */
-  private released: { at: number; asked: boolean; found: AndroidRelease | null } | null = null;
+  /** What GitHub last said of the released build, when, whether it
+   * could be asked at all, and if not, why. */
+  private released: { at: number; asked: boolean; found: AndroidRelease | null; trouble: string | null } | null = null;
   private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
@@ -217,7 +218,7 @@ export class Edge {
   constructor(options: EdgeOptions) {
     this.kv = options.kv;
     this.now = options.now ?? Date.now;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = plain(options.fetchImpl ?? fetch);
     this.direct = options.direct;
     this.setAlarm = options.setAlarm ?? (async () => {});
     this.syncRefused = new KeyedLimiter(SYNC_REFUSALS, 60_000, this.now);
@@ -274,13 +275,26 @@ export class Edge {
         redirect: "follow",
         signal: AbortSignal.timeout(RELEASE_ASK_MS),
       });
-      if (res.status === 404) this.released = { at: now, asked: true, found: null };
-      else if (res.ok) this.released = { at: now, asked: true, found: androidRelease(await res.json()) };
-      else throw new Error(`http ${res.status}`);
-    } catch {
-      this.released = { at: now, asked: false, found: known?.found ?? null };
+      if (res.status === 404) this.released = { at: now, asked: true, found: null, trouble: null };
+      else if (res.ok) this.released = { at: now, asked: true, found: androidRelease(await res.json()), trouble: null };
+      else throw new Error(`GitHub answered ${res.status}`);
+    } catch (error) {
+      // Why it could not be asked is kept, and health says it: "none
+      // published" and "could not ask" are different things, and for a
+      // day the second looked like the first.
+      const e = error as Error;
+      const trouble = `${e.name && e.name !== "Error" ? `${e.name}: ` : ""}${e.message}`.slice(0, 160);
+      this.released = { at: now, asked: false, found: known?.found ?? null, trouble };
     }
     return this.released.found;
+  }
+
+  /** What is said of the released build: its name, its code and when it
+   * was built. Null when none is published, or before the host has said
+   * which repository this is. */
+  private async releaseSaid(cfg: EdgeConfig | null): Promise<{ name: string; code: number; built: string } | null> {
+    const release = cfg ? await this.androidRelease(cfg) : null;
+    return release && { name: release.name, code: release.code, built: release.built };
   }
 
   /** The released build, as a download, or null if it did not arrive as
@@ -946,6 +960,14 @@ export class Edge {
         // The copy of the Android build kept here: when it was built,
         // and whether it is the host's newest. Null if there is none.
         androidBuild: await this.apkState(),
+        // The newest build of the app GitHub has released, as last read
+        // here (within ten minutes): what a download is, when there is
+        // one. The release is public; this is how its arrival here is
+        // checked from outside. Null when none is published.
+        androidRelease: await this.releaseSaid(cfg),
+        // Why GitHub could not be asked, the last time it was tried;
+        // null when it answered (also when it answered "none").
+        androidReleaseTrouble: this.released?.trouble ?? null,
         // Since this object last started: requests it answered as the
         // owner's, and requests it left to the host to judge.
         answered: this.sure,
@@ -1047,11 +1069,7 @@ export class Edge {
         if (seg.length === 1 && seg[0] === "android") {
           // Where a download would come from: the build GitHub released,
           // if there is one, and the copy of the laptop's build kept here.
-          const release = await this.androidRelease(cfg);
-          return json({
-            release: release && { name: release.name, code: release.code, built: release.built },
-            copy: await this.apkState(),
-          });
+          return json({ release: await this.releaseSaid(cfg), copy: await this.apkState() });
         }
         if (seg.length === 1 && seg[0] === "push") return json(await this.push.status());
         if (seg.length === 1 && seg[0] === "devices") return json(await this.phones.devices.list());

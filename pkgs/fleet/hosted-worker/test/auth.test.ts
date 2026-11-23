@@ -31,15 +31,18 @@ test("a valid RP token resolves to the tenancy binding_id", async () => {
   assert.deepEqual(ctx.roles, ["owner"]);
 });
 
-test("a valid RP token passes auth on a door route (a stub door then answers 501)", async () => {
+test("a valid RP token passes auth on a door route (the door then answers its own refusal)", async () => {
   const token = await h.sign(h.rpPayload());
-  // The probe rides a still-stubbed door: it used the queue door
-  // until #12589 landed it; the ingestion door (#12590) is the
-  // remaining stub with the same shape.
-  const res = await dispatch(bearerReq("/v1/ingestion/github", token, { method: "POST" }), h.deps);
-  assert.equal(res.status, 501);
+  // The probe rode each still-stubbed door in turn (queue until
+  // #12589, ingestion until #12590, sync until #12591); no stub
+  // remains. It now rides the sync door in the bare harness,
+  // whose deps wire no project surface: past auth, the door's
+  // own unconfigured-dependency refusal (503) is the proof the
+  // token passed.
+  const res = await dispatch(bearerReq("/v1/sync/project", token, { method: "POST" }), h.deps);
+  assert.equal(res.status, 503);
   const body = (await res.json()) as { error: string };
-  assert.equal(body.error, "not_implemented");
+  assert.equal(body.error, "sync_not_configured");
 });
 
 test("an invalid signature is refused", async () => {
@@ -165,17 +168,17 @@ test("a cross-tenant assertion header fails closed (service caller)", async () =
 
 test("a binding header that agrees with the credential is not a refusal", async () => {
   const token = await h.sign(h.rpPayload());
-  // The probe rides a still-stubbed door (see the RP-token probe
-  // above): past the tenancy check, the stub's 501 is the proof
-  // the header was accepted.
+  // The probe rides the sync door in the bare harness (see the
+  // RP-token probe above): past the tenancy check, the door's
+  // own 503 is the proof the header was accepted.
   const res = await dispatch(
-    bearerReq("/v1/ingestion/github", token, {
+    bearerReq("/v1/sync/project", token, {
       method: "POST",
       headers: { "x-binding-id": BINDING_A },
     }),
     h.deps,
   );
-  assert.equal(res.status, 501);
+  assert.equal(res.status, 503);
 });
 
 test("a per-user Turso DB credential presented as service auth is refused", async () => {

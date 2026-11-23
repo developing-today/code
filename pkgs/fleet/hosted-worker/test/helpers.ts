@@ -19,6 +19,11 @@ export const BINDING_C = "cccccccccccccccccccccccccccccccc";
 
 export const SERVICE_TOKEN = "svc-token-for-tenant-a-0123456789abcdef";
 
+/** The webhook receiver's shared secret in the harness config
+ * (#12590): deliveries in tests sign with this; the receiver's
+ * unconfigured case is exercised with a config built without it. */
+export const WEBHOOK_SECRET = "test-webhook-secret-0123456789abcdef";
+
 function b64urlEncode(data: string | Uint8Array): string {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
   let bin = "";
@@ -82,6 +87,7 @@ export async function makeHarness(): Promise<Harness> {
     RP_ISSUER: ISSUER,
     RP_AUDIENCE: AUDIENCE,
     TENANCY_FIXTURE_JSON: fixture,
+    GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET,
   });
 
   async function signWith(
