@@ -205,6 +205,7 @@
 
 pub use id_core::abuse;
 pub use id_core::access;
+pub use id_core::admission_gate;
 #[cfg(feature = "world")]
 pub mod artifact;
 pub use id_events::attestation;
@@ -213,6 +214,7 @@ pub mod blob_gate;
 #[cfg(feature = "world")]
 pub mod boards;
 pub use id_core::connectivity;
+pub use id_store::admission;
 pub use id_store::chain;
 pub use id_store::chat;
 pub use id_store::chat_anchor;

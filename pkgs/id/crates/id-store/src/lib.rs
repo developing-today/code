@@ -27,6 +27,7 @@ pub use id_core::port;
 /// as a sibling module, so the module is re-exported at this root.
 pub use id_core::content_id;
 
+pub mod admission;
 pub mod chain;
 pub mod chat;
 pub mod chat_anchor;

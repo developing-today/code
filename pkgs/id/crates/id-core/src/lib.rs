@@ -22,6 +22,7 @@
 
 pub mod abuse;
 pub mod access;
+pub mod admission_gate;
 pub mod append_list;
 pub mod append_list_client;
 pub mod array_address;
