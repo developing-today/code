@@ -438,11 +438,11 @@ fn promotion_records_chunk_occurrences_for_identical_text() {
     assert_eq!(rows[0].1, want, "canonical hash is SHA-256 of the text");
 }
 
-/// Oracle: every stored occurrence span selects exactly the persisted
-/// chunk bytes from its source item's original UTF-8 text, and the
-/// ordered spans form a gap-free, overlap-free partition of each item.
-/// Generated documents contain multibyte characters, line boundaries,
-/// multiple source items, and enough tokens to exercise embed-time splits.
+// Oracle: every stored occurrence span selects exactly the persisted
+// chunk bytes from its source item's original UTF-8 text, and the
+// ordered spans form a gap-free, overlap-free partition of each item.
+// Generated documents contain multibyte characters, line boundaries,
+// multiple source items, and enough tokens to exercise embed-time splits.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
 
