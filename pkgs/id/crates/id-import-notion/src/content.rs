@@ -314,7 +314,7 @@ pub fn convert_page(
         )
     });
     advance(manifest, page_id, Stage::Files, files_outcome, None)?;
-    advance(manifest, page_id, Stage::Content, outcome, reason.clone())?;
+    advance(manifest, page_id, Stage::Content, outcome.clone(), reason.clone())?;
     advance(manifest, page_id, Stage::References, outcome, reason)?;
 
     Ok(PageConversion {
