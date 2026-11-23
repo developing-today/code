@@ -25,6 +25,11 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   the pinned config fingerprint (ceiling, model revision, vector
   table, k). A cached entry is never served across ceilings or
   embedding spaces.
+- `src/freshness.ts` — the D1 hot-cache freshness evaluator
+  (#13101; design #9134 §1): pure per-class watermark/TTL rules
+  with fail-safe degradation, plus the tenant watermark read seam.
+  Not wired into a read path yet — the D1 store is #13100 and
+  read-path integration is follow-on 4 under #9134.
 
 ## Endpoints
 
