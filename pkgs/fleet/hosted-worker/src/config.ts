@@ -49,6 +49,17 @@ export interface HostedEnv {
    * rotation order: rate-limit / permission refusals fail over to
    * the next installation (the native #8887 rule). */
   GITHUB_APP_INSTALLATION_IDS?: string;
+  /** GitHub webhook secret (#12590): the shared secret GitHub signs
+   * deliveries with (X-Hub-Signature-256, HMAC-SHA256). A secret,
+   * referenced by name only; never logged. Absent → the webhook
+   * receiver fails closed (503), like unconfigured auth. */
+  GITHUB_WEBHOOK_SECRET?: string;
+  /** Ingestion scope (#12590): the repos the scheduled sweeper
+   * re-scans, comma-separated owner/name — "in-scope repos" in
+   * #9060 §16's terms (all repos the fleet works in). The sweep
+   * route may name repos per request instead; this is the
+   * scheduled run's standing scope. */
+  INGESTION_REPOS?: string;
 }
 
 /** Stamp signing key material: the parsed key, bytes only. */
@@ -88,6 +99,14 @@ export interface HostedConfig {
    * (valid) App material is set — the Worker then wires the fixture
    * GitHub writer (local/dev semantics, src/github.ts). */
   github: GitHubAppConfig | null;
+  /** GitHub webhook secret (#12590), or null when unset/empty —
+   * the ingestion receiver then fails closed (503). */
+  webhookSecret: string | null;
+  /** The sweeper's standing repo scope (#12590), parsed from
+   * INGESTION_REPOS: owner/name entries only, in listed order.
+   * Empty when unconfigured — the scheduled sweep then has
+   * nothing to scan and the sweep route must be given repos. */
+  ingestionRepos: string[];
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -203,5 +222,27 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     authConfigured: rp !== null && tenancy !== null,
     stamp: parseStampConfig(env),
     github: parseGitHubAppConfig(env),
+    webhookSecret:
+      env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== ""
+        ? env.GITHUB_WEBHOOK_SECRET
+        : null,
+    ingestionRepos: parseIngestionRepos(env.INGESTION_REPOS),
   };
+}
+
+/** The sweeper's repo scope: comma-separated owner/name entries.
+ * A malformed entry is dropped, not fatal — the residue is a
+ * smaller scope, and an all-malformed value parses to the empty
+ * (unconfigured) scope, whose sweep fails closed like every
+ * unconfigured dependency. */
+function parseIngestionRepos(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const out: string[] = [];
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(trimmed) && !out.includes(trimmed)) {
+      out.push(trimmed);
+    }
+  }
+  return out;
 }

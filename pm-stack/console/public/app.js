@@ -865,6 +865,7 @@ function viewMore() {
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
       tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
       tile("more/away", "Laptop away", "what Cloudflare does by itself when the laptop cannot be reached"),
+      tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
   ];
   for (const g of ops.more || []) {
@@ -918,6 +919,40 @@ export function subscriptionState(madeFor, mark, status) {
   return (status.known || []).includes(mark) ? "keep" : "again";
 }
 
+/** Where this device stands: "on" (it is subscribed and the sender has
+ * it), "unfinished" (the browser said yes but the sender does not have
+ * this device, so nothing would arrive), or "off". `state` is
+ * subscriptionState's answer for this device's subscription. */
+export function deviceState(permission, subscribed, state) {
+  if (!subscribed || permission !== "granted") return "off";
+  return state === "keep" ? "on" : "unfinished";
+}
+
+const SENT_FOR = {
+  replies: "a reply from the fleet",
+  needs: "something that needs you",
+  questions: "a question for you",
+  trouble: "a unit that failed",
+  test: "a test",
+};
+const devices = (n) => `${n} device${n === 1 ? "" : "s"}`;
+
+/** What came of the last notification, in a sentence or two. A push
+ * service taking a message is not the phone showing it, so this says
+ * "took", not "delivered". */
+export function deliveryNote(last, now = Date.now()) {
+  if (!last) return "Nothing has been sent yet.";
+  const said = [`Last sent ${ago(last.at, now) || "at an unknown time"}: ${SENT_FOR[last.class] || "a notification"}.`];
+  if (last.sent) said.push(`The push service took it for ${devices(last.sent)}.`);
+  if (last.failed) {
+    const first = (last.refused || [])[0];
+    const why = first ? `: ${first.host} ${first.status ? `answered ${first.status}` : "did not answer"}` : "";
+    said.push(`Not taken for ${devices(last.failed)}${why}.`);
+  }
+  if (last.gone) said.push(`${devices(last.gone)} no longer subscribed ${last.gone === 1 ? "was" : "were"} forgotten.`);
+  return said.join(" ");
+}
+
 /** Notifications that are on for this device stay on: nothing is asked,
  * because the owner already said yes on this device. A device where
  * they are off is left alone. */
@@ -943,6 +978,13 @@ function keyBytes(b64) {
   return Uint8Array.from(text, (c) => c.charCodeAt(0));
 }
 
+/** What a test send came to, for the line shown when it is done. */
+export function testSaid(r) {
+  if (r.sent && !r.failed) return `Test sent to ${devices(r.sent)}`;
+  if (r.sent) return `Test sent to ${devices(r.sent)}; not taken for ${devices(r.failed)}`;
+  return r.failed ? "The push service did not take the test" : "No device took the test";
+}
+
 async function viewNotify() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
     return [empty("This browser cannot receive notifications. On Android, use Chrome or the app.")];
@@ -950,7 +992,12 @@ async function viewNotify() {
   const status = await api("push");
   const reg = await navigator.serviceWorker.getRegistration("/console/");
   const sub = reg ? await reg.pushManager.getSubscription() : null;
-  const on = Boolean(sub) && Notification.permission === "granted";
+  // The browser being subscribed is half of it: the sender has to hold
+  // this device too, or nothing would arrive.
+  const madeFor = sub?.options?.applicationServerKey;
+  const state = sub ? subscriptionState(madeFor ? b64url(new Uint8Array(madeFor)) : "", await endpointMark(sub.endpoint), status) : "keep";
+  const where = deviceState(Notification.permission, Boolean(sub), state);
+  const on = where === "on";
   const turnOn = async (e) => {
     e.target.disabled = true;
     try {
@@ -959,8 +1006,14 @@ async function viewNotify() {
       }
       const r = await navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" });
       await navigator.serviceWorker.ready;
+      // A subscription made for another sender's key cannot be reused.
+      if (state === "renew") await (await r.pushManager.getSubscription())?.unsubscribe();
       const s = await r.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(status.key) });
-      await act("push.on", { subscription: s.toJSON(), label: deviceLabel() }, "Notifications are on for this device");
+      // Refused by the sender: the reason is on screen, and the button
+      // is there to press again.
+      if (!(await act("push.on", { subscription: s.toJSON(), label: deviceLabel() }, "Notifications are on for this device"))) {
+        e.target.disabled = false;
+      }
     } catch (error) {
       toast(error.message, true);
       e.target.disabled = false;
@@ -973,15 +1026,18 @@ async function viewNotify() {
   };
   return [
     card(
-      h("h3", {}, on ? "On for this device" : "Off for this device"),
-      h("p", { class: "meta" }, `${status.devices} device${status.devices === 1 ? "" : "s"} subscribed in all.`),
+      h("h3", {}, on ? "On for this device" : where === "unfinished" ? "Not finished on this device" : "Off for this device"),
+      where === "unfinished"
+        ? h("p", { class: "why" }, "This device said yes, but the sender of notifications does not have it, so nothing would arrive here.")
+        : null,
+      h("p", { class: "meta" }, `${devices(status.devices)} subscribed in all. ${deliveryNote(status.last)}`),
       Notification.permission === "denied" ? h("p", { class: "why" }, "This browser is set to block notifications from this site.") : null,
       h(
         "div",
         { class: "row end" },
         on ? h("button", { class: "small ghost", onclick: turnOff }, "Turn off") : null,
-        on ? h("button", { class: "small ghost", onclick: (e) => act("push.test", {}, (r) => (r.sent ? `Test sent to ${r.sent} device${r.sent === 1 ? "" : "s"}` : "No device took the test"), e.target) }, "Send a test") : null,
-        on ? null : h("button", { onclick: turnOn }, "Turn on for this device"),
+        on ? h("button", { class: "small ghost", onclick: (e) => act("push.test", {}, testSaid, e.target) }, "Send a test") : null,
+        on ? null : h("button", { onclick: turnOn }, where === "unfinished" ? "Finish turning on" : "Turn on for this device"),
       ),
     ),
     h("h2", {}, "Tell me when"),
@@ -993,6 +1049,92 @@ async function viewNotify() {
           h("input", { type: "checkbox", checked: status.classes[cls], onchange: (e) => act("push.class", { class: cls, on: e.target.checked }, e.target.checked ? "On" : "Off") }),
           label,
         ),
+      ),
+    ),
+  ];
+}
+
+// ---- releases ----------------------------------------------------------
+
+const RUN_STATE = {
+  success: "Done",
+  failure: "Failed",
+  cancelled: "Cancelled",
+  timed_out: "Ran out of time",
+  in_progress: "Running now",
+  queued: "Waiting to start",
+};
+
+/** One run of a deploy or a build, in a line: how it stands, when it
+ * started, of which commit, and whether someone started it by hand. */
+export function runSaid(run, now = Date.now()) {
+  const state = RUN_STATE[run.state] || capital(String(run.state || "unknown").replace(/_/g, " "));
+  return [state, ago(run.at, now), String(run.commit || "").slice(0, 7), run.byHand ? "started by hand" : null].filter(Boolean).join(" · ");
+}
+
+/** What is being served, in a sentence, from the edge's health answer:
+ * which commit Cloudflare serves, and whether the laptop runs the same. */
+export function servingSaid(health) {
+  if (!health || health.edge !== true || !health.version) return "This is served straight from the laptop.";
+  const edge = String(health.version).slice(0, 7);
+  const host = health.hostVersion ? String(health.hostVersion).slice(0, 7) : null;
+  if (!host) return `Cloudflare is serving ${edge}. The laptop has not said what it runs.`;
+  if (host === edge) return `Cloudflare and the laptop are both on ${edge}.`;
+  return `Cloudflare is serving ${edge}; the laptop runs ${host}. After a merge the laptop follows within a minute or two.`;
+}
+
+/** Releases: what is deployed and what is released, as Cloudflare and
+ * GitHub themselves say, and the buttons that put either out again. A
+ * merge does both by itself; this is for looking, and for doing it over. */
+async function viewReleases() {
+  let health = null;
+  try {
+    const res = await fetch("/console/health", { cache: "no-store" });
+    health = res.ok ? await res.json() : null;
+  } catch {
+    health = null;
+  }
+  const [runs, android] = await Promise.all([api("releases").catch((error) => ({ error: error.message })), me.edge ? api("android").catch(() => null) : null]);
+  const list = (got) => {
+    if (!Array.isArray(got)) return [h("p", { class: "why" }, `Its runs could not be read: ${got?.error || runs.error || "no answer"}`)];
+    if (got.length === 0) return [h("p", { class: "meta" }, "It has not run yet.")];
+    return [h("div", { class: "runs" }, ...got.slice(0, 3).map((r) => ext(r.url, runSaid(r))))];
+  };
+  const start = (what, scratch, title, text, said) => async (e) => {
+    const yes = await ask({ title, text, okLabel: "Start it" });
+    if (yes !== null) act("deploy.start", { what, scratch }, said, e.target);
+  };
+  const release = android?.release || health?.androidRelease || null;
+  const page = `https://github.com/${me.repo || "developing-today/code"}/releases/tag/pm-console-android`;
+  return [
+    h("h2", {}, "This site"),
+    card(
+      h("h3", {}, servingSaid(health)),
+      ...list(runs.site),
+      h(
+        "div",
+        { class: "row end" },
+        h(
+          "button",
+          {
+            class: "small ghost",
+            onclick: start("site", true, "Stand it up from nothing, then deploy?", "GitHub first stands a throwaway copy of the Worker up from nothing, checks it and removes it, then deploys main to the real one. It takes a few minutes more.", "Started: from nothing first, then the deploy"),
+          },
+          "From nothing first",
+        ),
+        h("button", { class: "small", onclick: start("site", false, "Deploy the site again?", "GitHub deploys main to Cloudflare again, checks it, and puts the last version back if the check fails.", "Deploy started") }, "Deploy again"),
+      ),
+    ),
+    h("h2", {}, "Android app"),
+    card(
+      h("h3", {}, release ? `Released: ${release.name}` : "No release yet"),
+      release ? h("p", { class: "meta" }, `Built ${ago(release.built)}. `, ext(page, "The release on GitHub")) : h("p", { class: "meta" }, "A build is released within about ten minutes of being made."),
+      ...list(runs.app),
+      h(
+        "div",
+        { class: "row end" },
+        h("button", { class: "small ghost", onclick: start("app", false, "Build the app again?", "GitHub builds the app from main. It is then signed where its key is and released, within about ten minutes.", "Build started") }, "Build again"),
+        me.androidApp || release ? h("a", { class: "button", href: "/console/pm-console.apk" }, "Download") : null,
       ),
     ),
   ];
@@ -1291,7 +1433,7 @@ function androidNote(me, android) {
   const source = androidSource(me, android);
   if (!source) return null;
   if (source.by === "github") {
-    return h("p", { class: "meta" }, `Build ${source.name}, built, signed and released by GitHub ${ago(source.at)}. It installs over the one you have.`);
+    return h("p", { class: "meta" }, `Build ${source.name}, built by GitHub and released ${ago(source.at)}. It installs over the one you have.`);
   }
   return h(
     "p",
@@ -1555,6 +1697,7 @@ const VIEWS = {
   "more/phone": ["Phones", viewPhone],
   "more/signin": ["Sign-in", viewSignin],
   "more/away": ["Laptop away", viewAway],
+  "more/releases": ["Releases", viewReleases],
 };
 let route = "now";
 let drawSeq = 0;
@@ -1575,6 +1718,19 @@ function parse(hash) {
 function go(to) {
   if (location.hash === `#${to}`) draw();
   else location.hash = to;
+}
+
+/** A card's title is a third-level heading, under a section's
+ * second-level one. On a screen with no section above it, it comes
+ * straight after the screen's title: it is then said to be second-level,
+ * so that someone listening does not hear a level skipped. It looks the
+ * same. `headings` are the screen's h2 and h3 elements, in order. */
+export function levelHeadings(headings) {
+  let sectioned = false;
+  for (const el of headings) {
+    if (el.tagName === "H2") sectioned = true;
+    else if (!sectioned) el.setAttribute("aria-level", "2");
+  }
 }
 
 function drawTabs() {
@@ -1633,6 +1789,7 @@ async function draw() {
     const nodes = await render(sub);
     if (seq !== drawSeq) return;
     view.replaceChildren(...nodes.filter(Boolean));
+    levelHeadings(view.querySelectorAll("h2, h3"));
     if (moved) scrollTo(0, 0);
     drawn = route;
   } catch (error) {
@@ -1640,6 +1797,7 @@ async function draw() {
     view.replaceChildren(
       card(h("h3", {}, "This section could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => (signedOut ? location.reload() : draw()) }, signedOut ? "Reload" : "Try again"))),
     );
+    levelHeadings(view.querySelectorAll("h2, h3"));
     if (moved) scrollTo(0, 0);
     drawn = route;
   } finally {

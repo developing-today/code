@@ -23,6 +23,7 @@
 
 pub mod announcement;
 pub mod artifact;
+pub mod bridge;
 pub mod chained_message;
 mod checked_json;
 pub mod dht;
@@ -39,4 +40,5 @@ pub mod meta_client;
 pub mod protocol;
 pub mod registry;
 pub mod relay_gate;
+pub mod relay_ingest;
 pub mod transfer;

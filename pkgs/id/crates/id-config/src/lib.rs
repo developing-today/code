@@ -376,9 +376,11 @@ pub struct ConfigDocument {
     /// Scoped overrides, applied in scope-name order during resolution.
     #[serde(default)]
     pub overrides: Vec<ScopedOverride>,
-    /// Namespaced optional extensions. Keys must be namespaced (contain a
-    /// `.` or `/` separator, e.g. `example.com/experiment`); values are
-    /// retained verbatim in the resolved output and never executed here.
+    /// Namespaced optional extensions. Keys must be valid namespaces per
+    /// the canonical schema rule: at least two non-empty, non-whitespace
+    /// segments joined by single `.` or `/` separators (e.g.
+    /// `example.com/experiment`); values are retained verbatim in the
+    /// resolved output and never executed here.
     #[serde(default)]
     pub extensions: BTreeMap<String, serde_json::Value>,
 }
@@ -489,9 +491,28 @@ pub enum ConfigError {
     /// An override names an empty scope.
     #[error("override scope must not be empty")]
     EmptyScope,
-    /// An extension key is not namespaced.
-    #[error("extension key {0:?} is not namespaced (expected a '.' or '/' separator)")]
+    /// An extension key is not a valid namespace.
+    #[error(
+        "extension key {0:?} is not a valid namespace (expected non-empty, non-whitespace segments joined by '.' or '/' separators, e.g. 'example.com/experiment')"
+    )]
     UnnamespacedExtension(String),
+}
+
+/// Whether an extension key is a valid namespace per the canonical schema
+/// rule (`^[^./\\s]+([./][^./\\s]+)+$` in id-config-v1.schema.json): at
+/// least two segments of non-separator, non-whitespace characters joined by
+/// single `.` or `/` separators. Separator-only keys (`.`), empty segments
+/// (`a..b`), leading or trailing separators, and whitespace anywhere in the
+/// key are all malformed and reject.
+fn is_namespaced_extension_key(key: &str) -> bool {
+    let mut segments = 0usize;
+    for segment in key.split(['.', '/']) {
+        if segment.is_empty() || segment.chars().any(char::is_whitespace) {
+            return false;
+        }
+        segments += 1;
+    }
+    segments >= 2
 }
 
 fn check_ceiling_widening(
@@ -563,7 +584,7 @@ impl ConfigDocument {
             return Err(ConfigError::FixedGateDisabled(gate));
         }
         for key in self.extensions.keys() {
-            if !key.contains('.') && !key.contains('/') {
+            if !is_namespaced_extension_key(key) {
                 return Err(ConfigError::UnnamespacedExtension(key.clone()));
             }
         }

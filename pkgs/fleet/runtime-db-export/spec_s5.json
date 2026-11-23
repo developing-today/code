@@ -1,0 +1,1 @@
+{"table": "agent.mirror_concurrency_hourly", "conflict": ["hour"], "epoch_hour": {"hour_epoch": "hour"}}

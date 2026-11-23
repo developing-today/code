@@ -253,6 +253,50 @@ fn oracle_invalid_config_matrix() {
 }
 
 #[test]
+fn extension_namespace_keys_match_the_schema_rule() {
+    // Regression for #12881: the Rust validator must reject every key the
+    // canonical schema pattern ^[^./\s]+([./][^./\s]+)+$ rejects, not only
+    // keys with no separator at all.
+    let malformed = [
+        ".",           // separator only
+        "/",           // separator only
+        "a..b",        // empty segment
+        "a//b",        // empty segment
+        "a./b",        // empty segment across mixed separators
+        ".a.b",        // leading separator
+        "a.b.",        // trailing separator
+        "a b.c",       // whitespace inside a segment
+        "a/b c",       // whitespace inside a later segment
+        "a\tb.c",     // tab whitespace
+        "a.b ",        // trailing whitespace
+        " example.c",  // leading whitespace
+    ];
+    for key in malformed {
+        let mut doc = valid_doc();
+        doc["extensions"] = json!({ key: { "enabled": true } });
+        match load_err(&doc) {
+            ConfigError::UnnamespacedExtension(rejected) => {
+                assert_eq!(rejected, key, "error must name the offending key");
+            }
+            other => panic!("key {key:?} must reject as unnamespaced, got {other:?}"),
+        }
+    }
+
+    // Valid namespaces still resolve and are retained verbatim.
+    for key in ["example.com/experiment", "a.b", "a/b", "a.b/c.d"] {
+        let mut doc = valid_doc();
+        doc["extensions"] = json!({ key: { "enabled": true } });
+        let resolved = load(&doc)
+            .unwrap_or_else(|err| panic!("key {key:?} must resolve, got {err:?}"));
+        assert_eq!(
+            resolved.extensions[key],
+            json!({ "enabled": true }),
+            "valid extension {key:?} must be retained verbatim"
+        );
+    }
+}
+
+#[test]
 fn oracle_resolution_is_deterministic() {
     // Same document, authored with overrides and allowlist entries in the
     // opposite order: resolution must not notice.

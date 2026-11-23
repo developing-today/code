@@ -36,6 +36,7 @@ fn account(id: AccountId, ledger: u32, guarded: bool) -> Account {
         flags: AccountFlags {
             debits_must_not_exceed_credits: guarded,
             credits_must_not_exceed_debits: false,
+            history: false,
         },
     }
 }

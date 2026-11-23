@@ -50,6 +50,11 @@ pub mod snapshot;
 #[cfg(feature = "world")]
 pub mod gateway;
 
+/// The F5 proof of concept composing registry, factory, and gateway
+/// over a single currency (#2321).
+#[cfg(feature = "world")]
+pub mod gateway_poc;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 

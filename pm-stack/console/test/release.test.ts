@@ -410,6 +410,11 @@ process.exit(status);
     // What was serving before is serving again.
     expect(serving(REAL)).toEqual({ kind: "app", short: "aaaaaaaaaaaa" });
     expect(got.err).toContain(`${REAL} is not serving ${SHORT}`);
+    // And the run says what it heard in place of a health answer: an
+    // error page is a different fault from no route, and "silent" alone
+    // told them apart for nobody.
+    expect(got.out + got.err).toContain("(last answer: silent; it said: http 500 ");
+    expect(got.out + got.err).toContain("error code: 1101");
   });
 
   test("an upload that fails changes nothing that is serving", async () => {

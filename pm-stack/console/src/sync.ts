@@ -10,6 +10,7 @@
 // starts; if the host dies part-way, the action is reported as
 // interrupted instead of being run a second time.
 import type { Docs } from "./docs.ts";
+import { plain } from "./plain.ts";
 import {
   APK_LIMIT,
   type ApkReport,
@@ -91,7 +92,7 @@ export class EdgeLink {
 
   constructor(private o: LinkOptions) {
     this.now = o.now ?? Date.now;
-    this.fetchImpl = o.fetchImpl ?? fetch;
+    this.fetchImpl = plain(o.fetchImpl ?? fetch);
     this.log = o.log ?? ((line) => console.error(`pm-console: edge: ${line}`));
   }
 

@@ -16,7 +16,10 @@
 #             into ~/.local/share/muse-bootstrap/bin, sha256-checked
 #   token     BWS and optional 1Password service-account tokens into
 #             ~/.config/bitwarden/access-token and ~/.config/op/service-account-token
-#             (600), read from stdin or hidden prompts, never argv
+#             (600), read from stdin or hidden prompts, never argv; plus the
+#             three shared broker tokens from the BWS fleet.* names into
+#             ~/tools/{secrets-broker,queue-broker,laptop-agent}-token (600),
+#             so a fresh seat's secrets/queue/shell legs work (#12898)
 #   restore   ~/.config from restic-sandbox-config, then every top-level
 #             home entry from restic-sandbox-home (latest snapshot per
 #             entry; ~/git and ~/agents only with --all)
@@ -30,7 +33,7 @@
 #             fleet linked (only /home/hatch survives a recycle)
 #   init      run the restored ~/tools/init.sh (units, services)
 #   check     fleet version/capabilities, laptop link, secrets broker,
-#             bridge hello as agent "muse" (group muse)
+#             bridge hello as the enrolling agent (its own groups, #12897)
 #
 # Secrets are fetched by name and never printed, logged or put in argv.
 # Exit: 0 ok, 1 a phase failed (the message names it), 2 usage.
@@ -52,6 +55,7 @@ LAPTOP_TAILNET_IP=100.99.113.103
 AGENT="${FLEET_AGENT:-muse}"
 AGENT_WAS_EXPLICIT=0
 [ "${FLEET_AGENT+x}" = x ] && AGENT_WAS_EXPLICIT=1
+AGENT_GROUPS="${FLEET_AGENT_GROUPS:-}"
 TS_HOSTNAME_OVERRIDE="${TS_HOSTNAME:-}"
 TS_STATE_OVERRIDE="${TS_STATE:-}"
 
@@ -280,6 +284,50 @@ if want token; then
   bws secret list -o json >/dev/null 2>&1 ||
     die "token: bws cannot list secrets with the token in $TOKEN_FILE (pass a fresh one: BWS_ACCESS_TOKEN=... or remove the file and rerun)"
   say "token: stored and verified"
+fi
+
+# The three shared broker token files a seat's fleet client verbs read
+# (#12898): the secrets broker's client token (fleet secrets), the queue
+# broker's (fleet queue) and the laptop agent's (fleet laptop-agent, and the
+# session broker's default). BWS is the source of truth: the fleet.* names
+# were published from the laptop's server files on 2026-11-22. Before this,
+# only the muse seat had the files, by accident of the home restore, and a
+# fresh non-muse seat had no provisioning path at all. Fetch by name, write
+# 0600, never print. A name the seat's BWS token cannot see is a warning,
+# not a failure: the enrollment continues and the check phase names the
+# legs that stay down.
+provision_broker_token() { # provision_broker_token BWS_NAME DEST
+  local name=$1 dest=$2 value
+  value=$(bws secret list -o json 2>/dev/null | python3 -c '
+import json, sys
+name = sys.argv[1]
+for s in json.load(sys.stdin):
+    if s.get("key") == name:
+        sys.stdout.write(s.get("value", "")); sys.exit(0)
+sys.exit(1)' "$name") || {
+    say "token: BWS secret $name not visible to this seat; $dest not provisioned"
+    return 0
+  }
+  # The published values are the laptop files byte-for-byte; the files are
+  # one token per line, so normalize whitespace the same way store_token
+  # does and write exactly one trailing newline.
+  value=$(printf '%s' "$value" | tr -d '[:space:]')
+  [ -n "$value" ] || {
+    say "token: BWS secret $name is empty; $dest not provisioned"
+    return 0
+  }
+  mkdir -p "$(dirname "$dest")"
+  (
+    umask 077
+    printf '%s\n' "$value" >"$dest.tmp"
+  ) && mv -f "$dest.tmp" "$dest"
+  chmod 600 "$dest"
+  say "token: provisioned $dest from BWS $name"
+}
+if want token; then
+  provision_broker_token fleet.secrets-broker-token "$HOME/tools/secrets-broker-token"
+  provision_broker_token fleet.queue-broker-token "$HOME/tools/queue-broker-token"
+  provision_broker_token fleet.laptop-agent-token "$HOME/tools/laptop-agent-token"
 fi
 
 # ---- restore ----
@@ -715,7 +763,15 @@ except OSError:
     say "check: 1Password CLI/token did not verify (op is restored from ~/tools or login data is missing)"
     rc=1
   fi
-  if fleet bridge hello --agent "$AGENT" --groups muse >/dev/null 2>&1; then
+  # Bridge registration probe (#12897): use the enrolling agent's own
+  # groups when the caller supplies them (FLEET_AGENT_GROUPS); with
+  # none supplied, hello without --groups -- the bridge registers a
+  # new agent group-less and leaves an existing agent's groups
+  # untouched. Never hardcode another kind's group here: `fleet agent
+  # enroll` is the step that owns group assignment.
+  bridge_hello=(fleet bridge hello --agent "$AGENT")
+  [ -n "$AGENT_GROUPS" ] && bridge_hello+=(--groups "$AGENT_GROUPS")
+  if "${bridge_hello[@]}" >/dev/null 2>&1; then
     say "check: bridge hello as $AGENT ok; unread commands: $(fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
   else
     say "check: bridge hello failed"

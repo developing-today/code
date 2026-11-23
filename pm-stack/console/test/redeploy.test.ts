@@ -18,6 +18,8 @@ const UNITS = [
   "pm-console-expose.timer",
   "pm-console-redeploy.service",
   "pm-console-redeploy.timer",
+  "pm-console-android-release.service",
+  "pm-console-android-release.timer",
 ];
 
 let dir: string;

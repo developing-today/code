@@ -994,6 +994,59 @@ pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
     side: ProviderSide::Client,
 };
 
+/// The name of the client-side notification provider for the mobile
+/// shell (#10930, shells v1 slice 4; design
+/// `doc/2026-11-10T20-40-00Z_design_more_shells_v1` §1 and
+/// §"Capability providers").
+pub const CLIENT_NOTIFY_NAME: &str = "client.notify";
+
+/// Argument schema for `client.notify`: one optional `head` — the
+/// journal head sequence the re-sync hint refers to. The schema
+/// deliberately carries no text or content field: a notification
+/// under this provider is a hint to re-sync, never a data channel
+/// (the shells record: "a notification is a hint to re-sync,
+/// carrying no world content of its own"), and the shell renders
+/// its own local wording. A shell already past `head` can ignore
+/// the hint; a shell behind it re-syncs on return.
+const CLIENT_NOTIFY_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "head",
+    value_type: ArgumentType::UnsignedInteger,
+    required: false,
+}];
+
+/// Largest reply `client.notify` may return, in bytes: the
+/// executor's answer is a fixed-shape acknowledgment carrying no
+/// content, so the bound is a small constant rather than a
+/// content-sized cap.
+pub const MAX_CLIENT_NOTIFY_RESPONSE_BYTES: usize = 1024;
+
+/// Bounds for `client.notify`: argument bytes plus the
+/// acknowledgment response cap.
+const CLIENT_NOTIFY_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::ResponseBytes(MAX_CLIENT_NOTIFY_RESPONSE_BYTES),
+];
+
+/// The `client.notify` manifest (#10930): the mobile shell's
+/// notification power, declared in the F12.4 registry shape like
+/// every v1 shell power (provider declaration in v1 rides the
+/// registry/manifest out of band — the `join` frame has no
+/// declaration field). It registers exactly like `client.file.read`
+/// — one manifest entry, client-side, excluded from every default
+/// ceiling — so registration alone widens no world's authority:
+/// the world ceiling/grant and the local user grant must both
+/// permit it before any hint can be delivered.
+pub const CLIENT_NOTIFY_MANIFEST: ProviderManifest = ProviderManifest {
+    name: CLIENT_NOTIFY_NAME,
+    version: 1,
+    kind: ProviderKind::Request,
+    argument_schema: ArgumentSchema::JsonObject(CLIENT_NOTIFY_ARGUMENTS),
+    bounds: CLIENT_NOTIFY_BOUNDS,
+    required_scope: RequiredScope::Join,
+    default_ceiling: DefaultCeiling::Excluded,
+    side: ProviderSide::Client,
+};
+
 /// Production client-side entries, assembled into the registry after
 /// the host production entries. They are deliberately not part of the
 /// macro-generated legacy [`CATALOG`] name view: that view is the host
@@ -1005,7 +1058,8 @@ pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
 /// registry exit proofs assert against: the assembled registry is
 /// exactly the legacy [`CATALOG`] entries, then these entries, then
 /// any feature-gated registry-only additions — nothing else.
-pub const CLIENT_CATALOG_ENTRIES: &[ProviderManifest] = &[CLIENT_FILE_READ_MANIFEST];
+pub const CLIENT_CATALOG_ENTRIES: &[ProviderManifest] =
+    &[CLIENT_FILE_READ_MANIFEST, CLIENT_NOTIFY_MANIFEST];
 
 /// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
 #[cfg(feature = "test-provider")]
@@ -2952,6 +3006,42 @@ mod tests {
     }
 
     #[test]
+    fn client_notify_is_registered_but_off_by_default() {
+        // #10930 (shells v1 slice 4): the mobile shell's
+        // notification power exists in the registry in the F12.4
+        // manifest shape — an operator can name it in an explicit
+        // ceiling — but it is client-side and joins no default
+        // ceiling: the registry half of the off-by-default rule
+        // for client providers. The executor half (local grant,
+        // bounds, revoke, audit) is the shell adapter's, in the
+        // follow-on slice.
+        let manifest = PROVIDER_REGISTRY.get(CLIENT_NOTIFY_NAME).unwrap();
+        assert_eq!(manifest.side, ProviderSide::Client);
+        assert_eq!(manifest.default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(manifest.required_scope, RequiredScope::Join);
+        assert_eq!(manifest.side_contract_violation(), None);
+        assert!(catalog_names().contains(CLIENT_NOTIFY_NAME));
+        assert!(!CATALOG.contains(&CLIENT_NOTIFY_NAME));
+        assert!(!default_ceiling_names().contains(CLIENT_NOTIFY_NAME));
+        // The schema is a re-sync hint only: the single optional
+        // `head` field, and no content-bearing field — a
+        // notification under this provider carries no world
+        // content of its own (shells v1 record §1).
+        match manifest.argument_schema {
+            ArgumentSchema::JsonObject(fields) => {
+                assert_eq!(fields.len(), 1);
+                assert_eq!(fields[0].name, "head");
+                assert_eq!(fields[0].value_type, ArgumentType::UnsignedInteger);
+                assert!(!fields[0].required);
+            }
+            other => panic!("client.notify schema must be a JSON object, got {other:?}"),
+        }
+        assert!(manifest.bounds.contains(&ProviderBound::ResponseBytes(
+            MAX_CLIENT_NOTIFY_RESPONSE_BYTES
+        )));
+    }
+
+    #[test]
     fn http_fetch_is_registered_but_off_by_default() {
         // The provider exists in the catalog (an operator can name
         // it in a ceiling) but joins no default ceiling: the
@@ -3050,19 +3140,24 @@ mod tests {
             assert_eq!(entry.side_contract_violation(), None, "{}", entry.name);
         }
         // F13.7 step 5 registers the first client provider,
-        // client.file.read. Every other catalog entry is still
-        // host-side, and the legacy host catalog view is unchanged:
-        // the client provider joins the registry without joining
-        // CATALOG or any default ceiling.
+        // client.file.read; #10930 adds the second, client.notify.
+        // Every other catalog entry is still host-side, and the
+        // legacy host catalog view is unchanged: the client
+        // providers join the registry without joining CATALOG or
+        // any default ceiling.
         let client_entries: Vec<&ProviderManifest> = CATALOG_ENTRIES
             .iter()
             .filter(|entry| entry.side == ProviderSide::Client)
             .collect();
-        assert_eq!(client_entries.len(), 1);
+        assert_eq!(client_entries.len(), 2);
         assert_eq!(client_entries[0].name, CLIENT_FILE_READ_NAME);
+        assert_eq!(client_entries[1].name, CLIENT_NOTIFY_NAME);
         assert_eq!(client_entries[0].default_ceiling, DefaultCeiling::Excluded);
+        assert_eq!(client_entries[1].default_ceiling, DefaultCeiling::Excluded);
         assert!(!CATALOG.contains(&CLIENT_FILE_READ_NAME));
+        assert!(!CATALOG.contains(&CLIENT_NOTIFY_NAME));
         assert!(!default_ceiling_names().contains(CLIENT_FILE_READ_NAME));
+        assert!(!default_ceiling_names().contains(CLIENT_NOTIFY_NAME));
     }
 
     #[test]
@@ -3111,12 +3206,13 @@ mod tests {
         #[cfg(not(feature = "test-provider"))]
         let production_names: Vec<&str> = entry_names.clone();
         // F13.7 step 5: the registry also carries the production
-        // client-side entries (client.file.read), which are
-        // deliberately not part of the legacy catalog view this test
-        // pins — registration without a host catalog edit.
+        // client-side entries (client.file.read, and client.notify
+        // since #10930), which are deliberately not part of the
+        // legacy catalog view this test pins — registration without
+        // a host catalog edit.
         let production_names: Vec<&str> = production_names
             .into_iter()
-            .filter(|name| *name != CLIENT_FILE_READ_NAME)
+            .filter(|name| *name != CLIENT_FILE_READ_NAME && *name != CLIENT_NOTIFY_NAME)
             .collect();
         assert_eq!(
             production_names, CATALOG,
@@ -3212,6 +3308,8 @@ mod tests {
         // subtracted the same way.
         // client.file.read (F13.7 step 5) is likewise Excluded: it is
         // in the registry's name set but joins no default ceiling.
+        // client.notify (#10930) is Excluded for the same reason: a
+        // client-side provider the local user grants per world.
         // http.fetch (#1062) is Excluded for the same reason: an
         // outward-facing provider joins no default ceiling, and its
         // executor additionally enforces the admin host allowlist.
@@ -3226,6 +3324,7 @@ mod tests {
             "http.fetch",
             "notify",
             CLIENT_FILE_READ_NAME,
+            CLIENT_NOTIFY_NAME,
         ]);
         #[cfg(feature = "test-provider")]
         let excluded_from_ceiling = {

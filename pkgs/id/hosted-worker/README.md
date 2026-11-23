@@ -39,11 +39,45 @@ package makes no residency claim and authorizes no deployment, no
 production binding/config, and no billable resource (#3403 stays
 blocked pending Drew authorization).
 
+## The signed-object bridge (#3818)
+
+The hosted half of the #2046 bridge: production HTTPS/WebSocket
+push/pull between native ID nodes and this per-user store. The
+store is a sync peer — it holds signed objects and proof-carrying
+chain/fork evidence, assigns no order, re-signs nothing, and
+serves no authoritative snapshot.
+
+- `src/event.ts` + `src/blake3.ts` — the signed event as
+  `chain.rs::decode` verifies it (canonical CBOR via
+  `src/canonical-cbor.ts`, Ed25519 over the signing bytes, BLAKE3
+  operation IDs), and a signer for clients/tests.
+- `src/bridge-store.ts` — native ingest semantics (accept /
+  duplicate / fork / waiting / frozen, the release drain, fork
+  proofs, the derived applied prefix) mirrored on the object's
+  SQLite (schema v3).
+- `src/range.ts` — range reconciliation transcribed from
+  `crates/id-events`' `range.rs`.
+- `src/bridge-auth.ts` — ID-key proof against the binding record:
+  the front door forwards the bound Iroh root key as the internal
+  `x-hosted-iroh-id` header; callers prove possession against a
+  single-use nonce. No bound key → bridge routes fail closed.
+- `src/bridge-session.ts` — the session protocol (challenge/auth,
+  heads, resume tokens, range flights, bounded acknowledged
+  batches, withholding detection), the server session, and a
+  reference client.
+- Routes: `GET /v1/bridge/challenge`, `GET /v1/bridge/heads`,
+  `POST /v1/bridge/push`, `POST /v1/bridge/pull`,
+  `GET /v1/bridge/ws`. Bridge bytes count toward the storage
+  ceiling. Design record:
+  `doc/2026-11-23T05-00-00Z_design_bridge_v1_implementation/`.
+  Cross-language fixtures: `pkgs/id/tests/bridge_fixtures.rs`.
+
 ## Tests
 
 - `npm test` — routing unit tests (validation, restricted-namespace
   selection, fail-closed on unavailable restriction) with plain
-  `node --test`.
+  `node --test`; the bridge suites (codec, store, range, session
+  acceptance, DO routes) run in the same command.
 - `npm run smoke` — two local `wrangler dev` passes: (1) the app
   worker fail-closed matrix (401/403/503 above); (2) `UserDO`
   bootstrap / identity-guard / isolation through the test-only harness

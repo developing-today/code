@@ -53,6 +53,7 @@ import {
   planEscalation,
   planRecovery,
   recordEscalation,
+  recordReEscalation,
   surfacingLine,
   type EscalationContext,
   type EscalationEffectors,
@@ -612,12 +613,13 @@ export async function runTick(
         adapterRef: `adapters/${adapter.name}.json`,
         historyRef: opts.historyFile,
       };
-      const plan = planEscalation(health, ctx);
+      const plan = planEscalation(health, ctx, now.getTime());
       if (plan.actions.length > 0) {
         if (opts.liveEscalation) {
           try {
             const refs = await applyEscalationActions(plan.actions, opts.effects.escalation);
             health = recordEscalation(health, ctx, refs, at);
+            if (plan.reEscalated) health = recordReEscalation(health, at);
           } catch (e) {
             if (e instanceof EscalationPartialError) {
               health = recordEscalation(health, ctx, e.refs, at);

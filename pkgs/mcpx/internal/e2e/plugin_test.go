@@ -43,3 +43,65 @@ func TestThePluginSuiteRunsAgainstARealDaemon(t *testing.T) {
 		t.Fatalf("the plugin suite did not report a clean run:\n%s", out)
 	}
 }
+
+// TestPluginAnnotateChangesToolResultsFromTheEnvironment is the effect
+// probe for plugin.annotate (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: when
+// more than one daemon matches the directory, mcpx appends an
+// "answered by" note to tool results, and MCPX_PLUGIN_ANNOTATE=false
+// turns that note off. No Go caller produces the note, so the probe
+// drives the host the way the plugin suite does — bun, the real tool
+// executors, options resolved from the environment — and the bun
+// cases in plugin/opencode/v2/annotate.test.ts assert the observable
+// with/without difference. A run that skipped the cases is a run that
+// did not check what this probe exists to check, so skips fail it,
+// as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginAnnotateChangesToolResultsFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/annotate.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/annotate.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.annotate probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.annotate probe did not report a clean run:\n%s", out)
+	}
+}
+
+// TestPluginBackendChoosesDaemonOrBinaryFromTheEnvironment is the
+// effect probe for plugin.backend (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: on
+// every tool call it decides whether the host talks to the daemon
+// over its socket or spawns the mcpx binary — auto prefers the
+// socket and falls back, v1 refuses to fall back, cli never uses
+// the socket. No Go caller makes that choice, so the probe drives
+// the host the way the plugin suite does — bun, the real tool
+// executors, options resolved from the environment — and the bun
+// cases in plugin/opencode/v2/backend.test.ts assert the observable
+// differences: who answered (daemon, binary, or the v1 refusal) and
+// who was never asked. A run that skipped the cases is a run that
+// did not check what this probe exists to check, so skips fail it,
+// as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginBackendChoosesDaemonOrBinaryFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/backend.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/backend.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.backend probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.backend probe did not report a clean run:\n%s", out)
+	}
+}

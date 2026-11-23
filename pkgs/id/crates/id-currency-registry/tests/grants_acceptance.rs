@@ -226,3 +226,83 @@ fn key_hash_is_sha256() {
     let expected_prefix: [u8; 8] = [0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65];
     assert_eq!(hash[..8], expected_prefix);
 }
+
+#[test]
+fn policy_partial_vest_posts_only_the_vested_fraction() {
+    // Oracle: design section 4's policy row — post the vested
+    // fraction with `post_pending_transfer` amount = N' < N; the
+    // unposted remainder is auto-restored (no longer pending,
+    // never posted). The stub ledger's balances are the money
+    // truth.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-partial-vest", "user-1", 500), NOW)
+        .expect("register");
+    let vested = svc
+        .vest_partial(grant.id, 200, NOW + 60)
+        .expect("vest_partial");
+    assert_eq!(vested.state, GrantState::Posted);
+    assert!(vested.resolution_transfer_id.is_some());
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 200);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 0);
+}
+
+#[test]
+fn policy_partial_vest_amount_must_be_a_proper_partial() {
+    // Oracle: InvalidAmount for a zero vest (nothing to post —
+    // releasing a hold is the void path) and for the full amount
+    // or more (a full vest is a plain vest). Rejections resolve
+    // nothing and spend no resolution: a proper partial vest
+    // still lands afterwards.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-partial-vest-bounds", "user-1", 500), NOW)
+        .expect("register");
+    for attempted in [0, 500, 501] {
+        assert_eq!(
+            svc.vest_partial(grant.id, attempted, NOW + 60),
+            Err(GrantError::InvalidAmount {
+                attempted,
+                grant_amount: 500,
+            })
+        );
+    }
+    assert_eq!(svc.get(grant.id).expect("grant").state, GrantState::Pending);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 500);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+
+    let vested = svc
+        .vest_partial(grant.id, 125, NOW + 120)
+        .expect("vest_partial after rejections");
+    assert_eq!(vested.state, GrantState::Posted);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 125);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 0);
+}
+
+#[test]
+fn policy_partial_vest_resolves_at_most_once() {
+    // Oracle: at-most-once resolution (design section 2.4's
+    // 409): after a partial vest, any further vest, partial
+    // vest, or void is AlreadyResolved carrying the reached
+    // state, and no more value moves.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-partial-vest-once", "user-1", 500), NOW)
+        .expect("register");
+    svc.vest_partial(grant.id, 200, NOW + 60)
+        .expect("vest_partial");
+    let already = Err(GrantError::AlreadyResolved {
+        grant_id: grant.id,
+        state: GrantState::Posted,
+    });
+    assert_eq!(svc.vest(grant.id, NOW + 120), already);
+    assert_eq!(svc.vest_partial(grant.id, 100, NOW + 120), already);
+    assert_eq!(svc.void(grant.id, NOW + 120), already);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 200);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 0);
+
+    assert_eq!(
+        svc.vest_partial(999, 100, NOW),
+        Err(GrantError::UnknownGrant(999))
+    );
+}

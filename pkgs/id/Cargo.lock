@@ -4766,6 +4766,7 @@ dependencies = [
  "id-cli",
  "id-config",
  "id-core",
+ "id-currency-registry",
  "id-directory",
  "id-events",
  "id-groups",
@@ -5010,6 +5011,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-hw-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id",
+ "id-worlds",
+ "iroh",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "id-import-notion"
 version = "0.1.0"
 dependencies = [
@@ -5109,6 +5122,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tracing",
  "unicode-normalization",
 ]

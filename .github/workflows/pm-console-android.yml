@@ -4,29 +4,35 @@ name: pm-console android
 # so it keeps a push trigger (restricted to main, and to the app's own
 # files).
 #
-# Builds, signs and releases the PM console's Android app
-# (pm-stack/console/android): a Trusted Web Activity over
-# https://pm.security.cab, plus what only an installed app has. It runs
-# on every push to main that touches the app, and by hand.
+# Builds the PM console's Android app (pm-stack/console/android): a
+# Trusted Web Activity over https://pm.security.cab, plus what only an
+# installed app has. It runs on every push to main that touches the app,
+# and by hand. Every build ends up signed and released with nobody
+# involved; where the signing happens depends on where the key is.
 #
 # The version is the commit's (build.sh): a code that rises with the
 # commit's time, so each build installs over the one before.
 #
-# Signing needs the app's key, as two secrets of the pm-console-android
-# environment: PM_CONSOLE_ANDROID_KEYSTORE_B64 and
-# PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD. An environment, not the
-# repository, so that it can be limited to runs on main. Putting the key
-# there is the owner's to do, by hand; no script or agent holds or moves
-# it (pm-stack/console/android/README.md).
+# The key is not here (how it starts): the build is unsigned and kept as
+# the artifact pm-console-apk-unsigned, with the version it carries. The
+# machine that holds the key looks for it every ten minutes
+# (pm-console-android-release.timer, android/release-built.sh), signs it
+# there, checks it against the certificate the site lists
+# (signing-fingerprint.txt) and releases it. The key never leaves that
+# machine.
 #
-# With the key: the APK is signed here, checked against the certificate
-# the site lists (signing-fingerprint.txt), and released twice with
-# nobody involved: as pm-console-android-v<code>, which is never
-# changed again, and as pm-console-android, whose address stays the same
-# and always holds the newest build. The site hands out the second.
+# The key is here: as two secrets of the pm-console-android environment,
+# PM_CONSOLE_ANDROID_KEYSTORE_B64 and PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD
+# (an environment, not the repository, so that it can be limited to runs
+# on main). Then the APK is signed and released by this run, and the
+# other machine finds nothing to do. Putting the key here is the
+# owner's choice and the owner's to do; no script or agent holds or
+# moves it (pm-stack/console/android/README.md).
 #
-# Without the key: the build is unsigned and kept as an artifact, and
-# the run says so. Nothing is released.
+# Either way it is released twice: as pm-console-android-v<code>, which
+# is never changed again, and as pm-console-android, whose address stays
+# the same and always holds the newest build. The site hands out the
+# second.
 on:
   push:
     branches: [main]
@@ -45,7 +51,7 @@ concurrency:
 
 jobs:
   build:
-    name: "build, sign and release the APK"
+    name: "build the APK, and sign and release it when the key is here"
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment: pm-console-android
@@ -69,13 +75,17 @@ jobs:
             echo "signed=true" >>"$GITHUB_OUTPUT"
           else
             echo "signed=false" >>"$GITHUB_OUTPUT"
-            echo "::notice::Built unsigned: this environment does not hold the signing key, so nothing is released. See pm-stack/console/android/README.md, Giving GitHub the key."
-            echo "Built $(sed -n 1p "$out/version") unsigned: the signing key is not here, so nothing was released." >>"$GITHUB_STEP_SUMMARY"
+            echo "::notice::Built unsigned: the signing key is not here. The machine that holds it signs and releases this build within about ten minutes (pm-console-android-release.timer)."
+            echo "Built $(sed -n 1p "$out/version") unsigned: the signing key is not here. The machine that holds it signs and releases this build within about ten minutes; it will appear at https://github.com/$GITHUB_REPOSITORY/releases/tag/pm-console-android" >>"$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.build.outputs.signed == 'true' && 'pm-console-apk' || 'pm-console-apk-unsigned' }}
-          path: pm-stack/console/android/app/build/outputs/apk/release/*.apk
+          # The version goes with the build: whoever signs it releases
+          # it under the version it was built as.
+          path: |
+            pm-stack/console/android/app/build/outputs/apk/release/*.apk
+            pm-stack/console/android/app/build/outputs/apk/release/version
           if-no-files-found: error
       - name: Release
         if: steps.build.outputs.signed == 'true' && github.ref == 'refs/heads/main'

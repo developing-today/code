@@ -12,7 +12,7 @@
 // No Iroh QUIC runs inside the Worker (issue excludes).
 
 import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNamespaceLike } from "./routing.ts";
-import { HDR_BINDING, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
+import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 
 export { UserDO } from "./user-do.ts";
 
@@ -47,6 +47,14 @@ export default {
       const headers = new Headers(req.headers);
       headers.delete("x-binding-id");
       headers.delete("x-jurisdiction");
+      // The bound ID key (#3818): consumed from the internal
+      // caller like the binding context, stripped of any
+      // client-supplied copy, and re-set as an internal header.
+      // Absent stays absent — the bridge routes fail closed on it.
+      const irohId = req.headers.get("x-iroh-id");
+      headers.delete("x-iroh-id");
+      headers.delete(HDR_IROH);
+      if (irohId !== null) headers.set(HDR_IROH, irohId);
       headers.set(HDR_BINDING, bindingId);
       headers.set(HDR_JURISDICTION, jurisdiction);
       headers.set(HDR_ROUTED, "restricted");

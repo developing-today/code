@@ -270,10 +270,65 @@ fn an_empty_mailbox_falls_to_a_queue_claim() {
         rung_results(&out),
         vec![("push".to_string(), "empty".to_string())]
     );
-    // The claim carries the agent as worker, the lane, and the claimer's own flags.
+    // For an unrecognized custom lane, the agent remains the fallback
+    // worker; the lane and the claimer's own flags are also preserved.
     assert!(fake.called(
         "fleet queue claim --worker oc-go-1 --lane go --lease-seconds 14400 --platform opencode --remaining-budget-minutes 90"
     ));
+}
+
+#[test]
+fn next_uses_the_registered_worker_for_a_known_lane() {
+    // Oracle (#6853): the broker's canonical lane registry binds
+    // these lane/worker pairs, and claim/complete must preserve them.
+    for (lane, worker) in [
+        ("code-i", "repo-worker-code"),
+        ("code-a", "repo-worker-code"),
+        ("code-b", "repo-worker-code"),
+        ("opencode-a", "repo-worker-opencode"),
+        ("opencode-b", "repo-worker-opencode"),
+        ("openchamber-a", "repo-worker-openchamber"),
+        ("openchamber-b", "repo-worker-openchamber"),
+        ("nix-a", "repo-worker-nix"),
+        ("nix-b", "repo-worker-nix"),
+        ("not-code-a", "repo-worker-nix"),
+        ("not-code-b", "repo-worker-opencode"),
+        ("not-code-c", "repo-worker-code"),
+        ("not-code-d", "repo-worker-openchamber"),
+        ("not-code-e", "repo-worker-opencode"),
+        ("not-code-f", "repo-worker-code"),
+        ("not-code-g", "repo-worker-nix"),
+    ] {
+        let fake = Fake::new();
+        fake.on(INBOX, vec![empty_inbox()]).on(
+            CLAIM,
+            vec![ok(
+                json!({"id": 10814, "queue": "fleet", "status": "claimed"}),
+            )],
+        );
+        let (out, code) = run(&fake, &["next", "--agent", "code-i", "--lane", lane]);
+        assert_eq!(code, EXIT_OK, "lane {lane}");
+        assert_eq!(out["rung"], "queue", "lane {lane}");
+        assert!(
+            fake.called(&format!(
+                "fleet queue claim --worker {worker} --lane {lane} --lease-seconds 14400"
+            )),
+            "lane {lane} must be claimed by {worker}: {:?}",
+            fake.calls()
+        );
+        assert!(
+            out["then"][0]
+                .as_str()
+                .unwrap()
+                .contains(&format!("--worker {worker}"))
+        );
+        assert!(
+            out["then"][1]
+                .as_str()
+                .unwrap()
+                .contains(&format!("--worker {worker}"))
+        );
+    }
 }
 
 #[test]
