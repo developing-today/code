@@ -599,37 +599,40 @@ test("429 naming a body reset walls the leaf for later sessions (#12228)", async
   }
 });
 
-test("repeated authentication failures demote a leaf until it succeeds", async () => {
+test("an authentication failure benches a leaf until a probe succeeds (#12228)", async () => {
   const p = await startProxy();
   try {
     p.leafA.mode = "auth";
-    for (let i = 0; i < 3; i++) {
-      const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
-      assert.equal(res.status, 200);
-      assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
-    }
-
-    const beforeDemotion = p.attempts();
-    const authFailures = beforeDemotion.filter((row) => row.provider_id === "leafA");
-    assert.equal(authFailures.length, 3);
+    // The first session fails over to leafB, and the 401 is recorded.
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    const authFailures = p.attempts().filter((row) => row.provider_id === "leafA");
+    assert.equal(authFailures.length, 1);
     assert.ok(authFailures.every((row) => row.outcome === "failure"));
     assert.ok(authFailures.every((row) => row.error_tag === "Authentication"));
     assert.ok(authFailures.every((row) => row.error_status === 401));
     assert.ok(authFailures.every((row) => row.quota === null));
 
-    // Three prior auth failures move leafA behind leafB for the next turn.
-    const fallback = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
-    assert.equal(fallback.status, 200);
-    assert.equal((await fallback.json()).choices[0].message.content, "LEAF-B");
-    assert.equal(
-      p.attempts().filter((row) => row.provider_id === "leafA").length,
-      3,
+    // Later sessions must not be routed to the dead door while its
+    // bench holds: leafA sees no second attempt, and the bench says
+    // so on the diagnostics stream.
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
+    assert.ok(
+      p.log().includes("auth bench excluded leafA/m-a"),
+      `bench decision should be in the proxy diagnostics: ${p.log()}`,
     );
 
-    // A success on the demoted pair clears the failure run.
+    // A successful probe re-admits the leaf. leafA has recovered; a
+    // single-target request through it IS the probe (the bench's
+    // fail-safe keeps a benched last resort as the only candidate).
     p.leafA.mode = "ok";
-    const recovered = await p.post({ model: "opencode-route/t-a-only", messages: MSGS });
-    assert.equal(recovered.status, 200);
+    const probe = await p.post({ model: "opencode-route/t-a-only", messages: MSGS });
+    assert.equal(probe.status, 200);
+    assert.equal((await probe.json()).choices[0].message.content, "LEAF-A");
     const primaryAgain = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
     assert.equal(primaryAgain.status, 200);
     assert.equal(
@@ -1378,6 +1381,76 @@ const seedQuotaFailure = (dbPath, { provider, model, atMs, retryAfterMs, endedMs
   db.close();
 };
 
+// Seed one authentication failure for a (provider, model) pair, as if
+// the leaf had answered 403 (or 401) at `atMs`. Written straight into
+// the fixture ledger the proxy reads.
+const seedAuthFailure = (
+  dbPath,
+  { provider, model, atMs, endedMs, status = 403 },
+) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    atMs,
+    endedMs ?? atMs + 50,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "failure",
+    "Authentication",
+    null,
+    status,
+    "leaf HTTP 403: disabled",
+    0,
+    0,
+    null,
+    null,
+  );
+  db.close();
+};
+
+// Seed one success for a (provider, model) pair completing at
+// `endedMs` (started `startedMs`), as if the leaf had served.
+const seedSuccess = (dbPath, { provider, model, startedMs, endedMs }) => {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(
+    `INSERT INTO route_attempt (
+       time_started, time_ended, session_id, assistant_message_id,
+       route_id, provider_id, model_id, variant, outcome,
+       error_tag, error_code, error_status, error_message, retryable,
+       output_started, failed_over_to, quota
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    startedMs,
+    endedMs,
+    null,
+    null,
+    "seed",
+    provider,
+    model,
+    null,
+    "success",
+    null,
+    null,
+    null,
+    null,
+    1,
+    0,
+    null,
+    null,
+  );
+  db.close();
+};
+
 // A Monday noon UTC, pinned via OPENCODE_ROUTE_PROXY_NOW_MS so the
 // gate's clock is deterministic.
 const GATE_NOW = Date.UTC(2026, 0, 5, 12, 0, 0);
@@ -1609,6 +1682,79 @@ test("an overlapping success completed before the quota response does not clear 
     const body = await res.json();
     assert.equal(body.choices[0].message.content, "LEAF-B");
     assert.equal(p.leafA.hits, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+// ------------------------------------------------------------- #12228 auth bench
+
+test("a 403-auth-failed pair is excluded while another candidate is live (#12228)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedAuthFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 0, "dead leaf must not be attempted");
+    assert.ok(
+      p.log().includes("auth bench excluded leafA/m-a"),
+      `bench decision should be in the proxy diagnostics: ${p.log()}`,
+    );
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("an auth-bench pair returns after a successful probe (#12228)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedAuthFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+    });
+    seedSuccess(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      startedMs: GATE_NOW - 30_000,
+      endedMs: GATE_NOW - 20_000,
+    });
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.equal(p.leafA.hits, 1, "successful probe re-admits the leaf");
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("when every candidate is auth-benched, the route still walks in order (#12228)", async () => {
+  const p = await startProxy({ nowMs: GATE_NOW });
+  try {
+    seedAuthFailure(p.dbPath, {
+      provider: "leafA",
+      model: "m-a",
+      atMs: GATE_NOW - 60_000,
+    });
+    seedAuthFailure(p.dbPath, {
+      provider: "leafB",
+      model: "m-b",
+      atMs: GATE_NOW - 60_000,
+    });
+    // A benched route is still usable as a last resort, just like the
+    // quota gate: preserve availability rather than return no route.
+    const res = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).choices[0].message.content, "LEAF-A");
+    assert.ok(
+      p.log().includes("auth bench gate bypassed"),
+      `all-benched fallback should be explicit: ${p.log()}`,
+    );
   } finally {
     await p.cleanup();
   }
