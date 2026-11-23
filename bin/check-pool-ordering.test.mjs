@@ -361,3 +361,232 @@ test('funds leaves do not count toward pool order', () => {
   assert.deepEqual(result.issues, []);
   assert.deepEqual(result.tiers.summit.passes[0].pools, ['sol-plan']);
 });
+
+// --- Generated (property / model-based) coverage for the reserve-order
+// invariant (AGENTS.md testing doctrine). A seeded deterministic
+// generator builds route configurations, and an independent model —
+// computed from the generated spec, not from the checker's grouping
+// code — states the expected passes and reserve verdicts. Oracle: in
+// every ordered pass an OpenAI-backed pool must come last; passes split
+// at every class-fallback edge, transitively; unordered passes carry no
+// verdict. The generator covers pool permutations, selection modes,
+// direct leaves (including same-provider distinct models), and
+// transitive fallback boundaries (scout -> background -> workhorse).
+
+// Seeded deterministic PRNG (mulberry32) — no new dependency.
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Direct leaves the generator may seat straight in a tier chain, with
+// the pool id the checker must report for them.
+const GEN_DIRECT = [
+  { ref: '_muse/muse-spark-1.3-contributor', pool: 'direct:_muse/muse-spark-1.3-contributor', openai: false },
+  { ref: '_muse/muse-wonder-1.0-contributor', pool: 'direct:_muse/muse-wonder-1.0-contributor', openai: false },
+  { ref: '_claude/claude-haiku-5-5', pool: 'direct:_claude/claude-haiku-5-5', openai: false },
+  { ref: '_claude/claude-fable-5-2', pool: 'direct:_claude/claude-fable-5-2', openai: false },
+  { ref: 'openai/gpt-6.1-sol', pool: 'direct:openai/gpt-6.1-sol', openai: true },
+];
+
+// Leaves a generated pool route may hold. A pool is OpenAI-backed when
+// any of its leaves is.
+const GEN_POOL_LEAVES = [
+  { ref: 'openai-plan/gpt-6.1-sol', openai: true },
+  { ref: 'openai-plan/gpt-6-luna', openai: true },
+  { ref: '_muse/muse-spark-1.3-contributor', openai: false },
+  { ref: '_claude/claude-haiku-5-5', openai: false },
+];
+
+const GEN_SELECTIONS = ['ordered', 'ordered', 'ordered', 'weighted', 'round-robin'];
+
+function genPick(rng, array) {
+  return array[Math.floor(rng() * array.length)];
+}
+
+function genSample(rng, array, count) {
+  const copy = [...array];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy.slice(0, count);
+}
+
+// Take up to `max` items from `remaining` (without replacement, so a
+// route is expanded once per tier, matching the resolver's seen set).
+function takeChain(rng, remaining, max) {
+  const count = Math.floor(rng() * (max + 1));
+  const items = genSample(rng, remaining, Math.min(count, remaining.length));
+  for (const item of items) remaining.splice(remaining.indexOf(item), 1);
+  return items;
+}
+
+// Same, restricted to pool items: nested class-route chains hold pools
+// only (a direct leaf nested in a class route pools under that route's
+// name by the checker's existing chain-route semantics, which this
+// generator does not model).
+function takePoolChain(rng, remaining, max) {
+  const poolOnly = remaining.filter((item) => item.kind === 'pool');
+  const count = Math.floor(rng() * (max + 1));
+  const items = genSample(rng, poolOnly, Math.min(count, poolOnly.length));
+  for (const item of items) remaining.splice(remaining.indexOf(item), 1);
+  return items;
+}
+
+// The independent model: the expected pass for one chain of items under
+// the given governing-route selections, in the checker's pass shape.
+function modelPass(label, items, ancestorSelections) {
+  const pools = [];
+  const ordered = {};
+  const backed = {};
+  const passOrdered = ancestorSelections.every((selection) => selection === 'ordered');
+  for (const item of items) {
+    const pool = item.kind === 'pool' ? item.name : item.pool;
+    if (!pools.includes(pool)) pools.push(pool);
+    backed[pool] = item.openai;
+    ordered[pool] = passOrdered;
+  }
+  const orderedSeq = passOrdered ? pools : [];
+  const firstOpenAi = orderedSeq.findIndex((pool) => backed[pool]);
+  let reserve = 'n/a';
+  if (firstOpenAi >= 0) {
+    reserve = orderedSeq.slice(firstOpenAi + 1).some((pool) => !backed[pool])
+      ? 'violation'
+      : 'pass';
+  }
+  return { label, pools, ordered, openai_backed: backed, reserve };
+}
+
+function modelTierReserve(passes) {
+  if (passes.some((pass) => pass.reserve === 'violation')) return 'violation';
+  if (passes.some((pass) => pass.reserve === 'pass')) return 'pass';
+  return 'n/a';
+}
+
+function generatedCase(seed) {
+  const rng = mulberry32(seed);
+  const pools = {};
+  const poolItems = [];
+  for (let k = 0; k < 4; k += 1) {
+    const name = `gen-pool-${k}`;
+    const leaves = genSample(rng, GEN_POOL_LEAVES, 1 + Math.floor(rng() * 2));
+    pools[name] = { targets: leaves.map((leaf) => leaf.ref), selection: 'ordered' };
+    poolItems.push({ kind: 'pool', name, openai: leaves.some((leaf) => leaf.openai) });
+  }
+  const directItems = GEN_DIRECT.map((leaf) => ({ kind: 'direct', ...leaf }));
+  const refOf = (item) => (item.kind === 'pool' ? `opencode-route/${item.name}` : item.ref);
+
+  // scout: main chain + background/workhorse fallback tails. The
+  // workhorse route doubles as scout's fallback target and as the
+  // workhorse tier, as in the canonical config.
+  const scoutSelection = genPick(rng, GEN_SELECTIONS);
+  const backgroundSelection = genPick(rng, GEN_SELECTIONS);
+  const workhorseSelection = genPick(rng, GEN_SELECTIONS);
+  const scoutItems = [...poolItems, ...directItems];
+  const main = takeChain(rng, scoutItems, 4);
+  const bg = takePoolChain(rng, scoutItems, 3);
+  const bgHasWorkhorseTail = rng() < 0.5;
+  const wh = takePoolChain(rng, scoutItems, 3);
+
+  const summitSelection = genPick(rng, GEN_SELECTIONS);
+  const summit = takeChain(rng, [...poolItems, ...directItems], 4);
+  const specialistSelection = genPick(rng, GEN_SELECTIONS);
+  const specialist = takeChain(rng, [...poolItems, ...directItems], 4);
+
+  const config = configWith({
+    tiers: {
+      scout: {
+        targets: [...main.map(refOf), 'opencode-route/background', 'opencode-route/workhorse'],
+        selection: scoutSelection,
+      },
+      workhorse: { targets: wh.map(refOf), selection: workhorseSelection },
+      summit: { targets: summit.map(refOf), selection: summitSelection },
+      specialist: { targets: specialist.map(refOf), selection: specialistSelection },
+    },
+    pools: {
+      ...pools,
+      background: {
+        targets: [...bg.map(refOf), ...(bgHasWorkhorseTail ? ['opencode-route/workhorse'] : [])],
+        selection: backgroundSelection,
+      },
+    },
+  });
+
+  const expected = {
+    scout: [
+      ...(main.length ? [modelPass('main chain', main, [scoutSelection])] : []),
+      ...(bg.length
+        ? [modelPass('fallback via background', bg, [scoutSelection, backgroundSelection])]
+        : []),
+      ...(wh.length
+        ? [
+            modelPass(
+              bgHasWorkhorseTail ? 'fallback via background -> workhorse' : 'fallback via workhorse',
+              wh,
+              bgHasWorkhorseTail
+                ? [scoutSelection, backgroundSelection, workhorseSelection]
+                : [scoutSelection, workhorseSelection],
+            ),
+          ]
+        : []),
+    ],
+    workhorse: wh.length ? [modelPass('main chain', wh, [workhorseSelection])] : [],
+    summit: summit.length ? [modelPass('main chain', summit, [summitSelection])] : [],
+    specialist: specialist.length
+      ? [modelPass('main chain', specialist, [specialistSelection])]
+      : [],
+  };
+  return { config, expected };
+}
+
+test('generated configs match an independent reserve-order model', () => {
+  // 32 fixed seeds: fresh chains, pool mixes, direct leaves and
+  // fallback shapes per seed. The checker must reproduce the model's
+  // passes and reserve verdicts exactly, and report exactly the
+  // violations the model predicts.
+  for (let seed = 1; seed <= 32; seed += 1) {
+    const { config, expected } = generatedCase(seed);
+    const result = inspectPoolOrdering(config);
+    for (const tier of ['scout', 'workhorse', 'specialist', 'summit']) {
+      assert.deepEqual(result.tiers[tier].passes, expected[tier], `seed ${seed} tier ${tier}`);
+      assert.equal(
+        result.tiers[tier].reserve,
+        modelTierReserve(expected[tier]),
+        `seed ${seed} tier ${tier} reserve`,
+      );
+    }
+    const fragments = [];
+    for (const tier of ['scout', 'workhorse', 'specialist', 'summit']) {
+      for (const pass of expected[tier]) {
+        const orderedSeq = pass.pools.filter((pool) => pass.ordered[pool]);
+        const first = orderedSeq.findIndex((pool) => pass.openai_backed[pool]);
+        if (first < 0) continue;
+        const later = orderedSeq.slice(first + 1).find((pool) => !pass.openai_backed[pool]);
+        if (later) {
+          fragments.push(
+            `${tier} ${pass.label}: OpenAI-backed pool "${orderedSeq[first]}" ` +
+              `is tried before non-OpenAI pool "${later}"`,
+          );
+        }
+      }
+    }
+    assert.equal(
+      result.issues.length,
+      fragments.length,
+      `seed ${seed}: expected ${fragments.length} issue(s), got ${JSON.stringify(result.issues)}`,
+    );
+    for (const fragment of fragments) {
+      assert.ok(
+        result.issues.some((issue) => issue.includes(fragment)),
+        `seed ${seed}: missing issue ${fragment}`,
+      );
+    }
+  }
+});
