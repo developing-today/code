@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import {
   ago,
   androidSource,
+  answeredKeys,
   awayNotice,
   awayState,
   band,
@@ -728,4 +729,30 @@ test("what the owner is told of something just done, from what became of it when
     state: "refused",
     note: "It was taken back before it was sent.",
   });
+});
+
+test("a question is left out of the list while its answer is kept and not yet recorded, and is shown again when the answer is taken back", () => {
+  const answer = (qid: string, state: string, kind = "question.answer") => ({
+    kind,
+    state,
+    args: { set: "s1", ledger: "l1", qid, option: "a" },
+  });
+  // Waiting for a connection, or with the platform for a machine: left out.
+  expect([
+    ...answeredKeys([answer("q1", "waiting"), answer("q2", "held"), answer("q3", "waiting", "question.defer")]),
+  ]).toEqual(["s1|l1|q1", "s1|l1|q2", "s1|l1|q3"]);
+  // Recorded, refused, or kept back: nothing to leave out any more.
+  expect([...answeredKeys([answer("q1", "done"), answer("q2", "failed"), answer("q3", "stale")])]).toEqual([]);
+  // Taken back by the owner, the entry is gone, and so is the reason to hide the question.
+  expect([...answeredKeys([])]).toEqual([]);
+  expect([...answeredKeys(null)]).toEqual([]);
+  // Other things that are kept are not answers.
+  expect([
+    ...answeredKeys([
+      { kind: "ask.send", state: "waiting", args: { text: "x" } },
+      { kind: "questions.accept", state: "waiting", args: { set: "s1" } },
+    ]),
+  ]).toEqual([]);
+  // One being sent this moment is left out too, with what is kept.
+  expect([...answeredKeys([answer("q1", "waiting")], ["s1|l1|q9"])]).toEqual(["s1|l1|q9", "s1|l1|q1"]);
 });

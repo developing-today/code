@@ -33,6 +33,7 @@ interface Store {
 }
 const O = (globalThis as unknown as { PMOutbox: Record<string, unknown> }).PMOutbox as {
   TIMELY_MS: number;
+  SEND_WAIT_MS: number;
   rule(kind: string): "late" | "timely" | "now";
   subject(kind: string, args?: unknown): string | null;
   sayOf(kind: string, args?: unknown): string;
@@ -827,12 +828,36 @@ test("one try at sending: what goes out, and how each kind of answer is read", a
   // It goes as the app's own writes do, under its name, and the way to
   // a sign-in page is not followed.
   expect(calls[0].url).toBe("/console/api/act");
-  expect(calls[0].init).toEqual({
+  const { signal, ...sent } = calls[0].init;
+  expect(sent).toEqual({
     method: "POST",
     headers: { "Content-Type": "application/json", "X-PM-Console": "1" },
     body: JSON.stringify({ kind: "ask.send", args: { text: "hello" }, id: entry.id }),
     redirect: "manual",
   });
+  // One try is given a minute and no longer: a request that hung would
+  // hold up everything behind it, in every tab and in the worker.
+  expect(O.SEND_WAIT_MS).toBe(60_000);
+  expect(signal).toBeInstanceOf(AbortSignal);
+  expect((signal as AbortSignal).aborted).toBe(false);
+  // Given up on, before any answer or part-way through one, is no
+  // answer: it is offered again under its name.
+  const late = (name: string) => Object.assign(new Error("The operation timed out."), { name });
+  expect(
+    await O.httpSend(entry, async () => {
+      throw late("TimeoutError");
+    }),
+  ).toEqual({ network: true });
+  for (const name of ["TimeoutError", "AbortError"]) {
+    const cut = {
+      status: 200,
+      type: "basic",
+      json: async () => {
+        throw late(name);
+      },
+    };
+    expect(await O.httpSend(entry, answering(cut))).toEqual({ network: true });
+  }
   // No answer.
   expect(
     await O.httpSend(entry, async () => {

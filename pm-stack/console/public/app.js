@@ -237,19 +237,32 @@ async function loadDoc(name) {
   return true;
 }
 
-/** Questions answered on this device that the list may still show for a
- * while: the answer is on its way, or held until the laptop is back. */
-const answeredHere = new Set();
+/** Answers being sent this moment, by their question. */
+const sendingAnswers = new Set();
 const questionKey = (q) => `${q.set}|${q.ledger}|${q.qid}`;
+
+/** Questions answered on this device whose answer has not been
+ * recorded yet: it is on its way, waits here for a connection, or is
+ * held for a machine. The list may still show them for a while, and
+ * they are left out of it. It is worked out from what is kept, so one
+ * whose answer the owner took back, or that turned out not to count,
+ * is shown again, and one still waiting stays out after a reload. */
+export function answeredKeys(entries, sending = []) {
+  const keys = new Set(sending);
+  for (const e of entries || []) {
+    if ((e.kind === "question.answer" || e.kind === "question.defer") && (e.state === "waiting" || e.state === "held")) {
+      keys.add(questionKey(e.args || {}));
+    }
+  }
+  return keys;
+}
 
 function withoutAnswered(doc) {
   const q = doc?.questions;
   if (!q?.open) return;
-  const present = new Set(q.open.map(questionKey));
-  // Gone from the list: the answer arrived, and there is nothing to hide.
-  for (const key of answeredHere) if (!present.has(key)) answeredHere.delete(key);
-  if (answeredHere.size === 0) return;
-  q.open = q.open.filter((x) => !answeredHere.has(questionKey(x)));
+  const hidden = answeredKeys(kept, sendingAnswers);
+  if (hidden.size === 0) return;
+  q.open = q.open.filter((x) => !hidden.has(questionKey(x)));
   q.total = q.open.length;
 }
 
@@ -265,10 +278,29 @@ const KEPT_NOTE = "Kept on this device. It is sent when you are connected.";
 /** Read what is kept, for the line that says so and the screen that lists it. */
 async function readKept() {
   if (!outbox) return [];
+  const before = answeredKeys(kept);
   try {
     kept = (await outbox.all()).sort((a, b) => b.at - a.at);
   } catch {
     // The list as it was is better than none.
+  }
+  const now = answeredKeys(kept);
+  if (docs.questions) {
+    if ([...before].some((key) => !now.has(key))) {
+      // An answer that was waiting and no longer is (recorded, taken
+      // back, or refused): the questions are read again whole, so that
+      // one still open is shown again. (The copy here had it taken out.)
+      etags.questions = null;
+      loadDoc("questions").then(
+        () => draw(),
+        () => {},
+      );
+    } else if ([...now].some((key) => !before.has(key))) {
+      // One found waiting that the list was read without (the list
+      // came first, at start-up): taken out of it now.
+      withoutAnswered(docs.questions);
+      draw();
+    }
   }
   drawKept();
   return kept;
@@ -331,36 +363,41 @@ function flushOutbox() {
 async function submit(kind, args) {
   if (!Outbox) return { state: "refused", note: "This page cannot send that." };
   const entry = Outbox.make(kind, args, Date.now());
-  // Under the lock a send of what is waiting takes (here or in the
-  // service worker): while this is written down and not yet answered,
-  // nothing else may take it for something left waiting and send it too.
-  // (If one did, the platform would still do it once; the owner would
-  // be told twice.)
-  const work = () => submitNow(entry);
-  return navigator.locks?.request ? navigator.locks.request("pm-outbox", work) : work();
-}
-
-async function submitNow(entry) {
-  // Sent by itself, behind nothing: what needs a connection by its
-  // nature (it is not written down), or everything, in a browser that
-  // will not let this page keep anything.
-  const direct = async () => {
-    const answer = await Outbox.httpSend(entry);
-    const out = Outbox.classify(answer);
-    if (out.state === "done") return { state: "done", result: out.result };
-    if (out.state === "held") return { state: "held" };
-    if (out.state === "failed") return { state: "failed", note: out.note };
-    if (out.signin) signedOut = true;
-    return { state: "refused", note: answer.network ? "This needs a connection." : out.signin ? NO_SIGNIN : out.note };
-  };
-  if (Outbox.rule(entry.kind) === "now" || outbox === null) return direct();
+  // What needs a connection by its nature is sent by itself. It is not
+  // written down, so nothing else can take it for something waiting.
+  if (Outbox.rule(entry.kind) === "now" || outbox === null) return sendAlone(entry);
+  // Written down before anything is waited for, its turn to be sent
+  // included: another tab or the service worker may be in the middle of
+  // a slow send, and a page closed while this waited its turn would
+  // take what the owner did with it.
   try {
     await outbox.put(entry);
   } catch {
-    return direct();
+    // A browser that will not let this page keep anything.
+    return sendAlone(entry);
   }
-  // It goes behind whatever is already waiting, in the order things
-  // were done (outbox.js says why).
+  // Sent under the lock a send of what is waiting takes, here or in the
+  // service worker: one sender at a time, in the order things were done.
+  // (If another sender takes this one first, the platform still does it
+  // once, and this finds it done.)
+  const work = () => sendKept(entry);
+  return navigator.locks?.request ? navigator.locks.request("pm-outbox", work) : work();
+}
+
+/** Sent by itself, behind nothing, and kept nowhere. */
+async function sendAlone(entry) {
+  const answer = await Outbox.httpSend(entry);
+  const out = Outbox.classify(answer);
+  if (out.state === "done") return { state: "done", result: out.result };
+  if (out.state === "held") return { state: "held" };
+  if (out.state === "failed") return { state: "failed", note: out.note };
+  if (out.signin) signedOut = true;
+  return { state: "refused", note: answer.network ? "This needs a connection." : out.signin ? NO_SIGNIN : out.note };
+}
+
+/** Sent in its turn: behind whatever is already waiting, in the order
+ * things were done (outbox.js says why). */
+async function sendKept(entry) {
   let did;
   try {
     did = await Outbox.sendInOrder(outbox, entry.id, (e) => Outbox.httpSend(e));
@@ -680,13 +717,19 @@ function flushPending() {
 }
 
 async function sendAnswer(kind, args, key, said) {
-  const out = await submit(kind, args);
-  await readKept();
+  // Out of the list while it is on its way, whatever is read meanwhile.
+  sendingAnswers.add(key);
+  let out;
+  try {
+    out = await submit(kind, args);
+    await readKept();
+  } finally {
+    sendingAnswers.delete(key);
+  }
   if (out.state === "failed" || out.state === "refused") toast(out.note, true);
   else {
     if (out.result?.refused?.length) toast(`Not recorded: ${out.result.refused[0].why}`, true);
     else {
-      answeredHere.add(key);
       // A choice was already acknowledged when it was made (with its
       // Undo); anything else says so now, or the question would simply
       // vanish.

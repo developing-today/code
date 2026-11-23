@@ -200,7 +200,9 @@ the Android app alike (which is the same site in Chrome).
   "Keep a copy of every screen now", for before a flight.
 - **What the owner does is kept and sent once.** Every action is given
   a name on the device (a UUID) and written to the browser's own
-  database before it is sent (`public/outbox.js`). With no connection it
+  database before it is sent (`public/outbox.js`), and before it waits
+  its turn behind a send already under way, so a page closed meanwhile
+  loses nothing. One try is given a minute. With no connection it
   waits there, and is sent when the connection is back: by the page if
   the app is open, by the service worker if it is not (Background Sync,
   where the browser has it). The platform does an action once under its
@@ -213,7 +215,10 @@ the Android app alike (which is the same site in Chrome).
   chosen for it later.
 - **"Sent" means recorded.** An answer the platform took and did not
   record (a question that was settled in the meantime) is not counted
-  as sent: it is listed under "could not be done", with why.
+  as sent: it is listed under "could not be done", with why. A question
+  is left out of the list while its answer is kept and not yet
+  recorded, across a reload too, and is shown again if the answer is
+  taken back or does not count.
 - **In the order it was done.** Something done now goes behind whatever
   is already waiting, oldest first, and is not sent ahead of it. Two
   about the same thing (an issue ranked twice, a task moved twice) keep

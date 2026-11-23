@@ -354,6 +354,14 @@
     return changed;
   }
 
+  /** How long one try may take before it is given up on. A request
+   * that hung would otherwise hold up everything behind it, in every
+   * tab and in the worker, for as long as it hung. Given up on is not
+   * "not done": it is offered again under its name, and the platform
+   * does it once. */
+  const SEND_WAIT_MS = 60_000;
+  const gaveUp = (error) => error?.name === "TimeoutError" || error?.name === "AbortError";
+
   /** One try at sending an entry to the platform. */
   async function httpSend(entry, fetchImpl = root.fetch.bind(root)) {
     let res;
@@ -366,6 +374,7 @@
         // site. It is not followed: it is how this is told from no
         // connection at all.
         redirect: "manual",
+        ...(root.AbortSignal?.timeout ? { signal: root.AbortSignal.timeout(SEND_WAIT_MS) } : {}),
       });
     } catch {
       return { network: true };
@@ -374,7 +383,9 @@
     let body = null;
     try {
       body = await res.json();
-    } catch {
+    } catch (error) {
+      // Given up on part-way through the answer: no answer at all.
+      if (gaveUp(error)) return { network: true };
       body = null;
     }
     // No sign-in, whoever says so; or refused by something in between
@@ -430,6 +441,7 @@
 
   root.PMOutbox = {
     TIMELY_MS,
+    SEND_WAIT_MS,
     rule,
     subject,
     sayOf,

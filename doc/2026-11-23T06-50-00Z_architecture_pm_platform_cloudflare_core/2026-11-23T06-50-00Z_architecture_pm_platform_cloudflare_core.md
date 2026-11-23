@@ -495,13 +495,29 @@ A second review of those fixes found two more, both real:
   now "could not be done", with why, as the laptop already says of one
   it does late.
 
-Checked: 341 tests under bun, the keeper's 25. 46 planted faults in
+A third review found two more, both real, both in the page:
+
+- **An action waited its turn in memory.** It was written down only
+  once it held the turn to send; with another tab or the worker in the
+  middle of a slow send, closing the page lost it. It is now written
+  down first, and only the sending waits. One try at sending is given a
+  minute, so a request that hangs cannot hold every sender up.
+- **A taken-back answer left its question hidden.** The page kept its
+  own list of questions answered here. The list is now worked out from
+  what is kept: a question is out of the list while its answer waits
+  (across a reload too) and back when the answer is taken back or does
+  not count.
+
+Checked: 342 tests under bun, the keeper's 25. 52 planted faults in
 the new code, all caught (two more were planted and found to change
 nothing: each is behind a second guard). In a real Chrome against both
 demos: the offline flow, light
 and dark; the worker woken with the app closed; an older waiting rank
 and a new one leave the device in order and are done in order (and with
-the old direct send planted, that check fails); axe-core over 20
+the old direct send planted, that check fails); an answer kept, taken
+back and kept again, and an action done while another sender holds the
+turn and the page then closed (each fails against the code before its
+fix); axe-core over 20
 screens, the dialogs and the toasts: no violations. The Worker in its
 real runtime passes its own checks.
 
