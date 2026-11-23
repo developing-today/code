@@ -183,7 +183,11 @@ impl SpillPool {
     ) -> Option<&PoolMember> {
         self.members
             .values()
-            .filter(|member| member.eligible(journal_tip, max_catch_up_lag))
+            .filter(|member| {
+                member.eligible(journal_tip, max_catch_up_lag)
+                    && (cause != FailoverCause::HolderExpired
+                        || Some(member.identity.as_str()) != previous_holder)
+            })
             .min_by_key(|member| {
                 (
                     member.replay_position != journal_tip,
@@ -267,11 +271,24 @@ pub enum LeaseAction {
 /// must replay through before the host adapter resumes mutations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailoverPlan {
-    pub actions: Vec<LeaseAction>,
-    pub journal_tip: u64,
+    actions: Vec<LeaseAction>,
+    journal_tip: u64,
 }
 
 impl FailoverPlan {
+    /// Ordered authority actions. The list is immutable so callers cannot
+    /// accidentally move a grant ahead of its predecessor fence.
+    #[must_use]
+    pub fn actions(&self) -> &[LeaseAction] {
+        &self.actions
+    }
+
+    /// Journal position the selected successor must replay through.
+    #[must_use]
+    pub const fn journal_tip(&self) -> u64 {
+        self.journal_tip
+    }
+
     /// Whether the selected successor has replayed through the grant barrier.
     #[must_use]
     pub const fn barrier_reached(&self, replay_position: u64) -> bool {
@@ -308,7 +325,7 @@ mod tests {
             pool.observe("reader", true, true, true, 7, 7, 0, 0);
         }
         assert!(!pool.member("reader").unwrap().eligible(7, 0));
-        pool.observe("reader", true, true, true, 6, 7, 1, 0);
+        pool.observe("reader", true, true, true, 5, 7, 1, 0);
         for _ in 0..(READER_OBSERVATION_CYCLES - 1) {
             pool.observe("reader", true, true, true, 7, 7, 0, 0);
         }
@@ -336,6 +353,11 @@ mod tests {
                 .map(|member| member.identity.as_str()),
             Some("z-healthy")
         );
+        assert_eq!(
+            pool.select_successor(20, 1, Some("z-healthy"), FailoverCause::HolderExpired)
+                .map(|member| member.identity.as_str()),
+            Some("a-healthy")
+        );
     }
 
     #[test]
@@ -353,7 +375,7 @@ mod tests {
         );
         let plan = pool.plan_failover(&lease, 30_000, 50, 0).unwrap();
         assert_eq!(
-            plan.actions,
+            plan.actions(),
             vec![
                 LeaseAction::Revoke {
                     former_holder: "dead".into(),
@@ -365,7 +387,7 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(plan.journal_tip, 50);
+        assert_eq!(plan.journal_tip(), 50);
         assert!(!plan.barrier_reached(49));
         assert!(plan.barrier_reached(50));
         lease.apply_revoke("dead", 2, "term expired").unwrap();
@@ -383,7 +405,7 @@ mod tests {
             .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1))
             .unwrap();
         assert_eq!(
-            pool.plan_failover(&lease, 1, 50, 0).unwrap().actions,
+            pool.plan_failover(&lease, 1, 50, 0).unwrap().actions(),
             vec![
                 LeaseAction::Revoke {
                     former_holder: "dead".into(),
@@ -406,7 +428,7 @@ mod tests {
             .unwrap();
         lease.apply_revoke("dead", 2, "term expired").unwrap();
         assert_eq!(
-            pool.plan_failover(&lease, 1, 50, 0).unwrap().actions,
+            pool.plan_failover(&lease, 1, 50, 0).unwrap().actions(),
             vec![LeaseAction::Grant {
                 holder: DO_WRITE_LEASE_HOLDER.into(),
                 epoch: 3,
@@ -483,11 +505,11 @@ mod tests {
             .plan_failover(&failover_first, 30, 0, 0)
             .unwrap();
         assert!(matches!(
-            plan.actions[0],
+            plan.actions()[0],
             LeaseAction::Revoke { epoch: 2, .. }
         ));
         assert!(matches!(
-            plan.actions[1],
+            plan.actions()[1],
             LeaseAction::Grant { epoch: 3, .. }
         ));
     }
@@ -507,11 +529,11 @@ mod tests {
         );
         let next = pool.plan_failover(&lease, 40, 0, 0).unwrap();
         assert!(matches!(
-            next.actions[0],
+            next.actions()[0],
             LeaseAction::Revoke { epoch: 4, .. }
         ));
         assert!(matches!(
-            next.actions[1],
+            next.actions()[1],
             LeaseAction::Grant { epoch: 5, .. }
         ));
         lease.validate_history().unwrap();
@@ -529,12 +551,12 @@ mod tests {
             }
 
             let plan = SpillPool::default().plan_failover(&lease, 1, 0, 0).unwrap();
-            prop_assert_eq!(plan.actions.len(), 2);
-            let LeaseAction::Revoke { former_holder, epoch: revoke_epoch } = &plan.actions[0] else {
+            prop_assert_eq!(plan.actions().len(), 2);
+            let LeaseAction::Revoke { former_holder, epoch: revoke_epoch } = &plan.actions()[0] else {
                 prop_assert!(false, "a standing holder must be fenced before grant");
                 unreachable!();
             };
-            let LeaseAction::Grant { holder: successor, epoch: grant_epoch } = &plan.actions[1] else {
+            let LeaseAction::Grant { holder: successor, epoch: grant_epoch } = &plan.actions()[1] else {
                 prop_assert!(false, "grant must follow the fence");
                 unreachable!();
             };
