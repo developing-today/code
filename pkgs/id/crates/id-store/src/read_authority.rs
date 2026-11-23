@@ -31,7 +31,7 @@ use p2panda_core::Hash;
 
 use id_core::waiting::AuthorKey;
 
-use crate::note_checkpoints::{GroupRoles, NoteAccess, NoteCheckpoints, NoteRole};
+use crate::note_checkpoints::{GroupRoles, NoteAccess, NoteCheckpoints, NotePrincipal, NoteRole};
 
 /// Which level of the #5678 resolution order won a read decision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,7 +222,7 @@ pub fn may_read(
 mod tests {
     use super::*;
     use crate::documents::DocumentRef;
-    use crate::note_checkpoints::{NoteGrant, NotePrincipal};
+    use crate::note_checkpoints::NoteGrant;
 
     fn hash(byte: u8) -> Hash {
         Hash::from_bytes([byte; 32])
