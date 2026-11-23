@@ -4764,7 +4764,9 @@ dependencies = [
  "futures-util",
  "id-caps",
  "id-cli",
+ "id-config",
  "id-core",
+ "id-currency-registry",
  "id-directory",
  "id-events",
  "id-groups",
@@ -4872,6 +4874,15 @@ dependencies = [
  "toml",
  "tracing",
  "zeroize",
+]
+
+[[package]]
+name = "id-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5000,6 +5011,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-hw-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "id",
+ "id-worlds",
+ "iroh",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "id-import-notion"
 version = "0.1.0"
 dependencies = [
@@ -5093,12 +5116,14 @@ dependencies = [
  "postcard",
  "proptest",
  "rand 0.10.3",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tracing",
  "unicode-normalization",
 ]

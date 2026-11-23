@@ -30,6 +30,8 @@
 pub mod aggregate;
 pub mod backend;
 pub mod boundary;
+pub mod c8_fingerprint;
+pub mod c8_profile;
 pub mod classification;
 pub mod classify;
 pub mod detect;
@@ -65,6 +67,15 @@ pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
 pub use aggregate::{PromoteReport, embed_unit_into_shard, tier_sensitivity_name};
 pub use backend::SearchBackend;
+pub use c8_fingerprint::{
+    C8_FINGERPRINT_SCHEMA_VERSION, EdgeLabel, ErrorFingerprint, ErrorOccurrence, EvidenceBundle,
+    FINGERPRINT_ALGORITHM, FingerprintGroup, FirstObservation, FirstObservationKind,
+    InvestigationEdge, build_bundle, first_observation, group_occurrences, normalize_error_string,
+};
+pub use c8_profile::{
+    C8Link, C8Page, C8Source, LinkEvidence, LinkKind, PageKind, UrlParts, extract_links,
+    sanitize_url,
+};
 pub use detect::{
     DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, FileStat, LandedState, LandedTable,
     Mechanism, PathVerdict, PlainTreeOptions, RowDetectOptions, RowMode, RowStoreSpec,

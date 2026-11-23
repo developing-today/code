@@ -596,6 +596,7 @@ of silently showing canned data. `bun run dev` sets the switch for you.
 | `GRIST_ROADMAP_DOC`        | `czYHYKgG9SHcm9CPwiKEq1`                                     | The `Program roadmap` document id (Phase 2 seed)                                                                                                                                                        |
 | `PM_PROJECTOR_URL`         | `http://127.0.0.1:7801`                                      | Projector + link registry base URL (`/items`, `/comments`, `/links`); `off` disables it                                                                                                                 |
 | `PM_PROJECTOR_API_TOKEN`   | —                                                            | Projector bearer token; the GitHub hot-list consumer uses it to acknowledge completed checkpoints (copy the same secret configured on the projector into the aggregator environment)                    |
+| `PM_AGG_STACK_TOKEN_SECRET` | —                                                            | Shared HS256 secret for five-minute brokered-write stack tokens; leave unset to disable `/api/stack-token/exchange`                                                                                       |
 | `PM_AGG_COMMENTS_FILE`     | `./comments.json`                                            | Dashboard comment store (#906) — aggregator-local; created on first comment                                                                                                                             |
 | `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                             | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                                                  |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                            | Durable session identity registry (#906) — merged records persist across restarts                                                                                                                       |
@@ -690,6 +691,13 @@ Rules the implementation holds to:
   live Turso tables mirror them, and `src/turso-stores.ts`
   (`storeStatement`) translates the statements in
   `src/remote-stores.ts` to SQLite.
+
+- **Unchanged rows are not rewritten.** Action, comment and activity
+  UPSERTs compare their existing mutable fields in SQLite. The activity
+  tables' raw `updated_at` columns mark the last stored content change,
+  not the last attempted save; source status/checkpoint timestamps and
+  active gap windows still advance as before. The daily export is full
+  and ordered by primary key, not incremental by timestamp.
 
 Deploy with `PM_AGG_STORE_BACKEND=turso` (rendered by `install.sh` and
 set in the NixOS unit); the store token is resolved from Bitwarden by

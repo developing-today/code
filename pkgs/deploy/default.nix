@@ -16,6 +16,7 @@
   makeWrapper,
   runCommand,
   writeText,
+  cloudflared,
   sourceRev ? "dirty",
 }:
 let
@@ -57,6 +58,15 @@ let
     messageBridgeDeploy = callPackage ../../pkgs/message-bridge/worker/deploy.nix {
       messageBridge = callPackage ../../pkgs/message-bridge/worker/package.nix { };
     };
+    # PM stack (issue #12768): the same package files the NixOS
+    # pm-stack module callPackages into its units; the tunnel's
+    # package is nixpkgs cloudflared, as in the module.
+    pmAggregator = callPackage ../pm-aggregator/package.nix { };
+    pmProjector = callPackage ../pm-projector/package.nix { };
+    pmTunnel = cloudflared;
+    # Issue #12909: ready-for-agent, packaged from its pinned npm
+    # tarballs — the last of the four #12768 services to register.
+    readyForAgent = callPackage ../ready-for-agent/package.nix { };
   };
   jsonDefinitions = lib.mapAttrs (name: defn: defn // { package = "${defn.package}"; }) definitions;
 in

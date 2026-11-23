@@ -43,6 +43,8 @@ against the 307-line Slice-1 shadow stub that replaced it
 
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -604,6 +606,48 @@ class TestSupervisionStep(unittest.TestCase):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
+
+    def test_error_stopped_recovery_deletes_then_compare_clears_binding(self):
+        binds = []
+        deletes = []
+        with patch.object(
+            claimant, "_delete_session", side_effect=lambda sid: deletes.append(sid) or True
+        ), patch.object(
+            claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+        ):
+            recovered = claimant._recover_error_stopped("ses_error", 4242, {})
+        self.assertTrue(recovered)
+        self.assertEqual(deletes, ["ses_error"])
+        self.assertEqual(len(binds), 1)
+        bind_argv = [str(part) for part in binds[0]]
+        self.assertIn("4242", bind_argv)
+        self.assertIn("ses_error", bind_argv)
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ERROR_STOPPED, bind_argv)
+
+    def test_supervision_requeues_expired_error_stopped_bound_task(self):
+        binds = []
+        error_session = {
+            "id": "ses_gone",
+            "time": {"created": 1, "updated": 2, "idle": 3},
+            "outcome": "failure",
+        }
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant, "_fetch_sessions", return_value=[]),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(
+                claimant, "_get_session", return_value=("ok", error_session)
+            ),
+            patch.object(claimant, "_delete_session", return_value=True),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds)
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered[0]["reason"], "error_stopped")
+        self.assertEqual(recovered[0]["outcome"], "failure")
+        self.assertEqual(recovered[0]["binding"]["task_id"], 4242)
+        self.assertEqual(recovered[0]["action"], "requeued_retry")
 
     def test_unreadable_messages_are_unknown_not_zero(self):
         # #3026: the old endpoint 404s with an empty body, and the old
@@ -1536,3 +1580,86 @@ class TestHandBackStep(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCodeSourceFireLog(unittest.TestCase):
+    """#12813: every fire log entry records the primary clone's
+    checked-out branch and commit (code_source), so a fire running
+    stale-branch code names itself. The read is fail-open: a clone
+    git cannot read yields state "unreadable", never an abort."""
+
+    def setUp(self):
+        claimant._code_source = None
+
+    def tearDown(self):
+        claimant._code_source = None
+
+    def _make_clone(self, tmp: str) -> Path:
+        clone = Path(tmp) / "clone"
+        clone.mkdir()
+        env = dict(os.environ)
+        env.update(
+            {
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            }
+        )
+        subprocess.run(
+            ["git", "init", "-b", "main", str(clone)],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        (clone / "f.txt").write_text("x")
+        subprocess.run(
+            ["git", "-C", str(clone), "add", "f.txt"],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        subprocess.run(
+            ["git", "-C", str(clone), "commit", "-m", "init"],
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        return clone
+
+    def test_reads_branch_and_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = self._make_clone(tmp)
+            with patch.object(claimant, "PRIMARY_CLONE", clone):
+                source = claimant.read_code_source()
+        self.assertEqual(source["state"], "ok")
+        self.assertEqual(source["branch"], "main")
+        self.assertEqual(len(source["commit"]), 40)
+
+    def test_unreadable_clone_fails_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_repo = Path(tmp) / "nope"
+            not_a_repo.mkdir()
+            with patch.object(claimant, "PRIMARY_CLONE", not_a_repo):
+                source = claimant.read_code_source()
+        self.assertEqual(source["state"], "unreadable")
+        self.assertIsNone(source["branch"])
+        self.assertIsNone(source["commit"])
+
+    def test_fire_entry_carries_code_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = self._make_clone(tmp)
+            state_dir = Path(tmp) / "state"
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "PRIMARY_CLONE", clone),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                claimant.log_fire("live", [], [], 3, [])
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["code_source"]["branch"], "main")
+        self.assertEqual(entries[0]["code_source"]["state"], "ok")

@@ -1418,7 +1418,9 @@ let
   # dispatch, and git-sync as Nix derivations built from this repo's
   # pm-stack source. The nixos pm-stack module callPackages the same
   # files into its units; these outputs make `nix build .#pm-<app>`
-  # the package-level check.
+  # the package-level check. ready-for-agent joins them from
+  # pkgs/ready-for-agent — the one pm-stack app packaged from its
+  # pinned upstream npm release rather than repo source (#12909).
   make-pm-stack = inputs.flake-utils.lib.eachDefaultSystem (
     system:
     let
@@ -1428,6 +1430,7 @@ let
         pm-aggregator = pkgs.callPackage ../pkgs/pm-aggregator/package.nix { };
         pm-dispatch = pkgs.callPackage ../pkgs/pm-dispatch/package.nix { };
         pm-git-sync = pkgs.callPackage ../pkgs/pm-git-sync/package.nix { };
+        ready-for-agent = pkgs.callPackage ../pkgs/ready-for-agent/package.nix { };
       };
       mkApp = pkg: program: {
         type = "app";
@@ -1447,6 +1450,7 @@ let
         pm-aggregator-generate-digest = mkApp pmPackages.pm-aggregator "pm-aggregator-generate-digest";
         pm-dispatch = mkApp pmPackages.pm-dispatch "pm-dispatch";
         pm-git-sync = mkApp pmPackages.pm-git-sync "pm-git-sync";
+        ready-for-agent = mkApp pmPackages.ready-for-agent "ready-for-agent";
       };
     }
   );
@@ -1606,6 +1610,10 @@ let
               grep -q "queue-transport-alert" list.txt
               grep -q "message-bridge" list.txt
               grep -q "secrets-broker" list.txt
+              grep -q "pm-aggregator" list.txt
+              grep -q "pm-projector" list.txt
+              grep -q "pm-tunnel" list.txt
+              grep -q "ready-for-agent" list.txt
               grep -q "quota-recorder" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt

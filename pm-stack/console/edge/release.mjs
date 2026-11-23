@@ -123,6 +123,8 @@ async function serving() {
 }
 
 let address = null;
+/** What the last health request heard, for the line that says a wait failed. */
+let heard = "nothing asked yet";
 async function health() {
   if (!address && process.env.PM_RELEASE_HEALTH) address = `${process.env.PM_RELEASE_HEALTH}/${worker}`;
   if (!address) {
@@ -131,10 +133,23 @@ async function health() {
     if (status !== 200 || typeof sub !== "string") throw new Error("cannot read the account's workers.dev subdomain");
     address = `https://${worker}.${sub}.workers.dev/console/health`;
   }
+  // What came back that was not a health answer is kept, in a line, so
+  // that a Worker that did not answer is not just "silent": an error
+  // page, a refusal and no route to it are different faults.
+  let res;
   try {
-    const res = await fetch(address, { signal: AbortSignal.timeout(10_000), headers: { "cache-control": "no-cache" } });
-    return await res.json();
+    res = await fetch(address, { signal: AbortSignal.timeout(10_000), headers: { "cache-control": "no-cache" } });
+  } catch (error) {
+    heard = `no answer (${error.name}: ${String(error.cause?.code ?? error.cause?.message ?? error.message).slice(0, 80)})`;
+    return null;
+  }
+  const text = await res.text().catch(() => "");
+  try {
+    const answer = JSON.parse(text);
+    heard = `http ${res.status}, ${text.slice(0, 160)}`;
+    return answer;
   } catch {
+    heard = `http ${res.status} ${res.headers.get("content-type") ?? "of no type"}: ${text.replace(/\s+/g, " ").slice(0, 160)}`;
     return null;
   }
 }
@@ -147,7 +162,7 @@ async function answers(want) {
     if (last === want) return true;
     await sleep(HEALTH_WAIT_MS);
   }
-  say(`${worker} did not answer as ${want === "this" ? commit.short : want} (last answer: ${last})`);
+  say(`${worker} did not answer as ${want === "this" ? commit.short : want} (last answer: ${last}; it said: ${heard})`);
   return false;
 }
 

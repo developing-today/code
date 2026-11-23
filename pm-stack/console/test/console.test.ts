@@ -27,6 +27,7 @@ import {
   verifyJwt,
 } from "../src/auth.ts";
 import { type Config, ConfigError, type Issuer, readConfig } from "../src/config.ts";
+import { HOLDABLE } from "../src/edge-proto.ts";
 import { manageable, OpError, Ops, parseUnitFiles, parseUnits, type Run, triagePacket } from "../src/ops.ts";
 import { assetLinks, type Deps, handle } from "../src/server.ts";
 
@@ -403,6 +404,105 @@ const CFG: Config = readConfig({
 });
 
 describe("operations", () => {
+  test("deploys and builds are read from GitHub's own record, and started again from main", async () => {
+    // Oracle: the two answers are GitHub's own shape for a workflow's
+    // runs, and what is expected of them is written out by hand.
+    const siteRuns = {
+      workflow_runs: [
+        {
+          id: 45120541236,
+          head_sha: "ca5c04493289cde76fa0d7f287bbd46e0395c491",
+          status: "completed",
+          conclusion: "success",
+          event: "push",
+          created_at: "2026-11-23T05:51:40Z",
+          html_url: "https://github.com/developing-today/code/actions/runs/45120541236",
+        },
+        {
+          id: 45119999999,
+          head_sha: "326ac803beddb586530c6e48b76ce1db630e8aca",
+          status: "in_progress",
+          conclusion: null,
+          event: "workflow_dispatch",
+          created_at: "2026-11-23T05:42:59Z",
+          html_url: "https://github.com/developing-today/code/actions/runs/45119999999",
+        },
+      ],
+    };
+    const r = recorder((argv) => {
+      const path = argv.find((a) => a.startsWith("repos/")) ?? "";
+      if (path.includes("pm-console-edge-deploy.yml/runs")) return JSON.stringify(siteRuns);
+      if (path.includes("pm-console-android.yml/runs")) return { code: 1, stderr: "HTTP 502: Bad Gateway" };
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const got = await ops.releases();
+    expect(got.site).toEqual([
+      {
+        id: 45120541236,
+        commit: "ca5c04493289",
+        state: "success",
+        byHand: false,
+        at: "2026-11-23T05:51:40Z",
+        url: "https://github.com/developing-today/code/actions/runs/45120541236",
+      },
+      {
+        id: 45119999999,
+        commit: "326ac803bedd",
+        state: "in_progress", // not over: where it is, not how it ended
+        byHand: true,
+        at: "2026-11-23T05:42:59Z",
+        url: "https://github.com/developing-today/code/actions/runs/45119999999",
+      },
+    ]);
+    // The app's runs could not be read: that is said for them alone, and the site's still show.
+    expect((got.app as { error: string }).error).toContain("502");
+    // Only finished-or-not runs on main are asked for, a handful of each.
+    expect(r.calls.map((c) => c.argv.slice(1))).toEqual([
+      [
+        "gh",
+        "api",
+        "repos/developing-today/code/actions/workflows/pm-console-edge-deploy.yml/runs?branch=main&per_page=5",
+      ],
+      ["gh", "api", "repos/developing-today/code/actions/workflows/pm-console-android.yml/runs?branch=main&per_page=5"],
+    ]);
+
+    // Starting one again is the workflow's own start, on main, and nothing else.
+    const w = recorder();
+    const table = actions(new Ops(CFG, w.run), {} as never);
+    expect(await table["deploy.start"].run({ what: "site" })).toEqual({ started: "site", scratch: false });
+    expect(await table["deploy.start"].run({ what: "site", scratch: true })).toEqual({
+      started: "site",
+      scratch: true,
+    });
+    expect(await table["deploy.start"].run({ what: "app", scratch: true })).toEqual({ started: "app", scratch: false });
+    const at = (workflow: string) => [
+      "gh",
+      "api",
+      "-X",
+      "POST",
+      `repos/developing-today/code/actions/workflows/${workflow}/dispatches`,
+      "--input",
+      "-",
+    ];
+    expect(w.calls.map((c) => [c.argv.slice(1), JSON.parse(c.stdin ?? "null")])).toEqual([
+      [at("pm-console-edge-deploy.yml"), { ref: "main" }],
+      [at("pm-console-edge-deploy.yml"), { ref: "main", inputs: { scratch: "true" } }],
+      [at("pm-console-android.yml"), { ref: "main" }], // the app's build has no such input
+    ]);
+    // Anything else is refused before GitHub is asked: no other workflow, branch or input can be named.
+    for (const what of ["pm-dispatch.yml", "../x", "", null, { site: true }, "SITE"]) {
+      await expect(table["deploy.start"].run({ what })).rejects.toThrow(/site or app/);
+    }
+    expect(w.calls.length).toBe(3);
+    // What is recorded of it is which of the two, and whether from nothing; and it is never held to be done late.
+    expect(table["deploy.start"].audit({ what: "site", scratch: true, extra: "x" })).toEqual({
+      what: "site",
+      scratch: true,
+    });
+    expect(HOLDABLE.has("deploy.start")).toBe(false);
+  });
+
   test("queue actions run the fleet verb with the reason as one argument", async () => {
     const r = recorder();
     const ops = new Ops(CFG, r.run);
@@ -927,6 +1027,30 @@ describe("HTTP surface", () => {
     expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(await page.text()).toContain('src="/console/app.js"');
     expect((await handle(get("/console/app.css"), d)).headers.get("content-type")).toContain("text/css");
+    // The site is only ever HTTPS, and says so.
+    expect(page.headers.get("strict-transport-security")).toBe("max-age=31536000");
+    // A visit does not download the app again: each file says which
+    // version of itself it is, and a browser that names it is sent nothing.
+    const style = await handle(get("/console/app.css"), d);
+    const tag = style.headers.get("etag") as string;
+    expect(tag).toMatch(/^"[A-Za-z0-9_-]{22}"$/);
+    expect(tag).not.toBe(page.headers.get("etag")); // a file's tag is of its own content
+    expect((await handle(get("/console/app.css"), d)).headers.get("etag")).toBe(tag); // and does not change by itself
+    const asked = (named: string) =>
+      handle(
+        new Request("https://pm.security.cab/console/app.css", {
+          headers: { host: "pm.security.cab", "if-none-match": named },
+        }),
+        d,
+      );
+    for (const named of [tag, `W/${tag}`, `"other", ${tag}`]) {
+      const still = await asked(named);
+      expect([named, still.status, await still.text()]).toEqual([named, 304, ""]);
+      expect(still.headers.get("etag")).toBe(tag);
+    }
+    const sent = await asked('"an-older-version"');
+    expect(sent.status).toBe(200);
+    expect(await sent.text()).toBe(await style.text());
     expect((await handle(get("/console"), d)).status).toBe(308);
     // A path that climbs out of /console is the dashboard's to answer, never a file of this service.
     expect(await (await handle(get("/console/../src/server.ts"), d)).text()).toBe("dash");
@@ -1049,7 +1173,12 @@ describe("HTTP surface", () => {
     // The install manifest is the app's own: public, and it opens the app.
     const manifest = await handle(get("/manifest.webmanifest"), out);
     expect(manifest.headers.get("content-type")).toContain("application/manifest+json");
-    expect(await manifest.json()).toMatchObject({ start_url: "/console/", scope: "/", display: "standalone" });
+    expect(await manifest.json()).toMatchObject({
+      id: "/console/",
+      start_url: "/console/",
+      scope: "/",
+      display: "standalone",
+    });
     expect((await handle(post("/manifest.webmanifest", {}), out)).status).toBe(401);
     expect(out.sent.length).toBe(PUBLIC.length);
   });

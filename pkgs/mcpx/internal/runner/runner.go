@@ -668,6 +668,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// The dependency set is materialised before the launcher and the
 	// type check, because both resolve the script's imports (#1913).
 	var depsFlags []string
+	// depsFileLinkLocked records that the deps block below took the
+	// script directory's lock for its beside-script link, so the
+	// prepared-environment wiring in the imports block does not try
+	// to take the same single-capacity lock a second time.
+	depsFileLinkLocked := false
 	if opts.Deps != nil {
 		projectDir := depsProjectDir(opts)
 		flags, derr := materialiseDeps(workDir, rt.Kind, opts.Deps, opts.File != "", projectDir)
@@ -730,6 +735,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 				return nil, preflightErr(runCtx, lerr2)
 			}
 			defer unlock()
+			depsFileLinkLocked = true
 			// The set must also be visible at the selected
 			// manifest's directory: a module ABOVE the entry
 			// script (a helper the script imports from its
@@ -885,6 +891,33 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		for _, w := range rep.Warnings() {
 			reportWarning(opts, w)
+		}
+		// Stage 3 of #1915: when the pipeline prepared an environment
+		// for this run's resolved imports, point the run at it; when
+		// it prepared none, clear the link an earlier prepare run
+		// left, so this run does not silently keep importing it. A
+		// text script never prepares (CheckImportsText resolves no
+		// graph), so only file runs reach the wiring.
+		if opts.File != "" {
+			release, pflags, perr := pointRunAtPreparedEnv(runCtx, opts, rt.Kind, rep.Prepared, workDir, depsFileLinkLocked)
+			if perr != nil {
+				return nil, perr
+			}
+			if len(pflags) > 0 {
+				// The Deno form of the wiring speaks in flags
+				// (--import-map), spliced before the script path
+				// exactly as the deps block's flags are.
+				inner := rt.Args
+				rt.Args = func(script string) []string {
+					a := inner(script)
+					out := append([]string{}, a[:len(a)-1]...)
+					out = append(out, pflags...)
+					return append(out, a[len(a)-1])
+				}
+			}
+			if release != nil {
+				defer release()
+			}
 		}
 	}
 
@@ -1201,6 +1234,178 @@ func linkNodeModules(scriptDir, workDir string) error {
 		return os.Symlink(modules, link)
 	}
 	return nil
+}
+
+// pointRunAtPreparedEnv points a file run at the environment stage
+// 3 of #1915 prepared for its resolved imports, in the form its
+// runtime consumes. Node and Bun take the node_modules form: the
+// prepared entry's node_modules is linked beside the script, where
+// the runtime's resolution looks for it -- the same placement the
+// declared-dependency set gets from linkDepsForFileRun. Deno takes
+// the import-map form (pointDenoRunAtPreparedEnv), rendered from the
+// same entry and passed with --import-map. The returned function
+// releases what the wiring holds (the script directory's lock,
+// unless the deps block already holds it, and the cache lease) and
+// is deferred by Run, so both are held until the process exits; the
+// returned flags, when any, are spliced into the run's arguments by
+// Run the same way the deps block's flags are.
+//
+// When the run prepared no environment -- report mode, an empty
+// resolved set, or no graph to resolve -- the wiring instead removes
+// a beside-script link an earlier prepare run left, so a run that did
+// not ask for a prepared set does not silently keep importing one:
+// the same discipline linkNodeModules applies to a set-less deps run.
+//
+// A prepared entry whose node_modules is gone is an error, not a
+// fall-back: prepare reported success, so running on without the
+// environment would surface the same missing packages as a runtime
+// module error -- the failure shape the pipeline exists to replace.
+func pointRunAtPreparedEnv(ctx context.Context, opts Options, kind string, prepared *preflight.PreparedSet, workDir string, alreadyLocked bool) (func(), []string, error) {
+	if kind == KindDeno {
+		return pointDenoRunAtPreparedEnv(prepared, workDir)
+	}
+	if kind != KindNode && kind != KindBun {
+		return nil, nil, nil
+	}
+	abs, err := filepath.Abs(opts.File)
+	if err != nil {
+		return nil, nil, err
+	}
+	scriptDir := filepath.Dir(abs)
+	if prepared == nil || prepared.Dir == "" {
+		if alreadyLocked {
+			removePreparedLink(scriptDir)
+			return nil, nil, nil
+		}
+		// The removal is a link change like any other: take the
+		// directory's lock and hold it for the run, so a concurrent
+		// prepare run cannot swap a prepared link in under this
+		// run -- or have its own link removed from under it.
+		unlock, lerr := lockScriptDirs(ctx, scriptDir)
+		if lerr != nil {
+			return nil, nil, preflightErr(ctx, lerr)
+		}
+		removePreparedLink(scriptDir)
+		return unlock, nil, nil
+	}
+	modules := filepath.Join(prepared.Dir, "node_modules")
+	if st, serr := os.Stat(modules); serr != nil || !st.IsDir() {
+		return nil, nil, fmt.Errorf("imports: the prepared dependency environment at %s has no node_modules to run against", prepared.Dir)
+	}
+	// Lease the cache entry for the run's lifetime so pruning cannot
+	// delete it from under a live exec (#1908) -- the same lease the
+	// exec workdir takes above.
+	var lease *cache.Lease
+	if l, lerr := cache.Acquire(prepared.Dir); lerr == nil {
+		lease = l
+	}
+	release := func() {
+		if lease != nil {
+			lease.Release()
+		}
+	}
+	if !alreadyLocked {
+		// The beside-script link is shared by every file run in the
+		// directory, and refreshing it mid-flight would swap the
+		// environment under a run still importing; hold the
+		// directory's lock from linking until this run returns, as
+		// the deps link does. When the deps block ran it already
+		// holds that lock for this run, and the single-capacity
+		// semaphore must not be taken twice.
+		unlock, lerr := lockScriptDirs(ctx, scriptDir)
+		if lerr != nil {
+			release()
+			return nil, nil, preflightErr(ctx, lerr)
+		}
+		inner := release
+		release = func() { unlock(); inner() }
+	}
+	if lerr := linkPreparedNodeModules(scriptDir, prepared.Dir, workDir); lerr != nil {
+		release()
+		return nil, nil, fmt.Errorf("imports: link the prepared environment beside the script: %w", lerr)
+	}
+	return release, nil, nil
+}
+
+// linkPreparedNodeModules symlinks a prepared environment's
+// node_modules beside a file script so the script's bare imports
+// resolve to the environment stage 3 materialised. What already sits
+// at that path decides, by the same rules as linkNodeModules:
+//   - a real install or directory is the project's own and wins
+//     untouched;
+//   - a symlink to THIS environment is already right;
+//   - a symlink to an earlier prepared environment, or to a runner
+//     workdir's materialised set, is stale the moment the resolved
+//     set changes, so it is refreshed;
+//   - a dangling link is replaced only when one of those mechanisms
+//     left it; any other symlink is left as the project put it.
+func linkPreparedNodeModules(scriptDir, preparedDir, workDir string) error {
+	modules := filepath.Join(preparedDir, "node_modules")
+	link := filepath.Join(scriptDir, "node_modules")
+	fi, err := os.Lstat(link)
+	if err != nil {
+		return os.Symlink(modules, link)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		return nil // a real directory or file: the project's own
+	}
+	target, rerr := os.Readlink(link)
+	if rerr != nil {
+		return nil
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(scriptDir, target)
+	}
+	target = filepath.Clean(target)
+	if target == filepath.Clean(modules) {
+		return nil // already points at this environment
+	}
+	if _, serr := os.Stat(target); serr != nil {
+		// Dangling: replace it only when a prepare run or this
+		// runner left it -- a user-managed link that happens to
+		// dangle is the project's own and stays.
+		if !preflight.IsPreparedNodeModules(target) && !runnerOwnedLinkTarget(target, workDir) {
+			return nil
+		}
+		_ = os.Remove(link)
+		return os.Symlink(modules, link)
+	}
+	// A live link elsewhere: refresh it only when a prepare run or
+	// this runner left it -- an earlier prepared environment
+	// (recognisable by its manifest), or a workdir set (recognisable
+	// by the generated client sitting beside its node_modules).
+	if preflight.IsPreparedNodeModules(target) {
+		_ = os.Remove(link)
+		return os.Symlink(modules, link)
+	}
+	if _, serr := os.Stat(filepath.Join(filepath.Dir(target), clientFileName)); serr == nil {
+		_ = os.Remove(link)
+		return os.Symlink(modules, link)
+	}
+	return nil
+}
+
+// removePreparedLink removes the beside-script node_modules link when
+// it points at a prepared environment, so a run that prepared none
+// does not keep importing an earlier run's set. Links to anything
+// else -- a workdir set, a user target, a real directory -- are left
+// exactly as they are.
+func removePreparedLink(scriptDir string) {
+	link := filepath.Join(scriptDir, "node_modules")
+	fi, err := os.Lstat(link)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		return
+	}
+	target, rerr := os.Readlink(link)
+	if rerr != nil {
+		return
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(scriptDir, target)
+	}
+	if preflight.IsPreparedNodeModules(filepath.Clean(target)) {
+		_ = os.Remove(link)
+	}
 }
 
 // writeIfChanged avoids touching mtime when content is identical, which keeps

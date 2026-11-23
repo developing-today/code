@@ -72,6 +72,22 @@ def stalled(task_id=101, confirmed=True):
     return entry
 
 
+def error_stopped(task_id=101, binding=None):
+    return {
+        "verdict": "error-stopped",
+        "outcome": "error",
+        "retryable": True,
+        "task_id": task_id,
+        "binding": binding
+        or {
+            "task_id": task_id,
+            "queue": "repo-health-code-pilot",
+            "issue_number": 4242,
+            "repo": "developing-today/code",
+        },
+    }
+
+
 class FakeEffects:
     """The injected effect boundary: records every call, answers
     from the configured result maps."""
@@ -122,6 +138,21 @@ class TestPlan(unittest.TestCase):
         )
         self.assertEqual(actions, [])
 
+    def test_error_stopped_bound_session_plans_one_retry_with_binding(self):
+        actions = nudges.plan_actions(
+            record(verdicts={"ses_failed": error_stopped()}), {}
+        )
+        self.assertEqual(actions[0]["kind"], "retry")
+        self.assertEqual(actions[0]["task_id"], 101)
+        self.assertEqual(actions[0]["binding"]["repo"], "developing-today/code")
+
+    def test_error_retry_is_not_replanned_after_success(self):
+        prior = {"ses_failed": {"error_retried": True}}
+        actions = nudges.plan_actions(
+            record(verdicts={"ses_failed": error_stopped()}), prior
+        )
+        self.assertEqual(actions, [])
+
     def test_unbound_confirmed_stall_is_observed_only(self):
         actions = nudges.plan_actions(
             record(verdicts={"ses_free": stalled(task_id=None)}), {}
@@ -148,15 +179,39 @@ class TestPlan(unittest.TestCase):
 
 
 class TestNudgeStep(unittest.TestCase):
-    def _step(self, fx, rec, state_dir, mode="live", bindings=None):
+    def _step(
+        self, fx, rec, state_dir, mode="live", bindings=None, recover_error=None
+    ):
         return nudges.nudge_step(
             mode,
             rec,
             send_prompt=fx.send_prompt,
             post_note=fx.post_note,
+            recover_error=recover_error,
             bindings=BINDINGS if bindings is None else bindings,
             state_dir=state_dir,
         )
+
+    def test_live_error_retry_calls_recovery_and_logs_binding(self):
+        fx = FakeEffects()
+        calls = []
+
+        def recover_error(session_id, task_id, binding):
+            calls.append((session_id, task_id, binding))
+            return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._step(
+                fx,
+                record(verdicts={"ses_failed": error_stopped()}),
+                Path(tmp),
+                recover_error=recover_error,
+            )
+        self.assertEqual(calls[0][0:2], ("ses_failed", 101))
+        self.assertEqual(calls[0][2]["repo"], "developing-today/code")
+        self.assertEqual(out["actions"][0]["kind"], "retry")
+        self.assertTrue(out["actions"][0]["applied"])
+        self.assertEqual(out["actions"][0]["detail"], "requeued_retry")
 
     def _state(self, state_dir):
         return json.loads((state_dir / nudges.STATE_FILE_NAME).read_text())
@@ -371,6 +426,148 @@ class TestFireWiring(unittest.TestCase):
             ]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["nudges"], dict(sentinel, mode="shadow"))
+
+
+class TestInterventionAccounting(unittest.TestCase):
+    """#1656 AC4: keeper state separates queue-session
+    interventions from the unbound (observed-only) class, and a
+    burst of queue interventions past the per-round cap is
+    overflow - reported in the round record and deferred, never
+    dropped."""
+
+    def _step(self, fx, rec, state_dir, mode="live", bindings=None):
+        return nudges.nudge_step(
+            mode,
+            rec,
+            send_prompt=fx.send_prompt,
+            post_note=fx.post_note,
+            bindings=BINDINGS if bindings is None else bindings,
+            state_dir=state_dir,
+        )
+
+    def _state(self, state_dir):
+        return json.loads((state_dir / nudges.STATE_FILE_NAME).read_text())
+
+    def test_counts_separate_queue_from_other_and_persist(self):
+        fx = FakeEffects()
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            rec = record(
+                verdicts={
+                    "ses_stuck": stalled(task_id=101),
+                    "ses_free": stalled(task_id=None),
+                }
+            )
+            out = self._step(fx, rec, state_dir)
+            self.assertEqual(
+                out["interventions"]["queue"],
+                {"retries": 0, "nudges": 1, "escalations": 0},
+            )
+            self.assertEqual(out["interventions"]["other"], {"observed": 1})
+            self.assertEqual(
+                out["interventions"]["cumulative"],
+                {
+                    "queue": {"retries": 0, "nudges": 1, "escalations": 0},
+                    "other": {"observed": 1},
+                },
+            )
+            state = self._state(state_dir)
+            self.assertEqual(state["counts"], out["interventions"]["cumulative"])
+
+    def test_failed_send_is_not_counted_as_an_intervention(self):
+        fx = FakeEffects(send_ok=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            out = self._step(
+                fx, record(verdicts={"ses_stuck": stalled()}), state_dir
+            )
+            self.assertEqual(out["interventions"]["queue"]["nudges"], 0)
+            self.assertEqual(
+                self._state(state_dir)["counts"]["queue"]["nudges"], 0
+            )
+
+    def test_counts_accumulate_across_rounds_and_episode_close(self):
+        fx = FakeEffects()
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            rec = record(verdicts={"ses_stuck": stalled()})
+            self._step(fx, rec, state_dir)
+            self._step(fx, rec, state_dir)
+            out3 = self._step(fx, rec, state_dir)  # escalates
+            self.assertEqual(
+                out3["interventions"]["cumulative"]["queue"],
+                {"retries": 0, "nudges": 2, "escalations": 1},
+            )
+            # Episode closes (session no longer stalled); the
+            # counts stay - they are run accounting, not episode
+            # state.
+            self._step(fx, record(verdicts={}), state_dir)
+            state = self._state(state_dir)
+            self.assertEqual(state["sessions"], {})
+            self.assertEqual(
+                state["counts"]["queue"],
+                {"retries": 0, "nudges": 2, "escalations": 1},
+            )
+
+    def test_queue_burst_overflows_and_defers_not_drops(self):
+        fx = FakeEffects()
+        cap = nudges.MAX_QUEUE_INTERVENTIONS_PER_ROUND
+        sids = [f"ses_{i:02d}" for i in range(cap + 1)]
+        verdicts = {sid: stalled(task_id=100 + i) for i, sid in enumerate(sids)}
+        bindings = {
+            sid: {
+                "task_id": 100 + i,
+                "queue": "repo-health-code-pilot",
+                "issue_number": 4242,
+                "repo": "developing-today/code",
+            }
+            for i, sid in enumerate(sids)
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            out = self._step(
+                fx, record(round_no=3, verdicts=verdicts), state_dir,
+                bindings=bindings,
+            )
+            self.assertEqual(len(fx.sent), cap)
+            self.assertEqual(len(out["overflow"]), 1)
+            overflowed = out["overflow"][0]["session_id"]
+            self.assertEqual(out["overflow"][0]["detail"], "over_queue_cap")
+            self.assertEqual(out["overflow"][0]["applied"], False)
+            self.assertEqual(out["interventions"]["queue"]["nudges"], cap)
+            # The deferred episode exists with its budget
+            # untouched, so the intervention re-plans next round.
+            state = self._state(state_dir)
+            self.assertEqual(
+                state["sessions"][overflowed]["nudges_sent"], 0
+            )
+            out2 = self._step(
+                fx, record(round_no=4, verdicts=verdicts), state_dir,
+                bindings=bindings,
+            )
+            # Least-served first: the session deferred in round 3
+            # is served in round 4, ahead of the sessions that
+            # consumed budget ahead of it.
+            self.assertIn(overflowed, [sid for sid, _ in fx.sent[cap:]])
+            self.assertNotIn(
+                overflowed, [a["session_id"] for a in out2["overflow"]]
+            )
+
+    def test_shadow_reports_overflow_and_counts_but_writes_nothing(self):
+        fx = FakeEffects()
+        cap = nudges.MAX_QUEUE_INTERVENTIONS_PER_ROUND
+        verdicts = {
+            f"ses_{i:02d}": stalled(task_id=100 + i) for i in range(cap + 1)
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            out = self._step(
+                fx, record(verdicts=verdicts), state_dir, mode="shadow"
+            )
+            self.assertEqual(len(out["overflow"]), 1)
+            self.assertEqual(out["interventions"]["queue"]["nudges"], cap)
+            self.assertEqual(fx.sent, [])
+            self.assertFalse((state_dir / nudges.STATE_FILE_NAME).exists())
 
 
 if __name__ == "__main__":

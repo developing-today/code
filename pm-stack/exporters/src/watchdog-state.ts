@@ -93,6 +93,11 @@ export interface EscalationRecord {
   class: FailureClass;
   /** When the escalation effects ran. */
   since: string;
+  /** When the latest re-escalation update was posted to the incident
+   *  issue (#10630), or absent if the hand-off has not re-fired yet.
+   *  The repeat window is measured from this stamp when present, else
+   *  from `since`. */
+  lastReEscalatedAt?: string;
   /** Fleet queue task id, or null if the enqueue has not confirmed. */
   queueTaskId: string | null;
   /** Repo owning the adapter (and therefore the incident issue). */
@@ -427,6 +432,7 @@ export function coerceHealth(source: string, raw: unknown): SourceHealth {
           queueTaskId: typeof e.queueTaskId === "string" ? e.queueTaskId : null,
           issueRepo: e.issueRepo,
           issueNumber: typeof e.issueNumber === "number" && Number.isFinite(e.issueNumber) ? e.issueNumber : null,
+          ...(typeof e.lastReEscalatedAt === "string" ? { lastReEscalatedAt: e.lastReEscalatedAt } : {}),
         }
       : null;
   };

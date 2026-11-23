@@ -7,18 +7,18 @@ runs the fleet's tools can be reached.
 
 ## What runs where
 
-| Thing                                                                            | Where                                             | When the laptop cannot be reached                                                                                                                                                            |
-| -------------------------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The app's page, script and icons                                                 | edge                                              | unchanged                                                                                                                                                                                    |
-| Checking who is calling                                                          | edge, and again on the laptop                     | the edge still answers the owner; anyone it is unsure of gets nothing                                                                                                                        |
-| State (in progress, next, needs me, prompts, pull…)                              | edge, from the laptop's report                    | the board, pull requests, ranked issues and prompts refresh from GitHub and the queue store after one minute of silence; the rest stays as of the last report                                |
-| Notifications: keys, subscriptions, sending                                      | edge                                              | unchanged; and one says the laptop has gone quiet                                                                                                                                            |
-| Linked phones and the widget's summary                                           | edge                                              | unchanged                                                                                                                                                                                    |
-| Actions safe to do late (prompts, answers, comments, …)                          | laptop, relayed at once                           | held at the edge, run once when it is back, dropped after a day and said so                                                                                                                  |
-| Direct actions (reply to or close a prompt, comment, rank an issue, move a task) | edge, once the laptop has been quiet for a minute | run at the edge through the laptop's own classes, and never sent to the laptop, so they are not done twice; a new prompt is filed at the edge and only its queue task is held for the laptop |
-| Actions not safe to do late (merge, units, unblock, …)                           | laptop, relayed at once                           | refused, saying why                                                                                                                                                                          |
-| The dashboard's own pages, logs, one pull request's page                         | laptop                                            | a plain notice with a link to the app                                                                                                                                                        |
-| The signed Android build (`/console/pm-console.apk`)                             | laptop, and a copy at the edge                    | the copy is served, and the app says so when the copy is older than the laptop's newest                                                                                                      |
+| Thing                                                                            | Where                                                       | When the laptop cannot be reached                                                                                                                                                            |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The app's page, script and icons                                                 | edge                                                        | unchanged                                                                                                                                                                                    |
+| Checking who is calling                                                          | edge, and again on the laptop                               | the edge still answers the owner; anyone it is unsure of gets nothing                                                                                                                        |
+| State (in progress, next, needs me, prompts, pull…)                              | edge, from the laptop's report                              | the board, pull requests, ranked issues and prompts refresh from GitHub and the queue store after one minute of silence; the rest stays as of the last report                                |
+| Notifications: keys, subscriptions, sending                                      | edge                                                        | unchanged; and one says the laptop has gone quiet                                                                                                                                            |
+| Linked phones and the widget's summary                                           | edge                                                        | unchanged                                                                                                                                                                                    |
+| Actions safe to do late (prompts, answers, comments, …)                          | laptop, relayed at once                                     | held at the edge, run once when it is back, dropped after a day and said so                                                                                                                  |
+| Direct actions (reply to or close a prompt, comment, rank an issue, move a task) | edge, once the laptop has been quiet for a minute           | run at the edge through the laptop's own classes, and never sent to the laptop, so they are not done twice; a new prompt is filed at the edge and only its queue task is held for the laptop |
+| Actions not safe to do late (merge, units, unblock, …)                           | laptop, relayed at once                                     | refused, saying why                                                                                                                                                                          |
+| The dashboard's own pages, logs, one pull request's page                         | laptop                                                      | a plain notice with a link to the app                                                                                                                                                        |
+| The signed Android build (`/console/pm-console.apk`)                             | GitHub's release first; else laptop, and a copy at the edge | the release is served (checked against its own description of itself); with none published, the copy is, and the app says so when the copy is older than the laptop's newest                 |
 
 The list of actions that may be done late is `HOLDABLE` in
 `../src/edge-proto.ts`.
@@ -47,6 +47,25 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   has. So a mistake at the edge can cost the edge's speed, never the
   owner's way in, and a stranger gets from the laptop exactly what a
   stranger got before.
+- **The app's own files are not downloaded twice.** The platform's file
+  store tags each file by its content; the Worker passes the tag on and
+  answers a browser that names it with "still that" (304) and nothing
+  else. They are still asked for every time (`no-cache`), so a deploy
+  shows at once. `/console/health` says, to anyone, which release of the
+  Android app this side knows of (`androidRelease`), beside the copy of
+  the laptop's build (`androidBuild`): that is how either arriving here
+  is checked from outside.
+- **No class keeps the platform's `fetch` itself.** In the Worker
+  runtime `fetch` refuses to be called as a method of another object
+  ("Illegal invocation"), and bun does not mind, so no test under bun
+  could see it: for the first day every notification the edge sent and
+  every read of the Android release failed that way. Each class keeps a
+  plain caller (`../src/plain.ts`); the tests hand the classes a fetch
+  that refuses as the runtime does (`asThePlatformFetch`); and the
+  deploy's run of the bundle in the runtime itself checks that the
+  state can make a request of its own. `/console/health` says why the
+  release could not be read when it could not
+  (`androidReleaseTrouble`).
 - **The laptop reports** to `POST /console/edge/sync`: the sections of
   state that changed, how current each unchanged one is, and what became
   of anything held for it. The answer says whether anyone is looking, and

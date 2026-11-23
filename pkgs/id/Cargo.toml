@@ -18,6 +18,7 @@ categories = ["command-line-utilities", "network-programming"]
 [workspace]
 members = [
   "crates/id-core",
+  "crates/id-config",
   "crates/id-caps",
   "crates/id-store",
   "crates/id-events",
@@ -29,6 +30,7 @@ members = [
   "crates/id-web",
   "crates/id-render",
   "crates/id-native-shell",
+  "crates/id-hw-shell",
   "crates/id-cli",
   "crates/id-import-notion",
 ]
@@ -41,6 +43,7 @@ exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
 default-members = [
   ".",
   "crates/id-core",
+  "crates/id-config",
   "crates/id-caps",
   "crates/id-store",
   "crates/id-events",
@@ -112,6 +115,9 @@ id-cli = { path = "crates/id-cli", default-features = false }
 # Directory-family modules extracted in step 6b of the crate split
 # (#4409). Re-exported at their historical crate:: paths in src/lib.rs.
 id-directory = { path = "crates/id-directory", default-features = false }
+# Currency registry + account factory (F1 #2317, F2 #2318); composed
+# with the gateway envelope by the #2321 PoC (src/currency/gateway_poc.rs).
+id-currency-registry = { path = "crates/id-currency-registry", default-features = false }
 anyhow = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 # Calendar arithmetic and the IANA time-zone database for the did-it tracker's
@@ -212,6 +218,9 @@ id-core = { path = "crates/id-core", default-features = false, features = [
 id-caps = { path = "crates/id-caps", default-features = false, features = [
   "test-provider",
 ] }
+# The versioned config contract (slice 9111-01, #10178); its invariant
+# tests live in tests/config_invariants.rs.
+id-config = { path = "crates/id-config" }
 # The artifact/envelope test seams live in id-sync since step 3c (#4406).
 id-sync = { path = "crates/id-sync", default-features = false, features = [
   "test-utils",
