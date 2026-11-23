@@ -63,6 +63,7 @@ pub mod owner_inventory;
 pub mod search;
 pub mod shards;
 pub mod shingles;
+pub mod source_registry;
 pub mod stage;
 pub mod sweep;
 pub mod trace;
@@ -138,6 +139,10 @@ pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
     run_get_chunk_with_context, run_search, run_search_traced, run_search_with_executor,
     run_search_with_executor_traced,
+};
+pub use source_registry::{
+    LocatorRegistration, RootRegistration, SOURCE_REGISTRY_DDL, SourceRoot, ensure_source_registry,
+    locators_for_root, register_locator, register_source_root, source_root,
 };
 pub use stage::{
     ChunkClassification, REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL,
