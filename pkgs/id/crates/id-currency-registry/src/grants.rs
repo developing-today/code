@@ -28,10 +28,12 @@
 //!   [`GrantError::AlreadyResolved`] *is* the API's `409` outcome.
 //!
 //! The rule section 4 states plainly, enforced here: **partial
-//! posting is for policy, void-and-reissue is for refunds.** This
-//! slice implements the refund path; a policy partial-vest is a
-//! follow-on. The vesting automation / reconciler that sweeps
-//! expired holds (section 6.3) is likewise a separate issue; the
+//! posting is for policy, void-and-reissue is for refunds.** Both
+//! paths are implemented: [`GrantService::refund_partial`] is the
+//! refund path, and [`GrantService::vest_partial`] is the policy
+//! partial vest (#10070 item 4). The vesting automation /
+//! reconciler that sweeps expired holds (section 6.3) is
+//! likewise a separate issue; the
 //! `Expired` state and the intent-first write order here are what
 //! it will reconcile against.
 //!
@@ -636,7 +638,8 @@ pub enum GrantError {
     /// No grant exists for this id.
     UnknownGrant(u128),
     /// The amount is not usable for this operation (a zero grant,
-    /// or a refund that is not a proper partial amount).
+    /// or an amount that is not a proper partial of the grant —
+    /// a partial refund or a policy partial vest).
     InvalidAmount {
         /// What was attempted.
         attempted: u128,
@@ -829,6 +832,48 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
         self.resolve(grant_id, now, Resolution::Vest)
     }
 
+    /// Vest a proper part of a grant by policy (`POST
+    /// /grants/{id}/vest` with an amount): post `vest_amount` of
+    /// the hold; the ledger restores the unposted remainder
+    /// (design section 4 — partial posting is for policy, e.g.
+    /// grant tiers vesting a fraction at window close). A refund
+    /// never takes this path: it voids and reissues via
+    /// [`GrantService::refund_partial`], so a refunded amount can
+    /// never end up posted.
+    ///
+    /// # Errors
+    ///
+    /// [`GrantError::UnknownGrant`]; [`GrantError::AlreadyResolved`]
+    /// (the `409`) if the grant already resolved;
+    /// [`GrantError::InvalidAmount`] unless
+    /// `0 < vest_amount < grant.amount` — posting nothing is a
+    /// [`GrantService::void`], posting everything is a plain
+    /// [`GrantService::vest`].
+    pub fn vest_partial(
+        &mut self,
+        grant_id: u128,
+        vest_amount: u128,
+        now: u64,
+    ) -> Result<Grant, GrantError> {
+        let grant = self
+            .store
+            .grant(grant_id)
+            .ok_or(GrantError::UnknownGrant(grant_id))?;
+        if grant.state.is_resolved() {
+            return Err(GrantError::AlreadyResolved {
+                grant_id,
+                state: grant.state,
+            });
+        }
+        if vest_amount == 0 || vest_amount >= grant.amount {
+            return Err(GrantError::InvalidAmount {
+                attempted: vest_amount,
+                grant_amount: grant.amount,
+            });
+        }
+        self.resolve(grant_id, now, Resolution::VestPartial(vest_amount))
+    }
+
     /// Void a grant (`POST /grants/{id}/void`): release its hold
     /// in full — the refund path.
     ///
@@ -946,6 +991,10 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
                 self.ledger
                     .post_pending(grant.pending_transfer_id, resolution_id, grant.amount)
             }
+            Resolution::VestPartial(amount) => {
+                self.ledger
+                    .post_pending(grant.pending_transfer_id, resolution_id, amount)
+            }
             Resolution::Void => self
                 .ledger
                 .void_pending(grant.pending_transfer_id, resolution_id),
@@ -953,7 +1002,7 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
         match outcome {
             Ok(()) => {
                 grant.state = match resolution {
-                    Resolution::Vest => GrantState::Posted,
+                    Resolution::Vest | Resolution::VestPartial(_) => GrantState::Posted,
                     Resolution::Void => GrantState::Voided,
                 };
                 grant.resolution_transfer_id = Some(resolution_id);
@@ -1060,6 +1109,7 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Resolution {
     Vest,
+    VestPartial(u128),
     Void,
 }
 
