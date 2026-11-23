@@ -4,25 +4,19 @@
   "private": true,
   "type": "module",
   "description": "GitHub webhook receiver (#5693): workflow_run -> Turso ci_events only; fleet push/PR/issues -> agent events sink + fleet-queue snapshots/watermarks.",
-  "engines": {
-    "node": ">=24.22.0"
-  },
   "scripts": {
-    "deploy": "echo 'npm run deploy is disabled; use the protected GitHub Actions Workers Versions flow' >&2; exit 1",
+    "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "build": "cf build",
     "test": "vitest run",
-    "test:deployment": "node --test test/deployment-config.test.mjs test/deployment-guard.test.mjs",
     "typecheck": "tsc --noEmit",
     "backfill": "esbuild scripts/backfill.ts --bundle --platform=node --format=esm --outfile=.backfill.build.mjs && node .backfill.build.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.23.0",
-    "@cloudflare/workers-types": "^5.20261119.1",
-    "cf": "1.0.0-rc.1",
+    "@cloudflare/workers-types": "^4.20251011.0",
     "typescript": "^5.6.0",
     "vitest": "^4.1.0",
-    "wrangler": "4.166.0"
+    "wrangler": "4.59.1"
   },
   "overrides": {
     "undici": "7.30.1"

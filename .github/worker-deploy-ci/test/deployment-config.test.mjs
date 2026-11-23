@@ -14,10 +14,11 @@ const SECRET_BINDINGS = [
 
 test("cf config declares the production non-secret bindings and only secret names", async () => {
   const config = await read("../cloudflare.config.ts");
-  const wrangler = await read("../wrangler.toml");
+  const wrangler = await read("../../../pkgs/github-ci/worker/wrangler.toml");
   assert.match(config, /name:\s*"github-ci"/);
   assert.match(config, /compatibilityDate:\s*"2025-09-15"/);
   assert.match(config, /workersDev:\s*true/);
+  assert.match(config, /\.\.\/\.\.\/pkgs\/github-ci\/worker\/src\/index\.ts/);
   assert.doesNotMatch(config, /previewUrls\s*:/);
   for (const [name, value] of [
     ["TURSO_PLATFORM_URL", "https://fleet-platform-dezren39.aws-us-east-1.turso.io"],
@@ -46,12 +47,18 @@ test("Build Output v1 was made by pinned Wrangler and preserves value-free secre
 test("locked toolchain uses the cf release candidate with matching Build Output v1", async () => {
   const pkg = JSON.parse(await read("../package.json"));
   const lock = JSON.parse(await read("../package-lock.json"));
-  assert.equal(pkg.engines.node, ">=24.22.0");
+  const workerPkg = JSON.parse(await read("../../../pkgs/github-ci/worker/package.json"));
+  const workerLock = JSON.parse(await read("../../../pkgs/github-ci/worker/package-lock.json"));
+  assert.equal(pkg.engines.node, "24.22.0");
   assert.equal(pkg.devDependencies.cf, "1.0.0-rc.1");
   assert.equal(lock.packages["node_modules/cf"].version, pkg.devDependencies.cf);
   assert.equal(pkg.devDependencies.wrangler, "4.166.0");
   assert.equal(lock.packages["node_modules/wrangler"].version, pkg.devDependencies.wrangler);
   assert.equal(lock.packages["node_modules/@cloudflare/build-output-utils"].version, "1.0.0-rc.1");
+  assert.equal(workerPkg.scripts.deploy, "wrangler deploy");
+  assert.equal(workerPkg.devDependencies.wrangler, "4.59.1");
+  assert.equal(Object.hasOwn(workerPkg.devDependencies, "cf"), false);
+  assert.equal(workerLock.packages["node_modules/wrangler"].version, "4.59.1");
 });
 
 test("pinned cf Versions upload requires strict inheritance resolution", async () => {

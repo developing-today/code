@@ -1,16 +1,38 @@
 name: github-ci Worker version promotion
 
-# Explicit promotion is separate from version upload. Configure this
-# environment with required reviewers and allow deployment only from main.
+# Manual, default-off promotion. The exact successful upload attempt,
+# baseline deployment and deployment create/read-back receipts are required.
 on:
   workflow_dispatch:
     inputs:
-      version_id:
-        description: Workers Version UUID from an upload workflow run
+      confirm_promotion:
+        description: Set true to opt in to protected production promotion
         required: true
+        type: boolean
+        default: false
+      upload_run_id:
+        description: Successful upload workflow run ID
+        required: false
+        type: string
+      upload_run_attempt:
+        description: Exact upload workflow run attempt number
+        required: false
+        type: string
+      version_id:
+        description: Candidate Workers Version UUID from that receipt
+        required: false
+        type: string
+      baseline_deployment_id:
+        description: Baseline Deployment UUID from that receipt
+        required: false
+        type: string
+      baseline_version_id:
+        description: Baseline Worker Version UUID from that receipt
+        required: false
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -18,14 +40,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  promote:
-    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+  check-production-environment:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm_promotion == true
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      protected: ${{ steps.verify.outputs.protected }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check production environment protection without provider credentials
+        id: verify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ENVIRONMENT_NAME: github-ci-production
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/environments/$ENVIRONMENT_NAME" \
+            > "$RUNNER_TEMP/production-environment.json"
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/environments/$ENVIRONMENT_NAME/deployment-branch-policies" \
+            > "$RUNNER_TEMP/production-branch-policies.json"
+          node pkgs/github-ci/worker/scripts/deployment-guard.mjs check-environment \
+            "$RUNNER_TEMP/production-environment.json" \
+            "$RUNNER_TEMP/production-branch-policies.json" \
+            "$ENVIRONMENT_NAME"
+
+  promote:
+    needs: check-production-environment
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.confirm_promotion == true && needs.check-production-environment.outputs.protected == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     environment: github-ci-production
     defaults:
       run:
-        working-directory: pkgs/github-ci/worker
+        working-directory: .github/worker-deploy-ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,23 +96,102 @@ jobs:
         with:
           node-version: 24.22.0
           cache: npm
-          cache-dependency-path: pkgs/github-ci/worker/package-lock.json
+          cache-dependency-path: .github/worker-deploy-ci/package-lock.json
 
-      - name: Install pinned cf and locked tooling
+      - name: Recheck protected environment before provider access
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ENVIRONMENT_NAME: github-ci-production
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/environments/$ENVIRONMENT_NAME" \
+            > "$RUNNER_TEMP/production-environment.json"
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/environments/$ENVIRONMENT_NAME/deployment-branch-policies" \
+            > "$RUNNER_TEMP/production-branch-policies.json"
+          node ../../pkgs/github-ci/worker/scripts/deployment-guard.mjs check-environment \
+            "$RUNNER_TEMP/production-environment.json" \
+            "$RUNNER_TEMP/production-branch-policies.json" \
+            "$ENVIRONMENT_NAME"
+
+      - name: Install the isolated pinned cf toolchain
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: Validate Cloudflare credentials and version UUID
-        id: validate
+      - name: Validate receipt input identifiers
+        id: inputs
+        env:
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          UPLOAD_RUN_ATTEMPT: ${{ inputs.upload_run_attempt }}
+          VERSION_ID_INPUT: ${{ inputs.version_id }}
+          BASELINE_DEPLOYMENT_ID_INPUT: ${{ inputs.baseline_deployment_id }}
+          BASELINE_VERSION_ID_INPUT: ${{ inputs.baseline_version_id }}
+        run: |
+          set -euo pipefail
+          [[ "$UPLOAD_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$UPLOAD_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$VERSION_ID_INPUT" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+          [[ "$BASELINE_DEPLOYMENT_ID_INPUT" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+          [[ "$BASELINE_VERSION_ID_INPUT" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+          echo "upload_run_id=$UPLOAD_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "upload_run_attempt=$UPLOAD_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "version_id=${VERSION_ID_INPUT,,}" >> "$GITHUB_OUTPUT"
+          echo "baseline_deployment_id=${BASELINE_DEPLOYMENT_ID_INPUT,,}" >> "$GITHUB_OUTPUT"
+          echo "baseline_version_id=${BASELINE_VERSION_ID_INPUT,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the receipt from that exact upload run attempt
+        uses: actions/download-artifact@v8
+        with:
+          name: github-ci-candidate-${{ steps.inputs.outputs.upload_run_id }}-${{ steps.inputs.outputs.upload_run_attempt }}
+          path: ${{ runner.temp }}/github-ci-upload
+          run-id: ${{ steps.inputs.outputs.upload_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Read the exact upload run attempt record
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          UPLOAD_RUN_ID: ${{ steps.inputs.outputs.upload_run_id }}
+          UPLOAD_RUN_ATTEMPT: ${{ steps.inputs.outputs.upload_run_attempt }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --max-time 15 \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$UPLOAD_RUN_ID/attempts/$UPLOAD_RUN_ATTEMPT" \
+            > "$RUNNER_TEMP/github-ci-upload-run-attempt.json"
+
+      - name: Verify exact upload attempt, candidate, and baseline receipt
+        id: receipt
+        env:
+          UPLOAD_RUN_ID: ${{ steps.inputs.outputs.upload_run_id }}
+          UPLOAD_RUN_ATTEMPT: ${{ steps.inputs.outputs.upload_run_attempt }}
+          VERSION_ID: ${{ steps.inputs.outputs.version_id }}
+          BASELINE_DEPLOYMENT_ID: ${{ steps.inputs.outputs.baseline_deployment_id }}
+          BASELINE_VERSION_ID: ${{ steps.inputs.outputs.baseline_version_id }}
+        run: |
+          set -euo pipefail
+          node ../../pkgs/github-ci/worker/scripts/deployment-guard.mjs verify-upload-receipt \
+            "$RUNNER_TEMP/github-ci-upload/github-ci-upload-receipt.json" \
+            "$RUNNER_TEMP/github-ci-upload-run-attempt.json" \
+            "$UPLOAD_RUN_ID" "$UPLOAD_RUN_ATTEMPT" "$VERSION_ID" \
+            "$BASELINE_DEPLOYMENT_ID" "$BASELINE_VERSION_ID"
+
+      - name: Validate Cloudflare credential presence
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          VERSION_ID_INPUT: ${{ inputs.version_id }}
         run: |
           set -euo pipefail
           [[ "$CF_ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]
           [[ -n "$CF_API_TOKEN" ]]
-          [[ "$VERSION_ID_INPUT" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
-          echo "version_id=${VERSION_ID_INPUT,,}" >> "$GITHUB_OUTPUT"
 
       - name: Require the existing Worker
         env:
@@ -61,63 +199,91 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
         run: ./node_modules/.bin/cf -q workers get github-ci >/dev/null
 
-      - name: Read exact version and check secret bindings and provenance
-        id: candidate
+      - name: Read candidate version and verify provenance and secret bindings
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          VERSION_ID: ${{ steps.validate.outputs.version_id }}
+          VERSION_ID: ${{ steps.inputs.outputs.version_id }}
+          SOURCE_SHA: ${{ steps.receipt.outputs.source_sha }}
         run: |
           set -euo pipefail
-          ./node_modules/.bin/cf -q workers versions get "$VERSION_ID" --worker github-ci \
-            > "$RUNNER_TEMP/github-ci-version.json"
-          node scripts/deployment-guard.mjs verify-version \
-            "$RUNNER_TEMP/github-ci-version.json" "$VERSION_ID"
+          ./node_modules/.bin/cf workers versions get "$VERSION_ID" --worker github-ci \
+            > "$RUNNER_TEMP/github-ci-candidate-version.json"
+          node ../../pkgs/github-ci/worker/scripts/deployment-guard.mjs verify-version \
+            "$RUNNER_TEMP/github-ci-candidate-version.json" "$VERSION_ID" "$SOURCE_SHA"
 
-      - name: Require the source commit to be on main history
+      - name: Require the source commit to remain on main history
         env:
-          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+          SOURCE_SHA: ${{ steps.receipt.outputs.source_sha }}
         run: |
           set -euo pipefail
           git cat-file -e "${SOURCE_SHA}^{commit}"
           git merge-base --is-ancestor "$SOURCE_SHA" "$GITHUB_SHA"
 
+      - name: Fail if production baseline changed since upload
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/cf workers deployments list --worker github-ci \
+            > "$RUNNER_TEMP/github-ci-current-deployments.json"
+          node ../../pkgs/github-ci/worker/scripts/deployment-guard.mjs verify-baseline-current \
+            "$RUNNER_TEMP/github-ci-current-deployments.json" \
+            "$RUNNER_TEMP/github-ci-upload/github-ci-upload-receipt.json"
+
       - name: Require the selected version to be deployable
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          VERSION_ID: ${{ steps.validate.outputs.version_id }}
+          VERSION_ID: ${{ steps.inputs.outputs.version_id }}
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --max-time 15 \
             -H "Authorization: Bearer $CF_API_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/workers/scripts/github-ci/versions?deployable=true" \
             > "$RUNNER_TEMP/github-ci-deployable.json"
-          node scripts/deployment-guard.mjs verify-deployable \
+          node ../../pkgs/github-ci/worker/scripts/deployment-guard.mjs verify-deployable \
             "$RUNNER_TEMP/github-ci-deployable.json" "$VERSION_ID"
 
-      - name: Create 100 percent deployment for the selected version
+      - name: Create a 100 percent deployment for the selected version
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          VERSION_ID: ${{ steps.validate.outputs.version_id }}
+          VERSION_ID: ${{ steps.inputs.outputs.version_id }}
         run: |
           set -euo pipefail
           printf '[{"version_id":"%s","percentage":100}]\n' "$VERSION_ID" \
             > "$RUNNER_TEMP/github-ci-deployment-versions.json"
-          ./node_modules/.bin/cf -q workers deployments create \
+          ./node_modules/.bin/cf workers deployments create \
             --worker github-ci --strategy percentage \
-            --versions "@$RUNNER_TEMP/github-ci-deployment-versions.json"
+            --versions "@$RUNNER_TEMP/github-ci-deployment-versions.json" \
+            > "$RUNNER_TEMP/github-ci-deployment-create.json"
 
-      - name: Read back latest deployment and verify provenance
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          VERSION_ID: ${{ steps.validate.outputs.version_id }}
-          SOURCE_SHA: ${{ steps.candidate.outputs.source_sha }}
+      - name: Verify the exact deployment create and latest read-back
         run: |
           set -euo pipefail
-          ./node_modules/.bin/cf -q workers deployments list --worker github-ci \
+          ./node_modules/.bin/cf workers deployments list --worker github-ci \
             > "$RUNNER_TEMP/github-ci-deployments.json"
-          node scripts/deployment-guard.mjs verify-deployment \
-            "$RUNNER_TEMP/github-ci-deployments.json" "$VERSION_ID" "$SOURCE_SHA"
+          node ../../pkgs/github-ci/worker/scripts/deployment-guard.mjs verify-promotion-readback \
+            "$RUNNER_TEMP/github-ci-deployments.json" \
+            "$RUNNER_TEMP/github-ci-upload/github-ci-upload-receipt.json" \
+            "$RUNNER_TEMP/github-ci-deployment-create.json"
+
+      - name: Write the exact promotion receipt
+        id: promotion-receipt
+        run: |
+          set -euo pipefail
+          node ../../pkgs/github-ci/worker/scripts/deployment-guard.mjs write-promotion-receipt \
+            "$RUNNER_TEMP/github-ci-upload/github-ci-upload-receipt.json" \
+            "$RUNNER_TEMP/github-ci-deployment-create.json" \
+            "$RUNNER_TEMP/github-ci-deployments.json" \
+            "$RUNNER_TEMP/github-ci-promotion-receipt.json"
+
+      - name: Publish the exact promotion receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.promotion-receipt.outputs.promotion_artifact_name }}
+          path: ${{ runner.temp }}/github-ci-promotion-receipt.json
+          if-no-files-found: error
+          retention-days: 30
