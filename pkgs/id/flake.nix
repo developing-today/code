@@ -1018,11 +1018,27 @@
           in
           individualChecks
           // {
-            default = pkgs.linkFarm "id-checks" (
-              pkgs.lib.mapAttrsToList (name: drv: {
+            default = pkgs.linkFarm "id-ci" (
+              map (name: {
                 inherit name;
-                path = drv;
-              }) individualChecks
+                path = individualChecks.${name};
+              }) [
+                "cargo-fmt-check"
+                "web-fmt-check"
+                "cargo-check"
+                "clippy-lint"
+                "clippy-native-shell"
+                "web-lint"
+                "test"
+                "test-native-shell"
+                "test-rust-examples"
+                "test-web-unit"
+                "test-web-typecheck"
+                "roc-test"
+                "doc"
+                "build"
+                "release"
+              ]
             );
           };
 
