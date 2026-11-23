@@ -51,6 +51,7 @@
 - [Design: search integration for fleet and ID](design/fleet-and-id-integration.md)
 - [Design: MCP and programmatic access, next steps](design/access-evolution.md)
 - [Design: the standing evaluation programme](design/evaluation-programme.md)
+- [R&D implementation plan and release gates](design/implementation-plan.md)
 - [Roadmap and issue map](design/roadmap-and-issue-map.md)
 
 - [Repository layout](development/layout.md)
