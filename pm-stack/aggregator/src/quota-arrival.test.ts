@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildArrivalRecords,
-  renderPredictionRange,
   scoreArrivalPrediction,
   validateArrivalRecord,
   type ArrivalPredictionRecord,
 } from "./quota-arrival.ts";
+import { renderPredictionRange } from "./quota-downtime.ts";
 import type { AnomalyFinding } from "./quota-anomaly.ts";
 
 // Oracle: the C4 design record (doc/2026-11-13T15-12-00Z_design_
@@ -93,7 +93,10 @@ describe("detector_history basis", () => {
     expect(rec.prediction?.likely).toBe(iso(T0 + 37.5 * DAY));
     expect(rec.inputs.samples).toBe(3);
     expect(rec.inputs.span).toEqual({ from: iso(T0), to: iso(T0 + 25 * DAY) });
-    expect(rec.prediction?.rendered).toContain("days from now");
+    // Shared §4 formatter: the range crosses Chicago day boundaries
+    // (and its earliest bound precedes issuance), so it renders in
+    // calendar form — never a negative or relative-day string.
+    expect(rec.prediction?.rendered).toBe("between Wednesday evening and this evening");
   });
 
   test("several findings at one instant are one arrival", () => {
@@ -235,13 +238,27 @@ describe("validateArrivalRecord — the no-speculative-dates guard", () => {
   });
 });
 
-describe("renderPredictionRange (§4 forms)", () => {
-  test("spans under 48h render in half-hour-rounded hours", () => {
-    expect(renderPredictionRange(T0 + 4 * HOUR, T0 + 6.4 * HOUR, T0)).toBe("between 4 and 6.5 hours from now");
+describe("renderPredictionRange — the shared §4 formatter (#13408)", () => {
+  // The arrival kind stores the one shared formatter's renderings
+  // (quota-downtime.ts); these pin the forms for arrival-shaped
+  // ranges so the kinds cannot drift apart silently. Oracle:
+  // design §4 and quota-downtime.test.ts.
+  test("a same-day future range renders in duration form, half-hour rounded", () => {
+    expect(renderPredictionRange("2026-10-01T16:15:00.000Z", "2026-10-01T19:45:00.000Z", "2026-10-01T14:00:00.000Z")).toBe(
+      "between 2.5 and 6 hours from now",
+    );
   });
 
-  test("spans of 48h or more render in days", () => {
-    expect(renderPredictionRange(T0 + 2.5 * DAY, T0 + 5.7 * DAY, T0)).toBe("between 2.5 and 5.7 days from now");
+  test("a multi-day range crossing Chicago day boundaries renders in calendar form", () => {
+    expect(renderPredictionRange(iso(T0 + 2.5 * DAY), iso(T0 + 5.7 * DAY), iso(T0))).toBe(
+      "between Saturday morning and Tuesday morning",
+    );
+  });
+
+  test("a sub-48h range crossing a Chicago day boundary renders in calendar form", () => {
+    expect(renderPredictionRange(iso(T0 + 4 * HOUR), iso(T0 + 6.4 * HOUR), iso(T0))).toBe(
+      "between today 11 pm and tomorrow 1 am",
+    );
   });
 });
 
