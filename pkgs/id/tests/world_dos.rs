@@ -45,7 +45,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use id::frames::{MAX_FRAME_BYTES, encode_frame};
 use id::sandbox::{Sandbox, SandboxLimits};
 use id::world::{
-    JournalEntry, WorldCore, WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
+    JournalEntry, ManualClock, WorldCore, WorldHandle, WorldJournal, WorldLimits, WorldProgram,
+    WorldScopes,
 };
 use id::world_caps::{
     CapError, CapLedger, Decision, MAX_ARGS_BYTES, MAX_PENDING_SCHEDULES, MAX_SCHEDULE_HORIZON_MS,
@@ -438,15 +439,21 @@ async fn the_open_world_ceiling_refuses_with_too_many_worlds() {
 
 #[tokio::test]
 async fn schedule_bounds_refuse_with_their_reasons() {
-    let core = WorldCore::new("dos-schedules", WorldLimits::default()).unwrap();
-    let handle = WorldHandle::spawn(core);
-    let (probe, probe_token) = handle.issue("probe", WorldScopes::GUEST).await.unwrap();
-    let _ = probe;
-
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
+
+    // Pin the world's clock at the test's `now_ms` (#12512). On the real
+    // clock the actor re-reads a later time when it processes the command,
+    // so under load the +1 ms horizon overshoot below lands inside the
+    // actor's horizon and the refusal flake-fails. One shared clock makes
+    // the boundary exact under any load.
+    let clock = Arc::new(ManualClock::new(now_ms));
+    let core = WorldCore::new_with_clock("dos-schedules", WorldLimits::default(), clock).unwrap();
+    let handle = WorldHandle::spawn(core);
+    let (probe, probe_token) = handle.issue("probe", WorldScopes::GUEST).await.unwrap();
+    let _ = probe;
 
     // Horizon: a schedule past MAX_SCHEDULE_HORIZON_MS is refused, and the
     // refusal says why (the program itself sees only bad_args).
