@@ -2281,6 +2281,115 @@ mod tests {
     }
 
     #[test]
+    fn dep_drop_12777() {
+        // Oracle (#12777): the surgical unblock. A stored dep
+        // record drops exactly the entries a spec names — kind
+        // is part of the identity, so an issue spec never eats
+        // a pr record with the same repo and number — and a
+        // spec that matches nothing fails the whole correction.
+        let issue_dep = json!({"kind": "issue", "repo": "developing-today/code",
+            "number": 9513, "state": "open", "reason": "gate"});
+        let pr_dep = json!({"kind": "pr", "repo": "developing-today/code",
+            "number": 9513, "state": "open"});
+        let self_loop = json!({"kind": "task", "task_id": 20408, "state": "open"});
+        let ci_dep = json!({"kind": "ci", "repo": "developing-today/code",
+            "run_id": 777, "state": "open"});
+        let deps = vec![
+            self_loop.clone(),
+            issue_dep.clone(),
+            pr_dep.clone(),
+            ci_dep.clone(),
+        ];
+        // The #12777 case: drop the bogus self-loop entry, keep
+        // the real deps watched, order preserved.
+        let (remaining, dropped) = remove_deps(&deps, &[json!({"kind": "task", "task_id": 20408})])
+            .expect("the self-loop spec matches its record");
+        assert_eq!(dropped, vec![self_loop.clone()]);
+        assert_eq!(
+            remaining,
+            vec![issue_dep.clone(), pr_dep.clone(), ci_dep.clone()]
+        );
+        // Kind is part of the identity.
+        let (remaining, dropped) = remove_deps(
+            &deps,
+            &[json!({"kind": "issue", "repo": "developing-today/code", "number": 9513})],
+        )
+        .expect("the issue spec matches its record");
+        assert_eq!(dropped, vec![issue_dep]);
+        assert!(remaining.contains(&pr_dep));
+        // CI deps match on run_id, not number.
+        let (_, dropped) = remove_deps(
+            &deps,
+            &[json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777})],
+        )
+        .expect("the ci spec matches its record");
+        assert_eq!(dropped, vec![ci_dep]);
+        // Dropping every entry empties the record — the broker
+        // releases the task on exactly this outcome.
+        let (remaining, dropped) = remove_deps(
+            &deps,
+            &[
+                json!({"kind": "task", "task_id": 20408}),
+                json!({"kind": "issue", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "pr", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777}),
+            ],
+        )
+        .expect("all four specs match");
+        assert!(remaining.is_empty());
+        assert_eq!(dropped.len(), 4);
+        // A spec that matches nothing fails the whole correction
+        // and names itself for the refusal message.
+        let err = remove_deps(
+            &deps,
+            &[json!({"kind": "issue", "repo": "developing-today/code", "number": 9999})],
+        )
+        .unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(dep_label(&err[0]), "issue developing-today/code#9999");
+        assert_eq!(dep_label(&self_loop), "task 20408");
+        // parse_drop_deps: the broker-side validation of the
+        // wire shape — strict refs, identity-only specs, and
+        // None for the classic full override.
+        assert_eq!(parse_drop_deps(&json!({})).expect("no field"), None);
+        assert_eq!(
+            parse_drop_deps(&json!({"drop_deps": []})).expect("empty list"),
+            None
+        );
+        assert_eq!(
+            parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 20408}]}))
+                .expect("task spec"),
+            Some(vec![json!({"kind": "task", "task_id": 20408})])
+        );
+        assert!(parse_drop_deps(&json!({"drop_deps": "task:20408"})).is_err());
+        assert!(
+            parse_drop_deps(&json!({"drop_deps": [{"kind": "issue", "repo": "bad", "number": 1}]}))
+                .is_err()
+        );
+        assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 0}]})).is_err());
+        assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "bogus", "task_id": 1}]})).is_err());
+        // Wiring: the client flag and parser, the broker's
+        // audit kind for a partial drop.
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        assert!(client_src.contains("drop-dep"), "client flag drop-dep");
+        assert!(client_src.contains("parse_drop_dep_list"));
+        assert!(client_src.contains("\"drop_deps\""));
+        let src = test_source();
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("\"dep_entry_dropped\""));
+        assert!(impl_src.contains("parse_drop_deps"));
+        assert!(impl_src.contains("unblock_drop"));
+    }
+
+    #[test]
     fn quarantine_atomic_sql_10671() {
         // Oracle: synthetic interleavings execute the exact production SQL
         // against SQLite, not a mocked affected-row count or live broker.
