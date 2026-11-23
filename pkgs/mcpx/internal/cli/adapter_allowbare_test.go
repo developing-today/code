@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 )
 
 // The adapters.allowBare gate (#11147): a bare declaration is a
@@ -88,14 +89,36 @@ func TestCheckBareAllowedRefusesAnyBareSpec(t *testing.T) {
 		{Name: "git", Command: "git", Bare: true},
 		{Name: "rg", Command: "rg", Bare: true},
 	}
-	err := checkBareAllowed(specs, false)
+	err := adapter.CheckBareAllowed(specs, false)
 	if err == nil || !strings.Contains(err.Error(), `"git"`) {
 		t.Fatalf("want a refusal naming the first bare spec, got %v", err)
 	}
-	if err := checkBareAllowed(specs, true); err != nil {
+	if err := adapter.CheckBareAllowed(specs, true); err != nil {
 		t.Fatalf("allowBare on should pass any load: %v", err)
 	}
-	if err := checkBareAllowed(specs[:1], false); err != nil {
+	if err := adapter.CheckBareAllowed(specs[:1], false); err != nil {
 		t.Fatalf("a load with no bare spec should pass while the gate is off: %v", err)
+	}
+}
+
+// The child the daemon spawns re-resolves its own settings: a grant
+// made only by the daemon process's flag would read as the default off
+// there, and the child would refuse the declaration the daemon accepted
+// (Codex review, PR #13118). augmentAdapters therefore forwards the
+// resolved permission in the child's environment.
+func TestAugmentAdaptersForwardsAllowBareToTheChild(t *testing.T) {
+	t.Setenv("MCPX_ADAPTERS_ALLOW_BARE", "true")
+	a := adapterApp(t, writeDecl(t, bareDecl))
+	cfg := &config.Config{MCPServers: map[string]*config.Server{}}
+	if err := a.augmentAdapters(cfg); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := cfg.MCPServers["git"]
+	if !ok {
+		t.Fatalf("adapter not added as a server: %v", cfg.MCPServers)
+	}
+	if got := s.Env["MCPX_ADAPTERS_ALLOW_BARE"]; got != "true" {
+		t.Fatalf("spawned server env MCPX_ADAPTERS_ALLOW_BARE = %q, want \"true\": "+
+			"the child would refuse the bare declaration its parent accepted", got)
 	}
 }

@@ -28,32 +28,10 @@ func (a *App) loadAdapters() ([]adapter.Spec, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkBareAllowed(specs, a.Settings().Bool("adapters.allowBare")); err != nil {
+	if err := adapter.CheckBareAllowed(specs, a.Settings().Bool("adapters.allowBare")); err != nil {
 		return nil, err
 	}
 	return specs, nil
-}
-
-// checkBareAllowed is the adapters.allowBare gate (#11147, from #1962).
-//
-// A bare declaration exposes a binary's whole argv surface, so loading
-// one is a policy decision, not just a parse: while the setting is off
-// (its default) any bare declaration fails the load, naming the setting
-// that would permit it, so an organisation can forbid passthrough
-// declarations centrally instead of auditing every file paths.adapters
-// might be pointed at.
-func checkBareAllowed(specs []adapter.Spec, allowBare bool) error {
-	if allowBare {
-		return nil
-	}
-	for _, s := range specs {
-		if s.Bare {
-			return fmt.Errorf("adapter %q is a bare (passthrough) declaration, and adapters.allowBare is off: "+
-				"set adapters.allowBare to true (or MCPX_ADAPTERS_ALLOW_BARE=true) to permit bare declarations, "+
-				"or remove \"bare\": true from the declaration", s.Name)
-		}
-	}
-	return nil
 }
 
 // loadAdapterFiles reads and validates declarations from these files.
@@ -244,7 +222,7 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 			// The explicit files bypass loadAdapters, so the gate is
 			// applied here too: naming a file directly is not a way
 			// around adapters.allowBare.
-			if err := checkBareAllowed(specs, a.Settings().Bool("adapters.allowBare")); err != nil {
+			if err := adapter.CheckBareAllowed(specs, a.Settings().Bool("adapters.allowBare")); err != nil {
 				return err
 			}
 		}
@@ -376,6 +354,17 @@ func (a *App) augmentAdapters(cfg *config.Config) error {
 		if _, dup := cfg.MCPServers[s.Name]; dup {
 			return fmt.Errorf("adapter %q has the same name as a configured server; rename one", s.Name)
 		}
+		env := map[string]string{"MCPX_ADAPTER_DECLARATION_SHA256": adapterDeclarationFingerprint(s)}
+		if a.Settings().Bool("adapters.allowBare") {
+			// The permission this process resolved rides along: the
+			// child re-resolves its own settings, and a grant made
+			// only by this process's flag (or a runtime override) is
+			// invisible there, so the child would refuse the very
+			// declaration this process accepted and the adapter could
+			// never start (Codex review, PR #13118). The environment
+			// form is the one route every child reads identically.
+			env["MCPX_ADAPTERS_ALLOW_BARE"] = "true"
+		}
 		cfg.MCPServers[s.Name] = &config.Server{
 			Name:    s.Name,
 			Command: self,
@@ -387,7 +376,7 @@ func (a *App) augmentAdapters(cfg *config.Config) error {
 			// the child that captured the old declaration at startup
 			// (Codex review, PR #2565; the same shape augmentAPIs uses
 			// for APIs since PR #2514).
-			Env: map[string]string{"MCPX_ADAPTER_DECLARATION_SHA256": adapterDeclarationFingerprint(s)},
+			Env: env,
 			// Instructions arrive from initialize, as a real server's do.
 			Mcpx: &config.Extras{Description: s.Description},
 		}
