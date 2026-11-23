@@ -33,7 +33,7 @@ const freePort = () =>
 const makeLeaf = (name, expectedKey) => {
   const leaf = {
     name,
-    mode: "ok", // ok | rate | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
+    mode: "ok", // ok | rate | rate-body-reset | auth | sse-rate | delayed-sse-rate | stream-break | late-sse-rate | delayed-stream | big-first-event | preface-flood
     last: null,
     hits: 0,
     server: null,
@@ -66,6 +66,20 @@ const makeLeaf = (name, expectedKey) => {
           "retry-after": "30",
         });
         return res.end(JSON.stringify({ error: { message: "quota" } }));
+      }
+      if (leaf.mode === "rate-body-reset") {
+        // A quota wall that names its reset in the BODY with no
+        // Retry-After header (the _muse shape in code#9859): the
+        // reset instant must still wall the leaf (#12228).
+        res.writeHead(429, { "content-type": "application/json" });
+        const resetAt = new Date(Date.now() + 3600 * 1000).toISOString();
+        return res.end(
+          JSON.stringify({
+            error: {
+              message: `Subscription quota exhausted. Your usage window resets at ${resetAt}.`,
+            },
+          }),
+        );
       }
       if (leaf.mode === "sse-rate") {
         res.writeHead(200, {
@@ -551,6 +565,35 @@ test("429 on the first leaf fails over; both attempts recorded", async () => {
     assert.equal(rows[0].session_id, null);
     assert.equal(rows[1].outcome, "success");
     assert.equal(rows[1].session_id, null);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("429 naming a body reset walls the leaf for later sessions (#12228)", async () => {
+  const p = await startProxy();
+  try {
+    p.leafA.mode = "rate-body-reset";
+    // The first session fails over to leafB ...
+    const first = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).choices[0].message.content, "LEAF-B");
+    // ... and the 429's body-carried reset is recorded as quota detail.
+    const rows = await waitForAttempts(p, 2);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].error_tag, "RateLimit");
+    assert.notEqual(rows[0].quota, null);
+    const quota = JSON.parse(rows[0].quota);
+    const resetMs = Date.parse(quota.resetsAt ?? quota.resetAt ?? quota.retryAt ?? NaN);
+    assert.ok(
+      Number.isFinite(resetMs) && resetMs > Date.now(),
+      `body reset not recorded as a future instant: ${rows[0].quota}`,
+    );
+    // A later session must not touch the walled leaf before its reset.
+    const second = await p.post({ model: "opencode-route/t-ordered", messages: MSGS });
+    assert.equal(second.status, 200);
+    assert.equal((await second.json()).choices[0].message.content, "LEAF-B");
+    assert.equal(p.leafA.hits, 1);
   } finally {
     await p.cleanup();
   }
