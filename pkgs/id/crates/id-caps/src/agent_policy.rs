@@ -21,7 +21,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::agent_delegation::{AgentId, JoinGrant};
@@ -244,7 +244,7 @@ impl Ceiling {
 /// program invocations. One shape serves as the session budget, the
 /// running spend, and the per-event charge recorded in the audit log
 /// (§7).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Quota {
     /// Frames requested.
     pub frames: u64,
@@ -802,6 +802,29 @@ impl PolicyPoint {
             event,
             park_event,
         }
+    }
+
+    /// Owner-side ceiling refresh (v2 agents-as-citizens step 1,
+    /// #8299 §2.1): replace the ceiling in force for this live
+    /// session. A lowered ceiling takes effect at the next
+    /// [`Self::admit`] frame check — not the next join — so a
+    /// citizen's rights track the current role configuration; the
+    /// role edit itself is audited by the role registry that issued
+    /// the change. Nothing here widens: it is the same owner-side
+    /// act as an out-of-band ceiling edit in v1, now reachable
+    /// through world configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PolicyRefusal::CeilingWorld`] if the new ceiling
+    /// does not cover the session's world: a session never runs
+    /// under a ceiling that does not name its world.
+    pub fn refresh_ceiling(&mut self, ceiling: Ceiling) -> Result<(), PolicyRefusal> {
+        if !ceiling.worlds().contains(&self.world) {
+            return Err(PolicyRefusal::CeilingWorld);
+        }
+        self.ceiling = ceiling;
+        Ok(())
     }
 
     /// Whether this action's tool is at its §6.3 rate limit at
