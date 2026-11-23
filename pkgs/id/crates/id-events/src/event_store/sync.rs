@@ -252,6 +252,43 @@ pub async fn sync_over(
     }
 }
 
+/// Runs one range-sync session over `conn` against a shared store:
+/// [`sync_over`] with the store behind the shared handle. The session
+/// takes the handle's lock per step ([`RangeStore`] for [`Shared`]),
+/// never for the session's whole life, so other users of the store —
+/// the node's own writes, the relay gate's frontier reads — are not
+/// blocked behind a network wait. This is the entry `LocalEvents`
+/// uses since it began holding the store through the handle (#5534).
+pub async fn sync_over_shared(
+    store: &mut Shared,
+    conn: &Connection,
+    initiator: bool,
+    params: Params,
+    now_ms: u64,
+    deadline: Duration,
+    gate: &PullGate,
+) -> Result<Outcome> {
+    match tokio::time::timeout(
+        deadline,
+        run(
+            store,
+            conn,
+            initiator,
+            params,
+            now_ms,
+            Cut::Never,
+            gate,
+            None,
+            BATCH_BYTES,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_elapsed) => bail!("the range session did not finish within {deadline:?}"),
+    }
+}
+
 /// The store access one range session needs, one step at a time.
 ///
 /// A session touches its store in short steps — the sync set once at the start, one
@@ -617,8 +654,8 @@ fn apply_batch<S: RangeStore>(
     Ok(())
 }
 
-async fn run(
-    store: &mut EventStore,
+async fn run<S: RangeStore>(
+    store: &mut S,
     conn: &Connection,
     initiator: bool,
     params: Params,

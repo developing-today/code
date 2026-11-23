@@ -311,4 +311,40 @@ mod tests {
         );
         assert_eq!(gate.forwarded(), 1);
     }
+
+    #[test]
+    fn frontier_reads_the_store_local_events_opened() {
+        // #5534, the serve-wiring prerequisite: `id serve` holds the
+        // node's store through `LocalEvents`, and the store directory
+        // admits one opener — so the frontier must read the store
+        // `LocalEvents` opened, through the handle it hands out, not a
+        // second open. Group events ingested through the handle
+        // authorize at the frontier, and a `LocalEvents` write lands
+        // in the same store without disturbing the roster.
+        let (alice, bob, carol) = (pkey(61), pkey(62), pkey(63));
+        let dir = tempfile::tempdir().unwrap();
+        let mut events = id_events::local_events::LocalEvents::open(dir.path(), pkey(61)).unwrap();
+        let shared = events.shared_store();
+        let frontier = GraphFrontier::new(shared.clone());
+
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), Access::manage()),
+                (individual(&bob), Access::read()),
+            ],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        let group_text = group.to_string();
+        shared
+            .ingest(&create_event.bytes, Some(&create_body), 0)
+            .unwrap();
+        assert!(frontier.is_authorized(&pkey_id(&alice), &group_text));
+        assert!(frontier.is_authorized(&pkey_id(&bob), &group_text));
+        assert!(!frontier.is_authorized(&pkey_id(&carol), &group_text));
+
+        events.ensure_identity_event().unwrap();
+        assert!(frontier.is_authorized(&pkey_id(&bob), &group_text));
+        assert!(!frontier.is_authorized(&pkey_id(&carol), &group_text));
+    }
 }
