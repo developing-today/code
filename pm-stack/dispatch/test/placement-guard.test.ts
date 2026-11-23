@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { enforcePlacementGuard, type PlacementCommand } from "../src/placement-guard.ts";
 
-describe("pm-dispatch placement guard (issue #2732)", () => {
-  test("pool-backed OpenCode Go and ClinePass models run placement-record before seating", () => {
+describe("pm-dispatch placement guard (issue #2732; oracle = placement-record argv and JSON contract)", () => {
+  test("OpenCode Go runs placement-record before seating", () => {
     const calls: PlacementCommand[] = [];
     const result = enforcePlacementGuard(
       {
@@ -38,7 +38,7 @@ describe("pm-dispatch placement guard (issue #2732)", () => {
     });
   });
 
-  test("a monthly guard refusal is logged verbatim and prevents seating", () => {
+  test("monthly guard refusal is logged verbatim and prevents seating (oracle = placement-record stderr)", () => {
     const refusal =
       'placement-record: monthly-guard refusal: option "opencode-session" on pool "opencode-go" refused (monthly 98.4% at/above 97% threshold [source: monthly-guard])';
     const errors: string[] = [];
@@ -58,7 +58,7 @@ describe("pm-dispatch placement guard (issue #2732)", () => {
     expect(errors).toEqual([refusal]);
   });
 
-  test("ClinePass uses its quota-current service id", () => {
+  test("ClinePass uses its quota-current service id (oracle = serviceId in quota-current.json)", () => {
     const calls: PlacementCommand[] = [];
     const result = enforcePlacementGuard(
       {
