@@ -7,9 +7,23 @@ name: pm-console-edge deploy
 # (pm-stack/console/edge): every push to main that touches the console,
 # or a manual run, runs the console's tests (which drive the Worker's
 # routing and state against the host's real handler), bundles the
-# Worker, and uploads it with the CLOUDFLARE_API_TOKEN and
+# Worker, and releases it with the CLOUDFLARE_API_TOKEN and
 # CLOUDFLARE_ACCOUNT_ID repository secrets, the ones message-bridge
 # deploys with.
+#
+# The release (pm-stack/console/edge/release.mjs) starts from whatever
+# is there, including nothing:
+#   1. no Worker of that name: an empty one is stood up (edge/init);
+#   2. this commit is uploaded as a version, which serves nothing yet;
+#   3. that version is put at 100%;
+#   4. the Worker is asked which version it is, and if it does not
+#      answer as this commit the version that was serving is put back
+#      and the run fails.
+# So nothing outside this workflow is needed to bring the Worker up in
+# an account that has none. That path is run for real, on a scratch
+# Worker that is removed first and removed again afterwards, whenever a
+# push changes how the Worker is stood up, and on a manual run that asks
+# for it (scratch). The real Worker is not touched by that.
 #
 # The Worker has no secrets from this deploy: the keys it uses it makes
 # itself, or are published by the host. Three secrets are optional, put
@@ -38,6 +52,10 @@ on:
         description: "Existing Worker version id to put back instead of uploading; empty deploys this commit"
         required: false
         default: ""
+      scratch:
+        description: "First stand a scratch Worker up from nothing, deploy this commit to it, check it and remove it"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,7 +70,7 @@ jobs:
   deploy:
     name: deploy pm-console-edge
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Check deploy secrets
         id: secrets
@@ -77,11 +95,46 @@ jobs:
       - name: Install the deploy tool
         working-directory: pm-stack/console/edge
         run: npm ci --no-audit --no-fund
-      - name: Bundle the Worker
+      - name: Bundle the Worker, and the empty one it is stood up from
         working-directory: pm-stack/console/edge
         run: |
           node build.mjs
           npx wrangler deploy --dry-run --outdir .wrangler/dry
+          npx wrangler deploy --dry-run --config init/wrangler.jsonc --outdir .wrangler/dry-init
+      - name: See whether this push changes how the Worker is stood up
+        id: standup
+        if: steps.secrets.outputs.ready == 'true' && inputs.rollback_version == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASKED: ${{ inputs.scratch }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # A manual run says whether it wants the scratch stand-up. A
+          # push gets it when it touches the release itself. If what
+          # the push changed cannot be read, the stand-up is run: it
+          # costs a few minutes and risks nothing.
+          scratch=false
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$ASKED" = "true" ]; then scratch=true; fi
+          elif ! printf '%s' "${BEFORE:-}" | grep -Eq '^[0-9a-f]{40}$' || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            scratch=true
+          elif files="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BEFORE}...${GITHUB_SHA}" --jq '.files[].filename')"; then
+            if printf '%s\n' "$files" | grep -Eq '^(pm-stack/console/edge/(release\.mjs|release-plan\.mjs|wrangler\.jsonc|package\.json|package-lock\.json|init/.*)|\.github/workflows/pm-console-edge-deploy\.yml)$'; then
+              scratch=true
+            fi
+          else
+            scratch=true
+          fi
+          echo "scratch=$scratch" >> "$GITHUB_OUTPUT"
+      - name: Stand a scratch Worker up from nothing, deploy this commit to it, and remove it
+        if: steps.standup.outputs.scratch == 'true'
+        working-directory: pm-stack/console/edge
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          node release.mjs --sha "$GITHUB_SHA" --scratch
+          echo "Stood pm-console-edge-scratch up from nothing, deployed ${GITHUB_SHA::12} to it, heard it answer, and removed it." >> "$GITHUB_STEP_SUMMARY"
       - name: Deploy
         if: steps.secrets.outputs.ready == 'true'
         working-directory: pm-stack/console/edge
@@ -100,7 +153,10 @@ jobs:
             npx wrangler rollback "$ROLLBACK_VERSION" --yes --message "rollback from workflow run ${GITHUB_RUN_ID}"
             echo "Put pm-console-edge back to version ${ROLLBACK_VERSION}." >> "$GITHUB_STEP_SUMMARY"
           else
-            npx wrangler deploy --var "VERSION:${GITHUB_SHA::12}" --message "git ${GITHUB_SHA}"
+            # Stands the Worker up if there is none, uploads this commit
+            # as a version, puts it at 100%, and puts the previous
+            # version back if this one does not answer.
+            node release.mjs --sha "$GITHUB_SHA"
             echo "Deployed pm-console-edge from ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Check the deployed Worker answers
@@ -116,7 +172,7 @@ jobs:
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["subdomain"])')"
           url="https://pm-console-edge.${sub}.workers.dev/console/health"
           want="${GITHUB_SHA::12}"
-          for attempt in $(seq 1 20); do
+          for _ in $(seq 1 20); do
             got="$(curl -fsS --max-time 10 "$url" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("version") if d.get("ok") and d.get("edge") else "")' 2>/dev/null || true)"
             if [ "$got" = "$want" ]; then
               echo "pm-console-edge answers as ${want}." >> "$GITHUB_STEP_SUMMARY"
