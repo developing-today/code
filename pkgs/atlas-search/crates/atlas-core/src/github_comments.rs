@@ -92,7 +92,7 @@ impl CommentKind {
     }
 
     /// Parse the record spelling, if it is one.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "issue_comment" => Some(CommentKind::IssueComment),
             "review_comment" => Some(CommentKind::ReviewComment),
@@ -238,7 +238,7 @@ pub fn document_from_record(record: &Json) -> Option<CommentDocument> {
         thread_number: record.get("thread_number")?.as_u64()?,
         is_pr: record.get("thread_kind")?.as_str()? == "pull_request",
         comment_id: record.get("comment_id")?.as_u64()?,
-        kind: CommentKind::from_str(record.get("kind")?.as_str()?)?,
+        kind: CommentKind::parse(record.get("kind")?.as_str()?)?,
         author: record.get("author")?.as_str()?.to_string(),
         created_at: record.get("created_at")?.as_str()?.to_string(),
         updated_at: record.get("updated_at")?.as_str()?.to_string(),

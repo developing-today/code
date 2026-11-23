@@ -186,7 +186,7 @@ pub fn group_occurrences(occurrences: &[ErrorOccurrence]) -> Vec<FingerprintGrou
             .occurrences
             .sort_by(|a, b| (&a.observed_at, &a.source_id).cmp(&(&b.observed_at, &b.source_id)));
     }
-    groups.sort_by(|a, b| a.fingerprint.id().cmp(&b.fingerprint.id()));
+    groups.sort_by_key(|a| a.fingerprint.id());
     groups
 }
 
