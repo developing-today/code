@@ -123,8 +123,39 @@ sign-in issuer's).
 Pushes to `main` that touch the console deploy it
 (`.github/workflows/pm-console-edge-deploy.yml`): the console's tests,
 which drive this Worker's routing and state against the laptop's real
-handler; a bundle; `wrangler deploy`; then a check that the deployed
-Worker answers its health check as that commit.
+handler; a bundle; the release; then a check that the deployed Worker
+answers its health check as that commit.
+
+The release is [`release.mjs`](release.mjs), and it starts from whatever
+is there, including nothing:
+
+1. No Worker of that name: an empty one is stood up
+   ([`init/`](init/worker.ts): the Durable Object's class and an answer
+   that says it is empty). A version cannot be uploaded to a Worker that
+   does not exist, and the storage behind the class is only made by a
+   deploy.
+2. This commit is uploaded as a version. It serves nothing yet.
+3. That version is put at 100%.
+4. The Worker is asked which version it is. If it does not answer as
+   this commit, the version that was serving is put back and the run
+   fails.
+
+A new Durable Object migration in `wrangler.jsonc` cannot travel in a
+version, so then steps 2 and 3 are one `wrangler deploy`.
+
+So an account with no Worker needs nothing but this workflow to get
+one. That is not taken on trust: whenever a push changes the release
+itself (`release.mjs`, `release-plan.mjs`, `init/`, `wrangler.jsonc`,
+the lockfile or the workflow), and on a manual run with `scratch`, the
+same steps are first run on `pm-console-edge-scratch`, which is removed
+before (so the start is nothing) and removed after. The real Worker is
+not touched by that, and the scratch one is the only Worker the script
+will ever delete.
+
+```bash
+gh workflow run pm-console-edge-deploy.yml                    # deploy main's head
+gh workflow run pm-console-edge-deploy.yml -f scratch=true    # and show the stand-up from nothing first
+```
 
 The Worker has no route in `wrangler.jsonc` on purpose. The laptop's
 `scripts/expose.py` (on a 15 minute timer) sends the hostname through it
