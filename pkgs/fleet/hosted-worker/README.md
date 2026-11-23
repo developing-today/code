@@ -105,6 +105,36 @@ the service skeleton from #12583; each door is filled by its own issue.
   door, one filtered read per genealogy slice; high-volume
   consumers use the direct-Turso read path (design §3.3 rule 1)
   instead.
+- **Queue front door** (`src/routes/queue.ts`, `src/queue.ts`,
+  `src/queue-validate.ts`, `src/queue-store.ts`,
+  `src/queue-fallback.ts`, #12589; design §6): the broker protocol
+  of the one fleet queue over hosted transports — one POST route
+  per verb (`/v1/queue/<verb>`: validate, enqueue, claim, lane,
+  bind, heartbeat, checkpoint, park, release, wake, block,
+  unblock, dep-recheck, cancel, fail, complete, list, show,
+  timeline, health, revive, and the events verbs), each answering
+  the broker envelope at HTTP 200 exactly as the native broker
+  does. The engine is a port of the native broker's verbs over the
+  `QueueStore` interface: same repo-task/v1 packet validation
+  (error strings included), same dedupe and work-identity rules,
+  same lane ledger, same agent.events timeline, same completion
+  gate. Claim atomicity is the store's conditional update — the
+  guarantee the native backend gets from its conditional UPDATE
+  under libSQL single-writer serialization; the doors are
+  stateless peers, so work enqueued at one door is claimed at the
+  other. Two deliberate divergences, both the design's: this door
+  requires authentication and refuses anonymous claims (the native
+  door keeps its local trust model), stamping the caller's
+  credential-resolved `binding_id` into every event detail as
+  claim provenance; and the fallback-claim protocol — an issue's
+  GitHub comments carry the claim when the queue backend is down —
+  is performed as a service under `/v1/queue/fallback/*` over the
+  GitHub comment surface, with the native CLI's marker format and
+  result shapes unchanged. Not ported: the claim-flow composite
+  (a client-side composite of claim+lane+bind), the sweep /
+  quarantine-recheck background verbs (dep-recheck is ported),
+  and the merge-intent stack, creation-outbox, signal-count and
+  coverage verbs of other stacks.
 - **Health + capabilities** (`src/health.ts`, `src/capabilities.ts`):
   public identity surface. `/capabilities` mirrors the native
   `fleet capabilities` JSON shape — same `build` / `capabilities` /
@@ -112,7 +142,8 @@ the service skeleton from #12583; each door is filled by its own issue.
   with hosted additions (`domains[].hosted` disposition from design
   §2, `filling_issue`, and a `doors` list). A domain reports
   available only when its filling issue landed: so far the
-  hosted-transformed `gh` domain, via the stamping and query doors.
+  hosted-transformed `gh` domain, via the stamping and query doors,
+  and the `queue` domain, via the queue door.
 
 ## What is a stub
 
@@ -121,7 +152,6 @@ The remaining door routes authenticate, then answer
 
 | Door      | Routes                                  | Filled by |
 | --------- | --------------------------------------- | --------- |
-| queue     | `POST /v1/queue`                        | #12589    |
 | ingestion | `POST /v1/ingestion/github`             | #12590    |
 | sync      | `POST /v1/sync/project`, `POST /v1/sync/queue-github` | #12591 |
 
@@ -152,10 +182,24 @@ so it does not appear in the capabilities `doors` list.
   store replaces it behind the same interface.
 - **Queue record source**: queue facts (queue id, scheduled start,
   pickup / work-start times) come from the queue record behind the
-  `QueueRecordSource` seam (`src/stamping.ts`). The queue front door
-  (#12589) owns claim records and wires the real source; until then
-  the Worker wires none and queue fields stamp null (the design §5
-  rule for work that is not queue-originated).
+  `QueueRecordSource` seam (`src/stamping.ts`). Wired by #12589:
+  `StoreQueueRecordSource` (`src/queue-records.ts`) reads the queue
+  store's claim records — a session is queue-bound when a task's
+  progress carries its session id — scoped to the caller's own
+  tenancy through the session registry. A session with no queue
+  binding still stamps its queue fields null (the design §5 rule
+  for work that is not queue-originated).
+- **Queue store**: the queue door's backend is the `QueueStore`
+  interface (`src/queue-store.ts`) — task/ledger/lease/lane/event
+  rows plus the one conditional-update primitive claim atomicity
+  rests on. Its production home is the existing fleet-queue Turso
+  DB (#6741), the same backend the native broker serves, behind a
+  libSQL implementation of the same interface; until it lands the
+  Worker wires the fixture in-memory store at module scope, like
+  the other seams. The dep-recheck probe is the same posture: the
+  native broker runs with no GitHub probe configured, and so does
+  this door by default (task deps resolve from the store; GitHub
+  deps stay blocked until their TTL).
 - **GitHub writer**: `GitHubWriter` (`src/github.ts`) is the seam
   between the stamping route and the write itself. The Worker wires
   the App rotation writer when fleet App configuration is present

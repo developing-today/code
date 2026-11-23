@@ -4,8 +4,11 @@
 // health and capabilities answer with the hosted door's identity, a
 // door refuses the unauthenticated, the session registry opens /
 // resolves / closes (#12584), the stamping door creates a
-// stamped, signed item (#12585), and the query door finds it by its
-// Metadata fields (#12587). For a wrangler dev run instead: set
+// stamped, signed item (#12585), the query door finds it by its
+// Metadata fields (#12587), and the queue door runs a full broker
+// lifecycle — enqueue, claim, heartbeat, checkpoint, park, wake,
+// claim, complete — plus a fallback claim over the comment
+// surface (#12589). For a wrangler dev run instead: set
 // RP_ISSUER / TENANCY_FIXTURE_JSON in the environment and
 // `npm run dev`, then curl /health and /capabilities.
 //
@@ -13,6 +16,8 @@
 
 import { configFromEnv } from "../src/config.ts";
 import { FixtureGitHubWriter } from "../src/github.ts";
+import { FixtureQueueStore } from "../src/queue-store.ts";
+import { StoreQueueRecordSource } from "../src/queue-records.ts";
 import { dispatch } from "../src/router.ts";
 import { FixtureSessionRegistry } from "../src/sessions.ts";
 import { FixtureMetadataStore } from "../src/stamping.ts";
@@ -85,6 +90,7 @@ const stampDeps = {
   metadataStore: new FixtureMetadataStore(),
   githubWriter: smokeWriter,
   githubItems: smokeWriter,
+  githubComments: smokeWriter,
 };
 const callerBody = [
   "Smoke item",
@@ -202,6 +208,103 @@ await check(
   409,
   (b) => b.error === "session_closed",
 );
+
+// Queue door (#12589): the full broker lifecycle against a fixture
+// queue store wired like worker.ts wires it (with the record
+// source the stamping door reads), each verb answering its broker
+// envelope at HTTP 200.
+{
+  const queueStore = new FixtureQueueStore();
+  const queueSessions = new FixtureSessionRegistry();
+  const queueDeps = {
+    ...stampDeps,
+    sessions: queueSessions,
+    queueStore,
+    queueRecords: new StoreQueueRecordSource(queueStore, queueSessions),
+  };
+  const queuePost = (path, body) =>
+    bearerReq(path, token, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const run = async (name, path, body, want) => {
+    const res = await dispatch(queuePost(path, body), queueDeps);
+    const doc = await res.json();
+    const ok = res.status === 200 && doc.ok === true && (want ? want(doc) : true);
+    console.log(`${ok ? "ok  " : "FAIL"} ${name}: HTTP ${res.status}`);
+    if (!ok) {
+      failures++;
+      console.log(`     body: ${JSON.stringify(doc)}`);
+    }
+    return doc;
+  };
+  const packet = {
+    title: "smoke fix",
+    priority: 30,
+    dedupe_key: "repo-health:v1:fix:developing-today/code:issue:12589",
+    payload: {
+      schema: "repo-task/v1",
+      kind: "small_fix",
+      repo: "developing-today/code",
+      issue: { number: 12589 },
+      problem: "smoke problem",
+      priority_reason: "smoke",
+      evidence: ["https://example.test/evidence"],
+      acceptance: ["smoke passes"],
+      tests: ["npm run smoke"],
+      context_refs: [],
+      scope: { include: ["pkgs/fleet/hosted-worker"], exclude: ["docs"] },
+      risk: { level: "low", flags: [] },
+      timebox_minutes: 45,
+      dedupe: { checked_at: new Date().toISOString(), basis: "smoke" },
+    },
+  };
+  const enq = await run("POST /v1/queue/enqueue", "/v1/queue/enqueue", { queue: "repo-health", packet }, (d) => d.row?.status === "queued");
+  const taskId = enq.row.id;
+  const claimed = await run("POST /v1/queue/claim", "/v1/queue/claim", { worker: "smoke-worker" }, (d) => d.row?.worker_id === "smoke-worker");
+  await run("POST /v1/queue/heartbeat", "/v1/queue/heartbeat", { task_id: taskId, worker: "smoke-worker" }, (d) => d.row?.status === "claimed");
+  await run("POST /v1/queue/checkpoint", "/v1/queue/checkpoint", { task_id: taskId, worker: "smoke-worker", stage: "working" }, (d) => d.row?.progress?.last_checkpoint?.stage === "working");
+  await run("POST /v1/queue/park", "/v1/queue/park", { task_id: taskId, worker: "smoke-worker", delay_seconds: 60 }, (d) => d.row?.status === "parked");
+  await run("POST /v1/queue/wake", "/v1/queue/wake", { task_id: taskId, worker: "smoke-worker" }, (d) => d.row?.status === "queued");
+  await run("POST /v1/queue/claim (after wake)", "/v1/queue/claim", { worker: "smoke-worker" }, (d) => d.row?.id === taskId);
+  const nowIsoReal = new Date().toISOString();
+  await run(
+    "POST /v1/queue/complete",
+    "/v1/queue/complete",
+    {
+      task_id: taskId,
+      worker: "smoke-worker",
+      result: {
+        evidence: "commit abc123",
+        disposition: {
+          checked_at: nowIsoReal,
+          source: "smoke",
+          issue: { number: 12589, state: "closed" },
+          pulls: [],
+          verdict: "closed_verified",
+        },
+      },
+    },
+    (d) => d.row?.status === "done",
+  );
+  {
+    // The fallback verbs answer the native CLI's result JSON, not
+    // the broker envelope — claimed:true is the success shape.
+    const res = await dispatch(
+      queuePost("/v1/queue/fallback/claim", { repo: "developing-today/code", number: 12589, worker: "smoke-worker" }),
+      queueDeps,
+    );
+    const doc = await res.json();
+    const ok = res.status === 200 && doc.claimed === true;
+    console.log(`${ok ? "ok  " : "FAIL"} POST /v1/queue/fallback/claim: HTTP ${res.status}`);
+    if (!ok) {
+      failures++;
+      console.log(`     body: ${JSON.stringify(doc)}`);
+    }
+  }
+  void claimed;
+}
 
 if (failures > 0) {
   console.error(`smoke: ${failures} check(s) failed`);

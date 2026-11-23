@@ -33,7 +33,10 @@ test("a valid RP token resolves to the tenancy binding_id", async () => {
 
 test("a valid RP token passes auth on a door route (a stub door then answers 501)", async () => {
   const token = await h.sign(h.rpPayload());
-  const res = await dispatch(bearerReq("/v1/queue", token, { method: "POST" }), h.deps);
+  // The probe rides a still-stubbed door: it used the queue door
+  // until #12589 landed it; the ingestion door (#12590) is the
+  // remaining stub with the same shape.
+  const res = await dispatch(bearerReq("/v1/ingestion/github", token, { method: "POST" }), h.deps);
   assert.equal(res.status, 501);
   const body = (await res.json()) as { error: string };
   assert.equal(body.error, "not_implemented");
@@ -106,7 +109,9 @@ test("a service token resolves on its scoped doors and is refused outside them",
   // check into the handler — which refuses 503 here (the harness
   // config carries no stamp material) — while the unscoped queue
   // door refuses at the check itself. (The probe used the query
-  // door's 501 stub until #12587 landed it.)
+  // door's 501 stub until #12587 landed it; since #12589 the queue
+  // door is a route per broker verb, so the probe names a real
+  // queue route — the scope check fires before any handler runs.)
   const inScope = await dispatch(
     bearerReq("/v1/stamps", SERVICE_TOKEN, { method: "POST" }),
     h.deps,
@@ -115,7 +120,7 @@ test("a service token resolves on its scoped doors and is refused outside them",
   assert.equal(((await inScope.json()) as { error: string }).error, "stamp_signing_not_configured");
 
   const outOfScope = await dispatch(
-    bearerReq("/v1/queue", SERVICE_TOKEN, { method: "POST" }),
+    bearerReq("/v1/queue/health", SERVICE_TOKEN, { method: "POST" }),
     h.deps,
   );
   assert.equal(outOfScope.status, 403);
@@ -160,8 +165,11 @@ test("a cross-tenant assertion header fails closed (service caller)", async () =
 
 test("a binding header that agrees with the credential is not a refusal", async () => {
   const token = await h.sign(h.rpPayload());
+  // The probe rides a still-stubbed door (see the RP-token probe
+  // above): past the tenancy check, the stub's 501 is the proof
+  // the header was accepted.
   const res = await dispatch(
-    bearerReq("/v1/queue", token, {
+    bearerReq("/v1/ingestion/github", token, {
       method: "POST",
       headers: { "x-binding-id": BINDING_A },
     }),
