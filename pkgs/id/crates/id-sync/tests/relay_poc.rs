@@ -366,7 +366,25 @@ async fn five_node_bridge_delivery_with_latency() {
                 node.name
             );
         }
-        assert_eq!(e_delivery.hops(), vec![d.id.clone(), e.id.clone()]);
+        // The hop chain records the path actually taken: D is
+        // always the last relay before E, but the message may reach
+        // D directly from A ([D, E]) or via B/C's fan-out racing
+        // A's direct send ([B|C, D, E]) — both are valid; the chain
+        // ends [..., D, E] either way, and check_hops below
+        // verifies linkage.
+        let hops = e_delivery.hops();
+        assert!(
+            hops.len() == 2 || hops.len() == 3,
+            "hop chain at E must be [D, E] or [B|C, D, E], got {hops:?}"
+        );
+        assert_eq!(hops[hops.len() - 2], d.id);
+        assert_eq!(hops[hops.len() - 1], e.id);
+        if hops.len() == 3 {
+            assert!(
+                hops[0] == b.id || hops[0] == c.id,
+                "a 3-hop chain must start at B or C, got {hops:?}"
+            );
+        }
         // The delivered copy verifies: envelope byte-identical to
         // what A sent (same message ID), origin signature valid,
         // hop chain linked and within the cap, per §4.1.
