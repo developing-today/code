@@ -49,7 +49,6 @@ declare -A GRANDFATHERED=(
   # split is tracked there.
   ["pm-stack/aggregator/src/render.ts"]="#12671"
   ["pm-stack/aggregator/src/server.ts"]="#12671"
-  ["pm-stack/aggregator/src/sources/live.ts"]="#12671"
   # The id-worlds files below moved from pkgs/id/src/ to
   # pkgs/id/crates/id-worlds/src/ in the id crate restructure; a key
   # must name the file's CURRENT path or the entry silently stops
