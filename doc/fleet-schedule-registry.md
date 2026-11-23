@@ -354,7 +354,7 @@ preserved. OpenChamber scheduled tasks remain on the configured
 `opencode-route` / `workhorse` route. The separate #3026 claimant /
 executor remains on its own protocol.
 
-### 2b. Laptop systemd user timers (47 listed: 43 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
+### 2b. Laptop systemd user timers (48 listed: 43 enabled, 1 installed-but-disabled; 5 Nix-configured pending deployment)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
@@ -408,6 +408,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `pm-projector-reconcile.timer` | `OnCalendar=*-*-* *:00/15:00` | `pm-projector-reconcile.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-tunnel-watchdog.timer` (Nix-configured; not yet loaded) | `OnUnitActiveSec=2min,OnBootSec=2min` (not live-verified) | `pm-tunnel-watchdog.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-11 | 2026-11-11 |
 | `quota-gatherer.timer` | `OnCalendar=*-*-* *:00/15:00` | `quota-gatherer.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-22 |
+| `quota-weekly-review.timer` | `OnCalendar=Mon *-*-* 07:20:00` | `quota-weekly-review.service` | laptop (user systemd; code#12701; NixOS module `services.pm-stack`, package `pkgs/pm-aggregator` — Stage-3 S7 weekly forecast-accuracy review: posts the report to epic #12694, S6 proposal PRs only, never edits config; Nix-configured pending deployment) | not recorded | not recorded | 2026-11-23 | 2026-11-23 |
 | `repo-archive-backup.timer` | `OnCalendar=*-*-* 05:15:00` | `repo-archive-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `repo-universe-issue-check.timer` | `OnCalendar=*-*-* 00:00:00` | `repo-universe-issue-check.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `queue-coverage-reconcile.timer` (repo-shipped, not yet installed) | `OnCalendar=*-*-* *:41:00` | `queue-coverage-reconcile.service` | laptop (user systemd; code#7016) | not recorded | not recorded | 2026-11-08 | 2026-11-08 |
