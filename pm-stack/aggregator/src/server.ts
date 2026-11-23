@@ -50,6 +50,7 @@ import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-li
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
+import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
   computeCoverage,
@@ -2434,6 +2435,38 @@ async function handler(req: Request): Promise<Response> {
         { error: `identity registry operation failed: ${error instanceof Error ? error.message : error}` },
         500,
       );
+    }
+  }
+
+  // #9605: exchange the already-verified Access identity for a short-lived
+  // layer-scoped token. The target and action are request metadata; the
+  // principal and role always come from verified Access + the registry.
+  if (req.method === "POST" && path === "/api/stack-token/exchange") {
+    const access = await enforceAccessAuthor(req, { kind: "agent", id: "exchange", label: "exchange" });
+    if (!access.ok) return json({ error: access.error }, access.status);
+    if (!access.verified || !access.identity) return json({ error: "verified Access identity required" }, 403);
+    const secret = cfg.stackTokenSecret;
+    if (!secret) return json({ error: "stack token exchange is not configured" }, 503);
+    const identity = access.identity.sub || access.identity.email;
+    const role: StackTokenRole =
+      access.author.kind === "drew" ? "owner" : await identityRegistryStore.roleFor(identity);
+    if (role === "read-only") return json({ error: "identity role cannot mint write tokens" }, 403);
+    try {
+      const body = await readJsonBody(req);
+      const target =
+        typeof body === "object" && body !== null && typeof (body as { target?: unknown }).target === "string"
+          ? (body as { target: string }).target.trim()
+          : "";
+      const action =
+        typeof body === "object" && body !== null && typeof (body as { action?: unknown }).action === "string"
+          ? (body as { action: string }).action.trim()
+          : "";
+      if (!["kaneo", "pad", "grist"].includes(target)) return json({ error: "target must be kaneo, pad, or grist" }, 400);
+      if (!/^[A-Za-z][A-Za-z0-9._:-]{0,63}$/.test(action)) return json({ error: "action is invalid" }, 400);
+      const token = mintStackToken({ sub: identity, role, aud: target, act: action }, secret);
+      return json({ token, tokenType: "Bearer", audience: target, expiresIn: STACK_TOKEN_TTL_SECONDS });
+    } catch (error) {
+      return json({ error: `stack token exchange failed: ${error instanceof Error ? error.message : error}` }, 400);
     }
   }
 
