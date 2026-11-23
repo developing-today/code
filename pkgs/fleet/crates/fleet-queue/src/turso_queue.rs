@@ -379,9 +379,8 @@ mod tests {
         // carries no labels stores at the ratified band 15 with
         // the mirror's labels on the payload — no manual update.
         // The mirror row is the stub's; the band is Drew's.
-        let (url, captured) = stub_pipeline(mirror_pipeline_reply(Some(
-            "[\"expedite\",\"kind/bug\"]",
-        )));
+        let (url, captured) =
+            stub_pipeline(mirror_pipeline_reply(Some("[\"expedite\",\"kind/bug\"]")));
         let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
         let req = json!({
             "queue": "repo-health-code-pilot",
@@ -423,7 +422,11 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["priority"], 25, "{out}");
-        assert_eq!(out["task"]["payload"]["labels"], json!(["next-up"]), "{out}");
+        assert_eq!(
+            out["task"]["payload"]["labels"],
+            json!(["next-up"]),
+            "{out}"
+        );
         let warnings = out["warnings"].to_string();
         assert!(!warnings.contains("mirror enrichment"), "{out}");
     }
