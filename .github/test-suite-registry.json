@@ -1347,6 +1347,7 @@
         "pkgs/id/crates/id-core/tests/array_order_prop.rs",
         "pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs",
         "pkgs/id/crates/id-core/tests/array_shorthand.rs",
+        "pkgs/id/crates/id-core/tests/atlas_content_profile_vectors.rs",
         "pkgs/id/crates/id-core/tests/content_id_vectors.rs",
         "pkgs/id/crates/id-core/tests/cross_signing_challenge.rs",
         "pkgs/id/crates/id-core/tests/delegation_model.rs",
@@ -1358,6 +1359,7 @@
         "pkgs/id/crates/id-core/tests/id_uri_property.rs",
         "pkgs/id/crates/id-core/tests/id_shape.rs",
         "pkgs/id/crates/id-core/tests/legacy_hash_vectors.rs",
+        "pkgs/id/crates/id-core/tests/location_ref.rs",
         "pkgs/id/crates/id-core/tests/namespace_definition.rs",
         "pkgs/id/crates/id-core/tests/numeric_order_prop.rs",
         "pkgs/id/crates/id-core/tests/numeric_value_prop.rs",
@@ -1415,6 +1417,7 @@
     {
       "id": "id.rust.id-sync.integration",
       "paths": [
+        "pkgs/id/crates/id-sync/tests/exchange_lock_release.rs",
         "pkgs/id/crates/id-sync/tests/federation_b01.rs",
         "pkgs/id/crates/id-sync/tests/federation_b02.rs",
         "pkgs/id/crates/id-sync/tests/federation_b03.rs",
