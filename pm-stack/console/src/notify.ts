@@ -19,12 +19,15 @@ export interface Seen {
   /** Units seen failed and not seen well since: when it was first seen,
    * and whether the owner has been told. Absent in a state written
    * before units that run on a timer were told apart. */
-  failing?: Record<string, { since: number; told: boolean }>;
+  failing?: Record<string, { since: number; told: boolean; last?: number }>;
 }
 export const NOTHING_SEEN: Seen = { primed: false, asks: {}, hands: [], questions: 0, failed: [] };
 
 /** A unit that runs on a timer is only worth a message once it has kept
- * failing this long: one bad run that the next run mends is not. */
+ * failing this long: one bad run that the next run mends is not. It is
+ * also how long a failing may go unobserved and still count as the same
+ * failing: after a longer gap nothing is known of what happened in
+ * between, and the count starts again. */
 export const SUSTAINED_MS = 5 * 60_000;
 
 export interface Message {
@@ -46,7 +49,10 @@ interface State {
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 /** The messages owed for `now`, and what will have been seen once they
- * are sent. A section that could not be read (null) changes nothing. */
+ * are sent. A section that could not be read (null) changes nothing.
+ * `at` is when the services were last actually read: how long a unit
+ * has been failing is counted between readings, so a list that has
+ * stopped being read cannot make one old failure look sustained. */
 export function changes(seen: Seen, now: State, at: number = Date.now()): { messages: Message[]; seen: Seen } {
   const next: Seen = {
     primed: true,
@@ -109,7 +115,7 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
     );
     const onTimer = (unit: string) => unit.endsWith(".service") && timers.has(unit.slice(0, -".service".length));
     // Units the owner was told of before this was kept are not told again.
-    const failing: Record<string, { since: number; told: boolean }> = {
+    const failing: Record<string, { since: number; told: boolean; last?: number }> = {
       ...(seen.failing ?? Object.fromEntries(seen.failed.map((unit) => [unit, { since: at, told: true }]))),
     };
     const listed = new Set<string>();
@@ -117,7 +123,10 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
       listed.add(u.unit);
       const before = failing[u.unit];
       if (u.active === "failed") {
-        const entry = { ...(before ?? { since: at, told: false }) };
+        // The same failing only if it was seen recently enough; otherwise
+        // this is where the count starts (again).
+        const unbroken = before !== undefined && at - (before.last ?? before.since) <= SUSTAINED_MS;
+        const entry = { since: unbroken ? before.since : at, told: before?.told ?? false, last: at };
         const sustained = at - entry.since >= SUSTAINED_MS;
         if (!entry.told && (!onTimer(u.unit) || sustained)) {
           entry.told = true;
@@ -145,6 +154,8 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
         failing[u.unit] = entry;
       } else if (u.active === "activating" || u.active === "deactivating" || u.active === "reloading") {
         // In the middle of a run: not failed, and not yet well either.
+        // It is still a sighting of the unit not being well.
+        if (before) failing[u.unit] = { ...before, last: at };
       } else if (before) {
         // Seen well again. One that was reported as failing run after
         // run gets its ending said too.
@@ -202,7 +213,8 @@ export class Notifier {
       if ((await this.push.status()).devices === 0) return 0;
       await this.docs.touch(WATCHED.filter((n) => !skip.includes(n)));
       const now = Object.fromEntries(WATCHED.map((n) => [n, this.docs.good(n)])) as State;
-      const { messages, seen } = changes(await this.load(), now, this.now());
+      // The services as of when they were last read, not as of now.
+      const { messages, seen } = changes(await this.load(), now, this.docs.goodAt("services") || this.now());
       for (const m of messages) await this.push.send(m.cls, m);
       // Written down only when it differs: most passes find nothing new.
       const before = JSON.stringify(this.seen);
@@ -212,6 +224,13 @@ export class Notifier {
     } finally {
       this.busy = false;
     }
+  }
+
+  /** True while a unit has been seen failing and the owner not yet told:
+   * the time it has gone on is still being counted, so the next reading
+   * matters even if it reads the same. */
+  async pending(): Promise<boolean> {
+    return Object.values((await this.load()).failing ?? {}).some((entry) => !entry.told);
   }
 
   start(everyMs = 60_000): void {

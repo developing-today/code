@@ -738,7 +738,11 @@ export class Edge {
       }
     }
     await this.setAlarm(now + SILENT_MS + 1000);
-    if (changed.some((n) => WATCHED.includes(n))) {
+    // Something the owner is told about changed, or a unit's failing is
+    // being timed: that clock only moves when the laptop's fresh word on
+    // its units is looked at, and a unit that stays failed reads the
+    // same in every report.
+    if (changed.some((n) => WATCHED.includes(n)) || (await this.notifier.pending())) {
       await this.notifier.tick().catch((error) => console.error(`pm-edge: notify: ${(error as Error).message}`));
     }
 
