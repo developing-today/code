@@ -16,6 +16,7 @@ pub mod http_fetch_url;
 pub mod library_gate;
 pub mod library_manifest;
 pub mod library_resolution;
+pub mod mcp_bridge;
 pub mod portal;
 pub mod used_caps;
 pub mod world_caps;

@@ -1497,6 +1497,7 @@
     {
       "id": "id.rust.crate-integration",
       "paths": [
+        "pkgs/id/crates/id-caps/tests/mcp_bridge_surface.rs",
         "pkgs/id/crates/id-caps/tests/roc_import_policy.rs",
         "pkgs/id/crates/id-cli/tests/aliases.rs",
         "pkgs/id/crates/id-core/tests/probe_petname_load.rs",
@@ -1511,7 +1512,7 @@
         "dispatchable": true
       },
       "status": "mapped",
-      "notes": "Wired by #10329: test-crate-integration is a named pkgs/id flake check included in the id PR-check list; its just recipe runs all five member-crate targets, including the four named by the issue and id-caps/roc_import_policy."
+      "notes": "Wired by #10329: test-crate-integration is a named pkgs/id flake check included in the id PR-check list; its just recipe runs all six member-crate targets, including the MCP bridge surface, the four named by the issue and id-caps/roc_import_policy."
     },
     {
       "id": "id.web.build-manifest",
