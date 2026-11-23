@@ -42,6 +42,23 @@ fn target(name: &str) -> TargetSpec {
     }
 }
 
+fn find_composed<'a>(
+    node: &'a id_render::compose::ComposedElement,
+    path: &str,
+) -> Option<&'a id_render::compose::ComposedElement> {
+    if node.path == path {
+        return Some(node);
+    }
+    for child in &node.children {
+        if let id_render::compose::ComposedNode::Element(el) = child
+            && let Some(found) = find_composed(el, path)
+        {
+            return Some(found);
+        }
+    }
+    None
+}
+
 fn doc_with_assert(assert: &str) -> String {
     format!(
         r#"<document version="1"><page title="T"><form action="a"><button action="a" assert="{assert}">Go</button></form></page></document>"#
@@ -199,23 +216,7 @@ fn source_assertions_compose_at_instance_specificity_decision_5854_s2_2() {
         ..Default::default()
     };
     let composed = compose_document(&doc, &target("web"), &data).expect("composes");
-    fn find<'a>(
-        node: &'a id_render::compose::ComposedElement,
-        path: &str,
-    ) -> Option<&'a id_render::compose::ComposedElement> {
-        if node.path == path {
-            return Some(node);
-        }
-        for child in &node.children {
-            if let id_render::compose::ComposedNode::Element(el) = child
-                && let Some(found) = find(el, path)
-            {
-                return Some(found);
-            }
-        }
-        None
-    }
-    let button = find(&composed.root, BUTTON_PATH).expect("button present");
+    let button = find_composed(&composed.root, BUTTON_PATH).expect("button present");
     assert_eq!(button.properties.len(), 1);
     assert_eq!(button.properties[0].token.as_deref(), Some("accent"));
 
