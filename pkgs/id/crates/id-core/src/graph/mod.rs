@@ -7,6 +7,7 @@
 //! is not reachable from its crate root. A module that does not exist
 //! yet is never declared.
 
+pub mod attribute;
 pub mod cross_signing;
 pub mod cursor;
 pub mod delegation;
