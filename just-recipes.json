@@ -839,7 +839,7 @@
             "windows_shell": null,
             "working_directory": null
           },
-          "source": "/home/user/git/code-ghb-rename/root.just",
+          "source": "/home/user/git/fleet/task-21040-20261122T190917Z-d66362ea/root.just",
           "unexports": [],
           "warnings": []
         }
@@ -1476,10 +1476,14 @@
             { "arguments": [], "recipe": "web-fmt-check", "star": null },
             { "arguments": [], "recipe": "cargo-check", "star": null },
             { "arguments": [], "recipe": "clippy-lint", "star": null },
+            { "arguments": [], "recipe": "clippy-native-shell", "star": null },
             { "arguments": [], "recipe": "web-lint", "star": null },
             { "arguments": [], "recipe": "test-sandbox", "star": null },
+            { "arguments": [], "recipe": "test-native-shell", "star": null },
+            { "arguments": [], "recipe": "test-rust-examples", "star": null },
             { "arguments": [], "recipe": "test-web-unit", "star": null },
             { "arguments": [], "recipe": "test-web-typecheck", "star": null },
+            { "arguments": [], "recipe": "roc-test", "star": null },
             { "arguments": [], "recipe": "doc", "star": null },
             { "arguments": [], "recipe": "build", "star": null },
             { "arguments": [], "recipe": "release", "star": null }
@@ -1487,7 +1491,7 @@
           "doc": "CI-safe checks (read-only, no modifications) [bun]",
           "name": "ci",
           "parameters": [],
-          "priors": 11,
+          "priors": 15,
           "private": false,
           "quiet": false,
           "namepath": "id::ci",
@@ -1530,6 +1534,19 @@
           "private": false,
           "quiet": false,
           "namepath": "id::clippy-lint-fix",
+          "shebang": false
+        },
+        "clippy-native-shell": {
+          "attributes": [{ "group": "lint" }],
+          "body": [["cargo clippy -p id-native-shell --all-targets"]],
+          "dependencies": [],
+          "doc": "Clippy for id-native-shell (#5582): non-default workspace member, so the default-member clippy-lint never sees it.",
+          "name": "clippy-native-shell",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::clippy-native-shell",
           "shebang": false
         },
         "coverage": {
@@ -1999,6 +2016,32 @@
           "namepath": "id::outdated",
           "shebang": false
         },
+        "planted-bug-check": {
+          "attributes": [{ "group": "test" }],
+          "body": [["bash tests/planted-bug-check.sh"]],
+          "dependencies": [],
+          "doc": "Planted-bug check: prove the voiding/frontier suites catch planted bugs (#1395, P2.3/P2.8)",
+          "name": "planted-bug-check",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::planted-bug-check",
+          "shebang": false
+        },
+        "prod-lines-check": {
+          "attributes": [{ "group": "lint" }],
+          "body": [["bash scripts/prod-lines-check.sh && bash scripts/prod-lines-check-test.sh"]],
+          "dependencies": [],
+          "doc": "the companion self-test proves the guard fails, not just that it passes",
+          "name": "prod-lines-check",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::prod-lines-check",
+          "shebang": false
+        },
         "release": {
           "attributes": [{ "group": "build" }],
           "body": [["./scripts/build.sh web release"]],
@@ -2095,6 +2138,19 @@
           "private": false,
           "quiet": false,
           "namepath": "id::repl",
+          "shebang": false
+        },
+        "roc-test": {
+          "attributes": [{ "group": "test" }],
+          "body": [["bash scripts/roc-test.sh"]],
+          "dependencies": [],
+          "doc": "Run the Roc library expect() tests (RocJson, Screen, Key) with the pinned Roc compiler (#813)",
+          "name": "roc-test",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::roc-test",
           "shebang": false
         },
         "run": {
@@ -2449,6 +2505,25 @@
           "namepath": "id::test",
           "shebang": false
         },
+        "test-crate-integration": {
+          "attributes": [{ "group": "test" }],
+          "body": [
+            ["cargo nextest run --all-features -p id-caps --test roc_import_policy"],
+            ["cargo nextest run --all-features -p id-cli --test aliases"],
+            ["cargo nextest run --all-features -p id-core --test probe_petname_load"],
+            ["cargo nextest run --all-features -p id-store --test store_traits"],
+            ["cargo nextest run --all-features -p id-web --test web_router_security"]
+          ],
+          "dependencies": [],
+          "doc": "root-package integration shards (#10329).",
+          "name": "test-crate-integration",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::test-crate-integration",
+          "shebang": false
+        },
         "test-e2e": {
           "attributes": [{ "group": "e2e" }],
           "body": [
@@ -2516,10 +2591,10 @@
         "test-full": {
           "attributes": [{ "group": "test" }],
           "body": [
-            ["cargo test --all-features --no-fail-fast"],
-            ["cargo test --all-features --test regression_replay"],
+            ["cargo nextest run --all-features --no-fail-fast"],
+            ["cargo nextest run --all-features --test regression_replay"],
             [
-              "PROPTEST_CASES=\"${PROPTEST_CASES:-4096}\" ID_TUPLE_FUZZ_CASES=\"${ID_TUPLE_FUZZ_CASES:-20000}\" cargo test --all-features --test tuple_properties"
+              "PROPTEST_CASES=\"${PROPTEST_CASES:-4096}\" ID_TUPLE_FUZZ_CASES=\"${ID_TUPLE_FUZZ_CASES:-20000}\" cargo nextest run --all-features --test tuple_properties"
             ],
             ["@echo \"✓ Full Rust test run passed\""]
           ],
@@ -2535,9 +2610,13 @@
         },
         "test-int-sandbox": {
           "attributes": [{ "group": "test" }],
-          "body": [["cargo test --all-features --test cli_integration -- --skip serve_tests"]],
+          "body": [
+            [
+              "cargo nextest run --all-features --test cli_integration -E 'not test(serve_tests) and not test(test_substrate_path_runs_signed_sync_conflict_and_restart)'"
+            ]
+          ],
           "dependencies": [],
-          "doc": "Run integration tests (sandbox-safe: excludes serve_tests requiring network)",
+          "doc": "Run integration tests (sandbox-safe: excludes network tests run in the NixOS VM)",
           "name": "test-int-sandbox",
           "parameters": [],
           "priors": 0,
@@ -2548,7 +2627,7 @@
         },
         "test-integration": {
           "attributes": [{ "group": "test" }],
-          "body": [["cargo test --all-features --test cli_integration"]],
+          "body": [["cargo nextest run --all-features --test cli_integration"]],
           "dependencies": [],
           "doc": "Run integration tests only",
           "name": "test-integration",
@@ -2557,6 +2636,19 @@
           "private": false,
           "quiet": false,
           "namepath": "id::test-integration",
+          "shebang": false
+        },
+        "test-native-shell": {
+          "attributes": [{ "group": "test" }],
+          "body": [["cargo nextest run -p id-native-shell"]],
+          "dependencies": [],
+          "doc": "Run the id-native-shell unit + contract transcript tests (#5582): non-default workspace member, so the default-member test recipes never run it.",
+          "name": "test-native-shell",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::test-native-shell",
           "shebang": false
         },
         "test-nix": {
@@ -2644,7 +2736,7 @@
         },
         "test-one": {
           "attributes": [{ "group": "test" }],
-          "body": [["cargo test --all-features ", [["variable", "NAME"]]]],
+          "body": [["cargo nextest run --all-features -E 'test(", [["variable", "NAME"]], ")'"]],
           "dependencies": [],
           "doc": "Run a specific test by name",
           "name": "test-one",
@@ -2673,7 +2765,7 @@
         },
         "test-rust": {
           "attributes": [{ "group": "test" }],
-          "body": [["cargo test --all-features"]],
+          "body": [["cargo nextest run --all-features"], ["cargo test --all-features --doc"]],
           "dependencies": [],
           "doc": "Run all Rust tests",
           "name": "test-rust",
@@ -2684,9 +2776,25 @@
           "namepath": "id::test-rust",
           "shebang": false
         },
+        "test-rust-examples": {
+          "attributes": [{ "group": "test" }],
+          "body": [
+            ["cargo test --manifest-path examples/rust-world/Cargo.toml"],
+            ["cargo test --manifest-path examples/rust-counter/Cargo.toml"]
+          ],
+          "dependencies": [],
+          "doc": "Run the Rust example-guest unit tests (#7904): plaza-sdk (examples/rust-world, 9 tests) and rust-counter (examples/rust-counter, 2 tests) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.",
+          "name": "test-rust-examples",
+          "parameters": [],
+          "priors": 0,
+          "private": false,
+          "quiet": false,
+          "namepath": "id::test-rust-examples",
+          "shebang": false
+        },
         "test-sandbox": {
           "attributes": [{ "group": "test" }],
-          "body": [["cargo test --all-features -- --skip serve_tests"]],
+          "body": [["cargo nextest run --all-features -E 'not test(serve_tests)'"]],
           "dependencies": [],
           "doc": "Run all Rust tests (sandbox-safe: excludes tests requiring network)",
           "name": "test-sandbox",
@@ -2743,7 +2851,7 @@
         },
         "test-unit": {
           "attributes": [{ "group": "test" }],
-          "body": [["cargo test --all-features --lib"]],
+          "body": [["cargo nextest run --all-features --lib"]],
           "dependencies": [],
           "doc": "Run unit tests only (fast)",
           "name": "test-unit",
@@ -2756,7 +2864,7 @@
         },
         "test-verbose": {
           "attributes": [{ "group": "test" }],
-          "body": [["cargo test --all-features -- --nocapture"]],
+          "body": [["cargo nextest run --all-features --nocapture"]],
           "dependencies": [],
           "doc": "Run tests with output shown",
           "name": "test-verbose",
@@ -2816,7 +2924,7 @@
         },
         "test-web-unit": {
           "attributes": [{ "group": "test" }],
-          "body": [["cd web && bun run test"]],
+          "body": [["cd web && bun run test"], ["sh web/scripts/build-manifest.test.sh"]],
           "dependencies": [],
           "doc": "[bun] Run TypeScript unit tests only",
           "name": "test-web-unit",
@@ -3285,7 +3393,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/code-ghb-rename/pkgs/id/justfile",
+      "source": "/home/user/git/fleet/task-21040-20261122T190917Z-d66362ea/pkgs/id/justfile",
       "unexports": [],
       "warnings": []
     }
@@ -4115,7 +4223,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/code-ghb-rename/justfile",
+  "source": "/home/user/git/fleet/task-21040-20261122T190917Z-d66362ea/justfile",
   "unexports": [],
   "warnings": []
 }

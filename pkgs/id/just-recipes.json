@@ -827,7 +827,7 @@
         "windows_shell": null,
         "working_directory": null
       },
-      "source": "/home/user/git/fleet/14257-7904-rust-sdk-venue/root.just",
+      "source": "/home/user/git/fleet/task-21040-20261122T190917Z-d66362ea/root.just",
       "unexports": [],
       "warnings": []
     }
@@ -2598,9 +2598,13 @@
     },
     "test-int-sandbox": {
       "attributes": [{ "group": "test" }],
-      "body": [["cargo nextest run --all-features --test cli_integration -E 'not test(serve_tests)'"]],
+      "body": [
+        [
+          "cargo nextest run --all-features --test cli_integration -E 'not test(serve_tests) and not test(test_substrate_path_runs_signed_sync_conflict_and_restart)'"
+        ]
+      ],
       "dependencies": [],
-      "doc": "Run integration tests (sandbox-safe: excludes serve_tests requiring network)",
+      "doc": "Run integration tests (sandbox-safe: excludes network tests run in the NixOS VM)",
       "name": "test-int-sandbox",
       "parameters": [],
       "priors": 0,
@@ -3375,7 +3379,7 @@
     "windows_shell": null,
     "working_directory": null
   },
-  "source": "/home/user/git/fleet/14257-7904-rust-sdk-venue/pkgs/id/justfile",
+  "source": "/home/user/git/fleet/task-21040-20261122T190917Z-d66362ea/pkgs/id/justfile",
   "unexports": [],
   "warnings": []
 }
