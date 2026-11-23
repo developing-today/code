@@ -115,8 +115,9 @@ jobs:
           INIT_RECEIPT: ${{ runner.temp }}/init/smoke-init-receipt.json
           INIT_RUN_JSON: ${{ runner.temp }}/init-run.json
           INIT_JOBS_JSON: ${{ runner.temp }}/init-jobs.json
+          INIT_COMPAT_JSON: ${{ runner.temp }}/init-compatibility.json
           GITHUB_TOKEN: ${{ github.token }}
-        run: node smoke-upload.mjs fetch-init "$INIT_RECEIPT" "$INIT_RUN_JSON" "$INIT_JOBS_JSON"
+        run: node smoke-upload.mjs fetch-init "$INIT_RECEIPT" "$INIT_RUN_JSON" "$INIT_JOBS_JSON" "$INIT_COMPAT_JSON"
 
       - name: Validate init receipt and trusted workflow provenance
         id: init
@@ -125,15 +126,17 @@ jobs:
           INIT_RECEIPT: ${{ runner.temp }}/init/smoke-init-receipt.json
           INIT_RUN_JSON: ${{ runner.temp }}/init-run.json
           INIT_JOBS_JSON: ${{ runner.temp }}/init-jobs.json
+          INIT_COMPAT_JSON: ${{ runner.temp }}/init-compatibility.json
           CF_SMOKE_UPLOAD_ACCOUNT_ID: ${{ secrets.CF_SMOKE_UPLOAD_ACCOUNT_ID }}
           CF_SMOKE_UPLOAD_API_TOKEN: ${{ secrets.CF_SMOKE_UPLOAD_API_TOKEN }}
           CF_SMOKE_UPLOAD_READ_TOKEN: ${{ secrets.CF_SMOKE_UPLOAD_READ_TOKEN }}
-        run: node smoke-upload.mjs validate-init "$INIT_RECEIPT" "$INIT_RUN_JSON" "$INIT_JOBS_JSON"
+        run: node smoke-upload.mjs validate-init "$INIT_RECEIPT" "$INIT_RUN_JSON" "$INIT_JOBS_JSON" "$INIT_COMPAT_JSON"
 
       - name: Verify the initialized smoke target and exposure state read-only
         working-directory: pm-stack/private-laptop-bridge
         env:
           INIT_RECEIPT: ${{ runner.temp }}/init/smoke-init-receipt.json
+          INIT_RECEIPT_DIGEST: ${{ steps.init.outputs.receipt_digest }}
           CF_SMOKE_UPLOAD_ACCOUNT_ID: ${{ secrets.CF_SMOKE_UPLOAD_ACCOUNT_ID }}
           CF_SMOKE_UPLOAD_READ_TOKEN: ${{ secrets.CF_SMOKE_UPLOAD_READ_TOKEN }}
           CF_SMOKE_UPLOAD_EXPECTED_ZONE_IDS: ${{ secrets.CF_SMOKE_UPLOAD_EXPECTED_ZONE_IDS }}

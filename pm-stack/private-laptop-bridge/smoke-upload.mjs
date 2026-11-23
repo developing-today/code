@@ -6,6 +6,17 @@ import { API, INIT_WORKFLOW, WORKER_NAME, verifySmokeEmptyTarget, verifySmokePos
 
 const REPOSITORY = 'developing-today/code';
 export const UPLOAD_WORKFLOW = '.github/workflows/private-laptop-bridge-smoke-upload.yml';
+// Pin the initializer and upload-side receipt contract, along with the exact validation/tool contract.
+export const INIT_COMPAT_PATHS = [
+  INIT_WORKFLOW,
+  UPLOAD_WORKFLOW,
+  'pm-stack/private-laptop-bridge/bootstrap-smoke.mjs',
+  'pm-stack/private-laptop-bridge/bootstrap-smoke.test.mjs',
+  'pm-stack/private-laptop-bridge/smoke-upload.mjs',
+  'pm-stack/private-laptop-bridge/smoke-upload.test.mjs',
+  'pm-stack/private-laptop-bridge/package.json',
+  'pm-stack/private-laptop-bridge/package-lock.json',
+];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{40}$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -44,20 +55,38 @@ function receiptShape(receipt) {
   return receipt;
 }
 
-export function validateInitReceipt({ receiptJson, runJson, jobsJson, expectedAccountId, currentSha, initRunId }) {
+export function assertInitCompatibility({ compatibility, initSha, currentSha }) {
+  const compare = compatibility?.comparison;
+  if (!SHA.test(initSha ?? '') || !SHA.test(currentSha ?? '') || !compare ||
+      !['ahead', 'identical'].includes(compare.status) || !Number.isSafeInteger(compare.ahead_by) || compare.ahead_by < 0 ||
+      compare.behind_by !== 0 || compare.base_commit?.sha !== initSha || compare.head_commit?.sha !== currentSha ||
+      compare.merge_base_commit?.sha !== initSha) fail('init run SHA is not a verified ancestor of the upload SHA');
+  const files = compatibility.files;
+  if (!Array.isArray(files) || files.length !== INIT_COMPAT_PATHS.length) fail('initializer compatibility file evidence is missing or ambiguous');
+  for (let i = 0; i < INIT_COMPAT_PATHS.length; i++) {
+    const item = files[i];
+    if (item?.path !== INIT_COMPAT_PATHS[i] || !/^[a-f0-9]{40}$/i.test(item.init_blob_sha ?? '') ||
+        item.init_blob_sha !== item.upload_blob_sha) fail(`initializer compatibility changed or is unverifiable: ${INIT_COMPAT_PATHS[i]}`);
+  }
+  return true;
+}
+
+export function validateInitReceipt({ receiptJson, runJson, jobsJson, compatibilityJson, expectedAccountId, currentSha, initRunId }) {
   const receipt = receiptShape(parseJson(receiptJson, 'init receipt'));
   const run = parseJson(runJson, 'init workflow run');
   const jobsResponse = parseJson(jobsJson, 'init workflow jobs');
+  const compatibility = parseJson(compatibilityJson, 'init compatibility evidence');
   if (!/^[a-f0-9]{32}$/i.test(expectedAccountId ?? '') || !expectedAccountId.toLowerCase().endsWith('cbfa') ||
       receipt.account_id_sha256 !== hash(expectedAccountId.toLowerCase())) fail('init receipt account does not match protected upload configuration');
-  if (!SHA.test(currentSha ?? '') || receipt.source_sha !== currentSha || receipt.run_id !== String(initRunId)) fail('init receipt does not match this exact main dispatch SHA and run ID');
+  if (!SHA.test(currentSha ?? '') || receipt.run_id !== String(initRunId)) fail('init receipt does not match this main dispatch run ID');
   if (!run || !Number.isSafeInteger(run.id) || String(run.id) !== String(initRunId) || run.run_attempt !== receipt.run_attempt || run.status !== 'completed' || run.conclusion !== 'success' ||
-      run.event !== 'workflow_dispatch' || run.head_branch !== 'main' || run.head_sha !== currentSha || run.path?.split('@')[0] !== INIT_WORKFLOW ||
+      run.event !== 'workflow_dispatch' || run.head_branch !== 'main' || run.head_sha !== receipt.source_sha || run.path?.split('@')[0] !== INIT_WORKFLOW ||
       run.repository?.full_name !== REPOSITORY) fail('init receipt is not from the exact successful protected-main workflow run');
+  assertInitCompatibility({ compatibility, initSha: receipt.source_sha, currentSha });
   const jobs = jobsResponse?.jobs;
   if (!Array.isArray(jobs) || jobsResponse.total_count !== 1 || jobs.length !== 1) fail('init workflow job evidence is missing or ambiguous');
   const job = jobs[0];
-  if (job.name !== 'initialize' || job.run_id !== run.id || job.head_sha !== currentSha || job.status !== 'completed' || job.conclusion !== 'success' || !Array.isArray(job.steps)) {
+  if (job.name !== 'initialize' || job.run_id !== run.id || job.head_sha !== receipt.source_sha || job.status !== 'completed' || job.conclusion !== 'success' || !Array.isArray(job.steps)) {
     fail('init workflow job is not the exact successful main job');
   }
   const steps = new Map(job.steps.map(step => [step.name, step]));
@@ -72,9 +101,10 @@ export function validateInitReceipt({ receiptJson, runJson, jobsJson, expectedAc
   };
 }
 
-export async function fetchInitRunEvidence({ receiptJson, initRunId, githubToken, fetchImpl = fetch }) {
+export async function fetchInitRunEvidence({ receiptJson, initRunId, currentSha, githubToken, fetchImpl = fetch }) {
   const receipt = receiptShape(parseJson(receiptJson, 'init receipt'));
   if (!/^\d{1,20}$/.test(String(initRunId)) || receipt.run_id !== String(initRunId)) fail('init run ID does not match the receipt');
+  if (!SHA.test(currentSha ?? '')) fail('upload SHA is invalid');
   if (typeof githubToken !== 'string' || githubToken.length < 20) fail('GitHub read-only token is missing');
   const base = `https://api.github.com/repos/${REPOSITORY}/actions/runs/${encodeURIComponent(initRunId)}`;
   async function get(path) {
@@ -87,7 +117,20 @@ export async function fetchInitRunEvidence({ receiptJson, initRunId, githubToken
   }
   const run = await get(base);
   const jobs = await get(`${base}/attempts/${receipt.run_attempt}/jobs?per_page=100`);
-  return { run, jobs };
+  const initSha = receipt.source_sha;
+  const comparison = await get(`https://api.github.com/repos/${REPOSITORY}/compare/${initSha}...${currentSha}`);
+  const files = [];
+  for (const path of INIT_COMPAT_PATHS) {
+    const apiPath = path.split('/').map(encodeURIComponent).join('/');
+    const [initFile, uploadFile] = await Promise.all([
+      get(`https://api.github.com/repos/${REPOSITORY}/contents/${apiPath}?ref=${initSha}`),
+      get(`https://api.github.com/repos/${REPOSITORY}/contents/${apiPath}?ref=${currentSha}`),
+    ]);
+    if (initFile?.type !== 'file' || uploadFile?.type !== 'file' || initFile.path !== path || uploadFile.path !== path ||
+        !/^[a-f0-9]{40}$/i.test(initFile.sha ?? '') || !/^[a-f0-9]{40}$/i.test(uploadFile.sha ?? '')) fail(`GitHub initializer source evidence is unavailable: ${path}`);
+    files.push({ path, init_blob_sha: initFile.sha, upload_blob_sha: uploadFile.sha });
+  }
+  return { run, jobs, compatibility: { comparison, files } };
 }
 
 export function assertDryRunOutput(text) {
@@ -308,9 +351,10 @@ async function readJsonFile(path, name) {
 async function main() {
   const [action, ...args] = process.argv.slice(2);
   if (action === 'validate-init') {
-    if (args.length !== 3) fail('usage: validate-init <receipt.json> <run.json> <jobs.json>');
+    if (args.length !== 4) fail('usage: validate-init <receipt.json> <run.json> <jobs.json> <compatibility.json>');
     const result = validateInitReceipt({
       receiptJson: await readJsonFile(args[0], 'init receipt'), runJson: await readJsonFile(args[1], 'init run'), jobsJson: await readJsonFile(args[2], 'init jobs'),
+      compatibilityJson: await readJsonFile(args[3], 'init compatibility'),
       expectedAccountId: required('CF_SMOKE_UPLOAD_ACCOUNT_ID'), currentSha: required('GITHUB_SHA'), initRunId: required('INIT_RUN_ID'),
     });
     const uploadToken = process.env.CF_SMOKE_UPLOAD_API_TOKEN;
@@ -321,18 +365,19 @@ async function main() {
     return;
   }
   if (action === 'fetch-init') {
-    if (args.length !== 3) fail('usage: fetch-init <receipt.json> <run.json> <jobs.json>');
+    if (args.length !== 4) fail('usage: fetch-init <receipt.json> <run.json> <jobs.json> <compatibility.json>');
     const receiptJson = await readJsonFile(args[0], 'init receipt');
-    const evidence = await fetchInitRunEvidence({ receiptJson, initRunId: required('INIT_RUN_ID'), githubToken: required('GITHUB_TOKEN') });
+    const evidence = await fetchInitRunEvidence({ receiptJson, initRunId: required('INIT_RUN_ID'), currentSha: required('GITHUB_SHA'), githubToken: required('GITHUB_TOKEN') });
     await writeFile(args[1], `${JSON.stringify(evidence.run)}\n`, { flag: 'wx', mode: 0o600 });
     await writeFile(args[2], `${JSON.stringify(evidence.jobs)}\n`, { flag: 'wx', mode: 0o600 });
+    await writeFile(args[3], `${JSON.stringify(evidence.compatibility)}\n`, { flag: 'wx', mode: 0o600 });
     return;
   }
   if (action === 'preflight') {
     if (args.length !== 1) fail('usage: preflight <receipt.json>');
     const receipt = receiptShape(parseJson(await readJsonFile(args[0], 'init receipt'), 'init receipt'));
     const accountId = required('CF_SMOKE_UPLOAD_ACCOUNT_ID');
-    if (receipt.account_id_sha256 !== hash(accountId.toLowerCase()) || receipt.source_sha !== required('GITHUB_SHA')) fail('init receipt does not match current upload account or SHA');
+    if (receipt.account_id_sha256 !== hash(accountId.toLowerCase()) || hash(await readJsonFile(args[0], 'init receipt')) !== required('INIT_RECEIPT_DIGEST')) fail('init receipt does not match current upload account or validated receipt digest');
     await verifySmokeEmptyTarget({ approvedAccountId: accountId, expectedZoneIds: required('CF_SMOKE_UPLOAD_EXPECTED_ZONE_IDS'), readToken: required('CF_SMOKE_UPLOAD_READ_TOKEN'), expectedWorkerId: receipt.worker_id });
     await assertLegacyVersionsEmpty({ accountId, readToken: required('CF_SMOKE_UPLOAD_READ_TOKEN') });
     console.log('Smoke target identity, empty version/deployment state, routes and preview settings verified read-only.');

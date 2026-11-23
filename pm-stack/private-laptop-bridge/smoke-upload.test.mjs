@@ -7,8 +7,10 @@ import {
   assertDryRunOutput,
   assertExactVersionReadback,
   assertLegacyVersionIdMatch,
+  assertInitCompatibility,
   extractUploadedVersion,
   fetchInitRunEvidence,
+  INIT_COMPAT_PATHS,
   readLegacyVersions,
   readVersions,
   validateInitReceipt,
@@ -51,12 +53,17 @@ function trustedEvidence() {
   const run = { id: 123456789, run_attempt: 1, status: 'completed', conclusion: 'success', event: 'workflow_dispatch', head_branch: 'main', head_sha: sourceSha, path: '.github/workflows/private-laptop-bridge-smoke-init.yml@refs/heads/main', repository: { full_name: 'developing-today/code' } };
   const names = ['Run offline bootstrap contract tests', 'Create only the fixed empty Worker and verify it read-only', 'Preserve verified smoke initialization receipt'];
   const jobs = { total_count: 1, jobs: [{ name: 'initialize', run_id: run.id, head_sha: sourceSha, status: 'completed', conclusion: 'success', steps: names.map(name => ({ name, status: 'completed', conclusion: 'success' })) }] };
-  return { receiptJson: `${JSON.stringify(receipt)}\n`, run, jobs };
+  const uploadSha = 'c'.repeat(40);
+  const compatibility = {
+    comparison: { status: 'ahead', ahead_by: 1, behind_by: 0, base_commit: { sha: sourceSha }, head_commit: { sha: uploadSha }, merge_base_commit: { sha: sourceSha } },
+    files: INIT_COMPAT_PATHS.map(path => ({ path, init_blob_sha: 'd'.repeat(40), upload_blob_sha: 'd'.repeat(40) })),
+  };
+  return { receiptJson: `${JSON.stringify(receipt)}\n`, run, jobs, compatibility, uploadSha };
 }
 
-test('successful init receipt is tied to exact protected main run, attempt, account, and SHA', () => {
-  const { receiptJson, run, jobs } = trustedEvidence();
-  const validated = validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), expectedAccountId: accountId, currentSha: sourceSha, initRunId: '123456789' });
+test('successful init receipt allows main to advance only when the run SHA is an ancestor with identical initializer files', () => {
+  const { receiptJson, run, jobs, compatibility, uploadSha } = trustedEvidence();
+  const validated = validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(compatibility), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' });
   assert.equal(validated.workerId, workerId);
   assert.match(validated.receiptDigest, /^[a-f0-9]{64}$/);
   for (const edit of [
@@ -67,23 +74,36 @@ test('successful init receipt is tied to exact protected main run, attempt, acco
     value => { value.jobs.jobs[0].steps[1].conclusion = 'failure'; },
   ]) {
     const evidence = trustedEvidence(); edit(evidence);
-    assert.throws(() => validateInitReceipt({ receiptJson: evidence.receiptJson, runJson: JSON.stringify(evidence.run), jobsJson: JSON.stringify(evidence.jobs), expectedAccountId: accountId, currentSha: sourceSha, initRunId: '123456789' }));
+    assert.throws(() => validateInitReceipt({ receiptJson: evidence.receiptJson, runJson: JSON.stringify(evidence.run), jobsJson: JSON.stringify(evidence.jobs), compatibilityJson: JSON.stringify(evidence.compatibility), expectedAccountId: accountId, currentSha: evidence.uploadSha, initRunId: '123456789' }));
   }
-  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), expectedAccountId: `${'f'.repeat(28)}cbfa`, currentSha: sourceSha, initRunId: '123456789' }), /account/);
-  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), expectedAccountId: accountId, currentSha: 'c'.repeat(40), initRunId: '123456789' }), /exact main dispatch SHA/);
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(compatibility), expectedAccountId: `${'f'.repeat(28)}cbfa`, currentSha: uploadSha, initRunId: '123456789' }), /account/);
+  const notAncestor = structuredClone(compatibility); notAncestor.comparison.status = 'diverged';
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(notAncestor), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /ancestor/);
+  const changedInitializer = structuredClone(compatibility); changedInitializer.files[1].upload_blob_sha = 'e'.repeat(40);
+  assert.throws(() => validateInitReceipt({ receiptJson, runJson: JSON.stringify(run), jobsJson: JSON.stringify(jobs), compatibilityJson: JSON.stringify(changedInitializer), expectedAccountId: accountId, currentSha: uploadSha, initRunId: '123456789' }), /initializer compatibility changed/);
+  assert.throws(() => assertInitCompatibility({ compatibility: {}, initSha: sourceSha, currentSha: uploadSha }), /ancestor/);
 });
 
 test('init evidence fetch is fixed to repository and receipt attempt', async () => {
-  const { receiptJson } = trustedEvidence();
+  const { receiptJson, run, uploadSha } = trustedEvidence();
   const urls = [];
-  const evidence = await fetchInitRunEvidence({ receiptJson, initRunId: '123456789', githubToken: 'synthetic-github-token-000000', fetchImpl: async url => {
+  const evidence = await fetchInitRunEvidence({ receiptJson, initRunId: '123456789', currentSha: uploadSha, githubToken: 'synthetic-github-token-000000', fetchImpl: async (url, options) => {
     urls.push(String(url));
-    return new Response(JSON.stringify(urls.length === 1 ? { id: 123456789 } : { jobs: [], total_count: 0 }));
+    assert.equal(options.headers.authorization, 'Bearer synthetic-github-token-000000');
+    const parsed = new URL(String(url));
+    const json = value => new Response(JSON.stringify(value));
+    if (parsed.pathname.endsWith('/actions/runs/123456789')) return json(run);
+    if (parsed.pathname.endsWith('/attempts/1/jobs')) return json({ jobs: [], total_count: 0 });
+    if (parsed.pathname.endsWith(`/compare/${sourceSha}...${uploadSha}`)) return json({ status: 'ahead', ahead_by: 1, behind_by: 0, base_commit: { sha: sourceSha }, head_commit: { sha: uploadSha }, merge_base_commit: { sha: sourceSha } });
+    if (parsed.pathname.includes('/contents/')) return json({ type: 'file', path: decodeURIComponent(parsed.pathname.split('/contents/')[1]), sha: 'd'.repeat(40) });
+    throw new Error(`unexpected GitHub API URL ${url}`);
   } });
   assert.equal(urls[0], 'https://api.github.com/repos/developing-today/code/actions/runs/123456789');
   assert.match(urls[1], /attempts\/1\/jobs\?per_page=100$/);
   assert.equal(evidence.jobs.total_count, 0);
-  await assert.rejects(fetchInitRunEvidence({ receiptJson, initRunId: 'not-an-id', githubToken: 'synthetic-github-token-000000', fetchImpl: async () => new Response('{}') }), /run ID/);
+  assert.ok(urls.includes(`https://api.github.com/repos/developing-today/code/compare/${sourceSha}...${uploadSha}`));
+  assert.equal(evidence.compatibility.files.length, INIT_COMPAT_PATHS.length);
+  await assert.rejects(fetchInitRunEvidence({ receiptJson, initRunId: 'not-an-id', currentSha: uploadSha, githubToken: 'synthetic-github-token-000000', fetchImpl: async () => new Response('{}') }), /run ID/);
 });
 
 test('pinned cf dry-run must show the fixed disabled smoke config', () => {
