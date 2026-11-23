@@ -875,6 +875,16 @@ const classifyHttp = (status, headers, bodyText) => {
       headers: { "retry-after": retryAfter },
     });
   }
+  if (status === 429 && quota === null) {
+    // A quota wall that names its reset in the BODY with no
+    // Retry-After header still walls the leaf (#12228): the _muse
+    // wall reads "Your usage window resets at 2026-11-16T00:00:00Z"
+    // with no header, and dropping it kept new sessions routing
+    // into the wall until demotion (reorder-only) kicked in.
+    const resetMs = bodyResetMs(bodyText);
+    if (resetMs !== null)
+      quota = JSON.stringify({ resetsAt: new Date(resetMs).toISOString() });
+  }
   if (status === 429)
     return new LeafError(`leaf HTTP 429: ${bodyText.slice(0, 200)}`, {
       tag: "RateLimit",
@@ -897,6 +907,58 @@ const classifyHttp = (status, headers, bodyText) => {
     tag: "ProviderInternal",
     status,
   });
+};
+
+// The reset instant a 429 BODY promises, if it names one (#12228).
+// Shapes: explicit JSON fields ({"resetsAt": "<iso>"}, epoch seconds
+// or ms under a reset/retry/renew key) or free prose with a reset
+// word next to an ISO instant ("window resets at ...Z"). Only future
+// instants are returned: a past instant cannot wall, and recording one
+// would just add noise to the ledger. Returns epoch ms or null.
+const bodyResetMs = (bodyText) => {
+  if (!bodyText) return null;
+  const futureMs = (ms) =>
+    Number.isFinite(ms) && ms > Date.now() ? ms : null;
+  try {
+    const parsed = JSON.parse(bodyText);
+    const findKeyed = (v, depth) => {
+      if (depth > 4 || v === null || typeof v !== "object") return null;
+      const entries = Array.isArray(v)
+        ? v.map((item, i) => [i, item])
+        : Object.entries(v);
+      for (const [k, item] of entries) {
+        if (
+          (typeof item === "string" || typeof item === "number") &&
+          /reset|retry|renew/i.test(String(k))
+        ) {
+          const ms =
+            typeof item === "number"
+              ? item > 1e12
+                ? item
+                : item > 1e9 && item < 1e11
+                  ? item * 1000
+                  : NaN
+              : Date.parse(item);
+          const ok = futureMs(ms);
+          if (ok !== null) return ok;
+        } else if (item !== null && typeof item === "object") {
+          const inner = findKeyed(item, depth + 1);
+          if (inner !== null) return inner;
+        }
+      }
+      return null;
+    };
+    const keyed = findKeyed(parsed, 0);
+    if (keyed !== null) return keyed;
+  } catch {}
+  const prose = bodyText.match(
+    /(?:reset|resum|renew|reinstat|available|back)[^\d]{0,20}(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})?)/i,
+  );
+  if (prose) {
+    const ok = futureMs(Date.parse(prose[1]));
+    if (ok !== null) return ok;
+  }
+  return null;
 };
 
 const classifyStreamError = (providerError, headers) => {
