@@ -172,15 +172,15 @@ class BatchLogTests(unittest.TestCase):
             )
             third = gate.append_batch_record(path, 3, [103, 104], "cmd", "red")
             fourth = gate.append_batch_record(path, 4, [105], "cmd", "green")
+            # The probe never counted as a landed batch; read the count
+            # back from the file while the temp dir still exists.
+            filed = gate.consecutive_green(gate.read_log(path))
         self.assertEqual(first["consecutive_green"], 1)
         self.assertEqual(second["consecutive_green"], 2)
         self.assertIsNone(probe["consecutive_green"])
         self.assertEqual(third["consecutive_green"], 0)
         self.assertEqual(fourth["consecutive_green"], 1)
-        # The probe never counted as a landed batch.
-        self.assertEqual(
-            gate.consecutive_green(gate.read_log(path)), 1
-        )
+        self.assertEqual(filed, 1)
 
     def test_status_reports_the_count_against_ten(self) -> None:
         records = [
@@ -425,8 +425,8 @@ class StatusCommandTests(unittest.TestCase):
                     "--result", "green",
                 ]
             )
+            (record,) = gate.read_log(path)
         self.assertEqual(rc, 0)
-        (record,) = gate.read_log(path)
         self.assertEqual(record["consecutive_green"], 1)
         self.assertEqual(record["probe"], False)
 
