@@ -3,6 +3,7 @@
 // dedupe_key) around a repo-task/v1 payload. Dispatch adds `origin`,
 // `caller`, `model_hint` and `directory` as extra payload fields (the
 // schema is additionalProperties: true).
+import { createHash } from "node:crypto";
 import type { CallerIdentity } from "./auth.ts";
 import type { ModelRef, TaskKind } from "./validate.ts";
 
@@ -30,6 +31,18 @@ export function canonicalDedupeKey(kind: TaskKind, repo: string, issueNumber: nu
       // there is no canonical key — caller falls back to a dispatch key.
       return null;
   }
+}
+
+/** Broker-compatible issue identity: request keys are scoped to an existing
+ * issue and hashed, while new issues always use their canonical key (#12527). */
+export function issueDispatchDedupeKey(kind: TaskKind, repo: string, issueNumber: number, callerKey?: string, attaching = false): string | null {
+  const canonical = canonicalDedupeKey(kind, repo, issueNumber);
+  if (!canonical) return null;
+  if (attaching && callerKey !== undefined) {
+    const suffix = createHash("sha256").update(callerKey).digest("hex").slice(0, 16);
+    return `${canonical}:dispatch:${suffix}`;
+  }
+  return canonical;
 }
 
 export interface PacketInput {
