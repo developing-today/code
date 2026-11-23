@@ -28,6 +28,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.request
 
@@ -54,6 +55,19 @@ HTTP_TIMEOUT_SECONDS = 120
 # the live queue store); it gets a far longer socket timeout than the
 # JSON API calls above it.
 UPLOAD_TIMEOUT_SECONDS = 3600
+
+# D1 caps one SQL statement at 100,000 bytes, and the import API
+# enforces it: a larger statement fails the whole import with
+# SQLITE_TOOBIG (seen live on the first #8584 export; the D1 import
+# docs' "Statement too long" section names the same limit). A row
+# whose quote()-rendered INSERT exceeds the cap is split instead:
+# its largest TEXT/BLOB cells are chunked, chunk 1 riding the INSERT
+# and the rest appended by UPDATE ... SET col = col || '<chunk>'
+# statements keyed on the table's primary key, each statement under
+# the cap. build_dump records every split so the exporter can verify
+# the reassembled lengths in D1 after the import.
+MAX_IMPORT_STATEMENT_BYTES = 90_000
+SPLIT_CHUNK_BYTES = 40_000
 
 
 def _shape(value):
@@ -219,6 +233,182 @@ def read_table_quoted(client, table, ncols):
     )
 
 
+def _decode_literal(literal):
+    """Inverse of SQLite quote() for TEXT and BLOB literals.
+
+    Returns ("text", str) or ("blob", bytes); (None, None) for anything
+    else (numbers, NULL) -- those are never split candidates.
+    """
+    if len(literal) >= 2 and literal.startswith("'") and literal.endswith("'"):
+        return "text", literal[1:-1].replace("''", "'")
+    if len(literal) >= 3 and literal.startswith("X'") and literal.endswith("'"):
+        return "blob", bytes.fromhex(literal[2:-1])
+    return None, None
+
+
+def _render_literal(kind, value):
+    if kind == "text":
+        return "'" + value.replace("'", "''") + "'"
+    return "X'" + value.hex().upper() + "'"
+
+
+def _value_chunks(kind, value, first_budget=None):
+    """Chunk a decoded TEXT/BLOB value: the first chunk is at most
+    `first_budget` bytes (default SPLIT_CHUNK_BYTES), later chunks at
+    most SPLIT_CHUNK_BYTES; sizes are UTF-8 bytes for text and a UTF-8
+    sequence is never split."""
+    limit = first_budget or SPLIT_CHUNK_BYTES
+    if kind == "text":
+        chunks, current, size = [], "", 0
+        for ch in value:
+            n = len(ch.encode("utf-8"))
+            if current and size + n > limit:
+                chunks.append(current)
+                current, size = "", 0
+                limit = SPLIT_CHUNK_BYTES
+            current += ch
+            size += n
+        if current or not chunks:
+            chunks.append(current)
+        return chunks
+    chunks = [value[:limit]]
+    rest = value[limit:]
+    chunks.extend(
+        rest[i : i + SPLIT_CHUNK_BYTES]
+        for i in range(0, len(rest), SPLIT_CHUNK_BYTES)
+    )
+    return [c for c in chunks if c] or [b""]
+
+
+def _pk_columns(create_sql):
+    """Primary-key column names from a CREATE TABLE statement, or None.
+
+    Handles the two shapes the queue schema uses: a table-level
+    PRIMARY KEY (a, b) definition and an inline column PRIMARY KEY.
+    The parenthesised body is split into top-level definitions first,
+    so a single-line CREATE cannot confuse the match.
+    """
+    start = create_sql.find("(")
+    if start < 0:
+        return None
+    depth, end = 0, None
+    for i in range(start, len(create_sql)):
+        if create_sql[i] == "(":
+            depth += 1
+        elif create_sql[i] == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end is None:
+        return None
+    defs, depth, cur = [], 0, ""
+    for ch in create_sql[start + 1 : end]:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            defs.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        defs.append(cur)
+    for d in defs:
+        m = re.match(r"\s*PRIMARY\s+KEY\s*\(([^)]*)\)", d, re.IGNORECASE)
+        if m:
+            return [c.strip().strip('"`[]') for c in m.group(1).split(",")]
+    for d in defs:
+        d = d.strip()
+        if d.upper().startswith(
+            ("PRIMARY", "FOREIGN", "UNIQUE", "CHECK", "CONSTRAINT")
+        ):
+            continue
+        m = re.match(r'"?([A-Za-z_][A-Za-z0-9_]*)"?\s+', d)
+        if m and re.search(r"\bPRIMARY\s+KEY\b", d, re.IGNORECASE):
+            return [m.group(1)]
+    return None
+
+
+def _split_row_insert(table, colnames, row, pk_cols, splits):
+    """Render one oversized row as an INSERT plus UPDATE appends.
+
+    The largest splittable (TEXT/BLOB) cells are chunked until the
+    INSERT fits under MAX_IMPORT_STATEMENT_BYTES; the remaining chunks
+    are appended by UPDATEs keyed on the primary key (or, when the
+    table declares none, on every unsplit column) with a running-length
+    guard, so a mis-keyed UPDATE matches nothing instead of corrupting
+    a row. Every split is recorded in `splits` as (table, column,
+    where_sql, expected_length) for post-import verification. A row
+    that cannot be split safely raises: a loud failure beats a silently
+    wrong backup copy.
+    """
+    cells = list(row)
+    key_idx = [colnames.index(c) for c in pk_cols] if pk_cols else None
+    split_cells = {}
+    while True:
+        stmt = f'INSERT INTO "{table}" VALUES (' + ", ".join(cells) + ");"
+        if len(stmt.encode("utf-8")) <= MAX_IMPORT_STATEMENT_BYTES:
+            break
+        candidates = [
+            i
+            for i in range(len(cells))
+            if i not in split_cells
+            and i not in (key_idx or [])
+            and _decode_literal(cells[i])[0] is not None
+        ]
+        if not candidates:
+            raise RuntimeError(
+                f"{table}: row exceeds the D1 statement limit and has no "
+                "splittable cell left; refusing to emit it"
+            )
+        target = max(candidates, key=lambda i: len(cells[i].encode("utf-8")))
+        kind, value = _decode_literal(cells[target])
+        byte_len = len(value.encode("utf-8")) if kind == "text" else len(value)
+        overflow = len(stmt.encode("utf-8")) - MAX_IMPORT_STATEMENT_BYTES
+        first_budget = max(1024, byte_len - overflow)
+        chunks = _value_chunks(kind, value, first_budget)
+        if len(chunks) < 2:
+            raise RuntimeError(
+                f"{table}: oversized cell did not split into chunks"
+            )
+        split_cells[target] = (kind, value, chunks)
+        cells[target] = _render_literal(kind, chunks[0])
+    if key_idx is None:
+        key_idx = [i for i in range(len(cells)) if i not in split_cells]
+        if not key_idx:
+            raise RuntimeError(
+                f"{table}: oversized row has no column left to key its "
+                "UPDATE appends on; refusing to emit it"
+            )
+    where = " AND ".join(f'"{colnames[i]}" IS {row[i]}' for i in key_idx)
+    out = [stmt]
+    for target, (kind, value, chunks) in split_cells.items():
+        col = colnames[target]
+        done = len(chunks[0])
+        for chunk in chunks[1:]:
+            # SQLite's || always yields TEXT, so a BLOB cell's appends
+            # CAST back to BLOB to keep the rebuilt value's storage
+            # class (and bytes) identical to the source.
+            expr = f'"{col}" || {_render_literal(kind, chunk)}'
+            if kind == "blob":
+                expr = f"CAST({expr} AS BLOB)"
+            update = (
+                f'UPDATE "{table}" SET "{col}" = {expr} '
+                f'WHERE {where} AND length("{col}") = {done};'
+            )
+            if len(update.encode("utf-8")) > MAX_IMPORT_STATEMENT_BYTES:
+                raise RuntimeError(
+                    f"{table}: UPDATE append for column {col} exceeds the "
+                    "D1 statement limit; refusing to emit it"
+                )
+            out.append(update)
+            done += len(chunk)
+        splits.append((table, col, where, len(value)))
+    return out
+
+
 def build_dump(client, exported_at):
     """A complete, re-importable SQL dump of the store as D1-safe text.
 
@@ -226,7 +416,9 @@ def build_dump(client, exported_at):
     quote()), then indexes/views/triggers, then the meta table holding
     the export timestamp and the per-table row counts the restore
     drill and the freshness readout verify against. Returns
-    (dump_text, counts).
+    (dump_text, counts, splits), where splits records each row that
+    had to be chunked for the D1 statement limit (see
+    _split_row_insert), for post-import verification.
     """
     schema = read_schema(client)
     counts = table_counts(client, schema)
@@ -246,11 +438,19 @@ def build_dump(client, exported_at):
         lines.append(f'DROP TABLE IF EXISTS "{name}";')
     for _name, sql in tables:
         lines.append(sql.rstrip().rstrip(";") + ";")
-    for name, _sql in tables:
-        _c, _probe = client.execute(f'SELECT * FROM "{name}" LIMIT 0')
-        ncols = len(_c)
+    splits = []
+    for name, sql in tables:
+        colnames, _probe = client.execute(f'SELECT * FROM "{name}" LIMIT 0')
+        ncols = len(colnames)
+        pk_cols = _pk_columns(sql)
         for row in read_table_quoted(client, name, ncols):
-            lines.append(f'INSERT INTO "{name}" VALUES (' + ", ".join(row) + ");")
+            stmt = f'INSERT INTO "{name}" VALUES (' + ", ".join(row) + ");"
+            if len(stmt.encode("utf-8")) <= MAX_IMPORT_STATEMENT_BYTES:
+                lines.append(stmt)
+            else:
+                lines.extend(
+                    _split_row_insert(name, colnames, row, pk_cols, splits)
+                )
     for kind, _name, _t, sql in schema:
         if kind in ("index", "view", "trigger"):
             lines.append(sql.rstrip().rstrip(";") + ";")
@@ -267,7 +467,7 @@ def build_dump(client, exported_at):
         )
         + ");"
     )
-    return "\n".join(lines) + "\n", counts
+    return "\n".join(lines) + "\n", counts, splits
 
 
 # ------------------------------------------------------------- Cloudflare

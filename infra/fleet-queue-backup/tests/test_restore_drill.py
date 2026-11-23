@@ -110,7 +110,7 @@ class TestD1Value(unittest.TestCase):
 class TestRestore(unittest.TestCase):
     def test_restore_rebuilds_target_from_copy(self):
         source = make_source()
-        dump, _counts = fq_common.build_dump(
+        dump, _counts, _splits = fq_common.build_dump(
             SqliteLibsqlAdapter(source), "2026-11-22T00:00:00Z"
         )
         copy = sqlite3.connect(":memory:")
