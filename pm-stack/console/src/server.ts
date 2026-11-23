@@ -140,11 +140,11 @@ export interface Deps {
    * exist only when their limits do. */
   phones?: Phones;
   /** This host's link to the edge, when the app is served from one. */
-  link?: Pick<EdgeLink, "publicKey"> & Partial<Pick<EdgeLink, "begin" | "end" | "seen">>;
+  link?: Pick<EdgeLink, "publicKey"> & Partial<Pick<EdgeLink, "begin" | "end" | "seen" | "known" | "take" | "release">>;
   /** What became of each action sent under a name, so that one is done
    * once however often it arrives. The link keeps one; a host with no
    * edge in front of it keeps its own. */
-  named?: Pick<Named, "begin" | "end" | "seen">;
+  named?: Pick<Named, "begin" | "end" | "seen"> & Partial<Pick<Named, "known" | "take" | "release">>;
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -415,47 +415,61 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
           : undefined;
       const record = deps.named ?? deps.link;
       const link = ACT_ID.test(name) && record?.begin && record.end ? record : null;
-      const before = (await link?.seen?.(name)) ?? null;
-      if (before?.state === "running") return json({ error: "This is still being done.", running: true }, 409);
-      if (before?.state === "lost") {
-        // Started, and this host stopped before it ended. Whether it
-        // happened is not known, and doing it again could do it twice.
-        const fate = {
-          ok: false,
-          status: 502,
-          error: "the host restarted while doing this; check whether it happened",
-        };
-        await link?.end?.(name, fate);
-        return json({ error: fate.error, again: true }, 502);
+      // The name is taken for doing here and now, before anything is
+      // waited for (what is known of it is read, and the audit written,
+      // after): of two arrivals under one name only one can take it,
+      // and the other is told it is being done.
+      const taken = link?.take && link.known ? link.take(name) : null;
+      if (taken === false) return json({ error: "This is still being done.", running: true }, 409);
+      try {
+        // What was written down for it before. (A record that cannot be
+        // taken is asked the older way, which also says "being done".)
+        const before = (await (taken ? link?.known?.(name) : link?.seen?.(name))) ?? null;
+        if (before?.state === "running") return json({ error: "This is still being done.", running: true }, 409);
+        if (before?.state === "lost") {
+          // Started, and this host stopped before it ended. Whether it
+          // happened is not known, and doing it again could do it twice.
+          const fate = {
+            ok: false,
+            status: 502,
+            error: "the host restarted while doing this; check whether it happened",
+          };
+          await link?.end?.(name, fate);
+          return json({ error: fate.error, again: true }, 502);
+        }
+        if (before?.state === "done") {
+          return before.fate.ok
+            ? json({ ok: true, result: before.fate.result ?? null, again: true, ...forEdge?.() })
+            : json({ error: before.fate.error ?? "it could not be done", again: true }, before.fate.status ?? 502);
+        }
+        return await act(
+          kind || "unknown",
+          kept,
+          async () => {
+            await link?.begin?.(name);
+            docs.logAct({ ...entry, status: "running" });
+            try {
+              const result = await perform(table, docs, kind, args);
+              docs.logAct({ ...entry, status: "done" });
+              await link?.end?.(name, { ok: true, ...keptSmall(result) });
+              return result;
+            } catch (error) {
+              docs.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
+              await link?.end?.(name, {
+                ok: false,
+                error: (error as Error).message.slice(0, 300),
+                status: error instanceof OpError ? error.status : 502,
+              });
+              throw error;
+            }
+          },
+          forEdge,
+        );
+      } finally {
+        // Given back, whatever became of it: answered from the record,
+        // refused before it began, or done (when it is given back already).
+        if (taken) link?.release?.(name);
       }
-      if (before?.state === "done") {
-        return before.fate.ok
-          ? json({ ok: true, result: before.fate.result ?? null, again: true, ...forEdge?.() })
-          : json({ error: before.fate.error ?? "it could not be done", again: true }, before.fate.status ?? 502);
-      }
-      return await act(
-        kind || "unknown",
-        kept,
-        async () => {
-          await link?.begin?.(name);
-          docs.logAct({ ...entry, status: "running" });
-          try {
-            const result = await perform(table, docs, kind, args);
-            docs.logAct({ ...entry, status: "done" });
-            await link?.end?.(name, { ok: true, ...keptSmall(result) });
-            return result;
-          } catch (error) {
-            docs.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
-            await link?.end?.(name, {
-              ok: false,
-              error: (error as Error).message.slice(0, 300),
-              status: error instanceof OpError ? error.status : 502,
-            });
-            throw error;
-          }
-        },
-        forEdge,
-      );
     }
     if (seg.length === 3 && seg[0] === "queue") {
       return await act(`queue.${seg[2]}`, { task: seg[1], reason: body.reason }, () =>

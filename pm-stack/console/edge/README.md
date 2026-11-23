@@ -341,6 +341,16 @@ open nothing.
   that was put away before it ended is said to be unknown, once, and
   not retried. What goes to the laptop goes under the same name, and
   the laptop keeps the record. Held twice under one name, an action
-  waits once.
+  waits once. A name is taken by one arrival at a time, here and on the
+  laptop, before anything else is waited for: of two that arrive
+  together one does it and the other is told it is being done.
+- What is done late is done in the order the owner did it. An action
+  that may be held goes behind an earlier one about the same thing (the
+  same issue, task, reference or set of questions) that a machine has
+  not taken yet, even when the machine can be reached again: sent
+  straight on it would be done first, and the older one would undo it.
+  What is about something else goes straight on. Not covered (#13398):
+  an older action held for a machine and a newer one about the same
+  thing that the edge does itself.
 - The storage is one Durable Object. A section larger than one stored
   value is kept in pieces.

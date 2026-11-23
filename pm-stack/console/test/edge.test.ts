@@ -590,8 +590,13 @@ async function setup(options: { direct?: boolean } = {}) {
   const puts: string[] = [];
   /** Keys the edge's storage refuses to write, as a store in trouble would. */
   const storeFails = new Set<string>();
+  /** Keys the edge's storage is slow to read: a read waits for its promise. */
+  const storeSlow = new Map<string, Promise<void>>();
   const kv: KV = {
-    get: async (key) => structuredClone(stored.get(key)),
+    get: async (key) => {
+      await storeSlow.get(key);
+      return structuredClone(stored.get(key));
+    },
     put: async (key, value) => {
       if (storeFails.has(key)) throw new Error(`storage: could not write ${key}`);
       puts.push(key);
@@ -743,6 +748,16 @@ async function setup(options: { direct?: boolean } = {}) {
       touch: [],
       audit: (a) => ({ ref: a.ref }),
     },
+    // Something said to an agent: about nothing else, so nothing orders it.
+    "message.send": {
+      run: async (a) => {
+        ran.push({ kind: "message.send", args: a });
+        await gate.wait;
+        return { sent: a.to };
+      },
+      touch: [],
+      audit: (a) => ({ to: a.to }),
+    },
   };
   const audited: Record<string, unknown>[] = [];
   const hostDeps: Deps = {
@@ -884,6 +899,9 @@ async function setup(options: { direct?: boolean } = {}) {
     begin: (id) => link.now.begin(id),
     end: (id, fate) => link.now.end(id, fate),
     seen: (id) => link.now.seen(id),
+    known: (id) => link.now.known(id),
+    take: (id) => link.now.take(id),
+    release: (id) => link.now.release(id),
   };
 
   const token = (claims: Record<string, unknown> = {}) =>
@@ -971,6 +989,7 @@ async function setup(options: { direct?: boolean } = {}) {
     ghDrops,
     ghSays,
     ghHolds,
+    storeSlow,
     queueReadOnly,
     ghBreaks,
     queueRefuses,
@@ -1557,6 +1576,76 @@ describe("actions", () => {
     expect(asked.status).toBe(502);
     expect(((await asked.json()) as { error: string }).error).toContain("restarted while doing this");
     expect(w.ran.filter((r) => r.kind === "need.comment")).toHaveLength(1);
+  });
+
+  test("sent again while the laptop is doing the copy that was held for it, the device is told to wait, not that it was lost", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const id = "0a000000-0000-4000-8000-000000000006";
+    const args = { to: ["lane-1"], text: "held, then slow" };
+    w.net.hostUp = false;
+    expect(await (await w.act("message.send", args, id)).json()).toMatchObject({ ok: true, held: true });
+    // The laptop is back, takes the held action, and is slow doing it.
+    w.net.hostUp = true;
+    let done: () => void = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    w.now.t += 1_000;
+    const taking = w.link.now.once();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(w.ran.map((r) => r.kind)).toEqual(["message.send"]);
+    // The device, which never heard, sends it again meanwhile, and it
+    // reaches the laptop a second way.
+    const meanwhile = await w.act("message.send", args, id);
+    expect([meanwhile.status, await meanwhile.json()]).toEqual([
+      409,
+      { error: "This is still being done.", running: true },
+    ]);
+    done();
+    await taking;
+    w.gate.wait = null;
+    // Done once; and asked once more, the device hears how it came out.
+    expect(w.ran).toHaveLength(1);
+    const after = await w.act("message.send", args, id);
+    expect(await after.json()).toMatchObject({ ok: true, again: true });
+    expect(w.ran).toHaveLength(1);
+  });
+
+  test("done late in the order it was done: what may wait goes behind an earlier one about the same thing that a machine has not taken yet", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    // With the laptop out of reach, the owner moves a task to the top.
+    w.net.hostUp = false;
+    const first = await w.act("task.move", { task: 21016, to: "first" });
+    expect(await first.json()).toMatchObject({ ok: true, held: true });
+    // The laptop is in reach again, and before it has taken that, the
+    // owner moves the same task to the bottom. Sent straight on, it
+    // would be done first, and the older move would undo it.
+    w.net.hostUp = true;
+    const second = await w.act("task.move", { task: 21016, to: "last" });
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null });
+    expect(w.ran.filter((r) => r.kind === "task.move")).toEqual([]);
+    // Another task is nothing to do with it: it is done at once.
+    const other = await w.act("task.move", { task: 21017, to: "first" });
+    expect(await other.json()).toEqual({ ok: true, result: { task: 21017, priority: 10 } });
+    // So is something about nothing in particular.
+    expect((await w.act("message.send", { to: ["lane-1"], text: "hello" })).status).toBe(200);
+    // The laptop takes what waited, in the order the owner did it.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.ran.filter((r) => r.kind === "task.move").map((r) => [r.args.task, r.args.to])).toEqual([
+      [21017, "first"],
+      [21016, "first"],
+      [21016, "last"],
+    ]);
+    // Nothing waits any more, so the next one about that task goes straight on.
+    w.now.t += 1_000;
+    await w.link.now.once();
+    const third = await w.act("task.move", { task: 21016, to: "first" });
+    expect(await third.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
   });
 
   test("held twice under one name, an action waits once", async () => {
@@ -3112,6 +3201,36 @@ describe("the edge does the core itself", () => {
     await merging;
     // GitHub was asked to merge once.
     expect(w.githubCalls.filter((c) => merge(c.method, c.url))).toHaveLength(1);
+  });
+
+  test("two arrivals under one name at the same moment are one doing, here", async () => {
+    const w = await primary();
+    const id = "0b000000-0000-4000-8000-000000000007";
+    // The first is still reading what is known of the name when the
+    // second arrives: neither has written anything down.
+    let open: () => void = () => {};
+    w.storeSlow.set(
+      `a:${id}`,
+      new Promise<void>((r) => {
+        open = r;
+      }),
+    );
+    const first = w.act("pr.merge", { pr: 55 }, id);
+    await new Promise((r) => setTimeout(r, 5));
+    const second = w.act("pr.merge", { pr: 55 }, id);
+    await new Promise((r) => setTimeout(r, 5));
+    w.storeSlow.clear();
+    open();
+    const both = await Promise.all([first, second]);
+    expect(both.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(await (both.find((r) => r.status === 409) as Response).json()).toEqual({
+      error: "This is still being done.",
+      running: true,
+    });
+    expect(w.ghMerged).toHaveLength(1);
+    // The name is free again afterwards: asked once more, it is answered from what was written down.
+    expect(await (await w.act("pr.merge", { pr: 55 }, id)).json()).toMatchObject({ ok: true, again: true });
+    expect(w.ghMerged).toHaveLength(1);
   });
 
   test("handed on to the laptop, an action keeps the device's name for it: the laptop does it once", async () => {

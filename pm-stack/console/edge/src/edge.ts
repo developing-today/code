@@ -49,6 +49,7 @@ import {
   keyId,
   type PublicKey,
   publicKey,
+  subjectOf,
   SYNC_SKEW_MS,
   type SyncRequest,
   type SyncResponse,
@@ -1546,6 +1547,16 @@ export class Edge {
             if (!(error instanceof HandOver)) throw error;
           }
         }
+        // What may be done late goes behind anything already waiting
+        // for a machine that is about the same thing. Sent straight to
+        // a machine that has just come back, it would be done before
+        // the older one, which would undo it when its turn came.
+        if (HOLDABLE.has(kind)) {
+          const about = subjectOf(kind, args as Record<string, unknown>);
+          if (about !== null && (await this.heldList()).some((h) => subjectOf(h.kind, h.args) === about)) {
+            return this.keep({ id: id ?? crypto.randomUUID(), kind, args, who: by });
+          }
+        }
         // The host's to do. The stateless part relays it, and if the
         // host cannot be reached comes back to have it held.
         // It goes under the device's name for it, or one given here,
@@ -1585,19 +1596,22 @@ export class Edge {
    * same name. */
   private async once(id: string | null, kind: string, work: () => Promise<Response>): Promise<Response> {
     if (id === null) return work();
-    const key = `a:${id}`;
-    const before = ((await this.kv.get(key)) as Acted | undefined) ?? null;
-    if (before?.state === "done") return json({ ...before.body, again: true }, before.status ?? 200);
-    if (before?.state === "running") {
-      if (this.doing.has(id)) return json({ error: "This is still being done.", running: true }, 409);
-      // Started, and this object was put away before it ended. Whether
-      // it happened is not known, and doing it again could do it twice.
-      const body = { error: "Cloudflare restarted while doing this; check whether it happened before trying again." };
-      await this.kv.put(key, { at: this.now(), kind, state: "done", status: 502, body } satisfies Acted);
-      return json({ ...body, again: true }, 502);
-    }
+    // Taken for doing here and now, before anything is waited for: of
+    // two arrivals under one name, only one can take it.
+    if (this.doing.has(id)) return json({ error: "This is still being done.", running: true }, 409);
     this.doing.add(id);
+    const key = `a:${id}`;
     try {
+      const before = ((await this.kv.get(key)) as Acted | undefined) ?? null;
+      if (before?.state === "done") return json({ ...before.body, again: true }, before.status ?? 200);
+      if (before?.state === "running") {
+        // Started, and not by this object (it would hold the name):
+        // one that was put away before it ended. Whether it happened
+        // is not known, and doing it again could do it twice.
+        const body = { error: "Cloudflare restarted while doing this; check whether it happened before trying again." };
+        await this.kv.put(key, { at: this.now(), kind, state: "done", status: 502, body } satisfies Acted);
+        return json({ ...body, again: true }, 502);
+      }
       await this.kv.put(key, { at: this.now(), kind, state: "running" } satisfies Acted);
       await this.actedIndex(id);
       let res: Response;
@@ -1674,12 +1688,18 @@ export class Edge {
   /** The host could not be reached: keep the action for it, if it is one
    * that may be done late. */
   private async hold(req: Request): Promise<Response> {
-    const body = (await req.json().catch(() => null)) as {
-      id?: unknown;
-      kind?: unknown;
-      args?: unknown;
-      who?: unknown;
-    } | null;
+    return this.keep(
+      (await req.json().catch(() => null)) as {
+        id?: unknown;
+        kind?: unknown;
+        args?: unknown;
+        who?: unknown;
+      } | null,
+    );
+  }
+
+  /** Keep an action for a machine, at the back of what already waits. */
+  private async keep(body: { id?: unknown; kind?: unknown; args?: unknown; who?: unknown } | null): Promise<Response> {
     const kind = typeof body?.kind === "string" ? body.kind : "";
     const args = body?.args;
     if (!HOLDABLE.has(kind) || args === null || typeof args !== "object" || Array.isArray(args)) {

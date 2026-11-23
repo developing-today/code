@@ -50,6 +50,47 @@
    * a secret that is not written down). What is not known is "now". */
   const rule = (kind) => (LATE.has(kind) ? "late" : TIMELY.has(kind) ? "timely" : "now");
 
+  /** What an action is about, where the order of two matters: a rank
+   * set twice, a task moved twice. Two about one thing are sent in the
+   * order they were done, and a later one is not sent while an earlier
+   * one still waits. Null: it stands alone (a new prompt, a message).
+   * (The platform keeps the same order for what it holds for a
+   * machine: subjectOf in src/edge-proto.ts says the same.) */
+  function subject(kind, args = {}) {
+    const a = args ?? {};
+    const of = (what, value) => {
+      const said = typeof value === "string" || typeof value === "number" ? String(value) : "";
+      return said === "" ? null : `${what}:${said}`;
+    };
+    switch (kind) {
+      case "ask.reply":
+      case "ask.close":
+      case "issue.comment":
+      case "issue.rank":
+        return of("issue", a.issue);
+      case "task.move":
+      case "task.cancel":
+      case "task.unblock":
+        return of("task", a.task);
+      case "hands.done":
+      case "need.comment":
+        return of("ref", a.ref);
+      case "question.answer":
+      case "question.defer":
+      case "questions.accept":
+        return of("questions", a.set);
+      case "pr.merge":
+        return of("pr", a.pr);
+      case "unit.act":
+        return of("unit", a.unit);
+      default:
+        return null;
+    }
+  }
+  /** Said of an entry that was not sent because an earlier one about
+   * the same thing has not been taken yet. */
+  const BEHIND_NOTE = "It goes after an earlier one about the same thing, which has not been taken yet.";
+
   const short = (text, n = 60) => {
     const t = String(text ?? "")
       .replace(/\s+/g, " ")
@@ -176,8 +217,8 @@
 
   /** Send what is due, oldest first. `store` keeps the entries (all,
    * put, remove); `send(entry)` makes one try and says what came back.
-   * Returns what changed. One flush at a time per store: a second call
-   * while one runs joins it. */
+   * Returns what changed, and which entries this pass looked at. One
+   * flush at a time per store: a second call while one runs joins it. */
   const running = new WeakMap();
   function flush(store, send, now = () => Date.now()) {
     const already = running.get(store);
@@ -187,13 +228,31 @@
       let signin = false;
       let offline = false;
       const entries = (await store.all()).sort((a, b) => a.at - b.at);
-      for (const entry of entries) {
-        if (entry.state !== "waiting") continue;
+      // What an earlier entry in this pass is about, when it still
+      // waits after its try: a later one about the same thing is not
+      // sent ahead of it.
+      const stillWaits = new Set();
+      for (const listed of entries) {
+        if (listed.state !== "waiting") continue;
+        // As it stands now, not as it stood when this began: one taken
+        // back meanwhile ("do not send") is not sent, and one already
+        // dealt with is not dealt with again.
+        const entry = (await store.all()).find((e) => e.id === listed.id);
+        if (!entry || entry.state !== "waiting") continue;
         if (!due(entry, now())) {
           // Too old to send unasked: kept, and said to be.
           const stale = { ...entry, state: "stale", note: "Not sent: it was a while ago, and this may have changed." };
           await store.put(stale);
           changed.push(stale);
+          continue;
+        }
+        const about = subject(entry.kind, entry.args);
+        if (about !== null && stillWaits.has(about)) {
+          if (entry.note !== BEHIND_NOTE) {
+            const behind = { ...entry, note: BEHIND_NOTE };
+            await store.put(behind);
+            changed.push(behind);
+          }
           continue;
         }
         let answer;
@@ -203,6 +262,7 @@
           answer = { network: true };
         }
         const { state, note, result, stop, signin: needs } = classify(answer);
+        if (state === "waiting" && about !== null) stillWaits.add(about);
         const next = {
           ...entry,
           state,
@@ -221,13 +281,43 @@
         if (answer.network) offline = true;
         if (stop) break;
       }
-      for (const id of expired(await store.all(), now())) await store.remove(id);
-      return { changed, signin, offline };
+      const left = await store.all();
+      for (const id of expired(left, now())) await store.remove(id);
+      // How many still wait to be sent: by their own doing (no answer,
+      // nothing to take them just now), not for the owner to look at.
+      return {
+        changed,
+        signin,
+        offline,
+        waiting: left.filter((e) => e.state === "waiting").length,
+        looked: entries.map((e) => e.id),
+      };
     })();
     running.set(store, work);
     const clear = () => running.delete(store);
     work.then(clear, clear);
     return work;
+  }
+
+  /** Send an entry that has just been written down, behind whatever is
+   * already waiting, in the order things were done. Sent ahead of an
+   * older one, the older would undo it when its turn came: a rank
+   * changed twice would end as the first. Says what became of it (the
+   * entry as it now stands, or null if it was taken back meanwhile),
+   * and what else went in the same pass. One that failed is not kept:
+   * the caller says so to the owner's face. */
+  async function sendInOrder(store, id, send, now = () => Date.now()) {
+    const mine = async () => (await store.all()).find((e) => e.id === id) ?? null;
+    let out = await flush(store, send, now);
+    let entry = await mine();
+    // A send already under way was joined, and it began before this
+    // was written down: once more, for this one.
+    if (entry?.state === "waiting" && !out.looked.includes(id) && !out.offline && !out.signin) {
+      out = await flush(store, send, now);
+      entry = await mine();
+    }
+    if (entry?.state === "failed") await store.remove(id);
+    return { entry, others: out.changed.filter((e) => e.id !== id), signin: out.signin, offline: out.offline };
   }
 
   /** Entries held for a machine learn how they came out from the
@@ -326,6 +416,7 @@
   root.PMOutbox = {
     TIMELY_MS,
     rule,
+    subject,
     sayOf,
     make,
     classify,
@@ -333,6 +424,7 @@
     summary,
     expired,
     flush,
+    sendInOrder,
     settle,
     httpSend,
     idbStore,

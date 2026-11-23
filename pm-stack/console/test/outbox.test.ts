@@ -9,6 +9,7 @@
 // each once is checked in a browser and in test/edge.test.ts.
 import { expect, test } from "bun:test";
 import "../public/outbox.js";
+import { HOLDABLE, subjectOf } from "../src/edge-proto.ts";
 
 interface Entry {
   id: string;
@@ -33,6 +34,7 @@ interface Store {
 const O = (globalThis as unknown as { PMOutbox: Record<string, unknown> }).PMOutbox as {
   TIMELY_MS: number;
   rule(kind: string): "late" | "timely" | "now";
+  subject(kind: string, args?: unknown): string | null;
   sayOf(kind: string, args?: unknown): string;
   make(kind: string, args: unknown, now: number, said?: string, id?: string): Entry;
   classify(answer: Answer): { state: string; note: string; stop?: boolean; signin?: boolean; result?: unknown };
@@ -43,7 +45,13 @@ const O = (globalThis as unknown as { PMOutbox: Record<string, unknown> }).PMOut
     store: Store,
     send: (entry: Entry) => Promise<Answer>,
     now?: () => number,
-  ): Promise<{ changed: Entry[]; signin: boolean; offline: boolean }>;
+  ): Promise<{ changed: Entry[]; signin: boolean; offline: boolean; waiting: number; looked: string[] }>;
+  sendInOrder(
+    store: Store,
+    id: string,
+    send: (entry: Entry) => Promise<Answer>,
+    now?: () => number,
+  ): Promise<{ entry: Entry | null; others: Entry[]; signin: boolean; offline: boolean }>;
   settle(store: Store, acts: unknown, now?: () => number): Promise<Entry[]>;
   httpSend(entry: Entry, fetchImpl: (url: string, init: RequestInit) => Promise<unknown>): Promise<Answer>;
   memoryStore(): Store;
@@ -362,6 +370,313 @@ test("a merge asked for a while ago is kept back, not sent, until the owner says
   await store.put({ ...stale, state: "waiting", sure: true, note: "" });
   await O.flush(store, send, () => T0 + 5 * 60 * MIN);
   expect(sent).toEqual(["task.cancel", "pr.merge"]);
+});
+
+test("one taken back while another is being sent is not sent, and one dealt with meanwhile is not dealt with again", async () => {
+  const store = O.memoryStore();
+  const first = O.make("ask.send", { text: "slow" }, T0);
+  const second = O.make("pr.merge", { pr: 55 }, T0 + 1);
+  const third = O.make("issue.rank", { issue: 301, rank: "next" }, T0 + 2);
+  const fourth = O.make("ask.reply", { issue: 201, text: "still wanted" }, T0 + 3);
+  for (const e of [first, second, third, fourth]) await store.put(e);
+  let open: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    open = r;
+  });
+  const sent: string[] = [];
+  const flushing = O.flush(
+    store,
+    async (e) => {
+      sent.push(e.kind);
+      if (e.kind === "ask.send") await gate;
+      return ok();
+    },
+    () => T0 + 10,
+  );
+  await new Promise((r) => setTimeout(r, 5));
+  // While the first is out: the owner says "do not send" on the merge,
+  // and something else (the service worker, another tab) deals with the rank.
+  await store.remove(second.id);
+  await store.put({ ...third, state: "done", endedAt: T0 + 9 });
+  open();
+  const out = await flushing;
+  expect(sent).toEqual(["ask.send", "ask.reply"]);
+  expect(out.changed.map((e) => e.kind)).toEqual(["ask.send", "ask.reply"]);
+  expect((await store.all()).map((e) => [e.kind, e.state]).sort()).toEqual([
+    ["ask.reply", "done"],
+    ["ask.send", "done"],
+    ["issue.rank", "done"],
+  ]);
+  // Nothing is left waiting, and the flush says so.
+  expect(out.waiting).toBe(0);
+});
+
+test("a flush says how many are still waiting to be sent, not counting what waits for the owner", async () => {
+  const store = O.memoryStore();
+  await store.put(O.make("message.send", { to: ["a"], text: "x" }, T0));
+  await store.put(O.make("pr.merge", { pr: 55 }, T0 - 60 * MIN));
+  await store.put({ ...O.make("ask.send", {}, T0), state: "failed" });
+  const out = await O.flush(
+    store,
+    async () => ({ status: 503, body: { error: "no machine" } }),
+    () => T0 + 1,
+  );
+  expect([out.waiting, out.offline, out.signin]).toEqual([1, false, false]);
+  expect(
+    (
+      await O.flush(
+        store,
+        async () => ({ network: true }),
+        () => T0 + 2,
+      )
+    ).waiting,
+  ).toBe(1);
+  expect(
+    (
+      await O.flush(
+        store,
+        async () => ok(),
+        () => T0 + 3,
+      )
+    ).waiting,
+  ).toBe(0);
+});
+
+test("what an action is about: two about one thing keep their order, on the device and on the platform alike", () => {
+  const cases: [string, Record<string, unknown>, string | null][] = [
+    ["issue.rank", { issue: 301, rank: "now" }, "issue:301"],
+    ["issue.comment", { issue: 301, text: "x" }, "issue:301"],
+    ["ask.reply", { issue: 201, text: "x" }, "issue:201"],
+    ["ask.close", { issue: 201 }, "issue:201"],
+    ["task.move", { task: 21016, to: "first" }, "task:21016"],
+    ["task.cancel", { task: 21016, reason: "x" }, "task:21016"],
+    ["task.unblock", { task: "21016" }, "task:21016"],
+    ["need.comment", { ref: "developing-today/code#3", text: "x" }, "ref:developing-today/code#3"],
+    ["hands.done", { ref: "developing-today/code#3" }, "ref:developing-today/code#3"],
+    ["question.answer", { set: "s1", qid: "q1", option: "a" }, "questions:s1"],
+    ["question.defer", { set: "s1", qid: "q2" }, "questions:s1"],
+    ["questions.accept", { set: "s1" }, "questions:s1"],
+    ["pr.merge", { pr: 55 }, "pr:55"],
+    ["unit.act", { unit: "fleet-queue.service", action: "restart" }, "unit:fleet-queue.service"],
+    // About nothing else: nothing orders them.
+    ["ask.send", { text: "x" }, null],
+    ["intake.send", { text: "x", kind: "bug" }, null],
+    ["message.send", { to: ["a"], text: "x" }, null],
+    ["deploy.start", { what: "site" }, null],
+    ["prompt.enqueue", { issue: 201, text: "x" }, null],
+    ["something.new", { issue: 1 }, null],
+    // Said without the thing it is about, it is about nothing.
+    ["issue.rank", {}, null],
+    ["issue.rank", { issue: "" }, null],
+    ["task.move", { task: null }, null],
+    ["task.move", { task: { toString: () => "21016" } }, null],
+  ];
+  for (const [kind, args, about] of cases) {
+    expect([kind, args, O.subject(kind, args)]).toEqual([kind, args, about]);
+    expect([kind, args, subjectOf(kind, args)]).toEqual([kind, args, about]);
+  }
+  expect([O.subject("issue.rank"), O.subject("issue.rank", null), subjectOf("issue.rank", null)]).toEqual([
+    null,
+    null,
+    null,
+  ]);
+  // Everything the platform may hold for a machine is something the
+  // device may keep too, or is the platform's own second half of one.
+  for (const kind of HOLDABLE) {
+    if (kind === "prompt.enqueue" || kind === "triage.enqueue") continue;
+    expect([kind, O.rule(kind)]).toEqual([kind, "late"]);
+  }
+});
+
+test("a later one about the same thing is not sent ahead of an earlier one that has not been taken", async () => {
+  const store = O.memoryStore();
+  const older = O.make("task.move", { task: 21016, to: "first" }, T0);
+  const newer = O.make("task.move", { task: 21016, to: "last" }, T0 + 1);
+  const other = O.make("task.move", { task: 21017, to: "first" }, T0 + 2);
+  const alone = O.make("ask.send", { text: "x" }, T0 + 3);
+  for (const e of [older, newer, other, alone]) await store.put(e);
+  const sent: unknown[] = [];
+  // Nothing can take the older one just now; anything else would be taken.
+  const busy = async (e: Entry): Promise<Answer> => {
+    sent.push(e.kind === "task.move" ? `${e.args.task} ${e.args.to}` : e.kind);
+    return e.id === older.id ? { status: 503, body: { error: "no machine" } } : ok();
+  };
+  const out = await O.flush(store, busy, () => T0 + 10);
+  // The newer move of that task was not sent: done first, the older
+  // would undo it when its turn came. The rest went.
+  expect(sent).toEqual(["21016 first", "21017 first", "ask.send"]);
+  expect(out.changed.map((e) => [e.id, e.state, e.note])).toEqual([
+    [older.id, "waiting", "Nothing could take it just now. It is offered again."],
+    [newer.id, "waiting", "It goes after an earlier one about the same thing, which has not been taken yet."],
+    [other.id, "done", ""],
+    [alone.id, "done", ""],
+  ]);
+  expect([out.waiting, out.looked.length]).toEqual([2, 4]);
+  // The same again changes nothing, and writes nothing.
+  sent.length = 0;
+  expect((await O.flush(store, busy, () => T0 + 11)).changed).toEqual([]);
+  expect(sent).toEqual(["21016 first"]);
+  // Being done right now is the same: the newer waits for it to end.
+  sent.length = 0;
+  await O.flush(
+    store,
+    async (e) => {
+      sent.push(`${e.args.task} ${e.args.to}`);
+      return { status: 409, body: { error: "This is still being done.", running: true } };
+    },
+    () => T0 + 12,
+  );
+  expect(sent).toEqual(["21016 first"]);
+  // Once the older is taken, the newer goes after it, in the same pass.
+  sent.length = 0;
+  const after = await O.flush(
+    store,
+    async (e) => {
+      sent.push(`${e.args.task} ${e.args.to}`);
+      return ok();
+    },
+    () => T0 + 13,
+  );
+  expect(sent).toEqual(["21016 first", "21016 last"]);
+  expect(after.changed.map((e) => [e.id, e.state, e.note])).toEqual([
+    [older.id, "done", ""],
+    [newer.id, "done", ""],
+  ]);
+  // One that failed, or went stale, is not waited for: the owner is told of it instead.
+  const again = O.memoryStore();
+  await again.put(O.make("issue.rank", { issue: 301, rank: "now" }, T0));
+  await again.put(O.make("issue.rank", { issue: 301, rank: "next" }, T0 + 1));
+  const refused = await O.flush(
+    again,
+    async (e) => (e.args.rank === "now" ? { status: 404, body: { error: "no such issue" } } : ok()),
+    () => T0 + 2,
+  );
+  expect(refused.changed.map((e) => [e.args.rank, e.state])).toEqual([
+    ["now", "failed"],
+    ["next", "done"],
+  ]);
+});
+
+test("sent in order behind one about the same thing that is not taken: it is kept, said why, and the older is tried once", async () => {
+  const store = O.memoryStore();
+  const older = O.make("issue.rank", { issue: 301, rank: "now" }, T0);
+  await store.put(older);
+  const newer = O.make("issue.rank", { issue: 301, rank: "next" }, T0 + 60_000);
+  await store.put(newer);
+  const sent: unknown[] = [];
+  const did = await O.sendInOrder(
+    store,
+    newer.id,
+    async (e) => {
+      sent.push(e.args.rank);
+      return { status: 503, body: { error: "no machine" } };
+    },
+    () => T0 + 61_000,
+  );
+  expect(sent).toEqual(["now"]);
+  expect(did.entry).toMatchObject({
+    id: newer.id,
+    state: "waiting",
+    tries: 0,
+    note: "It goes after an earlier one about the same thing, which has not been taken yet.",
+  });
+  expect(did.others.map((e) => [e.id, e.state])).toEqual([[older.id, "waiting"]]);
+});
+
+test("something done now goes behind what is already waiting, so the older cannot undo it later", async () => {
+  const store = O.memoryStore();
+  // Kept from when there was no connection: the issue ranked "now".
+  const older = O.make("issue.rank", { issue: 301, rank: "now" }, T0);
+  await store.put(older);
+  // Connected again, and before anything else has sent it, the owner
+  // ranks the same issue "next".
+  const newer = O.make("issue.rank", { issue: 301, rank: "next" }, T0 + 60_000);
+  await store.put(newer);
+  const ranks: unknown[] = [];
+  const did = await O.sendInOrder(
+    store,
+    newer.id,
+    async (e) => {
+      ranks.push(e.args.rank);
+      return ok({ rank: e.args.rank });
+    },
+    () => T0 + 61_000,
+  );
+  // The older went first, so the issue ends as the owner last said.
+  expect(ranks).toEqual(["now", "next"]);
+  expect(did.entry).toMatchObject({ id: newer.id, state: "done", result: { rank: "next" } });
+  expect(did.others.map((e) => [e.id, e.state])).toEqual([[older.id, "done"]]);
+  expect([did.signin, did.offline]).toEqual([false, false]);
+});
+
+test("sent in order: what each outcome leaves behind", async () => {
+  const fresh = async (answer: (e: Entry) => Answer | Promise<Answer>) => {
+    const store = O.memoryStore();
+    const entry = O.make("ask.send", { text: "x" }, T0);
+    await store.put(entry);
+    const did = await O.sendInOrder(
+      store,
+      entry.id,
+      async (e) => answer(e),
+      () => T0 + 1,
+    );
+    return { did, left: await store.all() };
+  };
+  // No connection: it waits, written down.
+  const offline = await fresh(() => ({ network: true }));
+  expect([offline.did.entry?.state, offline.did.offline, offline.left.map((e) => e.state)]).toEqual([
+    "waiting",
+    true,
+    ["waiting"],
+  ]);
+  // No sign-in: the same, and it says which.
+  const signin = await fresh(() => ({ signin: true, status: 0, body: null }));
+  expect([signin.did.entry?.state, signin.did.signin, signin.did.entry?.note]).toEqual([
+    "waiting",
+    true,
+    "Sign in again to send this.",
+  ]);
+  // Refused: said at once, and nothing of it is kept.
+  const failed = await fresh(() => ({ status: 404, body: { error: "no such issue" } }));
+  expect([failed.did.entry?.state, failed.did.entry?.note, failed.left]).toEqual(["failed", "no such issue", []]);
+  // Kept by the platform for a machine.
+  const held = await fresh(() => ({ status: 200, body: { ok: true, held: true, result: null } }));
+  expect([held.did.entry?.state, held.left.map((e) => e.state)]).toEqual(["held", ["held"]]);
+  // Taken back while it was out: said as that.
+  const store = O.memoryStore();
+  const entry = O.make("ask.send", { text: "x" }, T0);
+  await store.put(entry);
+  const gone = await O.sendInOrder(store, entry.id, async () => {
+    await store.remove(entry.id);
+    return { network: true };
+  });
+  expect(gone.entry).toBeNull();
+});
+
+test("sent in order while another send is under way: it is not left behind", async () => {
+  const store = O.memoryStore();
+  const first = O.make("ask.send", { text: "already going" }, T0);
+  await store.put(first);
+  let open: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    open = r;
+  });
+  const sent: unknown[] = [];
+  const send = async (e: Entry) => {
+    sent.push(e.args.text);
+    if (e.args.text === "already going") await gate;
+    return ok();
+  };
+  const under = O.flush(store, send, () => T0 + 1);
+  await new Promise((r) => setTimeout(r, 5));
+  // The owner does something else while that is out.
+  const second = O.make("ask.send", { text: "done meanwhile" }, T0 + 2);
+  await store.put(second);
+  const mine = O.sendInOrder(store, second.id, send, () => T0 + 3);
+  open();
+  await under;
+  expect((await mine).entry).toMatchObject({ state: "done" });
+  expect(sent).toEqual(["already going", "done meanwhile"]);
 });
 
 test("two flushes at once are one flush: nothing is sent twice", async () => {

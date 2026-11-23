@@ -141,38 +141,57 @@ export class EdgeLink {
     return this.named.seen(id);
   }
 
+  /** What is written down for a name, whoever holds it now. */
+  known(id: string) {
+    return this.named.known(id);
+  }
+
+  /** Take a name for doing, now, or learn that it is being done. */
+  take(id: string): boolean {
+    return this.named.take(id);
+  }
+
+  /** Give back a name that was taken and not done under. */
+  release(id: string): void {
+    this.named.release(id);
+  }
+
   /** A held action from the edge: run it unless it has been seen before. */
-  private async take(held: Held): Promise<void> {
+  private async doHeld(held: Held): Promise<void> {
     if (this.acks.some((a) => a.id === held.id)) return;
-    // Still being done (its answer was slow, not lost): say nothing yet.
-    if (this.named.isRunning(held.id)) return;
-    const seen = await this.named.get(held.id);
-    if (seen === "started") {
-      // The host stopped while this was running. Whether it happened is
-      // not known, and running it again could do it twice.
-      const fate = { ok: false, error: "the host restarted while doing this; check whether it happened" };
-      await this.named.record(held.id, fate);
-      this.acks.push({ id: held.id, ...fate });
-      return;
-    }
-    if (seen) {
-      this.acks.push({ id: held.id, ...seen }); // the edge missed the first answer
-      return;
-    }
-    let fate: { ok: boolean; error?: string };
-    if (!HOLDABLE.has(held.kind)) {
-      fate = { ok: false, error: "this is not an action that may be done late" };
-    } else {
-      await this.named.record(held.id, "started");
-      try {
-        await this.o.run(held);
-        fate = { ok: true };
-      } catch (error) {
-        fate = { ok: false, error: (error as Error).message.slice(0, 300) };
+    // Taken for doing, here and now, before anything is read: the same
+    // name arriving by another way while this runs is told it is being
+    // done, not that it was lost. Not taken: it is still being done
+    // (its answer was slow, not lost; or the device that sent it is
+    // sending it again this moment), and nothing is said yet.
+    if (!this.named.take(held.id)) return;
+    try {
+      const seen = await this.named.get(held.id);
+      let fate: Outcome;
+      if (seen === "started") {
+        // The host stopped while this was running. Whether it happened
+        // is not known, and running it again could do it twice.
+        fate = { ok: false, error: "the host restarted while doing this; check whether it happened" };
+      } else if (seen) {
+        // The edge missed the first answer.
+        this.acks.push({ id: held.id, ok: seen.ok, ...(seen.error ? { error: seen.error } : {}) });
+        return;
+      } else if (!HOLDABLE.has(held.kind)) {
+        fate = { ok: false, error: "this is not an action that may be done late" };
+      } else {
+        await this.named.record(held.id, "started");
+        try {
+          await this.o.run(held);
+          fate = { ok: true };
+        } catch (error) {
+          fate = { ok: false, error: (error as Error).message.slice(0, 300) };
+        }
       }
+      await this.named.record(held.id, fate);
+      this.acks.push({ id: held.id, ok: fate.ok, ...(fate.error ? { error: fate.error } : {}) });
+    } finally {
+      this.named.release(held.id);
     }
-    await this.named.record(held.id, fate);
-    this.acks.push({ id: held.id, ...fate });
   }
 
   /** The build could not be sent. It is left out of the reports that
@@ -289,7 +308,7 @@ export class EdgeLink {
       this.want = new Set(answer.want ?? []);
       this.last = answer;
       await this.o.phones.mergeLinks(answer.phones);
-      for (const held of answer.commands ?? []) await this.take(held);
+      for (const held of answer.commands ?? []) await this.doHeld(held);
       return answer;
     } finally {
       this.busy = false;

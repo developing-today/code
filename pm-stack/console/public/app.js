@@ -341,43 +341,55 @@ async function submit(kind, args) {
 }
 
 async function submitNow(entry) {
-  const { kind } = entry;
-  // What needs a connection by its nature is not written down.
-  let keeps = Outbox.rule(kind) !== "now" && outbox !== null;
-  if (keeps) {
-    try {
-      await outbox.put(entry);
-    } catch {
-      keeps = false;
-    }
-  }
-  const answer = await Outbox.httpSend(entry);
-  const out = Outbox.classify(answer);
-  const end = async (state, more = {}) => {
-    if (keeps) await outbox.put({ ...entry, ...more, state, tries: 1, triedAt: Date.now(), endedAt: Date.now() }).catch(() => {});
+  // Sent by itself, behind nothing: what needs a connection by its
+  // nature (it is not written down), or everything, in a browser that
+  // will not let this page keep anything.
+  const direct = async () => {
+    const answer = await Outbox.httpSend(entry);
+    const out = Outbox.classify(answer);
+    if (out.state === "done") return { state: "done", result: out.result };
+    if (out.state === "held") return { state: "held" };
+    if (out.state === "failed") return { state: "failed", note: out.note };
+    if (out.signin) signedOut = true;
+    return { state: "refused", note: answer.network ? "This needs a connection." : out.signin ? NO_SIGNIN : out.note };
   };
-  if (out.state === "done") {
-    await end("done", { result: out.result });
-    return { state: "done", result: out.result };
+  if (Outbox.rule(entry.kind) === "now" || outbox === null) return direct();
+  try {
+    await outbox.put(entry);
+  } catch {
+    return direct();
   }
-  if (out.state === "held") {
-    await end("held", { note: out.note });
-    return { state: "held" };
+  // It goes behind whatever is already waiting, in the order things
+  // were done (outbox.js says why).
+  let did;
+  try {
+    did = await Outbox.sendInOrder(outbox, entry.id, (e) => Outbox.httpSend(e));
+  } catch {
+    // It is written down, and what became of it could not be read back:
+    // it is treated as waiting, which it is at worst, and sent again
+    // under its name.
+    did = { entry: { state: "waiting", note: "" }, others: [], signin: false, offline: false };
   }
-  if (out.state === "failed") {
-    // Said at once, to the owner's face: nothing to keep of it.
-    if (keeps) await outbox.remove(entry.id).catch(() => {});
-    return { state: "failed", note: out.note };
-  }
+  if (did.signin) signedOut = true;
+  const out = sentSaid(did, entry.id);
   // Not taken: no connection, no sign-in, or nothing to take it just now.
-  if (out.signin) signedOut = true;
-  if (!keeps) {
-    const note = answer.network ? "This needs a connection." : out.signin ? NO_SIGNIN : out.note;
-    return { state: "refused", note };
-  }
-  if (out.note) await outbox.put({ ...entry, note: out.note, tries: 1, triedAt: Date.now() }).catch(() => {});
-  sendWhenConnected();
-  return { state: "kept", id: entry.id, note: out.signin ? "Kept on this device. Sign in again to send it." : out.note ? `Kept on this device: ${out.note}` : KEPT_NOTE };
+  if (out.state === "kept") sendWhenConnected();
+  return out;
+}
+
+/** What to tell whoever did something, from what became of it when it
+ * was sent in its turn. `did.entry` is the entry as it now stands. */
+export function sentSaid(did, id) {
+  const now = did.entry;
+  if (!now) return { state: "refused", note: "It was taken back before it was sent." };
+  if (now.state === "done") return { state: "done", result: now.result ?? null, others: did.others };
+  if (now.state === "held") return { state: "held", others: did.others };
+  if (now.state === "failed") return { state: "failed", note: now.note };
+  return {
+    state: "kept",
+    id,
+    note: did.signin ? "Kept on this device. Sign in again to send it." : now.note ? `Kept on this device: ${now.note}` : KEPT_NOTE,
+  };
 }
 
 /** Take back something kept that has not been sent. */
@@ -398,13 +410,16 @@ async function act(kind, args, done, button) {
   if (button) button.disabled = true;
   const out = await submit(kind, args);
   await readKept();
+  // Older things that went in the same pass are said with it.
+  const older = out.others?.length ? flushSaid(out.others) : "";
+  const also = older ? ` ${older}` : "";
   if (out.state === "done") {
-    toast(typeof done === "function" ? done(out.result) : done);
+    toast((typeof done === "function" ? done(out.result) : done) + also);
     await refresh(true);
     return out.result ?? { done: true };
   }
   if (out.state === "held") {
-    toast(HELD_NOTE);
+    toast(HELD_NOTE + also);
     await refresh(true);
     return { held: true };
   }

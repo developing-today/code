@@ -27,6 +27,7 @@ import {
   phaseHeading,
   prCheck,
   runSaid,
+  sentSaid,
   servingSaid,
   subscriptionState,
   testSaid,
@@ -678,4 +679,53 @@ test("keeping a copy of every screen reads each under the address its screen ask
     "devices",
     "signin",
   ]);
+});
+
+test("what the owner is told of something just done, from what became of it when it was sent in its turn", () => {
+  const id = "0c000000-0000-4000-8000-000000000001";
+  const older = [{ id: "x", state: "done" }];
+  const quiet = { others: [], signin: false, offline: false };
+  // Done: its result, and what else went with it.
+  expect(sentSaid({ ...quiet, entry: { state: "done", result: { rank: "next" } }, others: older }, id)).toEqual({
+    state: "done",
+    result: { rank: "next" },
+    others: older,
+  });
+  expect(sentSaid({ ...quiet, entry: { state: "done" } }, id)).toEqual({ state: "done", result: null, others: [] });
+  // Taken by the platform for a machine.
+  expect(sentSaid({ ...quiet, entry: { state: "held" }, others: older }, id)).toEqual({ state: "held", others: older });
+  // Refused: said, and nothing more.
+  expect(sentSaid({ ...quiet, entry: { state: "failed", note: "no such issue" } }, id)).toEqual({
+    state: "failed",
+    note: "no such issue",
+  });
+  // Kept on the device: with no connection, with no sign-in, and when
+  // nothing could take it or it goes behind another, each said as itself.
+  expect(sentSaid({ ...quiet, offline: true, entry: { state: "waiting", note: "" } }, id)).toEqual({
+    state: "kept",
+    id,
+    note: "Kept on this device. It is sent when you are connected.",
+  });
+  expect(
+    sentSaid({ ...quiet, signin: true, entry: { state: "waiting", note: "Sign in again to send this." } }, id),
+  ).toEqual({
+    state: "kept",
+    id,
+    note: "Kept on this device. Sign in again to send it.",
+  });
+  expect(
+    sentSaid(
+      { ...quiet, entry: { state: "waiting", note: "Nothing could take it just now. It is offered again." } },
+      id,
+    ),
+  ).toEqual({
+    state: "kept",
+    id,
+    note: "Kept on this device: Nothing could take it just now. It is offered again.",
+  });
+  // Taken back by the owner while it was out.
+  expect(sentSaid({ ...quiet, entry: null }, id)).toEqual({
+    state: "refused",
+    note: "It was taken back before it was sent.",
+  });
 });

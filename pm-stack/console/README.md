@@ -190,6 +190,8 @@ the Android app alike (which is the same site in Chrome).
   screen's own read, each under the address it was asked for. The
   network is always asked first; a copy is shown only when the network
   gives no answer (or is too slow to wait for), and is marked as a copy.
+  Keeping copies is on a best effort: a device with no room, or a
+  browser that gives the site no cache, still gets the network's answer.
   An answer that says no (a refusal, a way to the sign-in page, an
   error) is passed on as it is and never papered over. The corner of
   the header then says `offline` and how old the state is, and a line
@@ -204,7 +206,19 @@ the Android app alike (which is the same site in Chrome).
   where the browser has it). The platform does an action once under its
   name however often it arrives, so sending again after an answer that
   never came is safe: Cloudflare keeps the names it did (a week, three
-  hundred), and a machine keeps its own (`src/named.ts`).
+  hundred), and a machine keeps its own (`src/named.ts`). A name is
+  taken by one arrival at a time: a second one while the first is still
+  being done is told so, and asks again.
+- **In the order it was done.** Something done now goes behind whatever
+  is already waiting, oldest first, and is not sent ahead of it. Two
+  about the same thing (an issue ranked twice, a task moved twice) keep
+  their order to the end: while the earlier one has not been taken, the
+  later one waits, on the device and, for what a machine does late, on
+  the platform too. What is about something else is not held up by it.
+- **Nothing waits unseen.** Where the browser wakes the worker with the
+  app closed and something still could not be taken, the worker asks to
+  be woken again; on the browser's last call it says what still waits,
+  and opening the app sends it.
 - **Not everything is sent unasked.** What the owner says or decides
   (a prompt, a reply, a rank, a note, a bug, an answer) does not go
   stale and goes whenever it can. A merge, a deploy, a cancel, an

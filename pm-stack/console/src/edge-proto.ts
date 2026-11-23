@@ -200,6 +200,44 @@ export const HOLDABLE = new Set([
   "intake.send",
   "triage.enqueue",
 ]);
+/** What an action is about, where the order of two matters: a rank set
+ * twice, a task moved twice. Two about one thing are done in the order
+ * the owner did them: one that may be done late goes behind an earlier
+ * one about the same thing that is still held for a machine. Null: it
+ * stands alone. (The device keeps the same order for what it has not
+ * sent yet: `subject` in public/outbox.js says the same, and a test
+ * holds the two together.) */
+export function subjectOf(kind: string, args: Record<string, unknown> | null | undefined): string | null {
+  const a = args ?? {};
+  const of = (what: string, value: unknown) => {
+    const said = typeof value === "string" || typeof value === "number" ? String(value) : "";
+    return said === "" ? null : `${what}:${said}`;
+  };
+  switch (kind) {
+    case "ask.reply":
+    case "ask.close":
+    case "issue.comment":
+    case "issue.rank":
+      return of("issue", a.issue);
+    case "task.move":
+    case "task.cancel":
+    case "task.unblock":
+      return of("task", a.task);
+    case "hands.done":
+    case "need.comment":
+      return of("ref", a.ref);
+    case "question.answer":
+    case "question.defer":
+    case "questions.accept":
+      return of("questions", a.set);
+    case "pr.merge":
+      return of("pr", a.pr);
+    case "unit.act":
+      return of("unit", a.unit);
+    default:
+      return null;
+  }
+}
 /** A held action older than this is dropped, and said to have been. */
 export const HELD_FOR_MS = 24 * 60 * 60_000;
 /** A sync whose time is further than this from the edge's clock is refused. */

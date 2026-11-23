@@ -22,15 +22,23 @@ const PUBLIC = join(import.meta.dir, "../public");
 /** The browser's cache, as far as the worker uses it. */
 function fakeCaches() {
   const stores = new Map<string, Map<string, Response>>();
+  /** A device with no room left: every write is refused. */
+  const full = { on: false };
+  /** A browser that gives this site no cache at all: it cannot be opened. */
+  const none = { on: false };
   const keyOf = (key: string | Request) => {
     const url = new URL(typeof key === "string" ? key : key.url, ORIGIN);
     return url.pathname + url.search;
   };
   const open = async (name: string) => {
+    if (none.on) throw new DOMException("The operation is insecure.", "SecurityError");
     if (!stores.has(name)) stores.set(name, new Map());
     const store = stores.get(name) as Map<string, Response>;
     return {
-      put: async (key: string | Request, res: Response) => void store.set(keyOf(key), res),
+      put: async (key: string | Request, res: Response) => {
+        if (full.on) throw new DOMException("Quota exceeded", "QuotaExceededError");
+        store.set(keyOf(key), res);
+      },
       match: async (key: string | Request) => store.get(keyOf(key))?.clone(),
       keys: async () => [...store.keys()].map((k) => new Request(ORIGIN + k)),
       delete: async (key: string | Request) => store.delete(keyOf(key)),
@@ -38,11 +46,16 @@ function fakeCaches() {
   };
   return {
     open,
-    keys: async () => [...stores.keys()],
+    keys: async () => {
+      if (none.on) throw new DOMException("The operation is insecure.", "SecurityError");
+      return [...stores.keys()];
+    },
     delete: async (name: string) => stores.delete(name),
     /** For the tests: what is kept under a name. */
     kept: (name = "pm-console-v1") => [...(stores.get(name)?.keys() ?? [])].sort(),
     stores,
+    full,
+    none,
   };
 }
 
@@ -584,4 +597,168 @@ test("the app's page is already sending: the worker leaves it to the page", asyn
   await w.fire("sync", { tag: "pm-outbox" });
   expect(sent).toEqual(["/console/api/act"]);
   expect((await store.all()).map((e) => e.state)).toEqual(["done"]);
+});
+
+test("a device with no room to keep a copy still gets the network's answer", async () => {
+  const w = worker([], { net: () => json({ v: 1 }) });
+  w.caches.full.on = true;
+  const read = w.get("/console/api/doc/core");
+  expect(await (await read.given)?.json()).toEqual({ v: 1 });
+  await read.settled();
+  const page = w.get("/console/", { mode: "navigate" });
+  expect((await page.given)?.status).toBe(200);
+  await page.settled();
+  // Told its copy is current, with nowhere to note it: the answer is passed on all the same.
+  w.state.net = () => new Response(null, { status: 304 });
+  expect((await w.get("/console/api/doc/core").given)?.status).toBe(304);
+  // Nothing was kept, so with no connection there is nothing to show: said as that.
+  w.state.net = down;
+  await expect(w.get("/console/api/doc/core").given).rejects.toThrow("Failed to fetch");
+  // With room again, it keeps again.
+  w.caches.full.on = false;
+  w.state.net = () => json({ v: 2 });
+  await w.get("/console/api/doc/core").settled();
+  w.state.net = down;
+  expect(await (await w.get("/console/api/doc/core").given)?.json()).toEqual({ v: 2 });
+});
+
+test("a browser that gives no cache at all: the network answers as if the worker were not there", async () => {
+  // The network takes a moment, as a real one does: long enough for
+  // anything left to fail on its own to be noticed.
+  const w = worker([], {
+    net: async () => {
+      await new Promise((r) => setTimeout(r, 3));
+      return json({ v: 1 });
+    },
+  });
+  w.caches.none.on = true;
+  const unhandled: unknown[] = [];
+  const note = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", note);
+  try {
+    // It is installed and takes the page all the same, for what else
+    // it does: notifications, and sending what was done offline.
+    await w.fire("install", {});
+    await w.fire("activate", {});
+    expect(w.did).toEqual(["skipWaiting", "claim"]);
+    const read = w.get("/console/api/doc/core");
+    expect(await (await read.given)?.json()).toEqual({ v: 1 });
+    await read.settled();
+    const page = w.get("/console/", { mode: "navigate" });
+    expect((await page.given)?.status).toBe(200);
+    await page.settled();
+    // With no connection there is nothing to fall back on, and it fails as itself.
+    w.state.net = async () => {
+      await new Promise((r) => setTimeout(r, 3));
+      return down(new URL(ORIGIN));
+    };
+    await expect(w.get("/console/api/doc/core").given).rejects.toThrow("Failed to fetch");
+    await new Promise((r) => setTimeout(r, 5));
+  } finally {
+    process.off("unhandledRejection", note);
+  }
+  // Nothing was left to fail on its own behind an answer.
+  expect(unhandled).toEqual([]);
+});
+
+test("woken with the app closed and something still not taken, the worker asks to be woken again", async () => {
+  type Entry = { id: string; kind: string; state: string; note: string };
+  const answers: Record<string, () => Response> = {
+    "ask.send": () => json({ ok: true, result: {} }),
+    // No machine in reach for it just now.
+    "message.send": () =>
+      json({ error: "The laptop cannot be reached, and too much is already waiting for it." }, {}, 503),
+  };
+  const net: Net = (_url, init) => {
+    const body = JSON.parse(String((init as { body?: string }).body)) as { kind: string };
+    return answers[body.kind]();
+  };
+  const w = worker([], { net });
+  const outbox = w.scope.PMOutbox as {
+    memoryStore: () => { all: () => Promise<Entry[]>; put: (e: unknown) => Promise<void> };
+    make: (kind: string, args: unknown, now: number) => unknown;
+    idbStore: unknown;
+  };
+  const store = outbox.memoryStore();
+  outbox.idbStore = () => store;
+  await store.put(outbox.make("message.send", { to: ["a"], text: "x" }, Date.now() - 2));
+  await store.put(outbox.make("ask.send", { text: "y" }, Date.now() - 1));
+  // One went, one could not be taken yet: the browser is to call again.
+  await expect(w.fire("sync", { tag: "pm-outbox" })).rejects.toThrow("not all sent yet");
+  expect((await store.all()).map((e) => [e.kind, e.state]).sort()).toEqual([
+    ["ask.send", "done"],
+    ["message.send", "waiting"],
+  ]);
+  // Being done right now under its name: the same.
+  answers["message.send"] = () => json({ error: "This is still being done.", running: true }, {}, 409);
+  await expect(w.fire("sync", { tag: "pm-outbox" })).rejects.toThrow("not all sent yet");
+  // Taken at last: nothing is left, and the browser need not call again.
+  answers["message.send"] = () => json({ ok: true, held: true, result: null });
+  await w.fire("sync", { tag: "pm-outbox" });
+  expect((await store.all()).map((e) => e.state).sort()).toEqual(["done", "held"]);
+  // What only waits for the owner to look again is not a reason to be woken.
+  await store.put(outbox.make("pr.merge", { pr: 55 }, Date.now() - 3_600_000));
+  await w.fire("sync", { tag: "pm-outbox" });
+  expect((await store.all()).map((e) => e.state).sort()).toEqual(["done", "held", "stale"]);
+});
+
+test("on the browser's last call, what still waits is said, since nothing will send it until the app is opened", async () => {
+  type Entry = { id: string; kind: string; state: string };
+  const taken = { yes: false };
+  const net: Net = (_url, init) => {
+    const body = JSON.parse(String((init as { body?: string }).body)) as { kind: string };
+    if (body.kind === "ask.send") return json({ ok: true, result: {} });
+    return taken.yes ? json({ ok: true, result: {} }) : json({ error: "no machine" }, {}, 503);
+  };
+  const setUp = async (windows: { url: string }[], permission = "granted") => {
+    const w = worker(windows, { net, permission });
+    const outbox = w.scope.PMOutbox as {
+      memoryStore: () => { all: () => Promise<Entry[]>; put: (e: unknown) => Promise<void> };
+      make: (kind: string, args: unknown, now: number) => unknown;
+      idbStore: unknown;
+    };
+    const store = outbox.memoryStore();
+    outbox.idbStore = () => store;
+    await store.put(outbox.make("ask.send", { text: "goes" }, Date.now() - 3));
+    await store.put(outbox.make("message.send", { to: ["a"], text: "x" }, Date.now() - 2));
+    await store.put(outbox.make("message.send", { to: ["b"], text: "y" }, Date.now() - 1));
+    return { w, store };
+  };
+  // Not the last call: the browser will call again, and only what went is said.
+  const early = await setUp([]);
+  await expect(early.w.fire("sync", { tag: "pm-outbox", lastChance: false })).rejects.toThrow("not all sent yet");
+  expect(early.w.shown.map((s) => s.options.body)).toEqual(["1 sent."]);
+  // The last call: what is left is said with it, in the one notification.
+  const last = await setUp([]);
+  await expect(last.w.fire("sync", { tag: "pm-outbox", lastChance: true })).rejects.toThrow("not all sent yet");
+  expect(last.w.shown).toEqual([
+    {
+      title: "What you did offline",
+      options: {
+        body: "1 sent, 2 still waiting (open the app to send them).",
+        tag: "outbox",
+        icon: "/icons/icon-192.png",
+        badge: "/icons/icon-192.png",
+        data: { url: "/console/#more/device" },
+      },
+    },
+  ]);
+  // Called once more by something else with nothing new to say but what is left: one, said as one.
+  last.w.shown.length = 0;
+  const one = (await last.store.all()).find((e) => e.kind === "message.send") as Entry;
+  await last.store.put({ ...one, state: "done" });
+  await expect(last.w.fire("sync", { tag: "pm-outbox", lastChance: true })).rejects.toThrow("not all sent yet");
+  expect(last.w.shown.map((s) => s.options.body)).toEqual(["1 still waiting (open the app to send it)."]);
+  // With the app open, the app shows what waits itself; without leave to notify, nothing is shown.
+  const open = await setUp([{ url: `${ORIGIN}/console/#now` }]);
+  await expect(open.w.fire("sync", { tag: "pm-outbox", lastChance: true })).rejects.toThrow("not all sent yet");
+  expect(open.w.shown).toEqual([]);
+  const quiet = await setUp([], "default");
+  await expect(quiet.w.fire("sync", { tag: "pm-outbox", lastChance: true })).rejects.toThrow("not all sent yet");
+  expect(quiet.w.shown).toEqual([]);
+  // The last call with nothing left: only what went.
+  taken.yes = true;
+  const clean = await setUp([]);
+  await clean.w.fire("sync", { tag: "pm-outbox", lastChance: true });
+  expect(clean.w.shown.map((s) => s.options.body)).toEqual(["3 sent."]);
 });

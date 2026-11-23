@@ -25,19 +25,25 @@ type Fate = "started" | Outcome;
 const KEPT = 300;
 
 export class Named {
-  private fates: Map<string, Fate> | null = null;
+  /** The record, read once. Everyone who asks while it is being read
+   * gets the same one: two readers with a record each would each write
+   * theirs back without what the other had written down. */
+  private fates: Promise<Map<string, Fate>> | null = null;
   /** Names being done right now, in this process. */
   private running = new Set<string>();
+  /** The write under way, if any: the next one waits for it. */
+  private writing: Promise<void> = Promise.resolve();
 
   constructor(private store: Store) {}
 
-  private async all(): Promise<Map<string, Fate>> {
-    if (this.fates) return this.fates;
-    try {
-      this.fates = new Map(Object.entries(JSON.parse((await this.store.read()) ?? "{}") as Record<string, Fate>));
-    } catch {
-      this.fates = new Map();
-    }
+  private all(): Promise<Map<string, Fate>> {
+    this.fates ??= (async () => {
+      try {
+        return new Map(Object.entries(JSON.parse((await this.store.read()) ?? "{}") as Record<string, Fate>));
+      } catch {
+        return new Map<string, Fate>();
+      }
+    })();
     return this.fates;
   }
 
@@ -47,7 +53,19 @@ export class Named {
     fates.delete(id);
     fates.set(id, fate);
     while (fates.size > KEPT) fates.delete(fates.keys().next().value as string);
-    await this.store.write(JSON.stringify(Object.fromEntries(fates)));
+    await this.save();
+  }
+
+  /** One write at a time, each of the record as it stands when its turn
+   * comes: an earlier write that was slow cannot land over a later one
+   * and take a name out of the record. */
+  private save(): Promise<void> {
+    const mine = this.writing.then(async () => {
+      await this.store.write(JSON.stringify(Object.fromEntries(await this.all())));
+    });
+    // A write that failed is its own caller's to hear of, not the next one's.
+    this.writing = mine.catch(() => {});
+    return mine;
   }
 
   /** What is written down for a name, if anything. */
@@ -57,6 +75,22 @@ export class Named {
 
   isRunning(id: string): boolean {
     return this.running.has(id);
+  }
+
+  /** Take a name for doing, now. False when it is already being done
+   * in this process. There is no waiting in this, so of two arrivals
+   * under one name only one can take it, whatever each has yet to
+   * write down. Whoever takes it gives it back with release() or end(). */
+  take(id: string): boolean {
+    if (this.running.has(id)) return false;
+    this.running.add(id);
+    return true;
+  }
+
+  /** Give back a name that was taken and, in the end, not done under
+   * (it was refused before it began). */
+  release(id: string): void {
+    this.running.delete(id);
   }
 
   /** An action is about to be done under this name. Written down
@@ -76,13 +110,21 @@ export class Named {
     }
   }
 
-  /** What is known of an action sent under this name: nothing; that it
-   * is being done now; how it came out; or ("lost") that it was started
-   * and this process stopped before it was known how it ended. */
-  async seen(id: string): Promise<{ state: "running" | "lost" } | { state: "done"; fate: Outcome } | null> {
-    if (this.running.has(id)) return { state: "running" };
+  /** What is written down for a name, whoever holds it now: nothing;
+   * how it came out; or ("lost") that it was started and this process
+   * stopped before it was known how it ended. For whoever has just
+   * taken the name: read after taking, this cannot miss what another
+   * wrote down before giving the name back. */
+  async known(id: string): Promise<{ state: "lost" } | { state: "done"; fate: Outcome } | null> {
     const fate = await this.get(id);
     if (fate === undefined) return null;
     return fate === "started" ? { state: "lost" } : { state: "done", fate };
+  }
+
+  /** What is known of an action sent under this name: that it is being
+   * done now, or what is written down for it. */
+  async seen(id: string): Promise<{ state: "running" | "lost" } | { state: "done"; fate: Outcome } | null> {
+    if (this.running.has(id)) return { state: "running" };
+    return this.known(id);
   }
 }

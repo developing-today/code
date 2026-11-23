@@ -435,3 +435,68 @@ this site in Chrome, so nothing in it changed). Not done: copies are
 not encrypted on the device beyond what the device does itself; a
 screen never visited has no copy until it is visited or "keep a copy of
 every screen" is pressed.
+
+## 2026-11-23T15:40Z Update: step 4 after review
+
+Review of the offline work found six real faults, and looking at them
+found three more of the same kinds. All are fixed in the same change.
+
+- **A name could be done twice by two arrivals at the same moment.**
+  The laptop looked a name up, then waited for the audit's write, and
+  only then marked it as being done: two arrivals could both look and
+  both do it. A name is now taken first, with no waiting in between
+  (`Named.take`), and what is known of it is read after, on the laptop
+  and at the edge alike; the second arrival is told it is being done,
+  and asks again. The laptop's record of names is read once however
+  many ask together, and written one write at a time.
+- **A held action being done on the laptop looked "lost" to a retry.**
+  Doing a held action wrote "started" without marking the name as being
+  done, so a device sending it again meanwhile was told the laptop had
+  restarted, and offered a retry under a new name. Held actions now go
+  through the same taking and giving back as any other.
+- **Something done now could overtake something older.** A new action
+  was sent by itself, ahead of what was waiting on the device; the
+  older one, sent later, undid it (a rank changed twice ended as the
+  first). A new action is now written down and sent through the same
+  oldest-first pass as everything else (`sendInOrder`).
+- **Order is kept per thing, to the end.** Found while fixing the last:
+  an older change that nothing could take just now (503) or that was
+  still being done (409) let a newer change about the same thing go
+  first. Each action says what it is about (`subject` on the device,
+  `subjectOf` on the platform; a test holds them together); a later one
+  about the same thing waits behind an earlier one that has not been
+  taken, on the device and in what the edge holds for a machine. What
+  is about something else is not held up.
+- **"Do not send" during a send was ignored**, and so was an entry
+  another tab or the worker had dealt with meanwhile: each entry is now
+  read again just before it is sent.
+- **The worker gave up with things still waiting.** A 503 or a
+  "being done" left an entry waiting but ended the browser's wake as a
+  success, so nothing called again. The worker now asks to be woken
+  again while anything waits to be sent, and on the browser's last call
+  says what still waits.
+- **A full device broke reads.** A refused write to the cache failed
+  the read it belonged to. Keeping copies is now on a best effort; and
+  with no cache at all (a browser that gives the site no storage) the
+  worker installs and answers as if it kept nothing.
+
+Checked: 339 tests under bun, the keeper's 25. 40 planted faults in
+the new code, all caught (two more were planted and found to change
+nothing: each is behind a second guard). In a real Chrome against both
+demos: the offline flow, light
+and dark; the worker woken with the app closed; an older waiting rank
+and a new one leave the device in order and are done in order (and with
+the old direct send planted, that check fails); axe-core over 20
+screens, the dialogs and the toasts: no violations. The Worker in its
+real runtime passes its own checks.
+
+Found on the way: the console's TypeScript is never type-checked. A
+method added to the laptop's link had the name of one already there,
+and the second silently replaced the first; the tests passed for the
+wrong reason until a later change exposed it. A type check finds it at
+once, and 53 smaller complaints across the console, none of them a
+fault. Adding the check to CI is the next change.
+
+Not done, and filed as #13398: an older action held for a machine is
+not ordered against a newer one about the same thing that the edge
+does itself.

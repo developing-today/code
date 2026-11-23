@@ -26,10 +26,17 @@ const READ_WAIT_MS = 8_000;
 self.addEventListener("install", (event) => {
   event.waitUntil(
     (async () => {
-      const cache = await self.caches.open(KEPT);
-      // Each by itself: one that cannot be fetched (not signed in, say)
-      // does not stop the others, or the worker.
-      await Promise.all([...FILES, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
+      // Keeping the files is on a best effort. With no cache to be had
+      // the worker is installed all the same, for what else it does:
+      // notifications, and sending what was done offline.
+      try {
+        const cache = await self.caches.open(KEPT);
+        // Each by itself: one that cannot be fetched (not signed in,
+        // say) does not stop the others, or the worker.
+        await Promise.all([...FILES, ...EXTRAS].map((path) => keep(cache, path).catch(() => {})));
+      } catch {
+        // Nothing is kept this time.
+      }
       await self.skipWaiting();
     })(),
   );
@@ -38,8 +45,12 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
-      for (const name of await self.caches.keys()) {
-        if (name.startsWith("pm-console-") && name !== KEPT) await self.caches.delete(name);
+      try {
+        for (const name of await self.caches.keys()) {
+          if (name.startsWith("pm-console-") && name !== KEPT) await self.caches.delete(name);
+        }
+      } catch {
+        // An older copy that cannot be cleared is only space.
       }
       await self.clients.claim();
     })(),
@@ -97,35 +108,50 @@ const after = (ms) => new Promise((resolve) => self.setTimeout(() => resolve(nul
  * and the keeping of the network's answer, which may come after. */
 function answer(request, kind) {
   const key = keyOf(new URL(request.url), kind);
-  const opened = self.caches.open(KEPT);
+  // With no cache to be had (a browser that refuses this site any
+  // storage) nothing is kept and nothing kept is shown: the network
+  // answers as if this worker were not here.
+  const opened = self.caches.open(KEPT).catch(() => null);
   const fromNetwork = (async () => {
-    const cache = await opened;
     const res = await self.fetch(request);
-    if (res.status === 200) {
-      const copy = kind === "read" ? await stamped(res.clone(), { "x-pm-kept-at": String(Date.now()) }) : res.clone();
-      await cache.put(key, copy);
-    } else if (res.status === 304 && kind === "read") {
-      // The app's own copy is current, and so is the one kept here:
-      // nothing new to keep but when that was, which is small.
-      const seen = { "x-pm-kept-at": String(Date.now()), "x-as-of": res.headers.get("x-as-of") ?? "" };
-      await cache.put(seenKey(key), new Response("", { headers: seen }));
+    // Keeping it is on a best effort: an answer the network gave is
+    // the answer, whether or not this device had room to keep a copy.
+    try {
+      const cache = await opened;
+      if (!cache) return res;
+      if (res.status === 200) {
+        const copy = kind === "read" ? await stamped(res.clone(), { "x-pm-kept-at": String(Date.now()) }) : res.clone();
+        await cache.put(key, copy);
+      } else if (res.status === 304 && kind === "read") {
+        // The app's own copy is current, and so is the one kept here:
+        // nothing new to keep but when that was, which is small.
+        const seen = { "x-pm-kept-at": String(Date.now()), "x-as-of": res.headers.get("x-as-of") ?? "" };
+        await cache.put(seenKey(key), new Response("", { headers: seen }));
+      }
+    } catch {
+      // No room: nothing is kept this time.
     }
     return res;
   })();
   const kept = async () => {
-    const cache = await opened;
-    const copy = await cache.match(key);
-    if (!copy) return null;
-    if (kind !== "read") return copy;
-    // As current as it was last said to be, which may be later than
-    // when it was last sent whole.
-    const marks = { "x-pm-offline": "1" };
-    const seen = await cache.match(seenKey(key));
-    if (seen && Number(seen.headers.get("x-pm-kept-at")) > Number(copy.headers.get("x-pm-kept-at"))) {
-      marks["x-pm-kept-at"] = seen.headers.get("x-pm-kept-at");
-      if (seen.headers.get("x-as-of")) marks["x-as-of"] = seen.headers.get("x-as-of");
+    try {
+      const cache = await opened;
+      const copy = await cache?.match(key);
+      if (!copy) return null;
+      if (kind !== "read") return copy;
+      // As current as it was last said to be, which may be later than
+      // when it was last sent whole.
+      const marks = { "x-pm-offline": "1" };
+      const seen = await cache.match(seenKey(key));
+      if (seen && Number(seen.headers.get("x-pm-kept-at")) > Number(copy.headers.get("x-pm-kept-at"))) {
+        marks["x-pm-kept-at"] = seen.headers.get("x-pm-kept-at");
+        if (seen.headers.get("x-as-of")) marks["x-as-of"] = seen.headers.get("x-as-of");
+      }
+      return await stamped(copy, marks);
+    } catch {
+      // A copy that cannot be read is no copy.
+      return null;
     }
-    return stamped(copy, marks);
   };
   const shown = (async () => {
     const first = await Promise.race([
@@ -161,8 +187,9 @@ self.addEventListener("fetch", (event) => {
 
 // ---- what the owner did while offline ------------------------------------
 
-/** Send what is waiting. Told to every open page, so each shows it. */
-async function send() {
+/** Send what is waiting. Told to every open page, so each shows it.
+ * `last`: the browser will not call again for this by itself. */
+async function send(last = false) {
   const store = self.PMOutbox.idbStore();
   const flush = () =>
     self.PMOutbox.flush(store, (entry) => self.PMOutbox.httpSend(entry, (url, init) => self.fetch(url, init)));
@@ -180,11 +207,16 @@ async function send() {
   const done = out.changed.filter((e) => e.state === "done" || e.state === "held").length;
   const failed = out.changed.filter((e) => e.state === "failed").length;
   const stale = out.changed.filter((e) => e.state === "stale").length;
-  if (!open && done + failed + stale > 0 && self.Notification?.permission === "granted") {
+  // On the browser's last call for this, what still waits is not sent
+  // until the app is next opened: that is said too, or it would wait
+  // unseen. (What waits for a sign-in is said below.)
+  const left = last && !out.signin ? out.waiting : 0;
+  if (!open && done + failed + stale + left > 0 && self.Notification?.permission === "granted") {
     const parts = [
       done ? `${done} sent` : "",
       failed ? `${failed} could not be done` : "",
       stale ? `${stale} kept back for you to look at` : "",
+      left ? `${left} still waiting (open the app to send ${left === 1 ? "it" : "them"})` : "",
     ].filter(Boolean);
     await self.registration.showNotification("What you did offline", {
       body: `${parts.join(", ")}.`,
@@ -206,12 +238,16 @@ async function send() {
       data: { url: "/console/#more/device" },
     });
   }
-  // Still no connection: say so, and the browser will call again.
+  // Still no connection, or something is still waiting for the
+  // platform to be able to take it: say so, and the browser will call
+  // again. (Not when it waits for a sign-in: calling again would not
+  // help, and the owner has been told.)
   if (out.offline) throw new Error("still offline");
+  if (out.waiting > 0 && !out.signin) throw new Error("not all sent yet");
 }
 
 self.addEventListener("sync", (event) => {
-  if (event.tag === "pm-outbox") event.waitUntil(send());
+  if (event.tag === "pm-outbox") event.waitUntil(send(event.lastChance === true));
 });
 
 self.addEventListener("message", (event) => {
