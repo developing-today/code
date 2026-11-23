@@ -15,6 +15,8 @@ import {
   endpointMark,
   levelHeadings,
   prCheck,
+  runSaid,
+  servingSaid,
   subscriptionState,
   testSaid,
 } from "../public/app.js";
@@ -301,4 +303,31 @@ test("a card's title is not announced as a skipped heading level", () => {
   // Sections first: nothing is changed.
   expect(levels(["H2", "H3"])).toEqual([null, null]);
   expect(levels([])).toEqual([]);
+});
+
+test("a deploy or build is told in a line, and what is being served in a sentence", () => {
+  const NOW = Date.parse("2026-11-23T06:00:00Z");
+  const run = { state: "success", at: "2026-11-23T05:51:40Z", commit: "ca5c04493289", byHand: false };
+  expect(runSaid(run, NOW)).toBe("Done · 8 min ago · ca5c044");
+  expect(runSaid({ ...run, state: "in_progress", byHand: true, at: "2026-11-23T05:59:30Z" }, NOW)).toBe(
+    "Running now · just now · ca5c044 · started by hand",
+  );
+  expect(runSaid({ ...run, state: "failure" }, NOW)).toBe("Failed · 8 min ago · ca5c044");
+  // A state this page was never told of is still said, in words.
+  expect(runSaid({ ...run, state: "action_required" }, NOW)).toBe("Action required · 8 min ago · ca5c044");
+  expect(runSaid({ state: null, at: null, commit: null }, NOW)).toBe("Unknown");
+
+  expect(servingSaid({ edge: true, version: "ca5c04493289", hostVersion: "ca5c04493289" })).toBe(
+    "Cloudflare and the laptop are both on ca5c044.",
+  );
+  expect(servingSaid({ edge: true, version: "ca5c04493289", hostVersion: "326ac803bedd" })).toBe(
+    "Cloudflare is serving ca5c044; the laptop runs 326ac80. After a merge the laptop follows within a minute or two.",
+  );
+  expect(servingSaid({ edge: true, version: "ca5c04493289", hostVersion: null })).toBe(
+    "Cloudflare is serving ca5c044. The laptop has not said what it runs.",
+  );
+  // Not behind the edge at all: said plainly, never guessed.
+  for (const health of [null, {}, { edge: false, version: "x" }, { edge: true }]) {
+    expect(servingSaid(health)).toBe("This is served straight from the laptop.");
+  }
 });

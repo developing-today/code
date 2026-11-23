@@ -353,6 +353,44 @@ const demoRun: Run = async (argv) => {
       stderr: "",
     };
   }
+  // The Releases screen: GitHub's record of the site's deploys and the
+  // app's builds, and a start that is taken and does nothing here.
+  const path = argv.find((a) => a.startsWith("repos/")) ?? "";
+  if (path.includes("/actions/workflows/") && path.includes("/runs")) {
+    const site = path.includes("pm-console-edge-deploy.yml");
+    const run = (
+      id: number,
+      sha: string,
+      status: string,
+      conclusion: string | null,
+      event: string,
+      minutes: number,
+    ) => ({
+      id,
+      head_sha: sha,
+      status,
+      conclusion,
+      event,
+      created_at: iso(minutes),
+      html_url: `https://github.com/developing-today/code/actions/runs/${id}`,
+    });
+    const runs = site
+      ? [
+          run(45120541236, "ca5c04493289cde76fa0d7f287bbd46e0395c491", "completed", "success", "push", 9),
+          run(45119509023, "326ac803beddb586530c6e48b76ce1db630e8aca", "completed", "success", "push", 18),
+          run(
+            45098200037,
+            "2bec21c17fae00000000000000000000000000aa",
+            "completed",
+            "success",
+            "workflow_dispatch",
+            235,
+          ),
+        ]
+      : [run(45118133709, "0f311ae99323955fbe908d8db814dc8de41d56f0", "completed", "success", "push", 31)];
+    return { code: 0, stdout: JSON.stringify({ workflow_runs: runs }), stderr: "" };
+  }
+  if (path.endsWith("/dispatches")) return { code: 0, stdout: "", stderr: "" };
   return { code: 0, stdout: "[]", stderr: "" };
 };
 

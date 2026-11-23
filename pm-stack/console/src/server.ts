@@ -283,6 +283,8 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             return json(await ops.services());
           case "prs":
             return json(await ops.prs());
+          case "releases":
+            return json(await ops.releases());
         }
       }
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {

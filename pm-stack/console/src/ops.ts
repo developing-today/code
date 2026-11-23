@@ -56,6 +56,8 @@ export type Rank = (typeof RANKS)[number] | "none";
 const PRIORITY_PAGES = 10;
 export const QUEUE_STATUSES = ["queued", "claimed", "blocked", "parked"] as const;
 const UNIT_NAME = /^[A-Za-z0-9@._-]+\.(service|timer)$/;
+/** The workflows that put the site and the app out, by what they put out. */
+const DEPLOYS = { site: "pm-console-edge-deploy.yml", app: "pm-console-android.yml" } as const;
 const UNIT_ACTIONS = ["start", "stop", "restart"] as const;
 export type UnitAction = (typeof UNIT_ACTIONS)[number];
 
@@ -673,6 +675,56 @@ export class Ops {
       "merge_method=merge",
     ])) as { merged: boolean; sha: string };
     return { number: n, merged: done.merged, sha: done.sha };
+  }
+
+  // ---- deploys and releases ---------------------------------------------
+
+  /** What GitHub's own record says of the site's deploys and the app's
+   * builds: the last few runs of each on main, newest first. One that
+   * could not be read says so by itself; the other still shows. */
+  async releases() {
+    const runs = async (workflow: string) => {
+      const got = (await this.gh([
+        `repos/${this.cfg.repo}/actions/workflows/${workflow}/runs?branch=main&per_page=5`,
+      ])) as {
+        workflow_runs?: {
+          id: number;
+          head_sha: string;
+          status: string;
+          conclusion: string | null;
+          event: string;
+          created_at: string;
+          html_url: string;
+        }[];
+      } | null;
+      return (got?.workflow_runs ?? []).map((r) => ({
+        id: r.id,
+        commit: r.head_sha.slice(0, 12),
+        // Once it is over, how it ended; before that, where it is.
+        state: r.status === "completed" ? (r.conclusion ?? "unknown") : r.status,
+        byHand: r.event === "workflow_dispatch",
+        at: r.created_at,
+        url: r.html_url,
+      }));
+    };
+    const part = async <T>(p: Promise<T>): Promise<T | { error: string }> =>
+      p.catch((e: Error) => ({ error: e.message }));
+    const [site, app] = await Promise.all([part(runs(DEPLOYS.site)), part(runs(DEPLOYS.app))]);
+    return { site, app };
+  }
+
+  /** Start the site's deploy, or the app's build, again from main: the
+   * same workflow a merge starts. `scratch` asks the site's deploy to
+   * first stand a throwaway copy up from nothing and remove it. */
+  async deploy(what: unknown, scratch: unknown) {
+    if (what !== "site" && what !== "app") throw new OpError(400, "what: site or app");
+    const fromNothing = what === "site" && scratch === true;
+    await this.gh(["-X", "POST", `repos/${this.cfg.repo}/actions/workflows/${DEPLOYS[what]}/dispatches`], {
+      ref: "main",
+      // GitHub takes a workflow's inputs as text.
+      ...(fromNothing ? { inputs: { scratch: "true" } } : {}),
+    });
+    return { started: what, scratch: fromNothing };
   }
 
   // ---- one screen --------------------------------------------------------
