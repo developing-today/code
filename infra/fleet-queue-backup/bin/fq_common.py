@@ -75,11 +75,38 @@ def _shape(value):
 
 
 # ------------------------------------------------------------ HTTP core
+TRANSPORT_ATTEMPTS = 5
+
+
 def http_json(method, url, token, payload=None, timeout=HTTP_TIMEOUT_SECONDS):
+    """One JSON HTTP call; returns the parsed body.
+
+    HTTP failures raise RuntimeError (see _http_json_once). Transport
+    failures (connection reset, timeout, DNS) are retried with
+    backoff first: over the fleet's paths a single reset hours into
+    a restore must not be fatal (live drill run, #8584). Retrying a
+    write whose first attempt may have landed is safe here -- primary
+    keys reject duplicates loudly, and both the export and the drill
+    verify final counts and fail loudly rather than pass a wrong
+    copy.
+    """
+    last_exc = None
+    for attempt in range(TRANSPORT_ATTEMPTS):
+        try:
+            return _http_json_once(method, url, token, payload, timeout)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_exc = exc
+            if attempt + 1 < TRANSPORT_ATTEMPTS:
+                time.sleep(min(30, 2 ** (attempt + 1)))
+    raise RuntimeError(f"{method} {url} failed: {last_exc}") from last_exc
+
+
+def _http_json_once(method, url, token, payload=None, timeout=HTTP_TIMEOUT_SECONDS):
     """One JSON HTTP call with a bearer token; returns the parsed body.
 
-    Raises RuntimeError naming the endpoint (never the token) on any
-    transport or HTTP failure.
+    One attempt. HTTP failures raise RuntimeError naming the
+    endpoint (never the token); transport failures propagate raw so
+    http_json can retry them.
     """
     data = None if payload is None else json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, method=method)
@@ -92,8 +119,6 @@ def http_json(method, url, token, payload=None, timeout=HTTP_TIMEOUT_SECONDS):
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:300]
         raise RuntimeError(f"{method} {url} -> HTTP {exc.code}: {detail}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise RuntimeError(f"{method} {url} failed: {exc}") from exc
 
 
 # ------------------------------------------------------- libsql (Turso)
