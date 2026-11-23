@@ -51,9 +51,38 @@ machines:
       - github-gh-auth
       - opencode-provider-route-credentials
     health:
+      # Watchdog-written cache (§1.5) — refreshed by
+      # scripts/fleet-machine-watchdog.py; never hand-edited (the
+      # validator requires the earned checks record below).
       source: watchdog
-      # Watchdog-written cache (§3). Ships null/unknown until per-machine
-      # watchdog reporting for amd-6 lands (named follow-up on #2179);
-      # a hand-written "healthy" here would be a fabricated pass (§1.5).
-      last_seen: null
-      status: unknown # healthy | degraded | unreachable | unknown
+      last_seen: '2026-11-23T01:31:05Z'
+      status: degraded
+      checks:
+        reported_at: '2026-11-23T01:31:05Z'
+        reachable:
+          state: ok
+          ssh: true
+          opencode_server_http: 200
+        load_headroom:
+          state: ok
+          load15: 7.4
+          cpu_cores: 16
+          load15_per_core: 0.463
+        disk_headroom:
+          state: failed
+          volume: worktree (home)
+          total_gb: 3371
+          free_gb: 197
+          free_pct: 5.8
+        sessions:
+          state: ok
+          listed: 50
+          active_within_cadence: 17
+          max_sessions: 12
+          source: openchamber attach api
+        last_queue_job:
+          state: ok
+          task_id: '20095'
+          queue: repo-health-code-pilot
+          worker: repo-worker-code
+          completed_at: '2026-11-23T01:20:25Z'

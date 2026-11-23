@@ -35,6 +35,7 @@ import {
   canonicalDedupeKey,
   describeCaller,
   dispatchDedupeKey,
+  issueDispatchDedupeKey,
   randomDispatchSuffix,
   validatePayload,
 } from "./packet.ts";
@@ -592,9 +593,13 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
     attachVerified = verification.outcome === "verified";
   }
 
+  // #12527: request idempotency keys are not broker packet identities.
   const dedupeKey =
+    (issue ? issueDispatchDedupeKey(
+      body.kind, body.repo, issue.number, body.dedupeKey,
+      body.issueNumber !== undefined,
+    ) : null) ??
     body.dedupeKey ??
-    (issue ? canonicalDedupeKey(body.kind, body.repo, issue.number) : null) ??
     dispatchDedupeKey(body.repo);
   const packetInput = {
     repo: body.repo,

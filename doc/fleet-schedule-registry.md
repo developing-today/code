@@ -317,13 +317,14 @@ Execution route/pool is recorded separately from work scope: the repo-health que
 | `aea12c82-c5af-4e5a-9b66-f8e360f87177` | Queue lane (scheduled) - code           | `*/40 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | not recorded               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `f1b4a33b-14d5-4a69-9ad6-d221e42e3ac9` | Opencode lane claimant/executor - #3026 | `*/10 * * * *`                  | True    | `~/.config/openchamber/projects/path_L2hvbWUvdXNlci9naXQvY29kZQ.json` | opencode-route / workhorse | not recorded | not recorded  | not recorded | 2026-11-03  |
 
-### 2b. Laptop systemd user timers (46 listed: 42 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
+### 2b. Laptop systemd user timers (47 listed: 43 enabled, 1 installed-but-disabled; 4 Nix-configured pending deployment)
 
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
 | timer unit | cadence spec | activates | owner / scope | budget | kill criteria | created | last review |
 | -------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------ | ------------- | ------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ainventory-gatherer.timer` | `OnCalendar=*-*-* 06:20:00` | `ainventory-gatherer.service` | laptop (user systemd; code#9999; canonical `scripts/ainventory_gather.py`, Turso fleet-platform) | not recorded | not recorded | 2026-11-16 | 2026-11-16 |
+| `archer-slack-collector.service` (continuous service, no timer) | `always-on (Restart=on-failure)` | `archer-slack-collector.service` | laptop (user systemd; code#2137 S2; NixOS module `services.archer-slack-collector`, package `pkgs/fleet/archer-slack/collector`; Socket Mode listener running the 3-day parallel run beside the watermark puller) | not recorded | not recorded | 2026-11-22 | 2026-11-22 |
 | `atlas-backup.timer` | `OnCalendar=*-*-* 04:47:00` | `atlas-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `cargo-target-janitor.timer` | `OnCalendar=*-*-* *:00:00` | `cargo-target-janitor.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `worktree-janitor.timer` | `OnCalendar=*-*-* 01,07,13,19:23:00` | `worktree-janitor.service` | laptop (user systemd; code#6884) | not recorded | not recorded | 2026-11-17 | 2026-11-17 |
@@ -395,6 +396,20 @@ it targeted the retired sandbox collector. The drill script is laptop-only
 sandbox's installed-unit state still requires the operator audit linked from
 issue #1319.
 
+### 2c. Sandbox systemd system timers (1 listed)
+
+The sandbox's system-scope timers (the sandbox has no user bus). A listed
+timer here is a deploy target (design §4.4): its units are rendered with
+its deploy generation and re-linked into `/etc/systemd/system` after
+every recycle by the generic deploy-target restorer (code#5770) — there
+is no per-service installer. The sandbox's other installed units are not
+deploy targets yet and remain inventoried by the operator audit linked
+from issue #1319.
+
+| timer unit             | cadence spec                                            | activates                | owner / scope                                              | budget       | kill criteria | created    | last review |
+| ---------------------- | ------------------------------------------------------- | ------------------------ | ---------------------------------------------------------- | ------------ | ------------- | ---------- | ----------- |
+| `quota-recorder.timer` | `OnCalendar=*:0/5` (Persistent=true, RandomizedDelaySec=20) | `quota-recorder.service` | sandbox (system systemd; deploy target `quota-recorder`, code#5770) | not recorded | not recorded  | 2026-10-28 | 2026-11-22  |
+
 ## Surface 3 — Jules schedules (1 entry, retired)
 
 | name/id                     | repo/scope            | cadence                  | prompt (summary; verbatim in #2265)                                                                                                                                                                                                                 | budget expectation                                      | owner                           | kill criteria                                                                                  | created     | last review | state                                                                                                                                                |
@@ -405,7 +420,7 @@ issue #1319.
 the surface is retained in this registry so a future Jules schedule,
 if one is ever created, lands here in the same pass.
 
-## Surface 4 — GitHub Actions schedules (2 entries)
+## Surface 4 — GitHub Actions schedules (3 entries)
 
 Scheduled workflows in this repo (`.github/workflows/*` with a
 `schedule:` trigger). This surface was added 2026-11-05 with its first
@@ -418,6 +433,7 @@ review, not silently normalised.
 | ----------------------------------------------------------------------- | --------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `bws-freshness` (`.github/workflows/bws-freshness.yml`)                 | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch`    | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`)                                       | issue #5451   | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05  |
 | `dispatch-health-probe` (`.github/workflows/dispatch-health-probe.yml`) | developing-today/code | `*/30 * * * *` (every 30 min UTC) + `workflow_dispatch` | enabled; outside probe of dispatch.security.cab — opens/updates one `meta/dispatch-probe` alert issue on failure, comments + closes it on recovery | issue #6992   | `.github/workflows/dispatch-health-probe.yml`                                            | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or dispatch.security.cab is retired   | 2026-11-11 | 2026-11-11  |
+| `fleet-sync-probe` (`.github/workflows/fleet-sync-probe.yml`) | developing-today/code | `30 14 * * *` (daily 14:30 UTC) + `workflow_dispatch` | enabled; judges each fork's sync-upstream freshness (successful scheduled run within 30h, no failed latest run) and opens/updates one `meta/fleet-sync-probe` alert issue on failure, comments + closes it on recovery | issue #12235 | `.github/workflows/fleet-sync-probe.yml`; probe `scripts/fleet/fleet-sync-probe.py` | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or sync-upstream is retired | 2026-11-22 | 2026-11-22  |
 
 ## Surface 5 — Mac launchd jobs (3 entries)
 
