@@ -199,7 +199,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   park <task-id> [--worker <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\
   wake <task-id> [--worker <id>] [--reason <text>]\n\
   block <task-id> [--worker <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>] [--hands <kind> --action <text>]\n\
-  unblock <task-id> [--worker <id>] [--reason <text>]\n\
+  unblock <task-id> [--worker <id>] [--reason <text>] [--drop-dep <list>]\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
   cancel <task-id> [--worker <id>] [--reason <text>]\n\
@@ -260,7 +260,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>] [--hands <kind> --action <text>]\n\nMarks a task blocked. A block that waits on a person is refused unless it is a hands item (FDR-0013): --hands physical|interactive-login|payment|signature with --action, one sentence a person can do in five minutes."
         }
         "unblock" => {
-            "usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>]\n\nClears a task's blocked state."
+            "usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>] [--drop-dep <list>]\n\nClears a task's blocked state. With --drop-dep, only the named dep entries are dropped from the task's record: a comma-separated list of kind:ref — issue:owner/repo#N, pr:owner/repo#N, ci:owner/repo#RUN, task:ID. The task stays blocked on the remaining deps; dropping the last one releases it."
         }
         "dep-recheck" => {
             "usage: repo-queue dep-recheck [--task <id>] [--limit <n>]\n\nRechecks task dependencies."
