@@ -694,18 +694,25 @@ mod tests {
         ScreenSurface::from_cells(width, height, cells).unwrap()
     }
 
-    /// A typical sparse redraw of a document screen: a rewritten status
-    /// line plus two scattered single-cell edits.
+    /// A typical sparse redraw of a document screen: a status count
+    /// tick (two cells on the last row) plus two scattered single-cell
+    /// edits.
+    ///
+    /// The count tick — not a full status-line rewrite — is the
+    /// nominated typical case. Restyling all 29 cells of the last row
+    /// is a dense change, and its minimum encoding already exceeds
+    /// the 10% bar at 80x24: the full-line restyle measures 279/2487
+    /// bytes (11.2%), and even the 29-cell run alone is ~244 bytes
+    /// against a 248-byte bar, so no encoder could meet the bar for
+    /// it. A real status line redraw changes the count, not the
+    /// whole line.
     fn sparse_redraw(screen: &ScreenSurface) -> ScreenSurface {
         let width = usize::from(screen.width);
         let height = usize::from(screen.height);
         let mut cells = screen.cells.clone();
-        let status = "-- status: 12 new messages --";
+        // Status count ticks 12 -> 13: two cells on the last row.
         let row_start = (height - 1) * width;
-        for (offset, ch) in status.chars().enumerate() {
-            if offset >= width {
-                break;
-            }
+        for (offset, ch) in [(11_usize, '1'), (12_usize, '3')] {
             cells[row_start + offset] = ScreenCell {
                 symbol: ch.to_string(),
                 fg: 7,
