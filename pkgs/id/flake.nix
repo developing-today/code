@@ -523,6 +523,10 @@
                   path = individualChecks.${member};
                 }) members
               );
+            ciBuildChecks = {
+              build = mkCheck "build" "build";
+              release = mkCheck "release" "release";
+            };
             individualChecks =
               {
                 # CI-safe checks (read-only): cargo-fmt-check web-fmt-check clippy-lint web-lint test-sandbox test-crate-integration test-web-unit test-web-typecheck roc-test roc-examples doc build release
@@ -648,8 +652,6 @@
                   '';
                 };
                 doc = mkCheckCargoOnly "doc" "doc";
-                build = mkCheck "build" "build";
-                release = mkCheck "release" "release";
                 cargo-check = mkCheck "cargo-check" "cargo-check";
                 # Production module-size guard (#1411): fails when any
                 # production .rs file exceeds 2,500 production lines.
@@ -1046,13 +1048,14 @@
                   );
                 }
               );
+            ciChecks = individualChecks // ciBuildChecks;
           in
           individualChecks
           // {
             default = pkgs.linkFarm "id-ci" (
               map (name: {
                 inherit name;
-                path = individualChecks.${name};
+                path = ciChecks.${name};
               }) [
                 "cargo-fmt-check"
                 "web-fmt-check"
