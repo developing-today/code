@@ -83,4 +83,66 @@ describe("pm-core scheduler (#8570)", () => {
     ]);
     expect(audits[0].error).toBe("provider unavailable");
   });
+
+  test("an audit sink failure after a successful job does not escape runNow", async () => {
+    let attempts = 0;
+    const scheduler = createPmCoreScheduler({
+      runQuota: () => {},
+      runFleetFeed: () => {},
+      writeAudit: async () => {
+        attempts += 1;
+        throw new Error("audit destination unavailable");
+      },
+    });
+
+    await expect(scheduler.runNow("quota")).resolves.toBeUndefined();
+    expect(scheduler.running("quota")).toBe(false);
+    // The scheduler keeps working after the sink failure.
+    await expect(scheduler.runNow("quota")).resolves.toBeUndefined();
+    expect(attempts).toBe(2);
+  });
+
+  test("an audit sink failure on the error path does not escape runNow", async () => {
+    const scheduler = createPmCoreScheduler({
+      runQuota: async () => {
+        throw new Error("provider unavailable");
+      },
+      runFleetFeed: () => {},
+      writeAudit: async () => {
+        throw new Error("audit destination unavailable");
+      },
+    });
+
+    await expect(scheduler.runNow("quota")).resolves.toBeUndefined();
+    expect(scheduler.running("quota")).toBe(false);
+  });
+
+  test("a timer tick with a failing audit sink settles without rejecting", async () => {
+    const callbacks: Array<() => void> = [];
+    let audits = 0;
+    const scheduler = createPmCoreScheduler({
+      runQuota: () => {},
+      runFleetFeed: () => {},
+      writeAudit: async () => {
+        audits += 1;
+        throw new Error("audit destination unavailable");
+      },
+      setInterval: (callback, _delayMs) => {
+        callbacks.push(callback);
+        return callbacks.length as unknown as ReturnType<typeof setInterval>;
+      },
+      clearInterval: () => {},
+    });
+
+    scheduler.start();
+    expect(callbacks).toHaveLength(2);
+    // The interval callback discards runNow's promise; if the audit
+    // rejection escaped, this tick would leave an unhandled rejection
+    // (which bun test fails on) instead of settling cleanly.
+    callbacks[0]();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(audits).toBe(1);
+    expect(scheduler.running("quota")).toBe(false);
+    scheduler.stop();
+  });
 });

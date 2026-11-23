@@ -52,16 +52,30 @@ export function createPmCoreScheduler(options: {
   const active = new Set<SchedulerJobName>();
   const timers = new Map<SchedulerJobName, Timer>();
 
+  // A failing audit sink must never escape the scheduler: the interval
+  // callback discards runNow's promise, so an escaped rejection would
+  // surface as an unhandled rejection in the hosting process, and an
+  // audit failure must not mask the job's own outcome either. There is
+  // nowhere further to report an audit failure to — the next run retries
+  // the sink with its own record.
+  async function writeAuditSafely(record: SchedulerAudit): Promise<void> {
+    try {
+      await options.writeAudit(record);
+    } catch {
+      // Swallowed by design; see the comment above.
+    }
+  }
+
   async function runNow(job: SchedulerJobName): Promise<void> {
     if (active.has(job)) return;
     active.add(job);
     const startedAt = now().toISOString();
     try {
       await jobs[job]();
-      await options.writeAudit({ job, startedAt, finishedAt: now().toISOString(), status: "ok" });
+      await writeAuditSafely({ job, startedAt, finishedAt: now().toISOString(), status: "ok" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await options.writeAudit({
+      await writeAuditSafely({
         job,
         startedAt,
         finishedAt: now().toISOString(),
