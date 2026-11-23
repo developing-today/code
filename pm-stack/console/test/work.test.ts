@@ -1185,6 +1185,31 @@ describe("the interface's endpoints", () => {
     expect(Object.keys(JSON.parse(kept[kept.length - 1]))).toEqual(["x", "y"]);
   });
 
+  test("asked which machines there are, a machine serving the app by itself answers with itself: nothing is in front of it, and nothing waits", async () => {
+    const { d } = deps();
+    d.self = { name: "nixos", version: "0123abcd4567" };
+    await handle(get("/console/api/doc/core"), d);
+    const answer = (await (await handle(get("/console/api/machines"), d)).json()) as {
+      served: string;
+      platform: unknown;
+      machines: { name: string; quiet: boolean; version: string | null; actions: string[]; sections: string[] }[];
+      held: unknown[];
+    };
+    expect([answer.served, answer.platform, answer.held]).toEqual(["machine", null, []]);
+    expect(answer.machines).toHaveLength(1);
+    const [self] = answer.machines;
+    expect([self.name, self.quiet, self.version]).toEqual(["nixos", false, "0123abcd4567"]);
+    // What it can do is what it has: its actions by kind, and every section it reads.
+    expect(self.actions).toEqual(Object.keys(d.actions ?? {}).sort());
+    expect(self.actions).toContain("task.cancel");
+    expect(self.sections).toContain("questions");
+    expect(self.sections).toEqual([...self.sections].sort());
+    // With no name given it, it is still a machine.
+    d.self = undefined;
+    const unnamed = (await (await handle(get("/console/api/machines"), d)).json()) as typeof answer;
+    expect([unnamed.machines[0].name, unnamed.machines[0].version]).toEqual(["this machine", null]);
+  });
+
   test("an action runs, is recorded without the owner's words, and shows in the state", async () => {
     const { d, w, audited } = deps();
     // What an action changes is read again before the answer goes back,

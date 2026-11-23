@@ -20,7 +20,16 @@ import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
-import { type EdgeConfig, edgeConfig as parseEdgeConfig, keyId, newKeyPair, sign } from "../src/edge-proto.ts";
+import {
+  type EdgeConfig,
+  edgeConfig as parseEdgeConfig,
+  keyId,
+  type MachinesAnswer,
+  machineName,
+  machineReport,
+  newKeyPair,
+  sign,
+} from "../src/edge-proto.ts";
 import { OpError } from "../src/errors.ts";
 import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
@@ -851,9 +860,15 @@ async function setup(options: { direct?: boolean } = {}) {
   };
   const keys = memoryStore();
   const done = memoryStore();
+  /** What the machine says of itself in each report; null for a console
+   * older than the saying, which says nothing. */
+  const machineSays: { now: { name: string; actions: string[] } | null } = {
+    now: { name: "nixos", actions: Object.keys(table).sort() },
+  };
   const makeLink = () =>
     new EdgeLink({
       version: "0123abcd4567",
+      ...(machineSays.now ? { machine: () => machineSays.now as { name: string; actions: string[] } } : {}),
       apk: async () => {
         if (!build.bytes) return null;
         const bytes = build.bytes;
@@ -970,6 +985,7 @@ async function setup(options: { direct?: boolean } = {}) {
     io,
     link,
     makeLink,
+    machineSays,
     later,
     token,
     browse,
@@ -1646,6 +1662,132 @@ describe("actions", () => {
     await w.link.now.once();
     const third = await w.act("task.move", { task: 21016, to: "first" });
     expect(await third.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
+  });
+
+  test("machines: the edge says what it does itself, what each machine that reports can do, and what waits for one, with every machine away too", async () => {
+    const w = await setup();
+    const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    await w.hostReads();
+    await w.link.now.once();
+    const first = await machines();
+    expect([first.served, first.held]).toEqual(["edge", []]);
+    // It only serves and waits here. Its own it does itself (linked
+    // phones, notifications, what is held); everything else is the machine's.
+    expect(first.platform).toEqual({
+      primary: false,
+      actions: [
+        "device.approve",
+        "device.remove",
+        "edge.retry",
+        "held.drop",
+        "push.class",
+        "push.off",
+        "push.on",
+        "push.test",
+      ],
+      sections: [],
+      refused: [],
+    });
+    expect(first.machines).toEqual([
+      {
+        name: "nixos",
+        seen: w.now.t,
+        quiet: false,
+        version: "0123abcd4567",
+        // What it said it can do: the kinds of action it has, and every section it reads.
+        actions: [
+          "ask.send",
+          "issue.comment",
+          "message.send",
+          "need.comment",
+          "pr.merge",
+          "prompt.enqueue",
+          "question.answer",
+          "task.move",
+          "triage.enqueue",
+        ],
+        sections: [...SECTION_NAMES].sort(),
+      },
+    ]);
+    // The machine goes away. What the owner does that may wait, waits; the list says what.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const kept = "0e000000-0000-4000-8000-000000000001";
+    expect(await (await w.act("task.move", { task: 21016, to: "first" }, kept)).json()).toMatchObject({ held: true });
+    expect(await (await w.act("message.send", { to: ["lane-1"], text: "when you are back" })).json()).toMatchObject({
+      held: true,
+    });
+    w.now.t += 5 * 60_000;
+    const away = await machines();
+    expect(away.machines.map((m) => [m.name, m.quiet, m.seen])).toEqual([["nixos", true, w.now.t - 5 * 60_000]]);
+    expect(away.held.map((h) => [h.kind, h.args, h.who])).toEqual([
+      ["task.move", { task: 21016, to: "first" }, OWNER],
+      ["message.send", { to: ["lane-1"], text: "when you are back" }, OWNER],
+    ]);
+    expect(away.held[0].id).toBe(kept);
+    // The object is put away and another starts in its place: it still knows the machine.
+    w.edge.now = w.makeEdge();
+    expect((await machines()).machines.map((m) => [m.name, m.actions.length, m.sections.length])).toEqual([
+      ["nixos", 9, SECTION_NAMES.length],
+    ]);
+    // The owner takes one back before the machine has it.
+    const dropped = await w.act("held.drop", { id: kept });
+    expect(await dropped.json()).toEqual({ ok: true, result: { dropped: kept, kind: "task.move" } });
+    expect((await machines()).held.map((h) => h.kind)).toEqual(["message.send"]);
+    // It is on the record as not sent, under its name, so the device that sent it learns so.
+    const { doc } = await w.core();
+    expect(doc.acts.find((a: { id: string }) => a.id === kept)).toMatchObject({
+      kind: "task.move",
+      status: "failed",
+      note: "Not sent: taken back before a machine took it.",
+    });
+    expect(doc.edge.held).toBe(1);
+    // Taken back twice, or something that was never waiting: said as that.
+    const again = await w.act("held.drop", { id: kept });
+    expect([again.status, await again.json()]).toEqual([
+      404,
+      { error: "That is no longer waiting: a machine took it, or it was taken back already." },
+    ]);
+    // The machine is back: it is given what still waits, and not what was taken back.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.ran.map((r) => r.kind)).toEqual(["message.send"]);
+    w.now.t += 1_000;
+    await w.link.now.once();
+    const back = await machines();
+    expect([back.machines[0].quiet, back.held]).toEqual([false, []]);
+  });
+
+  test("machines: a console older than the saying is a machine that has not said what it can do; one that says nonsense, the same", async () => {
+    const w = await setup();
+    w.machineSays.now = null;
+    w.link.now = w.makeLink();
+    await w.hostReads();
+    await w.link.now.once();
+    const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect((await machines()).machines).toEqual([
+      { name: "A machine", seen: w.now.t, quiet: false, version: "0123abcd4567", actions: [], sections: [] },
+    ]);
+    // A name that is not one, or a list that is not a list of kinds.
+    for (const says of [
+      { name: "<b>nixos</b>", actions: ["task.move"] },
+      { name: "nixos", actions: ["task.move", "not a kind"] },
+      { name: "", actions: [] },
+    ]) {
+      w.machineSays.now = says;
+      w.link.now = w.makeLink();
+      w.now.t += 1_000;
+      await w.link.now.once();
+      expect([says, (await machines()).machines[0].name]).toEqual([says, "A machine"]);
+    }
+    // Said properly again, it is known again.
+    w.machineSays.now = { name: "amd", actions: ["task.move", "task.move", "ask.send"] };
+    w.link.now = w.makeLink();
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect((await machines()).machines[0]).toMatchObject({ name: "amd", actions: ["ask.send", "task.move"] });
   });
 
   test("held twice under one name, an action waits once", async () => {
@@ -3233,6 +3375,45 @@ describe("the edge does the core itself", () => {
     expect(w.ghMerged).toHaveLength(1);
   });
 
+  test("machines: doing the core itself, the edge says which kinds it does and which sections it reads, less what it was turned away for", async () => {
+    const w = await primary();
+    const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    const first = await machines();
+    expect(first.platform).toEqual({
+      primary: true,
+      actions: [
+        "device.approve",
+        "device.remove",
+        "edge.retry",
+        "held.drop",
+        "push.class",
+        "push.off",
+        "push.on",
+        "push.test",
+        "ask.send",
+        "ask.reply",
+        "ask.close",
+        "issue.comment",
+        "need.comment",
+        "issue.rank",
+        "task.move",
+        "pr.merge",
+        "deploy.start",
+        "intake.send",
+      ],
+      sections: ["board", "prs", "priorities", "asks"],
+      refused: [],
+    });
+    expect(first.machines.map((m) => m.name)).toEqual(["nixos"]);
+    // Turned away for merging: that is a machine's for the hour, and said so.
+    w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));
+    await w.act("pr.merge", { pr: 55 });
+    const turned = (await machines()).platform;
+    expect(turned?.actions).not.toContain("pr.merge");
+    expect(turned?.actions).toContain("issue.rank");
+    expect(turned?.refused).toEqual(["pr.merge"]);
+  });
+
   test("handed on to the laptop, an action keeps the device's name for it: the laptop does it once", async () => {
     const w = await primary();
     const id = "0b000000-0000-4000-8000-000000000006";
@@ -4531,4 +4712,40 @@ describe("telling the owner, with no machine", () => {
     }
     expect(w.githubCalls.length).toBe(calls);
   });
+});
+
+test("what a machine may say of itself: a name fit to show, and lists of kinds", () => {
+  expect(
+    machineReport({ name: "nixos", actions: ["task.move", "ask.send", "task.move"], sections: ["board"] }),
+  ).toEqual({
+    name: "nixos",
+    actions: ["ask.send", "task.move"],
+    sections: ["board"],
+  });
+  expect(machineReport({ name: "Drew's laptop", actions: [], sections: [] })).toBeNull();
+  expect(machineReport({ name: "amd.local", actions: [], sections: ["questionCount"] })).toEqual({
+    name: "amd.local",
+    actions: [],
+    sections: ["questionCount"],
+  });
+  for (const bad of [
+    null,
+    "nixos",
+    { name: "nixos" },
+    { name: "nixos", actions: "task.move", sections: [] },
+    { name: "nixos", actions: ["Task Move"], sections: [] },
+    { name: "nixos", actions: [7], sections: [] },
+    { name: "x".repeat(64), actions: [], sections: [] },
+    { name: " nixos", actions: [], sections: [] },
+    { name: "nixos", actions: Array.from({ length: 201 }, (_, i) => `a.k${i}`), sections: [] },
+  ]) {
+    expect([bad, machineReport(bad)]).toEqual([bad, null]);
+  }
+  // A name from whatever the machine is called locally.
+  expect(machineName("nixos")).toBe("nixos");
+  expect(machineName("  Drew's laptop ")).toBe("Drew-s laptop");
+  expect(machineName("amd.lan")).toBe("amd.lan");
+  expect(machineName("--weird__")).toBe("weird__");
+  expect(machineName("x".repeat(100))).toBe("x".repeat(63));
+  for (const none of ["", "   ", "!!!", undefined, null]) expect([none, machineName(none)]).toEqual([none, ""]);
 });

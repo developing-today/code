@@ -66,6 +66,10 @@ export interface SyncRequest {
    * health answer, so whether a merge has reached the host can be seen
    * from anywhere, without reaching the host. */
   version?: string;
+  /** What this machine is called and what it can do. Absent from a
+   * console older than this: the edge then knows it only as a machine
+   * that reports. */
+  machine?: MachineReport;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
@@ -79,6 +83,69 @@ export interface SyncRequest {
   acks: { id: string; ok: boolean; error?: string }[];
   /** Linked-phone hashes and metadata only; never phone tokens. */
   phones: PhoneLinks;
+}
+
+/** What a machine says of itself in each report. A machine is anything
+ * that reports to the edge under a key the edge knows. It reports the
+ * state only it has (`sections`) and does what only it can (`actions`,
+ * by kind); everything else the platform does without it. */
+export interface MachineReport {
+  name: string;
+  actions: string[];
+  sections: string[];
+}
+
+const MACHINE_NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$/;
+const MACHINE_CAN = /^[A-Za-z][A-Za-z0-9._-]{0,47}$/;
+/** How many kinds of action, or sections, one machine may say it has. */
+const MACHINE_CAN_MAX = 200;
+
+/** A name fit to show for a machine, from whatever it is called
+ * locally; empty when nothing of it is. */
+export function machineName(value: unknown): string {
+  const name = String(value ?? "")
+    .trim()
+    .replace(/[^A-Za-z0-9 ._-]+/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .slice(0, 63);
+  return MACHINE_NAME.test(name) ? name : "";
+}
+
+/** A machine's account of itself as a report may give it, or null. */
+export function machineReport(value: unknown): MachineReport | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.name !== "string" || !MACHINE_NAME.test(v.name)) return null;
+  const list = (given: unknown): string[] | null => {
+    if (!Array.isArray(given) || given.length > MACHINE_CAN_MAX) return null;
+    if (!given.every((item) => typeof item === "string" && MACHINE_CAN.test(item))) return null;
+    return [...new Set(given as string[])].sort();
+  };
+  const actions = list(v.actions);
+  const sections = list(v.sections);
+  return actions && sections ? { name: v.name, actions, sections } : null;
+}
+
+/** What the Machines screen is drawn from: the platform's own part,
+ * each machine that reports, and what is held for one. */
+export interface MachinesAnswer {
+  /** Who answered: the edge, or a machine serving the app by itself. */
+  served: "edge" | "machine";
+  /** What the platform does with no machine: null when it is not in
+   * front, and an empty list of each when it only serves and waits. */
+  platform: { primary: boolean; actions: string[]; sections: string[]; refused: string[] } | null;
+  machines: {
+    name: string;
+    /** When it last reported, in milliseconds; null if it never has. */
+    seen: number | null;
+    /** It has not reported for long enough to be taken for away. */
+    quiet: boolean;
+    version: string | null;
+    actions: string[];
+    sections: string[];
+  }[];
+  /** What the owner did that waits for a machine, oldest first. */
+  held: Held[];
 }
 
 export interface PhoneLinks {

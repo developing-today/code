@@ -18,6 +18,7 @@ import {
   type Held,
   HOLDABLE,
   keyId,
+  machineReport,
   newKeyPair,
   type PublicKey,
   type PhoneLinks,
@@ -59,6 +60,8 @@ export interface LinkOptions {
   run: (held: Held) => Promise<void>;
   /** The commit this console is running, if it could be found. */
   version?: string;
+  /** What this machine is called, and the kinds of action it does. */
+  machine?: () => { name: string; actions: string[] };
   /** The signed Android build on this host, if there is one, and a way
    * to read it when the edge asks for it. */
   apk?: () => Promise<{ sha256: string; size: number; at: number; read: () => Promise<Uint8Array> } | null>;
@@ -234,11 +237,16 @@ export class EdgeLink {
       const have = Object.fromEntries(snapshot.map((s) => [s.name, { hash: s.hash, at: s.at, error: s.error }]));
       const phones = await this.o.phones.links();
       const acts = this.o.docs.recentActs();
+      // What this machine is and can do: every section it can read
+      // (those the edge reads itself included), and the actions it has.
+      const self = this.o.machine?.();
+      const machine = self ? machineReport({ ...self, sections: this.o.docs.names() }) : null;
       const encoded = (carried: typeof sections) => {
         const message: SyncRequest & { acts: unknown } = {
           v: 1,
           at,
           ...(this.o.version ? { version: this.o.version } : {}),
+          ...(machine ? { machine } : {}),
           ...(apk ? { apk } : {}),
           config,
           sections: carried,

@@ -365,6 +365,12 @@ describe("configuration", () => {
       ),
     ).toThrow(/https/);
     expect(() => readConfig({ PM_CONSOLE_ISSUERS_FILE: "/x" }, () => "{}")).toThrow(ConfigError);
+    // What the machine is called where machines are listed: what the
+    // environment says, made fit to show; unsaid, the host's own name is
+    // used when the console starts.
+    expect(readConfig({ PM_CONSOLE_MACHINE: "nixos" }).machineName).toBe("nixos");
+    expect(readConfig({ PM_CONSOLE_MACHINE: " Drew's laptop " }).machineName).toBe("Drew-s laptop");
+    expect(readConfig({}).machineName).toBe("");
     for (const bind of ["127.0.0.1", "::1", "localhost"]) {
       expect(readConfig({ PM_CONSOLE_BIND: bind }).bind).toBe(bind);
     }

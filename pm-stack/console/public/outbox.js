@@ -141,6 +141,12 @@
         return `Message to ${Array.isArray(a.to) ? a.to.join(", ") : a.to}${quoted(a.text)}`;
       case "unit.act":
         return `${a.action} ${a.unit}`;
+      // The platform's own second half of something it filed itself:
+      // never kept here, and shown where what waits for a machine is.
+      case "prompt.enqueue":
+        return `File the queue task for prompt #${a.issue}`;
+      case "triage.enqueue":
+        return `File the triage task for #${a.issue}`;
       default:
         return String(kind);
     }
