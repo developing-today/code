@@ -34,6 +34,9 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 ## Dated records
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference` and `research`. Run `ls doc/` to list them all. Some starting points:
+- [Fleet program investigation & build-out prompt](2026-11-23T12-45-06Z_design_fleet_program_investigation/2026-11-23T12-45-06Z_design_fleet_program_investigation.md) — the charter prompt for the fleet program tracked in #13272: full investigation of the fleet system (queue broker, placement and dispatch, agent lifecycle, secrets broker, repo constellation, quota plane), design completion and new designs for the obvious next steps, a fleet charter, the fleet book extended under `/code/fleet/`, and a prioritized map of all fleet issues with blockers marked.
+
+- [Listing record + registry protocol](2026-11-23T12-46-33Z_design_id10662_listing_record/2026-11-23T12-46-33Z_design_id10662_listing_record.md) — design for #10662 (v4 step 1, under #6303): the listing record's exact fields, its three-signature signing model (owner, agent countersignature at genesis, operator attestation), hash-chained versioning with a first-seen-head fork rule, suspension/resumption and delisting/reinstatement records, and the discovery query shape with signed registry index attestations.
 
 - [ID program investigation & build-out prompt](2026-11-23T12-06-42Z_design_id_program_investigation_prompt/2026-11-23T12-06-42Z_design_id_program_investigation_prompt.md) — the charter prompt for the ID program tracked in #13240: full investigation and design completion for the ID platform (epics #2056 and #9106), new designs for the obvious next steps, an ID book published under `/code/id/`, and a prioritized map of all ID issues with blockers marked.
 

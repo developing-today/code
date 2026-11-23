@@ -142,6 +142,32 @@ jobs:
           cp -rL result-fleet-docs site/fleet
           test -f site/fleet/index.html
 
+      # The atlas book (#13251, pkgs/atlas-search/book) shares this
+      # repository's single Pages site the same way: built with its
+      # own siteUrl and staged under atlas/ here, in the same deploy
+      # — a separate atlas-only deploy would wipe the mcpx and fleet
+      # books. Its build-only workflow is atlas-docs.yml; see the
+      # book's "Deploying this book" chapter
+      # (pkgs/atlas-search/book/operations/deploying-this-book.md).
+      - name: Nix build (atlas book, siteUrl /code/atlas/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.atlas-docs.override { siteUrl = "/code/atlas/"; }' \
+            --out-link result-atlas-docs
+
+      - name: Stage atlas book into site/atlas
+        run: |
+          rm -rf site/atlas
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding atlas/.
+          chmod u+w site
+          cp -rL result-atlas-docs site/atlas
+          test -f site/atlas/index.html
+
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5

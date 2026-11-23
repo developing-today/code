@@ -28,6 +28,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod resolve;
+
+pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
+
 /// The only `ConfigDocument` schema version this crate accepts. The schema
 /// file is `pkgs/id/config/id-config-v1.schema.json`; a document naming any
 /// other version is rejected ([`ConfigError::UnsupportedSchemaVersion`])

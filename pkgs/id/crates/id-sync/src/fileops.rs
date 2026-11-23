@@ -726,9 +726,13 @@ impl<'a> FileOps<'a> {
         while let Some(item) = list.next().await {
             let item = item.map_err(anyhow::Error::from)?;
             let tag = String::from_utf8_lossy(item.name.as_ref()).into_owned();
+            // The suffix must satisfy the shared archive_tag_timestamp
+            // rule: digits that fit in u64. An overflowing digit string is
+            // an ordinary user file (#13291), never an archive of this name.
             if let Some(rest) = tag.strip_prefix(&prefix)
                 && !rest.is_empty()
                 && rest.bytes().all(|b| b.is_ascii_digit())
+                && rest.parse::<u64>().is_ok()
             {
                 // Keep metadata-free legacy archives owned by their name,
                 // but do not let a matching name override an explicit owner
@@ -867,11 +871,18 @@ async fn set_archive_owner(tags: &TagStore, archive_name: &str, owner: &str) {
     }
 }
 
-/// Whether `archive_name` is a FileOps archive owned by `name`.
+/// Whether `archive_name` is a FileOps archive owned by `name`. The suffix
+/// must satisfy the shared [`archive_tag_timestamp`] rule (digits that fit
+/// in u64): an overflowing digit suffix is an ordinary user file, not an
+/// archive of `name`.
 fn is_owned_archive_tag_name(name: &str, archive_name: &str) -> bool {
     archive_name
         .strip_prefix(&format!("{name}.archive."))
-        .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+        .is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix.bytes().all(|b| b.is_ascii_digit())
+                && suffix.parse::<u64>().is_ok()
+        })
 }
 
 #[cfg(test)]
@@ -918,6 +929,14 @@ mod archive_reference_tests {
         assert!(!is_owned_archive_tag_name(
             "my-file",
             "my-file.archive.nope"
+        ));
+        assert!(is_owned_archive_tag_name(
+            "my-file",
+            "my-file.archive.18446744073709551615"
+        ));
+        assert!(!is_owned_archive_tag_name(
+            "my-file",
+            "my-file.archive.18446744073709551616"
         ));
     }
 }
@@ -1109,9 +1128,19 @@ mod archive_owner_read_tests {
             .await
             .unwrap();
 
-        let outcome = FileOps::new(&env.store, &env.tags).delete("a").await.unwrap();
+        let outcome = FileOps::new(&env.store, &env.tags)
+            .delete("a")
+            .await
+            .unwrap();
         assert_eq!(outcome.archives_removed, 0);
-        assert!(env.store.tags().get("a.archive.notes").await.unwrap().is_some());
+        assert!(
+            env.store
+                .tags()
+                .get("a.archive.notes")
+                .await
+                .unwrap()
+                .is_some()
+        );
         assert!(
             env.store
                 .tags()
@@ -1126,7 +1155,14 @@ mod archive_owner_read_tests {
             .await
             .unwrap();
         assert_eq!(outcome.archives_removed, 1);
-        assert!(env.store.tags().get("a.archive.notes").await.unwrap().is_none());
+        assert!(
+            env.store
+                .tags()
+                .get("a.archive.notes")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(
             env.store
                 .tags()
@@ -1157,7 +1193,14 @@ mod archive_owner_read_tests {
             .unwrap();
 
         assert_eq!(outcome.hash, Hash::from([4; 32]));
-        assert!(env.store.tags().get("x.archive.123").await.unwrap().is_none());
+        assert!(
+            env.store
+                .tags()
+                .get("x.archive.123")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             env.store
                 .tags()
@@ -1182,6 +1225,32 @@ mod archive_owner_read_tests {
         assert!(matches!(result, Err(FileOpError::ReservedArchiveName(_))));
     }
 
+    /// Regression test for #13291: an all-digit suffix that overflows u64
+    /// is an ordinary user file under the shared `archive_tag_timestamp`
+    /// rule, so `delete` of the base name must not collect it.
+    #[tokio::test]
+    async fn delete_of_base_spares_overflow_suffix_user_file() {
+        let env = env_with_archive_reference().await;
+        let user_file = "a.archive.18446744073709551616";
+        env.store
+            .tags()
+            .set("a", Hash::from([2; 32]))
+            .await
+            .unwrap();
+        env.store
+            .tags()
+            .set(user_file, Hash::from([3; 32]))
+            .await
+            .unwrap();
+
+        let outcome = FileOps::new(&env.store, &env.tags)
+            .delete("a")
+            .await
+            .unwrap();
+
+        assert_eq!(outcome.archives_removed, 0);
+        assert!(env.store.tags().get(user_file).await.unwrap().is_some());
+    }
 }
 
 #[cfg(test)]
