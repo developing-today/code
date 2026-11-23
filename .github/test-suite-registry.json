@@ -1506,7 +1506,8 @@
         "pkgs/id/crates/id-sync/tests/federation_b28.rs",
         "pkgs/id/crates/id-sync/tests/federation_b31.rs",
         "pkgs/id/crates/id-sync/tests/federation_b32.rs",
-        "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs"
+        "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs",
+        "pkgs/id/crates/id-sync/tests/bridge_live.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
