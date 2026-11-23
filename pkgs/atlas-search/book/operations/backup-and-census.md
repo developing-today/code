@@ -75,7 +75,7 @@ The canonical table counts differ from the October record by 0 sessions, −9 me
 
 On the same day the laptop service returned healthy with its embedder ready. Its health response supplied no publication generation or source watermark. Proving Fleet or Worker freshness requires tracing an authorized source revision through promotion and a scoped publication to the consumer.
 
-The backup timer was active and waiting. Its November 23 backup service run timed out after 90 minutes (04:58:04–06:28:04 Central). That run supplies no completed backup receipt. Verify a matching digest and destination receipt before relying on a particular copy. No backup or restore was triggered by the census. See #10304 for the existing backup investigation.
+The backup timer was active and waiting. Its November 23 backup service run timed out after 90 minutes (04:58:04–06:28:04 Central). The local dated gzip (491,721,304 bytes) and its manifest were present. The manifest recorded 18,325 sessions, 122,115 messages and 107,439 chunks, matching the live count. The November 15 local manifest recorded 18,325, 122,118 and 107,505 respectively. The ledger contained no November 23 completion and offsite copies were not independently verified. Verify a matching digest and destination receipt before relying on a particular copy. No backup or restore was triggered by the census. See #10304 for the existing backup investigation.
 
 ### Repeat the measurement
 
