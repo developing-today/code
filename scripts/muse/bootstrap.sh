@@ -16,7 +16,10 @@
 #             into ~/.local/share/muse-bootstrap/bin, sha256-checked
 #   token     BWS and optional 1Password service-account tokens into
 #             ~/.config/bitwarden/access-token and ~/.config/op/service-account-token
-#             (600), read from stdin or hidden prompts, never argv
+#             (600), read from stdin or hidden prompts, never argv; plus the
+#             three shared broker tokens from the BWS fleet.* names into
+#             ~/tools/{secrets-broker,queue-broker,laptop-agent}-token (600),
+#             so a fresh seat's secrets/queue/shell legs work (#12898)
 #   restore   ~/.config from restic-sandbox-config, then every top-level
 #             home entry from restic-sandbox-home (latest snapshot per
 #             entry; ~/git and ~/agents only with --all)
@@ -281,6 +284,50 @@ if want token; then
   bws secret list -o json >/dev/null 2>&1 ||
     die "token: bws cannot list secrets with the token in $TOKEN_FILE (pass a fresh one: BWS_ACCESS_TOKEN=... or remove the file and rerun)"
   say "token: stored and verified"
+fi
+
+# The three shared broker token files a seat's fleet client verbs read
+# (#12898): the secrets broker's client token (fleet secrets), the queue
+# broker's (fleet queue) and the laptop agent's (fleet laptop-agent, and the
+# session broker's default). BWS is the source of truth: the fleet.* names
+# were published from the laptop's server files on 2026-11-22. Before this,
+# only the muse seat had the files, by accident of the home restore, and a
+# fresh non-muse seat had no provisioning path at all. Fetch by name, write
+# 0600, never print. A name the seat's BWS token cannot see is a warning,
+# not a failure: the enrollment continues and the check phase names the
+# legs that stay down.
+provision_broker_token() { # provision_broker_token BWS_NAME DEST
+  local name=$1 dest=$2 value
+  value=$(bws secret list -o json 2>/dev/null | python3 -c '
+import json, sys
+name = sys.argv[1]
+for s in json.load(sys.stdin):
+    if s.get("key") == name:
+        sys.stdout.write(s.get("value", "")); sys.exit(0)
+sys.exit(1)' "$name") || {
+    say "token: BWS secret $name not visible to this seat; $dest not provisioned"
+    return 0
+  }
+  # The published values are the laptop files byte-for-byte; the files are
+  # one token per line, so normalize whitespace the same way store_token
+  # does and write exactly one trailing newline.
+  value=$(printf '%s' "$value" | tr -d '[:space:]')
+  [ -n "$value" ] || {
+    say "token: BWS secret $name is empty; $dest not provisioned"
+    return 0
+  }
+  mkdir -p "$(dirname "$dest")"
+  (
+    umask 077
+    printf '%s\n' "$value" >"$dest.tmp"
+  ) && mv -f "$dest.tmp" "$dest"
+  chmod 600 "$dest"
+  say "token: provisioned $dest from BWS $name"
+}
+if want token; then
+  provision_broker_token fleet.secrets-broker-token "$HOME/tools/secrets-broker-token"
+  provision_broker_token fleet.queue-broker-token "$HOME/tools/queue-broker-token"
+  provision_broker_token fleet.laptop-agent-token "$HOME/tools/laptop-agent-token"
 fi
 
 # ---- restore ----
