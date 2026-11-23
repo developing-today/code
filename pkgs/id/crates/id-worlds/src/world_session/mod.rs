@@ -60,6 +60,11 @@ mod service;
 /// Document store API (split from this module, #8594).
 mod documents;
 
+/// Producer-side Android gesture translation (#1831 slice S3a). Inert
+/// until the S3 app shell wires it to a live session (slice S3b); its
+/// translation contract is proven by its own tests.
+#[allow(dead_code)]
+mod gesture;
 /// Bounded hex encoding (split from this module, #12671).
 mod hex;
 /// Session core loop (split from this module, #8594).
