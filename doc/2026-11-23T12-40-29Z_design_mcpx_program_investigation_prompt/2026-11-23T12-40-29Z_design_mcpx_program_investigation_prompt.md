@@ -3,7 +3,7 @@
 **You are the coordinator of a program-scale investigation and build-out of mcpx** — Drew's
 MCP aggregation and proxy daemon in `developing-today/code` (`pkgs/mcpx/`), the single gateway
 through which every agent on the fleet reaches every MCP server. Dig into the **full system**:
-what it aggregates, how the daemon lives and dies, how its 252 settings behave, who consumes it
+what it aggregates, how the daemon lives and dies, how its 241 settings behave, who consumes it
 (harnesses, fleet, Atlas, ID), and what it should become. This prompt is a **starting point, not
 a conclusive or final stopping point**. Work the design end to end, begin implementation
 wherever you are unblocked, and when a pass finishes, review what remains, expand the plan, and
@@ -27,8 +27,8 @@ is its tracking home). Programme homes: epic [#8993](https://github.com/developi
 [#1900](https://github.com/developing-today/code/issues/1900) (every theme, in one order, with
 the disagreements between them).
 
-- **Surface**: ~50 CLI commands in five groups (running code, finding tools, the daemon,
-  configuration, inspection) — including `exec`, `catalog` (token-budgeted tool listing),
+- **Surface**: 75 CLI commands in six groups (running code, finding tools, the daemon,
+  configuration, inspection, daemon operations) — including `exec`, `catalog` (token-budgeted tool listing),
   `search` (keyword or semantic), `types`, `prompt` (words in, script back), `proxy`
   (an OpenAI-compatible LLM reverse proxy), `serve` (MCP over stdio), `stdio-proxy` (daemon
   API over an ssh tunnel), `settings`, `servers`, `registry`, `dashboard`. Public Go API at
@@ -43,19 +43,24 @@ the disagreements between them).
   for its whole life** — design [#1384](https://github.com/developing-today/code/issues/1384),
   Phase 3 [#9963](https://github.com/developing-today/code/issues/9963). When no daemon runs,
   the CLI starts one inline and polls readiness on the `daemon.inlineStartPoll` interval.
-- **Config system**: a typed settings registry — **252 distinct setting paths**, each
+- **Config system**: a typed settings registry — **241 distinct setting paths** (193 public
+  + 48 internal/plumbing — the registry `mcpx config --schema --plumbing` prints;
+  an earlier census figure of 252 counted `Path:` literals across the whole settings
+  tree, test fixtures included, and is superseded), each
   reachable via config file, environment, and `mcpx settings`, with resolved-value
   provenance. The registry carries an **effect-probe contract**: every setting has a named
   e2e probe proving it changes behaviour, or a written exemption; the exemption count is
   ratcheted (`EffectExemptionPin`) and can only shrink, only in the PR that adds the
-  replacing probe. **The exemption tail is exactly 8 settings** (verified 2026-11-23):
+  replacing probe. **The exemption tail is exactly 5 settings** (verified 2026-11-23;
+  `EffectExemptionPin` = 5):
   `daemon.inlineStartPoll`, `daemon.tsnet.hostname`, `daemon.tsnetUpTimeout`,
-  `http.streamBufferInit`, `embeddings.wasmPath` (unheld — they wait on harness shapes:
+  `http.streamBufferInit`, `embeddings.wasmPath` — they wait on harness shapes:
   a controllable tailnet, a timing-observable inline-start harness, an allocation oracle,
-  an in-tree embed-exporting wasm fixture) and `plugin.instructions`, `plugin.disabledTools`,
-  `protoTasks.cancelGrace` (**flag-held** — Drew's item-specific approvals; the last is
-  #8473's final exemption). Coverage burn-downs: #8465, #8469 (blocked), #8471 (parked),
-  #8472, #8473.
+  an in-tree embed-exporting wasm fixture. Three further settings the first census
+  listed in the tail — `plugin.instructions`, `plugin.disabledTools`,
+  `protoTasks.cancelGrace` — gained their e2e probes on 2026-11-23 (PRs #13345,
+  #13370, #13361; #8473 closed) and are no longer exempt. Coverage burn-downs:
+  #8465, #8469 (blocked), #8471 (parked), #8472, #8473.
 - **The book exists and is the Pages root**: `pkgs/mcpx/docs/` (mdBook, `.#mcpx-docs`,
   siteUrl argument) — 84 SUMMARY chapters, 120 markdown files, ~288k words including the
   package-local archives (`decisions/`, `changes/`, `compare/`, `spec/`). It deploys via
@@ -128,17 +133,18 @@ Close the release-channel gap on mcpx itself (#9900 → #1881): the install chan
 docs promise must be channels that exist.
 
 ### D. Config-system completion — burn the exemption tail to zero
-The ratchet only moves one way; finish it. For each of the 8 exempt settings, design
+The ratchet only moves one way; finish it. For each of the 5 exempt settings, design
 the probe (or, where a setting is a pure allocation hint like `http.streamBufferInit`,
 the contract decision that reclassifies it honestly — an exemption with a permanent
 reason is a design smell, not a resting place): a harness-controlled tailnet for the
 two `daemon.tsnet.*` settings and `daemon.tsnetUpTimeout`'s bring-up budget; a
 timing-observable inline-start harness for `daemon.inlineStartPoll`; a small
 embed-exporting **wasm fixture model in-tree** for `embeddings.wasmPath` (which also
-unblocks real testing of the Wasm embedder). The three flag-held settings
-(`plugin.instructions`, `plugin.disabledTools`, `protoTasks.cancelGrace`) get their
-probe designs prepared and recorded — implementation waits for Drew's word, exactly
-like the 11 sibling plugin.* probes that landed 2026-11-23 under #8472. In parallel:
+unblocks real testing of the Wasm embedder). The three settings the first census
+listed alongside these five (`plugin.instructions`, `plugin.disabledTools`,
+`protoTasks.cancelGrace`) are already done: their e2e probes landed 2026-11-23
+(PRs #13345, #13370, #13361; #8473 closed), so they are no longer exempt and need
+nothing here. In parallel:
 the remaining burn-downs (#8465 CLI running group, #8469, #8471) and the test-venue
 blockers (#2686, #10330) that decide how much of this CI can see.
 
@@ -194,7 +200,7 @@ one AI-surface design, currently four issues.
 
 ### J. Book extension, issue map, and the living record
 1. **Extend the mcpx book** (it exists — do not rebuild it): first run the missing
-   **mechanical coverage audit** — every CLI command and flag, every one of the 252
+   **mechanical coverage audit** — every CLI command and flag, every one of the 241
    settings (with default + provenance + probe/exemption status), every transport,
    every public library entry point, mapped to a chapter or a named gap; then write
    the missing chapters (the §A–§I designs join as book chapters in `pkgs/mcpx/docs/`,
