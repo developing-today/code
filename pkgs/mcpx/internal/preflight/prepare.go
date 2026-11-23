@@ -36,19 +36,27 @@ import (
 // and a later entry for the same key is the cached one, never a
 // re-resolution.
 //
-// Two parts of the stage-3 design are deliberately not here yet, and the
+// One part of the stage-3 design is deliberately not here yet, and the
 // report says so rather than implying coverage: cross-project subsets
 // are resolved and counted but not materialised (their design puts a
 // node_modules beside the foreign project's files, which is a write
-// into a user's project and needs its own opt-in), and no consumer
-// points a run at the prepared environment yet -- the runner wiring is
-// the next slice. The prepared environment is in the node_modules form
+// into a user's project and needs its own opt-in). The runner consumes
+// the prepared environment for Node and Bun file runs
+// (runner.pointRunAtPreparedEnv links the entry's node_modules beside
+// the script). The prepared environment is in the node_modules form
 // node and bun consume; the deno import-map form is likewise a later
 // slice.
 
 // prepareKind is the cache kind prepared environments live under, so
 // `mcpx cache` lists and prunes them with everything else.
 const prepareKind = "imports"
+
+// preparedManifestName is the package.json name every prepared
+// environment carries. It is the marker IsPreparedNodeModules
+// recognises a prepared environment by, so a consumer deciding what
+// left a node_modules directory behind does not have to know the
+// cache's layout.
+const preparedManifestName = "mcpx-prepared-imports"
 
 // Installer populates a prepared environment directory whose
 // package.json already carries the resolved pins.
@@ -182,7 +190,7 @@ func writePreparedManifest(dir string, pkgs []ResolvedPackage) error {
 		deps[p.Name] = p.Version
 	}
 	manifest := map[string]any{
-		"name":         "mcpx-prepared-imports",
+		"name":         preparedManifestName,
 		"version":      "0.0.0",
 		"private":      true,
 		"dependencies": deps,
@@ -192,6 +200,25 @@ func writePreparedManifest(dir string, pkgs []ResolvedPackage) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, "package.json"), append(b, '\n'), 0o644)
+}
+
+// IsPreparedNodeModules reports whether a node_modules directory is a
+// prepared environment's: the directory beside it is the cache entry
+// stage 3 wrote, recognisable by the manifest name it carries. The
+// runner uses it to tell a link it may refresh or remove (one a
+// prepare run left) from a link the project put there itself.
+func IsPreparedNodeModules(modulesDir string) bool {
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(modulesDir), "package.json"))
+	if err != nil {
+		return false
+	}
+	var manifest struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		return false
+	}
+	return manifest.Name == preparedManifestName
 }
 
 // prepareResolved runs stage 3 for one resolved set and records the
