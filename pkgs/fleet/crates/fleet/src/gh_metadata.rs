@@ -2436,8 +2436,7 @@ mod tests {
 
     // -- #9095 version conformance ------------------------------------
     //
-    // Oracle: the hand-authored fixture set at
-    // doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/
+    // Oracle: the hand-authored fixture set in src/testdata/
     // pm-metadata-v1.json — every historical shape of the pm_meta v1
     // block, with its recorded reader expectation. Each `ok` case must
     // parse and preserve its declared keys through parse and through
@@ -2446,10 +2445,7 @@ mod tests {
     // oracle for design §7 slice 2 and are not asserted here.
     #[test]
     fn pm_metadata_version_conformance_fixtures() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json"
-        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/testdata/pm-metadata-v1.json");
         let raw = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("conformance fixture set unreadable at {path}: {e}"));
         let set: Value = serde_json::from_str(&raw).expect("fixture set is valid JSON");

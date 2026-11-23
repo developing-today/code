@@ -15,7 +15,9 @@ doctrine edge cases those shapes must survive.
 
 ## Files
 
-- **`pm-metadata-v1.json`** — PM issue/PR Metadata cases. Each case
+- **`pm-metadata-v1.json`** (stored at
+  `pkgs/fleet/crates/fleet/src/testdata/pm-metadata-v1.json` so it is
+  included in Nix's `pkgs/`-scoped fleet source) — PM issue/PR Metadata cases. Each case
   carries a full issue body, a `reader_parse` expectation (`ok` /
   `reject`), and the top-level keys the reader must preserve.
   Asserted executably by the fleet crate conformance test
