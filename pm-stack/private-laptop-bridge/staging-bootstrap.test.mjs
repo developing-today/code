@@ -175,7 +175,7 @@ test('bootstrap only accepts disabled no-ingress state; routed postflight verifi
   assert.throws(()=>verifyProviderState(good,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/empty Worker already has a custom domain/);
   const reverseRef=snapshot();reverseRef.domains=[];reverseRef.worker=structuredClone(worker);reverseRef.worker.references.domains=[{hostname:'private-laptop-bridge-staging.security.cab'}];
   assert.throws(()=>verifyProviderState(reverseRef,{phase:'init-postflight',expectedZoneIds:[zoneId],sourceSha:sha,expectedWorkerId:workerId}),/reverse domain reference/);
-  assert.throws(()=>verifyProviderState(good,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:'c'.repeat(40),expectedWorkerId:workerId}),/exact reviewed source SHA/);
+  assert.throws(()=>verifyProviderState(noIngress,{phase:'preflight',expectedZoneIds:[zoneId],sourceSha:'c'.repeat(40),expectedWorkerId:workerId}),/exact reviewed source SHA/);
   for(const mutate of [
     s=>{s.zoneIds=[];},
     s=>{s.subdomain.enabled=true;},

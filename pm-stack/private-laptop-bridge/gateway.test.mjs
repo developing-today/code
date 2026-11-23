@@ -103,7 +103,7 @@ test('Gateway RPC contract and direct Access HTTP gate are independent; ordinary
   assert.equal((await h.send('device','/v1/result',{id:job.id,lease:job.lease,result})).status,200);
   assert.deepEqual((await h.send('caller','/v1/read',{id:job.id})).body,{status:'complete',result});
   const direct=await h.mf.getWorker('private-bridge');
-  const signed=await signRequest({origin:`https://${host}`,audience:'gateway-offline',principal:'caller',privateKey:h.keys.caller.privateKey,path:'/v1/call',body:{device:'amd',operation:'laptop.health',args:{}}});
+  const signed=await signRequest({origin:`https://${BRIDGE_HOST}`,audience:'gateway-offline',principal:'caller',privateKey:h.keys.caller.privateKey,path:'/v1/call',body:{device:'amd',operation:'laptop.health',args:{}}});
   const response=await direct.fetch(signed.url,{method:'POST',headers:Object.fromEntries(signed.headers),body:await signed.text()});
   assert.equal(response.status,401);assert.deepEqual(await response.json(),{error:'access-authentication'});
 });

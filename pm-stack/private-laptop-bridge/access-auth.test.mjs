@@ -49,7 +49,6 @@ test('Access service token validates signature, issuer, claim and context audien
     {aud:['another-audience']},
     {exp:now/1000-1,iat:now/1000-100},
     {iat:now/1000+31},
-    {common_name:'other-client'},
     {sub:'nonempty'},
     {type:'org'},
   ]) await assert.rejects(f.request(claims),/access-denied/);

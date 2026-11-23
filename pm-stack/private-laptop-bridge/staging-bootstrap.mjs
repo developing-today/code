@@ -321,7 +321,7 @@ async function readSnapshot({accountId, token, gatewayToken, expectedZoneIds, fe
     `/workers/workers/${workerId}/versions/${encodeURIComponent(exactVersionId)}`);
   if (exactVersion.result?.id !== exactVersionId) fail('Beta Worker version GET returned a different version ID');
   return {worker: worker.result, workerId, subdomain: subdomain.result, settings: settings.result,
-    schedules: schedules.result.schedules, namespaces, domains: allDomains, gatewayRules, version: exactVersion.result, deployments,
+    schedules: schedules.result.schedules, namespaces, domains: allDomains, gatewayRules, version: exactVersion.result, versions, deployments,
     zoneIds: zones.map(zone => zone.id.toLowerCase()).sort()};
 }
 
