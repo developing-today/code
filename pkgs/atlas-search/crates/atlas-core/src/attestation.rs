@@ -712,8 +712,9 @@ mod tests {
                 .collect();
             let statement = BatchStatement::new(subject, materials, predicate(BatchOutcome::Published));
             let bytes = statement.canonical_bytes().unwrap();
+            let digest = statement.envelope_digest().unwrap();
             prop_assert_eq!(BatchStatement::from_canonical_bytes(&bytes).unwrap(), statement);
-            prop_assert_eq!(statement.envelope_digest().unwrap(), sha256_hex(&bytes));
+            prop_assert_eq!(digest, sha256_hex(&bytes));
         }
     }
 }
