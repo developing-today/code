@@ -502,13 +502,57 @@ impl Adapter for GithubActionsAdapter {
             ctx.owner_cap(owner)
         };
         let active = running + queued;
-        let free = (cap - active).max(0);
-        Capacity {
-            summary: format!(
-                "owner {owner}: {active} active job(s) on fleet runner hosts \
-                 (proxy for account load) vs cap {cap} -> {free} free slot(s)"
+        // A numeric free-slot estimate requires complete load
+        // knowledge: measured reads, an explicitly labeled
+        // simulation, or a known subtotal that already proves
+        // saturation. Anything else reports unknown capacity
+        // instead of dressing an unreadable owner up as idle
+        // (issue #13611).
+        let coverage = ctx.owner_load_coverage.get(owner);
+        let free_slots = coverage.and_then(|c| c.estimated_free(cap));
+        let summary = match coverage {
+            Some(c) => match c.status {
+                LoadCoverageStatus::Measured => format!(
+                    "owner {owner}: {active} active job(s) on fleet runner hosts \
+                     (proxy for account load) vs cap {cap} -> {} free slot(s)",
+                    free_slots.unwrap_or(0)
+                ),
+                LoadCoverageStatus::Simulated => format!(
+                    "owner {owner}: {active} active job(s) (simulated via \
+                     --assume-owner-load, not live counts) vs cap {cap} -> {} free slot(s)",
+                    free_slots.unwrap_or(0)
+                ),
+                LoadCoverageStatus::Partial => {
+                    if free_slots == Some(0) {
+                        format!(
+                            "owner {owner}: load only partially observed, but the known \
+                             subtotal of {active} active job(s) already reaches cap {cap} \
+                             — saturated on the evidence available (missing reads: {})",
+                            c.missing_reads.join("; ")
+                        )
+                    } else {
+                        format!(
+                            "owner {owner}: load partially observed — at least {active} \
+                             active job(s) known vs cap {cap}; free slots unknown \
+                             (missing reads: {})",
+                            c.missing_reads.join("; ")
+                        )
+                    }
+                }
+                LoadCoverageStatus::Unknown => format!(
+                    "owner {owner}: load unknown — no runner-host read succeeded \
+                     (missing reads: {}); free slots unknown, not zero load",
+                    c.missing_reads.join("; ")
+                ),
+            },
+            None => format!(
+                "owner {owner}: load unknown — no coverage recorded for this owner; \
+                 free slots unknown, not zero load"
             ),
-            free_slots: Some(free),
+        };
+        Capacity {
+            summary,
+            free_slots,
             remaining_total_minutes: None,
         }
     }

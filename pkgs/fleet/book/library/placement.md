@@ -199,7 +199,11 @@ allow_paid_blacksmith}` — exactly the fields a session record stores
   `dispatch(job, gh) -> DispatchResult`, and `status(session, gh)`
   (defaulting to the stored state). `free_slots` and
   `remaining_total_minutes` are both optional in a capacity report: a
-  summary-only adapter (codespace) reports neither.
+  summary-only adapter (codespace) reports neither. For the GitHub
+  Actions adapter, `free_slots` is present only when the owner's load
+  coverage is measured or simulated — or when a partial known subtotal
+  already proves saturation, yielding a proven `0`; an unreadable owner
+  reports no estimate rather than a false zero.
 - **`DispatchResult`**: `{run_id, run_url, note, codespace,
 terminal_state}` — what a dispatch attempt hands back to be recorded
   as a session.
@@ -211,7 +215,10 @@ terminal_state}` — what a dispatch attempt hands back to be recorded
   the local store — per-owner load `(running, queued)` counted only over
   that owner's fleet runner-host repos (two `total_count` reads per host
   repo, `in_progress` and `queued`; failures are soft and recorded in
-  `load_read_errors`), per-owner and per-surface last-dispatch epochs
+  `load_read_errors`), per-owner load coverage (status
+  measured/partial/unknown/simulated, known subtotal, cap, read time,
+  source, and missing reads — also emitted as the decision output's
+  `owner_load_coverage`), per-owner and per-surface last-dispatch epochs
   from the session store, the month's Blacksmith minutes used, and the
   laptop-busy flag (`--laptop-busy` or the registry's `laptop.busy`).
 
@@ -219,7 +226,9 @@ The cascade itself — hard pin, follow-up affinity (kept only while the
 preferred surface is eligible, has capacity, and its owner's queued
 count is strictly below its `sticky_queue_threshold`), Tier 1 free
 Actions sorted by `(load, owner_last_dispatch, selection_priority,
-surface_last_dispatch, surface_id)`, Tier 2 Blacksmith in registry
+surface_last_dispatch, surface_id)` — with a deterministic
+unknown-capacity fallback, named in the reasoning, when no eligible
+surface has measured headroom — Tier 2 Blacksmith in registry
 order, Tier 3 Codespaces, then exhaustion — is walked step by step in
 [Tutorial: dispatch a build remotely](../tutorials/dispatch-a-build.md).
 
