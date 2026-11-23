@@ -2369,6 +2369,107 @@ mod tests {
     }
 
     #[test]
+    fn audio_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1b — a versioned audio document is accepted
+        // by host validation, projects deterministically to text (the
+        // old-shell fallback), and round-trips through serialization.
+        let document = serde_json::json!({
+            "kind": "audio", "version": 1, "title": "Harbor Sounds",
+            "cues": [
+                {"id": "rain", "label": "Rain", "format": "ogg",
+                 "duration_ms": 90000, "repeat": true},
+                {"id": "bell", "label": "Bell", "format": "wav",
+                 "duration_ms": 2500, "repeat": false}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Sounds\n1. Rain (ogg; 90000 ms; repeats)\n2. Bell (wav; 2500 ms)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is.
+        let untitled = parse_surface(
+            r#"{"kind":"audio","version":1,"cues":[{"id":"a","label":"A","format":"mp3","duration_ms":1000,"repeat":false}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Audio\n1. A (mp3; 1000 ms)");
+    }
+
+    #[test]
+    fn audio_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich surfaces
+        // are refused by host validation (an Err from parse_surface, which
+        // the host turns into an error frame), never silently dropped to
+        // the legacy text path and never accepted.
+        let cue = |id: &str| {
+            serde_json::json!({"id": id, "label": "A", "format": "ogg",
+                "duration_ms": 1000, "repeat": false})
+        };
+        let audio = |cues: Value| {
+            serde_json::json!({"kind": "audio", "version": 1, "cues": cues}).to_string()
+        };
+        // Bad versions.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 2, "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 0, "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        // Unknown fields, top level and per cue (deny_unknown_fields) —
+        // in particular a cue carries no embedded bytes or URL.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "audio", "version": 1, "src": "x.ogg", "cues": [cue("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 1000,
+             "repeat": false, "data": "AAAB"}
+        ])))
+        .is_err());
+        // Unknown format: the format set is closed.
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "flac", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+        // Empty and duplicate-id cue sets.
+        assert!(parse_surface(&audio(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&audio(serde_json::json!([cue("a"), cue("a")]))).is_err());
+        // Too many cues: the bound is 64 (MAX_AUDIO_CUES).
+        let many: Vec<Value> = (0..65).map(|index| cue(&format!("c{index}"))).collect();
+        assert!(parse_surface(&audio(Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC).
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A\u{001b}[2J", "format": "ogg", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+        // Duration bounds: a cue lasts 1..=3_600_000 ms
+        // (MAX_AUDIO_DURATION_MS, one hour).
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 0, "repeat": false}
+        ])))
+        .is_err());
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 3600001, "repeat": false}
+        ])))
+        .is_err());
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_AUDIO_BYTES); a single huge label trips it.
+        assert!(parse_surface(&audio(serde_json::json!([
+            {"id": "a", "label": "x".repeat(70_000), "format": "ogg", "duration_ms": 1000, "repeat": false}
+        ])))
+        .is_err());
+    }
+
+    #[test]
     fn unknown_rich_surface_kinds_stay_on_the_legacy_path() {
         // Forward-compat seam (#12657 triage): a rich kind this host does
         // not know is not an error — the document drops to the legacy
