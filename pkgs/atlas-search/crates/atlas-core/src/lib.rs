@@ -49,6 +49,7 @@ pub mod github_comments;
 pub mod join;
 pub mod local;
 pub mod manifest;
+pub mod memory;
 pub mod owner_inventory;
 pub mod search;
 pub mod shards;
