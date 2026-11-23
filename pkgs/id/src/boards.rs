@@ -105,6 +105,8 @@ mod subscription;
 pub use subscription::*;
 mod projection;
 pub use projection::*;
+mod render;
+pub use render::*;
 
 /// Signed-artifact kind used for all typed board objects in v1.
 pub const BOARD_OBJECT_KIND: &str = "board_object.v1";
