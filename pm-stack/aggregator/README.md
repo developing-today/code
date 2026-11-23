@@ -698,6 +698,14 @@ Rules the implementation holds to:
   active gap windows still advance as before. The daily export is full
   and ordered by primary key, not incremental by timestamp.
 
+- **Optional internal measurement.** A controlled probe can inject a
+  `TursoWriteMetrics` instance into `createTursoStoreGetter` and read its
+  in-process cumulative snapshot. The running service does not create
+  a meter or publish metrics. Counters only reflect successful responses
+  for the four UPSERT families and distinguish missing counts from zero.
+  Skipped means input candidates minus reported affected rows, only when
+  both are valid. Reported provider writes are not an invoice estimate.
+
 Deploy with `PM_AGG_STORE_BACKEND=turso` (rendered by `install.sh` and
 set in the NixOS unit); the store token is resolved from Bitwarden by
 name (`src/turso-stores.ts`). The Supabase project these stores first
