@@ -181,9 +181,7 @@ let
   # swapped in for the nixpkgs bun. Shells run on fleet hosts, where
   # the system loader exists and the repacked bun segfaults vitest;
   # sandbox derivations must never see bunPinned (#13751).
-  shellNativeBuildInputs = map (
-    p: if p == pkgs.bun then bunPinned else p
-  ) nativeBuildInputs;
+  shellNativeBuildInputs = map (p: if p == pkgs.bun then bunPinned else p) nativeBuildInputs;
 in
 {
   inherit
