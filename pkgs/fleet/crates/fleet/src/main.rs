@@ -960,7 +960,7 @@ fn run_domain_with_initializer(
             }
             // code#8887: the gh domain runs for real — the real
             // `gh` binary as a passthrough under the token
-            // rotation (personal, then App installations).
+            // rotation (App installations, then personal last).
             #[cfg(feature = "gh")]
             if d.name == "gh" {
                 return gh::run(&surface.config, args);
