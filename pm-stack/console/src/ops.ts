@@ -569,11 +569,11 @@ export class Ops {
     return { google: true, changed: said.filter((line) => line.startsWith("changed: ")).map((line) => line.slice(9)) };
   }
 
-  /** Let the edge act by itself while this host is away, or stop it.
-   * Turning it on gives the Worker the repository automation token and
-   * the queue store token, read from the secret store by the setup
-   * script and sent to Cloudflare; turning it off takes them away. It
-   * can only be done here, where the secret store is. */
+  /** Have the edge do the core itself, or stop it. On gives the Worker
+   * the repository automation token and the queue store token, read
+   * from the secret store by the setup script and sent to Cloudflare;
+   * off takes them away, and is remembered. It can only be done on a
+   * machine, where the secret store is. */
   async edgeDirect(on: unknown) {
     if (typeof on !== "boolean") throw new OpError(400, "on: true or false");
     const r = await this.expose(["--edge-direct", on ? "on" : "off"]);

@@ -37,6 +37,7 @@ import {
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
 import { Plan } from "./plan.ts";
+import { platformRead } from "./reads.ts";
 import { contact, Push } from "./push.ts";
 import { EdgeLink } from "./sync.ts";
 import { Work } from "./work.ts";
@@ -284,35 +285,18 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             });
           case "overview":
             return json(await ops.overview());
-          case "queue":
-            return json({
-              counts: await ops.queueCounts(),
-              tasks: await ops.queueList(query.get("status") ?? "queued", query.get("q"), query.get("limit")),
-            });
-          case "priorities":
-            return json(await ops.priorities());
           case "agents":
             return json(await ops.agents());
           case "messages":
             return json(await ops.messages(query.get("limit")));
           case "services":
             return json(await ops.services());
-          case "prs":
-            return json(await ops.prs());
-          case "releases":
-            return json(await ops.releases());
-          case "roadmaps":
-            return json(planOf(deps).capabilities());
-          // `fresh=1` is the reader pressing refresh: asked again now,
-          // not answered from the last minute's read.
-          case "roadmap":
-            return json(await planOf(deps).roadmap(query.get("area"), query.get("fresh") === "1"));
-          case "bugs":
-            return json(await planOf(deps).bugs(query.get("fresh") === "1"));
-          case "intake":
-            return json(await planOf(deps).intakeList(query.get("fresh") === "1"));
         }
       }
+      // What needs only GitHub and the queue store: the same code
+      // answers these at the edge without this machine.
+      const read = await platformRead(seg, query, ops, planOf(deps));
+      if (read !== undefined) return json(read);
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {
         return docResponse(req, await deps.docs.doc(seg[1] as DocName), gzipped);
       }
@@ -322,7 +306,6 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
       if (seg.length === 1 && seg[0] === "question" && deps.work) {
         return json(await deps.work.question(query.get("set"), query.get("ledger"), query.get("qid")));
       }
-      if (seg.length === 2 && seg[0] === "prs") return json(await ops.pr(seg[1]));
       if (seg.length === 3 && seg[0] === "services" && seg[2] === "logs") {
         return json(await ops.serviceLogs(seg[1], query.get("lines")));
       }

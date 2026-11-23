@@ -9,8 +9,11 @@
   --accent: #4c9aff;
   --accent-ink: #06121f;
   --good: #3fb950;
+  --good-ink: #04130a;
   --warn: #d29922;
   --bad: #f85149;
+  /* Text on that red: white on it was 3.4 to 1. */
+  --bad-ink: #1a0405;
   --tab-h: 62px;
   --top-h: 52px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -31,8 +34,12 @@
        they are too faint to read (2.2 to 3.4 to 1). These are at least
        5 to 1 on every light surface here. */
     --good: #18753a;
+    /* Text on that darker green: the dark ink made for the dark page's
+       green was 3.3 to 1 on it. */
+    --good-ink: #ffffff;
     --warn: #8a5a00;
     --bad: #c5222c;
+    --bad-ink: #ffffff;
   }
 }
 * {
@@ -373,7 +380,7 @@ button.ghost {
 button.danger {
   background: var(--bad);
   border-color: var(--bad);
-  color: #fff;
+  color: var(--bad-ink);
 }
 button.small {
   min-height: 34px;
@@ -612,13 +619,13 @@ pre {
   padding: 12px 14px;
   border-radius: 12px;
   background: var(--good);
-  color: #04130a;
+  color: var(--good-ink);
   font-weight: 600;
   z-index: 20;
 }
 .toast.bad {
   background: var(--bad);
-  color: #fff;
+  color: var(--bad-ink);
 }
 dialog {
   width: min(92vw, 520px);

@@ -16,12 +16,17 @@ interface Env {
   ASSETS: { fetch(request: Request): Promise<Response> };
   PUBLIC_HOST: string;
   VERSION?: string;
-  /** What the edge may do itself while the laptop is away. The tokens
-   * are Worker secrets, put there by scripts/expose.py --edge-direct;
-   * the flag is the explicit opt-in, off unless set to `on`. */
+  /** What lets the edge do the core itself. The tokens are Worker
+   * secrets, put there by scripts/expose.py on a machine that holds the
+   * secret store; the flag is the switch, off unless it reads `on`. */
   GITHUB_TOKEN?: string;
   QUEUE_TOKEN?: string;
   EDGE_DIRECT?: string;
+  /** Local development only: where GitHub's API and the queue store
+   * are, when they are stand-ins. Never set where this is deployed: the
+   * Worker's tokens are sent to whatever these name. */
+  GITHUB_API_ORIGIN?: string;
+  QUEUE_DB_ORIGIN?: string;
   /** Local development only: where the host is, when it is not simply
    * behind this hostname's route. Never set where this is deployed. */
   HOST_ORIGIN?: string;
@@ -45,9 +50,13 @@ export class PmEdge extends DurableObject<Env> {
         enabled: env.EDGE_DIRECT === "on",
         githubToken: env.GITHUB_TOKEN,
         queueToken: env.QUEUE_TOKEN,
+        githubApi: env.GITHUB_API_ORIGIN,
+        queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
+      // A read started behind an answer is given the time to finish.
+      later: (work) => ctx.waitUntil(work),
     });
   }
 
