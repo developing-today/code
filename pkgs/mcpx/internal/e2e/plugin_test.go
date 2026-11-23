@@ -356,3 +356,42 @@ func TestPluginDaemonToolsAreOfferedFromTheEnvironment(t *testing.T) {
 		t.Fatalf("the plugin.daemonTools probe did not report a clean run:\n%s", out)
 	}
 }
+
+// TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment
+// is the effect probe for plugin.remember (#8472; the effect guard
+// is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host:
+// when a daemon choice is made in the picker and the call names no
+// scope of its own, the scope is the setting's value (session /
+// until-gone / indefinite, from MCPX_PLUGIN_REMEMBER) — session
+// keeps the choice in memory only, while until-gone and
+// indefinite write it to the host's per-plugin storage, where a
+// later session recalls it. No Go caller persists it, so the
+// probe drives the host the way the plugin suite does — bun, the
+// real tool runtime, the real picker and the real storage-backed
+// applyChoice, options resolved from the environment — and the
+// bun cases in plugin/opencode/v2/remember.test.ts assert the
+// observable differences: unset (the session default) writes
+// nothing to storage, until-gone and indefinite each persist the
+// picked target under the directory's key, and the scope shown
+// to the permission prompt is the setting's value. A run that
+// skipped the cases is a run that did not check what this probe
+// exists to check, so skips fail it, as in
+// TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/remember.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/remember.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.remember probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.remember probe did not report a clean run:\n%s", out)
+	}
+}

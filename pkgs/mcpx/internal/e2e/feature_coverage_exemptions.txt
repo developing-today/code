@@ -21,5 +21,4 @@ setting	protoTasks.cancelGrace	no integration-test exercise yet; burn-down #8473
 setting	plugin.disabledTools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.headless	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.instructions	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
-setting	plugin.remember	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	embeddings.wasmPath	embeddings backend: needs a compiled wasm model fixture the harness does not provide; no embed-exporting model ships with the repo
