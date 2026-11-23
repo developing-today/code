@@ -10,22 +10,9 @@
 // The caller selects these only when PM_AGG_STORE_BACKEND=turso. A
 // missing client is an error here: silently writing a local canonical
 // copy would recreate exactly the laptop-only state #6815 removes.
-import {
-  ACTION_STATES,
-  type ActionsRemote,
-  type DashAction,
-} from "./actions.ts";
-import type {
-  ActivityRemote,
-  ActivitySourceStatus,
-  GapRecord,
-  IngestionFile,
-  SourceCheckpoint,
-} from "./activity.ts";
-import type {
-  AppendOnlyDocumentRemote,
-  DocumentRemote,
-} from "./aa-last-good.ts";
+import { ACTION_STATES, type ActionsRemote, type DashAction } from "./actions.ts";
+import type { ActivityRemote, ActivitySourceStatus, GapRecord, IngestionFile, SourceCheckpoint } from "./activity.ts";
+import type { AppendOnlyDocumentRemote, DocumentRemote } from "./aa-last-good.ts";
 import type { SnapshotsRemote } from "./snapshots.ts";
 import type { DashComment, SnapshotRecord } from "./model.ts";
 import type { CommentsRemote } from "./comments.ts";
@@ -49,16 +36,10 @@ const WRITE_CHUNK = 200;
 // Use a single set of mutable columns for assignment and comparison. The
 // null-safe check runs against the actual conflicting row inside the UPSERT,
 // not against a cache that could be stale after another write or lost response.
-function updateChanged(
-  table: string,
-  columns: readonly string[],
-  touchUpdatedAt = false,
-): string {
+function updateChanged(table: string, columns: readonly string[], touchUpdatedAt = false): string {
   const assignments = columns.map((column) => `${column} = excluded.${column}`);
   if (touchUpdatedAt) assignments.push("updated_at = now()");
-  const changed = columns.map(
-    (column) => `${table}.${column} is not excluded.${column}`,
-  );
+  const changed = columns.map((column) => `${table}.${column} is not excluded.${column}`);
   return `do update set ${assignments.join(", ")} where ${changed.join(" or ")}`;
 }
 
@@ -84,9 +65,7 @@ function optStr(v: string | null | undefined): string {
 }
 
 function optTs(v: string | null | undefined): string {
-  return v === null || v === undefined || v === ""
-    ? "null"
-    : `${sqlStr(v)}::timestamptz`;
+  return v === null || v === undefined || v === "" ? "null" : `${sqlStr(v)}::timestamptz`;
 }
 
 function sqlNum(v: number | null | undefined): string {
@@ -103,17 +82,12 @@ function isoOrUndefined(v: unknown): string | undefined {
 
 function isoRequired(v: unknown, what: string): string {
   const out = isoOrUndefined(v);
-  if (!out)
-    throw new Error(
-      `agg store row has an invalid ${what}: ${JSON.stringify(v)}`,
-    );
+  if (!out) throw new Error(`agg store row has an invalid ${what}: ${JSON.stringify(v)}`);
   return out;
 }
 
 function textArray(values: readonly string[]): string {
-  return values.length === 0
-    ? "'{}'::text[]"
-    : `array[${values.map(sqlStr).join(", ")}]::text[]`;
+  return values.length === 0 ? "'{}'::text[]" : `array[${values.map(sqlStr).join(", ")}]::text[]`;
 }
 
 // ---------------------------------------------------------------------
@@ -149,9 +123,7 @@ export function actionRowValues(a: DashAction): string {
 export function actionFromRow(row: Record<string, unknown>): DashAction {
   const state = row.state;
   if (typeof state !== "string" || !ACTION_STATES.has(state)) {
-    throw new Error(
-      `agg_actions row ${String(row.id)} has an invalid state: ${JSON.stringify(state)}`,
-    );
+    throw new Error(`agg_actions row ${String(row.id)} has an invalid state: ${JSON.stringify(state)}`);
   }
   const action = {
     id: String(row.id),
@@ -164,27 +136,20 @@ export function actionFromRow(row: Record<string, unknown>): DashAction {
     state: state as DashAction["state"],
   } as DashAction;
   // Pre-token audit rows are readable with no clientToken (#6103 contract).
-  if (typeof row.client_token === "string")
-    action.clientToken = row.client_token;
+  if (typeof row.client_token === "string") action.clientToken = row.client_token;
   if (typeof row.target_ref === "string") action.targetRef = row.target_ref;
   if (typeof row.session_id === "string") action.sessionId = row.session_id;
-  if (typeof row.session_source === "string")
-    action.sessionSource = row.session_source as DashAction["sessionSource"];
+  if (typeof row.session_source === "string") action.sessionSource = row.session_source as DashAction["sessionSource"];
   const appliedAt = isoOrUndefined(row.applied_at);
   if (appliedAt) action.appliedAt = appliedAt;
-  if (typeof row.applied_by_run === "string")
-    action.appliedByRun = row.applied_by_run;
+  if (typeof row.applied_by_run === "string") action.appliedByRun = row.applied_by_run;
   if (typeof row.result_note === "string") action.resultNote = row.result_note;
-  if (typeof row.supersedes_action_id === "string")
-    action.supersedes = row.supersedes_action_id;
-  if (typeof row.duplicate_of_action_id === "string")
-    action.duplicateOf = row.duplicate_of_action_id;
+  if (typeof row.supersedes_action_id === "string") action.supersedes = row.supersedes_action_id;
+  if (typeof row.duplicate_of_action_id === "string") action.duplicateOf = row.duplicate_of_action_id;
   return action;
 }
 
-export function createTursoActionsRemote(
-  getClient: GetClient = getTursoStoreClient,
-): ActionsRemote {
+export function createTursoActionsRemote(getClient: GetClient = getTursoStoreClient): ActionsRemote {
   return {
     async loadAll(): Promise<DashAction[]> {
       const db = await requireClient(getClient);
@@ -200,9 +165,7 @@ export function createTursoActionsRemote(
       // Insertion order matters: supersedes/duplicate_of are self-FKs, so
       // parents must land before children. The store keeps insertion order;
       // createdAt ascending preserves it.
-      const ordered = [...actions].sort((a, b) =>
-        a.createdAt.localeCompare(b.createdAt),
-      );
+      const ordered = [...actions].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       for (const chunk of chunks(ordered)) {
         const values = chunk.map(actionRowValues).join(",\n");
         await db.query(
@@ -225,9 +188,7 @@ export function createTursoActionsRemote(
 // activity-ingestion.json -> public.agg_activity_ingestion + gaps
 // ---------------------------------------------------------------------
 
-export function createTursoActivityRemote(
-  getClient: GetClient = getTursoStoreClient,
-): ActivityRemote {
+export function createTursoActivityRemote(getClient: GetClient = getTursoStoreClient): ActivityRemote {
   return {
     async load(): Promise<IngestionFile | null> {
       const db = await requireClient(getClient);
@@ -238,35 +199,21 @@ export function createTursoActivityRemote(
         `select id, source, gap_from, gap_to, status, detected_at, resolved_at from public.agg_activity_gaps`,
       );
       if (rows.length === 0 && gapRows.length === 0) return null;
-      const data: IngestionFile = {
-        version: 1,
-        checkpoints: {},
-        seen: {},
-        gaps: [],
-        sourceStatus: {},
-      };
+      const data: IngestionFile = { version: 1, checkpoints: {}, seen: {}, gaps: [], sourceStatus: {} };
       for (const row of rows) {
         const source = String(row.source);
         if (row.checkpoint && typeof row.checkpoint === "object") {
           data.checkpoints[source] = row.checkpoint as SourceCheckpoint;
         }
-        if (Array.isArray(row.seen_ids))
-          data.seen[source] = row.seen_ids.map(String);
+        if (Array.isArray(row.seen_ids)) data.seen[source] = row.seen_ids.map(String);
         if (row.source_status && typeof row.source_status === "object") {
-          data.sourceStatus![source] =
-            row.source_status as ActivitySourceStatus;
+          data.sourceStatus![source] = row.source_status as ActivitySourceStatus;
         }
       }
       for (const row of gapRows) {
         const status = String(row.status);
-        if (
-          status !== "open" &&
-          status !== "backfilled" &&
-          status !== "unrecoverable"
-        ) {
-          throw new Error(
-            `agg_activity_gaps row ${String(row.id)} has an invalid status: ${status}`,
-          );
+        if (status !== "open" && status !== "backfilled" && status !== "unrecoverable") {
+          throw new Error(`agg_activity_gaps row ${String(row.id)} has an invalid status: ${status}`);
         }
         const gap: GapRecord = {
           id: String(row.id),
@@ -332,13 +279,8 @@ export function createTursoActivityRemote(
 
 export function snapshotFromRow(row: Record<string, unknown>): SnapshotRecord {
   const value = row.value;
-  if (
-    typeof value !== "number" &&
-    (typeof value !== "object" || value === null)
-  ) {
-    throw new Error(
-      `agg_usage_snapshots row ${String(row.snapshot_key)} has an invalid value`,
-    );
+  if (typeof value !== "number" && (typeof value !== "object" || value === null)) {
+    throw new Error(`agg_usage_snapshots row ${String(row.snapshot_key)} has an invalid value`);
   }
   const record: SnapshotRecord = {
     ts: isoRequired(row.ts, "ts"),
@@ -349,8 +291,7 @@ export function snapshotFromRow(row: Record<string, unknown>): SnapshotRecord {
     source: String(row.source) as SnapshotRecord["source"],
     observedBy: String(row.observed_by),
   };
-  if (row.limit_value !== null && row.limit_value !== undefined)
-    record.limit = Number(row.limit_value);
+  if (row.limit_value !== null && row.limit_value !== undefined) record.limit = Number(row.limit_value);
   const resetsAt = isoOrUndefined(row.resets_at);
   if (resetsAt) record.resetsAt = resetsAt;
   return record;
@@ -364,9 +305,7 @@ export function snapshotRowValues(r: SnapshotRecord): string {
   );
 }
 
-export function createTursoSnapshotsRemote(
-  getClient: GetClient = getTursoStoreClient,
-): SnapshotsRemote {
+export function createTursoSnapshotsRemote(getClient: GetClient = getTursoStoreClient): SnapshotsRemote {
   return {
     async readAll(): Promise<SnapshotRecord[]> {
       const db = await requireClient(getClient);
@@ -404,9 +343,7 @@ export function createTursoDocumentRemote(
   writer: string = storeWriterIdentity(),
 ): DocumentRemote & AppendOnlyDocumentRemote {
   return {
-    async load(
-      store: string,
-    ): Promise<{ version: number; document: unknown } | null> {
+    async load(store: string): Promise<{ version: number; document: unknown } | null> {
       const db = await requireClient(getClient);
       const rows = await db.query<Record<string, unknown>>(
         `select version, document from public.agg_store_documents where store = ${sqlStr(store)}`,
@@ -416,11 +353,7 @@ export function createTursoDocumentRemote(
       return { version: Number(row.version), document: row.document };
     },
 
-    async save(
-      store: string,
-      version: number,
-      document: unknown,
-    ): Promise<void> {
+    async save(store: string, version: number, document: unknown): Promise<void> {
       const db = await requireClient(getClient);
       await db.query(
         `insert into public.agg_store_documents (store, version, document, writer, updated_at) ` +
@@ -430,11 +363,7 @@ export function createTursoDocumentRemote(
       );
     },
 
-    async insertIfAbsent(
-      store: string,
-      version: number,
-      document: unknown,
-    ): Promise<boolean> {
+    async insertIfAbsent(store: string, version: number, document: unknown): Promise<boolean> {
       const db = await requireClient(getClient);
       const rows = await db.query<Record<string, unknown>>(
         `insert into public.agg_store_documents (store, version, document, writer, updated_at) ` +
@@ -444,9 +373,7 @@ export function createTursoDocumentRemote(
       return rows.length > 0;
     },
 
-    async listPrefix(
-      prefix: string,
-    ): Promise<Array<{ store: string; version: number; document: unknown }>> {
+    async listPrefix(prefix: string): Promise<Array<{ store: string; version: number; document: unknown }>> {
       const db = await requireClient(getClient);
       return db.query<{ store: string; version: number; document: unknown }>(
         `select store, version, document from public.agg_store_documents ` +
@@ -499,29 +426,21 @@ export function commentFromRow(row: Record<string, unknown>): DashComment {
     body: String(row.body),
     createdAt: isoRequired(row.created_at, "created_at"),
   } as DashComment;
-  if (typeof row.provenance === "string")
-    comment.provenance = row.provenance as DashComment["provenance"];
+  if (typeof row.provenance === "string") comment.provenance = row.provenance as DashComment["provenance"];
   if (row.linked_identity && typeof row.linked_identity === "object") {
-    comment.linkedIdentity =
-      row.linked_identity as DashComment["linkedIdentity"];
+    comment.linkedIdentity = row.linked_identity as DashComment["linkedIdentity"];
   }
-  if (typeof row.triage_state === "string")
-    comment.triageState = row.triage_state as DashComment["triageState"];
-  if (typeof row.github_ref === "string")
-    comment.githubRef = row.github_ref as DashComment["githubRef"];
-  if (typeof row.github_state === "string")
-    comment.githubState = row.github_state as DashComment["githubState"];
+  if (typeof row.triage_state === "string") comment.triageState = row.triage_state as DashComment["triageState"];
+  if (typeof row.github_ref === "string") comment.githubRef = row.github_ref as DashComment["githubRef"];
+  if (typeof row.github_state === "string") comment.githubState = row.github_state as DashComment["githubState"];
   if (typeof row.github_url === "string") comment.githubUrl = row.github_url;
-  if (typeof row.github_error === "string")
-    comment.githubError = row.github_error;
+  if (typeof row.github_error === "string") comment.githubError = row.github_error;
   const failedAt = isoOrUndefined(row.github_failed_at);
   if (failedAt) comment.githubFailedAt = failedAt;
   return comment;
 }
 
-export function createTursoCommentsRemote(
-  getClient: GetClient = getTursoStoreClient,
-): CommentsRemote {
+export function createTursoCommentsRemote(getClient: GetClient = getTursoStoreClient): CommentsRemote {
   return {
     async loadAll(): Promise<DashComment[]> {
       const db = await requireClient(getClient);
@@ -534,9 +453,7 @@ export function createTursoCommentsRemote(
     async saveAll(comments: readonly DashComment[]): Promise<void> {
       if (comments.length === 0) return;
       const db = await requireClient(getClient);
-      const ordered = [...comments].sort((a, b) =>
-        a.createdAt.localeCompare(b.createdAt),
-      );
+      const ordered = [...comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       for (const chunk of chunks(ordered)) {
         const values = chunk.map(commentRowValues).join(",\n");
         await db.query(

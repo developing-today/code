@@ -1,10 +1,6 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import {
-  storeStatement,
-  decodeStoreRow,
-  createTursoStoreClient,
-} from "../src/turso-stores.ts";
+import { storeStatement, decodeStoreRow, createTursoStoreClient } from "../src/turso-stores.ts";
 import {
   createTursoActionsRemote,
   createTursoActivityRemote,
@@ -31,11 +27,8 @@ function localClient(db: Database) {
 test("literal text is never changed by dialect conversion", async () => {
   const db = new Database(":memory:");
   const client = localClient(db);
-  const literal =
-    "now() public.agg_actions alerts.incidents ::jsonb 'quoted' ?99";
-  const rows = await client.query<{ text: string }>(
-    `select '${literal.replaceAll("'", "''")}' as text`,
-  );
+  const literal = "now() public.agg_actions alerts.incidents ::jsonb 'quoted' ?99";
+  const rows = await client.query<{ text: string }>(`select '${literal.replaceAll("'", "''")}' as text`);
   expect(rows[0].text).toBe(literal);
   db.close();
 });
@@ -58,23 +51,11 @@ test("activity arrays and document JSON round trip", async () => {
   await activity.save(value);
   expect((await activity.load())!.seen).toEqual(value.seen);
   await doc.save("test", 1, { quotes: "::jsonb now()", a: [1, true] });
-  expect(await doc.load("test")).toEqual({
-    version: 1,
-    document: { quotes: "::jsonb now()", a: [1, true] },
-  });
-  const event = {
-    eventId: "report:stable",
-    type: "report.generated",
-    ts: "2026-11-22T00:00:00.000Z",
-  };
+  expect(await doc.load("test")).toEqual({ version: 1, document: { quotes: "::jsonb now()", a: [1, true] } });
+  const event = { eventId: "report:stable", type: "report.generated", ts: "2026-11-22T00:00:00.000Z" };
+  expect(await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, event)).toBe(true);
   expect(
-    await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, event),
-  ).toBe(true);
-  expect(
-    await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, {
-      ...event,
-      ts: "2026-11-22T00:01:00.000Z",
-    }),
+    await doc.insertIfAbsent("c7-report:v1:generated:stable", 1, { ...event, ts: "2026-11-22T00:01:00.000Z" }),
   ).toBe(false);
   expect(await doc.listPrefix("c7-report:v1:")).toEqual([
     { store: "c7-report:v1:generated:stable", version: 1, document: event },
@@ -140,16 +121,8 @@ test("activity writes only changed rows and preserves watchdog windows and seman
   await writer.save(structuredClone(draft));
   expect(totalChanges(db) - before).toBe(0); // was 4 unconditional rewrites
   expect((await writer.load())!.sourceStatus!.github).toEqual(status);
-  expect(
-    db.query("select updated_at from agg_activity_gaps where id='open'").get(),
-  ).toEqual({ updated_at: old });
-  expect(
-    db
-      .query(
-        "select updated_at from agg_activity_ingestion where source='github'",
-      )
-      .get(),
-  ).toEqual({
+  expect(db.query("select updated_at from agg_activity_gaps where id='open'").get()).toEqual({ updated_at: old });
+  expect(db.query("select updated_at from agg_activity_ingestion where source='github'").get()).toEqual({
     updated_at: old,
   });
 
@@ -159,14 +132,8 @@ test("activity writes only changed rows and preserves watchdog windows and seman
   await writer.save(extended);
   expect(totalChanges(db) - before).toBe(1); // was 4; only active gap extends
   expect((await writer.load())!.gaps.find((g) => g.id === "open")!.to).toBe(t1);
-  expect(
-    db.query("select updated_at from agg_activity_gaps where id='open'").get(),
-  ).not.toEqual({ updated_at: old });
-  expect(
-    db
-      .query("select updated_at from agg_activity_gaps where id='closed'")
-      .get(),
-  ).toEqual({ updated_at: old });
+  expect(db.query("select updated_at from agg_activity_gaps where id='open'").get()).not.toEqual({ updated_at: old });
+  expect(db.query("select updated_at from agg_activity_gaps where id='closed'").get()).toEqual({ updated_at: old });
 
   const newer = structuredClone(extended);
   newer.sourceStatus!.github = {
@@ -180,12 +147,8 @@ test("activity writes only changed rows and preserves watchdog windows and seman
   before = totalChanges(db);
   await writer.save(newer);
   expect(totalChanges(db) - before).toBe(1); // meaningful freshness even though cursor did not change
-  expect((await writer.load())!.sourceStatus!.github).toEqual(
-    newer.sourceStatus!.github,
-  );
-  expect((await writer.load())!.gaps.find((g) => g.id === "open")!.from).toBe(
-    t0,
-  );
+  expect((await writer.load())!.sourceStatus!.github).toEqual(newer.sourceStatus!.github);
+  expect((await writer.load())!.gaps.find((g) => g.id === "open")!.from).toBe(t0);
 
   const restart = remote();
   const afterRestart = (await restart.load())!;
@@ -210,9 +173,7 @@ test("activity writes only changed rows and preserves watchdog windows and seman
   before = totalChanges(db);
   await restart.save(cleared);
   expect(totalChanges(db) - before).toBe(1); // value→NULL not mistaken for equality
-  expect((await writer.load())!.gaps.find((g) => g.id === "open")).toEqual(
-    clearedGap,
-  );
+  expect((await writer.load())!.gaps.find((g) => g.id === "open")).toEqual(clearedGap);
 });
 
 test("alerts partial-index dedupe, JSON preference merge and ack are preserved", async () => {
@@ -223,49 +184,25 @@ test("alerts partial-index dedupe, JSON preference merge and ack are preserved",
     create table alerts_notification_sends(id integer primary key, class text, object_ref text, incident_id text, outcome text, acted_on_at text);
     create table alerts_push_subscriptions(id text default 'sub', endpoint text unique, p256dh text, auth text, classes text, quiet text, user_agent text, last_seen_at text, created_at text, gone_count integer default 0);`);
   const store = new AlertsStore(localClient(db));
-  const a = await store.postIncident({
-    source: "test",
-    key: "same",
-    severity: "critical",
-    title: "now() ::jsonb",
-  });
+  const a = await store.postIncident({ source: "test", key: "same", severity: "critical", title: "now() ::jsonb" });
   expect(a.created).toBe(true);
-  const b = await store.postIncident({
-    source: "test",
-    key: "same",
-    severity: "critical",
-    title: "again",
-  });
+  const b = await store.postIncident({ source: "test", key: "same", severity: "critical", title: "again" });
   expect(b.created).toBe(false);
   expect(b.incident.occurrences).toBe(2);
   expect((await store.ackIncident(a.incident.id)).transitioned).toBe(true);
   expect((await store.ackIncident(a.incident.id)).transitioned).toBe(false);
   expect(await store.pendingEscalations(15)).toEqual([]);
-  const c = await store.postIncident({
-    source: "test",
-    key: "second",
-    severity: "critical",
-    title: "second",
-  });
-  expect((await store.pendingDeliveries()).map((x) => x.id)).toContain(
-    c.incident.id,
-  );
+  const c = await store.postIncident({ source: "test", key: "second", severity: "critical", title: "second" });
+  expect((await store.pendingDeliveries()).map((x) => x.id)).toContain(c.incident.id);
   expect(await store.markDelivered(c.incident.id, {})).toBe(true);
   expect(await store.markDelivered(c.incident.id, {})).toBe(false);
   db.query(
     "update alerts_incidents set delivered_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-16 minutes') where id = ?",
   ).run(c.incident.id);
-  expect((await store.pendingEscalations(15)).map((x) => x.id)).toContain(
-    c.incident.id,
-  );
+  expect((await store.pendingEscalations(15)).map((x) => x.id)).toContain(c.incident.id);
   expect(await store.markEscalated(c.incident.id, {})).toBe(true);
   expect(await store.pendingEscalations(15)).toEqual([]);
-  await store.logSend({
-    class: "critical",
-    objectRef: "test",
-    incidentId: c.incident.id,
-    outcome: "sent",
-  });
+  await store.logSend({ class: "critical", objectRef: "test", incidentId: c.incident.id, outcome: "sent" });
   expect((await store.listSends()).length).toBe(1);
   await store.ackIncident(c.incident.id);
   expect((await store.listSends())[0].acted_on_at).not.toBeNull();
@@ -289,11 +226,7 @@ test("alerts partial-index dedupe, JSON preference merge and ack are preserved",
   db.close();
 });
 test("transport fails closed on HTTP and malformed envelopes", async () => {
-  const c = createTursoStoreClient(
-    "https://example.test",
-    "test",
-    (async () => new Response("{}")) as any,
-  );
+  const c = createTursoStoreClient("https://example.test", "test", (async () => new Response("{}")) as any);
   await expect(c.query("select 1")).rejects.toThrow("malformed");
 });
 test("snapshots preserve numeric and range JSON values and replay dedupes", async () => {
@@ -326,12 +259,7 @@ test("unknown dialect and unsafe numeric result are rejected", async () => {
       results: [
         {
           type: "ok",
-          response: {
-            result: {
-              cols: [{ name: "id" }],
-              rows: [[{ type: "integer", value: "9007199254740992" }]],
-            },
-          },
+          response: { result: { cols: [{ name: "id" }], rows: [[{ type: "integer", value: "9007199254740992" }]] } },
         },
       ],
     })) as any);
@@ -372,9 +300,7 @@ test("actions JSON and self references round trip with real FK constraints", asy
 
   const changed = { ...rows[0], resultNote: "new result" };
   const invalid = { ...rows[1], supersedes: "no-such-parent" };
-  await expect(store.saveAll([changed, invalid])).rejects.toThrow(
-    "FOREIGN KEY",
-  );
+  await expect(store.saveAll([changed, invalid])).rejects.toThrow("FOREIGN KEY");
   expect(await store.loadAll()).toEqual(rows); // same statement remains atomic
   before = totalChanges(db);
   await store.saveAll([changed, rows[1]]);
