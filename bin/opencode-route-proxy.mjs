@@ -382,8 +382,13 @@ const demotedPairs = () => {
 // (#5295): a Retry-After-derived relative wait (the shape
 // classifyHttp records for 429s), or an absolute reset recorded under
 // any of the equivalent field names. A quota record with no reset
-// (e.g. a bare paymentRequired) cannot gate: how long it lasts is
-// unknown, and demotion remains its only handling.
+// (e.g. a bare paymentRequired) cannot gate on a stated reset: how
+// long it lasts is unknown, and demotion remains its only handling
+// (the bounded inferred wall of #13693 is the separate, run-based
+// handling for such records). When one record carries several reset
+// shapes (#13693: Retry-After plus an x-ratelimit-reset header), the
+// LATEST instant governs — the pair is walled until every promised
+// reset has passed.
 const quotaResetMs = (timeEnded, quotaText) => {
   let q;
   try {
@@ -392,31 +397,40 @@ const quotaResetMs = (timeEnded, quotaText) => {
     return null;
   }
   if (!q || typeof q !== "object") return null;
+  let best = null;
+  const consider = (ms) => {
+    if (Number.isFinite(ms) && ms > 0)
+      best = best === null ? ms : Math.max(best, ms);
+  };
   // A relative retry delay runs from when the quota response was
   // RECEIVED (the attempt's time_ended), not from when the request
   // started: anchoring to the start would let a slow 429 response
   // consume its own backoff.
   if (Number.isFinite(q.retryAfterMs) && q.retryAfterMs > 0)
-    return timeEnded + q.retryAfterMs;
-  for (const k of ["resetsAtMs", "resetAtMs", "retryAtMs"])
-    if (Number.isFinite(q[k]) && q[k] > 0) return q[k];
-  for (const k of ["resetsAt", "resetAt", "retryAt"]) {
-    const ms = Date.parse(q[k]);
-    if (Number.isFinite(ms)) return ms;
-  }
-  return null;
+    consider(timeEnded + q.retryAfterMs);
+  for (const k of ["resetsAtMs", "resetAtMs", "retryAtMs"]) consider(q[k]);
+  for (const k of ["resetsAt", "resetAt", "retryAt"])
+    consider(Date.parse(q[k]));
+  return best;
 };
 
 // (provider,model) pairs whose binding quota window is KNOWN
-// exhausted (#5295, #4370 acceptance (c)): the pair's latest
-// quota-bearing failure in the ledger carries a reset still in the
-// future, and no success has been recorded for the pair since that
-// failure. Unlike demotion — reactive (>=3 failures in 4h) and
-// reorder-only — this is a seating-time exclusion known BEFORE the
-// next failure: a monthly-walled leg at a known 100% must not be a
-// first-choice candidate while any live candidate exists. The ledger
-// is the only source (no new network dependency in the hot path);
-// the lookback bounds the scan while covering monthly resets.
+// exhausted (#5295, #4370 acceptance (c)): the pair's current
+// failure run carries a reset still in the future, and no success
+// has been recorded for the pair since the run began. Unlike
+// demotion — reactive (>=3 failures in 4h) and reorder-only — this
+// is a seating-time exclusion known BEFORE the next failure: a
+// monthly-walled leg at a known 100% must not be a first-choice
+// candidate while any live candidate exists. The ledger is the
+// only source (no new network dependency in the hot path); the
+// lookback bounds the scan while covering monthly resets.
+//
+// #13693 RC-2: the gate judges the pair's current failure RUN —
+// every quota-bearing failure since its last success, completion-
+// time ordered as before — and takes the LATEST (maximum) reset
+// any failure in the run carried. Providers vary whether a given
+// 429 carries a reset; judging only the latest failure let a
+// reset-less 429 dissolve a standing wall mid-flight.
 const EXHAUSTED_LOOKBACK_MS = 40 * 24 * 60 * 60 * 1000;
 const knownExhaustedPairs = (now) => {
   let db = null;
@@ -429,17 +443,11 @@ const knownExhaustedPairs = (now) => {
     // recovery after it.
     const quotaRows = db
       .prepare(
-        `SELECT provider_id, model_id, time_started, time_ended, quota FROM route_attempt
+        `SELECT provider_id, model_id, time_ended, quota FROM route_attempt
          WHERE quota IS NOT NULL AND outcome != 'success' AND time_ended > ?
-           AND time_ended = (
-             SELECT MAX(time_ended) FROM route_attempt r2
-             WHERE r2.provider_id = route_attempt.provider_id
-               AND r2.model_id = route_attempt.model_id
-               AND r2.quota IS NOT NULL AND r2.outcome != 'success'
-               AND r2.time_ended > ?
-           )`,
+         ORDER BY time_ended ASC`,
       )
-      .all(since, since);
+      .all(since);
     const successRows = db
       .prepare(
         `SELECT provider_id, model_id, MAX(time_ended) AS latest
@@ -451,18 +459,148 @@ const knownExhaustedPairs = (now) => {
     const latestSuccess = new Map(
       successRows.map((r) => [`${r.provider_id}/${r.model_id}`, r.latest]),
     );
-    const out = new Map();
+    // The current run per pair: failures completed after the pair's
+    // latest success. The gate reset is the maximum reset the run
+    // carries, so a later reset-less failure cannot dissolve it; a
+    // success after every failure leaves the run empty.
+    const runReset = new Map();
     for (const r of quotaRows) {
-      const reset = quotaResetMs(r.time_ended, r.quota);
-      if (reset === null || reset <= now) continue;
       const key = `${r.provider_id}/${r.model_id}`;
       const successAt = latestSuccess.get(key);
       if (successAt !== undefined && successAt > r.time_ended) continue;
-      out.set(key, reset);
+      const reset = quotaResetMs(r.time_ended, r.quota);
+      if (reset === null) continue;
+      const prev = runReset.get(key);
+      if (prev === undefined || reset > prev) runReset.set(key, reset);
+    }
+    const out = new Map();
+    for (const [key, reset] of runReset)
+      if (reset > now) out.set(key, reset);
+    return out;
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// A bounded INFERRED wall for reset-less quota walls (#13693 RC-1):
+// a pair whose current failure run carries no parseable reset at
+// all still stops being walked indefinitely once the run shows
+// repeated plan-limit failure. A pair is inferred-walled when its
+// current run — quota-bearing failures (quota IS NOT NULL, outcome
+// != 'success', which includes 402 paymentRequired records) since
+// its last success — contains >=3 failures with some three of them
+// inside the demotion window (4h). The wall is bounded: it lasts
+// INFERRED_WALL_BASE_MS from the run's LATEST failure, doubling per
+// prior inferred wall for the pair inside the lookback, capped at
+// INFERRED_WALL_MAX_MS. Expiry makes the next seating the probe,
+// and a success after the latest failure clears the inference (the
+// run it belonged to is then no longer the current run).
+//
+// Escalation rule (deterministic, from the ledger alone): process
+// the pair's quota failures in completion order, grouped into
+// runs. A run ends at a success, or — once it has itself qualified
+// (>=3 failures with some three inside 4h, earning a window W) —
+// at the first later failure arriving more than W after the run's
+// previous failure (that wall had expired; the failure is a fresh
+// probe and starts a new run). A run's escalation count is the
+// number of earlier runs in the lookback that qualified; its
+// window is BASE * 2^count, capped at MAX. Doctrine: repeated
+// plan-limit failures only — never one failure, never unbounded.
+const INFERRED_WALL_BASE_MS = 15 * 60 * 1000;
+const INFERRED_WALL_MAX_MS = 2 * 60 * 60 * 1000;
+const inferredWalledPairs = (now) => {
+  let db = null;
+  try {
+    db = openDb();
+    const since = now - EXHAUSTED_LOOKBACK_MS;
+    const rows = db
+      .prepare(
+        `SELECT provider_id, model_id, time_ended, outcome FROM route_attempt
+         WHERE time_ended > ? AND (outcome = 'success' OR quota IS NOT NULL)
+         ORDER BY provider_id, model_id, time_ended ASC`,
+      )
+      .all(since);
+    const byPair = new Map();
+    for (const r of rows) {
+      const key = `${r.provider_id}/${r.model_id}`;
+      if (!byPair.has(key)) byPair.set(key, []);
+      byPair.get(key).push(r);
+    }
+    const qualifies = (run) => {
+      for (let i = 0; i + 2 < run.length; i++)
+        if (run[i + 2] - run[i] <= DEMOTE_WINDOW_MS) return true;
+      return false;
+    };
+    const out = new Map();
+    for (const [key, events] of byPair) {
+      let priorQualifying = 0;
+      let run = []; // time_ended of the current run's quota failures
+      let earnedMs = null; // window the current run earned, once qualified
+      const closeRun = () => {
+        if (qualifies(run)) priorQualifying++;
+        run = [];
+        earnedMs = null;
+      };
+      for (const e of events) {
+        if (e.outcome === "success") {
+          closeRun();
+          continue;
+        }
+        if (
+          run.length &&
+          earnedMs !== null &&
+          e.time_ended > run[run.length - 1] + earnedMs
+        )
+          closeRun();
+        run.push(e.time_ended);
+        if (earnedMs === null && qualifies(run))
+          earnedMs = Math.min(
+            INFERRED_WALL_BASE_MS * 2 ** priorQualifying,
+            INFERRED_WALL_MAX_MS,
+          );
+      }
+      if (earnedMs !== null) {
+        const until = run[run.length - 1] + earnedMs;
+        if (until > now) out.set(key, until);
+      }
     }
     return out;
   } catch {
     return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+};
+
+// Whether any route_attempt on one of the candidate pairs STARTED
+// within the last 60s (#13693 RC-4 pacing evidence: a walk already
+// paid failed attempts against the wall moments ago). Started-at,
+// strictly inside the window: an attempt that began exactly 60s
+// ago is the attempt that established the wall in the #5295
+// fixtures, not a repeat walk into a known wall.
+const recentAttemptOnCandidates = (candidates, now) => {
+  let db = null;
+  try {
+    db = openDb();
+    const clauses = candidates
+      .map(() => "(provider_id = ? AND model_id = ?)")
+      .join(" OR ");
+    const params = [];
+    for (const c of candidates) params.push(c.providerId, c.modelKey);
+    const row = db
+      .prepare(
+        `SELECT 1 AS x FROM route_attempt WHERE time_started > ? AND (${clauses}) LIMIT 1`,
+      )
+      .get(now - 60_000, ...params);
+    return Boolean(row);
+  } catch {
+    return false;
   } finally {
     try {
       db?.close();
@@ -530,21 +668,30 @@ const authBenchedPairs = (now) => {
   }
 };
 
-// Exclude known-exhausted and auth-benched candidates (#5295,
-// #12228), following the credential-less exclusion pattern (#3228) —
-// but fail-safe: if the gate would empty the candidate list, the
-// demoted order is kept as it was, because a benched leg as last
-// resort beats no route at all. Gate decisions are recorded on
-// stderr, the proxy's diagnostics stream.
+// Exclude known-exhausted, auth-benched and inferred-walled
+// candidates (#5295, #12228, #13693), following the credential-less
+// exclusion pattern (#3228) — but fail-safe: if the gate would
+// empty the candidate list, the demoted order is kept as it was,
+// because a benched leg as last resort beats no route at all (the
+// one exception is the reset-carrying pacing answer, RC-4 below).
+// Gate decisions are recorded on stderr, the proxy's diagnostics
+// stream.
 const applyKnownExhaustedGate = (cfg, candidates) => {
   if (!candidates.length) return candidates;
   const now = nowMs();
   const exhausted = knownExhaustedPairs(now);
   const authBenched = authBenchedPairs(now);
-  if (!exhausted.size && !authBenched.size) return candidates;
+  const inferred = inferredWalledPairs(now);
+  if (!exhausted.size && !authBenched.size && !inferred.size)
+    return candidates;
   const key = (c) => `${c.providerId}/${c.modelKey}`;
+  // The inferred wall never stacks on a reset-carrying gate: a pair
+  // with a stated reset is governed by that reset alone (#13693).
+  const inferredFor = (c) =>
+    inferred.has(key(c)) && !exhausted.has(key(c));
   const kept = candidates.filter(
-    (c) => !exhausted.has(key(c)) && !authBenched.has(key(c)),
+    (c) =>
+      !exhausted.has(key(c)) && !authBenched.has(key(c)) && !inferredFor(c),
   );
   // The fail-safe is evaluated against CREDENTIALED survivors: the
   // credential-less filter (#3228) runs after this gate, so a kept
@@ -552,9 +699,41 @@ const applyKnownExhaustedGate = (cfg, candidates) => {
   // route — and the benched leaf must then stay as the last resort
   // instead of the request failing with "no credentialed members".
   if (!kept.some((c) => hasCredential(cfg, c.providerId))) {
+    // Fail-safe pacing (#13693 RC-4): when EVERY excluded candidate
+    // is excluded by a reset-carrying known-exhausted gate (not
+    // inferred, not auth), the earliest such reset is >60s away,
+    // and a walk already paid attempts on a candidate pair within
+    // the last 60s, walking again only burns more failed attempts
+    // against a known wall — answer 503 with Retry-After until the
+    // earliest reset instead. In every other bypass case the
+    // walk-anyway behaviour below is preserved exactly.
+    const excluded = candidates.filter((c) => !kept.includes(c));
+    if (excluded.length && excluded.every((c) => exhausted.has(key(c)))) {
+      const earliestReset = Math.min(
+        ...excluded.map((c) => exhausted.get(key(c))),
+      );
+      if (
+        earliestReset - now > 60_000 &&
+        recentAttemptOnCandidates(candidates, now)
+      ) {
+        console.error(
+          `opencode-route-proxy: wall pacing — every candidate is ` +
+            `known-exhausted until ${new Date(earliestReset).toISOString()}; ` +
+            `answering 503 with Retry-After instead of walking (#13693)`,
+        );
+        const err = new LeafError(
+          `all route candidates are quota-walled until ${new Date(earliestReset).toISOString()} (#13693)`,
+          { tag: "RateLimit", status: 503 },
+        );
+        err.retryAfterMs = earliestReset - now;
+        err.wallPaced = true;
+        throw err;
+      }
+    }
     const reasons = [
       ...(exhausted.size ? ["known-exhausted"] : []),
       ...(authBenched.size ? ["auth bench"] : []),
+      ...(inferred.size ? ["inferred wall"] : []),
     ].join(" + ");
     console.error(
       `opencode-route-proxy: ${reasons} gate bypassed — no credentialed ` +
@@ -567,6 +746,11 @@ const applyKnownExhaustedGate = (cfg, candidates) => {
       console.error(
         `opencode-route-proxy: known-exhausted gate excluded ${key(c)} ` +
           `until ${new Date(exhausted.get(key(c))).toISOString()} (#5295)`,
+      );
+    else if (inferredFor(c))
+      console.error(
+        `opencode-route-proxy: inferred wall excluded ${key(c)} ` +
+          `until ${new Date(inferred.get(key(c))).toISOString()} (#13693)`,
       );
     else if (authBenched.has(key(c)))
       console.error(
@@ -941,13 +1125,42 @@ class LeafError extends Error {
 
 const classifyHttp = (status, headers, bodyText) => {
   let quota = null;
-  const retryAfter = headers.get("retry-after");
-  if (status === 429 && retryAfter) {
-    const secs = Number(retryAfter);
-    quota = JSON.stringify({
-      retryAfterMs: Number.isFinite(secs) ? secs * 1000 : null,
-      headers: { "retry-after": retryAfter },
-    });
+  if (status === 429) {
+    // Receipt time for this response: relative delays recorded here
+    // are anchored by the ledger to the attempt's time_ended via
+    // quotaResetMs, so an HTTP-date reset is stored as the DELTA
+    // from receipt, keeping that anchor exact (#13693).
+    const receiptMs = Date.now();
+    let quotaObj = null;
+    const retryAfter = headers.get("retry-after");
+    if (retryAfter) {
+      const secs = Number(retryAfter);
+      let retryAfterMs = null;
+      if (Number.isFinite(secs)) retryAfterMs = secs * 1000;
+      else {
+        // An HTTP-date Retry-After (RFC 9110 allows both shapes):
+        // parse it as the instant it names (#13693 RC-1).
+        const dateMs = Date.parse(retryAfter);
+        if (Number.isFinite(dateMs)) retryAfterMs = dateMs - receiptMs;
+      }
+      quotaObj = {
+        retryAfterMs,
+        headers: { "retry-after": retryAfter },
+      };
+    }
+    // Rate-limit reset headers (#13693 RC-1): >1e12 is epoch ms,
+    // >1e9 is epoch s, anything smaller is seconds-from-now.
+    const resetHeader =
+      headers.get("x-ratelimit-reset") ?? headers.get("ratelimit-reset");
+    if (resetHeader) {
+      const v = Number(resetHeader);
+      if (Number.isFinite(v) && v > 0) {
+        const resetsAtMs =
+          v > 1e12 ? v : v > 1e9 ? v * 1000 : receiptMs + v * 1000;
+        quotaObj = { ...(quotaObj ?? {}), resetsAtMs };
+      }
+    }
+    if (quotaObj) quota = JSON.stringify(quotaObj);
   }
   if (status === 429 && quota === null) {
     // A quota wall that names its reset in the BODY with no
@@ -983,14 +1196,49 @@ const classifyHttp = (status, headers, bodyText) => {
   });
 };
 
+// Duration units for the reset shapes real providers send
+// (#13693): prose ("in 20 minutes"), keyed duration strings
+// ("30s", Google-style retryDelay) and small-number seconds.
+const DURATION_UNIT_MS = {
+  ms: 1,
+  s: 1000,
+  sec: 1000,
+  secs: 1000,
+  second: 1000,
+  seconds: 1000,
+  m: 60_000,
+  min: 60_000,
+  mins: 60_000,
+  minute: 60_000,
+  minutes: 60_000,
+  h: 3_600_000,
+  hr: 3_600_000,
+  hrs: 3_600_000,
+  hour: 3_600_000,
+  hours: 3_600_000,
+};
+const durationMs = (numText, unit) => {
+  const mult = DURATION_UNIT_MS[String(unit).toLowerCase()];
+  const n = Number(numText);
+  return mult && Number.isFinite(n) && n > 0 ? n * mult : null;
+};
+const DURATION_RE =
+  /(\d+(?:\.\d+)?)\s*(ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)/.source;
+
 // The reset instant a 429 BODY promises, if it names one (#12228).
 // Shapes: explicit JSON fields ({"resetsAt": "<iso>"}, epoch seconds
 // or ms under a reset/retry/renew key) or free prose with a reset
-// word next to an ISO instant ("window resets at ...Z"). Only future
-// instants are returned: a past instant cannot wall, and recording one
-// would just add noise to the ledger. Returns epoch ms or null.
+// word next to an ISO instant ("window resets at ...Z"). #13693
+// adds the duration shapes: keyed pure-duration strings and
+// small-number seconds under after/delay keys, and duration prose
+// ("try again in 20 minutes") — durations run from RECEIPT (this
+// call), which the caller records as an absolute instant. Only
+// future instants are returned: a past instant cannot wall, and
+// recording one would just add noise to the ledger. Returns epoch
+// ms or null.
 const bodyResetMs = (bodyText) => {
   if (!bodyText) return null;
+  const receiptMs = Date.now();
   const futureMs = (ms) =>
     Number.isFinite(ms) && ms > Date.now() ? ms : null;
   try {
@@ -1005,14 +1253,29 @@ const bodyResetMs = (bodyText) => {
           (typeof item === "string" || typeof item === "number") &&
           /reset|retry|renew/i.test(String(k))
         ) {
-          const ms =
-            typeof item === "number"
-              ? item > 1e12
-                ? item
-                : item > 1e9 && item < 1e11
-                  ? item * 1000
-                  : NaN
-              : Date.parse(item);
+          let ms;
+          if (typeof item === "number") {
+            // A small number under an after/delay key is a DURATION
+            // in seconds ("retry_after": 30), not an epoch: epochs
+            // that small predate the ledger entirely (#13693).
+            ms =
+              item > 0 && item < 1e9 && /after|delay/i.test(String(k))
+                ? receiptMs + item * 1000
+                : item > 1e12
+                  ? item
+                  : item > 1e9 && item < 1e11
+                    ? item * 1000
+                    : NaN;
+          } else {
+            // A pure duration string ("30s", "1.5s", "2m", "1h" —
+            // Google's retryDelay shape) is a duration from
+            // receipt, not an instant (#13693).
+            const dur = new RegExp(`^${DURATION_RE}$`, "i").exec(
+              item.trim(),
+            );
+                        const d = dur ? durationMs(dur[1], dur[2]) : null;
+            ms = dur ? (d === null ? NaN : receiptMs + d) : Date.parse(item);
+          }
           const ok = futureMs(ms);
           if (ok !== null) return ok;
         } else if (item !== null && typeof item === "object") {
@@ -1025,6 +1288,16 @@ const bodyResetMs = (bodyText) => {
     const keyed = findKeyed(parsed, 0);
     if (keyed !== null) return keyed;
   } catch {}
+  // Duration prose: a verb + "in" + number + unit ("try again in
+  // 20s / 2 minutes / 1.5h") is a duration from receipt (#13693).
+  const durProse = bodyText.match(
+    /(?:try again|retry|re-?try|attempt again|check back|wait)\b[^.\d]{0,40}?\bin\s+(\d+(?:\.\d+)?)\s*(ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b/i,
+  );
+  if (durProse) {
+    const d = durationMs(durProse[1], durProse[2]);
+    const ok = d === null ? null : futureMs(receiptMs + d);
+    if (ok !== null) return ok;
+  }
   const prose = bodyText.match(
     /(?:reset|resum|renew|reinstat|available|back)[^\d]{0,20}(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})?)/i,
   );
@@ -1582,6 +1855,24 @@ const sendJson = (res, status, obj) => {
 const sendError = (res, status, message) =>
   sendJson(res, status, { error: { message, type: "proxy_error" } });
 
+// A wall-paced answer (#13693 RC-4): 503 with Retry-After until the
+// earliest known reset, and a JSON error body naming the wall — the
+// same { error: { message, type } } shape as every other proxy
+// error, plus the retry-after header sendJson does not carry.
+const sendWallPaced = (res, err) => {
+  if (res.destroyed || res.writableEnded) return;
+  const secs = Math.max(1, Math.ceil((err.retryAfterMs ?? 0) / 1000));
+  res.writeHead(503, {
+    "content-type": "application/json",
+    "retry-after": String(secs),
+  });
+  res.end(
+    JSON.stringify({
+      error: { message: String(err?.message || err), type: "proxy_error" },
+    }),
+  );
+};
+
 const isPlainObject = (v) =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -1738,6 +2029,7 @@ const handleChatCompletions = async (req, res, body) => {
       });
       if (!res.destroyed && !res.writableEnded) res.end();
     } catch (err) {
+      if (err?.wallPaced && !headersSent) return sendWallPaced(res, err);
       if (!headersSent) {
         return sendError(res, 502, String(err?.message || err));
       }
@@ -1762,6 +2054,7 @@ const handleChatCompletions = async (req, res, body) => {
       res.end(text);
     }
   } catch (err) {
+    if (err?.wallPaced) return sendWallPaced(res, err);
     return sendError(res, 502, String(err?.message || err));
   }
 };

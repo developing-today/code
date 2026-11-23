@@ -44,7 +44,8 @@ just serve
 ### With Cargo
 
 ```bash
-# Lib variant (no web UI): the default features
+# Default build: sandbox and world included, no web UI
+# (--no-default-features would also remove sandbox and world)
 cargo build
 cargo run -- serve
 
@@ -70,8 +71,8 @@ id get myfile.txt
 # List all files
 id list
 
-# Find files by pattern
-id find "*.rs"
+# Find files by query (case-insensitive substring; no glob matching)
+id find ".rs"
 
 # Search files
 id search "hello"
@@ -260,7 +261,7 @@ it is — a valid world capability, minted by the host's admin with
 | `peek`         |                                | Preview with configurable head/tail lines               |
 | `find`         |                                | Find files by query, optionally output content          |
 | `search`       |                                | Search files and list all matches                       |
-| `list`         | `ls`                           | List all stored files                                   |
+| `list`         |                                | List all stored files                                   |
 | `tag`          | `label`, `link`                | Manage metadata tags on files                           |
 | `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files               |
 | `id`           |                                | Print local node public ID                              |
@@ -317,7 +318,8 @@ id repl
 > tag search author:Jane          # Structured search syntax
 > tag find readme                 # find = search alias
 > migrate-tags                    # Add name/file tags to all files
-> cat myfile.txt | head -5        # Pipe output to shell
+> !head -5 myfile.txt             # Shell escape: run any shell command
+> printf 'bread\n' |> put - bakery.txt  # Pipe shell output into a stored file
 > $(id id)                        # Subshell expansion
 > help                            # Show all commands
 ```

@@ -24,6 +24,59 @@ let
   rocCompiler = pkgs.callPackage ./nix/roc.nix { };
   zig = pkgs.zig_0_16;
 
+  # Bun pinned to the pristine official 1.4.5 build (#13337) — the
+  # upstream release binary, installed untouched. The nixpkgs package
+  # is a patchelf repack, and the repacked binary crashes vitest
+  # workers at startup on the fleet runner hosts (SIGSEGV with the
+  # baseline x86_64 flavor, SIGABRT with the regular flavor, at both
+  # 1.4.2 and 1.4.5), while the pristine 1.4.5 binary passes the same
+  # suite in the same runner and the repack passes on other hosts —
+  # the full evidence table is recorded on #13337. 1.4.5 is also the
+  # version the fleet-build Containerfile pins. Because the binary is
+  # pristine, it needs the system loader at runtime (/lib64/ld-linux
+  # or nix-ld, both present on the fleet's machines and in the
+  # fleet-build container); it is used in shells only — the web
+  # package builds keep their own pkgs.bun (see pkgs/id/flake.nix).
+  # Bump version + hashes together, deliberately, never by a lock
+  # update alone.
+  bunPinned =
+    let
+      zips = {
+        "x86_64-linux" = {
+          file = "bun-linux-x64.zip";
+          hash = "sha256-WCYOHQDhVan4VY5fXl1miwZQ3hNxCUnMeutJdXx0kFY=";
+        };
+        "aarch64-linux" = {
+          file = "bun-linux-aarch64.zip";
+          hash = "sha256-EkeG+qsv7hosvxqyHtkjizI8eDF5TW5hFYvHbw4SFpQ=";
+        };
+        "aarch64-darwin" = {
+          file = "bun-darwin-aarch64.zip";
+          hash = "sha256-mNY87B6ZYhDS4b8MDp+pR/7fnXvLes4A0kUdokvavwk=";
+        };
+      };
+      zip = zips.${pkgs.stdenv.hostPlatform.system};
+    in
+    pkgs.stdenvNoCC.mkDerivation {
+      pname = "bun";
+      version = "1.4.5";
+      src = pkgs.fetchzip {
+        url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/${zip.file}";
+        hash = zip.hash;
+      };
+      installPhase = ''
+        runHook preInstall
+        install -Dm 755 bun $out/bin/bun
+        ln -s bun $out/bin/bunx
+        runHook postInstall
+      '';
+      meta = {
+        description = "Incredibly fast JavaScript runtime, bundler, test runner, and package manager (pristine upstream binary)";
+        homepage = "https://bun.sh";
+        license = pkgs.lib.licenses.mit;
+      };
+    };
+
   # Builds examples/roc-world/targets/wasm32/host.wasm in the current build
   # directory. The file is git-ignored, and the roc-world platform refuses to load
   # without it (src/world_compile.rs), so every derivation that runs the tests
@@ -102,7 +155,7 @@ let
       hyperfine
 
       # Web development tools
-      bun # JavaScript bundler and runtime (required for web builds)
+      bunPinned # JavaScript bundler and runtime (required for web builds); pinned 1.4.5, see the let binding (#13337)
       typescript # TypeScript for type checking # nodepackages remoed 2026-04-03
       wrangler # Cloudflare Worker CLI (worker-poc dev, #2271)
 

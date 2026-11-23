@@ -304,7 +304,7 @@ and every build compiles it, so no build can know a domain another
 build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
 `fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
-`fleet shell`, `fleet search` and `fleet laptop-agent`, plus the
+`fleet shell`, `fleet search`, `fleet laptop-agent` and `fleet cert`, plus the
 built-ins `fleet init`, `fleet session`, `fleet version`,
 `fleet capabilities` and `fleet help`.
 

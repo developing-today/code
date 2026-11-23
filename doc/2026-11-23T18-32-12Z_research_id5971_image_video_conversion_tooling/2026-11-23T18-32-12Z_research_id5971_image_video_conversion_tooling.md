@@ -299,3 +299,108 @@ either is claimed as supported rather than merely detected.
   #786 + `doc/2026-11-01_design_id786.md` (capability tiers and presenter boundary),
   #5985 (license combination checker), `doc/2026-11-23T03-04-00Z_design_content-addressed-media-data-plane/` (derivative substrate),
   `pkgs/id/crates/id-worlds/src/world_terminal.rs` (existing capability probes).
+
+---
+
+## Amendment — 2026-11-23 (later the same day): the kitty encoder survey
+
+*Added after Drewry challenged §3's headline conclusion, naming kittage, little-kitty,
+rasteroid, zellij, ghostty, and kitty-graphics-protocol-rs as implementations the survey
+should have covered. He was right. This section corrects the record; the original text
+above is unchanged.*
+
+### A.1 What was wrong
+
+§3's headline — "the kitty encoder is not a library problem" — was wrong as stated, and
+§6.2's hand-roll-the-encoder recommendation rested on it. The original survey compared
+**applications and converters** (icat, chafa, timg, viu, term-image, notcurses, libsixel,
+mpv, yazi) and never looked for **protocol libraries**: crates whose whole job is composing
+kitty graphics commands. Those exist, in Rust, today, and two of them cover most or all of
+what §6.2 proposed to hand-roll. What survives the correction: §2's protocol mechanics,
+§4's placement analysis, §5's conversion-tool survey, §6.1/§6.3, §7's sequencing, and
+§6.2's wire-format description of what an encoder must emit. What changes is only the
+*build* decision — revised in A.3.
+
+Two factual updates to §2.3 fell out of the same pass:
+
+- **Ghostty 1.4** (2026-10-27) completed the published kitty graphics specification,
+  animation included (Ghostty's own protocol-status page: "100% of published protocol:
+  Yes (completed in version 1.4)"). The matrix row's "animation is the least mature part"
+  was already stale when written.
+- **Zellij 0.45** (2026-08) implements kitty graphics as a multiplexer: it parses pane
+  clients' APC streams, tracks placements per pane (surviving resize, scroll, and floating
+  panes), and re-emits to the host terminal, recompressing with zlib (`o=z`) when the host
+  supports it. That is a concrete, shipped instance of the multiplexer behavior §2.3's
+  caveat describes, and the strongest reason the presenter's probe — not the TERM name —
+  stays the authority.
+
+### A.2 The survey
+
+Checked 2026-11-23 against crates.io, docs.rs, lib.rs, and project documentation.
+"Coverage" is measured against what #13623 needs first (direct `t=d` transmission,
+4096-character chunking, image IDs, placements, an `a=q` query/response round-trip) and
+what §7 needs later (unicode placeholders, animation).
+
+| Project | Kind | Language | License | Coverage | State | Fit for #13623 |
+| --- | --- | --- | --- | --- | --- | --- |
+| kittage 0.4.0 | client encoder library | Rust | **MPL-2.0** | Everything except animation frames: all mediums (direct/file/temp/shared-memory), configurable chunk size, zlib compression, image IDs/numbers, placements incl. relative placements, virtual placements (unicode placeholders), delete, query + response reading (sync and async), tmux passthrough | 15 releases since 2025-08, latest 2026-04; ~13K downloads | Fullest fit of anything surveyed — held only by license class (A.3) |
+| little_kitty 0.0.3 (crate `little-kitty`) | client encoder library, low-level | Rust | **MIT OR Apache-2.0** | Generic control-key composition; its published docs demonstrate `a=T` transmit-and-place with `f=100`, file payloads, image IDs, `U=1` placeholder registration, `a=q` with expected response, and a support probe; tmux wrapping; response reader. No chunk-splitting helper appears in its documented surface (`write_base64` emits a payload whole) — verify at adoption | First published 2026-03; 3 releases; ~1K downloads | **Recommended base (A.3)** — permissive under §4.3 as written; the layer it provides is ~1.1K lines, thin enough to vendor under its own terms if it stalls |
+| kitty-graphics-protocol 0.1.3 | client encoder library | Rust | MIT | Claims everything: RGB/RGBA/PNG, chunked transfer (default 4 KB), animation, placeholders, placements, detection | All 4 versions published on a single day (2026-02-28); docs.rs fails to build it; ~860 downloads | Not adoptable on current evidence — claims unverified, no maintenance signal; its `serialize_chunked` design is a useful reference |
+| rasteroid 0.4.0 | encoder library (under the mcat viewer) | Rust | MIT | Kitty transmit-at-cursor only (`encode_image`, `encode_frames` for redraw-style animation); no image-ID, placement, placeholder, or query API | Active: 14 releases, mcat maintained | Does not cover #13623's transmit-by-ID + placement scope |
+| ratatui-image 11.x | encoder library (ratatui widget) | Rust | MIT | Kitty backend transmits RGBA in chunks and renders **only** via unicode placeholders written into ratatui's cell buffer | Very active; hundreds of dependent crates; cross-terminal screenshot QA | Architectural mismatch: pkgs/id does not use ratatui, and #13623 needs direct placement by ID. Field reports note its placeholder path does not render in WezTerm — at least one downstream project hand-rolled direct placement for exactly that reason |
+| viuer 0.11 | encoder library (under the viu viewer) | Rust | MIT (lib.rs also lists LGPL-3.0-or-later, via its sixel dependency) | Viewer-grade kitty: print at cursor; no IDs, placements, or placeholders | Maintained (2025-12) | Same class as the original survey's viu row; not #13623 scope |
+| yazi-adapter 26.x | application adapter (Yazi file manager) | Rust | MIT | Production kitty encoding incl. chunking and placeholders, inside Yazi's preview pipeline | Released with Yazi (latest 2026-05) | Prior art / behavioral reference, as the original survey had it; its API is Yazi's adapter surface, not a general encoder |
+| charmbracelet/x/ansi `kitty` | client encoder + decoder library | Go | MIT | Full: chunking (`MaxChunkSize`), all actions incl. animation frames, placeholders, complete delete taxonomy, plus a payload decoder | Actively maintained (v0.10.x) | Wrong language for pkgs/id; the best cross-language cross-check for #13623's golden fixtures |
+| zellij 0.45+ | terminal multiplexer (protocol intermediary) | Rust | MIT | Parses client kitty streams, tracks placements per pane, re-emits to host; `o=z` recompression when the host supports it | Current (0.46, 2026-11) | Not a library and not published as one; evidence for §2.3's multiplexer caveat and a placement-tracking reference |
+| ghostty 1.4 | terminal (renderer) | Zig | MIT | Project claims 100% of the published spec incl. animation and relative placements | Released 2026-10-27 | Conformance target and reference implementation; terminal-side, not a client encoder |
+| bboxy450_kitty_graphics 0.2.0 | terminal-side protocol state machine | Rust | non-standard | Chunked assembly, RGB/RGBA/PNG, display/delete/query; explicitly no file/shared-memory mediums, animation, or placeholders | Published 2026-11-13; 40 downloads | Terminal-side; completeness only |
+| xterm.js addon-image | terminal-side renderer | TypeScript | MIT | Full kitty command parsing/rendering in the browser terminal | Maintained with xterm.js | Terminal-side; completeness only |
+
+Nothing in the original §3 table was a protocol library — every entry was a converter or
+an application — which is precisely the gap. Those entries stand as converter/application
+prior art; this table is the missing layer.
+
+### A.3 Revised recommendation (replaces §6.2's build decision)
+
+**The recommendation flips: build #13623 on a library. Hand-roll only the pieces no
+permissively-licensed library provides.**
+
+1. **Adopt `little-kitty` 0.0.3 (MIT OR Apache-2.0)** as the presenter's kitty
+   composition layer: control-key command building, the `a=q` query/response round-trip
+   the capability gate needs, placeholder registration for §7's later stages, and tmux
+   wrapping. It is the only permissively-licensed option whose fit for #13623's scope
+   could be verified from its published documentation. It is young (v0.0.3, first
+   published 2026-03) — accepted knowingly: the layer is small, the license permits
+   vendoring, and the alternative candidates are either license-blocked (kittage) or
+   unverifiable (kitty-graphics-protocol).
+2. **Keep in presenter code** (unchanged from §6.2): PNG passthrough via the `image`
+   crate, zlib compression for `f=32 o=z`, and — unless little_kitty's execution path is
+   found to split payloads internally, which its published docs do not show — the
+   4096-character chunk loop with `m=` continuation. #13623's first step is that
+   verification, and its golden fixtures (against icat/chafa output) now double as the
+   verification that the library emits §6.2's wire format byte-for-byte.
+3. **Hold `kittage` 0.4.0 as the named alternative.** It is the fullest implementation
+   surveyed — it would retire more hand-rolled surface than little_kitty (chunking,
+   mediums, placeholders, relative placements, response streams) — but it is **MPL-2.0**:
+   weak, file-level copyleft, outside §4.3's linkable list as written. If the licensing
+   program (#5985) rules MPL-2.0 into the same with-obligations class §4.3 already grants
+   LGPL, kittage becomes the better buy and #13623 should switch before the encoder
+   hardens. This amendment does not make that ruling.
+4. **What does not change:** §6.2's wire spec (it now describes what the library must
+   emit, and the fixtures still verify exactly that); §7's sequencing; the probe-gated
+   posture (`a=q` before commitment, never TERM names); and §3's *converter* conclusions
+   (chafa/libsixel/notcurses remain the conversion-side story — this correction concerns
+   only the protocol-encoder layer).
+
+### A.4 Sources
+
+crates.io API records and docs.rs/lib.rs pages for kittage, little-kitty,
+kitty-graphics-protocol, rasteroid, viuer, ratatui-image, yazi-adapter, and
+bboxy450_kitty_graphics (all read 2026-11-23); kittage `DisplayConfig` documentation
+(virtual placement, relative placements) and `Medium`/`Compression` types; little_kitty
+crate documentation (worked examples for transmit-and-place, placeholder registration,
+query with expected response, support probe; `KittyCommandWriter` surface); Ghostty
+protocol-status documentation and 1.4 release notes; Zellij 0.45.0 release notes and
+configuration documentation (`support_kitty_graphics_protocol`); charmbracelet/x/ansi
+`kitty` package documentation (pkg.go.dev).
+

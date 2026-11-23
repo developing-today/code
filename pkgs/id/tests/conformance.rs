@@ -458,9 +458,11 @@ fn capability_reports_match_the_declared_profiles() {
     let profiles = [redb_profile(), turso_profile()];
     let mut matched: HashSet<&str> = HashSet::new();
     for report in reports {
-        if report["status"] != json!("active") {
+        if report["resource_id"] == "indexeddb" {
+            // The TypeScript suite compares this exact report to the actual browser adapter.
             continue;
         }
+        assert_eq!(report["status"], "active");
         let resource_id = report["resource_id"].as_str().unwrap();
         let profile = profiles
             .iter()
@@ -484,28 +486,25 @@ fn capability_reports_match_the_declared_profiles() {
 }
 
 #[test]
-fn indexeddb_profile_is_reserved_and_claims_nothing() {
+fn indexeddb_has_an_active_report_and_explicit_vector_expectations() {
     let fixture = fixture();
-    let reports = fixture["capability_reports"].as_array().unwrap();
-    let reserved: Vec<&Value> = reports
+    let browser_reports: Vec<_> = fixture["capability_reports"]
+        .as_array()
+        .unwrap()
         .iter()
-        .filter(|report| report["status"] == json!("reserved"))
+        .filter(|report| report["resource_id"] == "indexeddb")
         .collect();
-    assert_eq!(reserved.len(), 1, "exactly one reserved profile");
-    let report = reserved[0];
-    assert_eq!(report["resource_id"], json!("indexeddb"));
-    // Reserved for its verdict (#10213): it advertises no
-    // capability and no guarantee until that verdict lands.
-    assert_eq!(report["required_capabilities"], json!([]));
-    assert_eq!(report["optional_capabilities"], json!([]));
-    let guarantees = report["guarantees"].as_object().unwrap();
-    assert!(
-        guarantees.values().all(|value| value == &json!(false)),
-        "a reserved profile claims no guarantees"
-    );
-    assert_eq!(report["atomic_scope"], Value::Null);
-    assert_eq!(report["commit_ambiguity"], Value::Null);
-    assert_eq!(report["retry_rule"], Value::Null);
+    assert_eq!(browser_reports.len(), 1);
+    assert_eq!(browser_reports[0]["status"], "active");
+    assert_eq!(browser_reports[0]["scope"], "browser");
+    for step in fixture["vectors"].as_array().unwrap() {
+        if let Some(by_profile) = step["expect"].as_object() {
+            assert!(
+                by_profile.get("indexeddb").is_some_and(Value::is_string),
+                "missing browser expectation for {step}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -154,6 +154,17 @@
   // failed main's bin-tests CI. The provider, its definition, and
   // the key plumbing above are unchanged; see the REMOVED note on
   // the route for the two-step re-enable.
+  // 2026-11-23 (Drew, direct order): "deepseek" LEAVES the list
+  // again, TEMPORARILY. The two-step re-enable the 2026-11-06 note
+  // prescribes is executed in this pass: deepseek/deepseek-flash is
+  // re-seated as deepseek-flash-plan's LAST target (tier 0.1, with
+  // the metered guard's exception marker on the seat) in the same
+  // change that deletes the line below. The same order seats two
+  // more temporary PAYG tails -- claude-payg into haiku-plan and
+  // openai-payg into luna-plan, each last at low effort; both of
+  // those providers were already enabled, so no flip is needed for
+  // them. All three tails are temporary wiring on Drew's word;
+  // removing the seats and restoring this line is the revert.
   // 2026-10-30 (Drew, direct order): "meta" joins the list below.
   // The direct api.meta.ai door is dead by Meta's design — the plan
   // API key returns 403 client_attestation_denied from any
@@ -347,8 +358,17 @@
   // should - the plan-wall build deployed AND the #2256
   // near-plus-erroring wall working. Until then the door stays
   // dark rather than eating attempts.
+  // 2026-11-23 (Drew, free-wiring order - code#13677): "_commandcode"
+  // LEAVES the list below. Its five free models join through the new
+  // commandcode-free-plan (see model_routes below), seated in scout's
+  // and background's free clusters; its paid DeepSeek legs at #low in
+  // the per-model pools reactivate with the flip, exactly as the
+  // switchboard doctrine provides. No credential step: the native
+  // provider reads ~/.commandcode/auth.json in place and a
+  // credential-store row (integrationID commandcode) already exists.
+  // The 2026-11-16 interim restore condition above is superseded by
+  // this direct order.
   "disabled_providers": [
-    "_commandcode",
     "google",
     "google-vertex",
     "cloudflare-ai-gateway",
@@ -357,7 +377,6 @@
     "github-copilot",
     "cloudflare-workers-ai",
     "meta",
-    "deepseek",
     "_antigravity"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
@@ -1159,7 +1178,11 @@
       "instanceOf": "google",
       "name": "Google AI Studio (Gemini Free - muse project)",
       "options": {
-        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+        "endpoints": {
+          "decision": { "kind": "google-decisions", "path": "/decisions" },
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" }
+        }
       }
     },
     // gen-lang project -- Drew-supplied key 2026-11-16.
@@ -1170,7 +1193,11 @@
       "instanceOf": "google",
       "name": "Google AI Studio (Gemini Free - gen-lang project)",
       "options": {
-        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+        "endpoints": {
+          "decision": { "kind": "google-decisions", "path": "/decisions" },
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" }
+        }
       }
     },
     // personal project -- Drew-supplied key 2026-11-16.
@@ -1181,7 +1208,11 @@
       "instanceOf": "google",
       "name": "Google AI Studio (Gemini Free - personal project)",
       "options": {
-        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+        "endpoints": {
+          "decision": { "kind": "google-decisions", "path": "/decisions" },
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" }
+        }
       }
     },
     // Drew project -- Drew-supplied key 2026-11-16.
@@ -1192,7 +1223,11 @@
       "instanceOf": "google",
       "name": "Google AI Studio (Gemini Free - Drew project)",
       "options": {
-        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta",
+        "endpoints": {
+          "decision": { "kind": "google-decisions", "path": "/decisions" },
+          "embed": { "kind": "google-embed", "path": "/models/{model}:embedContent" }
+        }
       }
     },
     // developing-today project -- the PAYG door, grouped as
@@ -1299,7 +1334,7 @@
 
       }
     },
-    // OFF via disabled_providers (PROVIDER SWITCHBOARD, top of file). Definition kept complete so the flip is the only step. (Its configured :free models were retired 2026-10-22; refresh the model list when re-enabling.)
+    // ENABLED and routed (2026-11-23 correction, code#13677): an older note here claimed this door was OFF via disabled_providers -- stale since the 2026-11-15 free-provider pass. openrouter is NOT in disabled_providers, its credential-store row is active, and openrouter-free-plan below seats its :free shelf in scout and background. The block below is the live definition.
     "openrouter": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "OpenRouter (Free Tier)",
@@ -1333,6 +1368,162 @@
           "limit": {
             "context": 256000,
             "output": 64000
+          }
+        }
+      }
+    },
+    // SambaNova Cloud (2026-11-23, Drew: free-wiring order,
+    // code#13677): direct door on SambaNova's own OpenAI-compatible
+    // endpoint (baseURL per SambaNova's docs:
+    // https://api.sambanova.ai/v1). Key is ours: Bitwarden
+    // `sambanova.api-key`, bound via a credential-store row
+    // (integrationID sambanova) created 2026-11-23. Explicit model
+    // list = this account's live GET /v1/models catalogue read
+    // 2026-11-23 (four models; the wider free shelf in SambaNova's
+    // docs -- Meta-Llama-3.3-70B-Instruct, DeepSeek-V3.1,
+    // DeepSeek-V3.2 -- is NOT in this account's live list). Free
+    // tier per SambaNova's rate-limit docs: 20 RPM / 20 requests
+    // per day / 200K tokens per day PER MODEL. PROBE RESULT
+    // 2026-11-23: every live model answered 402
+    // PAYMENT_METHOD_REQUIRED ("A payment method is required",
+    // balance 0) -- in practice this account is not on the free
+    // tier, and adding a payment method is Drew's call, never a
+    // config step (NEVER FUNDS). DEFINED BUT SEATED NOWHERE until
+    // a probe answers 200; seat the answering models in a
+    // sambanova-free-plan at that point. No limit blocks: the live
+    // catalogue publishes no context/output limits for these ids.
+    "sambanova": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "SambaNova Cloud (Free Tier - probe-blocked, see note)",
+      "options": {
+        "baseURL": "https://api.sambanova.ai/v1"
+      },
+      "models": {
+        "gpt-oss-120b": {
+          "name": "gpt-oss-120b (SambaNova)"
+        },
+        "gemma-4-31B-it": {
+          "name": "Gemma 4 31B IT (SambaNova)"
+        },
+        "GLM-5.3": {
+          "name": "GLM 5.3 (SambaNova)"
+        },
+        "MiniMax-M3.1-Flash": {
+          "name": "MiniMax M3.1 Flash (SambaNova)"
+        }
+      }
+    },
+    // Kilo Gateway (2026-11-23, Drew: free-wiring order,
+    // code#13677): KEYLESS door -- Kilo's gateway serves its :free
+    // shelf without authentication (verified live 2026-11-23: GET
+    // /models and a chat completion on kilo-auto/free both answered
+    // 200 with no Authorization header; the completion cost $0).
+    // Unauthenticated rate limit: 200 requests/hour per IP. No
+    // credential-store row exists or is needed; the apiKey below is
+    // a clearly-marked placeholder the gateway ignores, present
+    // only because the SDK shape expects one. PROMPT-LOGGING
+    // CAVEAT (Kilo's own model description): prompts may be logged
+    // by the upstream provider and used to improve their services
+    // -- non-sensitive volume only, never secrets or private code.
+    // Explicit model list = the :free chat shelf of the live GET
+    // /models catalogue read 2026-11-23 (470 models total; limits
+    // below are the catalogue's own context/max-output values).
+    // Only kilo-auto/free is seated (kilo-free-plan below): the
+    // named :free legs duplicate shelves already seated elsewhere
+    // (OpenRouter / NVIDIA) and stay unseated until wanted.
+    "kilo": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Kilo Gateway (Free, Keyless)",
+      "options": {
+        "baseURL": "https://ai-gateway.kilo.ai/api/v1",
+        "apiKey": "kilo-free-keyless-placeholder"
+      },
+      "models": {
+        "kilo-auto/free": {
+          "name": "Auto Free (Kilo)",
+          "limit": {
+            "context": 256000,
+            "output": 32768
+          }
+        },
+        "inclusionai/ling-3.2-flash:free": {
+          "name": "Ling 3.2 Flash (Kilo Free)",
+          "limit": {
+            "context": 1048576,
+            "output": 262144
+          }
+        },
+        "baidu/ernie-5.5-flash-preview:free": {
+          "name": "ERNIE 5.5 Flash Preview (Kilo Free)",
+          "limit": {
+            "context": 1024000,
+            "output": 921600
+          }
+        },
+        "liquid/lfm-3-1.7b:free": {
+          "name": "LFM 3 1.7B (Kilo Free)",
+          "limit": {
+            "context": 262144,
+            "output": 8192
+          }
+        },
+        "particle-ai/particle-1:free": {
+          "name": "Particle 1 (Kilo Free)",
+          "limit": {
+            "context": 1048576,
+            "output": 131072
+          }
+        },
+        "recursive/flint-v1.0:free": {
+          "name": "Flint v1.0 (Kilo Free)",
+          "limit": {
+            "context": 262144,
+            "output": 235929
+          }
+        },
+        "nvidia/nemotron-3.5-super-vl:free": {
+          "name": "Nemotron 3.5 Super VL (Kilo Free)",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          }
+        },
+        "dots-studio/dots-3-note-preview:free": {
+          "name": "Dots 3 Note Preview (Kilo Free)",
+          "limit": {
+            "context": 512000,
+            "output": 460800
+          }
+        },
+        "nvidia/nemotron-3.5-lightning:free": {
+          "name": "Nemotron 3.5 Lightning (Kilo Free)",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b:free": {
+          "name": "Nemotron 3 Ultra 550B (Kilo Free)",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+          "name": "Nemotron 3 Nano Omni 30B (Kilo Free)",
+          "limit": {
+            "context": 256000,
+            "output": 65536
+          }
+        },
+        "openrouter/free": {
+          "name": "OpenRouter Free Router (Kilo)"
+        },
+        "reflection/beam-free": {
+          "name": "Beam 1.0 Free (Kilo)",
+          "limit": {
+            "context": 1048576,
+            "output": 131072
           }
         }
       }
@@ -2592,6 +2783,53 @@
     "opencode-mem@latest",
     "opencode-auto-continue@https://github.com/developing-today/opencode-auto-continue/archive/refs/tags/latest.tar.gz"
   ],
+  // Model designations (2026-11-23, code#13675): purpose +
+  // capability policy keyed by bare model id, the same
+  // top-level-policy pattern as model_route_windows inside
+  // experimental below. A designated model may be seated ONLY in
+  // pools whose declared "purpose" (a model_routes field, absent =
+  // chat) is in its purposes list; an absent entry is legacy
+  // unrestricted. Closed vocabularies -- purposes: chat, decision,
+  // embed, rerank, recommend, transcribe, speak, guard;
+  // capabilities: visual, pdf, audio-in, audio-bidir, tts, stt.
+  // Enforced by bin/check-opencode-route-rules.mjs over EVERY pool
+  // in model_routes (not only the four tiers): a designated model
+  // without chat can never resolve into a chat-purpose pool, which
+  // mechanises the systemone decision-only convention.
+  // Groq TTS note (2026-11-23): playai-tts is NOT designated or
+  // seated -- it is absent from the groq provider catalog above
+  // (Groq shut PlayAI TTS down; the catalog's TTS shelf is the
+  // Canopy Labs Orpheus pair designated here instead).
+  // Provenance (Drew, 2026-11-23): every designation below was
+  // verified against models.dev AND the provider's own live
+  // model-list endpoint; each entry's "source" names the asserting
+  // source(s) so a stale classification is traceable. Findings:
+  // the Zen decision ids (jev-1.13-free, jev-1.13,
+  // gpt-6-luna-decision, gemini-decision-1) are absent from
+  // models.dev entirely -- Zen's own live /v1/models list asserts
+  // them, and it is their source. gemini-decision-1 is asserted by
+  // Google's live list with supportedGenerationMethods
+  // ["createDecision"], and both embedding ids with embedContent
+  // (models.dev also asserts both, family gemini-embedding, and
+  // marks gemini-embedding-001 deprecated there -- Google's live
+  // list still serves it). playai-tts is absent from models.dev
+  // AND from Groq's live list for our key (11 models), confirming
+  // the Orpheus substitution above.
+  "model_designations": {
+    "jev-1.13-free": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
+    "jev-1.13": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
+    "gpt-6-luna-decision": { "purposes": ["decision"], "source": "opencode.ai/zen live /v1/models, 2026-11-23" },
+    "gpt-6-luna": { "purposes": ["chat", "decision"], "source": "code#13675 Luna decision eval (PASS, 2026-11-23); models.dev" },
+    "gemini-decision-1": { "purposes": ["decision"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23" },
+    "gemini-embedding-2": { "purposes": ["embed"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23; models.dev" },
+    "gemini-embedding-001": { "purposes": ["embed"], "source": "generativelanguage.googleapis.com live /v1beta/models, 2026-11-23; models.dev" },
+    "whisper-large-v3": { "purposes": ["transcribe"], "capabilities": ["stt", "audio-in"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "whisper-large-v3-turbo": { "purposes": ["transcribe"], "capabilities": ["stt", "audio-in"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "canopylabs/orpheus-v1-english": { "purposes": ["speak"], "capabilities": ["tts"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "canopylabs/orpheus-arabic-saudi": { "purposes": ["speak"], "capabilities": ["tts"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "meta-llama/llama-prompt-guard-2-22m": { "purposes": ["guard"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" },
+    "meta-llama/llama-prompt-guard-2-86m": { "purposes": ["guard"], "source": "api.groq.com live /openai/v1/models, 2026-11-23; models.dev" }
+  },
   "experimental": {
     "provider_routes": {
       // openai-plan (2026-11-01): the ChatGPT pair as ONE provider
@@ -2863,9 +3101,12 @@
         // API-leg seating was written against.
         "targets": [
           // Drew, 2026-11-18: promotion quota first on Go; retain DeepSeek fallback tiers.
-          "opencode-go-plans/glm-5.3",
+          // 2026-11-23 (Drew, direct order): the opencode-go-plans/glm-5.3
+          // seat is REMOVED -- GLM leaves the DeepSeek pools. Every
+          // remaining DeepSeek seat in this pool is pinned to low
+          // effort (#low) in the same pass.
           {
-            "model": "opencode-go-plans/deepseek-v4.1-flash",
+            "model": "opencode-go-plans/deepseek-v4.1-flash#low",
             "variants": { "medium": "high", "xhigh": "max" }
           },
           // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
@@ -2882,10 +3123,18 @@
           // Drew, 2026-11-18: use OpenDesign Flash Eco (live /v1/models verified).
           // Same plan/seat/tier; no paid fallback. Eco can be slower for batch work.
           {
-            "model": "opendesign/deepseek-v4.1-flash-eco",
+            "model": "opendesign/deepseek-v4.1-flash-eco#low",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "_commandcode/deepseek/deepseek-v4.1-flash"
+          "_commandcode/deepseek/deepseek-v4.1-flash#low",
+          // 2026-11-23 (Drew, direct order): the DeepSeek PAYG tail
+          // is re-seated TEMPORARILY as this pool's last target --
+          // the two-step change the 2026-11-06 note prescribes, with
+          // "deepseek" leaving disabled_providers in the same pass
+          // (see the switchboard note). Tier 0.1, below every plan
+          // leg; remove when Drew lifts the temporary wiring.
+          // payg-exception: Drew direct order 2026-11-23 -- temporary DeepSeek PAYG tail seated last in deepseek-flash-plan
+          "deepseek/deepseek-flash#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2893,10 +3142,10 @@
         // stack note above. Higher tier serves first; rotation is
         // even within a tier.
         "weights": {
-          "opencode-go-plans/glm-5.3": 4,
           "opencode-go-plans/deepseek-v4.1-flash": 2,
           "opendesign/deepseek-v4.1-flash-eco": 1,
-          "_commandcode/deepseek/deepseek-v4.1-flash": 1
+          "_commandcode/deepseek/deepseek-v4.1-flash": 1,
+          "deepseek/deepseek-flash": 0.1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
         // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
@@ -2943,9 +3192,12 @@
         // remains the named pool for direct calls.
         "targets": [
           // Drew, 2026-11-18: promotion quota first on Go; retain DeepSeek fallback tiers.
-          "opencode-go-plans/glm-5.3",
+          // 2026-11-23 (Drew, direct order): the opencode-go-plans/glm-5.3
+          // seat is REMOVED -- GLM leaves the DeepSeek pools. Every
+          // remaining DeepSeek seat in this pool is pinned to low
+          // effort (#low) in the same pass.
           {
-            "model": "opencode-go-plans/deepseek-v4-pro",
+            "model": "opencode-go-plans/deepseek-v4-pro#low",
             "variants": { "medium": "high", "xhigh": "max" }
           },
           // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
@@ -2960,10 +3212,10 @@
                   // monthly <100%, AND a live completion through the door proves
                   // it answers again.
           {
-            "model": "opendesign/deepseek-v4-pro",
+            "model": "opendesign/deepseek-v4-pro#low",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "_commandcode/deepseek/deepseek-v4-pro"
+          "_commandcode/deepseek/deepseek-v4-pro#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2971,7 +3223,6 @@
         // opendesign legs were missing from this map — an unweighted
         // leg's tier placement is undefined. Weighted as minor legs.
         "weights": {
-          "opencode-go-plans/glm-5.3": 4,
           "opencode-go-plans/deepseek-v4-pro": 3,
           "_commandcode/deepseek/deepseek-v4-pro": 0.5,
           "opendesign/deepseek-v4-pro": 1
@@ -3013,6 +3264,12 @@
         // is the pool's live flat door today.
         "targets": [
           "_claude/claude-haiku-5-5",
+          // 2026-11-23 (Drew, direct order): TEMPORARY PAYG tail --
+          // claude-payg (the direct Anthropic API door) seated last
+          // at low effort, behind the Claude plan door. Ordered
+          // selection: it serves only when the plan door fails or
+          // is demoted. Remove with the temporary PAYG wiring.
+          "claude-payg/claude-haiku-5-5#low"
         ],
         "selection": "ordered",
         "autonomy": "rules"
@@ -3068,7 +3325,12 @@
             "model": "opendesign/gpt-6-luna",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "opencode-go-plans/gpt-6-luna"
+          "opencode-go-plans/gpt-6-luna",
+          // 2026-11-23 (Drew, direct order): TEMPORARY PAYG tail --
+          // openai-payg (the direct OpenAI API door) seated last at
+          // low effort, at tier 0.1 below every plan leg. Remove
+          // with the temporary PAYG wiring.
+          "openai-payg/gpt-6-luna#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -3084,7 +3346,8 @@
         "weights": {
           "openai-plan/gpt-6-luna": 6,
           "opencode-go-plans/gpt-6-luna": 1,
-          "opendesign/gpt-6-luna": 1
+          "opendesign/gpt-6-luna": 1,
+          "openai-payg/gpt-6-luna": 0.1
         }
       },
       "luna-effort-rr": {
@@ -3631,6 +3894,63 @@
           "openrouter/cohere/north-mini-code:free": 3
         }
       },
+      "commandcode-free-plan": {
+        "name": "Command Code Free - plan providers",
+        // NEW 2026-11-23 (Drew, free-wiring order - code#13677): the
+        // _commandcode door's five free models as their own pool, in
+        // the pass that removes _commandcode from disabled_providers
+        // above. Laguna S 2.1 Free, the two Ling Flash :free legs and
+        // Glyph Cluster :free are plain free legs. Beam :free is
+        // seated on this same direct order even though its free tier
+        // was recorded ended 2026-11-13 (403 on every call that day):
+        // the fork benches a permanently-refused leg reactively
+        // (opencode#2570), so a still-dead tier costs a bench, not a
+        // burn. Plain legs, no variant remaps -- the free door's
+        // variant surface is unverified (same rationale as
+        // flash-free-plan). Seated free-first in scout's free cluster
+        // and in background's free cluster per Drew's 2026-11-23
+        // free-first rule. Known follow-up (wall scoping, Drew
+        // 2026-11-23): a provider-wide wall on _commandcode would
+        // bench these free legs together with the paid ones; the
+        // free/paid alias split is the wall lane's design
+        // (opencode#2256), not this pass.
+        "targets": [
+          "_commandcode/poolside/laguna-s-2.1-free",
+          "_commandcode/inclusionai/ling-3.0-flash-sante:free",
+          "_commandcode/inclusionai/ling-3.1-flash:free",
+          "_commandcode/reflection/beam:free",
+          "_commandcode/stealth/glyph-cluster:free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "_commandcode/poolside/laguna-s-2.1-free": 3,
+          "_commandcode/inclusionai/ling-3.0-flash-sante:free": 3,
+          "_commandcode/inclusionai/ling-3.1-flash:free": 3,
+          "_commandcode/reflection/beam:free": 3,
+          "_commandcode/stealth/glyph-cluster:free": 3
+        }
+      },
+      "kilo-free-plan": {
+        "name": "Kilo Free (Gateway, Keyless) - plan providers",
+        // NEW 2026-11-23 (Drew, free-wiring order - code#13677):
+        // Kilo Gateway's keyless auto-router over its :free shelf
+        // (probe-verified live 2026-11-23: HTTP 200, $0, no auth --
+        // the probe rotated to nvidia/nemotron-3.5-super-vl:free).
+        // 200 requests/hour per IP unauthenticated; Kilo warns
+        // prompts may be logged upstream, so non-sensitive volume
+        // only. The router's backend rotates, so no capability score
+        // can attach: it sits in scout's free cluster behind the
+        // measured free plans, and in background's free cluster.
+        "targets": [
+          "kilo/kilo-auto/free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "kilo/kilo-auto/free": 3
+        }
+      },
       "inkling-plan": {
         "name": "Inkling 2 Small Free (Zen) - plan providers",
         // NEW 2026-11-14 (Drew, Zen pass): Thinking Machines Lab's
@@ -3807,6 +4127,7 @@
       },
       "systemone": {
         "name": "System One - decision models (NOT a chat pool)",
+        "purpose": "decision",
         // NEW 2026-11-14 (Drew): the decision-model pool. System-1
         // models answer typed questions (noul/choice/score) over a
         // state payload — they are NOT chat models and chat calls to
@@ -3821,6 +4142,24 @@
         // "systemone" 2026-11-15 (Drew, direct order) to match the
         // endpoint spelling (/v1/systemone). The mill design
         // supplement calls the same pool "decision".
+        // Wired 2026-11-23 (code#13675): the pool now declares
+        // "purpose": "decision" and the decision-only convention is
+        // checker-enforced via model_designations (jev-1.13-free
+        // and gemini-decision-1 are designated decision-only, so
+        // neither can resolve into a chat-purpose pool). Second leg
+        // is Gemini Decision 1 through the google-free provider
+        // route -- the four free projects multiply the free daily
+        // bucket (~10k decisions/day per project). Endpoint +
+        // model id live-probed 2026-11-23 before seating: POST
+        // https://generativelanguage.googleapis.com/v1beta/decisions
+        // with the muse project key returned 200 with a noul
+        // answer (evidence on code#13675). The google.* aliases
+        // carry the native endpoint descriptors (options.endpoints)
+        // for this leg. The paid Zen legs below stay OFF.
+        // Third leg added 2026-11-23 (code#13675): Luna low
+        // (openai-payg/gpt-6-luna#low) is seated last in this pool,
+        // after the free legs, on the decision eval PASS (see the
+        // targets note below).
         // Paid legs — OFF by Drew's ruling 2026-11-14, kept here in
         // paste-ready form. To enable, add to targets:
         //   "zen-plans/jev-1.13",
@@ -3831,12 +4170,99 @@
         //   "zen-plans/gpt-6-luna-decision": 3,
         //   "zen-plans/gemini-decision-1": 3
         "targets": [
-          "zen-plans/jev-1.13-free"
+          "zen-plans/jev-1.13-free",
+          "google-free/gemini-decision-1",
+          // 2026-11-23 (code#13675): Luna low seated last, after
+          // the free legs, on the eval PASS -- schema 36/36,
+          // accuracy 35/36 vs native baseline 36/36, spend
+          // ≈$0.08 -- riding the temporary PAYG tail Drew
+          // authorised 2026-11-23; remove when he lifts the
+          // temporary wiring.
+          "openai-payg/gpt-6-luna#low"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "zen-plans/jev-1.13-free": 3
+          "zen-plans/jev-1.13-free": 3,
+          "google-free/gemini-decision-1": 3,
+          "openai-payg/gpt-6-luna": 0.1
+        }
+      },
+      "gemini-embed-plan": {
+        "name": "Gemini Embedding - plan providers",
+        "purpose": "embed",
+        // NEW 2026-11-23 (code#13675): the embedding pool, so the
+        // embeddings endpoint has a real route. Both models are
+        // designated embed-only in model_designations and ride the
+        // google-free provider route (the four free projects);
+        // the google.* aliases carry the native google-embed
+        // endpoint descriptor (:embedContent) for this pool.
+        "targets": [
+          "google-free/gemini-embedding-2",
+          "google-free/gemini-embedding-001"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "google-free/gemini-embedding-2": 3,
+          "google-free/gemini-embedding-001": 3
+        }
+      },
+      "stt-plan": {
+        "name": "Speech-to-text (Whisper on Groq) - plan providers",
+        "purpose": "transcribe",
+        // NEW 2026-11-23 (code#13675): Groq's Whisper shelf,
+        // designated transcribe-only in model_designations
+        // (capabilities stt + audio-in; ids verified against the
+        // groq provider catalog above). NOT a chat pool.
+        "targets": [
+          "groq/whisper-large-v3",
+          "groq/whisper-large-v3-turbo"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "groq/whisper-large-v3": 3,
+          "groq/whisper-large-v3-turbo": 3
+        }
+      },
+      "tts-plan": {
+        "name": "Text-to-speech (Orpheus on Groq) - plan providers",
+        "purpose": "speak",
+        // NEW 2026-11-23 (code#13675): Groq's TTS shelf,
+        // designated speak-only in model_designations (capability
+        // tts). playai-tts is NOT seated: it is absent from the
+        // groq provider catalog above (Groq shut PlayAI TTS down);
+        // the catalog's verified TTS models are the Canopy Labs
+        // Orpheus pair seated here. NOT a chat pool.
+        "targets": [
+          "groq/canopylabs/orpheus-v1-english",
+          "groq/canopylabs/orpheus-arabic-saudi"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "groq/canopylabs/orpheus-v1-english": 3,
+          "groq/canopylabs/orpheus-arabic-saudi": 3
+        }
+      },
+      "prompt-guard-plan": {
+        "name": "Prompt Guard (Groq) - plan providers",
+        "purpose": "guard",
+        // NEW 2026-11-23 (code#13675): Groq's prompt-guard shelf,
+        // designated guard-only in model_designations (ids are the
+        // catalog's meta-llama/llama-prompt-guard-2-* entries,
+        // verified against the groq provider catalog above).
+        // NOT a chat pool.
+        "targets": [
+          "groq/meta-llama/llama-prompt-guard-2-22m",
+          "groq/meta-llama/llama-prompt-guard-2-86m"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "groq/meta-llama/llama-prompt-guard-2-22m": 3,
+          "groq/meta-llama/llama-prompt-guard-2-86m": 3
         }
       },
       "mimo-flash-plan": {
@@ -3986,12 +4412,21 @@
         // (aggregate dealt opencode.developing-today-0/inkling-2-small-
         // free, success; direct pin opencode.drewrypope/big-pickle,
         // success).
+        // 2026-11-23 (Drew, free-wiring order - code#13677): two more
+        // free plans join this tier's free cluster behind
+        // openrouter-free-plan and ahead of the paid legs --
+        // commandcode-free-plan (the _commandcode door's five free
+        // models, on the flip that re-enables the door) and
+        // kilo-free-plan (Kilo's keyless auto-router; unmeasured
+        // rotating backend, so it trails the measured free plans).
         "targets": [
           "opencode-route/beam-plan",
           "opencode-route/longcat-plan",
           "opencode-route/iceman-plan",
           "opencode-route/inkling-plan",
           "opencode-route/openrouter-free-plan",
+          "opencode-route/commandcode-free-plan",
+          "opencode-route/kilo-free-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
           "opencode-route/background",
@@ -4074,6 +4509,12 @@
         // an unbenchmarked vendor-claim model, so it takes a
         // toss-up background seat ahead of the ~200k legs, not a
         // scout front seat, until its history proves equivalence.
+        // 2026-11-23 (Drew, free-wiring order - code#13677):
+        // commandcode-free-plan (the _commandcode door's five free
+        // models) and kilo-free-plan (Kilo's keyless auto-router)
+        // join this cluster at its end, ahead of the workhorse
+        // escalation -- patient bulk work is exactly the
+        // non-sensitive volume Kilo's prompt-logging caveat allows.
         // Drew (2026-11-14, later): the whole Zen shelf sits in this
         // last-resort position deliberately — limited context on the
         // Zen free models means they are never a first-choice leg.
@@ -4116,6 +4557,8 @@
           // plan stays defined below for tiny-prompt seats only.
           "opencode-route/nvidia-free-plan",
           "opencode-route/openrouter-free-plan",
+          "opencode-route/commandcode-free-plan",
+          "opencode-route/kilo-free-plan",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",

@@ -33,15 +33,15 @@ The mode is detected at startup and printed in the banner as `id repl (<mode>)`.
 
 The session target is fixed at startup. In local-serve (`Remote`) mode, individual commands can additionally be aimed at another node with the `@NODE_ID` syntax described below.
 
-### The banner, and what it omits (CLI-12)
+### The banner (CLI-12, resolved)
 
 At startup the REPL prints a one-line command summary:
 
 ```text
-commands: list, put, get, cat, gethash, peers, help, quit
+commands: list, put, get, cat, gethash, delete, rename, copy, send, find, search, show, peek, tag, tags, peers, migrate-tags, help, quit
 ```
 
-That line lists 8 commands. The dispatch in `runner.rs` implements 20 command groups. The banner omits `delete`, `rename`, `copy`, `send`, `find`, `search`, `show`, `peek`, the whole `tag` family, `tags`, and `migrate-tags`, all of which work and all of which the REPL's own `help` command lists. This is disagreement CLI-12: the banner is the incomplete side; the dispatch table in this chapter is the complete one.
+The dispatch in `runner.rs` implements 20 command groups, and the banner now names them all. It once listed only 8 commands, omitting `delete`, `rename`, `copy`, `send`, `find`, `search`, `show`, `peek`, the whole `tag` family, `tags`, and `migrate-tags` (disagreement CLI-12, resolved). The dispatch table in this chapter remains the complete reference.
 
 ## Command list
 
@@ -112,7 +112,7 @@ Queries are case-insensitive. Match quality is exact, then prefix, then contains
 
 ### The format default differs from the clap CLI (CLI-11)
 
-In the REPL, `find` and `search` default to `--format union`. The clap `id find` and `id search` commands default to `--format tag`. The same query therefore prints union-deduplicated output interactively and tag-grouped output non-interactively. Neither side's help mentions the other's default, and the REPL `help` text lists no `--format` flag at all even though the hand parser accepts one. This is disagreement CLI-11; the code behaviour is as stated here.
+In the REPL, `find` and `search` default to `--format union`. The clap `id find` and `id search` commands default to `--format tag`. The same query therefore prints union-deduplicated output interactively and tag-grouped output non-interactively. Each side's help now mentions the other's default, and the REPL `help` text lists the `--format` flag the hand parser accepts (disagreement CLI-11, resolved); the code behaviour is as stated here.
 
 ### Interactive match selection
 
@@ -177,15 +177,15 @@ error: content requires a name (e.g., put $(cmd) name.txt)
 - An empty delimiter is an error: `heredoc delimiter cannot be empty`.
 - Ctrl+C cancels the heredoc. Ctrl+D ends it with what was read.
 
-### The pipe that does not exist (CLI-7)
+### The pipe that does not exist (CLI-7, resolved)
 
-The README's REPL section shows:
+The README's REPL section once showed:
 
 ```text
 > cat myfile.txt | head -5   # Pipe output to shell
 ```
 
-That example does not work. The REPL implements exactly four operators — `<<DELIM` heredoc, `<<<` here-string, `|>` pipe-in, and `$(…)`/backtick capture — and dispatch splits on whitespace with no `|` handling. The line parses as `cat` with the extra arguments `|`, `head` and `-5`, matches no pattern, and is reported as an unknown command. To send REPL output to a shell tool, fetch the file with `get` first and run the tool outside the REPL, or use the shell escape below. This is disagreement CLI-7; the code behaviour is as stated here.
+That example did not work, and the README no longer shows it (disagreement CLI-7, resolved — the example now uses the shell escape and the `|>` pipe-in). The REPL implements exactly four operators — `<<DELIM` heredoc, `<<<` here-string, `|>` pipe-in, and `$(…)`/backtick capture — and dispatch splits on whitespace with no `|` handling. The line parses as `cat` with the extra arguments `|`, `head` and `-5`, matches no pattern, and is reported as an unknown command. To send REPL output to a shell tool, fetch the file with `get` first and run the tool outside the REPL, or use the shell escape below. The code behaviour is as stated here.
 
 ## Shell escape
 

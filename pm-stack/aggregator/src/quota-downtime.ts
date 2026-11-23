@@ -42,7 +42,7 @@
 // Basis (§1: mandatory, singular): since_last_reset — the S1
 // projections are fit on the current reset period's same-period
 // series, and this module fits nothing itself; it intersects the
-// oracle's published intervals. Methodology version c4-meth:1
+// oracle's published intervals. Methodology version c4-meth:3
 // (c4-methodology-log.jsonl beside this module's package root,
 // §6). Advisory only: no placement path reads these records —
 // the C6 pages and forecast alerts named by #9572 consume them.
@@ -54,7 +54,7 @@ import type { ForecastLedgerRow, QuotaForecastFile } from "./quota-forecast.ts";
  * into the S1 source. */
 export const PREDICTION_LEDGER_SOURCE = "quota-prediction";
 
-export const C4_METHODOLOGY_VERSION = "c4-meth:1" as const;
+export const C4_METHODOLOGY_VERSION = "c4-meth:3" as const;
 
 export interface C4PredictionRecord {
   record_version: 1;
@@ -88,11 +88,15 @@ interface WallInterval {
 // day form at/over 48h, calendar form when the range crosses a
 // Chicago day boundary — the form preferred for downtime windows
 // and any range whose latest bound falls on a different day than
-// its earliest.
+// its earliest. A calendar bound a week or more from issuance
+// carries its month/day date (a bare weekday name repeats every
+// seven days — #13536); this/tomorrow/today-anchored bounds keep
+// their short form.
 
 const CHICAGO = "America/Chicago";
 const dayKeyFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, year: "numeric", month: "2-digit", day: "2-digit" });
 const weekdayFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, weekday: "long" });
+const monthDayFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, month: "short", day: "numeric" });
 const hourFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, hour: "numeric", hourCycle: "h23" });
 
 function chicagoDayRef(ms: number, issuedMs: number): string {
@@ -105,15 +109,31 @@ function chicagoDayRef(ms: number, issuedMs: number): string {
   return weekdayFmt.format(new Date(ms));
 }
 
+// A bare weekday name repeats every seven days, so a bound a
+// week or more from issuance carries its calendar date after the
+// daypart — otherwise a range like Sep 22 → Oct 6 renders as the
+// ambiguous "between Tuesday afternoon and Tuesday
+// afternoon" (#13536). Bounds anchored to this/tomorrow/today
+// are never ambiguous and keep their short form.
+function chicagoDateSuffix(ms: number, issuedMs: number): string {
+  const ref = chicagoDayRef(ms, issuedMs);
+  if (ref === "this" || ref === "tomorrow") return "";
+  if (Math.abs(ms - issuedMs) >= 7 * 86_400_000) return `, ${monthDayFmt.format(new Date(ms))}`;
+  return "";
+}
+
 function chicagoDaypart(ms: number, issuedMs: number): string {
   const ref = chicagoDayRef(ms, issuedMs);
+  const suffix = chicagoDateSuffix(ms, issuedMs);
   const hour = Number(hourFmt.format(new Date(ms)));
   const namedHour = hour === 0 ? "12 am" : hour < 12 ? `${hour} am` : hour === 12 ? "12 pm" : `${hour - 12} pm`;
-  if (hour >= 5 && hour < 12) return ref === "this" ? "this morning" : `${ref} morning`;
-  if (hour >= 12 && hour < 17) return ref === "this" ? "this afternoon" : `${ref} afternoon`;
-  if (hour >= 17 && hour < 22) return ref === "this" ? "this evening" : `${ref} evening`;
+  if (hour >= 5 && hour < 12) return ref === "this" ? "this morning" : `${ref} morning${suffix}`;
+  if (hour >= 12 && hour < 17) return ref === "this" ? "this afternoon" : `${ref} afternoon${suffix}`;
+  if (hour >= 17 && hour < 22) return ref === "this" ? "this evening" : `${ref} evening${suffix}`;
   // Night bounds are sharp in Drew's formats ("Sunday 2 am").
-  return ref === "tomorrow" ? `tomorrow ${namedHour}` : ref === "this" ? `today ${namedHour}` : `${ref} ${namedHour}`;
+  if (ref === "tomorrow") return `tomorrow ${namedHour}`;
+  if (ref === "this") return `today ${namedHour}`;
+  return `${ref} ${namedHour}${suffix}`;
 }
 
 const roundHalf = (x: number) => Math.round(x * 2) / 2;
