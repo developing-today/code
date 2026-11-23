@@ -24,7 +24,14 @@ standard (doc/2026-11-04T05-15-02Z_design_machine-onboarding-standard-v1,
 - secrets entries are class names only (§1.6): lowercase slugs, never
   value-shaped strings;
 - health.status is one of healthy|degraded|unreachable|unknown and
-  health.source names who reports.
+  health.source names who reports;
+- health is an EARNED record (§1.5): a status other than `unknown`, or
+  any non-null `last_seen`, is valid only with the watchdog's checks
+  record attached — `checks.reported_at` plus all five §1.5 checks
+  (reachable, load_headroom, disk_headroom, sessions, last_queue_job),
+  each a mapping whose state is ok|failed|unknown. A bare hand-written
+  `status: healthy` is a fabricated pass and fails here. `last_seen`,
+  when present, must be ISO-8601.
 
 Exit 0 and one `ok:` line per record on success; exit 1 with one
 `error:` line per violation otherwise. Requires PyYAML.
@@ -33,12 +40,15 @@ Exit 0 and one `ok:` line per record on success; exit 1 with one
 import argparse
 import re
 import sys
+from datetime import datetime
 
 import yaml
 
 STATES = {"declared", "joining", "active", "draining", "retired"}
 ROLES = {"execution", "lab-cluster", "both"}
 HEALTH_STATUSES = {"healthy", "degraded", "unreachable", "unknown"}
+HEALTH_CHECKS = {"reachable", "load_headroom", "disk_headroom", "sessions", "last_queue_job"}
+CHECK_STATES = {"ok", "failed", "unknown"}
 CAPABILITIES = {"queue_worker", "opencode_sessions", "builds", "gpu"}
 SECRET_CLASS = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 REQUIRED_FIELDS = {
@@ -113,6 +123,55 @@ def validate(doc):
             errors.append(f"{where}: health.status must be one of {sorted(HEALTH_STATUSES)}")
         elif not health.get("source"):
             errors.append(f"{where}: health.source must name who reports (§1.5)")
+        if isinstance(health, dict):
+            errors.extend(_health_earned_errors(where, health))
+    return errors
+
+
+def _is_iso8601(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
+
+
+def _health_earned_errors(where, health):
+    """The §1.5 earning rules: health is written by the watchdog from
+    checks that actually ran, never asserted by hand."""
+    errors = []
+    last_seen = health.get("last_seen")
+    if last_seen is not None and not _is_iso8601(last_seen):
+        errors.append(f"{where}: health.last_seen must be ISO-8601 or null")
+    checks = health.get("checks")
+    if checks is not None:
+        if not isinstance(checks, dict):
+            errors.append(f"{where}: health.checks must be a mapping")
+            checks = None
+        else:
+            if not _is_iso8601(checks.get("reported_at")):
+                errors.append(f"{where}: health.checks.reported_at must be ISO-8601")
+            for name, entry in checks.items():
+                if name == "reported_at":
+                    continue
+                if not isinstance(entry, dict) or entry.get("state") not in CHECK_STATES:
+                    errors.append(
+                        f"{where}: health.checks.{name} must be a mapping "
+                        f"with state in {sorted(CHECK_STATES)}"
+                    )
+    earned = isinstance(checks, dict) and HEALTH_CHECKS <= set(checks)
+    if health.get("status") != "unknown" and not earned:
+        errors.append(
+            f"{where}: health.status {health.get('status')!r} without the "
+            "watchdog checks record is a fabricated pass (§1.5)"
+        )
+    if last_seen is not None and checks is None:
+        errors.append(
+            f"{where}: health.last_seen set without the watchdog checks "
+            "record (§1.5: last_seen is watchdog-written)"
+        )
     return errors
 
 
