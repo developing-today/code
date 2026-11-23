@@ -22,14 +22,15 @@ SCRIPT="$SELF_DIR/laptop-state-backup.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
-make_home() { # $1 dir; fake opencode state + ssh + one sops secret
+make_home() { # $1 dir; fake opencode state + ssh + one sops secret + age key
   local h="$1"
-  mkdir -p "$h/.local/state/opencode" "$h/.local/state/opencode-claimant" "$h/.ssh" "$h/secrets" "$h/.config/bws"
+  mkdir -p "$h/.local/state/opencode" "$h/.local/state/opencode-claimant" "$h/.ssh" "$h/secrets" "$h/.config/bws" "$h/.config/sops/age"
   echo '{"x":1}' >"$h/.local/state/opencode/service-prod.json"
   echo "full" >"$h/.local/state/opencode-claimant/mode"
   echo "log" >"$h/.local/state/opencode-claimant/claimant-fire-x.out"
   echo "fake-key" >"$h/.ssh/id_ed25519"
   echo "ciphertext" >"$h/secrets/pm-stack.sops.yaml"
+  echo "fake-age-key" >"$h/.config/sops/age/keys.txt"
   echo "fake-token" >"$h/.config/bws/access-token"
 }
 
@@ -96,6 +97,7 @@ check "claimant state backed up" grep -q "state/opencode-claimant" "$C"
 check "claimant logs excluded" grep -q -- "--exclude .*opencode-claimant/\*.out" "$C"
 check "ssh backed up" grep -q ".ssh" "$C"
 check "sops secret backed up" grep -q "sops.yaml" "$C"
+check "sops age key backed up" grep -q "sops/age/keys.txt" "$C"
 check "check per backend" [ "$(grep -c ' check' "$C" 2>/dev/null || echo 0)" = "3" ]
 check "forget+prune per backend" [ "$(grep -c ' forget.*--prune' "$C" 2>/dev/null || echo 0)" = "3" ]
 
