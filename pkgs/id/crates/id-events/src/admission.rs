@@ -136,18 +136,17 @@ impl EventsAdmission {
         check_carrier(envelope)?;
 
         let mut ingest_slot: Option<Ingest> = None;
-        let outcome = self.pipeline.run(
-            operation_id,
-            envelope,
-            context,
-            |_commit| match store.ingest(&envelope.payload, now_ms) {
-                Ok(ingest) => {
-                    ingest_slot = Some(ingest);
-                    Ok(())
+        let outcome = self
+            .pipeline
+            .run(operation_id, envelope, context, |_commit| {
+                match store.ingest(&envelope.payload, now_ms) {
+                    Ok(ingest) => {
+                        ingest_slot = Some(ingest);
+                        Ok(())
+                    }
+                    Err(err) => Err(format!("event store ingest failed: {err}")),
                 }
-                Err(err) => Err(format!("event store ingest failed: {err}")),
-            },
-        )?;
+            })?;
 
         match outcome {
             PipelineOutcome::Committed {
@@ -227,10 +226,12 @@ fn check_carrier(envelope: &Envelope) -> Result<Event, LifecycleRejection> {
         }))
     })?;
     if *event.header.verifying_key.as_bytes() != envelope.body.key {
-        return Err(LifecycleRejection::Gate(AdmissionRejection::SignerBinding {
-            signer_id: envelope.body.signer_id.clone(),
-            problem: "the envelope signer is not the event author",
-        }));
+        return Err(LifecycleRejection::Gate(
+            AdmissionRejection::SignerBinding {
+                signer_id: envelope.body.signer_id.clone(),
+                problem: "the envelope signer is not the event author",
+            },
+        ));
     }
     Ok(event)
 }
@@ -291,11 +292,7 @@ mod tests {
     fn carrier_check_accepts_a_matching_event_and_envelope() {
         let event = chain_event(11);
         let key = SigningKey::from_bytes(&[11; 32]);
-        let envelope = carrier_envelope(
-            &event,
-            EVENTS_DOMAIN,
-            *key.verifying_key().as_bytes(),
-        );
+        let envelope = carrier_envelope(&event, EVENTS_DOMAIN, *key.verifying_key().as_bytes());
         let decoded = check_carrier(&envelope).unwrap();
         assert_eq!(decoded.id, event.id);
     }
@@ -304,11 +301,7 @@ mod tests {
     fn carrier_check_refuses_a_foreign_domain() {
         let event = chain_event(11);
         let key = SigningKey::from_bytes(&[11; 32]);
-        let envelope = carrier_envelope(
-            &event,
-            "id/other",
-            *key.verifying_key().as_bytes(),
-        );
+        let envelope = carrier_envelope(&event, "id/other", *key.verifying_key().as_bytes());
         let err = check_carrier(&envelope).unwrap_err();
         assert_eq!(err.stage(), "gate");
         assert_eq!(err.class(), "malformed");
@@ -318,11 +311,7 @@ mod tests {
     fn carrier_check_refuses_bytes_that_are_not_a_chain_event() {
         let event = chain_event(11);
         let key = SigningKey::from_bytes(&[11; 32]);
-        let mut envelope = carrier_envelope(
-            &event,
-            EVENTS_DOMAIN,
-            *key.verifying_key().as_bytes(),
-        );
+        let mut envelope = carrier_envelope(&event, EVENTS_DOMAIN, *key.verifying_key().as_bytes());
         envelope.payload = vec![9; 8];
         let err = check_carrier(&envelope).unwrap_err();
         assert_eq!(err.stage(), "gate");
@@ -333,11 +322,7 @@ mod tests {
     fn carrier_check_refuses_an_envelope_signer_who_is_not_the_author() {
         let event = chain_event(11);
         let other = SigningKey::from_bytes(&[22; 32]);
-        let envelope = carrier_envelope(
-            &event,
-            EVENTS_DOMAIN,
-            *other.verifying_key().as_bytes(),
-        );
+        let envelope = carrier_envelope(&event, EVENTS_DOMAIN, *other.verifying_key().as_bytes());
         let err = check_carrier(&envelope).unwrap_err();
         assert_eq!(err.stage(), "gate");
         assert_eq!(err.class(), "signer_binding");

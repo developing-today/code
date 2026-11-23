@@ -295,13 +295,13 @@ fn gate_refusals_never_reach_the_store() {
     let undecodable = carrier_envelope("alice", 11, TENANT_A, vec![9; 8]);
 
     let cases: [(&str, Envelope, &'static str, Option<Event>); 7] = [
-        ("forged signature", forged, "bad_signature", Some(event.clone())),
         (
-            "tampered payload",
-            tampered,
-            "payload",
+            "forged signature",
+            forged,
+            "bad_signature",
             Some(event.clone()),
         ),
+        ("tampered payload", tampered, "payload", Some(event.clone())),
         (
             "unknown signer",
             unknown_signer,
@@ -417,10 +417,7 @@ fn replay_never_double_ingests() {
             0,
         )
         .unwrap();
-    assert!(matches!(
-        first,
-        EventsAdmissionOutcome::Committed { .. }
-    ));
+    assert!(matches!(first, EventsAdmissionOutcome::Committed { .. }));
     let trace_after_first = rig.trace.lock().unwrap().clone();
 
     let second = rig
