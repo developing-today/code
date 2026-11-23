@@ -128,8 +128,8 @@ def make_d1(variant=1):
             "INSERT INTO tasks VALUES (?,?,?)",
             [(1, "one", b"\x01\x02"), (4, "four", b"\xff")],
         )
-        conn.execute("DROP TABLE notes")
         conn.execute("DROP INDEX idx_notes_task")
+        conn.execute("DROP TABLE notes")
         conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, kind TEXT)")
         conn.executemany("INSERT INTO events VALUES (?,?)", [(1, "boot")])
     conn.executemany(
