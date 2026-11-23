@@ -5,7 +5,13 @@ The harness the #5741 test plan builds _first_, before any signal
 signal combination are scored offline against judged qrels, so the
 ablation matrix — {dense} / {BM25} / {SPLADE} / {dense+BM25} (today's
 design) / {dense+SPLADE} / {dense+BM25+SPLADE} / each ± Jaccard
-rescore — is measured, not argued.
+rescore — is measured, not argued. Two cautions about that matrix
+as a record: the SPLADE arms have never been scored — no SPLADE
+encoder or postings exist (see "What this does not do"), so every
+SPLADE row above is design intent, not a measured signal — and the
+golden-311 numbers recorded in this directory come from two
+different configurations, named under "The recorded golden-311
+rows" below.
 
 - Library: `crates/atlas-core/src/eval.rs` (`atlas_core::eval`)
 - Runner: `cargo run -p atlas-core --bin atlas-eval -- <eval.json> <dev|test>`
@@ -16,9 +22,13 @@ rescore — is measured, not argued.
 The repository also keeps the production Python reference and its
 corpus-specific retrieval runner beside the Rust tooling:
 
-- `../atlas_search.py` — copied byte-for-byte from the laptop's
+- `../atlas_search.py` — copied from the laptop's
   `~/atlas/turso-atlas/scripts/atlas_search.py`
-  (SHA-256 `1b805be87b2d08fd5c5f6ed65f45d1c40528c9acc074adeaf0a5665a4cec8d9f`).
+  (source SHA-256 `1b805be87b2d08fd5c5f6ed65f45d1c40528c9acc074adeaf0a5665a4cec8d9f`).
+  The in-repo copy has since diverged from that source: concurrent
+  hybrid branches (#12900 thread 1), a fail-closed chunk-labels
+  fix, a treefmt pass, and the recorded-row cross-reference added
+  under #13283.
 - `eval3.py` — started from the source at
   `~/atlas/turso-atlas/scripts/eval3.py`; this copy updates only the usage
   example to point at the checked-in fixture. Source SHA-256:
@@ -101,9 +111,39 @@ qrels, and rankings that exercise the harness end to end (it backs
 the determinism and selection tests). It is **not** a held-out set,
 was never measured against a corpus, and must never be quoted as
 evaluation evidence or as support for adopting SPLADE or any other
-signal. The real held-out set (real query shapes against our
-corpora, with judged chunks) is collected under #5741's test plan,
-step 1; this harness is what will score it when it exists.
+signal. A real held-out set does now exist: `fixtures/heldout-nearexact-54.json`
+(54 verbatim near-exact passages, built 2026-11-17), and a full
+gate has run on it — `gate5733.py`, verdict record
+`gate-5733-results.md` (FAIL for the Jaccard rescore). That set is
+a near-exact-passage set built for the #5733 gate; the broader
+held-out collection of real query shapes described in #5741's test
+plan, step 1, remains the plan for general query shapes, and this
+harness is what will score it when it exists.
+
+## The recorded golden-311 rows
+
+Golden-311 carries two recorded rows that were both long labelled
+"production hybrid". They are different configurations, not a
+measurement error, and neither should be cited without its
+configuration:
+
+| Row | Configuration | Recorded in |
+| --- | --- | --- |
+| 189 hits@10, MRR 0.3894 | production shape: one-stage hybrid, RRF k=10, pool 100 per branch, full 768 dimensions | `../atlas_search.py` header (2026-10-31 bake-off decision); configuration pinned by `crates/atlas-proto/query-parameters-v1.json` |
+| recall@10 183/311, MRR 0.3640 | eval lineage: branch depth 30, RRF k=60, vectors truncated to 384 dimensions | `gate-5733-results.md` (sanity gate, reproduced exactly) |
+
+Three different artefacts in this directory are all called
+"golden"; they are not interchangeable:
+
+- `fixtures/golden-311.json` — 311 judged queries; qrels are
+  chunk-id judgements against the conversation corpus.
+- `fixtures/heldout-nearexact-54.json` — the 54-query held-out
+  near-exact set above.
+- The overlap experiment's query set (`overlap-report-6039.md`) —
+  provisional and self-derived, with span judgements against a
+  slice of this repository. Golden-311 cannot serve that
+  experiment: its qrels judge chunk ids in a different corpus,
+  not spans in the repo slice.
 
 ## What this does not do
 
