@@ -475,7 +475,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
     let exp = iat + TOKEN_TTL_SECS;
     let mut id_claims = serde_json::json!({
         "iss": flow.issuer,
-        "sub": account.account_id,
+        "sub": record.account_id,
         "aud": client_id,
         "iat": iat,
         "exp": exp,
