@@ -4770,10 +4770,12 @@ describe("telling the owner, with no machine", () => {
     await w.edge.now.alarm();
     const limitedAt = w.now.t;
     expect(w.pushes).toHaveLength(0);
-    // Not a minute from now, when it would only be turned away again:
-    // when the five minutes are up. Nobody is looking and no laptop
-    // reports, so this wake is all that will notice.
-    expect(w.alarm.at).toBe(limitedAt + 5 * 60_000 + 1_000);
+    // A minute from now, as ever: what is still read here is read
+    // again then. The prompts are not tried again until their five
+    // minutes are up: until then they are the laptop's to read, and
+    // the wake is all that will notice either, with nobody looking
+    // and no laptop reporting.
+    expect(w.alarm.at).toBe(limitedAt + 60_000);
     // Meanwhile the fleet answers.
     w.ghLimits.length = 0;
     w.now.t += 60_000;
