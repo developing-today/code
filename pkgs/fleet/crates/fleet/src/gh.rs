@@ -131,6 +131,7 @@
 use crate::gh_cache;
 use crate::gh_closure;
 use crate::gh_guard;
+use crate::gh_metadata;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
 use std::io::{IsTerminal, Write};
