@@ -169,6 +169,17 @@ class TestVerdicts(unittest.TestCase):
         self.assertEqual(v["verdict"], "stalled")
         self.assertEqual(v["task_id"], 101)
 
+    def test_error_stopped_bound_session_is_retryable_with_binding(self):
+        s = session("ses_a", idle=NOW, outcome="error")
+        bound = binding(repo="developing-today/code")
+        record, _ = round_of([s], bindings={"ses_a": bound})
+        v = record["verdicts"]["ses_a"]
+        self.assertEqual(v["verdict"], "error-stopped")
+        self.assertEqual(v["outcome"], "error")
+        self.assertTrue(v["retryable"])
+        self.assertEqual(v["binding"]["task_id"], 101)
+        self.assertEqual(v["binding"]["repo"], "developing-today/code")
+
     def test_blocked_reason_explains_silence(self):
         s = session("ses_a", updated=NOW - 25 * MIN)
         record, _ = round_of(

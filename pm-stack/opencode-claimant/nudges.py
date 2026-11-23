@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nudges.py - stall nudges + escalation over babysitter verdicts (#1187).
+"""nudges.py - retries, stall nudges + escalation over babysitter verdicts.
 
 The actuation half of the babysitter loop (#1234's scope: "progress
 verdicts, one stall nudge then escalation"). babysitter.py (#1338)
@@ -9,6 +9,9 @@ round record's CONFIRMED stalls and acts on them:
 - a bound session in a confirmed stall gets a nudge - a prompt
   injected through the claimant's verified delivery transport -
   at most MAX_NUDGES times per stall episode;
+- a bound terminal error is recorded as a one-shot retry action; the
+  claimant's supervision step performs the delete + compare-clear,
+  and the next fire relaunches through the task's route;
 - a bound session still confirmed-stalled after its nudges are
   spent is escalated to the fleet as a stuck-holder case: an
   agent-note on the bound task's issue, once per episode;
@@ -159,14 +162,49 @@ def confirmed_stalls(record):
     }
 
 
-def plan_actions(record, prior_sessions):
-    """The round's planned actions, pure: one per confirmed stall.
+def error_stopped_sessions(record):
+    """session_id -> binding for retryable bound error outcomes.
 
-    Bound stall, budget left -> "nudge"; bound stall, budget
+    Error sessions are acted on once by the queue claimant. Unbound
+    error sessions remain observation-only, just like unbound stalls.
+    """
+    if not isinstance(record, dict) or record.get("error"):
+        return {}
+    verdicts = record.get("verdicts")
+    if not isinstance(verdicts, dict):
+        return {}
+    return {
+        sid: entry
+        for sid, entry in verdicts.items()
+        if isinstance(entry, dict)
+        and entry.get("verdict") == "error-stopped"
+        and entry.get("retryable")
+        and entry.get("task_id") is not None
+    }
+
+
+def plan_actions(record, prior_sessions):
+    """The round's planned actions, pure: retries and stall actions.
+
+    A bound terminal error -> one "retry" through the claimant's
+    atomic recovery path. Bound stall, budget left -> "nudge"; bound stall, budget
     spent, not yet escalated -> "escalate"; bound stall already
     escalated -> no action (the fleet has the case). Unbound
     stall -> "observed" (recorded, never driven)."""
     actions = []
+    for sid, entry in sorted(error_stopped_sessions(record).items()):
+        prior = prior_sessions.get(sid) or {}
+        if prior.get("error_retried"):
+            continue
+        actions.append(
+            {
+                "session_id": sid,
+                "kind": "retry",
+                "task_id": entry["task_id"],
+                "outcome": entry.get("outcome"),
+                "binding": entry.get("binding") or {},
+            }
+        )
     for sid, entry in sorted(confirmed_stalls(record).items()):
         task_id = entry.get("task_id")
         if task_id is None:
@@ -209,7 +247,7 @@ def _load_state(state_dir):
 
 def _empty_counts():
     return {
-        "queue": {"nudges": 0, "escalations": 0},
+        "queue": {"retries": 0, "nudges": 0, "escalations": 0},
         "other": {"observed": 0},
     }
 
@@ -249,7 +287,7 @@ def split_plan(planned):
     nudges_sent, then session id): a session deferred by one
     burst is served before the sessions that consumed budget
     ahead of it, so overflow defers but never starves."""
-    queue = [a for a in planned if a["kind"] in ("nudge", "escalate")]
+    queue = [a for a in planned if a["kind"] in ("retry", "nudge", "escalate")]
     queue.sort(key=lambda a: (a.get("nudges_sent") or 0, a["session_id"]))
     overflow_ids = {id(a) for a in queue[MAX_QUEUE_INTERVENTIONS_PER_ROUND:]}
     to_apply = [a for a in planned if id(a) not in overflow_ids]
@@ -258,7 +296,14 @@ def split_plan(planned):
 
 
 def nudge_step(
-    mode, record, *, send_prompt=None, post_note=None, bindings=None, state_dir=None
+    mode,
+    record,
+    *,
+    send_prompt=None,
+    post_note=None,
+    recover_error=None,
+    bindings=None,
+    state_dir=None,
 ):
     """Run one nudge pass over a babysitter round record and
     return its record for the fire log.
@@ -294,6 +339,7 @@ def nudge_step(
             ],
             "interventions": {
                 "queue": {
+                    "retries": sum(1 for a in to_apply if a["kind"] == "retry"),
                     "nudges": sum(1 for a in to_apply if a["kind"] == "nudge"),
                     "escalations": sum(
                         1 for a in to_apply if a["kind"] == "escalate"
@@ -311,6 +357,7 @@ def nudge_step(
         bindings = babysitter.build_bindings(babysitter._load_poll_module())
 
     stalls = confirmed_stalls(record)
+    errors = error_stopped_sessions(record)
     outcomes = []
     new_sessions = {}
     for action in to_apply:
@@ -328,6 +375,22 @@ def nudge_step(
         }
         if kind == "observed":
             outcomes.append(dict(action, applied=False, detail="observed_only"))
+            continue
+        if kind == "retry":
+            recovered = bool(
+                recover_error
+                and recover_error(sid, action["task_id"], action.get("binding") or {})
+            )
+            entry["error_retried"] = recovered
+            outcomes.append(
+                dict(
+                    action,
+                    applied=recovered,
+                    detail="requeued_retry" if recovered else "recovery_failed",
+                )
+            )
+            if not recovered:
+                new_sessions[sid] = entry
             continue
         if kind == "nudge":
             delivered = bool(send_prompt and send_prompt(sid, NUDGE_TEXT))
@@ -379,9 +442,17 @@ def nudge_step(
     # untouched, so the same intervention re-plans next round.
     for action in overflow:
         sid = action["session_id"]
-        if sid not in stalls or sid in new_sessions:
+        if (sid not in stalls and sid not in errors) or sid in new_sessions:
             continue
         prior = prior_sessions.get(sid) or {}
+        if action["kind"] == "retry":
+            new_sessions[sid] = {
+                "task_id": action["task_id"],
+                "error_retried": False,
+                "first_round": prior.get("first_round", round_no),
+                "last_round": round_no,
+            }
+            continue
         sent = prior.get("nudges_sent")
         new_sessions[sid] = {
             "task_id": action["task_id"],
@@ -404,6 +475,10 @@ def nudge_step(
             carried = dict(prior)
             carried["last_round"] = round_no
             new_sessions[sid] = carried
+        elif sid in errors and sid not in new_sessions:
+            carried = dict(prior)
+            carried["last_round"] = round_no
+            new_sessions[sid] = carried
 
     # Per-class intervention accounting (#1656 AC4): only applied
     # actuations count - a failed send and an unnoted escalation
@@ -414,7 +489,9 @@ def nudge_step(
     for outcome in outcomes:
         if not outcome.get("applied"):
             continue
-        if outcome["kind"] == "nudge":
+        if outcome["kind"] == "retry":
+            round_counts["queue"]["retries"] += 1
+        elif outcome["kind"] == "nudge":
             round_counts["queue"]["nudges"] += 1
         elif outcome["kind"] == "escalate":
             round_counts["queue"]["escalations"] += 1
