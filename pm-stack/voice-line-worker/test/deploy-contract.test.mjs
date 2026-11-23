@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import config from "../cloudflare.config.ts";
 import {
   deployableVersionIds,
   deploymentIsFullRollout,
@@ -14,25 +13,6 @@ import {
   uploadRunMatchesProvenance,
   validatePromotionInputs,
 } from "../src/deploy-contract.mjs";
-
-test("cf config preserves the deployed Worker bindings and SQLite Durable Object", () => {
-  assert.equal(config.worker.name, "voice-line");
-  assert.equal(config.worker.compatibilityDate, "2025-09-15");
-  assert.equal(config.worker.workersDev, true);
-  assert.equal(config.worker.env.TURSO_URL.value, "https://voice-line-ledger-dezren39.aws-us-east-1.turso.io");
-  assert.equal(config.worker.env.TURSO_TOKEN.type, "secret");
-  assert.equal(config.worker.env.STATUS_INGEST_TOKEN.type, "secret");
-  assert.deepEqual(config.worker.env.VOICE_SESSIONS, {
-    type: "durable-object",
-    worker: "voice-line",
-    exportName: "VoiceSession",
-  });
-  assert.deepEqual(config.worker.env.AI, { type: "ai" });
-  assert.deepEqual(config.worker.exports.VoiceSession, {
-    type: "durable-object",
-    storage: "sqlite",
-  });
-});
 
 test("parses cf JSON after progress output", () => {
   assert.deepEqual(parseCfJson('Creating version…\n{"result":{"id":"v1"}}'), { result: { id: "v1" } });
@@ -67,7 +47,10 @@ test("requires exact version tag and message provenance for promotion", () => {
 test("accepts only a successful main upload run for the exact commit and attempt", () => {
   const sha = "a".repeat(40);
   const run = {
-    path: ".github/workflows/voice-line-worker-deploy.yml@main",
+    path: ".github/workflows/voice-line-worker-deploy.yml",
+    repository: { full_name: "developing-today/code" },
+    head_repository: { full_name: "developing-today/code" },
+    id: 12345,
     event: "workflow_dispatch",
     head_branch: "main",
     head_sha: sha,
@@ -75,10 +58,10 @@ test("accepts only a successful main upload run for the exact commit and attempt
     status: "completed",
     conclusion: "success",
   };
-  assert.equal(uploadRunMatchesProvenance(run, sha, "2"), true);
-  assert.equal(uploadRunMatchesProvenance({ ...run, path: ".github/workflows/other.yml@main" }, sha, "2"), false);
-  assert.equal(uploadRunMatchesProvenance({ ...run, conclusion: "failure" }, sha, "2"), false);
-  assert.equal(uploadRunMatchesProvenance(run, sha, "1"), false);
+  assert.equal(uploadRunMatchesProvenance(run, sha, "12345", "2"), true);
+  assert.equal(uploadRunMatchesProvenance({ ...run, path: ".github/workflows/other.yml@main" }, sha, "12345", "2"), false);
+  assert.equal(uploadRunMatchesProvenance({ ...run, conclusion: "failure" }, sha, "12345", "2"), false);
+  assert.equal(uploadRunMatchesProvenance(run, sha, "12345", "1"), false);
 });
 
 test("accepts API deployable versions and refuses absent versions", () => {

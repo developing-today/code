@@ -1,53 +1,59 @@
 // Upload a prebuilt Worker Version without creating or changing a deployment.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parseVersionItems, versionMatchesProvenance } from "../src/deploy-contract.mjs";
+import { exactWorkerId, parseCfJson, parseVersionItems, releaseRepository, releaseWorker, requireExactVersion, uploadedVersionId } from "../src/deploy-contract.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workerDir = resolve(here, "..");
-const workerName = "voice-line";
-const sha = process.env.GITHUB_SHA ?? execFileSync("git", ["rev-parse", "HEAD"], {
-  cwd: workerDir,
-  encoding: "utf8",
-}).trim();
-if (!/^[a-f0-9]{40}$/i.test(sha)) throw new Error("GITHUB_SHA must be a full 40-character commit SHA");
-const runId = process.env.GITHUB_RUN_ID;
-const runAttempt = process.env.GITHUB_RUN_ATTEMPT;
-if (!/^\d+$/.test(runId) || !/^\d+$/.test(runAttempt)) {
+if (process.env.GITHUB_REPOSITORY !== releaseRepository || process.env.GITHUB_REF !== "refs/heads/main"
+  || process.env.GITHUB_EVENT_NAME !== "workflow_dispatch") throw new Error("the upload requires the exact manual main workflow");
+const sha = requiredEnv("GITHUB_SHA");
+if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("GITHUB_SHA must be a full commit SHA");
+const runId = requiredEnv("GITHUB_RUN_ID");
+const runAttempt = requiredEnv("GITHUB_RUN_ATTEMPT");
+if (!/^[1-9]\d{0,19}$/.test(runId) || !/^[1-9]\d{0,19}$/.test(runAttempt)) {
   throw new Error("GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT must identify the upload workflow run");
 }
-requiredEnv("CLOUDFLARE_ACCOUNT_ID");
+const accountId = requiredEnv("CLOUDFLARE_ACCOUNT_ID");
+if (!/^[a-f0-9]{32}$/.test(accountId)) throw new Error("CLOUDFLARE_ACCOUNT_ID is invalid");
 requiredEnv("CLOUDFLARE_API_TOKEN");
+const handoffPath = requiredEnv("VOICE_LINE_UPLOAD_RECEIPT");
+const workerId = exactWorkerId(parseCfJson(runCf(["-q", "workers", "get", "--worker", releaseWorker])));
 
 const tag = `git-${sha}-r${runId}-a${runAttempt}`;
 const message = `git ${sha}`;
-runCf(["workers", "versions", "create", "--prebuilt", "--worker", workerName, "--tag", tag, "--message", message]);
-
-const versions = parseVersionItems(runCf(["-q", "workers", "versions", "list", "--worker", workerName, "--per-page", "100"]));
-const matches = versions.filter((version) => versionMatchesProvenance(version, sha, runId, runAttempt));
-if (matches.length !== 1 || typeof matches[0]?.id !== "string") {
-  throw new Error(`expected exactly one uploaded version with exact provenance for ${sha}; found ${matches.length}`);
+const temp = await mkdtemp(resolve(tmpdir(), "voice-line-upload-"));
+try {
+  const output = resolve(temp, "cf-output.jsonl");
+  runCf(["-q", "workers", "versions", "create", "--prebuilt", "--worker", releaseWorker, "--tag", tag, "--message", message],
+    { ...process.env, WRANGLER_OUTPUT_FILE_PATH: output });
+  const lines = (await readFile(output, "utf8")).trim().split("\n");
+  const versionId = uploadedVersionId(lines.map((line) => JSON.parse(line)));
+  const versions = parseVersionItems(runCf(["-q", "workers", "versions", "list", "--worker", workerId, "--per-page", "100"]));
+  requireExactVersion(versions, versionId, sha, runId, runAttempt);
+  const accountHash = createHash("sha256").update(accountId).digest("hex");
+  await writeFile(handoffPath, JSON.stringify({
+    worker: releaseWorker, workerIdHash: createHash("sha256").update(workerId).digest("hex"), accountHash, versionId, sourceSha: sha, uploadRunId: runId, uploadRunAttempt: runAttempt,
+  }) + "\n", { mode: 0o600, flag: "wx" });
+  console.log(`Uploaded candidate version ${versionId} from ${sha}, run ${runId} (attempt ${runAttempt}). No traffic changed.`);
+} finally {
+  await rm(temp, { recursive: true, force: true });
 }
 
-console.log(`Uploaded candidate version: ${matches[0].id}`);
-console.log(`Source commit: ${sha}`);
-console.log(`Upload run: ${runId} (attempt ${runAttempt})`);
-if (process.env.GITHUB_STEP_SUMMARY) {
-  const fs = await import("node:fs/promises");
-  await fs.appendFile(process.env.GITHUB_STEP_SUMMARY,
-    `## Voice line Worker candidate uploaded\n\n- Version ID: \`${matches[0].id}\`\n- Source SHA: \`${sha}\`\n- Upload run: \`${runId}\` (attempt \`${runAttempt}\`)\n- Traffic changed: no\n`);
-}
-
-function runCf(args) {
+function runCf(args, env = process.env) {
   const binary = resolve(workerDir, "node_modules/cf/bin/cf");
-  return execFileSync(process.execPath, [binary, ...args], {
-    cwd: workerDir,
-    env: process.env,
-    encoding: "utf8",
-    stdio: ["inherit", "pipe", "inherit"],
-  });
+  try {
+    return execFileSync(process.execPath, [binary, ...args], {
+      cwd: workerDir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    throw new Error("cf upload or verification failed; inspect provider state before retrying");
+  }
 }
 
 function requiredEnv(name) {

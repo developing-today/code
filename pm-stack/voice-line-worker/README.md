@@ -58,8 +58,11 @@ npm run cf:build
 
 Run uploads through the manual GitHub Actions workflow rather than locally.
 It creates a version tagged with the full source SHA, upload run ID, and
-attempt, with the full source SHA in its message, and reports the resulting
-Version UUID. It does not create a deployment or route traffic.
+attempt, with the full source SHA in its message. Its receipt binds the UUID
+reported by cf to the Worker, an account fingerprint, and the upload attempt;
+it is published as an Actions artifact. Upload does not create a deployment
+or change the serving split. Check provider Version URL settings separately:
+an upload-only operation is not isolated from production resources.
 
 GitHub Actions uploads only from a manually dispatched run on `main`; it runs
 the offline tests and build first. Promotion is a different manual workflow,
@@ -72,10 +75,16 @@ upload run succeeded from the expected workflow on `main` at that SHA,
 Cloudflare marks it deployable, and the
 currently serving deployment is a single 100% version matching the supplied
 expected ID. It checks the serving version again immediately before promotion
-and verifies 100% read-back afterwards.
+and verifies that the exact deployment returned by cf is the latest active
+deployment and serves the candidate at 100%. The immediate recheck is not an
+atomic compare-and-swap against other writers; keep the release window free of
+out-of-band deployment changes.
 
 Before enabling either workflow, configure these repository environments
-(environment protection and secrets cannot be declared in workflow YAML):
+(environment protection and secrets cannot be declared in workflow YAML).
+A preflight with only the GitHub workflow read token against the GitHub deployment environment API
+halts before the deploy job attaches a missing or insufficiently protected
+environment:
 
 1. `voice-line-worker-upload`: allow deployments from `main` only; require an
    independent reviewer, prevent self-review, and disallow administrator
