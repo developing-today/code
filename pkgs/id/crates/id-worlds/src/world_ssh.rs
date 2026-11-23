@@ -1254,8 +1254,12 @@ impl SshIo {
 
     /// Abandon kitty activation after a failed or unanswered verification:
     /// pop the owned push and fall back to legacy input. Held tokens stay
-    /// queued and drain as legacy frames — their bytes are untouched.
+    /// queued and drain as legacy frames — their bytes are untouched. The
+    /// opt-in retires with the fallback: one negotiation attempt per
+    /// connection, never a push/retry loop against a terminal that has
+    /// already answered (or refused to).
     async fn kitty_fallback(&mut self) {
+        self.kitty_opt_in = false;
         self.kitty_verify_deadline = None;
         self.pop_kitty().await;
         self.kitty.fallback();
@@ -3415,6 +3419,24 @@ mod tests {
         assert_eq!(collect_inputs(&mut events, 1).await, vec![b"q".to_vec()]);
         channel.data(b"hi".as_slice()).await.unwrap();
         assert_eq!(collect_inputs(&mut events, 1).await, vec![b"hi".to_vec()]);
+
+        // And the fallback is final for this connection: no second push.
+        let mut heard = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_millis(700), async {
+            loop {
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => heard.extend_from_slice(&data),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+        assert_eq!(
+            count_bytes(&heard, kitty::KITTY_PUSH),
+            0,
+            "a refused terminal is not renegotiated"
+        );
         server.abort();
     }
 
