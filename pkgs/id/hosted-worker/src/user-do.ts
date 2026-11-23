@@ -46,6 +46,7 @@ import {
   type FrameTransport,
 } from "./bridge-session.ts";
 import type { IngestOutcome } from "./bridge-store.ts";
+import { ExportProductionError, exportSetsToWire, produceExportSets } from "./export.ts";
 
 export const SCHEMA_VERSION = 3;
 
@@ -508,6 +509,35 @@ export class UserDO {
             "x-bridge-heads": JSON.stringify(store.heads()),
           },
         });
+      }
+      if (url.pathname === "/v1/bridge/export" && req.method === "GET") {
+        // §6 export production (slice 4b, #13157): the applied
+        // objects and the blobs they cite, as the sets build_export
+        // assembles. A pure read — like every read it stays
+        // available from a read-only, at-cap store (§5.4) — and a
+        // blob the store references but R2 cannot produce fails
+        // the export loudly (502 naming the hash), never silently
+        // incomplete.
+        const irohHex = this.requireIroh(req);
+        const store = await this.bridgeProof(req, bindingId, irohHex, "export", new Uint8Array(0));
+        const bucket = blobsBindingFor(this.env, jurisdiction as Jurisdiction);
+        const blobRows = this.state.storage.sql
+          .exec("SELECT hash FROM blobs ORDER BY hash")
+          .toArray()
+          .map((r) => ({ hash: String(r.hash) }));
+        try {
+          const sets = await produceExportSets(store.appliedEvents(), blobRows, async (hash) => {
+            const obj = await bucket.get(hash);
+            if (!obj) return null;
+            return new Uint8Array(await new Response(obj.body).arrayBuffer());
+          });
+          return json(exportSetsToWire(sets));
+        } catch (e) {
+          if (e instanceof ExportProductionError) {
+            throw new FailClosed(502, "export_production_failed", e.message);
+          }
+          throw e;
+        }
       }
       if (url.pathname === "/v1/bridge/ws" && req.method === "GET") {
         const irohHex = this.requireIroh(req);
