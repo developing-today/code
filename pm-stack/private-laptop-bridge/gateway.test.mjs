@@ -44,7 +44,7 @@ async function harness(t, overrides = {}) {
   const keys = {}, principals = [];
   for (const [id, role] of [['caller','caller'], ['device','device']]) {
     keys[id] = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
-    principals.push({id, role, device:'amd', publicKey:b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)), scopes:[...operations], issuedAt:Date.now()-1000, expiresAt:Date.now()+120000, revoked:false});
+    principals.push({id, role, device:'amd', publicKey:b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)), accessClientId:`synthetic-${id}-client`,scopes:[...operations], issuedAt:Date.now()-1000, expiresAt:Date.now()+120000, revoked:false});
   }
   const mf = new Miniflare({host:'127.0.0.1', workers:[
     {name:'gateway-harness', modules:true, script:harnessSource, compatibilityDate:'2026-07-30', serviceBindings:{PRIVATE:{name:'private-bridge',entrypoint:'GatewayMiddleware'}}, outboundService:() => {throw new Error('outbound forbidden');}},
@@ -62,7 +62,7 @@ async function harness(t, overrides = {}) {
   return {mf,send,keys};
 }
 
-test('private Gateway RPC reaches signed DO normal flow; ordinary HTTP is always denied',async t=>{
+test('Gateway RPC contract and direct Access HTTP gate are independent; ordinary HTTP is denied without Access config',async t=>{
   const h=await harness(t);
   const submitted=await h.send('caller','/v1/call',{device:'amd',operation:'laptop.health',args:{}});
   assert.equal(submitted.status,202,JSON.stringify(submitted));
@@ -74,7 +74,7 @@ test('private Gateway RPC reaches signed DO normal flow; ordinary HTTP is always
   const direct=await h.mf.getWorker('private-bridge');
   const signed=await signRequest({origin:`https://${host}`,audience:'gateway-offline',principal:'caller',privateKey:h.keys.caller.privateKey,path:'/v1/call',body:{device:'amd',operation:'laptop.health',args:{}}});
   const response=await direct.fetch(signed.url,{method:'POST',headers:Object.fromEntries(signed.headers),body:await signed.text()});
-  assert.equal(response.status,403);assert.deepEqual(await response.json(),{error:'private-rpc-only'});
+  assert.equal(response.status,401);assert.deepEqual(await response.json(),{error:'access-authentication'});
 });
 
 test('private Gateway RPC rejects route and trusted-context mismatches without next',async t=>{

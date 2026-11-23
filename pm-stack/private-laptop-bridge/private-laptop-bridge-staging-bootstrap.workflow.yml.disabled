@@ -1,5 +1,6 @@
 # Dormant reviewed template. GitHub ignores this non-workflow extension.
-# Enable only after `cloudflare-staging-bootstrap` exists with reviewers,
+# The owner creates the exact metadata-only Worker locally and pins its ID before CI.
+# Enable only after `cloudflare-staging` exists with reviewers,
 # prevent_self_review=true, a main-only branch policy and the exact source pin.
 name: Private laptop bridge disabled staging bootstrap
 
@@ -36,14 +37,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_API_URL: ${{ github.api_url }}
-          CF_BRIDGE_BOOTSTRAP_REVIEWER_IDS: ${{ vars.CF_BRIDGE_BOOTSTRAP_REVIEWER_IDS }}
-        run: node staging-bootstrap.mjs github-environment
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          CF_BRIDGE_RELEASE_REVIEWER_IDS: ${{ vars.CF_BRIDGE_RELEASE_REVIEWER_IDS }}
+        run: node staging-bootstrap.mjs github-environment-bootstrap
 
   deploy-disabled-bridge:
     needs: verify-environment-before-assignment
-    if: needs.verify-environment-before-assignment.result == 'success' && needs.verify-environment-before-assignment.outputs.environment == 'cloudflare-staging-bootstrap'
+    if: needs.verify-environment-before-assignment.result == 'success' && needs.verify-environment-before-assignment.outputs.environment == 'cloudflare-staging'
     environment:
       name: ${{ needs.verify-environment-before-assignment.outputs.environment }}
+    env:
+      CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+      CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -71,6 +76,9 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Verify disabled bridge build and deploy dry run
         working-directory: pm-stack/private-laptop-bridge
+        env:
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
         run: |
           set -euo pipefail
           node --test deployment-config.test.mjs release-contract.test.mjs staging-bootstrap.test.mjs
@@ -81,19 +89,26 @@ jobs:
         id: provider
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID }}
-          CF_BRIDGE_BOOTSTRAP_ZONE_IDS: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ZONE_IDS }}
-          CF_BRIDGE_BOOTSTRAP_READ_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_READ_TOKEN }}
+          CF_BRIDGE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CF_BRIDGE_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
+          CF_BRIDGE_ZONE_IDS: ${{ secrets.CF_BRIDGE_ZONE_IDS }}
+          CF_BRIDGE_READ_TOKEN: ${{ secrets.CF_BRIDGE_READ_TOKEN }}
+          CF_BRIDGE_GATEWAY_READ_TOKEN: ${{ secrets.CF_BRIDGE_GATEWAY_READ_TOKEN }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
           GITHUB_SHA: ${{ github.sha }}
         run: node staging-bootstrap.mjs preflight
       - name: Deploy only the pinned disabled declarative Worker and SQLite export
         if: steps.provider.outputs.status == 'deploy'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_BRIDGE_BOOTSTRAP_READ_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_READ_TOKEN }}
-          CF_BRIDGE_BOOTSTRAP_WRITE_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_WRITE_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_WRITE_TOKEN }}
+          CF_BRIDGE_READ_TOKEN: ${{ secrets.CF_BRIDGE_READ_TOKEN }}
+          CF_BRIDGE_GATEWAY_READ_TOKEN: ${{ secrets.CF_BRIDGE_GATEWAY_READ_TOKEN }}
+          CF_BRIDGE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
         run: |
           set -euo pipefail
           node staging-bootstrap.mjs assert-distinct-credentials
@@ -102,8 +117,12 @@ jobs:
         if: steps.provider.outputs.status == 'deploy'
         working-directory: pm-stack/private-laptop-bridge
         env:
-          CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID }}
-          CF_BRIDGE_BOOTSTRAP_ZONE_IDS: ${{ secrets.CF_BRIDGE_BOOTSTRAP_ZONE_IDS }}
-          CF_BRIDGE_BOOTSTRAP_READ_TOKEN: ${{ secrets.CF_BRIDGE_BOOTSTRAP_READ_TOKEN }}
+          CF_BRIDGE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CF_BRIDGE_WORKER_ID: ${{ vars.CF_BRIDGE_WORKER_ID }}
+          CF_BRIDGE_ZONE_IDS: ${{ secrets.CF_BRIDGE_ZONE_IDS }}
+          CF_BRIDGE_READ_TOKEN: ${{ secrets.CF_BRIDGE_READ_TOKEN }}
+          CF_BRIDGE_GATEWAY_READ_TOKEN: ${{ secrets.CF_BRIDGE_GATEWAY_READ_TOKEN }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
           GITHUB_SHA: ${{ github.sha }}
         run: node staging-bootstrap.mjs postflight

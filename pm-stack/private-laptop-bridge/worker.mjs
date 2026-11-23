@@ -1,4 +1,5 @@
 import {operations, exact, identifier, unbase64, signingBytes, boundedText, validateOperation, validateResult} from './protocol.mjs';
+import {verifyAccessServiceToken} from './access-auth.mjs';
 
 const nextExpiry = s => Math.min(...Object.values(s.nonces), ...Object.values(s.quotas).map(q => q.end), ...Object.values(s.jobs).map(j => j.retainUntil), ...s.audit.map(e => e.at + 180000));
 const paths = ['/v1/call', '/v1/poll', '/v1/result', '/v1/read'];
@@ -16,10 +17,11 @@ function registry(raw) {
   if (typeof raw !== 'string' || raw.length > 16384) throw new Error('config');
   const r = JSON.parse(raw);
   if (!exact(r, ['audience', 'principals']) || !identifier(r.audience) || !Array.isArray(r.principals) || r.principals.length < 2 || r.principals.length > 16) throw new Error('config');
-  const ids = new Set(), keys = new Set(), principals = {};
+  const ids = new Set(), keys = new Set(), accessIds = new Set(), principals = {};
   for (const p of r.principals) {
-    if (!exact(p, ['id', 'role', 'device', 'publicKey', 'scopes', 'issuedAt', 'expiresAt', 'revoked']) || !identifier(p.id) || !identifier(p.device) || !['caller', 'device'].includes(p.role) || typeof p.revoked !== 'boolean' || !Number.isSafeInteger(p.issuedAt) || !Number.isSafeInteger(p.expiresAt) || p.expiresAt <= p.issuedAt || p.expiresAt - p.issuedAt > 3600000 || !Array.isArray(p.scopes) || p.scopes.length < 1 || p.scopes.length > operations.length || new Set(p.scopes).size !== p.scopes.length || !p.scopes.every(s => operations.includes(s)) || ids.has(p.id) || keys.has(p.publicKey) || unbase64(p.publicKey).length !== 32) throw new Error('config');
-    ids.add(p.id); keys.add(p.publicKey); principals[p.id] = p;
+    if (!exact(p, ['id', 'role', 'device', 'publicKey', 'accessClientId', 'scopes', 'issuedAt', 'expiresAt', 'revoked']) || !identifier(p.id) || !identifier(p.device) || !['caller', 'device'].includes(p.role) || typeof p.accessClientId !== 'string' || !/^[A-Za-z0-9._-]{8,128}$/.test(p.accessClientId) || typeof p.revoked !== 'boolean' || !Number.isSafeInteger(p.issuedAt) || !Number.isSafeInteger(p.expiresAt) || p.expiresAt <= p.issuedAt || p.expiresAt - p.issuedAt > 3600000 || !Array.isArray(p.scopes) || p.scopes.length < 1 || p.scopes.length > operations.length || new Set(p.scopes).size !== p.scopes.length || !p.scopes.every(s => operations.includes(s)) || ids.has(p.id) || keys.has(p.publicKey) || unbase64(p.publicKey).length !== 32) throw new Error('config');
+    if (accessIds.has(p.accessClientId)) throw new Error('config');
+    ids.add(p.id); keys.add(p.publicKey); accessIds.add(p.accessClientId); principals[p.id] = p;
   }
   return {audience: r.audience, principals};
 }
@@ -134,10 +136,31 @@ export class PrivateLaptopBridge {
   }
 }
 
+// Internal-only invocation shared with the trusted Gateway RPC entrypoint.
+// Public HTTP must use the default export below, which verifies Access first.
+export async function dispatchSignedRequest(request, env) {
+  if (env.ENABLED !== 'true' || !env.BRIDGE) return response(503, {error: 'disabled'});
+  try { return await env.BRIDGE.get(env.BRIDGE.idFromName('owner-v1')).fetch(request); }
+  catch { return response(503, {error: 'storage'}); }
+}
+
 export default {
   async fetch(request, env) {
     if (env.ENABLED !== 'true' || !env.BRIDGE) return response(503, {error: 'disabled'});
-    try { return await env.BRIDGE.get(env.BRIDGE.idFromName('owner-v1')).fetch(request); }
-    catch { return response(503, {error: 'storage'}); }
+    let config;
+    try { config = registry(env.BRIDGE_REGISTRY); } catch { return response(503, {error: 'configuration'}); }
+    let clientId;
+    try { clientId = await verifyAccessServiceToken(request, env); }
+    catch { return response(401, {error: 'access-authentication'}); }
+    const principal = Object.values(config.principals).find(p => p.accessClientId === clientId);
+    if (!principal || !active(principal, Date.now())) return response(401, {error: 'access-principal'});
+    // Never forward Access credentials or edge identity headers into the DO.
+    const headers = new Headers(request.headers);
+    for (const name of [...headers.keys()]) {
+      const lower = name.toLowerCase();
+      if (lower.startsWith('cf-access-') || lower === 'cookie' || lower === 'authorization') headers.delete(name);
+    }
+    const sanitized = new Request(request, {headers});
+    return dispatchSignedRequest(sanitized, env);
   },
 };

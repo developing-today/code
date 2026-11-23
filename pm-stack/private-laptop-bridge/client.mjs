@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { signRequest, validateOperation, validateResult, identifier } from './protocol.mjs';
 import { createAdapters } from './adapters.mjs';
+import { BRIDGE_ORIGIN } from './access-auth.mjs';
 
 const exact = (v, list) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === list.length && list.every(k => Object.hasOwn(v, k));
 const id = identifier;
@@ -19,9 +20,9 @@ export function requireNonRoot(getuid = process.getuid) {
   if (typeof getuid !== 'function' || !Number.isInteger(getuid()) || getuid() <= 0) throw new Error('non-root-required');
 }
 export function validateConfig(config) {
-  if (!exact(config, ['origin','audience','principal','privateKey'])) throw new Error('invalid-config');
+  if (!exact(config, ['origin','audience','principal','privateKey','accessClientId','accessClientSecret'])) throw new Error('invalid-config');
   const origin = new URL(config.origin);
-  if (origin.protocol !== 'https:' || origin.origin !== config.origin || origin.username || origin.password || !id(config.principal) || typeof config.audience !== 'string' || config.audience.length < 1 || config.audience.length > 200) throw new Error('invalid-config');
+  if (origin.protocol !== 'https:' || origin.origin !== config.origin || origin.origin !== BRIDGE_ORIGIN || origin.username || origin.password || !id(config.principal) || typeof config.audience !== 'string' || config.audience.length < 1 || config.audience.length > 200 || typeof config.accessClientId !== 'string' || !/^[A-Za-z0-9._-]{8,128}$/.test(config.accessClientId) || typeof config.accessClientSecret !== 'string' || config.accessClientSecret.length < 32 || config.accessClientSecret.length > 256) throw new Error('invalid-config');
   if (!exact(config.privateKey, ['kty','crv','x','d']) || config.privateKey.kty !== 'OKP' || config.privateKey.crv !== 'Ed25519' || !/^[A-Za-z0-9_-]{43}$/.test(config.privateKey.x) || !/^[A-Za-z0-9_-]{43}$/.test(config.privateKey.d)) throw new Error('invalid-config');
   return config;
 }
@@ -56,14 +57,18 @@ async function readResponse(response, signal) {
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
   } finally { signal.removeEventListener('abort', abort); void reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
-export function createClient({ origin, audience, principal, privateKey, fetch: fetchFn = globalThis.fetch, execute = createAdapters(), now = Date.now, sleep = delay, getuid = process.getuid, requestTimeoutMs = 5000 }) {
+export function createClient({ origin, audience, principal, privateKey, accessClientId, accessClientSecret, fetch: fetchFn = globalThis.fetch, execute = createAdapters(), now = Date.now, sleep = delay, getuid = process.getuid, requestTimeoutMs = 5000 }) {
   requireNonRoot(getuid);
   const url = new URL(origin);
-  if (url.protocol !== 'https:' || url.origin !== origin || !id(principal) || typeof audience !== 'string' || !audience) throw new Error('invalid-config');
+  if (url.protocol !== 'https:' || url.origin !== origin || url.origin !== BRIDGE_ORIGIN || !id(principal) || typeof audience !== 'string' || !audience || typeof accessClientId !== 'string' || !/^[A-Za-z0-9._-]{8,128}$/.test(accessClientId) || typeof accessClientSecret !== 'string' || accessClientSecret.length < 32 || accessClientSecret.length > 256) throw new Error('invalid-config');
   async function send(path, body, signal) {
     const bounded = signal ? AbortSignal.any([signal, AbortSignal.timeout(requestTimeoutMs)]) : AbortSignal.timeout(requestTimeoutMs);
     const startedAt = now();
-    const request = await signRequest({ origin, audience, principal, privateKey, path, body, now: startedAt });
+    const signed = await signRequest({ origin, audience, principal, privateKey, path, body, now: startedAt });
+    const headers = new Headers(signed.headers);
+    headers.set('cf-access-client-id', accessClientId);
+    headers.set('cf-access-client-secret', accessClientSecret);
+    const request = new Request(signed, {headers});
     const response = await fetchFn(request, { redirect: 'error', signal: bounded });
     if ([401,403,410].includes(response.status)) { void response.body?.cancel().catch(() => {}); throw new BridgeDenied(); }
     if (!response.ok || response.redirected) { void response.body?.cancel().catch(() => {}); throw new Error('bridge-unavailable'); }

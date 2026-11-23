@@ -1,6 +1,7 @@
 // Caller SDK: four named reads, an explicit accepted handle, and bounded polling.
 // Keys are supplied by an approved caller integration; no enrollment or files.
 import { exact, identifier, validateOperation, validateResult, signRequest } from './protocol.mjs';
+import { BRIDGE_ORIGIN } from './access-auth.mjs';
 
 export class CallerError extends Error {
   constructor(code, handle) {
@@ -18,12 +19,14 @@ function validHandle(handle) {
     && validateOperation(handle.operation, handle.args) && Number.isSafeInteger(handle.expiresAt);
 }
 
-export function createCaller({ origin, audience, principal, device, privateKey, fetch: fetchFn = globalThis.fetch,
+export function createCaller({ origin, audience, principal, device, privateKey, accessClientId, accessClientSecret, fetch: fetchFn = globalThis.fetch,
   now = Date.now, requestTimeoutMs = 3000 }) {
   let url;
   try { url = new URL(origin); } catch { throw new CallerError('invalid-config'); }
-  if (url.protocol !== 'https:' || url.origin !== origin || url.username || url.password
+  if (url.protocol !== 'https:' || url.origin !== origin || url.origin !== BRIDGE_ORIGIN || url.username || url.password
     || !identifier(audience) || !identifier(principal) || !identifier(device)
+    || typeof accessClientId !== 'string' || !/^[A-Za-z0-9._-]{8,128}$/.test(accessClientId)
+    || typeof accessClientSecret !== 'string' || accessClientSecret.length < 32 || accessClientSecret.length > 256
     || !privateKey || privateKey.type !== 'private' || privateKey.algorithm?.name !== 'Ed25519'
     || !Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 3000) throw new CallerError('invalid-config');
 
@@ -44,7 +47,11 @@ export function createCaller({ origin, audience, principal, device, privateKey, 
     try {
       const work = async () => {
         controller.signal.throwIfAborted();
-        const request = await signRequest({ origin, audience, principal, privateKey, path, body, now: startedAt });
+        const signed = await signRequest({ origin, audience, principal, privateKey, path, body, now: startedAt });
+        const headers = new Headers(signed.headers);
+        headers.set('cf-access-client-id', accessClientId);
+        headers.set('cf-access-client-secret', accessClientSecret);
+        const request = new Request(signed, {headers});
         controller.signal.throwIfAborted();
         response = await fetchFn(request, { redirect: 'error', signal: controller.signal });
         if (controller.signal.aborted) { void response.body?.cancel().catch(() => {}); controller.signal.throwIfAborted(); }

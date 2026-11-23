@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {lstat, readFile, readdir} from 'node:fs/promises';
 import {join, relative, resolve, sep} from 'node:path';
+import {BRIDGE_HOST} from './access-auth.mjs';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA=/^[0-9a-f]{40}$/;
@@ -12,6 +13,11 @@ const fail=(message)=>{throw new Error(message);};
 const digest=(bytes)=>createHash('sha256').update(bytes).digest('hex');
 const stable=(value)=>Array.isArray(value)?value.map(stable):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,stable(value[key])])):value;
 const same=(a,b)=>JSON.stringify(stable(a))===JSON.stringify(stable(b));
+const validAccess=(issuerValue,audience)=>{
+  let issuer; try {issuer=new URL(issuerValue);} catch {return false;}
+  return issuer.protocol==='https:'&&issuer.origin===issuerValue&&issuer.pathname==='/'&&!issuer.search&&!issuer.hash&&
+    /^[a-z0-9-]+\.cloudflareaccess\.com$/.test(issuer.hostname)&&/^[A-Za-z0-9_-]{20,128}$/.test(audience??'');
+};
 
 export function extractServerVersionId(stdout,{worker}={}) {
   let value; try {value=JSON.parse(stdout);} catch {fail('cf versions create did not return JSON; refusing to infer a version id');}
@@ -155,13 +161,30 @@ export function assertUploadRun(run,jobsResponse,handoff) {
   return true;
 }
 
-export function assertPreflight(proof,{accountId,worker,environment,now=Date.now()}) {
+export function assertPreflight(proof,{accountId,worker,environment,now=Date.now(),accessIssuer=process.env.CF_BRIDGE_ACCESS_ISSUER??'',accessAudience=process.env.CF_BRIDGE_ACCESS_AUDIENCE??''}) {
   if(!proof||proof.schema!==1||proof.verified!==true||proof.account_id!==accountId||typeof proof.evidence_ref!=='string'||proof.evidence_ref.trim().length<3||!Number.isFinite(Date.parse(proof.verified_at))||!Number.isFinite(Date.parse(proof.expires_at))||Date.parse(proof.verified_at)>now||Date.parse(proof.expires_at)<=now||Date.parse(proof.expires_at)-Date.parse(proof.verified_at)>24*3600000) fail('owner read-only staging proof is absent, expired, or invalid');
   const release=proof.release_policy,allowedRefs=release?.allowed_environment_branches?.[environment];
   if(release?.repository!=='developing-today/code'||release?.branch!=='main'||release?.branch_protected!==true||release?.required_pull_request_reviews!==true||release?.force_push_disabled!==true||release?.admin_bypass_disabled!==true||release?.environment_reviewers_required?.[environment]!==true||release?.self_review_disabled?.[environment]!==true||!Array.isArray(allowedRefs)||!same(allowedRefs,['main'])||typeof release?.evidence_ref!=='string'||release.evidence_ref.trim().length<3) fail('trusted protected-main or deployment-environment approval proof is absent or invalid');
   const target=proof.targets?.[worker];
-  const expectedVars=worker==='private-laptop-bridge-staging'?{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:''}:{ENABLED:'false',GATEWAY_HOST:'private-bridge-smoke.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',START_MS:'',END_MS:''};
-  if(!target||target.environment!==environment||target.exists!==true||target.script_id!==worker||target.account_id!==accountId||target.workers_dev!==false||target.preview_urls!==false||!Array.isArray(target.routes)||target.routes.length!==0||!Array.isArray(target.custom_domains)||target.custom_domains.length!==0||target.application_enabled!==false||target.observability?.enabled!==false||target.observability?.logs!==false||target.observability?.traces!==false||target.limits?.cpu_ms!==10||!Array.isArray(target.gateway_forward_policy_ids)||target.gateway_forward_policy_ids.length!==0||!Array.isArray(target.gateway_caller_ids)||target.gateway_caller_ids.length!==0||JSON.stringify(Object.fromEntries(Object.entries(target.variables??{}).sort()))!==JSON.stringify(Object.fromEntries(Object.entries(expectedVars).sort()))||!Array.isArray(target.bindings)) fail('owner read-only proof does not verify the exact private disabled target');
+  if(worker==='private-laptop-bridge-staging') {
+    if(target?.variables?.ACCESS_ISSUER!==accessIssuer||target?.variables?.ACCESS_AUDIENCE!==accessAudience) fail('owner proof Access issuer/audience differ from the protected build configuration');
+    if(!validAccess(accessIssuer,accessAudience)) fail('owner proof does not identify a valid exact Access application issuer and audience');
+  }
+  const expectedVars=worker==='private-laptop-bridge-staging'?{ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_HOST,ACCESS_ISSUER:accessIssuer,ACCESS_AUDIENCE:accessAudience,BRIDGE_REGISTRY:''}:{ENABLED:'false',GATEWAY_HOST:'private-bridge-smoke.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',START_MS:'',END_MS:''};
+  const expectedDomains=worker==='private-laptop-bridge-staging'?[BRIDGE_HOST]:[];
+  if(!target||target.environment!==environment||target.exists!==true||target.script_id!==worker||target.account_id!==accountId||target.workers_dev!==false||target.preview_urls!==false||!Array.isArray(target.routes)||target.routes.length!==0||!same(target.custom_domains,expectedDomains)||target.application_enabled!==false||target.observability?.enabled!==false||target.observability?.logs!==false||target.observability?.traces!==false||target.limits?.cpu_ms!==10||!Array.isArray(target.gateway_forward_policy_ids)||target.gateway_forward_policy_ids.length!==0||!Array.isArray(target.gateway_caller_ids)||target.gateway_caller_ids.length!==0||JSON.stringify(Object.fromEntries(Object.entries(target.variables??{}).sort()))!==JSON.stringify(Object.fromEntries(Object.entries(expectedVars).sort()))||!Array.isArray(target.bindings)) fail('owner read-only proof does not verify the exact private disabled target');
+  if(worker==='private-laptop-bridge-staging') {
+    const app=target.access_app, clientIds=app?.allowed_client_ids;
+    const expiryIds=Object.keys(app?.client_expires_at??{}).sort();
+    const issuedAt=Date.parse(proof.verified_at), expires=clientIds?.map(id=>Date.parse(app?.client_expires_at?.[id]));
+    if(!app||typeof app.application_id!=='string'||app.application_id.length<8||app.hostname!==BRIDGE_HOST||
+      app.issuer!==accessIssuer||app.audience!==accessAudience||app.enabled!==true||app.mode!=='service-token-only'||
+      app.browser_login!==false||app.bypass_policy_count!==0||app.non_service_allow_count!==0||
+      !Array.isArray(clientIds)||clientIds.length!==2||clientIds.some(id=>typeof id!=='string'||!/^[A-Za-z0-9._-]{8,128}$/.test(id))||new Set(clientIds).size!==2||
+      !same(expiryIds,[...clientIds].sort())||expires.some(value=>!Number.isFinite(value)||value<=now||value>issuedAt+3600000)) {
+      fail('owner proof does not verify one Access application restricted to the two approved service identities');
+    }
+  }
   if(worker==='private-laptop-bridge-staging'&&(target.bindings.length!==1||target.bindings[0]?.name!=='BRIDGE'||target.bindings[0]?.type!=='durable_object_namespace'||target.bindings[0]?.class_name!=='PrivateLaptopBridge'||target.bindings[0]?.namespace_id!==target.do?.id||!same(target.declarative_exports,{PrivateLaptopBridge:{state:'created',storage:'sqlite'}})||target.do?.script!==worker||target.do?.class!=='PrivateLaptopBridge'||target.do?.use_sqlite!==true||!NAMESPACE.test(target.do?.id??''))) fail('owner read-only proof does not verify the same-Worker SQLite Durable Object export and namespace');
   if(worker==='private-laptop-bridge-smoke'&&(target.bindings.length!==0||target.do!==null)) fail('smoke target unexpectedly has a Durable Object namespace or binding');
   return true;
@@ -177,14 +200,15 @@ export function assertDryRunPayload(text,{worker,mode}) {
   return true;
 }
 
-export function assertEffectivePayload(config,{worker,mode}) {
+export function assertEffectivePayload(config,{worker,mode,accessIssuer=process.env.CF_BRIDGE_ACCESS_ISSUER??'',accessAudience=process.env.CF_BRIDGE_ACCESS_AUDIENCE??''}) {
   const bridge=worker==='private-laptop-bridge-staging';
   const smoke=worker==='private-laptop-bridge-smoke';
   if((!bridge&&!smoke)||(bridge&&mode!=='bridge')||(smoke&&mode!=='default')) fail('Build Output mode does not match the fixed target');
+  if(bridge&&!validAccess(accessIssuer,accessAudience)) fail('bridge Build Output requires the exact protected Access issuer and audience');
   const common={
     name:worker,
     compatibilityDate:'2026-07-30',
-    domains:[],
+    domains:bridge?[BRIDGE_HOST]:[],
     triggers:[],
     limits:{cpuMs:10},
     observability:{enabled:false,logs:{enabled:false},traces:{enabled:false}},
@@ -193,7 +217,7 @@ export function assertEffectivePayload(config,{worker,mode}) {
   };
   const variables=bridge?{
     ENABLED:'false',GATEWAY_HOST:'private-bridge-staging.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',
-    GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_REGISTRY:'',
+    GATEWAY_IDENTITY_EMAIL:'',GATEWAY_POSTURE_ID:'',BRIDGE_HOST,ACCESS_ISSUER:accessIssuer,ACCESS_AUDIENCE:accessAudience,BRIDGE_REGISTRY:'',
   }:{
     ENABLED:'false',GATEWAY_HOST:'private-bridge-smoke.invalid',GATEWAY_ACCOUNT_ID:'',GATEWAY_POLICY_ID:'',START_MS:'',END_MS:'',
   };

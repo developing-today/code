@@ -36,14 +36,14 @@ async function harness(t) {
   const keys = {}, principals = [];
   for (const [id, role] of [['owner','caller'], ['laptop','device']]) {
     keys[id] = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
-    principals.push({ id, role, device:'amd', publicKey:b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)), scopes:[...operations], issuedAt:NOW-1000, expiresAt:NOW+1800000, revoked:false });
+    principals.push({ id, role, device:'amd', publicKey:b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)), accessClientId:`synthetic-${id}-client`, scopes:[...operations], issuedAt:NOW-1000, expiresAt:NOW+1800000, revoked:false });
   }
   const env = { ENABLED:'true', BRIDGE_REGISTRY:JSON.stringify({ audience:'freshness-test', principals }) };
   const object = new PrivateLaptopBridge({ storage:new Storage() }, env);
   env.BRIDGE = { idFromName:x=>x, get:()=>({ fetch:r=>object.fetch(r) }) };
-  const fetch = request => worker.fetch(request, env);
+  const fetch = request => object.fetch(request);
   const execute = createAdapters({ readSnapshot:()=>readQueueSnapshot(home), clock:()=>clock });
-  const config = { origin:'https://bridge.invalid', audience:'freshness-test', fetch, now:()=>clock };
+  const config = { origin:'https://laptop-bridge-staging.security.cab', audience:'freshness-test', accessClientId:'synthetic-client-id',accessClientSecret:'synthetic-access-secret-that-is-never-live',fetch,now:()=>clock };
   const client = createClient({ ...config, principal:'laptop', privateKey:keys.laptop.privateKey, execute, getuid:()=>1000 });
   const caller = createCaller({ ...config, principal:'owner', device:'amd', privateKey:keys.owner.privateKey });
   const collect = (health={ok:true,rows:[rawIdle()]}, list={ok:true,rows:[]}, fetchedAt=clock) => fetchQueueSnapshot('http://synthetic.invalid', 'synthetic-not-a-secret', async url=>({ ok:true,status:200,json:async()=>url.endsWith('/health')?health:list }), ()=>fetchedAt);

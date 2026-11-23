@@ -1,6 +1,7 @@
 import {bindings, defineConfig, exports} from 'cf/config';
 import * as smoke from './smoke.mjs' with {type:'cf-worker'};
 import * as bridge from './gateway.mjs' with {type:'cf-worker'};
+import {BRIDGE_HOST} from './access-auth.mjs';
 
 const isolated = () => ({
   workersDev: false,
@@ -18,6 +19,7 @@ const isolated = () => ({
 export default defineConfig(({mode}) => mode === 'bridge' ? ({
   worker: {
     ...isolated(),
+    domains: [BRIDGE_HOST],
     name: 'private-laptop-bridge-staging',
     compatibilityDate: '2026-07-30',
     entrypoint: bridge,
@@ -27,6 +29,9 @@ export default defineConfig(({mode}) => mode === 'bridge' ? ({
       GATEWAY_HOST: bindings.text('private-bridge-staging.invalid'),
       GATEWAY_ACCOUNT_ID: bindings.text(''), GATEWAY_POLICY_ID: bindings.text(''),
       GATEWAY_IDENTITY_EMAIL: bindings.text(''), GATEWAY_POSTURE_ID: bindings.text(''),
+      BRIDGE_HOST: bindings.text(BRIDGE_HOST),
+      ACCESS_ISSUER: bindings.text(process.env.CF_BRIDGE_ACCESS_ISSUER ?? ''),
+      ACCESS_AUDIENCE: bindings.text(process.env.CF_BRIDGE_ACCESS_AUDIENCE ?? ''),
       BRIDGE_REGISTRY: bindings.text(''),
       BRIDGE: bindings.durableObject({worker: 'private-laptop-bridge-staging', exportName: 'PrivateLaptopBridge'}),
     },

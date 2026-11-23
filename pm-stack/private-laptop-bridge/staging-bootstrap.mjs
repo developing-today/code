@@ -8,9 +8,13 @@ import {assertEffectivePayload} from './release-contract.mjs';
 
 export const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 export const GITHUB_REPOSITORY = 'developing-today/code';
-export const ENVIRONMENT_NAME = 'cloudflare-staging-bootstrap';
+export const RELEASE_ENVIRONMENT = 'cloudflare-staging';
+export const BOOTSTRAP_ENVIRONMENT = RELEASE_ENVIRONMENT;
+export const ENVIRONMENT_NAME = BOOTSTRAP_ENVIRONMENT;
 export const WORKER_NAME = 'private-laptop-bridge-staging';
 export const DO_CLASS = 'PrivateLaptopBridge';
+export const BOOTSTRAP_WORKER_ID_VARIABLE = 'CF_BRIDGE_WORKER_ID';
+export const BRIDGE_HOST = 'laptop-bridge-staging.security.cab';
 const PAGE_SIZE = 100;
 const ZONE_PAGE_SIZE = 50;
 const HASH = /^[a-f0-9]{64}$/;
@@ -28,29 +32,42 @@ function parseIds(value, label) {
   return normalized;
 }
 
-function parseReviewerIds(value) {
-  let ids;
-  try { ids = typeof value === 'string' ? JSON.parse(value) : value; }
+function parseReviewerIdentities(value) {
+  let reviewers;
+  try { reviewers = typeof value === 'string' ? JSON.parse(value) : value; }
   catch { fail('expected independent reviewer IDs are invalid'); }
-  if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => !(Number.isInteger(id) && id > 0) && !(typeof id === 'string' && /^[1-9][0-9]{0,19}$/.test(id)))) {
-    fail('expected independent reviewer IDs are missing or invalid');
+  if (!Array.isArray(reviewers) || reviewers.length === 0 || reviewers.some(item =>
+    !item || !['User', 'Team'].includes(item.type) || !Number.isSafeInteger(item.id) || item.id <= 0)) {
+    fail('expected typed independent reviewer IDs are missing or invalid');
   }
-  const normalized = ids.map(String).sort();
-  if (new Set(normalized).size !== normalized.length) fail('expected independent reviewer IDs contain duplicates');
+  const normalized = reviewers.map(item => `${item.type}:${item.id}`).sort();
+  if (new Set(normalized).size !== normalized.length) fail('expected typed independent reviewer IDs contain duplicates');
   return normalized;
 }
 
-export function verifyEnvironmentProtection({environment, branchPolicies, expectedReviewerIds}) {
-  if (!environment || environment.name !== ENVIRONMENT_NAME || !Array.isArray(environment.protection_rules)) {
+export function verifyEnvironmentProtection({environment, branchPolicies, expectedReviewerIds, expectedEnvironmentName = ENVIRONMENT_NAME, dispatcherId}) {
+  if (!environment || environment.name !== expectedEnvironmentName || !Array.isArray(environment.protection_rules)) {
     fail('the exact protected staging environment is absent or unverifiable');
   }
-  const expected = parseReviewerIds(expectedReviewerIds);
+  if (environment.can_admins_bypass !== false) fail('environment API did not prove administrator bypass is disabled');
+  const expected = parseReviewerIdentities(expectedReviewerIds);
+  if (!Number.isSafeInteger(dispatcherId) || dispatcherId <= 0) fail('workflow dispatcher identity is unavailable');
+  if (expected.length === 1 && expected[0] === `User:${dispatcherId}`) {
+    fail('the workflow dispatcher is the only eligible environment reviewer');
+  }
   const rules = environment.protection_rules;
   const reviewers = rules.filter(rule => rule?.type === 'required_reviewers');
   if (reviewers.length !== 1 || reviewers[0].prevent_self_review !== true || !Array.isArray(reviewers[0].reviewers)) {
     fail('staging environment reviewer protection is absent or allows self-review');
   }
-  const actual = reviewers[0].reviewers.map(item => item?.reviewer?.id).filter(Number.isInteger).map(String).sort();
+  const actual = reviewers[0].reviewers.map(item => {
+    const type = item?.type;
+    const id = item?.reviewer?.id;
+    if (!['User', 'Team'].includes(type) || !Number.isSafeInteger(id) || id <= 0) {
+      fail('environment API did not return typed reviewer identities');
+    }
+    return `${type}:${id}`;
+  }).sort();
   if (actual.length !== expected.length || actual.some((id, index) => id !== expected[index])) {
     fail('staging environment reviewers do not match the independently approved set');
   }
@@ -59,10 +76,11 @@ export function verifyEnvironmentProtection({environment, branchPolicies, expect
     fail('staging environment is not restricted by an explicit branch policy');
   }
   const rows = branchPolicies?.branch_policies;
-  if (!Array.isArray(rows) || branchPolicies.total_count !== rows.length || rows.length !== 1 || rows[0]?.name !== 'main') {
-    fail('staging environment deployment policy must allow only main');
+  if (!Array.isArray(rows) || branchPolicies.total_count !== rows.length || rows.length !== 1 ||
+      rows[0]?.name !== 'main' || rows[0]?.type !== 'branch') {
+    fail('staging environment API must prove exactly one branch-only main deployment rule');
   }
-  return {environment: ENVIRONMENT_NAME};
+  return {environment: expectedEnvironmentName};
 }
 
 async function apiRequest(fetchImpl, url, token) {
@@ -175,17 +193,22 @@ async function readRoutes(fetchImpl, accountId, token, zones) {
   return routes;
 }
 
-function verifyVersion(version, namespaceId) {
-  if (!version || !Array.isArray(version.resources?.bindings) || !version.exports || typeof version.exports !== 'object') {
-    fail('deployed Worker version lacks independently readable bindings or declarative exports');
+function verifyVersion(version, namespaceId, expectedVersionId) {
+  if (!version || version.id !== expectedVersionId || !Array.isArray(version.bindings) || !version.env ||
+      typeof version.env !== 'object' || Array.isArray(version.env) || !version.exports ||
+      typeof version.exports !== 'object' || !Array.isArray(version.urls)) {
+    fail('exact Beta Worker version lacks its documented ID, bindings, env, exports, or URL fields');
   }
   const expectedVars = {
     ENABLED: 'false', GATEWAY_HOST: 'private-bridge-staging.invalid', GATEWAY_ACCOUNT_ID: '',
-    GATEWAY_POLICY_ID: '', GATEWAY_IDENTITY_EMAIL: '', GATEWAY_POSTURE_ID: '', BRIDGE_REGISTRY: '',
+    GATEWAY_POLICY_ID: '', GATEWAY_IDENTITY_EMAIL: '', GATEWAY_POSTURE_ID: '',
+    BRIDGE_HOST, ACCESS_ISSUER: process.env.CF_BRIDGE_ACCESS_ISSUER ?? '',
+    ACCESS_AUDIENCE: process.env.CF_BRIDGE_ACCESS_AUDIENCE ?? '', BRIDGE_REGISTRY: '',
   };
-  const bindings = version.resources.bindings;
-  const vars = bindings.filter(binding => binding?.type === 'plain_text');
-  const actualVars = Object.fromEntries(vars.map(binding => [binding.name, binding.text ?? binding.value]));
+  const bindings = version.bindings;
+  if (bindings.some(binding => !binding || typeof binding.name !== 'string') ||
+      new Set(bindings.map(binding => binding.name)).size !== bindings.length) fail('Beta version bindings are malformed or duplicated');
+  const actualVars = Object.fromEntries(bindings.filter(binding => binding?.type === 'plain_text').map(binding => [binding.name, binding.text]));
   if (JSON.stringify(Object.entries(actualVars).sort()) !== JSON.stringify(Object.entries(expectedVars).sort())) {
     fail('deployed Worker variables are not the fixed disabled configuration');
   }
@@ -194,33 +217,82 @@ function verifyVersion(version, namespaceId) {
       durable[0]?.class_name !== DO_CLASS || durable[0]?.namespace_id !== namespaceId) {
     fail('deployed Worker has an unexpected binding or the BRIDGE namespace differs');
   }
+  const expectedNames = [...Object.keys(expectedVars), 'BRIDGE'].sort();
+  if (bindings.length !== expectedNames.length || bindings.map(binding => binding.name).sort().some((name, index) => name !== expectedNames[index]) ||
+      Object.keys(version.env).sort().some((name, index) => name !== expectedNames[index]) || Object.keys(version.env).length !== expectedNames.length) {
+    fail('Beta version bindings and env aliases do not have the exact expected names');
+  }
+  for (const binding of bindings) {
+    const alias = version.env[binding.name];
+    if (!alias || alias.type !== binding.type) fail('Beta version env alias disagrees with its binding');
+    for (const [key, value] of Object.entries(alias)) {
+      if (key === 'name' || binding[key] !== value) fail('Beta version env alias carries conflicting binding data');
+    }
+    if (binding.type === 'plain_text' && Object.hasOwn(alias, 'text') && alias.text !== binding.text) {
+      fail('Beta version env text differs from the binding value');
+    }
+  }
   const exportValue = version.exports[DO_CLASS];
   const exportKeys = Object.keys(version.exports).sort();
   if (exportKeys.length !== 1 || exportKeys[0] !== DO_CLASS || exportValue?.type !== 'durable-object' ||
       exportValue?.storage !== 'sqlite' || (exportValue?.state !== undefined && exportValue.state !== 'created')) {
     fail('deployed Worker does not declare exactly the expected SQLite export');
   }
-  if (version.limits?.cpu_ms !== 10 || version.hasPreview === true) fail('deployed Worker limits or preview state differ from the disabled build');
+  if (version.limits?.cpu_ms !== 10 || Object.keys(version.limits ?? {}).some(key => key !== 'cpu_ms')) fail('deployed Worker CPU limits differ from the disabled build');
+  if (version.urls.length !== 0) fail('exact serving version advertises a routable URL');
   return true;
 }
 
 function verifyWorkerMetadata(worker) {
   if (!worker || worker.name !== WORKER_NAME || !ID.test(worker.id ?? '') || worker.logpush !== false ||
-      worker.observability?.enabled !== false || !worker.references || !Array.isArray(worker.references.domains) ||
-      worker.references.domains.length !== 0) fail('Worker metadata is missing or exposes unexpected domains or telemetry');
+      worker.observability?.enabled !== false || !worker.references || !Array.isArray(worker.references.domains)) {
+    fail('Worker metadata is missing or its domain or telemetry state is unverifiable');
+  }
   return worker.id;
 }
 
-async function readSnapshot({accountId, token, expectedZoneIds, fetchImpl = fetch}) {
+function exactBridgeDomains(domains, {deployed, zoneIds}) {
+  if (!Array.isArray(domains)) fail('Worker domain inventory is unavailable');
+  const related = domains.filter(domain => domain?.service === WORKER_NAME || domain?.hostname === BRIDGE_HOST);
+  if (!deployed) {
+    if (related.length !== 0) fail('empty Worker already has a custom domain or hostname collision');
+    return true;
+  }
+  if (related.length !== 1) fail('deployed Worker must have exactly one approved custom hostname');
+  const [domain] = related;
+  if (domain?.service !== WORKER_NAME || domain?.hostname !== BRIDGE_HOST || domain.enabled !== true ||
+      domain.previews_enabled !== false || !ID.test(domain.zone_id ?? '') ||
+      !zoneIds.includes(domain.zone_id.toLowerCase())) {
+    fail('Worker custom hostname, zone, or preview state is not the exact approved Access host');
+  }
+  return true;
+}
+
+function verifyNoGatewayAssociation(rules, workerId = null) {
+  if (!Array.isArray(rules)) fail('account Gateway rule inventory is unavailable');
+  for (const rule of rules) {
+    if (!rule || typeof rule.action !== 'string' || typeof rule.enabled !== 'boolean') fail('account Gateway rule inventory contains an unverifiable entry');
+    if (rule.action !== 'forward') continue;
+    const worker = rule.rule_settings?.forward?.worker_id;
+    if (typeof worker !== 'string' || worker.length === 0) fail('Gateway Forward rule lacks a verifiable Worker association');
+    if (worker === WORKER_NAME || (workerId && worker === workerId)) fail('an account Gateway Forward rule targets the fixed staging Worker');
+  }
+  return true;
+}
+
+async function readSnapshot({accountId, token, gatewayToken, expectedZoneIds, fetchImpl = fetch}) {
   const zones = await readZones(fetchImpl, accountId, token, expectedZoneIds);
   await readRoutes(fetchImpl, accountId, token, zones);
+  const gatewayRules = await listPages(fetchImpl, accountId, gatewayToken, '/gateway/rules', {pageSize: 100});
+  verifyNoGatewayAssociation(gatewayRules);
   const allDomains = await listPages(fetchImpl, accountId, token, '/workers/domains');
-  if (allDomains.some(domain => domain?.service === WORKER_NAME)) fail('fixed staging Worker has an attached domain');
   const allNamespaces = await listPages(fetchImpl, accountId, token, '/workers/durable_objects/namespaces', {pageSize: 1000});
   const namespaces = allNamespaces.filter(item => item?.script === WORKER_NAME);
   const worker = await cfRequest(fetchImpl, accountId, token, `/workers/workers/${WORKER_NAME}`, {allowMissingWorker: true});
-  if (!worker) return {worker: null, namespaces, domains: [], zoneIds: zones.map(zone => zone.id.toLowerCase()).sort()};
+  if (!worker) return {worker: null, namespaces, domains: allDomains, gatewayRules,
+    zoneIds: zones.map(zone => zone.id.toLowerCase()).sort()};
   const workerId = verifyWorkerMetadata(worker.result);
+  verifyNoGatewayAssociation(gatewayRules, workerId);
   const subdomain = await cfRequest(fetchImpl, accountId, token, `/workers/scripts/${WORKER_NAME}/subdomain`);
   if (subdomain.result?.enabled !== false || subdomain.result?.previews_enabled !== false) fail('Worker subdomain or preview ingress is enabled');
   const settings = await cfRequest(fetchImpl, accountId, token, `/workers/scripts/${WORKER_NAME}/script-settings`);
@@ -230,66 +302,88 @@ async function readSnapshot({accountId, token, expectedZoneIds, fetchImpl = fetc
   }
   const schedules = await cfRequest(fetchImpl, accountId, token, `/workers/scripts/${WORKER_NAME}/schedules`);
   if (!Array.isArray(schedules.result?.schedules) || schedules.result.schedules.length !== 0) fail('Worker schedules are missing or non-empty');
-  const versions = await listPages(fetchImpl, accountId, token, `/workers/workers/${workerId}/versions`);
   const deployResponse = await cfRequest(fetchImpl, accountId, token, `/workers/scripts/${WORKER_NAME}/deployments?page=1&per_page=100`, { });
   const deployments = deployResponse.result?.deployments;
   if (!Array.isArray(deployments)) fail('Worker deployment readback is missing');
+  if (deployments.length === 0) return {worker: worker.result, workerId, subdomain: subdomain.result, settings: settings.result,
+    schedules: schedules.result.schedules, namespaces, domains: allDomains, gatewayRules, version: null, deployments,
+    zoneIds: zones.map(zone => zone.id.toLowerCase()).sort()};
+  const latest = deployments[0];
+  const servingVersions = latest?.versions;
+  if (!Array.isArray(servingVersions) || servingVersions.length !== 1 || !UUID.test(servingVersions[0]?.version_id ?? '') ||
+      servingVersions[0]?.percentage !== 100) fail('latest deployment does not identify one exact 100 percent version');
+  const exactVersionId = servingVersions[0].version_id;
+  const exactVersion = await cfRequest(fetchImpl, accountId, token,
+    `/workers/workers/${workerId}/versions/${encodeURIComponent(exactVersionId)}`);
+  if (exactVersion.result?.id !== exactVersionId) fail('Beta Worker version GET returned a different version ID');
   return {worker: worker.result, workerId, subdomain: subdomain.result, settings: settings.result,
-    schedules: schedules.result.schedules, namespaces, domains: [], versions, deployments,
+    schedules: schedules.result.schedules, namespaces, domains: allDomains, gatewayRules, version: exactVersion.result, deployments,
     zoneIds: zones.map(zone => zone.id.toLowerCase()).sort()};
 }
 
-export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha}) {
+export function verifyProviderState(snapshot, {phase, expectedZoneIds, sourceSha, expectedWorkerId}) {
   if (!['preflight', 'postflight'].includes(phase)) fail('provider verification phase is invalid');
   const expected = parseIds(expectedZoneIds, 'approved zone inventory');
   if (!snapshot || !Array.isArray(snapshot.namespaces) || !Array.isArray(snapshot.domains) || !Array.isArray(snapshot.zoneIds) ||
       snapshot.zoneIds.length !== expected.length || snapshot.zoneIds.some((id, index) => id !== expected[index])) fail('provider inventory snapshot is incomplete or has the wrong account zones');
-  if (!snapshot.worker) {
-    if (phase === 'postflight') fail('Worker is still absent after pinned deploy');
-    if (snapshot.namespaces.length !== 0 || snapshot.domains.length !== 0) fail('an orphan namespace or domain exists for the absent Worker');
+  verifyNoGatewayAssociation(snapshot.gatewayRules, snapshot.worker?.id ?? null);
+  if (!snapshot.worker) fail('the fixed Worker must be created locally by an owner before CI may proceed');
+  const id = verifyWorkerMetadata(snapshot.worker);
+  if (!ID.test(expectedWorkerId ?? '') || id !== expectedWorkerId.toLowerCase()) fail('Worker ID differs from the independently pinned environment identity');
+  if (Array.isArray(snapshot.deployments) && snapshot.deployments.length === 0) {
+    exactBridgeDomains(snapshot.domains, {deployed: false, zoneIds: expected});
+    if (phase !== 'preflight' || snapshot.namespaces.length !== 0 ||
+        snapshot.subdomain?.enabled !== false || snapshot.subdomain?.previews_enabled !== false ||
+        !Array.isArray(snapshot.schedules) || snapshot.schedules.length !== 0 || !snapshot.settings ||
+        snapshot.settings.logpush !== false || snapshot.settings.observability?.enabled !== false ||
+        !Array.isArray(snapshot.settings.tail_consumers) || snapshot.settings.tail_consumers.length !== 0) {
+      fail('only the exact empty disabled locally created Worker may enter first CI deployment');
+    }
     return 'deploy';
   }
-  const id = verifyWorkerMetadata(snapshot.worker);
   if (snapshot.workerId !== id || snapshot.subdomain?.enabled !== false || snapshot.subdomain?.previews_enabled !== false ||
-      !Array.isArray(snapshot.schedules) || snapshot.schedules.length !== 0 || !Array.isArray(snapshot.versions) ||
+      !Array.isArray(snapshot.schedules) || snapshot.schedules.length !== 0 || !snapshot.version ||
       !Array.isArray(snapshot.deployments) || snapshot.deployments.length === 0 || snapshot.settings?.logpush !== false ||
       snapshot.settings?.observability?.enabled !== false || !Array.isArray(snapshot.settings?.tail_consumers) || snapshot.settings.tail_consumers.length !== 0) {
     fail('existing Worker is not fully verified as disabled and serving safely');
   }
-  if (snapshot.domains.length !== 0 || snapshot.namespaces.length !== 1) fail('existing Worker domain or SQLite namespace inventory is unexpected');
+  exactBridgeDomains(snapshot.domains, {deployed: true, zoneIds: expected});
+  if (snapshot.namespaces.length !== 1) fail('existing Worker SQLite namespace inventory is unexpected');
   const namespace = snapshot.namespaces[0];
   if (!ID.test(namespace?.id ?? '') && !UUID.test(namespace?.id ?? '')) fail('Durable Object namespace ID is invalid');
   if (namespace.script !== WORKER_NAME || namespace.class !== DO_CLASS || namespace.use_sqlite !== true) fail('Durable Object namespace owner, class, or SQLite mode is unexpected');
   const deployment = snapshot.deployments[0];
   if (!deployment || !UUID.test(deployment.id ?? '') || !Array.isArray(deployment.versions) || deployment.versions.length !== 1 ||
       deployment.versions[0]?.percentage !== 100 || !UUID.test(deployment.versions[0]?.version_id ?? '')) fail('latest serving deployment is not an exact 100 percent single-version deployment');
-  const versions = snapshot.versions.filter(version => version.id === deployment.versions[0].version_id);
-  if (versions.length !== 1) fail('latest serving deployment version is absent or ambiguous');
-  verifyVersion(versions[0], namespace.id);
-  if (!/^[a-f0-9]{40}$/.test(sourceSha ?? '') || versions[0].annotations?.['workers/tag'] !== sourceSha) {
+  if (!snapshot.version || snapshot.version.id !== deployment.versions[0].version_id) fail('exact Beta Worker version does not match the latest deployment UUID');
+  verifyVersion(snapshot.version, namespace.id, deployment.versions[0].version_id);
+  if (!/^[a-f0-9]{40}$/.test(sourceSha ?? '') || snapshot.version.annotations?.['workers/tag'] !== sourceSha) {
     fail('latest serving version is not tagged to this exact reviewed source SHA');
   }
   return phase === 'preflight' ? 'already-ready' : 'verified';
 }
 
-export async function verifyBootstrapPreflight({accountId, readToken, expectedZoneIds, sourceSha, fetchImpl = fetch}) {
-  if (!ID.test(accountId ?? '') || typeof readToken !== 'string' || readToken.length < 20) fail('protected bootstrap account or read-only credential is missing');
+export async function verifyBootstrapPreflight({accountId, workerId, readToken, gatewayToken, expectedZoneIds, sourceSha, fetchImpl = fetch}) {
+  if (!ID.test(accountId ?? '') || typeof readToken !== 'string' || readToken.length < 20 ||
+      typeof gatewayToken !== 'string' || gatewayToken.length < 20 || readToken === gatewayToken) fail('protected bootstrap account or separate read-only credentials are missing');
   const zones = parseIds(expectedZoneIds, 'approved zone inventory');
-  const snapshot = await readSnapshot({accountId, token: readToken, expectedZoneIds: zones, fetchImpl});
-  return verifyProviderState(snapshot, {phase: 'preflight', expectedZoneIds: zones, sourceSha});
+  const snapshot = await readSnapshot({accountId, token: readToken, gatewayToken, expectedZoneIds: zones, fetchImpl});
+  return verifyProviderState(snapshot, {phase: 'preflight', expectedZoneIds: zones, sourceSha, expectedWorkerId: workerId});
 }
 
-export function verifyDistinctWriteCredential(readToken, writeToken) {
+export function verifyDistinctWriteCredential(readToken, gatewayToken, writeToken) {
   if (typeof readToken !== 'string' || readToken.length < 20 || typeof writeToken !== 'string' ||
-      writeToken.length < 20 || readToken === writeToken) fail('protected read and write credentials must be separate');
+      writeToken.length < 20 || typeof gatewayToken !== 'string' || gatewayToken.length < 20 ||
+      new Set([readToken, gatewayToken, writeToken]).size !== 3) fail('protected Worker-read, Gateway-read, and write credentials must be separate');
   return true;
 }
 
-export async function verifyBootstrapPostflight({accountId, readToken, expectedZoneIds, sourceSha, fetchImpl = fetch}) {
-  if (!ID.test(accountId ?? '') || typeof readToken !== 'string' || readToken.length < 20) fail('protected read-only provider identity is missing');
+export async function verifyBootstrapPostflight({accountId, workerId, readToken, gatewayToken, expectedZoneIds, sourceSha, fetchImpl = fetch}) {
+  if (!ID.test(accountId ?? '') || typeof readToken !== 'string' || readToken.length < 20 ||
+      typeof gatewayToken !== 'string' || gatewayToken.length < 20 || readToken === gatewayToken) fail('protected read-only provider identities are missing');
   const zones = parseIds(expectedZoneIds, 'approved zone inventory');
-  const snapshot = await readSnapshot({accountId, token: readToken, expectedZoneIds: zones, fetchImpl});
-  return verifyProviderState(snapshot, {phase: 'postflight', expectedZoneIds: zones, sourceSha});
+  const snapshot = await readSnapshot({accountId, token: readToken, gatewayToken, expectedZoneIds: zones, fetchImpl});
+  return verifyProviderState(snapshot, {phase: 'postflight', expectedZoneIds: zones, sourceSha, expectedWorkerId: workerId});
 }
 
 export async function validateLocalBuild({buildOutput, mode = 'bridge'}) {
@@ -304,14 +398,20 @@ export async function validateLocalBuild({buildOutput, mode = 'bridge'}) {
   return true;
 }
 
-async function githubEnvironmentGate() {
+async function githubEnvironmentGate(target) {
+  const targets = {
+    bootstrap: {name: BOOTSTRAP_ENVIRONMENT, reviewersVariable: 'CF_BRIDGE_RELEASE_REVIEWER_IDS'},
+    release: {name: RELEASE_ENVIRONMENT, reviewersVariable: 'CF_BRIDGE_RELEASE_REVIEWER_IDS'},
+  };
+  const selected = targets[target];
+  if (!selected) fail('environment gate target is invalid');
   const token = process.env.GH_TOKEN;
   const api = process.env.GITHUB_API_URL;
   if (!token || !api || process.env.GITHUB_REPOSITORY !== GITHUB_REPOSITORY || process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
       process.env.GITHUB_REF !== 'refs/heads/main' || !/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA ?? '')) {
     fail('bootstrap dispatch is not from the fixed repository and main source');
   }
-  const base = `${api.replace(/\/$/, '')}/repos/${GITHUB_REPOSITORY}/environments/${ENVIRONMENT_NAME}`;
+  const base = `${api.replace(/\/$/, '')}/repos/${GITHUB_REPOSITORY}/environments/${encodeURIComponent(selected.name)}`;
   const headers = {authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28'};
   const envResponse = await fetch(`${base}`, {headers, redirect: 'error', signal: AbortSignal.timeout(15_000)});
   if (!envResponse.ok) fail('protected bootstrap environment does not exist or cannot be read; deployment job was not admitted');
@@ -319,8 +419,9 @@ async function githubEnvironmentGate() {
   const policyResponse = await fetch(`${base}/deployment-branch-policies?per_page=100&page=1`, {headers, redirect: 'error', signal: AbortSignal.timeout(15_000)});
   if (!policyResponse.ok) fail('protected bootstrap branch policy cannot be read');
   const policies = await policyResponse.json();
-  const expected = process.env.CF_BRIDGE_BOOTSTRAP_REVIEWER_IDS;
-  const result = verifyEnvironmentProtection({environment, branchPolicies: policies, expectedReviewerIds: expected});
+  const expected = process.env[selected.reviewersVariable];
+  const result = verifyEnvironmentProtection({environment, branchPolicies: policies, expectedReviewerIds: expected,
+    expectedEnvironmentName: selected.name, dispatcherId: Number(process.env.GITHUB_ACTOR_ID)});
   const outputPath = process.env.GITHUB_OUTPUT;
   if (!outputPath) fail('workflow output channel is unavailable');
   await writeFile(outputPath, `environment=${result.environment}\n`, {flag: 'a', mode: 0o600});
@@ -330,11 +431,13 @@ async function githubEnvironmentGate() {
 async function providerCheck(phase) {
   const path = process.env.GITHUB_OUTPUT;
   const result = phase === 'preflight'
-    ? await verifyBootstrapPreflight({accountId: process.env.CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID,
-      readToken: process.env.CF_BRIDGE_BOOTSTRAP_READ_TOKEN,
-      expectedZoneIds: process.env.CF_BRIDGE_BOOTSTRAP_ZONE_IDS, sourceSha: process.env.GITHUB_SHA})
-    : await verifyBootstrapPostflight({accountId: process.env.CF_BRIDGE_BOOTSTRAP_ACCOUNT_ID,
-      readToken: process.env.CF_BRIDGE_BOOTSTRAP_READ_TOKEN, expectedZoneIds: process.env.CF_BRIDGE_BOOTSTRAP_ZONE_IDS,
+    ? await verifyBootstrapPreflight({accountId: process.env.CF_BRIDGE_ACCOUNT_ID, workerId: process.env.CF_BRIDGE_WORKER_ID,
+      readToken: process.env.CF_BRIDGE_READ_TOKEN,
+      gatewayToken: process.env.CF_BRIDGE_GATEWAY_READ_TOKEN,
+      expectedZoneIds: process.env.CF_BRIDGE_ZONE_IDS, sourceSha: process.env.GITHUB_SHA})
+    : await verifyBootstrapPostflight({accountId: process.env.CF_BRIDGE_ACCOUNT_ID, workerId: process.env.CF_BRIDGE_WORKER_ID,
+      readToken: process.env.CF_BRIDGE_READ_TOKEN, gatewayToken: process.env.CF_BRIDGE_GATEWAY_READ_TOKEN,
+      expectedZoneIds: process.env.CF_BRIDGE_ZONE_IDS,
       sourceSha: process.env.GITHUB_SHA});
   if (phase === 'preflight') {
     if (!path) fail('workflow output channel is unavailable');
@@ -345,16 +448,18 @@ async function providerCheck(phase) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (args.length !== 0) fail(`usage: staging-bootstrap.mjs <github-environment|preflight|postflight|assert-distinct-credentials|validate-build>`);
-  if (command === 'github-environment') await githubEnvironmentGate();
+  if (args.length !== 0) fail(`usage: staging-bootstrap.mjs <github-environment-bootstrap|github-environment-release|preflight|postflight|assert-distinct-credentials|validate-build>`);
+  if (command === 'github-environment-bootstrap') await githubEnvironmentGate('bootstrap');
+  else if (command === 'github-environment-release') await githubEnvironmentGate('release');
   else if (command === 'preflight') await providerCheck('preflight');
   else if (command === 'postflight') await providerCheck('postflight');
   else if (command === 'assert-distinct-credentials') {
-    verifyDistinctWriteCredential(process.env.CF_BRIDGE_BOOTSTRAP_READ_TOKEN, process.env.CF_BRIDGE_BOOTSTRAP_WRITE_TOKEN);
+    verifyDistinctWriteCredential(process.env.CF_BRIDGE_READ_TOKEN, process.env.CF_BRIDGE_GATEWAY_READ_TOKEN,
+      process.env.CF_BRIDGE_API_TOKEN);
     console.log('separate read and write credentials verified');
   }
   else if (command === 'validate-build') await validateLocalBuild({buildOutput: process.env.BUILD_OUTPUT ?? '.cloudflare/output/v1'});
-  else fail('usage: staging-bootstrap.mjs <github-environment|preflight|postflight|assert-distinct-credentials|validate-build>');
+  else fail('usage: staging-bootstrap.mjs <github-environment-bootstrap|github-environment-release|preflight|postflight|assert-distinct-credentials|validate-build>');
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {

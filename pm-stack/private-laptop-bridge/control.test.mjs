@@ -20,17 +20,17 @@ async function setup() {
   const keys = {}, principals = [];
   for (const [id, role] of [['alice', 'caller'], ['bob', 'caller'], ['laptop', 'device']]) {
     keys[id] = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
-    principals.push({id, role, device: 'amd', publicKey: b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)), scopes: [...operations], issuedAt: Date.now() - 1000, expiresAt: Date.now() + 1800000, revoked: false});
+    principals.push({id, role, device: 'amd', publicKey: b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)), accessClientId:`synthetic-${id}-client`,scopes: [...operations], issuedAt: Date.now() - 1000, expiresAt: Date.now() + 1800000, revoked: false});
   }
   const registry = {audience: 'offline-test', principals};
   const env = {ENABLED: 'true', BRIDGE_REGISTRY: JSON.stringify(registry)};
   const storage = new Storage(); let object = new PrivateLaptopBridge({storage}, env);
   env.BRIDGE = {idFromName: x => x, get: () => ({fetch: req => object.fetch(req)})};
-  const request = (id, path, body, options = {}) => signRequest({origin: 'https://bridge.invalid', audience: registry.audience, principal: id, privateKey: keys[id].privateKey, path, body, ...options});
-  const call = async (id, path, body, options) => { const r = await worker.fetch(await request(id, path, body, options), env); return {status: r.status, body: await r.json()}; };
+  const request = (id, path, body, options = {}) => signRequest({origin: 'https://laptop-bridge-staging.security.cab', audience: registry.audience, principal: id, privateKey: keys[id].privateKey, path, body, ...options});
+  const call = async (id, path, body, options) => { const r = await object.fetch(await request(id, path, body, options)); return {status: r.status, body: await r.json()}; };
   const update = fn => { fn(registry); env.BRIDGE_REGISTRY = JSON.stringify(registry); };
   const start = (id = 'alice', operation = 'laptop.health', args = {}) => call(id, '/v1/call', {device: 'amd', operation, args});
-  return {env, storage, request, call, update, start, restart: () => { object = new PrivateLaptopBridge({storage}, env); }, alarm: () => object.alarm()};
+  return {env, storage, request, call, update, start, get object(){return object;}, restart: () => { object = new PrivateLaptopBridge({storage}, env); }, alarm: () => object.alarm()};
 }
 const okHealth = {ok: true, data: {queueBroker: 'up'}};
 
@@ -50,9 +50,9 @@ test('signature binds audience, principal, exact method/path/body; unknown or ex
   assert.equal((await h.start('alice')).status, 202); // positive control
   for (const options of [{audience: 'other'}, {now: Date.now() - 31000}, {now: Date.now() + 31000}]) assert.equal((await h.call('alice', '/v1/poll', {}, options)).status, 401);
   const req = await h.request('alice', '/v1/poll', {});
-  assert.equal((await worker.fetch(new Request(req.url, {method: 'POST', headers: req.headers, body: '{"extra":1}'}), h.env)).status, 401);
+  assert.equal((await h.object.fetch(new Request(req.url, {method: 'POST', headers: req.headers, body: '{"extra":1}'}))).status, 401);
   const r2 = await h.request('alice', '/v1/poll', {});
-  assert.equal((await worker.fetch(new Request('https://bridge.invalid/v1/read', {method: 'POST', headers: r2.headers, body: '{}'}), h.env)).status, 401);
+  assert.equal((await h.object.fetch(new Request('https://laptop-bridge-staging.security.cab/v1/read', {method: 'POST', headers: r2.headers, body: '{}'}))).status, 401);
   h.update(r => { r.principals[0].revoked = true; });
   assert.equal((await h.call('alice', '/v1/poll', {})).status, 401);
 });
@@ -69,9 +69,9 @@ test('role, scope, operation schema and forbidden argument corpus fail closed', 
 
 test('replay is durable, concurrent duplicates execute once, rejected requests consume quota', async () => {
   const h = await setup(); const nonce = 'fixed-nonce'; const req = await h.request('alice', '/v1/call', {device: 'amd', operation: 'laptop.health', args: {}}, {nonce});
-  const results = await Promise.all(Array.from({length: 12}, () => worker.fetch(req.clone(), h.env)));
+  const results = await Promise.all(Array.from({length: 12}, () => h.object.fetch(req.clone())));
   assert.equal(results.filter(r => r.status === 202).length, 1); assert.equal(results.filter(r => r.status === 409).length, 11);
-  h.restart(); assert.equal((await worker.fetch(req.clone(), h.env)).status, 409);
+  h.restart(); assert.equal((await h.object.fetch(req.clone())).status, 409);
   for (let n = 13; n < 60; n++) assert.equal((await h.call('alice', '/v1/poll', {})).status, 403);
   assert.equal((await h.call('alice', '/v1/poll', {})).status, 429);
   assert.equal(Object.keys(h.storage.value.jobs).length, 1);
@@ -146,13 +146,13 @@ test('body size, streaming deadline and header limits reject before dispatch', a
   await assert.rejects(boundedText(new ReadableStream({}), 8192, 5), /timeout/);
   const h = await setup();
   const large = await h.request('alice', '/v1/poll', {data: 'x'.repeat(8192)});
-  assert.equal((await worker.fetch(large, h.env)).status, 413);
+  assert.equal((await h.object.fetch(large)).status, 413);
   const req = await h.request('alice', '/v1/poll', {});
   req.headers.set('content-length', '90000000000');
-  assert.equal((await worker.fetch(req, h.env)).status, 413);
+  assert.equal((await h.object.fetch(req)).status, 413);
   const bad = await h.request('alice', '/v1/poll', {});
   bad.headers.set('x-bridge-signature', 'x'.repeat(9000));
-  assert.equal((await worker.fetch(bad, h.env)).status, 401);
+  assert.equal((await h.object.fetch(bad)).status, 401);
   assert.equal(h.storage.value, undefined);
 });
 

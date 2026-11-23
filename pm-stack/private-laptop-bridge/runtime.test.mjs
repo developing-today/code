@@ -15,8 +15,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = here;
 const clientSource = here;
 const { signRequest, b64url, operations } = await import(pathToFileURL(join(source, 'protocol.mjs')));
-const origin = 'https://private-bridge.invalid';
+const origin = 'https://laptop-bridge-staging.security.cab';
 const audience = 'offline-acceptance';
+const testAccess = {accessClientId:'synthetic-client-id',accessClientSecret:'synthetic-access-secret-that-is-never-live'};
 const result = { ok: true, data: { queueBroker: 'up' } };
 
 async function harness(t) {
@@ -26,7 +27,7 @@ async function harness(t) {
   const now = Date.now();
   for (const [id, role, device] of [['caller','caller','amd'], ['other','caller','amd'], ['device','device','amd'], ['wrong-device','device','other']]) {
     keys[id] = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
-    principals.push({ id, role, device, publicKey: b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)), scopes: [...operations], issuedAt: now - 1000, expiresAt: now + 120000, revoked: false });
+    principals.push({ id, role, device, publicKey: b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)), accessClientId:`access-${id}-client`, scopes: [...operations], issuedAt: now - 1000, expiresAt: now + 120000, revoked: false });
   }
   const registry = { audience, principals };
   let mf;
@@ -34,7 +35,7 @@ async function harness(t) {
     name: 'private-laptop-bridge-offline',
     host: '127.0.0.1',
     modules: true,
-    scriptPath: join(source, 'worker.mjs'),
+    scriptPath: join(source, 'runtime-test-entry.mjs'),
     modulesRules: [{ type: 'ESModule', include: ['**/*.mjs'] }],
     compatibilityDate: '2026-07-30',
     bindings: { ENABLED: 'true', BRIDGE_REGISTRY: JSON.stringify(registry) },
@@ -209,11 +210,11 @@ test('workerd: actual non-root laptop client completes each named read through W
   };
   const seen = [];
   const adapters = createAdapters({ readSnapshot: () => readQueueSnapshot(home), probe: () => queueBrokerAlive(home), diagnostics: () => samples['laptop.diagnostics'].data });
-  const client = createClient({ origin, audience, principal: 'device', privateKey: h.keys.device.privateKey, getuid: () => 1000,
+  const client = createClient({ origin, audience, principal: 'device', privateKey: h.keys.device.privateKey, accessClientId:'access-device-client',accessClientSecret:'synthetic-runtime-access-secret-never-live',getuid: () => 1000,
     fetch: async (request, init) => { assert.equal(init.redirect, 'error'); return h.dispatch(request); },
     execute: async (operation, args) => { seen.push({ operation, args }); return adapters(operation, args); },
   });
-  const caller = createCaller({ origin, audience, principal: 'caller', device: 'amd', privateKey: h.keys.caller.privateKey, fetch: request => h.dispatch(request) });
+  const caller = createCaller({ origin, audience, principal: 'caller', device: 'amd', privateKey: h.keys.caller.privateKey, accessClientId:'access-caller-client',accessClientSecret:'synthetic-runtime-access-secret-never-live',fetch: request => h.dispatch(request) });
   const methods = { 'fleet.queue.list': 'fleetQueueList', 'fleet.queue.health': 'fleetQueueHealth', 'laptop.health': 'laptopHealth', 'laptop.diagnostics': 'laptopDiagnostics' };
   for (const operation of operations) {
     const args = operation === 'fleet.queue.list' ? { limit: 1, status: 'queued' } : {};
@@ -229,7 +230,7 @@ test('workerd: actual non-root laptop client completes each named read through W
 test('caller SDK: validates before I/O and never retries uncertain submissions', async () => {
   const { createCaller, CallerError } = await import('./caller.mjs');
   const keys = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
-  const base = { origin, audience, principal: 'caller', device: 'amd', privateKey: keys.privateKey };
+  const base = { origin, audience, principal: 'caller', device: 'amd', privateKey: keys.privateKey, ...testAccess };
   assert.throws(() => createCaller({ ...base, origin: 'http://localhost' }), /invalid-config/);
   let calls = 0;
   const caller = createCaller({ ...base, fetch: async () => { calls++; throw new Error('secret-bearing transport detail'); } });
@@ -246,7 +247,7 @@ test('caller SDK: uncertain reads preserve accepted handle and malformed results
   const keys = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
   const handle = { id: 'test-id', operation: 'laptop.health', expiresAt: Date.now() + 60000, args: {} };
   let mode = 'failed';
-  const caller = createCaller({ origin, audience, principal: 'caller', device: 'amd', privateKey: keys.privateKey,
+  const caller = createCaller({ origin, audience, principal: 'caller', device: 'amd', privateKey: keys.privateKey,...testAccess,
     fetch: async () => {
       if (mode === 'failed') throw new Error('private stack trace');
       if (mode === 'extra') return Response.json({ status: 'complete', result: { ok: true, data: { queueBroker: 'up', raw: 'forbidden' } } });
@@ -264,7 +265,7 @@ test('caller SDK: uncertain reads preserve accepted handle and malformed results
 test('caller SDK: transport and streamed response deadlines are bounded', async () => {
   const { createCaller } = await import('./caller.mjs');
   const keys = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
-  const base = { origin, audience, principal: 'caller', device: 'amd', privateKey: keys.privateKey, requestTimeoutMs: 30 };
+  const base = { origin, audience, principal: 'caller', device: 'amd', privateKey: keys.privateKey, ...testAccess,requestTimeoutMs: 30 };
   const silent = createCaller({ ...base, fetch: async () => new Promise(() => {}) });
   await assert.rejects(silent.laptopHealth(), { code: 'submit-outcome-unknown' });
   let cancelled = false;

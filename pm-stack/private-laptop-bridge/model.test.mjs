@@ -26,7 +26,7 @@ test('model: 50 seeded call/poll/lease/replay/revoke/reconnect traces preserve a
   const keys = {}, definitions = [];
   for (const [id, role] of [['alice','caller'], ['bob','caller'], ['laptop','device']]) {
     keys[id] = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
-    definitions.push({id, role, device:'amd', publicKey:b64url(await crypto.subtle.exportKey('raw',keys[id].publicKey)), scopes:['laptop.health'], issuedAt:start-1000, expiresAt:start+3599000, revoked:false});
+    definitions.push({id, role, device:'amd', publicKey:b64url(await crypto.subtle.exportKey('raw',keys[id].publicKey)), accessClientId:`synthetic-${id}-client`,scopes:['laptop.health'], issuedAt:start-1000, expiresAt:start+3599000, revoked:false});
   }
   const coverage={accepted:0,leased:0,completed:0,staleLeaseDenied:0,replayDenied:0,completeRead:0,ownerDenied:0};
   for (let seed=1; seed<=50; seed++) {
@@ -40,8 +40,8 @@ test('model: 50 seeded call/poll/lease/replay/revoke/reconnect traces preserve a
     const revoked={alice:false,bob:false,laptop:false};
     const jobs=new Map(), leases=[], replays=[];
     let nextNonce=0;
-    const make=(principal,path,body)=>signRequest({origin:'https://bridge.invalid',audience:'model-test',principal,privateKey:keys[principal].privateKey,path,body,now,nonce:`seed-${seed}-${nextNonce++}`});
-    const send=async request=>{const response=await worker.fetch(request.clone(),env);return {status:response.status,body:await response.json()};};
+    const make=(principal,path,body)=>signRequest({origin:'https://laptop-bridge-staging.security.cab',audience:'model-test',principal,privateKey:keys[principal].privateKey,path,body,now,nonce:`seed-${seed}-${nextNonce++}`});
+    const send=async request=>{const response=await object.fetch(request.clone());return {status:response.status,body:await response.json()};};
     const gc=()=>{for(const [id,j] of jobs)if(j.retainUntil<=now)jobs.delete(id);};
     const live=j=>j && j.expiresAt>now && !revoked.alice;
     const check=(got,want,step,action)=>assert.equal(got,want,`seed=${seed} step=${step} action=${action}`);

@@ -27,9 +27,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify-release-environment:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.gate.outputs.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.0
+      - name: Validate fixed request and existing protected environment before assignment
+        id: gate
+        working-directory: pm-stack/private-laptop-bridge
+        env:
+          ACTION_KIND: ${{ inputs.action }}
+          WORKER_KIND: ${{ inputs.worker }}
+          UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_ACTOR_ID: ${{ github.actor_id }}
+          CF_BRIDGE_RELEASE_REVIEWER_IDS: ${{ vars.CF_BRIDGE_RELEASE_REVIEWER_IDS }}
+        run: |
+          set -euo pipefail
+          [[ "$ACTION_KIND" == upload && -z "$UPLOAD_RUN_ID" || "$ACTION_KIND" == promote && "$UPLOAD_RUN_ID" =~ ^[0-9]{1,20}$ ]]
+          [[ "$WORKER_KIND" == bridge ]]
+          node staging-bootstrap.mjs github-environment-release
+
   release:
-    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.worker == 'bridge'
-    environment: cloudflare-staging
+    needs: verify-release-environment
+    if: needs.verify-release-environment.result == 'success' && needs.verify-release-environment.outputs.environment == 'cloudflare-staging' && github.repository == 'developing-today/code' && github.ref == 'refs/heads/main' && inputs.worker == 'bridge'
+    environment:
+      name: ${{ needs.verify-release-environment.outputs.environment }}
+    env:
+      CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+      CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -159,6 +196,8 @@ jobs:
         working-directory: pm-stack/private-laptop-bridge
         env:
           TARGET_MODE: ${{ steps.target.outputs.mode }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
         run: |
           set -euo pipefail
           if [[ "$TARGET_MODE" == bridge ]]; then npx --no-install cf build --mode bridge; else npx --no-install cf build; fi
@@ -172,6 +211,8 @@ jobs:
         env:
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_MODE: ${{ steps.target.outputs.mode }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
           DRY_RUN_OUTPUT: ${{ runner.temp }}/cf-version-dry-run.txt
         run: |
           set -euo pipefail
@@ -187,6 +228,8 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_BRIDGE_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CF_BRIDGE_ACCOUNT_ID }}
+          CF_BRIDGE_ACCESS_ISSUER: ${{ vars.CF_BRIDGE_ACCESS_ISSUER }}
+          CF_BRIDGE_ACCESS_AUDIENCE: ${{ vars.CF_BRIDGE_ACCESS_AUDIENCE }}
           OWNER_PROOF_JSON: ${{ secrets.CF_BRIDGE_OWNER_PROOF_JSON }}
           TARGET_WORKER: ${{ steps.target.outputs.worker }}
           TARGET_ENV: ${{ steps.target.outputs.environment }}

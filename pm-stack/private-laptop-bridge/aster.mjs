@@ -63,7 +63,8 @@ export async function runAster(argv, { loadConfig = readConfig, importKey = impo
     requireNonRoot(getuid);
     const config = await loadConfig(command.config, getuid);
     const privateKey = await importKey(config.privateKey);
-    const caller = callerFactory({ origin: config.origin, audience: config.audience, principal: config.principal, privateKey, device: 'amd' });
+    const caller = callerFactory({ origin: config.origin, audience: config.audience, principal: config.principal, privateKey,
+      accessClientId: config.accessClientId, accessClientSecret: config.accessClientSecret, device: 'amd' });
     const deadline = signal ? AbortSignal.any([signal, AbortSignal.timeout(65000)]) : AbortSignal.timeout(65000);
     const options = { signal: deadline };
     const handle = command.command === 'queue-list'

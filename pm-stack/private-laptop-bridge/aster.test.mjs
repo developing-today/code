@@ -15,7 +15,8 @@ const samples = {
 };
 function fixtures(overrides = {}) {
   const stdout = [], stderr = [], activity = [];
-  const config = { origin: 'https://bridge.invalid', audience: 'aster-test', principal: 'aster-caller', privateKey: { sensitive: 'never-print' } };
+  const config = { origin: 'https://laptop-bridge-staging.security.cab', audience: 'aster-test', principal: 'aster-caller', privateKey: { sensitive: 'never-print' },
+    accessClientId:'synthetic-caller-client',accessClientSecret:'synthetic-access-secret-that-is-never-live' };
   const methods = { fleetQueueList: 'fleet.queue.list', fleetQueueHealth: 'fleet.queue.health', laptopHealth: 'laptop.health', laptopDiagnostics: 'laptop.diagnostics' };
   const caller = Object.fromEntries(Object.entries(methods).map(([method, operation]) => [method, async (...args) => {
     activity.push({ method, args });
@@ -124,16 +125,16 @@ test('Aster: real CLI -> signed caller SDK -> workerd -> device -> projected out
   const { createClient } = await import('./client.mjs');
   const { b64url, operations } = await import('./protocol.mjs');
   const { fileURLToPath } = await import('node:url');
-  const origin = 'https://aster-bridge.invalid', audience = 'aster-offline';
+  const origin = 'https://laptop-bridge-staging.security.cab', audience = 'aster-offline';
   const keys = {}, principals = [];
   const at = Date.now();
   for (const [id, role] of [['aster','caller'], ['amd-device','device']]) {
     keys[id] = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
-    principals.push({ id, role, device: 'amd', publicKey: b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)),
+    principals.push({ id, role, device: 'amd', publicKey: b64url(await crypto.subtle.exportKey('raw', keys[id].publicKey)),accessClientId:id==='aster'?'synthetic-caller-client':'synthetic-device-client',
       issuedAt: at - 1000, expiresAt: at + 120000, revoked: false, scopes: [...operations] });
   }
   const mf = new Miniflare({ name: 'aster-cli-offline', host: '127.0.0.1', modules: true,
-    scriptPath: fileURLToPath(new URL('./worker.mjs', import.meta.url)), modulesRules: [{ type: 'ESModule', include: ['**/*.mjs'] }],
+    scriptPath: fileURLToPath(new URL('./runtime-test-entry.mjs', import.meta.url)), modulesRules: [{ type: 'ESModule', include: ['**/*.mjs'] }],
     compatibilityDate: '2026-07-30', bindings: { ENABLED: 'true', BRIDGE_REGISTRY: JSON.stringify({ audience, principals }) },
     durableObjects: { BRIDGE: { className: 'PrivateLaptopBridge', useSQLite: true } }, durableObjectsPersist: false,
     outboundService: () => new Response('offline only', { status: 599 }),
@@ -145,9 +146,11 @@ test('Aster: real CLI -> signed caller SDK -> workerd -> device -> projected out
     return mf.dispatchFetch(request.url, { method: request.method, headers: Object.fromEntries(request.headers), body: await request.text() });
   };
   const device = createClient({ origin, audience, principal: 'amd-device', privateKey: keys['amd-device'].privateKey,
+    accessClientId:'synthetic-device-client',accessClientSecret:'synthetic-access-secret-that-is-never-live',
     getuid: () => 1000, fetch: dispatch, execute: async operation => samples[operation] });
   const jwk = await crypto.subtle.exportKey('jwk', keys.aster.privateKey);
-  const config = { origin, audience, principal: 'aster', privateKey: Object.fromEntries(['kty','crv','x','d'].map(k => [k,jwk[k]])) };
+  const config = { origin, audience, principal: 'aster', privateKey: Object.fromEntries(['kty','crv','x','d'].map(k => [k,jwk[k]])),
+    accessClientId:'synthetic-caller-client',accessClientSecret:'synthetic-access-secret-that-is-never-live' };
   const commands = [['queue-list','--limit','1','--status','queued'], ['queue-health'], ['laptop-health'], ['laptop-diagnostics']];
   for (const command of commands) {
     const stdout = [], stderr = [];

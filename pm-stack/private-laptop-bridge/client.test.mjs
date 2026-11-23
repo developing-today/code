@@ -11,7 +11,8 @@ const now = 1800000000000;
 const snapshot = () => ({ version:1, fetchedAt:now, available:true, stale:false, complete:false, total:null, tasks: [{id:1,status:'queued',priority:0},{id:2,status:'cancelled',priority:null}], counts:Object.fromEntries(statuses.map(s => [s, s === 'queued' ? 1 : 0])) });
 const json = body => new Response(JSON.stringify(body), { headers:{'content-type':'application/json'} });
 const keys = await crypto.subtle.generateKey('Ed25519', true, ['sign','verify']);
-const base = { origin:'https://bridge.invalid', audience:'test-bridge', principal:'amd-device', privateKey:keys.privateKey, now:()=>now, getuid:()=>1000 };
+const base = { origin:'https://laptop-bridge-staging.security.cab', audience:'test-bridge', principal:'amd-device', privateKey:keys.privateKey,
+  accessClientId:'synthetic-device-client',accessClientSecret:'synthetic-access-secret-that-is-never-live',now:()=>now,getuid:()=>1000 };
 const job = (overrides = {}) => ({ id:'job-1', lease:'lease-1', operation:'laptop.health', args:{}, expiresAt:now+60000, leaseExpiresAt:now+15000, serverNow:now, ...overrides });
 
 test('oracle: CLI grammar rejects every undeclared argument before activity', () => {
@@ -26,13 +27,13 @@ test('oracle: non-root gate runs before network and invalid origins cannot be co
   let calls=0;
   assert.throws(()=>createClient({...base,getuid:()=>0,fetch:()=>calls++}), /non-root/);
   assert.equal(calls,0);
-  for (const origin of ['http://bridge.invalid','https://bridge.invalid/path','https://user:pass@bridge.invalid','https://bridge.invalid/']) assert.throws(()=>createClient({...base,origin}));
+  for (const origin of ['http://bridge.invalid','https://laptop-bridge-staging.security.cab/path','https://user:pass@bridge.invalid','https://laptop-bridge-staging.security.cab/']) assert.throws(()=>createClient({...base,origin}));
 });
 
 test('oracle: configuration contains exactly owner provisioned Ed25519 identity', async () => {
   const exported=await crypto.subtle.exportKey('jwk', keys.privateKey);
   const privateKey=Object.fromEntries(['kty','crv','x','d'].map(k=>[k,exported[k]]));
-  const config={origin:base.origin,audience:base.audience,principal:base.principal,privateKey};
+  const config={origin:base.origin,audience:base.audience,principal:base.principal,privateKey,accessClientId:base.accessClientId,accessClientSecret:base.accessClientSecret};
   assert.equal(validateConfig(config),config);
   assert.throws(()=>validateConfig({...config,shell:'/bin/sh'}));
   assert.throws(()=>validateConfig({...config,privateKey:{...privateKey,kty:'RSA'}}));

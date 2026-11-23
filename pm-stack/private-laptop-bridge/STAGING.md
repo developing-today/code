@@ -20,8 +20,10 @@ bridge target. `cloudflare.config.ts` is the only deployment lifecycle source;
 no Wrangler JSONC deployment or migration fallback is kept.
 
 The bridge config currently has `ENABLED=false`, empty registry and Gateway
-placeholders, no routes/domains/triggers, workers.dev and preview URLs disabled,
-10 ms CPU limit, and observability/logging/traces off. It binds the staging
+placeholders, exactly one proposed Access hostname (`laptop-bridge-staging.security.cab`),
+no routes or triggers, workers.dev and preview URLs disabled, 10 ms CPU limit,
+and observability/logging/traces off. Access issuer/audience remain blank until
+the exact app is independently verified. It binds the staging
 Worker to its own declarative SQLite `PrivateLaptopBridge` Durable Object
 export. The tracked `staging-preflight.json` remains `verified:false`, `exists:false`, with
 empty account, namespace and evidence IDs. Local config/build tests prove only
@@ -38,11 +40,12 @@ matching. Schema 1 receipts are rejected.
 ### First disabled deployment workflow draft
 
 Routine releases remain versions-only and must refuse an absent Worker or
-Durable Object namespace. A one-time first deployment, if later authorized,
-must use the same `cloudflare.config.ts` `bridge` mode and pinned `cf` Build
-Output. Cloudflare's `cf` guidance uses `cf deploy` to create the initial
-Worker and apply the declarative DO export lifecycle; this is the initial
-deployment step, not a second configuration or a legacy migration fallback.
+Durable Object namespace. For first activation, the owner must first create
+only the fixed metadata-only Worker locally, read its immutable ID, and pin that
+ID in the protected `cloudflare-staging` environment. Actions must reject an
+absent Worker and any same-name/different-ID takeover; it must not receive
+account-wide create permission. Only then could the same `cloudflare.config.ts`
+`bridge` mode and pinned `cf` Build Output initialize the SQLite export.
 [cf project deploy](https://developers.cloudflare.com/cf/projects/) ·
 [cf and Durable Object lifecycle](https://developers.cloudflare.com/cf/wrangler/reference/#convert-durable-object-migrations)
 
@@ -56,35 +59,40 @@ schedule, route, public hostname, Gateway policy, or runtime secret.
 
 If enabled after all listed prerequisites are independently established, the
 workflow accepts only a manual dispatch from `main` in `developing-today/code`.
-Its initial no-secret job reads the exact `cloudflare-staging-bootstrap`
-environment and branch policy and checks the reviewer set and source SHA. Only
-that successful check emits the fixed environment name for the later deploy job;
+Its initial no-secret job reads the exact existing `cloudflare-staging`
+environment and branch policy and checks the typed reviewer set. Only that
+successful check emits the fixed environment name for the later deploy job;
 this prevents GitHub from auto-creating a missing, unprotected environment when
 a job is assigned to it. The protected environment must require an independent
 reviewer, disallow self-review, allow only `main`, and pin the exact reviewed
-full source SHA. The template fails closed if any part is missing or differs.
+full source SHA and immutable Worker ID. The template fails closed if any part
+is missing or differs.
 
 The deploy job runs the local build and pinned `cf deploy --dry-run`, verifies
 the effective disabled Build Output, then uses separate read-only and
 write-only credentials. Before its only possible provider write, read-only
 checks inventory the full account zone set and every zone's Worker routes,
-account Worker domains, the fixed Worker and SQLite namespace, schedules,
+account Worker domains, the pinned Worker ID and SQLite namespace, schedules,
 subdomain/preview flags, settings, versions and deployments. It refuses an
-unknown or partial inventory, any route/domain, an orphan namespace, an
-unexpected existing Worker, shared read/write tokens, or any effective config
-that differs from the disabled artifact. Only when the Worker is absent and the
-namespace is absent does the gated step run the pinned declarative
-`cf deploy --mode bridge --prebuilt --provision` lifecycle. A second
-read-only pass checks the exact serving version, single 100-percent deployment,
-source-SHA tag, disabled settings, no ingress, and the same SQLite namespace
-ID in the export and account inventory. It never changes Gateway or routes.
+unknown or partial inventory, any unexpected route/domain, an orphan namespace,
+an absent or mismatched Worker ID, shared read/write tokens, or any effective
+config that differs from the disabled artifact. Only an exact, precreated
+metadata-only Worker with zero deployments and no domain/namespace can proceed.
+A second read-only pass checks the exact serving version, single 100-percent
+deployment, source-SHA tag, disabled settings, the sole approved host with
+preview routing off, and the same SQLite namespace ID in the export and account
+inventory. It never changes Gateway or routes.
 
 The checked-in template has not been registered, dispatched, or run against
-Cloudflare. The current protected environment, reviewer IDs, exact account and
-zone inventory, and the separate read/write credentials are not available in
-this checkout. Their secret values were not accessed. Cloudflare's narrowest
-write scope for first creation of this absent Worker still needs an owner-side
-permission review; do not silently broaden it or use a Workers-product token.
+Cloudflare. The current protected environment, reviewer IDs, exact account,
+zone inventory and Worker ID, and separate read/write credentials are not
+available in this checkout. Their secret values were not accessed. The pinned
+`cf deploy --provision` behavior for adding the SQLite namespace to a precreated
+Worker, and whether an Individual Workers Editor can perform that exact
+operation without changing other state, have not been verified against
+Cloudflare. Do not claim compatibility or enable the workflow until that exact
+provider contract is confirmed. It has no fallback that creates a Worker or
+silently changes its identity.
 The read credential needs complete account zone/route inventory, Worker
 metadata/settings/versions/deployments/domains, and Durable Object namespace
 read. If those exact read scopes or an individual Worker write scope cannot be
@@ -100,9 +108,10 @@ npm ci --ignore-scripts --no-audit --no-fund
 # Never run it from a developer checkout.
 ```
 
-The final command writes a deployment and provisions the `PrivateLaptopBridge`
-SQLite export. It must run only with `ENABLED=false`, empty Gateway IDs and
-registry, no runtime secrets, no routes/domains/triggers, `workersDev:false`,
+The final command writes a deployment, may attach the exact approved custom
+hostname, and provisions the `PrivateLaptopBridge` SQLite export. It must run
+only with `ENABLED=false`, empty Gateway IDs and registry, no runtime secrets,
+no routes or extra domains/triggers, `workersDev:false`,
 `previewUrls:false`, logs/traces off, and the 10 ms CPU limit from the reviewed
 build. Do not pass `--force`, `--secrets-file`, or `--dispatch-namespace`. A
 successful local `--dry-run` proves config shape only; it is not permission to
@@ -122,9 +131,10 @@ changing it.
 
 Immediately after the write, independently repeat the full zone/route and
 Worker inventory and verify the same Worker identity and account, no
-routes/domains/schedules, no Gateway binding, workers.dev and preview URLs
-disabled, no runtime secrets, and the exact disabled variables and resource
-limits. This is not proof about account-level Gateway rules or caller identity.
+routes/schedules, only the exact approved custom domain with previews disabled,
+no Gateway binding, workers.dev and preview URLs disabled, no runtime secrets,
+and the exact disabled variables and resource limits. This is not proof about
+account-level Gateway rules or caller identity.
 Verify the Worker's
 declarative export is `PrivateLaptopBridge` with `state=created` and
 `storage=sqlite`; verify the `BRIDGE` binding's namespace ID matches exactly one
@@ -140,14 +150,12 @@ and [Gateway rules](https://developers.cloudflare.com/api/resources/zero_trust/s
 Any mismatch means stop and keep the Worker disabled and unrouted; do not
 automatically delete it, retry deployment, or create a replacement namespace.
 
-`cloudflare-staging` remains absent, and the template uses the separate exact
-`cloudflare-staging-bootstrap` environment for its one-time first deployment.
-That bootstrap environment is also not verified as present or protected. The
-tracked proof fixture still records branch protection/reviews and environment
-reviewers as false. The read-only branch-protection API request returned HTTP
-403 for this GitHub integration, so this session could not independently inspect
-the live branch rule. Do not register the template until an authorized
-repository administrator creates and independently verifies the bootstrap
+`cloudflare-staging` remains absent and is the only proposed bridge workflow
+environment. The tracked proof fixture still records branch protection/reviews
+and environment reviewers as false. The read-only branch-protection API request
+returned HTTP 403 for this GitHub integration, so this session could not
+independently inspect the live branch rule. Do not register the template until
+an authorized repository administrator creates and independently verifies that
 environment and its protection. Routine `cloudflare-staging` versions upload
 and promotion stay separately gated. GitHub creates an unconfigured environment
 when a workflow references a missing one; the no-secret pre-job gate must stay
@@ -176,7 +184,14 @@ Gateway state. Keep uploads and promotion blocked until this independent readbac
 is available, and keep the fallback until Drew separately approves bridge
 activation and end-to-end authorized Fleet operations pass on his laptop.
 
-## Selected ingress and the remaining feasibility gate
+## Superseded Gateway ingress sketch (historical only)
+
+**Do not follow this section or its Gateway/WARP steps.** Drew selected the
+no-WARP Cloudflare Access service-authentication path in
+[ACCESS-STAGING.md](ACCESS-STAGING.md). That document is the current ingress
+design; this section remains only to preserve the earlier review history.
+
+## Historical Gateway sketch
 
 Use **Cloudflare Gateway Forward**, not a public Worker URL. The official guide
 supports a Worker with no public route, `workers_dev:false`,

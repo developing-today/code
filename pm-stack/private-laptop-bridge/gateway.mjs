@@ -1,7 +1,7 @@
 // Private Gateway Forward RPC ingress. No public HTTP management entrypoint.
 // Context contract: https://developers.cloudflare.com/cloudflare-one/traffic-controls/integrate-workers/available-context/
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import bridge from './worker.mjs';
+import bridge, {dispatchSignedRequest} from './worker.mjs';
 export { PrivateLaptopBridge } from './worker.mjs';
 
 const paths = new Set(['/v1/call', '/v1/poll', '/v1/result', '/v1/read']);
@@ -45,8 +45,11 @@ export class GatewayMiddleware extends WorkerEntrypoint {
     } catch { return deny(503, 'gateway-context-unavailable'); }
     // Independent signed caller/device authentication, replay and scope checks
     // still run inside the existing Durable Object control plane.
-    return bridge.fetch(request, this.env);
+    return dispatchSignedRequest(request, this.env);
   }
 }
 
-export default {fetch() { return deny(403, 'private-rpc-only'); }};
+// The fixed custom hostname enters the Worker directly, but only after the
+// Worker validates Access's signed service-token JWT and the DO independently
+// validates the Ed25519 request. No proxy fallback or origin fetch exists.
+export default {fetch(request, env) { return bridge.fetch(request, env); }};

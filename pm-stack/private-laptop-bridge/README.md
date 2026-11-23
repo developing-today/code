@@ -1,8 +1,11 @@
 # Private laptop bridge — offline candidate
 
 **Not deployed; not a replacement-ready cutover.** Desktop Commander remains the
-fallback. [The staging approval packet](STAGING.md) specifies private Gateway
-ingress, resources, identities, costs, installation and rollback. This package
+fallback. The current proposed transport is documented in
+[ACCESS-STAGING.md](ACCESS-STAGING.md): no-WARP outbound HTTPS through a fixed
+Cloudflare Access service-authenticated hostname, with independent Worker JWT
+and Ed25519 checks. `STAGING.md` retains a clearly marked historical Gateway
+sketch. This package
 implements bounded Fleet reads, not a shell. Aster still
 needs an approved caller integration, a privately reachable control plane, and
 verified enrollment on Drew's AMD NixOS laptop before relying on it.
@@ -16,8 +19,8 @@ existing Turso-backed queue. No endpoint claims, dispatches, changes tasks,
 restarts services, reads arbitrary files, fetches arbitrary URLs, executes a
 command, or accepts scripts. Builds/tests are deliberately outside this version.
 
-The Worker is default-disabled, has no routes, workers.dev or preview URLs, and
-contains no private keys. Device and caller identities are independently pinned
+The Worker is default-disabled, has only the proposed fixed custom hostname,
+workers.dev and preview URLs disabled, and contains no private keys. Device and caller identities are independently pinned
 public keys with separate roles, device binding, operation scopes, expiration and
 revocation. Possession of a device key does not grant caller permissions. A
 request signature covers its audience, endpoint, method, timestamp, nonce and
@@ -213,16 +216,19 @@ and effective payload validator, not a deployment. `cloudflare.config.ts` in
 `bridge` mode is the sole real staging lifecycle definition. No Wrangler JSONC
 deployment or migration fallback is kept. The smoke Worker is owned by the
 separate smoke init/upload workflows on `main` and is not selectable in the bridge release
-workflow. The deployed candidate's default HTTP handler always denies; only the
-Gateway RPC entrypoint can reach the signed bridge, after trusted-context
-checks. The real Gateway DNS, device enrollment and TLS-trust path still requires
-the approval packet's smoke.
+workflow. Default HTTP fetch requires an exact-host Cloudflare Access service
+JWT, maps its signed client ID to one principal, then forwards the independently
+signed request to the bridge. The earlier Gateway path is historical only; see
+[ACCESS-STAGING.md](ACCESS-STAGING.md) for the current no-WARP design.
 
 The one-time disabled first-deployment workflow is a reviewed template with a
 `.disabled` suffix outside `.github/workflows`; GitHub does not register it.
 It remains dormant until the exact protected environment, reviewer policy,
-source pin, and narrowly scoped read/write credentials are independently
-verified. See [STAGING.md](STAGING.md) for its fixed target and gates.
+source pin, immutable owner-created Worker ID, exact Access app and narrowly
+scoped read/write credentials are independently verified. The pinned
+`cf deploy --provision`/Individual Workers Editor contract for the SQLite
+namespace is still unverified. See [STAGING.md](STAGING.md) for its fixed target
+and gates.
 
 No automatic PR CI or active schedule is added. The merged smoke init/upload
 workflows are manual; this branch retains a separate manual bridge release path
@@ -233,10 +239,10 @@ sandbox validation remain separate from the focused snapshot tests.
 
 ## Caller integration checkpoint
 
-`caller.mjs` exports `createCaller({origin, audience, principal, device, privateKey})`.
-An approved caller supplies its own Ed25519 CryptoKey and fixed HTTPS origin; the
-SDK does not load files, discover credentials, enroll identities, or install an
-Aster connector. Its four methods return accepted handles. `read(handle)` checks
+`caller.mjs` exports `createCaller({origin, audience, principal, device, privateKey, accessClientId, accessClientSecret})`.
+An approved caller supplies its own Ed25519 CryptoKey, fixed HTTPS origin, and
+owner-provisioned Cloudflare Access service token. The SDK does not load files,
+discover credentials, enroll identities, or install an Aster connector. Its four methods return accepted handles. `read(handle)` checks
 once; `wait(handle)` polls for at most the request lifetime. A failed read retains
 the handle for explicit resumption. An uncertain submit is never retried
 automatically because its acknowledgement may have been lost after acceptance.
@@ -248,8 +254,9 @@ const observation = await fleet.wait(handle);
 
 The device CLI accepts only `--config ABSOLUTE_PATH` or `--help`. The approved
 configuration must be an owner-only regular file containing exactly `origin`,
-`audience`, `principal`, and an externally provisioned Ed25519 private JWK
-(`kty`, `crv`, `x`, `d`). No example contains key material. The CLI refuses root,
+`audience`, `principal`, `accessClientId`, `accessClientSecret`, and an externally
+provisioned Ed25519 private JWK (`kty`, `crv`, `x`, `d`). No example contains key
+material. The CLI refuses root,
 follows no redirects, stops on authorization denial, and reconnects with bounded
 backoff after transport failure. The supplied service file is a review template
 with placeholder executable paths and no installation target.

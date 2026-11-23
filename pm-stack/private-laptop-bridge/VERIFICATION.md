@@ -322,3 +322,59 @@ credential-free synthetic smoke results are insufficient. See
 The previously proposed `private-bridge-staging.security.cab` hostname is
 rejected because it matches an existing public wildcard; no replacement host
 or AMD/Aster Gateway path is verified.
+
+## Access path and immutable precreated Worker contract — 2026-11-23
+
+The current source design is the fixed no-WARP Cloudflare Access path in
+[`ACCESS-STAGING.md`](ACCESS-STAGING.md), not the earlier Gateway plan above.
+The proposed hostname is `laptop-bridge-staging.security.cab`; its DNS/zone
+ownership and Access application remain unverified. The Worker now rejects
+requests unless the origin verifies Cloudflare's RS256 Access JWT for the
+configured exact issuer, audience, hostname and client ID, then independently
+checks the existing Ed25519 principal signature. It strips Access credentials
+before forwarding. Both protected environment variables are required to
+validate a deployable bridge Build Output.
+
+The bootstrap preflight now requires an owner-created metadata-only
+`private-laptop-bridge-staging` Worker and the protected immutable
+`CF_BRIDGE_WORKER_ID`. A missing Worker, same-name/different-ID Worker, any
+prior version/deployment, unexpected binding/namespace/route/domain, or unknown
+zone/Gateway inventory fails closed. The initial empty Worker must have no
+custom domain or namespace; deployed readback requires only the exact proposed
+host with preview routing disabled and the same immutable Worker ID. CI has no
+account-wide create credential.
+
+Current local checks on this working tree:
+
+```text
+npm test
+138 passed, 0 failed
+
+node --test staging-bootstrap.test.mjs release-contract.test.mjs access-auth.test.mjs
+21 passed, 0 failed
+
+CF_BRIDGE_ACCESS_ISSUER=https://staging.cloudflareaccess.com \
+CF_BRIDGE_ACCESS_AUDIENCE=synthetic-audience-value-00000001 \
+cf build --mode bridge
+node staging-bootstrap.mjs validate-build
+cf workers versions create --worker private-laptop-bridge-staging \
+  --tag <synthetic-sha> --message 'offline synthetic validation' \
+  --prebuilt --dry-run --mode bridge
+release-artifact.mjs dry-run
+```
+
+The pinned `cf@1.0.0-rc.1` dry-run produced the disabled DO binding, fixed host,
+synthetic issuer/audience and `ENABLED=false`, then exited before upload.
+These are synthetic/offline checks. No Cloudflare state, DNS, Access app,
+GitHub environment, credential, laptop setting or workflow was changed or
+dispatched. The bootstrap file remains outside `.github/workflows`.
+
+Two exact provider behaviors remain unverified: whether the pinned
+`cf deploy --provision` can initialize the SQLite Durable Object on this
+precreated Worker, and whether the proposed Individual Workers Editor grant can
+perform that operation without unrelated permissions. Therefore this source
+does not claim the first deployment is executable in production. The actual
+Access application, two service identities, public-key registry, exact
+hostname, protected environment/reviewer set, and laptop/Aster network/runtime
+path also remain owner-side prerequisites. Keep all workflows dormant until
+these are independently verified.
