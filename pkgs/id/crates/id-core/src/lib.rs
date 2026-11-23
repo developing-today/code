@@ -28,6 +28,7 @@ pub mod array_address;
 pub mod array_order;
 pub mod array_shorthand;
 pub mod block_list;
+pub mod board_view;
 pub mod boundary;
 pub mod boundary_surfaces;
 pub mod canonical_cbor;
