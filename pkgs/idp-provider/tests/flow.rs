@@ -87,13 +87,20 @@ fn harness() -> Harness {
                 redirect_uris: vec!["http://127.0.0.1:8913/callback".to_string()],
             },
         ],
+        doors: vec![],
         audit_db_path: None,
+        identity_db_path: None,
     };
     let audit = Arc::new(AuditLog::open(None).expect("in-memory audit"));
+    let identities = Arc::new(
+        idp_provider::identities::IdentityStore::open(None).expect("in-memory identity store"),
+    );
     let flow = Arc::new(FlowState::new(
         registry,
         TokenSigner::new(key, kid.clone()),
         audit.clone(),
+        identities,
+        vec![],
         ISSUER.to_string(),
     ));
     let config = Config {
@@ -103,6 +110,7 @@ fn harness() -> Harness {
         provider_config_path: None,
         signing_key_path: None,
         audit_db_path: None,
+        identity_db_path: None,
     };
     Harness {
         app: build_app_with_flow(config, jwks, Some(flow)),

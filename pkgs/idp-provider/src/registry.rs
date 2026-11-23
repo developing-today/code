@@ -3,13 +3,18 @@
 //! and the local-door credential hash.
 //!
 //! This is the provider's *config*, loaded from a JSON file whose
-//! path is configured at launch. The real file lives on-host with the
-//! provider (never in the repo): it carries the owner's credential
+//! path is configured at launch. The real file lives on-host with
+//! the provider (never in the repo): it carries the owner's credential
 //! HASH (PBKDF2-HMAC-SHA256 — the plaintext credential is never
 //! stored anywhere in the provider) and the audit DB location. The
 //! repo ships `config.example.json` with the hash field empty; an
 //! empty hash verifies nothing, so the door stays shut until the
 //! on-host config is written.
+//!
+//! Federated doors (#13411/#13412/#13414) are configured here too:
+//! endpoints and client ids are config, but a door's client SECRET
+//! is never in this file — the config names the environment variable
+//! the launcher fills from the vault by name.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -62,6 +67,50 @@ pub struct Account {
     pub local_credential_hash: String,
 }
 
+/// One upstream federated door. `name` is also the identity
+/// provider key: identities from this door are recorded as
+/// `<name>:<subject>`.
+#[derive(Clone, Debug, Deserialize)]
+pub struct UpstreamDoor {
+    /// "github" | "google" | "microsoft" (any name works; it keys
+    /// the door's routes, allowlist entries, and identity rows).
+    pub name: String,
+    /// "oidc" (Google/Microsoft shape: ID token verified against
+    /// the upstream JWKS) or "github" (code exchange + user fetch,
+    /// subject = the numeric user id).
+    pub kind: String,
+    #[serde(default)]
+    pub display_name: String,
+    pub client_id: String,
+    /// Name of the environment variable holding the door's client
+    /// secret. The launcher fills it from the vault by name (e.g.
+    /// vault `idp.github.client-secret` -> `IDP_GITHUB_CLIENT_SECRET`);
+    /// the secret itself is never in this config file or the repo.
+    pub client_secret_env: String,
+    pub authorize_url: String,
+    pub token_url: String,
+    /// OIDC doors: the upstream JWKS URI ID tokens are verified
+    /// against.
+    #[serde(default)]
+    pub jwks_uri: Option<String>,
+    /// GitHub door: the user endpoint (default
+    /// `https://api.github.com/user`).
+    #[serde(default)]
+    pub userinfo_url: Option<String>,
+    /// OIDC doors: the expected `iss` of upstream ID tokens.
+    #[serde(default)]
+    pub issuer: Option<String>,
+    /// OIDC doors: which claim names the recorded subject
+    /// (default `sub`; Microsoft records `oid`, falling back to
+    /// `sub` when absent).
+    #[serde(default)]
+    pub subject_claim: Option<String>,
+    /// Scopes requested at the upstream (OIDC default `openid`;
+    /// GitHub default `read:user`).
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ProviderConfig {
     pub account: Account,
@@ -71,9 +120,16 @@ pub struct ProviderConfig {
     pub allowlist: Vec<String>,
     #[serde(default)]
     pub clients: Vec<Client>,
+    /// Federated doors, in login-form order.
+    #[serde(default)]
+    pub doors: Vec<UpstreamDoor>,
     /// Audit DB path; when absent the audit log is in-memory only.
     #[serde(default)]
     pub audit_db_path: Option<PathBuf>,
+    /// Identity store DB path (#13415); when absent the link state
+    /// is in-memory only (tests, ephemeral runs).
+    #[serde(default)]
+    pub identity_db_path: Option<PathBuf>,
 }
 
 impl ProviderConfig {
@@ -91,14 +147,6 @@ impl ProviderConfig {
     pub fn is_allowlisted(&self, identity_key: &str) -> bool {
         self.allowlist.iter().any(|k| k == identity_key)
     }
-
-    /// Is `provider:subject` a linked identity of the account row?
-    pub fn is_linked(&self, provider: &str, subject: &str) -> bool {
-        self.account
-            .identities
-            .iter()
-            .any(|i| i.provider == provider && i.subject == subject)
-    }
 }
 
 // ---------- small helpers (time, randomness, credential hashing) ----------
@@ -108,6 +156,21 @@ pub fn now_unix() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Percent-encode a query component (unreserved characters pass
+/// through, everything else becomes `%XX`).
+pub fn url_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Random bytes from the OS (`/dev/urandom`); used for authorization

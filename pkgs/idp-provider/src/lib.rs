@@ -6,6 +6,11 @@
 //! completing the authorization-code + PKCE (S256) flow, signed
 //! RS256 with the Slice 2 OIDC private key.
 //!
+//! The federated doors (#13411 GitHub, #13412 Google, #13414
+//! Microsoft) hang off `/door/{name}/start|callback` and link into
+//! the same account row; link state lives in the runtime identity
+//! store (#13415), seeded from the provider config.
+//!
 //! The JWKS `kid` is the certificate's SHA-256 thumbprint in
 //! base64url form — the `x5t#S256` convention recorded on #13686 — so
 //! relying parties can pin either form. The private key is loaded
@@ -19,21 +24,26 @@
 //! path; SSO never rebinds an id key (#2060).
 
 pub mod audit;
+pub mod doors;
 pub mod flow;
+pub mod identities;
 pub mod registry;
 pub mod signing;
+pub mod upstream;
 
 use audit::AuditLog;
 use axum::{routing::get, Json, Router};
 use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
 use der::Decode;
 use flow::FlowState;
+use identities::IdentityStore;
 use pkcs1::DecodeRsaPublicKey;
 use rsa::{traits::PublicKeyParts, RsaPublicKey};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
+use upstream::DoorRuntime;
 use x509_cert::Certificate;
 
 pub const DEFAULT_ISSUER: &str = "http://127.0.0.1:8911";
@@ -56,6 +66,9 @@ pub struct Config {
     /// Audit DB path override (else the registry config's
     /// `audit_db_path`, else in-memory).
     pub audit_db_path: Option<PathBuf>,
+    /// Identity store DB path override (else the registry config's
+    /// `identity_db_path`, else in-memory).
+    pub identity_db_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -73,6 +86,9 @@ impl Config {
         let audit_db_path = std::env::var("IDP_PROVIDER_AUDIT_DB")
             .map(PathBuf::from)
             .ok();
+        let identity_db_path = std::env::var("IDP_PROVIDER_IDENTITY_DB")
+            .map(PathBuf::from)
+            .ok();
         Config {
             issuer: issuer.trim_end_matches('/').to_string(),
             bind,
@@ -80,6 +96,7 @@ impl Config {
             provider_config_path,
             signing_key_path,
             audit_db_path,
+            identity_db_path,
         }
     }
 }
@@ -232,6 +249,8 @@ pub fn build_app_with_flow(config: Config, jwks: Jwks, flow: Option<Arc<FlowStat
         )
         .route("/token", axum::routing::post(flow::token))
         .route("/userinfo", get(flow::userinfo))
+        .route("/door/{name}/start", get(doors::door_start))
+        .route("/door/{name}/callback", get(doors::door_callback))
         .with_state(state)
 }
 
@@ -279,10 +298,43 @@ pub fn app_from_config(config: Config) -> Result<Router, String> {
                 .clone()
                 .or_else(|| registry.audit_db_path.clone());
             let audit = Arc::new(AuditLog::open(audit_path.as_deref())?);
+            let identity_path = config
+                .identity_db_path
+                .clone()
+                .or_else(|| registry.identity_db_path.clone());
+            let identities = Arc::new(IdentityStore::open(identity_path.as_deref())?);
+            // Resolve each door's client secret from the
+            // environment variable its config names (the launcher
+            // fills it from the vault by name). A door without its
+            // secret — or an OIDC door without issuer/JWKS — stays
+            // disabled: its start endpoint denies with an audit
+            // record, and the rest of the provider is unaffected.
+            let doors: Vec<DoorRuntime> = registry
+                .doors
+                .iter()
+                .map(|d| {
+                    let secret = std::env::var(&d.client_secret_env)
+                        .ok()
+                        .filter(|s| !s.is_empty());
+                    let rt = DoorRuntime {
+                        config: d.clone(),
+                        client_secret: secret,
+                    };
+                    if !rt.enabled() {
+                        eprintln!(
+                            "idp-provider: door {} disabled (secret env {} unset or OIDC issuer/JWKS unconfigured)",
+                            d.name, d.client_secret_env
+                        );
+                    }
+                    rt
+                })
+                .collect();
             Some(Arc::new(FlowState::new(
                 registry,
                 signer,
                 audit,
+                identities,
+                doors,
                 config.issuer.clone(),
             )))
         }
