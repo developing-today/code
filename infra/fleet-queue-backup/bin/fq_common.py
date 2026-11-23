@@ -50,6 +50,11 @@ MAX_PAGES = 200_000
 
 HTTP_TIMEOUT_SECONDS = 120
 
+# The D1 import upload PUTs the whole dump in one request (~1 GB for
+# the live queue store); it gets a far longer socket timeout than the
+# JSON API calls above it.
+UPLOAD_TIMEOUT_SECONDS = 3600
+
 
 def _shape(value):
     return type(value).__name__
@@ -312,24 +317,44 @@ class D1Client:
         "current_bookmark => Required" (seen on the first live run,
         2026-11-22, #8584). Completion is the result status reaching
         "complete"; a result error aborts.
+
+        The upload is a single PUT of the whole dump (~1 GB for the
+        live queue store), so it gets its own long timeout, and a
+        transport failure re-runs init + upload (the dump is already
+        built; an upload retry never re-reads the source). API-level
+        errors are not retried: they do not heal.
         """
         digest = hashlib.md5(sql_text.encode()).hexdigest()
-        init = self._call(
-            "POST",
-            f"/accounts/{self.account}/d1/database/{db_id}/import",
-            {"action": "init", "etag": digest},
-        )
-        upload_url, filename = init["upload_url"], init["filename"]
-        req = urllib.request.Request(upload_url, data=sql_text.encode(), method="PUT")
-        try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
-                etag = resp.headers.get("etag", "").strip("\"")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise RuntimeError(f"D1 import upload failed: {exc}") from exc
-        if etag != digest:
-            raise RuntimeError(
-                f"D1 import upload etag mismatch: sent {digest}, got {etag}"
+        filename = None
+        for attempt in range(3):
+            init = self._call(
+                "POST",
+                f"/accounts/{self.account}/d1/database/{db_id}/import",
+                {"action": "init", "etag": digest},
             )
+            upload_url, filename = init["upload_url"], init["filename"]
+            req = urllib.request.Request(
+                upload_url, data=sql_text.encode(), method="PUT"
+            )
+            try:
+                with urllib.request.urlopen(
+                    req, timeout=UPLOAD_TIMEOUT_SECONDS
+                ) as resp:
+                    etag = resp.headers.get("etag", "").strip('"')
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"D1 import upload failed after 3 attempts: {exc}"
+                    ) from exc
+                time.sleep(5)
+                continue
+            if etag == digest:
+                break
+            if attempt == 2:
+                raise RuntimeError(
+                    f"D1 import upload etag mismatch: sent {digest}, got {etag}"
+                )
+            time.sleep(5)
         ingest = self._call(
             "POST",
             f"/accounts/{self.account}/d1/database/{db_id}/import",

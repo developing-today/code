@@ -76,6 +76,8 @@ class ImportFlowTest(unittest.TestCase):
             self.assertEqual(req.full_url, "https://upload.example/put")
             return FakeUploadResponse(hashlib.md5(req.data).hexdigest())
 
+        self._good_urlopen = fake_urlopen
+
         self._patches = [
             mock.patch.object(fq_common, "http_json", fake_http_json),
             mock.patch.object(fq_common.urllib.request, "urlopen", fake_urlopen),
@@ -112,6 +114,24 @@ class ImportFlowTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 client.import_sql("db-id", self.sql)
 
+
+    def test_upload_failure_reinits_and_retries(self):
+        attempts = {"n": 0}
+
+        def flaky_urlopen(req, timeout=None):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise fq_common.urllib.error.URLError(
+                    "write operation timed out")
+            return self._good_urlopen(req, timeout=timeout)
+
+        with mock.patch.object(
+                fq_common.urllib.request, "urlopen", flaky_urlopen):
+            client = fq_common.D1Client("token", "acct")
+            result = client.import_sql("db-id", self.sql)
+        self.assertEqual(result["status"], "complete")
+        actions = [c[2]["action"] for c in self.calls]
+        self.assertEqual(actions, ["init", "init", "ingest", "poll", "poll"])
 
 if __name__ == "__main__":
     unittest.main()
