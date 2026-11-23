@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   artifactIdFor,
   buildTriagePacket,
   extractMetadataPayload,
+  openMetadataStore,
   renderMetadataBlock,
   runMetadataCheck,
   sourceUrlFor,
@@ -229,6 +234,34 @@ describe("buildTriagePacket: the broker's required fields, pinned", () => {
     for (const field of ["timebox_minutes", "max_attempts"]) {
       expect(Number.isInteger(payload[field])).toBe(true);
       expect(payload[field] as number).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("openMetadataStore: clean-environment boot (#13293)", () => {
+  test("creates a missing parent directory before opening", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pm-metadata-store-"));
+    try {
+      const path = join(root, "state", "pm-aggregator", "pm-metadata.sqlite");
+      const db = openMetadataStore(path, (p) => new Database(p));
+      expect(
+        db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pm_metadata_items'").get(),
+      ).toEqual({ name: "pm_metadata_items" });
+      db.close();
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an unhealable parent still fails closed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pm-metadata-store-"));
+    try {
+      const blocker = join(root, "blocker");
+      await writeFile(blocker, "not a directory");
+      expect(() => openMetadataStore(join(blocker, "pm-metadata.sqlite"), (p) => new Database(p))).toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

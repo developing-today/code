@@ -25,6 +25,8 @@
  * Metadata *queries*; GitHub stays the system of record for the items.
  */
 import type { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   createPmMetadataStore,
   parsePmMetadata,
@@ -388,6 +390,13 @@ export function storeOutcome(db: Database, outcome: MetadataCheckOutcome): void 
 
 /** Open (creating) the sweeper/listener database with the store installed. */
 export function openMetadataStore(path: string, open: (path: string) => Database): Database {
+  // bun:sqlite creates the database file but not its parent directories,
+  // so a clean environment (no state directory yet) crashed the server at
+  // boot with SQLITE_CANTOPEN (#13293). Create the parent first, like the
+  // other state stores do on write; genuine open failures (permissions,
+  // a parent that is not a directory) still throw — only the
+  // missing-directory case self-heals.
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = open(path);
   createPmMetadataStore(db);
   return db;
