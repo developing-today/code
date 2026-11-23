@@ -8,8 +8,10 @@ example world.
 
 Slice 1 landed the SDK skeleton plus the two pure helpers everything
 else builds on (`json`, `grid`); slice 2 adds `screen` and `cap`, so
-all four helpers are in. The playable example and the conformance run
-are the follow-up slices on #12596.
+all four helpers are in. Slice 3 adds the playable example world,
+[`../zig-counter/`](../zig-counter/) — the counter twin of
+`../roc-counter/` and `../rust-counter/` — leaving the conformance
+run as the follow-up slice on #12596.
 
 ## Layout
 
@@ -53,17 +55,19 @@ ZIG=/path/to/zig ./zig-sdk-test.sh   # or put Zig 0.16.0 on PATH first
 
 This runs the version guard, `zig fmt --check`, the `zig test`
 suites in `src/` (mirrors of the Roc `expect` cases, including the
-64-depth and 64 KiB limit cases in `json`), and a
-`wasm32-freestanding` build proving the SDK compiles for the guest
-target. No Roc toolchain, Rust toolchain, or laptop is needed.
+64-depth and 64 KiB limit cases in `json`), a `wasm32-freestanding`
+build proving the SDK compiles for the guest target, and the
+`../zig-counter/` example's host tests plus guest-module build. No
+Roc toolchain, Rust toolchain, or laptop is needed.
 
 ## What remains on #12596
 
-1. A playable example world (e.g. `zig-counter`, mirroring
-   `../roc-counter/`) exporting the Plaza ABI v1 surface from
-   `../roc-world/ABI.md`.
-2. A conformance run of that example against the F12.7 suite, and
-   wiring `zig-sdk-test.sh` into the `roc-test` just recipe once the
+1. A conformance run of the `../zig-counter/` example against the
+   F12.7 suite: add `zig-counter` (its checked-in `counter.wasm`) to
+   the module list in `pkgs/id/crates/id-worlds/src/sandbox.rs` and
+   record the passing run where the Phase 12 exit audit (#12231) can
+   cite it.
+2. Wiring `zig-sdk-test.sh` into the `roc-test` just recipe once the
    nix-provided Zig version is confirmed to be 0.16.0 (the nix
    `zig` package version was not verified in this slice, so the
    wiring is deliberately left out rather than risk breaking
