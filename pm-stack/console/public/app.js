@@ -1632,6 +1632,19 @@ function go(to) {
   else location.hash = to;
 }
 
+/** A card's title is a third-level heading, under a section's
+ * second-level one. On a screen with no section above it, it comes
+ * straight after the screen's title: it is then said to be second-level,
+ * so that someone listening does not hear a level skipped. It looks the
+ * same. `headings` are the screen's h2 and h3 elements, in order. */
+export function levelHeadings(headings) {
+  let sectioned = false;
+  for (const el of headings) {
+    if (el.tagName === "H2") sectioned = true;
+    else if (!sectioned) el.setAttribute("aria-level", "2");
+  }
+}
+
 function drawTabs() {
   const n = needCounts();
   const fresh = (docs.core?.asks || []).filter((a) => a.status === "answered").length;
@@ -1688,6 +1701,7 @@ async function draw() {
     const nodes = await render(sub);
     if (seq !== drawSeq) return;
     view.replaceChildren(...nodes.filter(Boolean));
+    levelHeadings(view.querySelectorAll("h2, h3"));
     if (moved) scrollTo(0, 0);
     drawn = route;
   } catch (error) {
@@ -1695,6 +1709,7 @@ async function draw() {
     view.replaceChildren(
       card(h("h3", {}, "This section could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => (signedOut ? location.reload() : draw()) }, signedOut ? "Reload" : "Try again"))),
     );
+    levelHeadings(view.querySelectorAll("h2, h3"));
     if (moved) scrollTo(0, 0);
     drawn = route;
   } finally {

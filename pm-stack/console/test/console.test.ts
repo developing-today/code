@@ -927,6 +927,30 @@ describe("HTTP surface", () => {
     expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(await page.text()).toContain('src="/console/app.js"');
     expect((await handle(get("/console/app.css"), d)).headers.get("content-type")).toContain("text/css");
+    // The site is only ever HTTPS, and says so.
+    expect(page.headers.get("strict-transport-security")).toBe("max-age=31536000");
+    // A visit does not download the app again: each file says which
+    // version of itself it is, and a browser that names it is sent nothing.
+    const style = await handle(get("/console/app.css"), d);
+    const tag = style.headers.get("etag") as string;
+    expect(tag).toMatch(/^"[A-Za-z0-9_-]{22}"$/);
+    expect(tag).not.toBe(page.headers.get("etag")); // a file's tag is of its own content
+    expect((await handle(get("/console/app.css"), d)).headers.get("etag")).toBe(tag); // and does not change by itself
+    const asked = (named: string) =>
+      handle(
+        new Request("https://pm.security.cab/console/app.css", {
+          headers: { host: "pm.security.cab", "if-none-match": named },
+        }),
+        d,
+      );
+    for (const named of [tag, `W/${tag}`, `"other", ${tag}`]) {
+      const still = await asked(named);
+      expect([named, still.status, await still.text()]).toEqual([named, 304, ""]);
+      expect(still.headers.get("etag")).toBe(tag);
+    }
+    const sent = await asked('"an-older-version"');
+    expect(sent.status).toBe(200);
+    expect(await sent.text()).toBe(await style.text());
     expect((await handle(get("/console"), d)).status).toBe(308);
     // A path that climbs out of /console is the dashboard's to answer, never a file of this service.
     expect(await (await handle(get("/console/../src/server.ts"), d)).text()).toBe("dash");
@@ -1049,7 +1073,12 @@ describe("HTTP surface", () => {
     // The install manifest is the app's own: public, and it opens the app.
     const manifest = await handle(get("/manifest.webmanifest"), out);
     expect(manifest.headers.get("content-type")).toContain("application/manifest+json");
-    expect(await manifest.json()).toMatchObject({ start_url: "/console/", scope: "/", display: "standalone" });
+    expect(await manifest.json()).toMatchObject({
+      id: "/console/",
+      start_url: "/console/",
+      scope: "/",
+      display: "standalone",
+    });
     expect((await handle(post("/manifest.webmanifest", {}), out)).status).toBe(401);
     expect(out.sent.length).toBe(PUBLIC.length);
   });

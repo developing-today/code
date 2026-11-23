@@ -283,6 +283,14 @@ export class Edge {
     return this.released.found;
   }
 
+  /** What is said of the released build: its name, its code and when it
+   * was built. Null when none is published, or before the host has said
+   * which repository this is. */
+  private async releaseSaid(cfg: EdgeConfig | null): Promise<{ name: string; code: number; built: string } | null> {
+    const release = cfg ? await this.androidRelease(cfg) : null;
+    return release && { name: release.name, code: release.code, built: release.built };
+  }
+
   /** The released build, as a download, or null if it did not arrive as
    * its description says (GitHub out of reach, or the description read
    * while a new build was being put up). */
@@ -946,6 +954,11 @@ export class Edge {
         // The copy of the Android build kept here: when it was built,
         // and whether it is the host's newest. Null if there is none.
         androidBuild: await this.apkState(),
+        // The newest build of the app GitHub has released, as last read
+        // here (within ten minutes): what a download is, when there is
+        // one. The release is public; this is how its arrival here is
+        // checked from outside. Null when none is published.
+        androidRelease: await this.releaseSaid(cfg),
         // Since this object last started: requests it answered as the
         // owner's, and requests it left to the host to judge.
         answered: this.sure,
@@ -1047,11 +1060,7 @@ export class Edge {
         if (seg.length === 1 && seg[0] === "android") {
           // Where a download would come from: the build GitHub released,
           // if there is one, and the copy of the laptop's build kept here.
-          const release = await this.androidRelease(cfg);
-          return json({
-            release: release && { name: release.name, code: release.code, built: release.built },
-            copy: await this.apkState(),
-          });
+          return json({ release: await this.releaseSaid(cfg), copy: await this.apkState() });
         }
         if (seg.length === 1 && seg[0] === "push") return json(await this.push.status());
         if (seg.length === 1 && seg[0] === "devices") return json(await this.phones.devices.list());

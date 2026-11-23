@@ -618,7 +618,12 @@ async function setup(options: { direct?: boolean } = {}) {
   ]);
   const io: Io = {
     state: (r) => edge.now.fetch(r),
-    asset: async (path) => (files.has(path) ? new Response(files.get(path)) : new Response("", { status: 404 })),
+    // The platform's file store tags each file by its content; the icon
+    // here has none, as a store that sent no tag would not.
+    asset: async (path) =>
+      files.has(path)
+        ? new Response(files.get(path), path.startsWith("/icons/") ? {} : { headers: { ETag: `"tag-of-${path}"` } })
+        : new Response("", { status: 404 }),
     host: async (r) => {
       if (!net.hostUp) return null;
       hostSaw.push(`${r.method} ${new URL(r.url).pathname}`);
@@ -804,6 +809,7 @@ describe("before the host's first report", () => {
       hostSeen: null,
       hostVersion: null,
       androidBuild: null,
+      androidRelease: null,
       answered: 0,
       deferred: 0,
       version: "test",
@@ -898,6 +904,28 @@ describe("the owner, at the edge", () => {
     expect(await page.text()).toContain("<title>PM</title>");
     expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect((await w.browse("/console/app.js")).headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    // A visit does not download the app again. Each file says which
+    // version of itself it is; a browser that names that version is told
+    // "still that" and sent nothing, and any other is sent the file.
+    const script = await w.browse("/console/app.js");
+    const tag = script.headers.get("etag");
+    expect(tag).toBe('"tag-of-/console/app.js"');
+    expect(script.headers.get("cache-control")).toBe("no-cache"); // it always asks, so a deploy shows at once
+    for (const named of [tag, `W/${tag}`, `"something-else", ${tag}`, "*"]) {
+      const still = await w.browse("/console/app.js", { headers: { "if-none-match": named as string } });
+      expect([named, still.status, await still.text()]).toEqual([named, 304, ""]);
+      expect(still.headers.get("etag")).toBe(tag);
+      expect(still.headers.get("content-security-policy")).toContain("default-src 'self'");
+    }
+    for (const named of ['"an-older-version"', '"tag-of-/console/app.css"', "", "tag-of-/console/app.js"]) {
+      const sent = await w.browse("/console/app.js", { headers: { "if-none-match": named } });
+      expect([named, sent.status, await sent.text()]).toEqual([named, 200, "// app"]);
+    }
+    const stillPage = await w.browse("/console/", { headers: { "if-none-match": '"tag-of-/console/index.html"' } });
+    expect(stillPage.status).toBe(304);
+    // A file the store gave no tag for is always sent: nothing is made up.
+    const icon = await w.browse("/icons/icon-192.png", { headers: { "if-none-match": "*" } });
+    expect([icon.status, icon.headers.get("etag"), await icon.text()]).toEqual([200, null, "PNG"]);
     expect((await w.browse("/console")).status).toBe(308);
     const home = await w.browse("/");
     expect([home.status, home.headers.get("location")]).toEqual([302, `https://${HOST}/console/`]);
@@ -1585,6 +1613,7 @@ describe("the Android build", () => {
     expect((await download(w)).bytes).toEqual(apk(1));
     let said = (await (await w.browse("/console/api/android")).json()) as Record<string, any>;
     expect(said).toEqual({ release: null, copy: { at: w.build.at, current: true } });
+    expect(((await (await w.browse("/console/health", { token: null })).json()) as any).androidRelease).toBeNull();
     // GitHub Actions releases a build. The edge asks again within ten minutes and hands that out.
     w.github.apk = apk(9, 450_000);
     w.github.version = await described(w.github.apk, "2026.11.23-a3a547e", 21755935);
@@ -1599,6 +1628,15 @@ describe("the Android build", () => {
     expect(w.hostSaw).toEqual([]);
     said = (await (await w.browse("/console/api/android")).json()) as Record<string, any>;
     expect(said.release).toEqual({ name: "2026.11.23-a3a547e", code: 21755935, built: "2026-11-22T11:00:00.000Z" });
+    // Health says which release this side knows of, to anyone (the
+    // release is public): it is how its arrival here is checked from
+    // outside. Asking does not send the edge to GitHub each time.
+    const askedBefore = w.github.asked.length;
+    for (let i = 0; i < 3; i++) {
+      const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+      expect(health.androidRelease).toEqual(said.release);
+    }
+    expect(w.github.asked.length).toBe(askedBefore);
     // The laptop gone, the edge restarted, and no copy of the laptop's build at all: still handed out.
     w.net.hostUp = false;
     w.stored.delete("apk");

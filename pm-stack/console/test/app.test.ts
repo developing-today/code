@@ -13,6 +13,7 @@ import {
   deviceLabel,
   deviceState,
   endpointMark,
+  levelHeadings,
   prCheck,
   subscriptionState,
   testSaid,
@@ -279,4 +280,25 @@ test("what came of the last notification is said in plain words, and never as 'd
   expect(testSaid({ sent: 1, gone: 0, failed: 1 })).toBe("Test sent to 1 device; not taken for 1 device");
   expect(testSaid({ sent: 0, gone: 0, failed: 1 })).toBe("The push service did not take the test");
   expect(testSaid({ sent: 0, gone: 1, failed: 0 })).toBe("No device took the test");
+});
+
+test("a card's title is not announced as a skipped heading level", () => {
+  // The screen's title is level one. Card titles are h3: fine under a
+  // section's h2, a skipped level when the screen has no section above them.
+  const heading = (tagName: string) => {
+    const attrs: Record<string, string> = {};
+    return { tagName, attrs, setAttribute: (k: string, v: string) => void (attrs[k] = v) };
+  };
+  const levels = (tags: string[]) => {
+    const els = tags.map(heading);
+    levelHeadings(els);
+    return els.map((e) => e.attrs["aria-level"] ?? null);
+  };
+  // No sections: every card title is said to be level two.
+  expect(levels(["H3", "H3"])).toEqual(["2", "2"]);
+  // Cards before the first section are level two; under a section they stay level three.
+  expect(levels(["H3", "H2", "H3", "H3", "H2", "H3"])).toEqual(["2", null, null, null, null, null]);
+  // Sections first: nothing is changed.
+  expect(levels(["H2", "H3"])).toEqual([null, null]);
+  expect(levels([])).toEqual([]);
 });

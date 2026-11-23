@@ -125,6 +125,21 @@ try {
     icon.status === 200 && icon.headers.get("content-type") === "image/png" && bytes[1] === 0x50,
     `${bytes.length} bytes`,
   );
+  // The platform's file store tags each file; the Worker has to pass the
+  // tag on and answer a browser that names it with "still that", or
+  // every visit downloads the app again. Only this runtime has the store.
+  const tag = icon.headers.get("etag");
+  const again = tag ? await get("/icons/icon-192.png", { "If-None-Match": tag }) : null;
+  const other = await get("/icons/icon-192.png", { "If-None-Match": '"some-other-version"' });
+  check(
+    "a file says which version of itself it is, and a browser that has it is sent nothing",
+    Boolean(tag) &&
+      again?.status === 304 &&
+      (await again.arrayBuffer()).byteLength === 0 &&
+      other.status === 200 &&
+      (await other.arrayBuffer()).byteLength === bytes.byteLength,
+    `tag ${tag}, with it ${again?.status}, with another ${other.status}`,
+  );
 
   await docs.touch(Object.keys(data));
   const first = await link.once();
@@ -204,6 +219,17 @@ try {
   );
   const still = (await (await get("/console/health")).json()) as Record<string, unknown>;
   check("the edge itself is still up", still.ok === true && Number(still.deferred) >= 3, JSON.stringify(still));
+  // The Android app's release is read from GitHub itself, in this
+  // runtime, over the real network. There may be none, and GitHub may
+  // not answer a runner: either is said as null, and neither is a
+  // failure of this Worker. A release that is there must read as one.
+  const release = still.androidRelease as { name?: unknown; code?: unknown; built?: unknown } | null | undefined;
+  check(
+    "health says which release of the Android app it knows of, or that it knows of none",
+    release === null ||
+      (typeof release?.name === "string" && Number.isInteger(release.code) && typeof release.built === "string"),
+    JSON.stringify(release),
+  );
 } catch (error) {
   failed++;
   console.log(`FAIL the run stopped: ${(error as Error).message}`);
