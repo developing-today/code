@@ -284,13 +284,43 @@ def read_mode() -> str:
 _code_source: "Dict[str, Any] | None" = None
 
 
+def _read_git_ref(git_dir: "Path", ref: str) -> "str | None":
+    """Resolve a git ref to its commit sha by reading .git directly.
+
+    Loose ref first, then packed-refs. Returns None when the ref is
+    not recorded anywhere. Pure file reads: no git binary is spawned,
+    so this stays usable under the hermetic suite's no-subprocess
+    guard (#13135).
+    """
+    try:
+        sha = (git_dir.joinpath(*ref.split("/"))).read_text().strip()
+    except OSError:
+        sha = ""
+    if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha):
+        return sha
+    try:
+        packed = (git_dir / "packed-refs").read_text().splitlines()
+    except OSError:
+        return None
+    for line in packed:
+        if line.startswith("#") or line.startswith("^"):
+            continue
+        parts = line.split(" ", 1)
+        if len(parts) == 2 and parts[1].strip() == ref and len(parts[0]) == 40:
+            return parts[0]
+    return None
+
+
 def read_code_source() -> "Dict[str, Any]":
     """Read the primary clone's checked-out branch and commit.
 
-    Fail-open by design: this is provenance for the fire log, never
-    a gate. Any git failure (no git binary, not a checkout, timeout)
-    yields state "unreadable" with branch/commit None rather than
-    raising - a fire must never abort because its own provenance
+    Reads .git directly (HEAD plus loose/packed refs) instead of
+    spawning `git rev-parse`: the fire path never forks for its own
+    provenance, and the read stays usable under the hermetic suite's
+    no-subprocess guard (#13135). Fail-open by design: this is
+    provenance for the fire log, never a gate. Any unreadable .git
+    layout yields state "unreadable" with branch/commit None rather
+    than raising - a fire must never abort because its own provenance
     read failed. The result is cached per process: one fire is one
     process, and the checkout does not change under a running fire.
     """
@@ -305,25 +335,28 @@ def read_code_source() -> "Dict[str, Any]":
     }
     _code_source = source
     try:
-        branch = subprocess.run(
-            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        commit = subprocess.run(
-            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if branch.returncode != 0 or commit.returncode != 0:
-            source["state"] = "unreadable"
-            return source
-        source["branch"] = branch.stdout.strip() or None
-        source["commit"] = commit.stdout.strip() or None
-        if source["branch"] is None or source["commit"] is None:
-            source["state"] = "unreadable"
+        git_dir = PRIMARY_CLONE / ".git"
+        if git_dir.is_file():
+            # Worktree / linked checkout: .git holds "gitdir: <path>".
+            target = git_dir.read_text().strip()
+            if not target.startswith("gitdir:"):
+                raise ValueError("unexpected .git file")
+            git_dir = Path(target[len("gitdir:") :].strip())
+            if not git_dir.is_absolute():
+                git_dir = PRIMARY_CLONE / git_dir
+        head = (git_dir / "HEAD").read_text().strip()
+        if head.startswith("ref:"):
+            ref = head[len("ref:") :].strip()
+            branch = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+            commit = _read_git_ref(git_dir, ref)
+        elif len(head) == 40 and all(c in "0123456789abcdef" for c in head):
+            branch, commit = "HEAD", head  # detached HEAD, as rev-parse reports it
+        else:
+            raise ValueError("unparsable HEAD")
+        if not branch or commit is None:
+            raise ValueError("ref unresolvable")
+        source["branch"] = branch
+        source["commit"] = commit
     except Exception:
         source["state"] = "unreadable"
     return source

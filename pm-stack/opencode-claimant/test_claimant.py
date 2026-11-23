@@ -1719,36 +1719,20 @@ class TestCodeSourceFireLog(unittest.TestCase):
         claimant._code_source = None
 
     def _make_clone(self, tmp: str) -> Path:
+        # A static .git layout written with plain file writes (#13135):
+        # the hermetic suite's audit guard forbids subprocess spawns,
+        # so the fixture cannot run `git init` — and read_code_source()
+        # reads .git directly, so no git binary is needed for the read
+        # either. The commit sha is a fixed 40-hex placeholder; the
+        # tests assert shape (branch, 40-char commit), not history.
         clone = Path(tmp) / "clone"
-        clone.mkdir()
-        env = dict(os.environ)
-        env.update(
-            {
-                "GIT_AUTHOR_NAME": "test",
-                "GIT_AUTHOR_EMAIL": "test@example.invalid",
-                "GIT_COMMITTER_NAME": "test",
-                "GIT_COMMITTER_EMAIL": "test@example.invalid",
-            }
-        )
-        subprocess.run(
-            ["git", "init", "-b", "main", str(clone)],
-            check=True,
-            capture_output=True,
-            env=env,
+        git_dir = clone / ".git"
+        (git_dir / "refs" / "heads").mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_dir / "refs" / "heads" / "main").write_text(
+            "0123456789abcdef0123456789abcdef01234567\n"
         )
         (clone / "f.txt").write_text("x")
-        subprocess.run(
-            ["git", "-C", str(clone), "add", "f.txt"],
-            check=True,
-            capture_output=True,
-            env=env,
-        )
-        subprocess.run(
-            ["git", "-C", str(clone), "commit", "-m", "init"],
-            check=True,
-            capture_output=True,
-            env=env,
-        )
         return clone
 
     def test_reads_branch_and_commit(self):
