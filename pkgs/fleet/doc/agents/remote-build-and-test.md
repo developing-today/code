@@ -94,6 +94,12 @@ For a detached laptop command, add `--detach` and track the returned job ID with
 
 Random `fp_...` handles and their records remain in `~/.local/state/fleet-place/sessions.json`. They work where that local store is available. For a follow-up from another agent or workspace, use the portable `OWNER/REPO#RUN_ID` identifier; Fleet resolves it through GitHub without the local session record. If dispatch has not correlated a run ID yet, keep using the local handle.
 
+## Sandbox seats
+
+Sandbox seats run the static `fleet` build (installed by `scripts/muse/bootstrap.sh`). Dispatch and `dispatch-test` call the GitHub API directly from the seat, and the binary validates TLS against the platform root store, so both work under the sandbox's TLS-intercepting egress proxy with the ambient environment — no proxy overrides needed.
+
+On a binary old enough to predate the platform-verifier fix (code#13122), the same calls fail with `invalid peer certificate: UnknownIssuer`: that build trusted webpki roots only, and the egress proxy's CA is not among them. Do not conclude dispatch is unavailable from a sandbox seat on that error — update the binary (re-run `scripts/muse/bootstrap.sh` on a current checkout), or route every proxy variable (`HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy`, `ALL_PROXY`, `all_proxy`) through the seat's plain-tunnel relay, `http://broker:broker@127.0.0.1:3130`, which presents the real GitHub certificate.
+
 ## Other dispatch routes
 
 - **`fleet dispatch-test scan|submit|status`** — the explicit-dispatch route for work inside a fleet-umbrella submodule. `scan` lists the execution homes (dezren39/fleet and its fork network) with their live Actions load and picks the first with free capacity; `submit --submodule <name> --ref <ref> --commands '<cmds>'` stores the job in the fleet-dispatch Turso store and dispatches `fleet-dispatch-test.yml` there; `status <job-id>` reads the stored result. Linux, GitHub-hosted only; use it when the job is naturally "run inside submodule X at ref Y".
