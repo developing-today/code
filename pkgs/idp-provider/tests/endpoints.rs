@@ -37,6 +37,7 @@ fn test_config() -> Config {
         provider_config_path: None,
         signing_key_path: None,
         audit_db_path: None,
+        identity_db_path: None,
     }
 }
 
