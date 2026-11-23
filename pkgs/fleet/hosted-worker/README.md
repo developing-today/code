@@ -163,6 +163,23 @@ the service skeleton from #12583; each door is filled by its own issue.
   insert failed at the stamping door (#12585's
   `metadata_inserted: false`) is healed by the first check that
   sees the item.
+- **Thin TS CLI** (`src/cli.ts`, package-root `cli.ts`, #12588;
+  design §3.2): the hosted caller's command line — the entrypoint
+  the verb modules above name. Verbs: `session open|resume|close`
+  (carriage per §4.2: explicit > env > per-workspace stored state,
+  the stored id's liveness checked against the registry before it
+  is cited), `create issue|pr` (the caller's body text and
+  caller-owned Metadata fields, assembled by the CLI; the request
+  is a fixed allowlist of caller-owned fields and verifiable
+  claims — no timestamps, no queue fields, no provenance),
+  `query` (src/query-cli.ts's flags, rendered JSON first), `next`
+  (work intake as the client-side claim + lane + bind composite
+  the queue door leaves to the client) and `claim` (the single
+  verb), and `sync project|flow` (src/sync-cli.ts's flags). The
+  caller presents a #9077 relying-party token it already holds —
+  resolved explicit > `FLEET_HOSTED_TOKEN` > the CLI's token file,
+  storage local to the caller; acquisition flows (PKCE / device)
+  are component H's surface (#9086, design §8 deferral 4).
 - **Health + capabilities** (`src/health.ts`, `src/capabilities.ts`):
   public identity surface. `/capabilities` mirrors the native
   `fleet capabilities` JSON shape — same `build` / `capabilities` /
