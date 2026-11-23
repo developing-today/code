@@ -4764,6 +4764,7 @@ dependencies = [
  "futures-util",
  "id-caps",
  "id-cli",
+ "id-config",
  "id-core",
  "id-directory",
  "id-events",
@@ -4872,6 +4873,15 @@ dependencies = [
  "toml",
  "tracing",
  "zeroize",
+]
+
+[[package]]
+name = "id-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
