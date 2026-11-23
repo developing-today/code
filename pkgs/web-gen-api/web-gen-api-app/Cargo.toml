@@ -1,0 +1,21 @@
+[package]
+name = "web-gen-api-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = { version = "4", optional = true, features = ["macros"] }
+leptos = "0.8"
+leptos_meta = "0.8"
+leptos_actix = { version = "0.8", optional = true }
+leptos_router = "0.8"
+
+[features]
+csr = ["leptos/csr"]
+hydrate = ["leptos/hydrate"]
+ssr = [
+  "dep:actix-web",
+  "dep:leptos_actix",
+  "leptos/ssr",
+  "leptos_router/ssr",
+]
