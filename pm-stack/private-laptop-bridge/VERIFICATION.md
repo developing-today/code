@@ -188,3 +188,33 @@ network isolation.
 
 The workflow YAML parsed with PyYAML and all embedded `run:` blocks passed
 `bash -n` after substituting GitHub expressions. `actionlint` was unavailable.
+
+### Empty smoke Worker init request (2026-11-23)
+
+Drew authorized an empty Worker metadata init for only
+`private-laptop-bridge-smoke`. Official Cloudflare docs distinguish
+`POST /accounts/{account_id}/workers/workers` (metadata-only Worker creation)
+from `PUT /accounts/{account_id}/workers/scripts/{script_name}` (script upload,
+which implicitly creates and deploys a version). The metadata endpoint allows
+the request to disable `subdomain.enabled`, `subdomain.previews_enabled`,
+observability, and logpush. It returns `deployed_on: null` when the Worker has
+never been deployed. Sources: [Create Worker API](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/methods/create/),
+[Upload Worker API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/),
+[Cloudflare's create/deploy API notes](https://developers.cloudflare.com/workers/platform/infrastructure-as-code/).
+
+No init workflow or provider action was run. The metadata create API accepts
+`Workers Admin` or `Workers Scripts Write`; it does not list the planned
+per-Worker Editor permission. Account-wide create credentials cannot be put
+into the repository's Actions environment under the instruction against broad
+token disclosure. The current environment's protection and credentials were
+not read or changed. Moreover, proving that no route refers to this new name
+requires enumerating all account zones (`Zone Read`) and their routes
+(`Workers Metadata Read-Only` or `Workers Routes Read`, plus `Zone Read`; see
+[route API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)
+and [zone API](https://developers.cloudflare.com/api/resources/zones/methods/list/));
+the narrow Worker credential cannot prove this, and those scopes were not granted. The
+`workflow_dispatch` workflow is not on the default branch yet, so its required
+main-only admission cannot be exercised from this draft. No secret, provider
+setting, route, version, or deployment was changed, and no smoke version upload
+was attempted. The bootstrap path remains blocked pending a credential and
+read-only proof arrangement that satisfy these scope limits.

@@ -185,16 +185,44 @@ must independently confirm full account ID/ownership and existence of the exact
 Worker named by that GitHub Environment, then verify the resulting token cannot
 read or edit another Worker. No target was probed in this work session.
 
-There is no permitted bootstrap path in this release workflow. The exact
-`cf@1.0.0-rc.1` package is pinned in the lockfile and contains the
-`@cloudflare/deploy-helpers@0.27.2` versions-upload checks. They reject a
-missing Worker with “You cannot upload a new version of a Worker that does not
-yet exist” before the Versions API upload. The Cloudflare Workers deployment
-docs likewise state that the first upload must use a deploy command. This task
-allows only an initial Versions upload, so do not substitute `cf deploy`,
-Wrangler deploy, a direct API request, or a separate create workflow. The
-existing-Worker precheck and the CLI both fail closed if either exact target is
-absent. No bootstrap command was run or added.
+**Smoke Worker bootstrap is newly authorized as an empty metadata-only init,**
+separate from the Versions release workflow. Cloudflare's official API exposes
+`POST /accounts/{account_id}/workers/workers` to create a Worker metadata
+object, while its script `PUT /workers/scripts/{script_name}` creates and
+deploys a version to 100% immediately. The latter is not a safe substitute for
+the requested empty init. The metadata endpoint supports disabling the
+`workers.dev` subdomain, previews, logs and observability in its creation
+payload, and returns a null `deployed_on` for a Worker that has never been
+deployed. Sources: [Create Worker API](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/methods/create/),
+[Script Upload API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/update/),
+[Workers deployment behavior](https://developers.cloudflare.com/workers/platform/infrastructure-as-code/).
+
+**The init workflow is blocked and was not added or dispatched.** Cloudflare's
+Create Worker API accepts `Workers Admin` or `Workers Scripts Write`; the
+existing planned per-Worker Editor token for `cloudflare-staging-smoke` is not
+one of those permissions and cannot create an absent Worker. Those documented
+permissions are account-level, not scoped by the API to this single future
+Worker. No protected, separately scoped bootstrap credential or verified
+GitHub environment configuration is available in this repo. Reusing or
+widening the routine Worker token, adding an account-wide credential to Actions,
+or referencing an unverified new GitHub environment would violate the stated
+boundary. GitHub admits `workflow_dispatch` only after the workflow exists on
+the default branch ([GitHub's `workflow_dispatch` docs](https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow));
+a PR branch cannot run the requested main-only job. No such merge or dispatch
+was attempted.
+
+The requested route absence proof also needs account zone/route inventory:
+the Worker metadata response includes domain/reference details but does not
+provide an authoritative list of Workers routes, and the Routes API is
+zone-scoped. Cloudflare documents `Workers Metadata Read-Only` or `Workers
+Routes Read` for route listing and `Zone Read` for enumerating zones ([route
+API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/),
+[zone API](https://developers.cloudflare.com/api/resources/zones/methods/list/)).
+The current narrow Worker token cannot prove that no stale route in any account
+zone names this Worker. Therefore there is no safe check-then-create-and-verify
+sequence to run with the currently approved credentials.
+The existing-Worker precheck and pinned `cf@1.0.0-rc.1` Versions upload still
+fail closed for a missing target. No init or Versions upload was run.
 
 The real bridge has an additional Versions API constraint. Its Build Output
 declares `PrivateLaptopBridge` as a new SQLite Durable Object export and binds
