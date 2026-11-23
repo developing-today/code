@@ -381,7 +381,9 @@ mod tests {
         let mut mux = Mux::with_credit(100, 250, 1_000, 1_500);
         assert!(mux.open_stream(1));
         assert_eq!(mux.accept_data(1, 100), AcceptOutcome::Accepted);
-        mux.apply_window_update(&window_update(1, 150)).unwrap();
+        // Consumed 100, so a grant of 250 refills the window exactly
+        // to its ceiling.
+        mux.apply_window_update(&window_update(1, 250)).unwrap();
         assert_eq!(mux.stream_available(1), Some(250));
         assert!(mux.apply_window_update(&window_update(1, 1)).is_err());
         assert_eq!(mux.stream_available(1), Some(250));
