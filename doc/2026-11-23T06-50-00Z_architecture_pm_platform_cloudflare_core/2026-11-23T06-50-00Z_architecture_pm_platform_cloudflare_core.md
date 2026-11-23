@@ -107,12 +107,18 @@ item can ask for it).
 
 ## Routing
 
-| Kind              | Becomes                                                                             | Labels                                            | Default rank |
-| ----------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------- | ------------ |
-| bug               | an issue, with a triage task                                                        | `kind/bug`, `source/human`, the capability's      | now          |
-| note              | a comment on the issue it is about; else an issue with a triage task                | `roadmap/notes`, `source/human`, the capability's | next         |
-| change            | an issue saying what to change, with a triage task                                  | `roadmap/notes`, `source/human`, the capability's | next         |
-| any, as a session | a prompt (`owner/prompt`, `expedite`) that starts a session with the words verbatim | as above                                          | expedite     |
+| Kind              | Becomes                                                                             | Labels                                                       | Default rank |
+| ----------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------ | ------------ |
+| bug               | an issue, with a triage task                                                        | `kind/bug`, `source/human`, `owner/intake`, the capability's | now          |
+| note              | a comment on the issue it is about, with a task; else an issue with a triage task   | `source/human`, `owner/intake`, the capability's             | next         |
+| change            | an issue saying what to change, with a triage task                                  | `source/human`, `owner/intake`, the capability's             | next         |
+| any, as a session | a prompt (`owner/prompt`, `expedite`) that starts a session with the words verbatim | as above, added to the prompt's own                          | expedite     |
+
+`owner/intake` is new, and is how the Intake screen finds what the app
+filed. A note and a change carry no `kind/` label: whoever takes the
+item decides what kind of work it turned out to be. (`roadmap/notes`
+looks like the label for this and is not: it is the roadmap programme
+named "notes".)
 
 ## One platform
 
@@ -161,3 +167,46 @@ issue. None of them is done by this change.
   files the issue at once and a connected machine files the task.
 - It does not move Questions, needs, services or agents off machines.
   Those are machine capabilities or need the decisions door.
+
+## 2026-11-23T08:20Z Update: the plan's screens
+
+Step 2 is built (`src/plan.ts`, with its screens under More).
+
+- **Roadmap.** One page per capability, chosen along the top: the four
+  named first, then every other file in `planning/roadmaps/`. Three
+  reads per page, not one per phase: the file, one search for the open
+  issues that are being worked on, ranked or epics (sorted into phases
+  here by their labels, so an issue is shown once, where it stands
+  furthest along), and one for what closed in the last two weeks. A
+  page is read at most once a minute however often it is looked at,
+  because GitHub's search allows thirty requests a minute and the
+  fleet's own searches count against the same thirty; the refresh
+  button asks again at once, and so does anything sent from the app.
+  Measured on the day: 45, 39, 6 and 31 ranked-or-working issues under
+  id, fleet, atlas and pm-stack, so one page of a hundred holds each.
+- **What can be done from a page.** On an issue: move it between the
+  planned phases (its rank, set at once) or leave a note on it. On a
+  row of the file: a note, or a change (move it, add a sub-item, mark it
+  built, rewrite it, drop it). On the capability: a note, or a new
+  item. Each takes the words as typed and may be sent as a session.
+- **Bugs.** A form (what went wrong, where, how soon), the open bugs
+  soonest first, and the ones fixed lately.
+- **Intake.** A plain note, the routing table as the service has it,
+  and everything sent from the app as GitHub has it now.
+- **The queue half.** Filing a task is still the fleet binary's. Each
+  intake hands its packet to the same stand-in point the owner's
+  prompts use, with the action a machine would be asked to do in its
+  place (`triage.enqueue`, or `prompt.enqueue` for a session): the
+  arguments are checked again on the machine and the packet is built
+  there, never taken from the edge. A note on an existing issue has a
+  task of its own wording (`notePacket`), under the issue's one triage
+  key, so it joins a live task or starts a new one.
+- **Checked.** 31 tests for this (GitHub and the queue as recorders;
+  packets against the queue's own schema file); 74 planted faults, 71
+  caught, two that change nothing, and one that showed a step to be
+  redundant, which was removed; 27 checks in a phone-sized Chrome
+  against the demo, direct and behind the edge; axe-core over all 19
+  screens and the three form dialogs, light and dark, no violations.
+
+Not in this step: at the edge these reads and `intake.send` still go to
+the laptop (held when it is away). Step 3 moves them.

@@ -192,6 +192,10 @@ export const HOLDABLE = new Set([
   "task.move",
   "message.send",
   "prompt.enqueue",
+  // What the owner says is never lost for want of a machine: it is
+  // kept and filed when one is back (or filed here, when the edge can).
+  "intake.send",
+  "triage.enqueue",
 ]);
 /** A held action older than this is dropped, and said to have been. */
 export const HELD_FOR_MS = 24 * 60 * 60_000;
