@@ -69,7 +69,8 @@ function normalizeRecord(raw: Partial<PromptRecord> & Record<string, unknown>): 
     refs,
     notify: raw.notify === true,
     id: typeof raw.id === "string" ? raw.id : `prompt:${randomUUID()}`,
-    threadId: typeof raw.threadId === "string" ? raw.threadId : (typeof raw.id === "string" ? raw.id : `thread:${randomUUID()}`),
+    threadId:
+      typeof raw.threadId === "string" ? raw.threadId : typeof raw.id === "string" ? raw.id : `thread:${randomUUID()}`,
     status: (PROMPT_STATUSES.includes(raw.status as PromptStatus) ? raw.status : "queued") as PromptStatus,
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
     answer: typeof raw.answer === "string" ? raw.answer : undefined,
@@ -153,7 +154,9 @@ export class PromptsStore {
   private async doLoad(): Promise<void> {
     try {
       const parsed = JSON.parse(await readFile(this.path, "utf8")) as PromptsFile | { prompts?: unknown[] };
-      const raw = Array.isArray((parsed as { prompts?: unknown[] }).prompts) ? (parsed as { prompts: unknown[] }).prompts : [];
+      const raw = Array.isArray((parsed as { prompts?: unknown[] }).prompts)
+        ? (parsed as { prompts: unknown[] }).prompts
+        : [];
       this.prompts = raw.map((r) => normalizeRecord((r ?? {}) as Partial<PromptRecord> & Record<string, unknown>));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -207,14 +210,16 @@ export class PromptsStore {
     return this.prompts.find((p) => p.id === id) ?? null;
   }
 
-  async list(filter: {
-    page?: string;
-    status?: PromptStatus;
-    archived?: boolean;
-    threadId?: string;
-    replyTo?: string;
-    includeArchived?: boolean;
-  } = {}): Promise<PromptRecord[]> {
+  async list(
+    filter: {
+      page?: string;
+      status?: PromptStatus;
+      archived?: boolean;
+      threadId?: string;
+      replyTo?: string;
+      includeArchived?: boolean;
+    } = {},
+  ): Promise<PromptRecord[]> {
     await this.load();
     return this.prompts.filter((p) => {
       if (filter.page !== undefined && p.page !== filter.page) return false;
@@ -252,15 +257,18 @@ export class PromptsStore {
     }));
   }
 
-  async update(id: string, patch: {
-    status?: PromptStatus;
-    answer?: string;
-    error?: string;
-    archived?: boolean;
-    read?: boolean;
-    refs?: string[];
-    replyTo?: string | null;
-  } = {}): Promise<PromptRecord | null> {
+  async update(
+    id: string,
+    patch: {
+      status?: PromptStatus;
+      answer?: string;
+      error?: string;
+      archived?: boolean;
+      read?: boolean;
+      refs?: string[];
+      replyTo?: string | null;
+    } = {},
+  ): Promise<PromptRecord | null> {
     await this.load();
     const idx = this.prompts.findIndex((p) => p.id === id);
     if (idx === -1) return null;
@@ -270,7 +278,8 @@ export class PromptsStore {
     if (patch.error !== undefined) rec.error = patch.error;
     if (patch.archived !== undefined) rec.archived = patch.archived === true;
     if (patch.read !== undefined) rec.read = patch.read === true;
-    if (patch.refs !== undefined && Array.isArray(patch.refs)) rec.refs = patch.refs.filter((x) => typeof x === "string");
+    if (patch.refs !== undefined && Array.isArray(patch.refs))
+      rec.refs = patch.refs.filter((x) => typeof x === "string");
     if (patch.replyTo !== undefined) {
       rec.replyTo = typeof patch.replyTo === "string" ? patch.replyTo : null;
     }

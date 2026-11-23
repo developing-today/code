@@ -234,8 +234,7 @@ const shadowPlacementHistoryPath =
   process.env.QUOTA_SHADOW_PLACEMENT_HISTORY_PATH ?? join(dirname(currentPath), "quota-shadow-placement-history.jsonl");
 // #12699: the Stage-3 anomaly detectors' state + history, beside
 // quota-current.json in the quota-watchdog shape (design D6).
-const anomalyStatePath =
-  process.env.QUOTA_ANOMALY_STATE_PATH ?? join(dirname(currentPath), "quota-anomaly-state.json");
+const anomalyStatePath = process.env.QUOTA_ANOMALY_STATE_PATH ?? join(dirname(currentPath), "quota-anomaly-state.json");
 const anomalyHistoryPath =
   process.env.QUOTA_ANOMALY_HISTORY_PATH ?? join(dirname(currentPath), "quota-anomaly-history.jsonl");
 /** Strict millisecond parse for boot-time env (#2835 env-number contract):

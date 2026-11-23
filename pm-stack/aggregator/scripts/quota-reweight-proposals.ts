@@ -267,9 +267,7 @@ async function main(): Promise<void> {
   const forecast = values["--forecast"]
     ? await readJson<QuotaForecastFile>(values["--forecast"], "forecast file")
     : null;
-  const shadow = values["--shadow"]
-    ? await readJson<ShadowPlacementRecord>(values["--shadow"], "shadow record")
-    : null;
+  const shadow = values["--shadow"] ? await readJson<ShadowPlacementRecord>(values["--shadow"], "shadow record") : null;
   const configText = await readFile(routeConfigPath, "utf8");
   const routes = extractRoutes(configText);
 

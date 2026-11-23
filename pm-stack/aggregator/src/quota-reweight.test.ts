@@ -1,14 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  ForecastAccuracyLedger,
-  PoolBaseline,
-  WindowBaseline,
-} from "./quota-forecast-accuracy.ts";
-import {
-  buildReweightProposals,
-  renderEvidencePack,
-  type RouteWeightTable,
-} from "./quota-reweight.ts";
+import type { ForecastAccuracyLedger, PoolBaseline, WindowBaseline } from "./quota-forecast-accuracy.ts";
+import { buildReweightProposals, renderEvidencePack, type RouteWeightTable } from "./quota-reweight.ts";
 
 // Oracle: the Stage-3 design D5 (doc/2026-11-22T22-35-00Z_design_
 // quota-plane-stage-3, #12700): re-weighting proposals are PRs
@@ -62,7 +54,12 @@ function ledger(pools: PoolBaseline[]): ForecastAccuracyLedger {
     kind: "quota-forecast-accuracy",
     generatedAt: "2026-11-23T00:00:00.000Z",
     model: "quota-analytics.projectWindow pace v1 (design D2, via S1 #12695)",
-    store: { records: 20663, pctRecords: 19735, fromIso: "2026-10-20T12:00:00.000Z", toIso: "2026-11-23T00:00:00.000Z" },
+    store: {
+      records: 20663,
+      pctRecords: 19735,
+      fromIso: "2026-10-20T12:00:00.000Z",
+      toIso: "2026-11-23T00:00:00.000Z",
+    },
     pools,
   };
 }
@@ -85,12 +82,34 @@ describe("pool-weight class", () => {
     const run = buildReweightProposals({
       ledger: ledger([
         pool("opencode-go.drewrypope", [
-          win({ forecastsScored: 300, precision: 1, recall: 0.5, wallErrorMin: { count: 40, meanSignedMin: 2000, medianSignedMin: 2000, medianAbsMin: 2000, p90AbsMin: 3000 } }),
+          win({
+            forecastsScored: 300,
+            precision: 1,
+            recall: 0.5,
+            wallErrorMin: {
+              count: 40,
+              meanSignedMin: 2000,
+              medianSignedMin: 2000,
+              medianAbsMin: 2000,
+              p90AbsMin: 3000,
+            },
+          }),
         ]),
         pool("opencode-go.popesdrew", [
-          win({ forecastsScored: 250, precision: 1, recall: 0.95, wallErrorMin: { count: 30, meanSignedMin: 100, medianSignedMin: 100, medianAbsMin: 100, p90AbsMin: 200 } }),
+          win({
+            forecastsScored: 250,
+            precision: 1,
+            recall: 0.95,
+            wallErrorMin: { count: 30, meanSignedMin: 100, medianSignedMin: 100, medianAbsMin: 100, p90AbsMin: 200 },
+          }),
         ]),
-        pool("opencode-go.developing-today-0", [win({ scoreable: false, forecastsScored: 0, unscoreableReasons: ["no percent readings for this pool/window in the store"] })]),
+        pool("opencode-go.developing-today-0", [
+          win({
+            scoreable: false,
+            forecastsScored: 0,
+            unscoreableReasons: ["no percent readings for this pool/window in the store"],
+          }),
+        ]),
         pool("opencode-go.0x111dev", [win({ forecastsScored: 10 })]),
       ]),
       routes: [GO_ROUTE],
@@ -121,7 +140,8 @@ describe("pool-weight class", () => {
   });
 
   test("refuses an unscoreable binding window, carrying S2's reason verbatim", () => {
-    const s2Reason = "every issued forecast was insufficient-history — the pace was never measurable in a completed period";
+    const s2Reason =
+      "every issued forecast was insufficient-history — the pace was never measurable in a completed period";
     const run = buildReweightProposals({
       ledger: ledger([
         pool("opencode-go.drewrypope", [win({ scoreable: false, forecastsScored: 0, unscoreableReasons: [s2Reason] })]),
@@ -139,7 +159,13 @@ describe("pool-weight class", () => {
     const run = buildReweightProposals({
       ledger: ledger([
         pool("opencode-go.drewrypope", [
-          win({ forecastsScored: 300, precision: 0, recall: null, wallErrorMin: null, unscoreableReasons: ["recall undefined: no realized wall was scored"] }),
+          win({
+            forecastsScored: 300,
+            precision: 0,
+            recall: null,
+            wallErrorMin: null,
+            unscoreableReasons: ["recall undefined: no realized wall was scored"],
+          }),
         ]),
         pool("opencode-go.popesdrew", [win({ forecastsScored: 250, precision: 1, recall: 0.95 })]),
       ]),
@@ -172,11 +198,21 @@ describe("caution-margin class", () => {
   const anthropic = () =>
     pool("anthropic:claude-pro", [
       win({ window: "5h", forecastsScored: 305, precision: 0.593, recall: 0.44 }),
-      win({ forecastsScored: 273, precision: 1, recall: 0.582, wallErrorMin: { count: 159, meanSignedMin: 900, medianSignedMin: 795, medianAbsMin: 2204, p90AbsMin: 4000 } }),
+      win({
+        forecastsScored: 273,
+        precision: 1,
+        recall: 0.582,
+        wallErrorMin: { count: 159, meanSignedMin: 900, medianSignedMin: 795, medianAbsMin: 2204, p90AbsMin: 4000 },
+      }),
     ]);
   const meta = () =>
     pool("meta", [
-      win({ forecastsScored: 269, precision: 0.529, recall: 0.647, wallErrorMin: { count: 110, meanSignedMin: 3194, medianSignedMin: 4741, medianAbsMin: 4741, p90AbsMin: 6000 } }),
+      win({
+        forecastsScored: 269,
+        precision: 0.529,
+        recall: 0.647,
+        wallErrorMin: { count: 110, meanSignedMin: 3194, medianSignedMin: 4741, medianAbsMin: 4741, p90AbsMin: 6000 },
+      }),
     ]);
 
   test("fires DOWNWARD when weekly walls arrive early across pools with a precision anchor", () => {
@@ -190,7 +226,14 @@ describe("caution-margin class", () => {
       ledger: ledger([
         anthropic(),
         meta(),
-        pool("_openai.alt", [win({ forecastsScored: 169, precision: 1, recall: 0.958, wallErrorMin: { count: 60, meanSignedMin: -100, medianSignedMin: -155, medianAbsMin: 370, p90AbsMin: 900 } })]),
+        pool("_openai.alt", [
+          win({
+            forecastsScored: 169,
+            precision: 1,
+            recall: 0.958,
+            wallErrorMin: { count: 60, meanSignedMin: -100, medianSignedMin: -155, medianAbsMin: 370, p90AbsMin: 900 },
+          }),
+        ]),
       ]),
       routes: [],
       nearPctCurrent: 85,
@@ -222,10 +265,32 @@ describe("caution-margin class", () => {
     const run = buildReweightProposals({
       ledger: ledger([
         pool("meta", [
-          win({ forecastsScored: 269, precision: 0.9, recall: 0.9, wallErrorMin: { count: 110, meanSignedMin: -3000, medianSignedMin: -3000, medianAbsMin: 3000, p90AbsMin: 5000 } }),
+          win({
+            forecastsScored: 269,
+            precision: 0.9,
+            recall: 0.9,
+            wallErrorMin: {
+              count: 110,
+              meanSignedMin: -3000,
+              medianSignedMin: -3000,
+              medianAbsMin: 3000,
+              p90AbsMin: 5000,
+            },
+          }),
         ]),
         pool("opendesign", [
-          win({ forecastsScored: 200, precision: 1, recall: 0.95, wallErrorMin: { count: 50, meanSignedMin: -2000, medianSignedMin: -2000, medianAbsMin: 2000, p90AbsMin: 3000 } }),
+          win({
+            forecastsScored: 200,
+            precision: 1,
+            recall: 0.95,
+            wallErrorMin: {
+              count: 50,
+              meanSignedMin: -2000,
+              medianSignedMin: -2000,
+              medianAbsMin: 2000,
+              p90AbsMin: 3000,
+            },
+          }),
         ]),
       ]),
       routes: [],
@@ -248,10 +313,32 @@ describe("caution-margin class", () => {
         anthropic(),
         meta(),
         pool("opendesign", [
-          win({ forecastsScored: 200, precision: 1, recall: 0.9, wallErrorMin: { count: 50, meanSignedMin: -2000, medianSignedMin: -2000, medianAbsMin: 2000, p90AbsMin: 3000 } }),
+          win({
+            forecastsScored: 200,
+            precision: 1,
+            recall: 0.9,
+            wallErrorMin: {
+              count: 50,
+              meanSignedMin: -2000,
+              medianSignedMin: -2000,
+              medianAbsMin: 2000,
+              p90AbsMin: 3000,
+            },
+          }),
         ]),
         pool("_openai.main", [
-          win({ forecastsScored: 180, precision: 1, recall: 0.9, wallErrorMin: { count: 60, meanSignedMin: -1500, medianSignedMin: -1500, medianAbsMin: 1500, p90AbsMin: 2500 } }),
+          win({
+            forecastsScored: 180,
+            precision: 1,
+            recall: 0.9,
+            wallErrorMin: {
+              count: 60,
+              meanSignedMin: -1500,
+              medianSignedMin: -1500,
+              medianAbsMin: 1500,
+              p90AbsMin: 2500,
+            },
+          }),
         ]),
       ]),
       routes: [],
@@ -278,10 +365,32 @@ describe("caution-margin class", () => {
     const run = buildReweightProposals({
       ledger: ledger([
         pool("meta", [
-          win({ forecastsScored: 269, precision: 0.9, recall: 0.9, wallErrorMin: { count: 110, meanSignedMin: -3000, medianSignedMin: -3000, medianAbsMin: 3000, p90AbsMin: 5000 } }),
+          win({
+            forecastsScored: 269,
+            precision: 0.9,
+            recall: 0.9,
+            wallErrorMin: {
+              count: 110,
+              meanSignedMin: -3000,
+              medianSignedMin: -3000,
+              medianAbsMin: 3000,
+              p90AbsMin: 5000,
+            },
+          }),
         ]),
         pool("opendesign", [
-          win({ forecastsScored: 200, precision: 1, recall: 0.95, wallErrorMin: { count: 50, meanSignedMin: -2000, medianSignedMin: -2000, medianAbsMin: 2000, p90AbsMin: 3000 } }),
+          win({
+            forecastsScored: 200,
+            precision: 1,
+            recall: 0.95,
+            wallErrorMin: {
+              count: 50,
+              meanSignedMin: -2000,
+              medianSignedMin: -2000,
+              medianAbsMin: 2000,
+              p90AbsMin: 3000,
+            },
+          }),
         ]),
       ]),
       routes: [],
@@ -301,7 +410,20 @@ describe("caution-margin class", () => {
       ledger: ledger([
         anthropic(),
         meta(),
-        pool("opendesign", [win({ forecastsScored: 200, precision: 1, recall: 0.9, wallErrorMin: { count: 50, meanSignedMin: -2000, medianSignedMin: -2000, medianAbsMin: 2000, p90AbsMin: 3000 } })]),
+        pool("opendesign", [
+          win({
+            forecastsScored: 200,
+            precision: 1,
+            recall: 0.9,
+            wallErrorMin: {
+              count: 50,
+              meanSignedMin: -2000,
+              medianSignedMin: -2000,
+              medianAbsMin: 2000,
+              p90AbsMin: 3000,
+            },
+          }),
+        ]),
       ]),
       routes: [],
       nearPctCurrent: 85,
@@ -315,7 +437,18 @@ describe("caution-margin class", () => {
       ledger: ledger([
         anthropic(),
         pool("opencode-go", [
-          win({ forecastsScored: 711, precision: 1, recall: 0.454, wallErrorMin: { count: 300, meanSignedMin: 1903, medianSignedMin: 1903, medianAbsMin: 2961, p90AbsMin: 5000 } }),
+          win({
+            forecastsScored: 711,
+            precision: 1,
+            recall: 0.454,
+            wallErrorMin: {
+              count: 300,
+              meanSignedMin: 1903,
+              medianSignedMin: 1903,
+              medianAbsMin: 2961,
+              p90AbsMin: 5000,
+            },
+          }),
           win({ window: "monthly", forecastsScored: 513, precision: 0.054, recall: 0.929 }),
         ]),
       ]),
@@ -332,7 +465,16 @@ describe("caution-margin class", () => {
       ledger: ledger([
         anthropic(),
         pool("_antigravity.claude-gpt", [
-          win({ scoreable: false, forecastsScored: 0, precision: null, recall: null, wallErrorMin: null, unscoreableReasons: ["every issued forecast was insufficient-history — the pace was never measurable in a completed period"] }),
+          win({
+            scoreable: false,
+            forecastsScored: 0,
+            precision: null,
+            recall: null,
+            wallErrorMin: null,
+            unscoreableReasons: [
+              "every issued forecast was insufficient-history — the pace was never measurable in a completed period",
+            ],
+          }),
         ]),
       ]),
       routes: [],
@@ -346,8 +488,28 @@ describe("evidence pack honesty", () => {
   test("absent forecast/shadow inputs are named in the pack, never papered over", () => {
     const run = buildReweightProposals({
       ledger: ledger([
-        pool("anthropic:claude-pro", [win({ forecastsScored: 273, precision: 1, recall: 0.582, wallErrorMin: { count: 159, meanSignedMin: 900, medianSignedMin: 795, medianAbsMin: 2204, p90AbsMin: 4000 } })]),
-        pool("meta", [win({ forecastsScored: 269, precision: 0.529, recall: 0.647, wallErrorMin: { count: 110, meanSignedMin: 3194, medianSignedMin: 4741, medianAbsMin: 4741, p90AbsMin: 6000 } })]),
+        pool("anthropic:claude-pro", [
+          win({
+            forecastsScored: 273,
+            precision: 1,
+            recall: 0.582,
+            wallErrorMin: { count: 159, meanSignedMin: 900, medianSignedMin: 795, medianAbsMin: 2204, p90AbsMin: 4000 },
+          }),
+        ]),
+        pool("meta", [
+          win({
+            forecastsScored: 269,
+            precision: 0.529,
+            recall: 0.647,
+            wallErrorMin: {
+              count: 110,
+              meanSignedMin: 3194,
+              medianSignedMin: 4741,
+              medianAbsMin: 4741,
+              p90AbsMin: 6000,
+            },
+          }),
+        ]),
       ]),
       routes: [],
       nearPctCurrent: 85,

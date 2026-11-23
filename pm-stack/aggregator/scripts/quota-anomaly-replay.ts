@@ -132,9 +132,7 @@ function renderReport(args: {
   const lines: string[] = [];
   lines.push("# Quota anomaly detector replay — Stage-3 S5 (#12699)");
   lines.push("");
-  lines.push(
-    `- Store: ${args.records} records, ${args.fromIso ?? "?"} → ${args.toIso ?? "?"} (dir: ${args.storeDir})`,
-  );
+  lines.push(`- Store: ${args.records} records, ${args.fromIso ?? "?"} → ${args.toIso ?? "?"} (dir: ${args.storeDir})`);
   lines.push(
     "- Method: the live detectors' own machines (src/quota-anomaly.ts) replayed over the snapshot store in stream order. Burn-spike and the plan-change limit leg replay at full fidelity; schema drift replays at store fidelity (per-service per-day field sets, 3-active-day removal sustain — the store appends only on movement); the unparseable leg has no store trace and is covered by the live path + unit fixtures, not this replay.",
   );
@@ -177,7 +175,7 @@ function renderReport(args: {
     lines.push("## Landing demonstration (replay-injected)");
     lines.push("");
     lines.push(
-      "For the first finding above, the two records a live gatherer tick files — the evidence-baseline diff record (one history JSONL line) and the alerts-ledger incident input (AlertsStore.postIncident, source \"quota-anomaly\"):",
+      'For the first finding above, the two records a live gatherer tick files — the evidence-baseline diff record (one history JSONL line) and the alerts-ledger incident input (AlertsStore.postIncident, source "quota-anomaly"):',
     );
     lines.push("");
     lines.push("```json");
@@ -220,9 +218,7 @@ async function main(): Promise<void> {
     console.log(report);
   }
   if (args["--findings-out"]) {
-    const jsonl = findings
-      .map((f) => JSON.stringify({ kind: "quota-anomaly-finding", version: 1, ...f }))
-      .join("\n");
+    const jsonl = findings.map((f) => JSON.stringify({ kind: "quota-anomaly-finding", version: 1, ...f })).join("\n");
     await writeFile(args["--findings-out"], jsonl ? `${jsonl}\n` : "", "utf8");
     console.log(`quota-anomaly-replay: findings -> ${args["--findings-out"]}`);
   }

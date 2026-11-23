@@ -38,7 +38,12 @@ def valid_record():
             "builds": True,
             "gpu": False,
         },
-        "capacity": {"max_sessions": 12, "cpu_cores": 16, "ram_gb": 123, "worktree_disk_gb": 3372},
+        "capacity": {
+            "max_sessions": 12,
+            "cpu_cores": 16,
+            "ram_gb": 123,
+            "worktree_disk_gb": 3372,
+        },
         "secrets": ["github-gh-auth"],
         "health": {"source": "watchdog", "last_seen": None, "status": "unknown"},
     }
@@ -88,7 +93,12 @@ class RegistryShapeTests(unittest.TestCase):
         # capacity is measured; positivity binds only `active` records.
         rec = valid_record()
         rec["state"] = "declared"
-        rec["capacity"] = {"max_sessions": 0, "cpu_cores": 0, "ram_gb": 0, "worktree_disk_gb": 0}
+        rec["capacity"] = {
+            "max_sessions": 0,
+            "cpu_cores": 0,
+            "ram_gb": 0,
+            "worktree_disk_gb": 0,
+        }
         self.assertEqual(validator.validate(doc_with(rec)), [])
 
     def test_secret_value_shaped_entry_fails(self):
@@ -179,7 +189,9 @@ class HealthEarningTests(unittest.TestCase):
         health = earned_health(status="unreachable")
         health["last_seen"] = "2026-11-22T18:00:00Z"  # last sighting stands
         health["checks"]["reachable"] = {
-            "state": "failed", "ssh": True, "opencode_server_http": None,
+            "state": "failed",
+            "ssh": True,
+            "opencode_server_http": None,
         }
         rec["health"] = health
         self.assertEqual(validator.validate(doc_with(rec)), [])

@@ -21,13 +21,7 @@ const H = 3_600_000;
 const T0 = Date.parse("2026-11-20T00:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
 
-function rec(
-  serviceId: string,
-  metricId: string,
-  tsMs: number,
-  pct: number,
-  resetsAt: string | null,
-): SnapshotRecord {
+function rec(serviceId: string, metricId: string, tsMs: number, pct: number, resetsAt: string | null): SnapshotRecord {
   return {
     ts: iso(tsMs),
     serviceId,

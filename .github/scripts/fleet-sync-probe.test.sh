@@ -20,7 +20,8 @@ trap 'rm -rf "$TMP"' EXIT
 NOW="2026-11-22T14:30:00Z"
 RC=0
 run_probe() { # run_probe RUNS_FILE [EXTRA ARGS..]
-  local runs="$1"; shift
+  local runs="$1"
+  shift
   RC=0
   python3 "$PROBE" --repo developing-today/fleet --runs-json "$runs" \
     --max-age-hours 30 --now "$NOW" "$@" >"$TMP/out" 2>&1 || RC=$?
@@ -155,22 +156,38 @@ expect_fail_with "scheduled success 31h ago (outside the 30h window)" "no succes
 # missing required option are the same event.
 RC=0
 python3 "$PROBE" --repo x --runs-json "$TMP/bare-list.json" --nope >"$TMP/out" 2>&1 || RC=$?
-if [ "$RC" -ne 2 ]; then echo "FAIL: unknown flag should exit 2 (got $RC)" >&2; cat "$TMP/out" >&2; exit 1; fi
+if [ "$RC" -ne 2 ]; then
+  echo "FAIL: unknown flag should exit 2 (got $RC)" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
 echo "pass: unknown flag exits 2"
 # An abbreviated (but unambiguous) flag must also be rejected: the
 # probe's parser is strict (allow_abbrev=False) per the operator script
 # argument contract (#3352).
 RC=0
 python3 "$PROBE" --repo x --runs-json "$TMP/bare-list.json" --max-age-hour 30 >"$TMP/out" 2>&1 || RC=$?
-if [ "$RC" -ne 2 ]; then echo "FAIL: abbreviated flag should exit 2 (got $RC)" >&2; cat "$TMP/out" >&2; exit 1; fi
+if [ "$RC" -ne 2 ]; then
+  echo "FAIL: abbreviated flag should exit 2 (got $RC)" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
 echo "pass: abbreviated flag exits 2"
 RC=0
 python3 "$PROBE" --repo x --runs-json "$TMP/bare-list.json" extra >"$TMP/out" 2>&1 || RC=$?
-if [ "$RC" -ne 2 ]; then echo "FAIL: stray positional should exit 2 (got $RC)" >&2; cat "$TMP/out" >&2; exit 1; fi
+if [ "$RC" -ne 2 ]; then
+  echo "FAIL: stray positional should exit 2 (got $RC)" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
 echo "pass: stray positional exits 2"
 RC=0
 python3 "$PROBE" --repo x >"$TMP/out" 2>&1 || RC=$?
-if [ "$RC" -ne 2 ]; then echo "FAIL: missing --runs-json should exit 2 (got $RC)" >&2; cat "$TMP/out" >&2; exit 1; fi
+if [ "$RC" -ne 2 ]; then
+  echo "FAIL: missing --runs-json should exit 2 (got $RC)" >&2
+  cat "$TMP/out" >&2
+  exit 1
+fi
 echo "pass: missing --runs-json exits 2"
 
 # A missing runs file is a named read failure, never a verdict.

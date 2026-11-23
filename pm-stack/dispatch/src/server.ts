@@ -595,10 +595,9 @@ async function handleTasks(req: Request, caller: CallerIdentity): Promise<Respon
 
   // #12527: request idempotency keys are not broker packet identities.
   const dedupeKey =
-    (issue ? issueDispatchDedupeKey(
-      body.kind, body.repo, issue.number, body.dedupeKey,
-      body.issueNumber !== undefined,
-    ) : null) ??
+    (issue
+      ? issueDispatchDedupeKey(body.kind, body.repo, issue.number, body.dedupeKey, body.issueNumber !== undefined)
+      : null) ??
     body.dedupeKey ??
     dispatchDedupeKey(body.repo);
   const packetInput = {

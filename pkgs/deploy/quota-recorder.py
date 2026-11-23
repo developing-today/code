@@ -44,6 +44,7 @@ Two sinks, file first:
 
 No LLM involved. Always exits 0; failures are recorded as data.
 """
+
 import json
 import os
 import re
@@ -61,6 +62,8 @@ SUBSCRIPTION_STATUS = "/opt/hatch/bin/subscription-status"
 TURSO_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
 TURSO_TOKEN_SECRET = "turso.fleet-platform-rw-token"
 TABLE = "agent_quota_records"
+
+
 def _resolve_fleet():
     """First working fleet binary on this host: the layout differs per
     host (sandbox: ~/tools/bin/fleet; laptop: ~/.local/bin/fleet), so a
@@ -81,7 +84,9 @@ def record_subscription(ts):
     try:
         p = subprocess.run(
             [SUBSCRIPTION_STATUS, "status"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         text = (p.stdout or "") + (p.stderr or "")
         m = re.search(r"on the (\w+) subscription", text)
@@ -93,9 +98,7 @@ def record_subscription(ts):
         m = re.search(r"Weekly limit resets (.+)", text)
         if m:
             rec["resets"] = m.group(1).strip()
-        m = re.search(
-            r"Additional tokens:\s*([\d.]+)% used \(([^)]+)\)", text
-        )
+        m = re.search(r"Additional tokens:\s*([\d.]+)% used \(([^)]+)\)", text)
         if m:
             rec["additional_percent"] = float(m.group(1))
             rec["additional_left"] = m.group(2).strip()
@@ -108,6 +111,7 @@ def record_subscription(ts):
 
 
 # --- Turso landing --------------------------------------------------------
+
 
 def _sql_str(v):
     if v is None:
@@ -126,27 +130,27 @@ def build_insert(records, inserted_at):
     for r in records:
         rows.append(
             "("
-            + ", ".join([
-                _sql_str(r.get("source")),
-                _sql_str(r.get("ts")),
-                _sql_str(r.get("plan")),
-                _sql_num(r.get("weekly_percent")),
-                _sql_str(r.get("resets")),
-                _sql_num(r.get("additional_percent")),
-                _sql_str(r.get("additional_left")),
-                _sql_str(r.get("error")),
-                _sql_str(json.dumps(r)),
-                _sql_str(inserted_at),
-                _sql_str(r.get("id") or ""),
-            ])
+            + ", ".join(
+                [
+                    _sql_str(r.get("source")),
+                    _sql_str(r.get("ts")),
+                    _sql_str(r.get("plan")),
+                    _sql_num(r.get("weekly_percent")),
+                    _sql_str(r.get("resets")),
+                    _sql_num(r.get("additional_percent")),
+                    _sql_str(r.get("additional_left")),
+                    _sql_str(r.get("error")),
+                    _sql_str(json.dumps(r)),
+                    _sql_str(inserted_at),
+                    _sql_str(r.get("id") or ""),
+                ]
+            )
             + ")"
         )
     return (
         f"INSERT OR IGNORE INTO {TABLE} (source, ts, plan, weekly_percent,"
         " resets, additional_percent, additional_left, error, payload,"
-        " inserted_at, id) VALUES\n"
-        + ",\n".join(rows)
-        + ";"
+        " inserted_at, id) VALUES\n" + ",\n".join(rows) + ";"
     )
 
 
@@ -178,8 +182,14 @@ def load_file_state(path):
 
 PROXY_ENV_FILE = os.path.expanduser("~/tools/secrets.d/mcpx-daemon.env")
 PROXY_KEYS = (
-    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
-    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
 )
 
 
@@ -206,7 +216,10 @@ def flush_env():
 def get_turso_token(env):
     p = subprocess.run(
         [FLEET, "secrets", "get", TURSO_TOKEN_SECRET],
-        capture_output=True, text=True, timeout=60, env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
     )
     val = (p.stdout or "").strip()
     if not val:
@@ -222,22 +235,36 @@ def run_flush(records, now_ts):
         token = get_turso_token(env)
     except Exception as e:
         return False, f"token: {type(e).__name__}: {e}"[:300]
-    body = {"requests": [
-        {"type": "execute",
-         "stmt": {"sql": build_insert(records, now_ts)}},
-        {"type": "close"},
-    ]}
+    body = {
+        "requests": [
+            {"type": "execute", "stmt": {"sql": build_insert(records, now_ts)}},
+            {"type": "close"},
+        ]
+    }
     fd, fname = tempfile.mkstemp(suffix=".json", prefix="quota-flush-")
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(body, f)
         p = subprocess.run(
-            ["curl", "-sS", "-m", "120", "-X", "POST",
-             f"{TURSO_URL}/v2/pipeline",
-             "-H", f"Authorization: Bearer {token}",
-             "-H", "Content-Type: application/json",
-             "--data-binary", f"@{fname}"],
-            capture_output=True, text=True, timeout=180, env=env,
+            [
+                "curl",
+                "-sS",
+                "-m",
+                "120",
+                "-X",
+                "POST",
+                f"{TURSO_URL}/v2/pipeline",
+                "-H",
+                f"Authorization: Bearer {token}",
+                "-H",
+                "Content-Type: application/json",
+                "--data-binary",
+                f"@{fname}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env=env,
         )
         if p.returncode != 0:
             err = (p.stderr or p.stdout or "").strip().splitlines()
@@ -266,35 +293,42 @@ def flush_file(path, now_ts):
     if not os.path.exists(path):
         return 0
     records, acked_through = load_file_state(path)
-    pending = [
-        r for r in records
-        if acked_through is None or r["ts"] > acked_through
-    ]
+    pending = [r for r in records if acked_through is None or r["ts"] > acked_through]
     if not pending:
         return 0
     landed_through = acked_through
     landed = 0
     for i in range(0, len(pending), CHUNK):
-        chunk = pending[i:i + CHUNK]
+        chunk = pending[i : i + CHUNK]
         ok, err = run_flush(chunk, now_ts)
         if not ok:
             with open(path, "a") as f:
-                f.write(json.dumps({
-                    "kind": "turso-error",
-                    "ts": now_ts,
-                    "error": err,
-                    "pending": len(pending) - landed,
-                }) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "kind": "turso-error",
+                            "ts": now_ts,
+                            "error": err,
+                            "pending": len(pending) - landed,
+                        }
+                    )
+                    + "\n"
+                )
             return len(pending) - landed
         landed += len(chunk)
         landed_through = chunk[-1]["ts"]
     with open(path, "a") as f:
-        f.write(json.dumps({
-            "kind": "turso-ack",
-            "ts": now_ts,
-            "through": landed_through,
-            "count": landed,
-        }) + "\n")
+        f.write(
+            json.dumps(
+                {
+                    "kind": "turso-ack",
+                    "ts": now_ts,
+                    "through": landed_through,
+                    "count": landed,
+                }
+            )
+            + "\n"
+        )
     return 0
 
 
@@ -304,8 +338,7 @@ def month_paths(now):
     paths = []
     y, m = now.year, now.month
     for _ in range(2):
-        paths.append(os.path.join(
-            OUT_DIR, f"quota-records-{y:04d}-{m:02d}.jsonl"))
+        paths.append(os.path.join(OUT_DIR, f"quota-records-{y:04d}-{m:02d}.jsonl"))
         m -= 1
         if m == 0:
             y, m = y - 1, 12
@@ -315,9 +348,7 @@ def month_paths(now):
 def main():
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     os.makedirs(OUT_DIR, exist_ok=True)
-    path = os.path.join(
-        OUT_DIR, datetime.now().strftime("quota-records-%Y-%m.jsonl")
-    )
+    path = os.path.join(OUT_DIR, datetime.now().strftime("quota-records-%Y-%m.jsonl"))
     with open(path, "a") as f:
         f.write(json.dumps(record_subscription(ts)) + "\n")
     still_pending = 0

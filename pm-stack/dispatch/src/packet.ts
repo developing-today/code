@@ -35,7 +35,13 @@ export function canonicalDedupeKey(kind: TaskKind, repo: string, issueNumber: nu
 
 /** Broker-compatible issue identity: request keys are scoped to an existing
  * issue and hashed, while new issues always use their canonical key (#12527). */
-export function issueDispatchDedupeKey(kind: TaskKind, repo: string, issueNumber: number, callerKey?: string, attaching = false): string | null {
+export function issueDispatchDedupeKey(
+  kind: TaskKind,
+  repo: string,
+  issueNumber: number,
+  callerKey?: string,
+  attaching = false,
+): string | null {
   const canonical = canonicalDedupeKey(kind, repo, issueNumber);
   if (!canonical) return null;
   if (attaching && callerKey !== undefined) {
