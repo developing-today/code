@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use atlas_core::error::Result;
+use atlas_core::filters::Sensitivity;
 use atlas_core::occurrences::{ChunkOccurrence, lookup_by_hash};
 use atlas_core::search::run_get_chunk;
 use atlas_core::shards::scan::ShardedBackend;
@@ -19,7 +20,9 @@ use atlas_core::shards::{
     DirLister, DiscoveryOptions, ShardConnector, ShardEndpoint, ShardSet, Tier, TierCeiling,
     discover,
 };
-use atlas_core::types::{BranchHit, BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow};
+use atlas_core::types::{
+    BranchHit, BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow,
+};
 use atlas_core::{DEFAULT_VEC_TABLE, SearchBackend};
 
 const NOW: &str = "2026-11-23T00:00:00Z";
@@ -36,11 +39,21 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 /// One (source, span) pair a fixture shard records for HASH.
-fn fixture(
+fn fixture(dir: &Path, name: &str, occurrences: &[(&str, i64, i64)], legacy: bool) -> PathBuf {
+    fixture_with_sens(dir, name, occurrences, legacy, &["personal"])
+}
+
+/// Same as [`fixture`], but each chunk row's `sensitivity` is taken
+/// from `sens` positionally (cycling when shorter): the per-row
+/// classification promotion writes separately from the shard tier
+/// (#3125 slice 3 P1: an admitted shard can hold rows above the
+/// caller's ceiling).
+fn fixture_with_sens(
     dir: &Path,
     name: &str,
     occurrences: &[(&str, i64, i64)],
     legacy: bool,
+    sens: &[&str],
 ) -> PathBuf {
     use rusqlite::params;
     let (tier, topic, part) =
@@ -69,9 +82,10 @@ fn fixture(
     }
     for (i, (source, start, end)) in occurrences.iter().enumerate() {
         let id = (i + 1) as i64;
+        let chunk_sens = sens.get(i % sens.len()).copied().unwrap_or("personal");
         con.execute(
-            "INSERT INTO chunks VALUES (?1, ?2, 0, ?3, ?4, 'personal')",
-            params![id, source, TEXT, format!("h{id}")],
+            "INSERT INTO chunks VALUES (?1, ?2, 0, ?3, ?4, ?5)",
+            params![id, source, TEXT, format!("h{id}"), chunk_sens],
         )
         .expect("chunk");
         con.execute(
@@ -113,12 +127,18 @@ impl ShardConnector for OpenConnector {
     fn can_open(&self, _tier: Tier) -> bool {
         true
     }
-    fn connect(&self, ep: &ShardEndpoint, _tier: Tier) -> Result<std::sync::Arc<dyn atlas_core::shards::ShardTransport>> {
+    fn connect(
+        &self,
+        ep: &ShardEndpoint,
+        _tier: Tier,
+    ) -> Result<std::sync::Arc<dyn atlas_core::shards::ShardTransport>> {
         use atlas_core::shards::ShardLocation;
         let ShardLocation::File(p) = &ep.location else {
             panic!("tests use files");
         };
-        Ok(std::sync::Arc::new(atlas_core::shards::LocalShardTransport::open(p)?))
+        Ok(std::sync::Arc::new(
+            atlas_core::shards::LocalShardTransport::open(p)?,
+        ))
     }
 }
 
@@ -164,7 +184,13 @@ fn lookup_finds_every_occurrence_across_shards_and_skips_legacy_shards() {
     fixture(&dir, "atlas-core-internal-misc-01", &[], true);
     let set = discover_set(&dir, Tier::Secret);
 
-    let found = lookup_by_hash(&set, TierCeiling(Tier::Internal), HASH).unwrap();
+    let found = lookup_by_hash(
+        &set,
+        TierCeiling(Tier::Internal),
+        Sensitivity::LocalOnly,
+        HASH,
+    )
+    .unwrap();
     assert_eq!(
         found,
         vec![
@@ -191,11 +217,26 @@ fn lookup_finds_every_occurrence_across_shards_and_skips_legacy_shards() {
     );
 
     // A secret ceiling sees the third occurrence too.
-    let secret = lookup_by_hash(&set, TierCeiling(Tier::Secret), HASH).unwrap();
+    let secret = lookup_by_hash(
+        &set,
+        TierCeiling(Tier::Secret),
+        Sensitivity::SecretBearing,
+        HASH,
+    )
+    .unwrap();
     assert_eq!(secret.len(), 3, "secret ceiling adds the secret-tier row");
 
     // An unknown hash reads as empty, never as an error.
-    assert!(lookup_by_hash(&set, TierCeiling(Tier::Internal), "00").unwrap().is_empty());
+    assert!(
+        lookup_by_hash(
+            &set,
+            TierCeiling(Tier::Internal),
+            Sensitivity::LocalOnly,
+            "00"
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
 
 /// Stands in for the wrapped monolith: serves one chunk detail
@@ -213,7 +254,11 @@ impl SearchBackend for Monolith {
     fn notes(&self) -> Vec<String> {
         Vec::new()
     }
-    fn branch_pools(&self, _q: &BranchQuery, _f: &atlas_core::filters::Filters) -> Result<BranchPools> {
+    fn branch_pools(
+        &self,
+        _q: &BranchQuery,
+        _f: &atlas_core::filters::Filters,
+    ) -> Result<BranchPools> {
         Ok(BranchPools::default())
     }
     fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
@@ -281,7 +326,11 @@ fn get_chunk_reports_occurrences_from_the_shard_fan_out() {
 
     let sharded = ShardedBackend::new(inner, set);
     let out = run_get_chunk(&sharded, 7, 0).unwrap();
-    let occ = out.get("occurrences").expect("occurrences present").as_array().unwrap();
+    let occ = out
+        .get("occurrences")
+        .expect("occurrences present")
+        .as_array()
+        .unwrap();
     assert_eq!(occ.len(), 2, "both internal shard rows surface");
     let sources: Vec<&str> = occ
         .iter()
@@ -297,10 +346,7 @@ fn get_chunk_reports_occurrences_from_the_shard_fan_out() {
         Some(4),
         "the media shard's row carries its own span"
     );
-    assert_eq!(
-        occ[0].get("span_end").and_then(|v| v.as_i64()),
-        Some(21)
-    );
+    assert_eq!(occ[0].get("span_end").and_then(|v| v.as_i64()), Some(21));
     assert_eq!(
         occ[0].get("observed_at").and_then(|v| v.as_str()),
         Some(NOW)
@@ -334,17 +380,74 @@ fn sharded_backend_occurrences_respect_the_caller_ceiling() {
     let sharded = ShardedBackend::new(Monolith { chunk_id: 1 }, set);
 
     let internal = sharded
-        .occurrences(HASH, TierCeiling(Tier::Internal))
+        .occurrences(HASH, TierCeiling(Tier::Internal), Sensitivity::LocalOnly)
         .unwrap();
     assert_eq!(internal.len(), 1, "secret-tier occurrence withheld");
     let secret = sharded
-        .occurrences(HASH, TierCeiling(Tier::Secret))
+        .occurrences(HASH, TierCeiling(Tier::Secret), Sensitivity::SecretBearing)
         .unwrap();
     assert_eq!(secret.len(), 2, "secret ceiling adds the secret row");
+}
+
+#[test]
+fn occurrence_rows_are_filtered_by_their_own_chunk_sensitivity_not_just_shard_tier() {
+    // #3125 slice 3 P1: promotion names a shard from the unit's
+    // tier but writes each chunk's effective sensitivity
+    // separately, so an admitted shard can hold rows above the
+    // caller's ceiling. Both occurrences live in the SAME
+    // internal shard (admitted by an internal tier ceiling); only
+    // the per-row sensitivity decides which surface: a personal
+    // caller must not see the local-only row, and the
+    // personal/local-only distinction must survive (an internal
+    // TierCeiling alone cannot tell them apart).
+    let dir = temp_dir("rowsens");
+    fixture_with_sens(
+        &dir,
+        "atlas-core-internal-work-01",
+        &[
+            ("repo@abc:infra/dns/shared.yaml", 0, 17),
+            ("repo@abc:infra/dns/local.yaml", 0, 17),
+        ],
+        false,
+        &["personal", "local-only"],
+    );
+    let set = discover_set(&dir, Tier::Internal);
+
+    let personal = lookup_by_hash(
+        &set,
+        TierCeiling(Tier::Internal),
+        Sensitivity::Personal,
+        HASH,
+    )
+    .unwrap();
+    assert_eq!(
+        personal
+            .iter()
+            .map(|o| o.source.as_str())
+            .collect::<Vec<_>>(),
+        ["repo@abc:infra/dns/shared.yaml"],
+        "personal caller sees only the personal row; the local-only row in the same admitted shard is withheld"
+    );
+
+    let local = lookup_by_hash(
+        &set,
+        TierCeiling(Tier::Internal),
+        Sensitivity::LocalOnly,
+        HASH,
+    )
+    .unwrap();
+    assert_eq!(
+        local.len(),
+        2,
+        "local-only ceiling sees both rows in the admitted shard"
+    );
 }
 
 // Silence unused warnings for helpers the monolith mock keeps.
 #[allow(dead_code)]
 fn _unused(_r: &Mutex<()>) -> BranchHit {
-    BranchHit { chunk_id: 0, dist: None }
+    BranchHit {
+        chunk_id: 0,
+        dist: None,
+    }
 }

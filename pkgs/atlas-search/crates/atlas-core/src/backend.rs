@@ -7,6 +7,7 @@
 
 use crate::error::Result;
 use crate::filters::Filters;
+use crate::filters::Sensitivity;
 use crate::occurrences::ChunkOccurrence;
 use crate::shards::TierCeiling;
 use crate::types::{BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow};
@@ -93,9 +94,10 @@ pub trait SearchBackend {
     fn occurrences(
         &self,
         canonical_hash: &str,
-        ceiling: TierCeiling,
+        tier_ceiling: TierCeiling,
+        caller_ceiling: Sensitivity,
     ) -> Result<Vec<ChunkOccurrence>> {
-        let _ = (canonical_hash, ceiling);
+        let _ = (canonical_hash, tier_ceiling, caller_ceiling);
         Ok(Vec::new())
     }
 
@@ -135,9 +137,10 @@ impl<T: SearchBackend + ?Sized> SearchBackend for Box<T> {
     fn occurrences(
         &self,
         canonical_hash: &str,
-        ceiling: TierCeiling,
+        tier_ceiling: TierCeiling,
+        caller_ceiling: Sensitivity,
     ) -> Result<Vec<ChunkOccurrence>> {
-        (**self).occurrences(canonical_hash, ceiling)
+        (**self).occurrences(canonical_hash, tier_ceiling, caller_ceiling)
     }
     fn message(&self, message_id: &str) -> Result<Option<MessageRow>> {
         (**self).message(message_id)

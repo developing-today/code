@@ -537,9 +537,15 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
     fn occurrences(
         &self,
         canonical_hash: &str,
-        ceiling: TierCeiling,
+        tier_ceiling: TierCeiling,
+        caller_ceiling: crate::filters::Sensitivity,
     ) -> Result<Vec<crate::occurrences::ChunkOccurrence>> {
-        crate::occurrences::lookup_by_hash(&self.current_set(), ceiling, canonical_hash)
+        crate::occurrences::lookup_by_hash(
+            &self.current_set(),
+            tier_ceiling,
+            caller_ceiling,
+            canonical_hash,
+        )
     }
 }
 
