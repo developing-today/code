@@ -257,10 +257,24 @@ impl LiveWorker {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
         panic!(
-            "wrangler dev on 127.0.0.1:{} never answered {url} (log {})",
+            "wrangler dev on 127.0.0.1:{} never answered {url} (log {})\n{}",
             self.port,
-            self.log_path.display()
+            self.log_path.display(),
+            log_tail(&self.log_path),
         );
+    }
+}
+
+fn log_tail(path: &std::path::Path) -> String {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let start = bytes.len().saturating_sub(3000);
+            format!(
+                "wrangler log tail:\n{}",
+                String::from_utf8_lossy(&bytes[start..])
+            )
+        }
+        Err(err) => format!("wrangler log unreadable: {err}"),
     }
 }
 
