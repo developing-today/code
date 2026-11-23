@@ -293,9 +293,19 @@ fn first_token(lookups: &[&dyn Fn() -> Option<String>]) -> Option<String> {
 
 impl RealGh {
     fn new() -> Self {
+        // Platform root store, not webpki-roots alone: hosts
+        // behind a TLS-intercepting egress proxy present the
+        // proxy's CA, which only the platform store carries (the
+        // sandbox seat's dispatch died with UnknownIssuer before
+        // this — code#13122; same fix as fleet's gh.rs App leg).
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(60)))
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
             .build()
             .into();
         RealGh {
