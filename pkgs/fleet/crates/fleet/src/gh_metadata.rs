@@ -128,6 +128,7 @@ fn now_unix() -> i64 {
 // The Metadata block: parse, render, assemble (the hosted metadata.ts
 // semantics, ported).
 
+#[derive(Debug)]
 pub struct ParsedBody {
     /// The parsed block (a JSON object with `pm_meta: 1`), or None
     /// when the body carries no block.
@@ -669,7 +670,10 @@ pub fn queue_record_from_rows(rows: &[Value], session_id: &str) -> Option<QueueR
     let primary = mine.iter().max_by(|a, b| {
         let key = |row: &Value| {
             (
-                row.get("claimed_at").and_then(Value::as_str).unwrap_or(""),
+                row.get("claimed_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
                 row.get("id").and_then(Value::as_i64).unwrap_or(0),
             )
         };
@@ -1231,6 +1235,7 @@ impl MetadataStore for SqliteMetadataStore {
 // ---------------------------------------------------------------------
 // Create recognition: `issue create` / `pr create` argument surgery.
 
+#[derive(Debug)]
 enum BodySource {
     Inline(String),
     File(PathBuf),
@@ -1240,6 +1245,7 @@ enum BodySource {
 /// A recognized, stampable create call: the normalized gh arguments
 /// (the body carried as `--body <value>`; the slot index is where
 /// the stamped body lands) plus where the caller's body text lives.
+#[derive(Debug)]
 pub struct CreateIntent {
     pub kind: &'static str,
     pub repo: Option<String>,
@@ -1370,7 +1376,7 @@ pub fn parse_create(
             Some((n, v)) => (n, Some(v.to_string())),
             None => (token.as_str(), None),
         };
-        let mut take_value = |i: &mut usize| -> Result<String, String> {
+        let take_value = |i: &mut usize| -> Result<String, String> {
             if let Some(v) = &inline {
                 return Ok(v.clone());
             }
