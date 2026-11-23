@@ -426,9 +426,8 @@ fn canonical_number(s: &str) -> Option<i64> {
     Some(n)
 }
 
-/// Hand-rolled equivalent of the DEDUPE_REGEXES family patterns.
-// Issue-scoped dispatch keys retain the issue-number cross-check. Support
-// existing random 8-hex retry suffixes and stable 16-hex request suffixes.
+/// Issue-scoped dispatch keys retain the issue-number cross-check. Support
+/// existing random 8-hex retry suffixes and stable 16-hex request suffixes.
 fn issue_number_with_dispatch_suffix(tail: &str) -> Option<i64> {
     let (number, suffix) = match tail.split_once(":dispatch:") {
         Some((number, suffix)) => (number, Some(suffix)),
@@ -442,6 +441,7 @@ fn issue_number_with_dispatch_suffix(tail: &str) -> Option<i64> {
     canonical_number(number)
 }
 
+/// Hand-rolled equivalent of the DEDUPE_REGEXES family patterns.
 fn match_dedupe(key: &str) -> Option<DedupeMatch> {
     let rest = key.strip_prefix("repo-health:v1:")?;
     // set family has a different shape: set:<num>:owed:<repo>
@@ -1262,14 +1262,76 @@ mod tests {
                     .any(|e| e.contains("does not match payload.issue.number"))
             );
         }
-        for suffix in [
-            "",
-            "ab",
-            "0123456g",
-            "0123456789abcdef0",
-            "00000000:extra",
-        ] {
+        for suffix in ["", "ab", "0123456g", "0123456789abcdef0", "00000000:extra"] {
             assert!(match_dedupe(&format!("{base}:dispatch:{suffix}")).is_none());
+        }
+    }
+
+    proptest! {
+        /// Invariant (#12527): an issue-scoped fix/triage key with a
+        /// well-formed dispatch suffix (8 or 16 hex digits) parses to the
+        /// same family, repo and issue number as its bare key, and the
+        /// payload issue-number cross-check still holds for it.
+        #[test]
+        fn dispatch_suffix_preserves_issue_identity(
+            fam in prop_oneof![Just("fix"), Just("triage")],
+            num in 1i64..=9_999_999,
+            suffix in prop_oneof!["[0-9a-fA-F]{8}", "[0-9a-fA-F]{16}"],
+            other in 1i64..=9_999_999,
+        ) {
+            let base = format!("repo-health:v1:{fam}:developing-today/code:issue:{num}");
+            let bare = match_dedupe(&base).expect("bare key parses");
+            let key = format!("{base}:dispatch:{suffix}");
+            let m = match_dedupe(&key).expect("suffixed key parses");
+            prop_assert_eq!(&m.family, &bare.family);
+            prop_assert_eq!(&m.repo, &bare.repo);
+            prop_assert_eq!(m.num, Some(num));
+
+            let mut packet = json!({
+                "title": "dispatch identity",
+                "priority": 40,
+                "dedupe_key": key,
+                "payload": payload_with(json!({"issue": {"number": num}, "kind": "small_fix"})),
+            });
+            let (errors, _w) = validate_packet(&packet);
+            prop_assert!(
+                !errors.iter().any(|e| e.contains("does not match payload.issue.number")),
+                "{:?}", errors
+            );
+            if other != num {
+                packet["payload"]["issue"]["number"] = json!(other);
+                let (errors, _w) = validate_packet(&packet);
+                prop_assert!(
+                    errors.iter().any(|e| e.contains("does not match payload.issue.number")),
+                    "{:?}", errors
+                );
+            }
+        }
+
+        /// Invariant (#12527): a dispatch suffix that is not exactly 8 or
+        /// 16 hex digits never parses, so arbitrary request keys cannot
+        /// pass as canonical repo-health keys.
+        #[test]
+        fn malformed_dispatch_suffix_is_rejected(
+            fam in prop_oneof![Just("fix"), Just("triage")],
+            num in 1i64..=9_999_999,
+            suffix in "[0-9a-zA-Z:_-]{0,24}",
+        ) {
+            let well_formed = matches!(suffix.len(), 8 | 16)
+                && suffix.bytes().all(|b| b.is_ascii_hexdigit());
+            let key = format!("repo-health:v1:{fam}:developing-today/code:issue:{num}:dispatch:{suffix}");
+            prop_assert_eq!(match_dedupe(&key).is_some(), well_formed, "{}", key);
+        }
+
+        /// Invariant (#12527): only a canonical issue number is accepted
+        /// in front of a dispatch suffix (no leading zeros or signs).
+        #[test]
+        fn dispatch_suffix_requires_canonical_issue_number(
+            num in 1i64..=9_999_999,
+            pad in "0{1,3}",
+        ) {
+            let key = format!("repo-health:v1:fix:developing-today/code:issue:{pad}{num}:dispatch:01234567");
+            prop_assert!(match_dedupe(&key).is_none(), "{}", key);
         }
     }
 
