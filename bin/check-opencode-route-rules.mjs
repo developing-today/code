@@ -509,6 +509,9 @@ export function inspectRouteRules(config) {
             }
           }
         }
+        if (entry.source !== undefined && (typeof entry.source !== 'string' || entry.source.trim().length === 0)) {
+          addIssue(`designation: model "${modelId}" source must be a non-empty string naming its asserting source`);
+        }
         if (entry.capabilities !== undefined) {
           if (!Array.isArray(entry.capabilities)) {
             addIssue(`designation: model "${modelId}" capabilities must be a list`);
