@@ -245,6 +245,43 @@ func TestPluginEnvLevelChangesShellEnvFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// TestPluginDiscoveryRetryDelaysRediscoveryFromTheEnvironment is
+// the effect probe for plugin.discoveryRetry (#8472; the effect
+// guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host:
+// after a discovery miss, the tool runtime holds the miss for the
+// duration MCPX_PLUGIN_DISCOVERY_RETRY names (a Go duration, the
+// registry default is 1m0s) instead of running the discovery
+// ladder again on every look. No Go caller reads it, so the probe
+// drives the host the way the plugin suite does — bun, the real
+// tool runtime, options resolved from the environment — and the
+// bun cases in plugin/opencode/v2/discovery-retry.test.ts assert
+// the observable differences with a counting ladder that always
+// misses: unset and a long value hold the miss (one ladder run
+// across repeated looks), 0s rediscovers on every look, a short
+// value holds inside its window and releases after it, and an
+// unparseable value falls back to the default rather than to
+// zero. A run that skipped the cases is a run that did not check
+// what this probe exists to check, so skips fail it, as in
+// TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginDiscoveryRetryDelaysRediscoveryFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/discovery-retry.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/discovery-retry.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.discoveryRetry probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.discoveryRetry probe did not report a clean run:\n%s", out)
+	}
+}
+
 // TestPluginDaemonToolsAreOfferedFromTheEnvironment is the effect
 // probe for plugin.daemonTools (#8472; the effect guard is #1971).
 //
