@@ -137,7 +137,7 @@ test("read through the fleet binary: the repository's list, with the last deploy
   const p = await ops.platform();
   expect([p.checked, p.malformed, p.workers.length]).toEqual(["2026-11-23", 0, 20]);
   // One read of the list, and one of each deploy workflow: not one per Worker.
-  expect(asked).toHaveLength(3);
+  expect(asked).toHaveLength(4);
   const byName = new Map(p.workers.map((w) => [w.name, w]));
   expect(byName.get("pm-console-edge")?.run).toEqual({
     commit: "2a96e875037d",

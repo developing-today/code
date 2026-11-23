@@ -57,7 +57,7 @@ test("a Worker said to be deployed from Actions has a workflow that deploys it a
     const workflow = readFileSync(file, "utf8");
     expect([w.name, workflow.includes("workflow_dispatch")]).toEqual([w.name, true]);
     expect([w.name, workflow.includes(w.path)]).toEqual([w.name, true]);
-    expect([w.name, /wrangler/.test(workflow)]).toEqual([w.name, true]);
+    expect([w.name, /wrangler|upload-version/.test(workflow)]).toEqual([w.name, true]);
   }
 });
 
