@@ -84,18 +84,29 @@ candidate Version UUID, and the baseline Deployment and Version UUIDs
 from that upload receipt. It confirms the selected run succeeded on
 `main`, the production baseline has not changed, and the newest
 Cloudflare Deployment read-back serves the selected candidate at 100%.
-Both workflows publish receipts with run, attempt, source, candidate,
-baseline, and deployment identifiers.
+The upload reads the exact Version UUID from the pinned `cf` create
+response and binds it to the run-attempt receipt. Before creating a
+candidate, it requires the latest uploaded Version to equal the currently
+serving baseline; `cf` strict binding inheritance resolves against the
+latest uploaded Version. Both workflows publish receipts with run,
+attempt, source, candidate, baseline, and deployment identifiers.
 
-Each workflow fails before provider access unless its GitHub environment
-exists, has required reviewers, and allows exactly the `main` branch.
-Store `CF_ACCOUNT_ID` and `CF_API_TOKEN` as environment secrets in
-`github-ci-cloudflare-upload` and `github-ci-production`; use Cloudflare
-tokens scoped to the `github-ci` Worker. The upload checks that the Worker
-already exists. It also checks the active baseline and uploaded candidate
-for all six required secret binding names. Receipt files contain binding
-names and types only; secret values are never read or copied by these
-workflows.
+Each workflow first runs a detached read-only gate. It requires required
+reviewers, self-review prevention, disabled administrator bypass, and
+exactly one typed `branch:main` deployment policy. Only after that check
+does the deployment job bind to the environment name emitted by the gate.
+GitHub's published branch-policy read response documents only `id`,
+`node_id`, and `name`; the gate requires `type: branch` and stops if GitHub
+does not return that field. Resolve that API evidence gap before dispatching
+either workflow.
+Store `CF_UPLOAD_ACCOUNT_ID` and `CF_UPLOAD_API_TOKEN` only as environment
+secrets in `github-ci-cloudflare-upload`; store
+`CF_PROMOTION_ACCOUNT_ID` and `CF_PROMOTION_API_TOKEN` only as environment
+secrets in `github-ci-production`. Use Cloudflare tokens scoped to the
+`github-ci` Worker. The upload checks that the Worker already exists. It
+also checks the active baseline and uploaded candidate for all six required
+secret binding names. Receipt files contain binding names and types only;
+secret values are never read or copied by these workflows.
 
 The existing operator `npm run deploy` command and Wrangler configuration
 remain unchanged. This is the GitHub CI webhook Worker, not

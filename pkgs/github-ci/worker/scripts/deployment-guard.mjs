@@ -26,7 +26,7 @@ const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 
 function usage() {
   throw new Error(
-    "usage: deployment-guard.mjs build <output-v1-dir> | check-environment <environment.json> <branch-policies.json> <environment-name> | select-upload <versions.json> <commit-sha> | select-baseline <deployments.json> | verify-baseline <deployments.json> <version.json> | verify-version <version.json> <version-id> [commit-sha] | verify-deployable <deployable.json> <version-id> | write-upload-receipt <baseline-deployments.json> <baseline-version.json> <candidate-version.json> <receipt.json> | verify-upload-receipt <receipt.json> <run-attempt.json> <run-id> <run-attempt> <version-id> <baseline-deployment-id> <baseline-version-id> | verify-baseline-current <deployments.json> <upload-receipt.json> | verify-created-deployment <created.json> <upload-receipt.json> | verify-promotion-readback <deployments.json> <upload-receipt.json> <created.json> | write-promotion-receipt <upload-receipt.json> <created.json> <deployments.json> <receipt.json>",
+    "usage: deployment-guard.mjs build <output-v1-dir> | select-branch-policy <branch-policies.json> | check-environment <environment.json> <branch-policy.json> <environment-name> <branch-policy-id> | select-baseline <deployments.json> | verify-baseline <deployments.json> <version.json> | verify-inheritance-source <deployments.json> <versions.json> | select-upload-result <create-response.json> | verify-version <version.json> <version-id> [commit-sha] | verify-deployable <deployable.json> <version-id> | write-upload-receipt <baseline-deployments.json> <baseline-version.json> <create-response.json> <candidate-version.json> <receipt.json> | verify-upload-receipt <receipt.json> <run-attempt.json> <run-id> <run-attempt> <version-id> <baseline-deployment-id> <baseline-version-id> | verify-baseline-current <deployments.json> <upload-receipt.json> | verify-created-deployment <created.json> <upload-receipt.json> | verify-promotion-readback <deployments.json> <upload-receipt.json> <created.json> | write-promotion-receipt <upload-receipt.json> <created.json> <deployments.json> <receipt.json>",
   );
 }
 
@@ -145,26 +145,42 @@ function checkBuild(root) {
   console.log("Build Output v1 has the expected Worker, ingress, production vars, and value-free secret declarations.");
 }
 
-function checkEnvironment(environmentPath, policiesPath, expectedName) {
+function selectBranchPolicy(path) {
+  const response = unwrap(readJson(path));
+  const policies = response?.branch_policies;
+  if (!Array.isArray(policies) || policies.length !== 1 || response.total_count !== 1) {
+    throw new Error("environment must have exactly one deployment branch policy");
+  }
+  const policy = policies[0];
+  if (policy?.name !== "main" || !Number.isSafeInteger(policy.id) || policy.id < 1) {
+    throw new Error("environment must have one identified main deployment branch policy");
+  }
+  reportOutput({ branch_policy_id: policy.id }, `Selected the only deployment policy ID for main (${policy.id}).`);
+}
+
+function checkEnvironment(environmentPath, policyPath, expectedName, expectedPolicyId) {
   const environment = readJson(environmentPath);
-  const policiesResponse = readJson(policiesPath);
+  const policy = unwrap(readJson(policyPath));
   if (environment?.name !== expectedName) throw new Error(`required environment ${expectedName} is missing`);
   const rules = environment.protection_rules;
-  const hasReviewers = Array.isArray(rules) && rules.some((rule) =>
-    rule.type === "required_reviewers" && Array.isArray(rule.reviewers) && rule.reviewers.length > 0,
+  const reviewerRules = Array.isArray(rules) ? rules.filter((rule) => rule.type === "required_reviewers") : [];
+  const reviewerRule = reviewerRules[0];
+  const hasReviewer = Array.isArray(reviewerRule?.reviewers) && reviewerRule.reviewers.some((entry) =>
+    ["User", "Team"].includes(entry?.type) && Number.isSafeInteger(entry?.reviewer?.id) && entry.reviewer.id > 0,
   );
-  if (!hasReviewers) throw new Error(`${expectedName} has no required-reviewer protection rule`);
+  if (reviewerRules.length !== 1 || !hasReviewer) throw new Error(`${expectedName} must have exactly one valid required-reviewer protection rule`);
+  if (reviewerRule.prevent_self_review !== true) throw new Error(`${expectedName} must prevent self-review`);
+  if (environment.can_admins_bypass !== false) throw new Error(`${expectedName} must disallow administrator bypass`);
   const branchPolicy = environment.deployment_branch_policy;
   if (branchPolicy?.protected_branches !== false || branchPolicy?.custom_branch_policies !== true) {
     throw new Error(`${expectedName} must restrict deployments with a custom branch policy`);
   }
-  const policies = policiesResponse?.branch_policies;
-  if (!Array.isArray(policies) || policies.length !== 1 || policies[0]?.name !== "main") {
-    throw new Error(`${expectedName} must allow exactly the main branch`);
+  if (!POSITIVE_INTEGER.test(String(expectedPolicyId)) || String(policy.id) !== String(expectedPolicyId) || policy.name !== "main" || policy.type !== "branch") {
+    throw new Error(`${expectedName} must have exactly the selected policy as type branch with name main`);
   }
   reportOutput(
-    { protected: "true" },
-    `Confirmed ${expectedName} exists with required reviewers and an exact main deployment branch policy.`,
+    { environment_name: expectedName },
+    `Confirmed ${expectedName} has required reviewers, self-review prevention, no administrator bypass, and exactly the selected branch:main policy.`,
   );
 }
 
@@ -206,17 +222,26 @@ function verifyBaseline(deploymentsPath, versionPath) {
   );
 }
 
-function selectUpload(path, sha) {
-  if (!COMMIT_SHA.test(sha)) throw new Error("upload commit must be a full Git commit SHA");
-  const tag = `git-${sha.slice(0, 12)}`;
-  const versions = rows(readJson(path), "versions");
-  const candidates = versions.filter((version) =>
-    annotation(version, "workers/tag") === tag && annotation(version, "workers/message") === `github-ci candidate ${sha}`,
-  );
-  if (!candidates.length) throw new Error("uploaded version with exact commit tag and message was not listed");
-  const version = newest(candidates, "candidate versions");
-  if (!VERSION_ID.test(version.id ?? "")) throw new Error("selected upload did not have a Cloudflare Version UUID");
-  reportOutput({ version_id: version.id }, `Uploaded immutable candidate ${version.id} from commit ${sha}; traffic was unchanged.`);
+function verifyInheritanceSource(deploymentsPath, versionsPath) {
+  const baseline = deploymentRecord(deploymentsPath);
+  const versions = rows(readJson(versionsPath), "uploaded Worker Versions");
+  if (versions.length !== 1) {
+    throw new Error("inheritance-source check must contain only the first latest Worker Version from page 1");
+  }
+  const latestUploaded = versions[0];
+  createdOn(latestUploaded, "latest uploaded Worker Version");
+  if (!VERSION_ID.test(latestUploaded.id ?? "")) throw new Error("latest uploaded Worker Version has no Cloudflare Version UUID");
+  if (latestUploaded.id !== baseline.version_id) {
+    throw new Error("latest uploaded Worker Version is not the currently serving production baseline; strict secret inheritance would use another version");
+  }
+  console.log(`Latest uploaded Worker Version ${latestUploaded.id} matches serving baseline ${baseline.version_id}.`);
+}
+
+function selectUploadResult(path) {
+  const response = unwrap(readJson(path));
+  const versionId = response?.id;
+  if (!VERSION_ID.test(versionId ?? "")) throw new Error("cf Workers Version create response is missing its exact Version UUID");
+  reportOutput({ version_id: versionId }, `Captured exact Workers Version UUID ${versionId} from the cf create response.`);
 }
 
 function verifyVersion(path, requestedId, expectedSha) {
@@ -257,15 +282,18 @@ function assertUploadRuntime() {
   return { sourceSha, runId, attempt: Number(attempt), workflowRef };
 }
 
-function writeUploadReceipt(baselineDeploymentsPath, baselineVersionPath, candidatePath, outputPath) {
+function writeUploadReceipt(baselineDeploymentsPath, baselineVersionPath, createResponsePath, candidatePath, outputPath) {
   const runtime = assertUploadRuntime();
   const baseline = deploymentRecord(baselineDeploymentsPath);
   const baselineVersion = versionRecord(baselineVersionPath);
   if (baselineVersion.version.id !== baseline.version_id) throw new Error("baseline version read-back does not match the active deployment");
   assertSecrets(baselineVersion.version);
 
+  const createResponse = unwrap(readJson(createResponsePath));
+  if (!VERSION_ID.test(createResponse?.id ?? "")) throw new Error("cf Workers Version create response is missing its exact Version UUID");
   const candidateRecord = versionRecord(candidatePath);
   const candidate = candidateRecord.version;
+  if (candidate.id !== createResponse.id) throw new Error("candidate read-back does not match the exact Version UUID returned by cf create");
   if (candidate.id === baseline.version_id) throw new Error("uploaded candidate is the same version as the baseline");
   if (candidateRecord.created_at_ms <= baseline.created_at_ms) throw new Error("uploaded candidate is not newer than its production baseline");
   const candidateSha = commitFrom(candidate);
@@ -499,8 +527,9 @@ function main() {
   const parsed = parseArgs({ args: process.argv.slice(2), options: {}, allowPositionals: true, strict: true });
   const [command, ...args] = parsed.positionals;
   if (command === "build" && args.length === 1) return checkBuild(args[0]);
-  if (command === "check-environment" && args.length === 3) return checkEnvironment(args[0], args[1], args[2]);
-  if (command === "select-upload" && args.length === 2) return selectUpload(args[0], args[1]);
+  if (command === "select-branch-policy" && args.length === 1) return selectBranchPolicy(args[0]);
+  if (command === "check-environment" && args.length === 4) return checkEnvironment(args[0], args[1], args[2], args[3]);
+  if (command === "select-upload-result" && args.length === 1) return selectUploadResult(args[0]);
   if (command === "select-baseline" && args.length === 1) {
     const baseline = deploymentRecord(args[0]);
     reportOutput(
@@ -510,9 +539,10 @@ function main() {
     return;
   }
   if (command === "verify-baseline" && args.length === 2) return verifyBaseline(args[0], args[1]);
+  if (command === "verify-inheritance-source" && args.length === 2) return verifyInheritanceSource(args[0], args[1]);
   if (command === "verify-version" && (args.length === 2 || args.length === 3)) return verifyVersion(args[0], args[1], args[2]);
   if (command === "verify-deployable" && args.length === 2) return verifyDeployable(args[0], args[1]);
-  if (command === "write-upload-receipt" && args.length === 4) return writeUploadReceipt(args[0], args[1], args[2], args[3]);
+  if (command === "write-upload-receipt" && args.length === 5) return writeUploadReceipt(args[0], args[1], args[2], args[3], args[4]);
   if (command === "verify-upload-receipt" && args.length === 7) return verifyUploadRun(...args);
   if (command === "verify-baseline-current" && args.length === 2) return verifyBaselineCurrent(args[0], args[1]);
   if (command === "verify-created-deployment" && args.length === 2) return verifyCreatedDeployment(args[0], args[1]);

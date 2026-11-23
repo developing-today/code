@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,6 +13,7 @@ const VERSION_ID = "01234567-89ab-cdef-0123-456789abcdef";
 const BASELINE_VERSION_ID = "11234567-89ab-cdef-0123-456789abcdef";
 const BASELINE_DEPLOYMENT_ID = "21234567-89ab-cdef-0123-456789abcdef";
 const DEPLOYMENT_ID = "31234567-89ab-cdef-0123-456789abcdef";
+const BRANCH_POLICY_ID = 77;
 const SECRET_NAMES = [
   "GITHUB_WEBHOOK_SECRET",
   "TURSO_PLATFORM_TOKEN",
@@ -105,48 +106,104 @@ function uploadEnv(root) {
   };
 }
 
-test("environment check fails closed without required reviewers and exact main policy", (t) => {
+test("detached environment gate requires reviewers, self-review prevention, no admin bypass, and typed main", (t) => {
   const root = temp(t);
   const environmentPath = join(root, "environment.json");
-  const policiesPath = join(root, "policies.json");
-  writeJson(environmentPath, {
+  const policyListPath = join(root, "policy-list.json");
+  const policyPath = join(root, "policy.json");
+  const environment = {
     name: "github-ci-production",
-    protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User", reviewer: { login: "reviewer" } }] }],
+    can_admins_bypass: false,
+    protection_rules: [{
+      type: "required_reviewers",
+      prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { id: 123, login: "reviewer" } }],
+    }],
     deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
-  });
-  writeJson(policiesPath, { branch_policies: [{ id: 1, name: "main" }] });
-  assert.equal(run(root, ["check-environment", environmentPath, policiesPath, "github-ci-production"], {
-    GITHUB_OUTPUT: join(root, "output"),
-  }).status, 0);
+  };
+  writeJson(environmentPath, environment);
+  writeJson(policyListPath, { total_count: 1, branch_policies: [{ id: BRANCH_POLICY_ID, name: "main" }] });
+  writeJson(policyPath, { id: BRANCH_POLICY_ID, name: "main", type: "branch" });
 
-  writeJson(environmentPath, { name: "github-ci-production", protection_rules: [], deployment_branch_policy: { custom_branch_policies: true } });
-  assert.notEqual(run(root, ["check-environment", environmentPath, policiesPath, "github-ci-production"], {
-    GITHUB_OUTPUT: join(root, "output"),
-  }).status, 0);
-  writeJson(environmentPath, {
-    name: "github-ci-production",
-    protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User", reviewer: { login: "reviewer" } }] }],
-    deployment_branch_policy: { protected_branches: false, custom_branch_policies: true },
+  const outputPath = join(root, "output");
+  const selected = run(root, ["select-branch-policy", policyListPath], { GITHUB_OUTPUT: outputPath });
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.match(readFileSync(outputPath, "utf8"), new RegExp(`branch_policy_id=${BRANCH_POLICY_ID}`));
+  const verified = run(root, ["check-environment", environmentPath, policyPath, "github-ci-production", String(BRANCH_POLICY_ID)], {
+    GITHUB_OUTPUT: outputPath,
   });
-  writeJson(policiesPath, { branch_policies: [{ id: 1, name: "main" }, { id: 2, name: "release/*" }] });
-  assert.notEqual(run(root, ["check-environment", environmentPath, policiesPath, "github-ci-production"], {
-    GITHUB_OUTPUT: join(root, "output"),
-  }).status, 0);
+  assert.equal(verified.status, 0, verified.stderr);
+  assert.match(readFileSync(outputPath, "utf8"), /environment_name=github-ci-production/);
+
+  for (const badEnvironment of [
+    { ...environment, protection_rules: [] },
+    { ...environment, protection_rules: [{ ...environment.protection_rules[0], prevent_self_review: false }] },
+    { ...environment, can_admins_bypass: true },
+    { ...environment, can_admins_bypass: undefined },
+  ]) {
+    writeJson(environmentPath, badEnvironment);
+    const failed = run(root, ["check-environment", environmentPath, policyPath, "github-ci-production", String(BRANCH_POLICY_ID)], {
+      GITHUB_OUTPUT: join(root, "failed-output"),
+    });
+    assert.notEqual(failed.status, 0);
+    assert.equal(existsSync(join(root, "failed-output")), false, "failed gate must not emit an environment name");
+  }
+
+  writeJson(environmentPath, environment);
+  for (const badPolicy of [
+    { id: BRANCH_POLICY_ID, name: "main", type: "tag" },
+    { id: BRANCH_POLICY_ID + 1, name: "main", type: "branch" },
+    { id: BRANCH_POLICY_ID, name: "release/*", type: "branch" },
+    { id: BRANCH_POLICY_ID, name: "main" },
+  ]) {
+    writeJson(policyPath, badPolicy);
+    assert.notEqual(run(root, ["check-environment", environmentPath, policyPath, "github-ci-production", String(BRANCH_POLICY_ID)], {
+      GITHUB_OUTPUT: join(root, "bad-policy-output"),
+    }).status, 0);
+  }
+
+  writeJson(policyPath, { id: BRANCH_POLICY_ID, name: "main", type: "branch" });
+  for (const badList of [
+    { total_count: 0, branch_policies: [] },
+    { total_count: 2, branch_policies: [{ id: BRANCH_POLICY_ID, name: "main" }, { id: 78, name: "main" }] },
+    { total_count: 1, branch_policies: [{ id: BRANCH_POLICY_ID, name: "main" }, { id: 78, name: "main" }] },
+    { total_count: 1, branch_policies: [{ id: BRANCH_POLICY_ID, name: "main" }] },
+  ]) {
+    writeJson(policyListPath, badList);
+    const listOutput = join(root, "list-output");
+    const failed = run(root, ["select-branch-policy", policyListPath], { GITHUB_OUTPUT: listOutput });
+    if (badList.branch_policies.length !== 1 || badList.total_count !== 1) {
+      assert.notEqual(failed.status, 0);
+      assert.equal(existsSync(listOutput), false);
+    } else {
+      assert.equal(failed.status, 0, failed.stderr);
+    }
+  }
 });
 
 test("baseline and uploaded candidate receipt preserve exact IDs, attempts, provenance, and binding names", (t) => {
   const root = temp(t);
   const baselinePath = join(root, "baseline-deployments.json");
   const baselineVersionPath = join(root, "baseline-version.json");
+  const createResponsePath = join(root, "create-response.json");
   const candidatePath = join(root, "candidate-version.json");
   const receiptPath = join(root, "upload-receipt.json");
   const runPath = join(root, "run-attempt.json");
   writeJson(baselinePath, { result: { deployments: [baselineDeployment()] } });
   writeJson(baselineVersionPath, { result: version(BASELINE_VERSION_ID, "2026-11-22T11:59:00.000Z", { annotations: {} }) });
+  writeJson(createResponsePath, { success: true, result: { id: VERSION_ID } });
   writeJson(candidatePath, { result: version(VERSION_ID, "2026-11-22T12:05:00.000Z") });
 
   const env = uploadEnv(root);
-  const written = run(root, ["write-upload-receipt", baselinePath, baselineVersionPath, candidatePath, receiptPath], env);
+  const selected = run(root, ["select-upload-result", createResponsePath], env);
+  assert.equal(selected.status, 0, selected.stderr);
+  assert.match(readFileSync(env.GITHUB_OUTPUT, "utf8"), new RegExp(`version_id=${VERSION_ID}`));
+
+  const invalidCreateResponsePath = join(root, "invalid-create-response.json");
+  writeJson(invalidCreateResponsePath, { success: true, result: { metadata: {} } });
+  assert.notEqual(run(root, ["select-upload-result", invalidCreateResponsePath], env).status, 0);
+
+  const written = run(root, ["write-upload-receipt", baselinePath, baselineVersionPath, createResponsePath, candidatePath, receiptPath], env);
   assert.equal(written.status, 0, written.stderr);
   const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
   assert.equal(receipt.upload.run_id, RUN_ID);
@@ -155,6 +212,9 @@ test("baseline and uploaded candidate receipt preserve exact IDs, attempts, prov
   assert.equal(receipt.baseline.version_id, BASELINE_VERSION_ID);
   assert.deepEqual(receipt.candidate.secret_bindings.map((binding) => binding.name), SECRET_NAMES);
   assert.doesNotMatch(readFileSync(receiptPath, "utf8"), /secret_text.*value|"value"/);
+
+  writeJson(invalidCreateResponsePath, { success: true, result: { id: BASELINE_VERSION_ID } });
+  assert.notEqual(run(root, ["write-upload-receipt", baselinePath, baselineVersionPath, invalidCreateResponsePath, candidatePath, join(root, "wrong-create-receipt.json")], env).status, 0);
 
   writeJson(runPath, {
     id: Number(RUN_ID),
@@ -174,6 +234,46 @@ test("baseline and uploaded candidate receipt preserve exact IDs, attempts, prov
   assert.notEqual(run(root, ["verify-upload-receipt", receiptPath, runPath, RUN_ID, "1", VERSION_ID, BASELINE_DEPLOYMENT_ID, BASELINE_VERSION_ID], env).status, 0);
   assert.notEqual(run(root, ["verify-upload-receipt", receiptPath, runPath, RUN_ID, RUN_ATTEMPT, VERSION_ID, DEPLOYMENT_ID, BASELINE_VERSION_ID], env).status, 0);
   assert.notEqual(run(root, ["verify-upload-receipt", join(root, "missing.json"), runPath, RUN_ID, RUN_ATTEMPT, VERSION_ID, BASELINE_DEPLOYMENT_ID, BASELINE_VERSION_ID], env).status, 0);
+});
+
+test("strict inheritance is fenced to the serving baseline, not another latest upload", (t) => {
+  const root = temp(t);
+  const deploymentsPath = join(root, "deployments.json");
+  const versionsPath = join(root, "versions.json");
+  writeJson(deploymentsPath, { result: { deployments: [baselineDeployment()] } });
+  writeJson(versionsPath, {
+    result: {
+      items: [
+        { id: BASELINE_VERSION_ID, metadata: { created_on: "2026-11-22T11:59:00.000Z" } },
+      ],
+    },
+  });
+  const match = run(root, ["verify-inheritance-source", deploymentsPath, versionsPath]);
+  assert.equal(match.status, 0, match.stderr);
+
+  writeJson(versionsPath, {
+    result: {
+      items: [
+        { id: VERSION_ID, metadata: { created_on: "2026-11-22T12:01:00.000Z" } },
+      ],
+    },
+  });
+  const mismatch = run(root, ["verify-inheritance-source", deploymentsPath, versionsPath]);
+  assert.notEqual(mismatch.status, 0);
+  assert.match(mismatch.stderr, /latest uploaded Worker Version is not the currently serving production baseline/);
+
+  writeJson(versionsPath, { result: { items: [] } });
+  assert.notEqual(run(root, ["verify-inheritance-source", deploymentsPath, versionsPath]).status, 0);
+
+  writeJson(versionsPath, {
+    result: {
+      items: [
+        { id: BASELINE_VERSION_ID, metadata: { created_on: "2026-11-22T11:59:00.000Z" } },
+        { id: VERSION_ID, metadata: { created_on: "2026-11-22T12:01:00.000Z" } },
+      ],
+    },
+  });
+  assert.notEqual(run(root, ["verify-inheritance-source", deploymentsPath, versionsPath]).status, 0);
 });
 
 test("version guards reject missing bindings and verify the existing active baseline", (t) => {
