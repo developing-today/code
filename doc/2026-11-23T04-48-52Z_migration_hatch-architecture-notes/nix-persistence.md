@@ -3,6 +3,7 @@
 ## The Problem
 
 Nix stores everything in `/nix`, which is on the ephemeral overlay. Every recycle would wipe it, requiring a full re-download. But:
+
 - The `/nix` path is compiled into the nix binary and every store path (RPATHs, shebangs) — it cannot be moved
 - Nix refuses if `/nix` is a symlink ("not allowed for the Nix store")
 - Bind mounts are per-exec (invisible to the next exec)

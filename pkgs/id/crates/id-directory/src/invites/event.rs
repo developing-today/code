@@ -7,8 +7,8 @@
 //! no redeemer pin). New invites are minted in the **v2 form**: a magic + version header,
 //! then the body as postcard (#5674), then the signature. The v2 body carries the delegation
 //! terms of the #5751 design record: the target (a group, or a world and its fronting group),
-//! a use cap, the remaining delegation depth, the parent invite's digest, and an optional
-//! redeemer pin.
+//! a use cap, the remaining delegation depth, the parent invite's digest, an optional
+//! redeemer pin, and an optional capability pin (#5959 §7).
 //!
 //! Budgets (§1 of the record): the v2 body is at most [`MAX_BODY_LEN`] bytes, refused at
 //! decode, so a future field cannot silently grow the object; the paste form's budget lives
@@ -20,6 +20,8 @@
 //! made here cannot be replayed as a signature over some other message. Role codes are part
 //! of the v1 format: 0 `Pull`, 1 `Read`, 2 `Write`, 3 `Manage`, 4 `Admin` — the same order
 //! postcard assigns the variants in v2.
+
+use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
@@ -105,6 +107,66 @@ impl InviteSource {
     }
 }
 
+/// A capability baseline pinned at issuance (#5959 §7): the release identity
+/// of the world as issued, and the class-table version the inviter's client
+/// computed under.
+///
+/// The pin deliberately does not carry the message set: the pinned release's
+/// registry record (#5958 §4) is immutable and content-addressed, so the
+/// redeeming client recomputes the pinned set from the identity (see
+/// [`ReleaseMessageSetLookup`]). An identity and a version keep the pin
+/// inside the body's 512-byte budget with room to spare, which a class list
+/// would not guarantee for many-class worlds. The pin grants nothing by
+/// itself and never widens anything: its only effect is at redemption, in
+/// [`InviteBody::pin_redemption`]. A redeemer pin says who may join; a
+/// capability pin says what they were invited to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityPin {
+    /// The pinned release's identity: the content address of its registry
+    /// record.
+    pub release_identity: [u8; 32],
+    /// The class-table version the pinned set was computed under — the
+    /// class table's version at issuance.
+    pub table_version: u32,
+}
+
+/// Resolves the message set a pinned release carries, for the redemption
+/// decision.
+///
+/// The real lookup fetches the release's immutable registry record by
+/// identity and recomputes its set under the pin's table version (#5959 §7
+/// step 1); that fetch is #12921's connect-stage scope. This seam keeps the
+/// decision itself a pure function of (pinned set, current set, fetch
+/// outcome), testable ahead of the store it will seed.
+pub trait ReleaseMessageSetLookup {
+    /// The message set of the release the pin names: the capability names
+    /// its registry record carries. `None` when the record cannot be
+    /// fetched — an unusable pin is not an error (§7 step 1).
+    fn message_set(&self, pin: &CapabilityPin) -> Option<BTreeSet<String>>;
+}
+
+/// What a capability pin decides at redemption (#5959 §7 step 2). The
+/// baseline store and the notice surface that consume this are #12921's;
+/// this is the decision they consume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PinRedemption {
+    /// The invite carries no pin: an ordinary first connect.
+    NoPin,
+    /// The pinned release's record could not be fetched: the pin is ignored
+    /// and the join is an ordinary first connect.
+    PinUnusable,
+    /// The current set is covered by the pinned set: the pin seeds the
+    /// baseline, narrowed to the current set. No blocking capability
+    /// decision is required for the covered classes; accepting the invite
+    /// was the decision.
+    SeedBaseline(BTreeSet<String>),
+    /// The current set outgrew the pinned set between issuance and
+    /// redemption: the change notice fires before the first connect
+    /// completes. Carries the uncovered part of the current set — what the
+    /// world can now also do.
+    NoticeBeforeConnect(BTreeSet<String>),
+}
+
 /// The delegation terms an inviter chooses, before they are signed into a body.
 /// Defaults follow §2–§3; see [`InviteTerms::source`] and [`InviteTerms::link`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +187,9 @@ pub struct InviteTerms {
     pub parent_digest: Option<[u8; 32]>,
     /// The one redeemer the invite is pinned to (§3), or `None` for a bearer invite.
     pub redeemer: Option<[u8; 32]>,
+    /// The capability baseline pinned at issuance (#5959 §7), or `None` —
+    /// the normal case for a public bearer invite.
+    pub capability_pin: Option<CapabilityPin>,
 }
 
 impl InviteTerms {
@@ -145,6 +210,7 @@ impl InviteTerms {
             depth_remaining: source.default_depth(),
             parent_digest: None,
             redeemer: None,
+            capability_pin: None,
         }
     }
 
@@ -172,6 +238,16 @@ impl InviteTerms {
         );
         self.depth_remaining = depth_remaining;
         Ok(self)
+    }
+
+    /// Attaches a capability pin (#5959 §7), computed by the inviter's client
+    /// at issuance from the release it is inviting to. Recommended for
+    /// per-recipient links to sensitive worlds; bearer <redacted> normally
+    /// carry none.
+    #[must_use]
+    pub const fn with_capability_pin(mut self, capability_pin: CapabilityPin) -> Self {
+        self.capability_pin = Some(capability_pin);
+        self
     }
 }
 
@@ -210,6 +286,8 @@ pub struct InviteBody {
     pub parent_digest: Option<[u8; 32]>,
     /// The one redeemer the invite is pinned to (§3), or `None` for a bearer invite.
     pub redeemer: Option<[u8; 32]>,
+    /// The capability baseline pinned at issuance (#5959 §7), or `None`.
+    pub capability_pin: Option<CapabilityPin>,
     /// Read from (or minted as) the v1 fixed layout. Not part of the v2 encoding:
     /// it selects the wire form and the signing domain.
     #[serde(skip)]
@@ -238,6 +316,7 @@ impl InviteEvent {
             depth_remaining: 0,
             parent_digest: None,
             redeemer: None,
+            capability_pin: None,
             legacy_v1: false,
         };
         let signature = key.sign(&body.message()).to_bytes();
@@ -272,6 +351,7 @@ impl InviteEvent {
             depth_remaining: terms.depth_remaining,
             parent_digest: terms.parent_digest,
             redeemer: terms.redeemer,
+            capability_pin: terms.capability_pin,
             legacy_v1: false,
         };
         ensure!(
@@ -372,6 +452,7 @@ impl InviteEvent {
                 depth_remaining: 0,
                 parent_digest: None,
                 redeemer: None,
+                capability_pin: None,
                 legacy_v1: true,
             },
             signature: *signature,
@@ -450,6 +531,7 @@ impl InviteBody {
         depth_remaining: u8,
         uses_cap: Option<u32>,
         redeemer: Option<[u8; 32]>,
+        capability_pin: Option<CapabilityPin>,
     ) -> Result<InviteTerms> {
         ensure!(
             depth_remaining < self.depth_remaining,
@@ -464,7 +546,37 @@ impl InviteBody {
             depth_remaining,
             parent_digest: Some(self.digest()),
             redeemer,
+            capability_pin,
         })
+    }
+
+    /// The redemption decision for this invite's capability pin (#5959 §7):
+    /// a pure function of the pinned set (recomputed through `lookup`), the
+    /// current set the redeeming client would actually join, and the fetch
+    /// outcome.
+    ///
+    /// Coverage here is set inclusion over the message sets as the lookup
+    /// returns them; the subsumption-aware comparison of #5999 §6 is
+    /// #12921's layer, which consumes this decision. A pin never widens
+    /// anything: a seeded baseline is the pinned set narrowed to the current
+    /// set — never more than either.
+    #[must_use]
+    pub fn pin_redemption(
+        &self,
+        lookup: &dyn ReleaseMessageSetLookup,
+        current: &BTreeSet<String>,
+    ) -> PinRedemption {
+        let Some(pin) = &self.capability_pin else {
+            return PinRedemption::NoPin;
+        };
+        let Some(pinned) = lookup.message_set(pin) else {
+            return PinRedemption::PinUnusable;
+        };
+        if current.is_subset(&pinned) {
+            PinRedemption::SeedBaseline(pinned.intersection(current).cloned().collect())
+        } else {
+            PinRedemption::NoticeBeforeConnect(current.difference(&pinned).cloned().collect())
+        }
     }
 
     /// The body's bytes in its wire form, without the signature: the v1 fixed
@@ -551,6 +663,7 @@ mod tests {
             depth_remaining: 0,
             parent_digest: None,
             redeemer: None,
+            capability_pin: None,
             legacy_v1: false,
         }
     }
@@ -591,6 +704,7 @@ mod tests {
                 depth_remaining: 0,
                 parent_digest: None,
                 redeemer: None,
+                capability_pin: None,
                 legacy_v1: false,
             },
             signature: identity_forgery(),
@@ -629,6 +743,10 @@ mod tests {
             depth_remaining: 2,
             parent_digest: Some([5; 32]),
             redeemer: Some([6; 32]),
+            capability_pin: Some(CapabilityPin {
+                release_identity: [8; 32],
+                table_version: 1,
+            }),
             ..body_for(&key)
         };
         let event = signed(body, &key);
@@ -655,6 +773,7 @@ mod tests {
         assert_eq!(event.body.depth_remaining, 0);
         assert_eq!(event.body.parent_digest, None);
         assert_eq!(event.body.redeemer, None);
+        assert_eq!(event.body.capability_pin, None);
         assert!(event.verify_signature().is_ok());
         assert_eq!(
             event.to_bytes(),
@@ -702,6 +821,7 @@ mod tests {
                 0,
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(child.depth_remaining, 0);
@@ -713,6 +833,7 @@ mod tests {
                     Role::Read,
                     1_800_000_000_000,
                     1,
+                    None,
                     None,
                     None
                 )
@@ -729,6 +850,7 @@ mod tests {
                 Role::Read,
                 1_800_000_000_000,
                 0,
+                None,
                 None,
                 None
             )
@@ -794,5 +916,113 @@ mod tests {
         assert!(capped.admits_redemption(1));
         assert!(!capped.admits_redemption(2));
         assert!(body_for(&key).admits_redemption(u32::MAX - 1));
+    }
+
+    /// A lookup that answers with a fixed fetch outcome, so the redemption
+    /// decision's tests name the pinned set and the failure directly.
+    struct StubLookup(Option<BTreeSet<String>>);
+
+    impl ReleaseMessageSetLookup for StubLookup {
+        fn message_set(&self, _pin: &CapabilityPin) -> Option<BTreeSet<String>> {
+            self.0.clone()
+        }
+    }
+
+    fn names(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
+
+    fn pinned_body(key: &SigningKey) -> InviteBody {
+        InviteBody {
+            capability_pin: Some(CapabilityPin {
+                release_identity: [8; 32],
+                table_version: 1,
+            }),
+            ..body_for(key)
+        }
+    }
+
+    #[test]
+    fn a_capability_pin_is_attached_at_issuance() {
+        let pin = CapabilityPin {
+            release_identity: [8; 32],
+            table_version: 1,
+        };
+        let terms = InviteTerms::source(
+            InviteSource::OpenDelegation,
+            InviteTarget::Group([4; 32]),
+            Role::Read,
+            1_800_000_000_000,
+        );
+        assert_eq!(
+            terms.capability_pin, None,
+            "a source invite starts unpinned"
+        );
+        assert_eq!(terms.with_capability_pin(pin).capability_pin, Some(pin));
+    }
+
+    #[test]
+    fn a_covered_pin_seeds_the_baseline() {
+        // Oracle (#12922): pin covered ⇒ baseline seeded, no blocking prompt.
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let body = pinned_body(&key);
+        let lookup = StubLookup(Some(names(&["chat.read", "chat.write"])));
+        let current = names(&["chat.read", "chat.write"]);
+        assert_eq!(
+            body.pin_redemption(&lookup, &current),
+            PinRedemption::SeedBaseline(names(&["chat.read", "chat.write"]))
+        );
+    }
+
+    #[test]
+    fn an_uncovered_pin_fires_the_notice_before_the_first_connect() {
+        // Oracle (#12922): pin uncovered ⇒ notice before first connect,
+        // naming what the world can now also do.
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let body = pinned_body(&key);
+        let lookup = StubLookup(Some(names(&["chat.read"])));
+        let current = names(&["chat.read", "device.location"]);
+        assert_eq!(
+            body.pin_redemption(&lookup, &current),
+            PinRedemption::NoticeBeforeConnect(names(&["device.location"]))
+        );
+    }
+
+    #[test]
+    fn an_unfetchable_pin_is_an_ordinary_first_connect() {
+        // Oracle (#12922): pin unfetchable ⇒ ordinary first connect; an
+        // unusable pin is not an error and not a prompt.
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let body = pinned_body(&key);
+        let lookup = StubLookup(None);
+        assert_eq!(
+            body.pin_redemption(&lookup, &names(&["chat.read"])),
+            PinRedemption::PinUnusable
+        );
+    }
+
+    #[test]
+    fn a_shrunk_world_seeds_the_baseline_at_the_narrower_current_set() {
+        // Oracle (#12922): pin present with a since-shrunk world ⇒ baseline
+        // seeds at the narrower current set; a pin never widens anything.
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let body = pinned_body(&key);
+        let lookup = StubLookup(Some(names(&["chat.read", "chat.write", "device.location"])));
+        let current = names(&["chat.read"]);
+        assert_eq!(
+            body.pin_redemption(&lookup, &current),
+            PinRedemption::SeedBaseline(names(&["chat.read"]))
+        );
+    }
+
+    #[test]
+    fn an_unpinned_invite_decides_no_pin() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let body = body_for(&key);
+        let lookup = StubLookup(Some(names(&["chat.read"])));
+        assert_eq!(
+            body.pin_redemption(&lookup, &names(&["chat.read"])),
+            PinRedemption::NoPin
+        );
     }
 }

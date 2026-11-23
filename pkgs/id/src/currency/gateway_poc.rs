@@ -435,6 +435,31 @@ impl<B: LedgerBackend> GatewayPoc<B> {
         &self.backend
     }
 
+    /// Run the F4 reconciliation and supply audit (issue #2320,
+    /// design section 7.3) over every currency this gateway
+    /// serves: per currency, the supply audit and the linkage /
+    /// amount checks over the most recent `recent_limit`
+    /// transfers. Report-only — this reads the registry, the
+    /// ledger, and the graph log, and changes none of them.
+    #[must_use]
+    pub fn reconcile(&self, recent_limit: usize) -> crate::currency::reconcile::ReconReport {
+        let mut report = crate::currency::reconcile::ReconReport::default();
+        for key in self.currency_ids.keys() {
+            let Some(record) = self.registry_record(key) else {
+                continue;
+            };
+            let (recon, findings) = crate::currency::reconcile::audit_currency(
+                &record,
+                &self.backend,
+                &self.graph,
+                recent_limit,
+            );
+            report.currencies.push(recon);
+            report.findings.extend(findings);
+        }
+        report
+    }
+
     /// The registry record for a currency key, once its definition
     /// is recorded.
     #[must_use]
@@ -868,6 +893,7 @@ mod tests {
         CurrencyBinding, SupplyCap, sign_definition, sign_issue, sign_transfer,
     };
     use crate::currency::issuer_id;
+    use crate::currency::reconcile::ReconFinding;
     use crate::currency_poc::ledger::InMemoryLedger;
     use p2panda_core::SigningKey as PandaKey;
 
@@ -1314,5 +1340,227 @@ mod tests {
             "got {error:?}",
         );
         assert_eq!(fx.svc.holder_balance(&key, &fx.alice.account), Some(60));
+    }
+
+    /// One Alice -> Bob transfer of `amount` through the gateway,
+    /// returning the graph event the transfer was stamped with.
+    fn transfer_to_bob(
+        fx: &mut Fixture<InMemoryLedger>,
+        currency: &CurrencyId,
+        client_request_id: u128,
+        amount: u128,
+        seq: u32,
+    ) -> Event {
+        let key = *currency.compact_hash().as_bytes();
+        let token = TokenTransfer {
+            currency: currency.compact_hash(),
+            amount,
+            to: issuer_id(&fx.bob.account_key),
+            seq_ref: u64::from(seq),
+            memo: None,
+        };
+        let event = sign_transfer(&fx.alice.account_key, seq, None, &token, vec![])
+            .expect("transfer signs");
+        let body = token.body().expect("body");
+        let request = CurrencyRequest {
+            client_request_id,
+            op: CurrencyOp::Transfer(GwTransfer {
+                currency: key,
+                from: fx.alice.account.clone(),
+                to: fx.bob.account.clone(),
+                amount,
+            }),
+        };
+        let device_key = fx.alice.device_key.clone();
+        send(fx, &device_key, &request, Some((&event, &body))).expect("transfer posts");
+        event
+    }
+
+    /// Post one transfer straight onto the ledger, bypassing the
+    /// gateway entirely: the divergence-injection tool of the F4
+    /// tests. The gateway's own writes are all stamped and
+    /// supply-consistent, so drift can only arrive this way —
+    /// which is exactly the failure mode section 7 exists to
+    /// detect.
+    fn inject_transfer(
+        fx: &mut Fixture<InMemoryLedger>,
+        id: u128,
+        debit_account_id: u128,
+        credit_account_id: u128,
+        amount: u128,
+        stamp: u128,
+    ) {
+        let results = fx.svc.backend.create_transfers(&[LedgerTransfer {
+            id,
+            debit_account_id,
+            credit_account_id,
+            amount,
+            ledger: id_currency_registry::CURRENCY_RANGE_START,
+            user_data_128: stamp,
+            code: transfer_code::HOLDER_TRANSFER_START,
+            linked: false,
+        }]);
+        assert_eq!(results, vec![Ok(())]);
+    }
+
+    /// The factory-derived ledger account id of one actor's
+    /// account of `kind` in the fixture currency.
+    fn derived_id(fx: &Fixture<InMemoryLedger>, owner: &str, kind: AccountKind) -> u128 {
+        id_currency_registry::account_spec(
+            id_currency_registry::CURRENCY_RANGE_START,
+            kind,
+            owner,
+            "",
+        )
+        .id
+    }
+
+    /// F4 acceptance (#2320, design section 7.3): a seeded
+    /// cluster with a known supply reports a match. Oracle: the
+    /// fixture's own posted balances — issue 100 to Alice, move
+    /// 40 to Bob; issued 100 must equal Alice 60 + Bob 40 + fee 0
+    /// + burn 0, and both transfers' stamps resolve with agreeing
+    /// amounts, so the report is clean.
+    #[test]
+    fn reconcile_reports_match_for_seeded_cluster() {
+        let mut fx = fixture_with(InMemoryLedger::default());
+        let (_receipt, currency, definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        let (_receipt, _event) = issue_to_alice(&mut fx, &currency, &definition, 2, 100, 1);
+        let _event = transfer_to_bob(&mut fx, &currency, 3, 40, 0);
+        assert_eq!(fx.svc.holder_balance(&key, &fx.alice.account), Some(60));
+        assert_eq!(fx.svc.holder_balance(&key, &fx.bob.account), Some(40));
+
+        let report = fx.svc.reconcile(100);
+        assert!(report.is_clean(), "findings: {:?}", report.findings);
+        assert_eq!(report.currencies.len(), 1);
+        let recon = &report.currencies[0];
+        assert_eq!(
+            recon.currency_id,
+            fx.svc
+                .registry_record(&key)
+                .expect("registry record")
+                .currency_id
+        );
+        assert_eq!(recon.ledger_id, id_currency_registry::CURRENCY_RANGE_START);
+        let supply = recon.supply.as_ref().expect("supply audit ran");
+        assert_eq!((supply.issued, supply.accounted), (100, 100));
+        assert!(supply.matches());
+        assert_eq!(recon.transfers_checked, 2);
+        assert_eq!(recon.unstamped_transfers, 0);
+    }
+
+    /// F4 acceptance (#2320): a transfer whose `user_data_128`
+    /// has no graph object is reported, not silently ignored —
+    /// with the currency, the ledger, and the transfer named.
+    #[test]
+    fn reconcile_reports_unresolved_graph_link() {
+        let mut fx = fixture_with(InMemoryLedger::default());
+        let (_receipt, currency, definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        let (_receipt, _event) = issue_to_alice(&mut fx, &currency, &definition, 2, 100, 1);
+
+        let issuer_tb = derived_id(&fx, &fx.issuer.account, AccountKind::Issuer);
+        let alice_tb = derived_id(&fx, &fx.alice.account, AccountKind::Holder);
+        inject_transfer(&mut fx, 0x2320_0001, issuer_tb, alice_tb, 5, 0xdead_beef);
+
+        let report = fx.svc.reconcile(100);
+        assert_eq!(
+            report.findings,
+            vec![ReconFinding::UnresolvedGraphLink {
+                currency_id: fx
+                    .svc
+                    .registry_record(&key)
+                    .expect("registry record")
+                    .currency_id,
+                ledger_id: id_currency_registry::CURRENCY_RANGE_START,
+                transfer_id: 0x2320_0001,
+                user_data_128: 0xdead_beef,
+            }],
+        );
+    }
+
+    /// F4 acceptance (#2320): an injected divergence between a
+    /// transfer and its graph object is reported with the
+    /// currency, the ledger id, and the offending object. The
+    /// injected transfer reuses the real transfer event's stamp
+    /// but moves 7 where the object records 40; the money itself
+    /// stays supply-consistent, so amount drift is the only
+    /// finding.
+    #[test]
+    fn reconcile_reports_amount_drift_with_currency_ledger_and_object() {
+        let mut fx = fixture_with(InMemoryLedger::default());
+        let (_receipt, currency, definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        let (_receipt, _event) = issue_to_alice(&mut fx, &currency, &definition, 2, 100, 1);
+        let transfer_event = transfer_to_bob(&mut fx, &currency, 3, 40, 0);
+
+        let issuer_tb = derived_id(&fx, &fx.issuer.account, AccountKind::Issuer);
+        let alice_tb = derived_id(&fx, &fx.alice.account, AccountKind::Holder);
+        inject_transfer(
+            &mut fx,
+            0x2320_0002,
+            issuer_tb,
+            alice_tb,
+            7,
+            GraphLog::stamp_of(&transfer_event),
+        );
+
+        let report = fx.svc.reconcile(100);
+        assert_eq!(
+            report.findings,
+            vec![ReconFinding::AmountDrift {
+                currency_id: fx
+                    .svc
+                    .registry_record(&key)
+                    .expect("registry record")
+                    .currency_id,
+                ledger_id: id_currency_registry::CURRENCY_RANGE_START,
+                transfer_id: 0x2320_0002,
+                graph_object: transfer_event.id.to_hex(),
+                ledger_amount: 7,
+                graph_amount: 40,
+            }],
+        );
+    }
+
+    /// F4 acceptance (#2320): supply that leaves the audited
+    /// accounts breaks the supply audit, with both sides of the
+    /// comparison named. The sink account's code is no audited
+    /// kind, so the 10 Alice sends it vanish from `accounted`
+    /// while `issued` still counts them.
+    #[test]
+    fn reconcile_reports_supply_mismatch_when_supply_leaves_audited_accounts() {
+        let mut fx = fixture_with(InMemoryLedger::default());
+        let (_receipt, currency, definition) = registered(&mut fx);
+        let key = *currency.compact_hash().as_bytes();
+        let (_receipt, _event) = issue_to_alice(&mut fx, &currency, &definition, 2, 100, 1);
+
+        let sink: u128 = 987_654_321;
+        let results = fx.svc.backend.create_accounts(&[LedgerAccount {
+            id: sink,
+            ledger: id_currency_registry::CURRENCY_RANGE_START,
+            code: 9,
+            flags: LedgerFlags::default(),
+        }]);
+        assert_eq!(results, vec![Ok(())]);
+        let alice_tb = derived_id(&fx, &fx.alice.account, AccountKind::Holder);
+        inject_transfer(&mut fx, 0x2320_0003, alice_tb, sink, 10, 0);
+
+        let report = fx.svc.reconcile(100);
+        assert_eq!(
+            report.findings,
+            vec![ReconFinding::SupplyMismatch {
+                currency_id: fx
+                    .svc
+                    .registry_record(&key)
+                    .expect("registry record")
+                    .currency_id,
+                ledger_id: id_currency_registry::CURRENCY_RANGE_START,
+                issued: 100,
+                accounted: 90,
+            }],
+        );
+        assert_eq!(report.currencies[0].unstamped_transfers, 1);
     }
 }

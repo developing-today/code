@@ -43,8 +43,20 @@ const tenancyFixture = JSON.stringify({
     { issuer: ISSUER, subject: "user-sub-2", binding_id: BINDING_B, active: true },
   ],
   service_tokens: [
-    { sha256: await sha256Hex(SERVICE_TOKEN), binding_id: BINDING_A, routes: ["stamping", "query"], active: true, label: "pm-service-test" },
-    { sha256: await sha256Hex(QUERY_ONLY_TOKEN), binding_id: BINDING_A, routes: ["query"], active: true, label: "query-only" },
+    {
+      sha256: await sha256Hex(SERVICE_TOKEN),
+      binding_id: BINDING_A,
+      routes: ["stamping", "query"],
+      active: true,
+      label: "pm-service-test",
+    },
+    {
+      sha256: await sha256Hex(QUERY_ONLY_TOKEN),
+      binding_id: BINDING_A,
+      routes: ["query"],
+      active: true,
+      label: "query-only",
+    },
   ],
 });
 
@@ -242,8 +254,7 @@ test("a complete caller block: caller-owned preserved verbatim, forged provenanc
       stamp_sig: "v1.ed25519.forged.deadbeef",
     },
   };
-  const callerBody =
-    `Intro text\n\n<!-- pm-metadata:start -->\n\`\`\`json\n${JSON.stringify(callerBlock, null, 2)}\n\`\`\`\n<!-- pm-metadata:end -->\n\nTrailing notes`;
+  const callerBody = `Intro text\n\n<!-- pm-metadata:start -->\n\`\`\`json\n${JSON.stringify(callerBlock, null, 2)}\n\`\`\`\n<!-- pm-metadata:end -->\n\nTrailing notes`;
 
   const created = await createOk(tokenA, {
     repo: "developing-today/code",
@@ -282,8 +293,7 @@ test("a complete caller block: caller-owned preserved verbatim, forged provenanc
 });
 
 test("a partial block takes required-field defaults for the missing caller-owned fields", async () => {
-  const callerBody =
-    `Text\n\n<!-- pm-metadata:start -->\n\`\`\`json\n${JSON.stringify({ pm_meta: 1, direct_parent: { repo: "developing-today/code", number: 3447, kind: "epic" } })}\n\`\`\`\n<!-- pm-metadata:end -->`;
+  const callerBody = `Text\n\n<!-- pm-metadata:start -->\n\`\`\`json\n${JSON.stringify({ pm_meta: 1, direct_parent: { repo: "developing-today/code", number: 3447, kind: "epic" } })}\n\`\`\`\n<!-- pm-metadata:end -->`;
   const created = await createOk(tokenA, {
     repo: "developing-today/code",
     kind: "issue",

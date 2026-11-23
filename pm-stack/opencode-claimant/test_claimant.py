@@ -311,7 +311,7 @@ class TestLaunchStep(unittest.TestCase):
     def test_vanished_candidate_is_a_recorded_skip(self):
         calls = {"n": 0}
 
-        def poll_stub():
+        def poll_stub(**_kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
                 return {"candidates": [dict(CANDIDATE)]}
@@ -610,10 +610,15 @@ class TestSupervisionStep(unittest.TestCase):
     def test_error_stopped_recovery_deletes_then_compare_clears_binding(self):
         binds = []
         deletes = []
-        with patch.object(
-            claimant, "_delete_session", side_effect=lambda sid: deletes.append(sid) or True
-        ), patch.object(
-            claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+        with (
+            patch.object(
+                claimant,
+                "_delete_session",
+                side_effect=lambda sid: deletes.append(sid) or True,
+            ),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+            ),
         ):
             recovered = claimant._recover_error_stopped("ses_error", 4242, {})
         self.assertTrue(recovered)
@@ -635,13 +640,9 @@ class TestSupervisionStep(unittest.TestCase):
             stub_claimed_rows([BOUND_ROW]),
             patch.object(claimant, "_fetch_sessions", return_value=[]),
             patch.object(claimant, "_fetch_active_ids", return_value=set()),
-            patch.object(
-                claimant, "_get_session", return_value=("ok", error_session)
-            ),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
             patch.object(claimant, "_delete_session", return_value=True),
-            patch.object(
-                claimant.subprocess, "run", make_fake_run(binds)
-            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
         ):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered[0]["reason"], "error_stopped")
@@ -800,7 +801,7 @@ class TestMainFireLog(unittest.TestCase):
     def test_main_records_launch_skips_in_fires_entry(self):
         calls = {"n": 0}
 
-        def poll_stub():
+        def poll_stub(**_kwargs):
             calls["n"] += 1
             # The gate (call 1) sees the candidate and main threads
             # it into launch_step as the fire-start snapshot (#8038);
@@ -1576,6 +1577,129 @@ class TestHandBackStep(unittest.TestCase):
             record = claimant.hand_back_step("live", [bound])
         self.assertIsNone(record)
         self.assertEqual(calls, empty_calls())
+
+
+class TestBoundedPoll(unittest.TestCase):
+    def snapshot(self):
+        return {
+            "candidates": [],
+            "cap_room": 36,
+            "ledger_readable": True,
+            "queues": {q: {"read_ok": True} for q in claimant.QUEUES},
+        }
+
+    def poll(self, snapshot):
+        result = subprocess.CompletedProcess(
+            [], 0, json.dumps(snapshot), "claimant-poll-phase:snapshot\n"
+        )
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(claimant.subprocess, "run", return_value=result) as child,
+        ):
+            data = claimant.run_poll(timeout=12)
+        self.assertEqual(child.call_args.kwargs["timeout"], 12)
+        self.assertEqual(
+            child.call_args.kwargs["env"]["OPENCODE_CLAIMANT_POLL_SECONDS"], "12"
+        )
+        return data
+
+    def test_healthy_snapshot_keeps_decision(self):
+        snapshot = self.snapshot()
+        self.assertEqual(self.poll(snapshot), snapshot)
+        snapshot["candidates"] = [dict(CANDIDATE)]
+        self.assertEqual(self.poll(snapshot), snapshot)
+
+    def test_incomplete_snapshot_cannot_launch_even_with_candidate(self):
+        for field, bad, phase in (
+            ("cap_room", None, "session_census"),
+            ("ledger_readable", False, "ledger_read"),
+            ("queues", {}, "broker_reads"),
+            (
+                "queues",
+                {q: {"read_ok": False} for q in claimant.QUEUES},
+                "broker_reads",
+            ),
+        ):
+            with self.subTest(field=field, bad=bad):
+                snapshot = self.snapshot()
+                snapshot["candidates"] = [dict(CANDIDATE)]
+                snapshot[field] = bad
+                with self.assertRaises(claimant.PollFailure) as raised:
+                    self.poll(snapshot)
+                self.assertEqual(raised.exception.category, "incomplete_snapshot")
+                self.assertEqual(raised.exception.phase, phase)
+
+    def test_hard_timeout_reports_only_fixed_phase_not_stderr(self):
+        exc = subprocess.TimeoutExpired(
+            ["fixture"],
+            3,
+            stderr=b"private diagnostic\nclaimant-poll-phase:broker_reads\n",
+        )
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(claimant.subprocess, "run", side_effect=exc),
+        ):
+            with self.assertRaises(claimant.PollFailure) as raised:
+                claimant.run_poll(timeout=3)
+        self.assertEqual(str(raised.exception), "deadline during broker_reads")
+
+    def test_gate_spends_only_remaining_budget_and_records_fixed_category(self):
+        with (
+            patch.object(claimant.time, "monotonic", side_effect=[10.0, 27.0, 28.0]),
+            patch.object(claimant, "run_queue_health", return_value=None),
+            patch.object(
+                claimant,
+                "run_poll",
+                side_effect=claimant.PollFailure("deadline", "broker_reads"),
+            ) as read,
+        ):
+            self.assertIsNone(claimant.gate_step())
+        read.assert_called_once_with(timeout=298.0)
+        self.assertEqual(
+            claimant._gate_diagnostic,
+            {"category": "deadline", "phase": "broker_reads", "elapsed_ms": 18000},
+        )
+
+
+class TestSinkClaimDiagnostics(unittest.TestCase):
+    def test_fixed_categories_do_not_copy_cli_output_and_preserve_attempts(self):
+        fixtures = (
+            (subprocess.TimeoutExpired(["private"], 15, stderr=b"private"), "timeout"),
+            (OSError("private"), "spawn_error"),
+            (Result(13, "private"), "cli_nonzero"),
+            (Result(0, "private"), "invalid_json"),
+            (Result(0, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(0, '{"ignored":"private"}'), "missing_claim_row"),
+        )
+        for fixture, category in fixtures:
+            with (
+                self.subTest(category=category),
+                patch.object(claimant.subprocess, "run", side_effect=[fixture]) as run,
+                patch.object(claimant.time, "monotonic", side_effect=[10.0, 10.25]),
+            ):
+                diagnostic = {}
+                self.assertEqual(
+                    claimant._collect_handed_offs("fixture", 3, diagnostic=diagnostic),
+                    {},
+                )
+                self.assertEqual(diagnostic, {"category": category, "elapsed_ms": 250})
+                run.assert_called_once()
+                self.assertIn("--handoff", run.call_args.args[0])
+                self.assertNotIn("--task", run.call_args.args[0])
+                self.assertEqual(run.call_args.kwargs["timeout"], 15)
+
+    def test_diagnostic_does_not_change_preexisting_acceptance_of_returned_row(self):
+        row = {"id": 42, "private": "not surfaced"}
+        with patch.object(
+            claimant.subprocess, "run", return_value=Result(1, json.dumps(row))
+        ):
+            diagnostic = {}
+            self.assertEqual(
+                claimant._collect_handed_offs("fixture", 1, diagnostic=diagnostic),
+                {42: row},
+            )
+        self.assertEqual(diagnostic["category"], "row_returned")
+        self.assertEqual(set(diagnostic), {"category", "elapsed_ms"})
 
 
 if __name__ == "__main__":

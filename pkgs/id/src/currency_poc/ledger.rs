@@ -291,6 +291,41 @@ pub trait LedgerBackend {
             }
         }
     }
+    /// All accounts created on `ledger`, in account-id order.
+    ///
+    /// Enumeration is what the F4 reconciliation job (#2320,
+    /// design section 7.3) reads its account set from. The default
+    /// is an explicit error, never an empty list: a backend that
+    /// cannot enumerate must say so, so a reconciliation report
+    /// records its own blindness instead of reporting a false
+    /// match over zero accounts. The TigerBeetle client of
+    /// `tb_ledger` has no ledger-scoped account query, so that
+    /// binding keeps this default until one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot enumerate accounts
+    /// for a ledger, or on a backend failure.
+    fn try_accounts_on_ledger(&self, _ledger: u32) -> anyhow::Result<Vec<Account>> {
+        anyhow::bail!("ledger account enumeration is not supported by this backend")
+    }
+    /// The most recent `limit` posted transfers on `ledger`, in
+    /// posting order (oldest first). `limit == 0` means no
+    /// transfers are returned. Same honesty rule as
+    /// [`Self::try_accounts_on_ledger`]: the default is an explicit
+    /// error, never a silent empty page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot enumerate
+    /// transfers for a ledger, or on a backend failure.
+    fn try_transfers_on_ledger(
+        &self,
+        _ledger: u32,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<Transfer>> {
+        anyhow::bail!("ledger transfer enumeration is not supported by this backend")
+    }
 }
 
 /// In-memory backend implementing the TigerBeetle semantics listed in
@@ -650,5 +685,28 @@ impl LedgerBackend for InMemoryLedger {
             .filter(|transfer| transfer.user_data_128 == value)
             .cloned()
             .collect())
+    }
+
+    fn try_accounts_on_ledger(&self, ledger: u32) -> anyhow::Result<Vec<Account>> {
+        let mut accounts: Vec<Account> = self
+            .accounts
+            .values()
+            .filter(|account| account.ledger == ledger)
+            .cloned()
+            .collect();
+        accounts.sort_by_key(|account| account.id);
+        Ok(accounts)
+    }
+
+    fn try_transfers_on_ledger(&self, ledger: u32, limit: usize) -> anyhow::Result<Vec<Transfer>> {
+        let on_ledger: Vec<Transfer> = self
+            .transfer_order
+            .iter()
+            .filter_map(|id| self.transfers.get(id))
+            .filter(|transfer| transfer.ledger == ledger)
+            .cloned()
+            .collect();
+        let skip = on_ledger.len().saturating_sub(limit);
+        Ok(on_ledger.into_iter().skip(skip).collect())
     }
 }

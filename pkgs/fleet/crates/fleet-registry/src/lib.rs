@@ -247,6 +247,7 @@ pub const DOMAINS: &[Domain] = &[
             "unblock",
             "dep-recheck",
             "quarantine-recheck",
+            "repair",
             "cancel",
             "revive",
             "fail",

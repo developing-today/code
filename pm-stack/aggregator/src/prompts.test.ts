@@ -2,8 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PromptsStore, validateNewPrompt, type NewPrompt } from "./prompts.ts";
+import {
+  PromptsStore,
+  syncBlockHttpResult,
+  validateNewPrompt,
+  type NewPrompt,
+  type PromptRecord,
+  type PromptWaitResult,
+} from "./prompts.ts";
 import { renderPromptWidget } from "./prompt-widget.ts";
+import { loadConfig } from "./config.ts";
 
 const valid: NewPrompt = {
   scope: "page",
@@ -24,7 +32,12 @@ describe("validateNewPrompt", () => {
   test("rejects unknown scope, target and mode", () => {
     expect(validateNewPrompt({ ...valid, scope: "global" }).ok).toBe(false);
     expect(validateNewPrompt({ ...valid, target: "pool:low" }).ok).toBe(false);
-    expect(validateNewPrompt({ ...valid, mode: "sync-block" }).ok).toBe(false);
+    expect(validateNewPrompt({ ...valid, mode: "sync" }).ok).toBe(false);
+  });
+
+  test("accepts the S3 sync modes", () => {
+    expect(validateNewPrompt({ ...valid, mode: "sync-block" }).ok).toBe(true);
+    expect(validateNewPrompt({ ...valid, mode: "sync-ws" }).ok).toBe(true);
   });
 
   test("requires sectionRef for section scope", () => {
@@ -101,6 +114,119 @@ describe("PromptsStore", () => {
     const record = await store.add(parsed.value);
     const onDisk = JSON.parse(await readFile(path, "utf8"));
     expect(onDisk.prompts.map((p: { id: string }) => p.id)).toEqual([record.id]);
+  });
+});
+
+describe("PromptsStore.waitForAnswer (S3 sync-block)", () => {
+  async function newStore() {
+    const dir = await mkdtemp(join(tmpdir(), "prompts-wait-"));
+    const store = new PromptsStore(join(dir, "prompts.json"));
+    const parsed = validateNewPrompt({ ...valid, mode: "sync-block" });
+    if (!parsed.ok) throw new Error("fixture invalid");
+    const record = await store.add(parsed.value);
+    return { store, record };
+  }
+
+  test("resolves at once for an already-answered prompt", async () => {
+    const { store, record } = await newStore();
+    await store.update(record.id, { status: "answered", answer: "ready" });
+    const wait = await store.waitForAnswer(record.id, { timeoutMs: 1000, pollMs: 5 });
+    expect(wait.outcome).toBe("answered");
+    if (wait.outcome === "answered") expect(wait.record.answer).toBe("ready");
+  });
+
+  test("resolves when the answer lands mid-wait", async () => {
+    const { store, record } = await newStore();
+    const waiting = store.waitForAnswer(record.id, { timeoutMs: 2000, pollMs: 5 });
+    await new Promise((r) => setTimeout(r, 20));
+    await store.update(record.id, { status: "answered", answer: "late answer" });
+    const wait = await waiting;
+    expect(wait.outcome).toBe("answered");
+    if (wait.outcome === "answered") expect(wait.record.answer).toBe("late answer");
+  });
+
+  test("resolves as failed when the prompt fails", async () => {
+    const { store, record } = await newStore();
+    const waiting = store.waitForAnswer(record.id, { timeoutMs: 2000, pollMs: 5 });
+    await store.update(record.id, { status: "failed", error: "boom" });
+    const wait = await waiting;
+    expect(wait.outcome).toBe("failed");
+    if (wait.outcome === "failed") expect(wait.record.error).toBe("boom");
+  });
+
+  test("times out with the still-queued record when no answer lands", async () => {
+    const { store, record } = await newStore();
+    const wait = await store.waitForAnswer(record.id, { timeoutMs: 60, pollMs: 5 });
+    expect(wait.outcome).toBe("timeout");
+    if (wait.outcome === "timeout") expect(wait.record.status).toBe("queued");
+  });
+
+  test("reports not-found for an unknown id", async () => {
+    const { store } = await newStore();
+    const wait = await store.waitForAnswer("prompt:missing", { timeoutMs: 60, pollMs: 5 });
+    expect(wait).toEqual({ outcome: "not-found" });
+  });
+});
+
+describe("syncBlockHttpResult (S3 response shapes)", () => {
+  const base: PromptRecord = {
+    scope: "page",
+    target: "claude",
+    mode: "sync-block",
+    page: "queue",
+    sectionRef: null,
+    prompt: "reprioritize",
+    id: "prompt:1",
+    threadId: "prompt:1",
+    status: "queued",
+    createdAt: "2026-11-23T00:00:00.000Z",
+    archived: false,
+    read: false,
+    replyTo: null,
+    refs: [],
+    notify: false,
+  };
+
+  test("answered maps to the design §3.7 body at 200", () => {
+    const wait: PromptWaitResult = {
+      outcome: "answered",
+      record: { ...base, status: "answered", answer: "the answer" },
+    };
+    const result = syncBlockHttpResult(wait, 120000);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ id: "prompt:1", status: "answered", answer: "the answer", attachments: [] });
+  });
+
+  test("failed maps to a typed 200 result carrying the error", () => {
+    const wait: PromptWaitResult = { outcome: "failed", record: { ...base, status: "failed", error: "boom" } };
+    const result = syncBlockHttpResult(wait, 120000);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ id: "prompt:1", status: "failed", error: "boom" });
+  });
+
+  test("timeout maps to a typed 504 result naming the configured wait", () => {
+    const wait: PromptWaitResult = { outcome: "timeout", record: { ...base } };
+    const result = syncBlockHttpResult(wait, 120000);
+    expect(result.status).toBe(504);
+    expect(result.body).toEqual({
+      id: "prompt:1",
+      status: "timeout",
+      error: "prompt not answered within 120000 ms",
+      timeoutMs: 120000,
+    });
+  });
+
+  test("not-found maps to 404", () => {
+    const result = syncBlockHttpResult({ outcome: "not-found" }, 120000);
+    expect(result.status).toBe(404);
+  });
+});
+
+describe("loadConfig prompt sync timeout (S3)", () => {
+  test("defaults to the design's 120s and honors PM_AGG_PROMPT_SYNC_TIMEOUT_MS", () => {
+    expect(loadConfig({ PM_AGG_DEV: "1" }).promptSyncTimeoutMs).toBe(120000);
+    expect(loadConfig({ PM_AGG_DEV: "1", PM_AGG_PROMPT_SYNC_TIMEOUT_MS: "45000" }).promptSyncTimeoutMs).toBe(45000);
+    expect(() => loadConfig({ PM_AGG_DEV: "1", PM_AGG_PROMPT_SYNC_TIMEOUT_MS: "soon" })).toThrow();
   });
 });
 

@@ -71,6 +71,17 @@ serves no authoritative snapshot.
   ceiling. Design record:
   `doc/2026-11-23T05-00-00Z_design_bridge_v1_implementation/`.
   Cross-language fixtures: `pkgs/id/tests/bridge_fixtures.rs`.
+- `src/export.ts` — §6 export production (slice 4b of #2852,
+  #13157): enumerates the DO's applied events and the R2 blobs
+  they cite into the object/blob sets `build_export`
+  (`pkgs/id/src/hosted_export.rs`) assembles, under the
+  object-model mapping recorded in the spec as §6.3. Route:
+  `GET /v1/bridge/export`, ID-key proof like the other bridge
+  HTTPS legs; a pure read, available at cap, and a referenced
+  blob R2 cannot produce fails it loudly (502 naming the hash).
+  The produced sets are pinned to
+  `test/fixtures/hosted-export-sets.json`, which the Rust suite
+  verifies through `build_export` + `verify_import`.
 
 ## Tests
 

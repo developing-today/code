@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FailClosed, parseBindingId, parseJurisdiction, userStub } from "../src/routing.ts";
+import { createHostedAccountRecord } from "../src/account-directory.ts";
 
 const BINDING = "0123456789abcdef0123456789abcdef";
 
@@ -18,6 +19,47 @@ test("jurisdiction must be present and supported", () => {
   assert.throws(() => parseJurisdiction(null), FailClosed);
   assert.throws(() => parseJurisdiction(""), FailClosed);
   assert.throws(() => parseJurisdiction("apac"), FailClosed);
+});
+
+test("hosted account metadata requires an explicit supported jurisdiction", () => {
+  const record = createHostedAccountRecord({
+    subjectKey: "provider-subject-hash",
+    bindingId: BINDING,
+    jurisdiction: "eu",
+  });
+  assert.deepEqual(record, {
+    subjectKey: "provider-subject-hash",
+    bindingId: BINDING,
+    jurisdiction: "eu",
+    jurisdictionPending: null,
+    migrationId: null,
+    phase: "stable",
+    routingEpoch: 0,
+  });
+});
+
+test("hosted account creation fails closed before metadata exists for absent or invalid jurisdiction", () => {
+  for (const jurisdiction of [null, "", "apac"]) {
+    assert.throws(
+      () => createHostedAccountRecord({
+        subjectKey: "provider-subject-hash",
+        bindingId: BINDING,
+        jurisdiction,
+      }),
+      (error: unknown) => error instanceof FailClosed,
+    );
+  }
+});
+
+test("hosted account metadata rejects invalid identity inputs", () => {
+  assert.throws(
+    () => createHostedAccountRecord({ subjectKey: "", bindingId: BINDING, jurisdiction: "us" }),
+    (error: unknown) => error instanceof FailClosed,
+  );
+  assert.throws(
+    () => createHostedAccountRecord({ subjectKey: "provider-subject-hash", bindingId: "google:sub", jurisdiction: "us" }),
+    (error: unknown) => error instanceof FailClosed,
+  );
 });
 
 test("userStub takes id and stub from the restricted namespace only", () => {

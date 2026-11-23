@@ -107,10 +107,7 @@ pub(crate) fn bound_issues(rows: &[Value]) -> (Vec<BoundIssue>, i64) {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let dedupe_key = row
-            .get("dedupe_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let dedupe_key = row.get("dedupe_key").and_then(|v| v.as_str()).unwrap_or("");
         let issue = task_issue(&payload, dedupe_key);
         match (repo.is_empty(), issue) {
             (false, Some(issue)) => bound.push(BoundIssue {
@@ -265,11 +262,7 @@ fn resolve_alerts_intake_token() -> Result<String, String> {
 pub fn run_closed_bound_checks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
     run_closed_bound_checks_with(t, limit, &|body| {
         resolve_alerts_intake_token().and_then(|token| {
-            crate::needs_drew::post_plain_alert_to(
-                &crate::needs_drew::alerts_url(),
-                &token,
-                body,
-            )
+            crate::needs_drew::post_plain_alert_to(&crate::needs_drew::alerts_url(), &token, body)
         })
     })
 }
@@ -317,7 +310,10 @@ pub(crate) fn run_closed_bound_checks_with(
             .or_insert_with(|| probe.probe_landing(LinkKind::Issue, &repo, issue))
             .clone();
         checked += 1;
-        match closed_bound_verdict(&landing, has_completion_record(&log_text, b.task_id, b.issue)) {
+        match closed_bound_verdict(
+            &landing,
+            has_completion_record(&log_text, b.task_id, b.issue),
+        ) {
             ClosedBoundVerdict::Open | ClosedBoundVerdict::ClosedClean => {
                 if matches!(landing, Landing::Landed { .. }) {
                     summary["closed"] = json!(summary["closed"].as_i64().unwrap_or(0) + 1);
@@ -469,7 +465,11 @@ mod tests {
         // nothing.
         let mixed = format!("not json\n{{\"action\": 1}}\n{good}\n[broken");
         assert!(has_completion_record(&mixed, 20372, 9177));
-        assert!(!has_completion_record("not json\n{\"action\": 1}\n", 20372, 9177));
+        assert!(!has_completion_record(
+            "not json\n{\"action\": 1}\n",
+            20372,
+            9177
+        ));
         assert!(!has_completion_record("", 20372, 9177));
     }
 
@@ -490,8 +490,14 @@ mod tests {
             closed_bound_verdict(&landed, false),
             ClosedBoundVerdict::ClosedMissingRecord
         );
-        assert_eq!(closed_bound_verdict(&Landing::Open, false), ClosedBoundVerdict::Open);
-        assert_eq!(closed_bound_verdict(&Landing::Open, true), ClosedBoundVerdict::Open);
+        assert_eq!(
+            closed_bound_verdict(&Landing::Open, false),
+            ClosedBoundVerdict::Open
+        );
+        assert_eq!(
+            closed_bound_verdict(&Landing::Open, true),
+            ClosedBoundVerdict::Open
+        );
         assert_eq!(
             closed_bound_verdict(&Landing::Unknown("github http 502".to_string()), false),
             ClosedBoundVerdict::Open
@@ -538,13 +544,19 @@ mod tests {
     /// requests get a bare ok. Captures every request body.
     fn stub_pipeline_seq(
         replies: Vec<String>,
-    ) -> (String, Arc<Mutex<Vec<String>>>, Arc<Mutex<std::collections::VecDeque<String>>>) {
+    ) -> (
+        String,
+        Arc<Mutex<Vec<String>>>,
+        Arc<Mutex<std::collections::VecDeque<String>>>,
+    ) {
         use std::io::{BufRead, BufReader, Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let captured = Arc::new(Mutex::new(Vec::new()));
         let queue = Arc::new(Mutex::new(
-            replies.into_iter().collect::<std::collections::VecDeque<_>>(),
+            replies
+                .into_iter()
+                .collect::<std::collections::VecDeque<_>>(),
         ));
         let sink = captured.clone();
         let pending = queue.clone();
@@ -574,20 +586,16 @@ mod tests {
                 sink.lock()
                     .unwrap()
                     .push(String::from_utf8_lossy(&body).to_string());
-                let resp = pending
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .unwrap_or_else(|| {
-                        json!({"results": [
-                            {"type": "ok", "response": {"type": "execute", "result": {
-                                "cols": [], "rows": [],
-                                "affected_row_count": 0,
-                                "last_insert_rowid": null}}},
-                            {"type": "ok", "response": {"type": "close"}}
-                        ]})
-                        .to_string()
-                    });
+                let resp = pending.lock().unwrap().pop_front().unwrap_or_else(|| {
+                    json!({"results": [
+                        {"type": "ok", "response": {"type": "execute", "result": {
+                            "cols": [], "rows": [],
+                            "affected_row_count": 0,
+                            "last_insert_rowid": null}}},
+                        {"type": "ok", "response": {"type": "close"}}
+                    ]})
+                    .to_string()
+                });
                 let out = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
                      Content-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -672,7 +680,8 @@ mod tests {
     use std::sync::MutexGuard;
 
     fn temp_closure_log(name: &str, contents: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("fleet-closed-bound-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("fleet-closed-bound-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("closure-records.jsonl");
         std::fs::write(&path, contents).unwrap();
@@ -693,15 +702,12 @@ mod tests {
         // an empty closure log, appends one closed_bound_alert
         // event, calls the throat once with the pinned body, and
         // reports missing_record == 1.
-        let (_lock, _env) = EnvGuard::set(
-            "FLEET_CLOSURE_LOG",
-            &temp_closure_log("no-record", ""),
-        );
-        let (url, captured, _queue) =
-            stub_pipeline_seq(vec![select_one_bound_row(), insert_ok()]);
-        let mut backend =
-            TursoBackend::new(url, "test".to_string(), ureq::agent());
-        backend.set_gh_probe(Arc::new(ClosedFixture { answer: landed_closed() }));
+        let (_lock, _env) = EnvGuard::set("FLEET_CLOSURE_LOG", &temp_closure_log("no-record", ""));
+        let (url, captured, _queue) = stub_pipeline_seq(vec![select_one_bound_row(), insert_ok()]);
+        let mut backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        backend.set_gh_probe(Arc::new(ClosedFixture {
+            answer: landed_closed(),
+        }));
         let posted = Arc::new(Mutex::new(Vec::new()));
         let sink = posted.clone();
         let out = run_closed_bound_checks_with(&backend, 200, &move |body| {
@@ -744,9 +750,10 @@ mod tests {
             &temp_closure_log("with-record", &format!("{record}\n")),
         );
         let (url, captured, _queue) = stub_pipeline_seq(vec![select_one_bound_row()]);
-        let mut backend =
-            TursoBackend::new(url, "test".to_string(), ureq::agent());
-        backend.set_gh_probe(Arc::new(ClosedFixture { answer: landed_closed() }));
+        let mut backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        backend.set_gh_probe(Arc::new(ClosedFixture {
+            answer: landed_closed(),
+        }));
         let posted = Arc::new(Mutex::new(0i64));
         let sink = posted.clone();
         let out = run_closed_bound_checks_with(&backend, 200, &move |_| {
@@ -768,15 +775,12 @@ mod tests {
         // Oracle: the throat half may fail (token, transport) —
         // the event is already the durable record, so the pass
         // counts alert_failures and stays Ok.
-        let (_lock, _env) = EnvGuard::set(
-            "FLEET_CLOSURE_LOG",
-            &temp_closure_log("post-fail", ""),
-        );
-        let (url, captured, _queue) =
-            stub_pipeline_seq(vec![select_one_bound_row(), insert_ok()]);
-        let mut backend =
-            TursoBackend::new(url, "test".to_string(), ureq::agent());
-        backend.set_gh_probe(Arc::new(ClosedFixture { answer: landed_closed() }));
+        let (_lock, _env) = EnvGuard::set("FLEET_CLOSURE_LOG", &temp_closure_log("post-fail", ""));
+        let (url, captured, _queue) = stub_pipeline_seq(vec![select_one_bound_row(), insert_ok()]);
+        let mut backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        backend.set_gh_probe(Arc::new(ClosedFixture {
+            answer: landed_closed(),
+        }));
         let out = run_closed_bound_checks_with(&backend, 200, &|_| {
             Err("cannot connect to alerts throat".to_string())
         })
@@ -792,10 +796,7 @@ mod tests {
         // Oracle: fail-open — with no GitHub probe installed the
         // pass does no GitHub work, alerts nothing, and returns a
         // clean Ok with every bound issue counted unavailable.
-        let (_lock, _env) = EnvGuard::set(
-            "FLEET_CLOSURE_LOG",
-            &temp_closure_log("no-probe", ""),
-        );
+        let (_lock, _env) = EnvGuard::set("FLEET_CLOSURE_LOG", &temp_closure_log("no-probe", ""));
         let (url, captured, _queue) = stub_pipeline_seq(vec![select_one_bound_row()]);
         let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
         let out = run_closed_bound_checks_with(&backend, 200, &|_| {
@@ -818,9 +819,7 @@ mod tests {
         // sweep event.
         let src = include_str!("core.rs");
         let flat = src.split_whitespace().collect::<Vec<_>>().join(" ");
-        assert!(flat.contains(
-            "run_closed_bound_checks( t, req_i64(req, \"closed_bound_limit\")"
-        ));
+        assert!(flat.contains("run_closed_bound_checks( t, req_i64(req, \"closed_bound_limit\")"));
         assert!(src.contains("req_bool(req, \"closed_bound\")"));
         assert!(src.contains("out[\"closed_bound\"]"));
         assert!(src.contains("closed_bound_missing > 0"));

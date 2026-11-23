@@ -2,7 +2,7 @@
 
 One Rust binary for the whole fleet surface (epic
 developing-today/code#5412; design note
-`doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/`). This
+`../../doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/2026-11-04T11-45-48Z_design_fleet_multicall_binary.md`). This
 workspace began as the step-1 (#5429) skeleton: the registry,
 config, secrets-by-name and proxy-protocol platform crates. Step 2
 (#5430) landed the queue domain — the repo-queue client and the
@@ -132,7 +132,7 @@ crates/fleet-dispatch/      the dispatch domain (step 4): a THIN
                             egress (sandbox seat).
 crates/fleet/               the binary: multicall dispatch, capability
                             stubs, `version`, `capabilities`, help.
-default.nix                 the four variant packages (see below)
+default.nix                 the six variant packages (see below)
 smoke.sh                    per-variant smoke suite (post-build)
 ```
 
@@ -304,6 +304,17 @@ built-ins `fleet init`, `fleet session`, `fleet version`,
 The per-domain `subcommands` arrays are the top-level command inventory rendered by `fleet <domain> --help`. The argument grammar and nested leaves live in the domain handlers and are documented in [`docs/verbs.md`](docs/verbs.md). That reference covers all shipped Fleet domains, top-level verbs, nested queue and agent commands, and where to ask a leaf for exact usage.
 
 The queue client dispatches 32 top-level verbs, including `show`; grouped surfaces (`fallback`, `dispatch`, `session`, `surfaces`, `outbox`, and `stack`) document their nested commands and flags in the same reference. Before scripting an unfamiliar command, check `fleet capabilities` and the leaf's `--help`.
+The same contract covers the book. [`book/`](book/) (mdBook sources,
+`book.toml` at this package's root) is the complete, self-contained
+reference for the binary — every domain, subcommand, flag, default and
+operational procedure — and any change to a command, flag, default,
+capability, surface or procedure updates the matching chapter in the
+same change. The rule is recorded for agents in
+[`doc/agents/documentation.md`](doc/agents/documentation.md) and in
+the book's own "Keeping this book current" chapter. The book builds
+with `nix build .#fleet-docs`; `create-missing = false` in
+`book.toml` makes a missing chapter a build failure, never a stub.
+
 Shipped examples — every verb below is dispatchable today:
 
 ```sh

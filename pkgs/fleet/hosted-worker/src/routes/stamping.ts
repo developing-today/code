@@ -60,11 +60,7 @@ import { SERVICE_NAME } from "../config.ts";
 import { FailClosed } from "../errors.ts";
 import type { RouteDef } from "../router.ts";
 import { checkedSessionId, requireOpenSession, type SessionRecord } from "../sessions.ts";
-import {
-  assembleStampedBlock,
-  parseMetadataBlock,
-  renderBodyWithBlock,
-} from "../metadata.ts";
+import { assembleStampedBlock, parseMetadataBlock, renderBodyWithBlock } from "../metadata.ts";
 import { requireStampSigner, signStamp, type Provenance } from "../stamp-sig.ts";
 import { extractKeys, type MetadataRecord } from "../stamping.ts";
 
@@ -128,11 +124,7 @@ function workspaceRefClaim(
   const claim = raw as Record<string, unknown>;
   const kind = claim["kind"];
   if (typeof kind !== "string" || !(WORKSPACE_KINDS as readonly string[]).includes(kind)) {
-    throw new FailClosed(
-      400,
-      "invalid_body",
-      `workspace_ref.kind must be one of ${WORKSPACE_KINDS.join(", ")}`,
-    );
+    throw new FailClosed(400, "invalid_body", `workspace_ref.kind must be one of ${WORKSPACE_KINDS.join(", ")}`);
   }
   const out: Record<string, unknown> = { kind };
   for (const field of ["id", "repo", "branch", "sha"]) {
@@ -224,9 +216,7 @@ async function createStamped(req: Request, ctx: CallerContext | null, deps: Auth
 
   // The queue record, when this work is queue-originated (design §5).
   const queue =
-    sessionId && deps.queueRecords
-      ? await deps.queueRecords.recordForSession(me.bindingId, sessionId)
-      : null;
+    sessionId && deps.queueRecords ? await deps.queueRecords.recordForSession(me.bindingId, sessionId) : null;
 
   // workspace_ref: the caller's claim, or the strongest locator the
   // request supports — the worktree claim, else the cited session.
@@ -312,6 +302,4 @@ async function createStamped(req: Request, ctx: CallerContext | null, deps: Auth
   );
 }
 
-export const routes: RouteDef[] = [
-  { method: "POST", path: "/v1/stamps", door: "stamping", handler: createStamped },
-];
+export const routes: RouteDef[] = [{ method: "POST", path: "/v1/stamps", door: "stamping", handler: createStamped }];

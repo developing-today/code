@@ -35,6 +35,7 @@ const QUEUE_VERBS: &[&str] = &[
     "unblock",
     "dep-recheck",
     "quarantine-recheck",
+    "repair",
     "cancel",
     "revive",
     "fail",

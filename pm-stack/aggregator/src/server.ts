@@ -30,7 +30,14 @@ import {
   queuedComments,
   validateNewComment,
 } from "./comments.ts";
-import { PROMPT_STATUSES, PromptsStore, validateNewPrompt, type PromptStatus } from "./prompts.ts";
+import {
+  PROMPT_STATUSES,
+  PromptsStore,
+  syncBlockHttpResult,
+  validateNewPrompt,
+  type PromptStatus,
+} from "./prompts.ts";
+import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
@@ -57,11 +64,7 @@ import { OutcomeFactStore } from "./outcome-attribution.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
-import {
-  BreakGlassTokenStore,
-  authorizeWithBreakGlassToken,
-  presentedBreakGlassToken,
-} from "./break-glass.ts";
+import { BreakGlassTokenStore, authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
 import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
@@ -2591,7 +2594,8 @@ async function handler(req: Request): Promise<Response> {
         typeof body === "object" && body !== null && typeof (body as { action?: unknown }).action === "string"
           ? (body as { action: string }).action.trim()
           : "";
-      if (!["kaneo", "pad", "grist"].includes(target)) return json({ error: "target must be kaneo, pad, or grist" }, 400);
+      if (!["kaneo", "pad", "grist"].includes(target))
+        return json({ error: "target must be kaneo, pad, or grist" }, 400);
       if (!/^[A-Za-z][A-Za-z0-9._:-]{0,63}$/.test(action)) return json({ error: "action is invalid" }, 400);
       const token = mintStackToken({ sub: identity, role, aud: target, act: action }, secret);
       return json({ token, tokenType: "Bearer", audience: target, expiresIn: STACK_TOKEN_TTL_SECONDS });
@@ -2648,7 +2652,18 @@ async function handler(req: Request): Promise<Response> {
     const parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
     if (!parsed.ok) return json({ error: parsed.error }, 400);
     try {
-      return json({ prompt: await promptsStore.add(parsed.value) }, 201);
+      const record = await promptsStore.add(parsed.value);
+      // #10033 S3 (design §3.5/§3.7): a sync-block submission waits
+      // in-band for the answer and returns it in the response body,
+      // bounded by the configured timeout. Async returns the record
+      // immediately, and so does sync-ws — its callers then open the
+      // /ws/prompt/:id channel named by the returned id.
+      if (parsed.value.mode === "sync-block") {
+        const wait = await promptsStore.waitForAnswer(record.id, { timeoutMs: cfg.promptSyncTimeoutMs });
+        const result = syncBlockHttpResult(wait, cfg.promptSyncTimeoutMs);
+        return json(result.body, result.status);
+      }
+      return json({ prompt: record }, 201);
     } catch (err) {
       return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
     }
@@ -5066,18 +5081,80 @@ async function fetchHandler(req: Request): Promise<Response> {
   return addConsoleShortcut(res, req, publicHost);
 }
 
+/** Per-socket state for the /ws/prompt/:id channel (#10033 S3). */
+interface PromptWsData {
+  promptId: string;
+  session?: PromptWsSession;
+}
+
+/**
+ * #10033 S3: upgrade a /ws/prompt/:id request. An unknown prompt id is
+ * a plain 404 JSON response (no upgrade attempted); a refused upgrade
+ * is a 400. On success the websocket handlers below own the socket and
+ * this fetch returns nothing further.
+ */
+async function promptWsUpgrade(
+  req: Request,
+  server: Bun.Server<PromptWsData>,
+  pathname: string,
+): Promise<Response | undefined> {
+  const id = decodeURIComponent(pathname.slice("/ws/prompt/".length));
+  const prompt = await promptsStore.get(id);
+  if (!prompt) return json({ error: "prompt not found" }, 404);
+  if (server.upgrade(req, { data: { promptId: id } })) return undefined;
+  return json({ error: "websocket upgrade failed" }, 400);
+}
+
 // One server per bind address (PM_AGG_HOSTS). Deployment on the
 // laptop binds loopback + the tailnet address, like Pad/Grist — no
 // public route (Drew, 2026-10-25: public only behind a password).
 const servers = cfg.hosts.map((hostname) =>
-  Bun.serve({
+  Bun.serve<PromptWsData>({
     hostname,
     port: cfg.port,
     // Phase B §13.1: slow fragments (overview/board/queue renders) exceed
     // Bun's 10s default idle timeout and the patch response gets killed
     // mid-render; 60s gives the heavy contexts room without going unbounded.
     idleTimeout: 60,
-    fetch: fetchHandler,
+    fetch(req, server) {
+      const pathname = new URL(req.url).pathname;
+      // #10033 S3: the sync-ws channel upgrades ahead of the ordinary
+      // request pipeline — it is a socket, not a rendered response.
+      if (pathname.startsWith("/ws/prompt/")) return promptWsUpgrade(req, server, pathname);
+      if (req.method === "POST" && pathname === "/api/prompt") {
+        // A sync-block submission may legitimately hold its request for
+        // the full configured answer wait (120s default), past the 60s
+        // socket idle timeout above; lift this request's cap to cover
+        // the wait plus margin (Bun caps the value at 255).
+        server.timeout(req, Math.min(255, Math.ceil(cfg.promptSyncTimeoutMs / 1000) + 5));
+      }
+      return fetchHandler(req);
+    },
+    websocket: {
+      open(ws) {
+        const session = createPromptWsSession({
+          store: promptsStore,
+          promptId: ws.data.promptId,
+          socket: {
+            send: (data) => {
+              ws.send(data);
+            },
+            close: (code, reason) => {
+              ws.close(code, reason);
+            },
+          },
+          timeoutMs: cfg.promptSyncTimeoutMs,
+        });
+        ws.data.session = session;
+        void session.start();
+      },
+      message() {
+        // The channel is server-to-client only; inbound frames are ignored.
+      },
+      close(ws) {
+        ws.data.session?.stop();
+      },
+    },
   }),
 );
 
@@ -5222,7 +5299,6 @@ if (cfg.source !== "fixtures") {
   timer.unref?.();
 }
 
-
 // #9991: the §4 escalation sinks — the real journal/feed/push surfaces
 // escalation.ts's delivery step was built against. Journal: the
 // aggregator's append-only watchdog journal (the SLO journal file,
@@ -5262,10 +5338,7 @@ const escalationSink: EscalationSink = {
     let sent = 0;
     let lastError = "push was not delivered";
     for (const sub of subs) {
-      const outcome = await sendPush(
-        { endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth },
-        payload,
-      );
+      const outcome = await sendPush({ endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth }, payload);
       if (outcome.ok) {
         sent += 1;
         await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "sent" });

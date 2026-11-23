@@ -191,12 +191,7 @@ export interface GitHubProjectSurface {
   /** Add content to the project; returns the new item's id. */
   addProjectItem(projectId: string, contentId: string): Promise<{ itemId: string }>;
   /** Set one single-select field value on one item. */
-  setProjectItemSingleSelect(
-    projectId: string,
-    itemId: string,
-    fieldId: string,
-    optionId: string,
-  ): Promise<void>;
+  setProjectItemSingleSelect(projectId: string, itemId: string, fieldId: string, optionId: string): Promise<void>;
 }
 
 /** Fixture writer: records every created item in memory (bodies read
@@ -206,12 +201,7 @@ export interface GitHubProjectSurface {
  * answer from the same recorded items, so a test that mutates a
  * recorded body is simulating a post-create hand-edit on GitHub. */
 export class FixtureGitHubWriter
-  implements
-    GitHubWriter,
-    GitHubItemSource,
-    GitHubCommentSurface,
-    GitHubBodyEditor,
-    GitHubProjectSurface
+  implements GitHubWriter, GitHubItemSource, GitHubCommentSurface, GitHubBodyEditor, GitHubProjectSurface
 {
   readonly items: (GitHubCreateInput & GitHubCreatedItem)[] = [];
   /** Comments posted through the fixture surface, in post order —
@@ -237,9 +227,7 @@ export class FixtureGitHubWriter
    * service (web UI, plain gh), with the facts the ingestion
    * check ascertains from. Returns the recorded item. */
   seedItem(item: GitHubItem): GitHubItem {
-    const url =
-      item.url ??
-      `https://github.com/${item.repo}/${item.kind === "pr" ? "pull" : "issues"}/${item.number}`;
+    const url = item.url ?? `https://github.com/${item.repo}/${item.kind === "pr" ? "pull" : "issues"}/${item.number}`;
     const recorded: GitHubItem = { ...item, url };
     this.items.push({
       repo: item.repo,
@@ -292,12 +280,7 @@ export class FixtureGitHubWriter
     return this.items.filter((i) => i.repo === repo).map((i) => this.toItem(i));
   }
 
-  async updateItemBody(
-    repo: string,
-    kind: "issue" | "pr",
-    number: number,
-    body: string,
-  ): Promise<void> {
+  async updateItemBody(repo: string, kind: "issue" | "pr", number: number, body: string): Promise<void> {
     if (this.failBodyEdits) {
       throw new Error("fixture GitHub writer: body edit refused (failBodyEdits)");
     }
@@ -309,28 +292,17 @@ export class FixtureGitHubWriter
   }
 
   async listIssueComments(repo: string, number: number): Promise<{ body: string }[]> {
-    return this.comments
-      .filter((c) => c.repo === repo && c.number === number)
-      .map((c) => ({ body: c.body }));
+    return this.comments.filter((c) => c.repo === repo && c.number === number).map((c) => ({ body: c.body }));
   }
 
-  async postIssueComment(
-    repo: string,
-    number: number,
-    body: string,
-  ): Promise<{ url: string }> {
+  async postIssueComment(repo: string, number: number, body: string): Promise<{ url: string }> {
     this.commentCounter += 1;
     const url = `https://github.com/${repo}/issues/${number}#issuecomment-${this.commentCounter}`;
     this.comments.push({ repo, number, body, url });
     return { url };
   }
 
-  async editIssueLabels(
-    repo: string,
-    number: number,
-    add: string[],
-    remove: string[],
-  ): Promise<void> {
+  async editIssueLabels(repo: string, number: number, add: string[], remove: string[]): Promise<void> {
     const key = `${repo}#${number}`;
     const set = this.labels.get(key) ?? new Set<string>();
     for (const label of add) set.add(label);
@@ -375,9 +347,10 @@ export class FixtureGitHubWriter
       values?: Record<string, string>;
     }[];
   }): GitHubProjectState {
-    const options = (seed.statusOptions ?? ["Todo", "In Progress", "In Review", "Done"]).map(
-      (name, i) => ({ id: `opt_${seed.number}_${i}`, name }),
-    );
+    const options = (seed.statusOptions ?? ["Todo", "In Progress", "In Review", "Done"]).map((name, i) => ({
+      id: `opt_${seed.number}_${i}`,
+      name,
+    }));
     const state: GitHubProjectState = {
       projectId: seed.projectId ?? `PVT_fixture_${seed.number}`,
       owner: seed.owner,
@@ -411,11 +384,7 @@ export class FixtureGitHubWriter
     return state ? this.snapshotProject(state) : null;
   }
 
-  async resolveContentId(
-    repo: string,
-    kind: "issue" | "pr",
-    number: number,
-  ): Promise<string | null> {
+  async resolveContentId(repo: string, kind: "issue" | "pr", number: number): Promise<string | null> {
     const item = this.items.find((i) => i.repo === repo && i.kind === kind && i.number === number);
     return item ? this.fixtureContentId(repo, kind, number) : null;
   }
@@ -491,12 +460,7 @@ interface CachedToken {
  * platform fetch).
  */
 export class AppRotationGitHubWriter
-  implements
-    GitHubWriter,
-    GitHubItemSource,
-    GitHubCommentSurface,
-    GitHubBodyEditor,
-    GitHubProjectSurface
+  implements GitHubWriter, GitHubItemSource, GitHubCommentSurface, GitHubBodyEditor, GitHubProjectSurface
 {
   private readonly config: GitHubAppConfig;
   private readonly fetchFn: FetchFn;
@@ -594,8 +558,7 @@ export class AppRotationGitHubWriter
   }
 
   async createItem(input: GitHubCreateInput): Promise<GitHubCreatedItem> {
-    const path =
-      input.kind === "pr" ? `/repos/${input.repo}/pulls` : `/repos/${input.repo}/issues`;
+    const path = input.kind === "pr" ? `/repos/${input.repo}/pulls` : `/repos/${input.repo}/issues`;
     const payload: Record<string, unknown> = { title: input.title, body: input.body };
     if (input.kind === "pr") {
       if (!input.head || !input.base) {
@@ -741,8 +704,7 @@ export class AppRotationGitHubWriter
 
   async listItems(repo: string): Promise<GitHubItem[]> {
     const out: GitHubItem[] = [];
-    let url: string | null =
-      `${GITHUB_API}/repos/${repo}/issues?state=all&per_page=100`;
+    let url: string | null = `${GITHUB_API}/repos/${repo}/issues?state=all&per_page=100`;
     for (let page = 0; page < MAX_LIST_PAGES && url !== null; page++) {
       const res = await this.getThroughRotation(url);
       if (res.status === 404) return out;
@@ -804,8 +766,7 @@ export class AppRotationGitHubWriter
 
   async listIssueComments(repo: string, number: number): Promise<{ body: string }[]> {
     const out: { body: string }[] = [];
-    let url: string | null =
-      `${GITHUB_API}/repos/${repo}/issues/${number}/comments?per_page=100`;
+    let url: string | null = `${GITHUB_API}/repos/${repo}/issues/${number}/comments?per_page=100`;
     for (let page = 0; page < MAX_COMMENT_PAGES; page++) {
       if (url === null) return out;
       const res = await this.getThroughRotation(url);
@@ -838,12 +799,7 @@ export class AppRotationGitHubWriter
    * same failover rule as every write. The issues endpoint edits
    * PR bodies too (same object). A 404 means the item is gone —
    * the write-back is refused and the check records it. */
-  async updateItemBody(
-    repo: string,
-    kind: "issue" | "pr",
-    number: number,
-    body: string,
-  ): Promise<void> {
+  async updateItemBody(repo: string, kind: "issue" | "pr", number: number, body: string): Promise<void> {
     void kind; // the issues endpoint serves both kinds (see getItem)
     const res = await this.mutateThroughRotation(
       "PATCH",
@@ -852,19 +808,11 @@ export class AppRotationGitHubWriter
       "github_body_edit_failed",
     );
     if (res.status < 200 || res.status >= 300) {
-      throw new FailClosed(
-        502,
-        "github_body_edit_failed",
-        `GitHub body edit failed (HTTP ${res.status})`,
-      );
+      throw new FailClosed(502, "github_body_edit_failed", `GitHub body edit failed (HTTP ${res.status})`);
     }
   }
 
-  async postIssueComment(
-    repo: string,
-    number: number,
-    body: string,
-  ): Promise<{ url: string }> {
+  async postIssueComment(repo: string, number: number, body: string): Promise<{ url: string }> {
     const res = await this.mutateThroughRotation(
       "POST",
       `${GITHUB_API}/repos/${repo}/issues/${number}/comments`,
@@ -872,11 +820,7 @@ export class AppRotationGitHubWriter
       "github_comment_failed",
     );
     if (res.status !== 201) {
-      throw new FailClosed(
-        502,
-        "github_comment_failed",
-        `GitHub comment create failed (HTTP ${res.status})`,
-      );
+      throw new FailClosed(502, "github_comment_failed", `GitHub comment create failed (HTTP ${res.status})`);
     }
     const created = (await res.json()) as { html_url?: unknown };
     if (typeof created.html_url !== "string") {
@@ -925,11 +869,7 @@ export class AppRotationGitHubWriter
         try {
           parsed = JSON.parse(bodyText) as { data?: unknown; errors?: unknown };
         } catch {
-          throw new FailClosed(
-            502,
-            "github_project_failed",
-            `GitHub GraphQL ${stage} returned a malformed body`,
-          );
+          throw new FailClosed(502, "github_project_failed", `GitHub GraphQL ${stage} returned a malformed body`);
         }
         const errors = Array.isArray(parsed.errors) ? parsed.errors : [];
         if (errors.length === 0 && typeof parsed.data === "object" && parsed.data !== null) {
@@ -1016,11 +956,7 @@ export class AppRotationGitHubWriter
     const items: ProjectItemState[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < MAX_PROJECT_PAGES; page++) {
-      const data = await this.graphqlThroughRotation(
-        query,
-        { login: owner, number, cursor },
-        "project read",
-      );
+      const data = await this.graphqlThroughRotation(query, { login: owner, number, cursor }, "project read");
       const holder = (data["organization"] ?? data["user"]) as
         | { projectV2?: Record<string, unknown> | null }
         | null
@@ -1071,8 +1007,7 @@ export class AppRotationGitHubWriter
           values,
         });
       }
-      const pageInfo = (project["items"] as { pageInfo?: Record<string, unknown> } | undefined)
-        ?.pageInfo;
+      const pageInfo = (project["items"] as { pageInfo?: Record<string, unknown> } | undefined)?.pageInfo;
       if (pageInfo?.["hasNextPage"] === true && typeof pageInfo?.["endCursor"] === "string") {
         cursor = pageInfo["endCursor"];
       } else {
@@ -1083,11 +1018,7 @@ export class AppRotationGitHubWriter
     return { projectId, owner, number, fields, items };
   }
 
-  async resolveContentId(
-    repo: string,
-    kind: "issue" | "pr",
-    number: number,
-  ): Promise<string | null> {
+  async resolveContentId(repo: string, kind: "issue" | "pr", number: number): Promise<string | null> {
     const [owner, name] = repo.split("/");
     const data = await this.graphqlThroughRotation(
       `query($owner: String!, $name: String!, $number: Int!) {
@@ -1101,10 +1032,7 @@ export class AppRotationGitHubWriter
     );
     const repository = data["repository"] as Record<string, unknown> | null;
     if (!repository) return null;
-    const node = repository[kind === "pr" ? "pullRequest" : "issue"] as
-      | Record<string, unknown>
-      | null
-      | undefined;
+    const node = repository[kind === "pr" ? "pullRequest" : "issue"] as Record<string, unknown> | null | undefined;
     return typeof node?.["id"] === "string" ? node["id"] : null;
   }
 
@@ -1123,11 +1051,7 @@ export class AppRotationGitHubWriter
       | null
       | undefined;
     if (typeof item?.["id"] !== "string") {
-      throw new FailClosed(
-        502,
-        "github_project_failed",
-        "GitHub GraphQL item add returned a malformed body",
-      );
+      throw new FailClosed(502, "github_project_failed", "GitHub GraphQL item add returned a malformed body");
     }
     return { itemId: item["id"] };
   }
@@ -1154,26 +1078,12 @@ export class AppRotationGitHubWriter
     );
   }
 
-  async editIssueLabels(
-    repo: string,
-    number: number,
-    add: string[],
-    remove: string[],
-  ): Promise<void> {
+  async editIssueLabels(repo: string, number: number, add: string[], remove: string[]): Promise<void> {
     const labelsUrl = `${GITHUB_API}/repos/${repo}/issues/${number}/labels`;
     if (add.length > 0) {
-      const res = await this.mutateThroughRotation(
-        "POST",
-        labelsUrl,
-        { labels: add },
-        "github_label_failed",
-      );
+      const res = await this.mutateThroughRotation("POST", labelsUrl, { labels: add }, "github_label_failed");
       if (res.status < 200 || res.status >= 300) {
-        throw new FailClosed(
-          502,
-          "github_label_failed",
-          `GitHub label add failed (HTTP ${res.status})`,
-        );
+        throw new FailClosed(502, "github_label_failed", `GitHub label add failed (HTTP ${res.status})`);
       }
     }
     for (const label of remove) {

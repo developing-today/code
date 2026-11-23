@@ -231,10 +231,12 @@ describe("outcome drill-through (#10910)", () => {
   });
 
   test("model and session drills select exactly their group members", () => {
-    expect(drillOutcomeFacts(facts, { dimension: "model", providerID: "openai", modelID: "gpt-y" }).map((r) => r.eventId)).toEqual([
-      "d5:commit:aaa111",
+    expect(
+      drillOutcomeFacts(facts, { dimension: "model", providerID: "openai", modelID: "gpt-y" }).map((r) => r.eventId),
+    ).toEqual(["d5:commit:aaa111"]);
+    expect(drillOutcomeFacts(facts, { dimension: "session", key: "sess-2" }).map((r) => r.eventId)).toEqual([
+      "d3:pr:2002",
     ]);
-    expect(drillOutcomeFacts(facts, { dimension: "session", key: "sess-2" }).map((r) => r.eventId)).toEqual(["d3:pr:2002"]);
     expect(drillOutcomeFacts(facts, { dimension: "model", providerID: "anthropic", modelID: "gpt-y" })).toEqual([]);
   });
 

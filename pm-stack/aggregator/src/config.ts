@@ -55,6 +55,11 @@ export interface Config {
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
   promptsFile: string;
+  /** Sync-mode answer wait for prompt submissions (#10033 S3, design
+   *  #9539 §3.5): a sync-block request blocks at most this long, and a
+   *  sync-ws channel closes with a typed timeout outcome after it.
+   *  120s default, configured by PM_AGG_PROMPT_SYNC_TIMEOUT_MS. */
+  promptSyncTimeoutMs: number;
   /** Append-only roadmap annotation store (#1284), separate from comments. */
   roadmapAnnotationsFile: string;
   /** Checkout of developing-today/code on the aggregator host; the
@@ -226,6 +231,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
     promptsFile: s(env.PM_AGG_PROMPTS_FILE, join(process.cwd(), "prompts.json")),
+    promptSyncTimeoutMs: parseAggregatorCount(
+      env.PM_AGG_PROMPT_SYNC_TIMEOUT_MS,
+      "PM_AGG_PROMPT_SYNC_TIMEOUT_MS",
+      "120000",
+    ),
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
     codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, join(homedir(), "git", "code")),
     nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, join(homedir(), "code", "dezren39-nix")),
@@ -255,10 +265,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_ACTIVITY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "activity-ingestion.json"),
     ),
-    outcomeFile: s(
-      env.PM_AGG_OUTCOME_FILE,
-      join(homedir(), ".local", "state", "pm-aggregator", "outcome-facts.jsonl"),
-    ),
+    outcomeFile: s(env.PM_AGG_OUTCOME_FILE, join(homedir(), ".local", "state", "pm-aggregator", "outcome-facts.jsonl")),
     outcomeBindingsFile: s(
       env.PM_AGG_OUTCOME_BINDINGS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "outcome-bindings.jsonl"),

@@ -152,6 +152,28 @@ fn settings_env_beats_file_beats_default() {
 }
 
 #[test]
+fn every_verb_has_its_own_help() {
+    // #13197: the domain status line advertises `fleet bridge <command>
+    // --help`; every verb execute() dispatches must answer with its own
+    // usage — its own usage line, the shared footer, and never the
+    // whole-domain USAGE text.
+    for verb in [
+        "send", "agents", "log", "hello", "inbox", "post", "ack", "health",
+    ] {
+        let text = verb_usage(verb).unwrap_or_else(|| panic!("no per-verb help for {verb}"));
+        assert!(
+            text.starts_with(&format!("usage: fleet bridge {verb}")),
+            "{verb}: {text}"
+        );
+        assert!(text.ends_with(USAGE_FOOTER), "{verb}: missing the footer");
+        assert_ne!(text, USAGE, "{verb}: fell back to the shared text");
+    }
+    assert!(verb_usage("bogus").is_none());
+    // The footer is USAGE's own tail, so the two cannot drift apart.
+    assert!(USAGE.ends_with(USAGE_FOOTER));
+}
+
+#[test]
 fn usage_errors_exit_2_before_any_request() {
     let s = secrets(&[]);
     // Port 9 (discard): nothing should ever connect for these.

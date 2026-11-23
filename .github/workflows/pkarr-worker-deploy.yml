@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ''
+      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ""
       OPERATION: ${{ inputs.operation }}
       VERSION_ID: ${{ inputs.version_id }}
       UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}

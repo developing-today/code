@@ -1052,7 +1052,7 @@ async function runAnomalyDetectors(args: {
   }
 }
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   const started = Date.now();
   const tickAt = new Date(started).toISOString();
 
@@ -1318,4 +1318,4 @@ async function main(): Promise<number> {
   return 0;
 }
 
-process.exit(await main());
+if (import.meta.main) process.exit(await main());

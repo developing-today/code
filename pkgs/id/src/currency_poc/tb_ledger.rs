@@ -592,6 +592,47 @@ impl LedgerBackend for TigerBeetleLedger {
         }
         Ok(matched)
     }
+
+    fn try_transfers_on_ledger(&self, ledger: u32, limit: usize) -> Result<Vec<Transfer>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        // Same paging discipline as the user_data_128 query above:
+        // the ledger filter is set server-side and the exact
+        // post-filter keeps only this ledger's transfers, so the
+        // result stays exact even if server filter semantics
+        // change. Pages advance by timestamp; only the most recent
+        // `limit` matches are kept.
+        const PAGE: u32 = 8_189;
+        let mut matched: Vec<Transfer> = Vec::new();
+        let mut timestamp_min = 0u64;
+        loop {
+            let filter = tb::QueryFilter {
+                ledger,
+                timestamp_min,
+                limit: PAGE,
+                ..Default::default()
+            };
+            let found = self
+                .block_on(self.client.query_transfers(filter))
+                .context("tigerbeetle query_transfers request failed")?;
+            let page_full = found.len() == PAGE as usize;
+            let last_timestamp = found.last().map(|transfer| transfer.timestamp);
+            for transfer in found.iter().filter(|transfer| transfer.ledger == ledger) {
+                let code = self.transfer_code(transfer.id, transfer.code)?;
+                matched.push(from_tb_transfer(transfer, code));
+            }
+            if matched.len() > limit {
+                let excess = matched.len() - limit;
+                matched.drain(..excess);
+            }
+            match last_timestamp {
+                Some(last) if page_full => timestamp_min = last.saturating_add(1),
+                _ => break,
+            }
+        }
+        Ok(matched)
+    }
 }
 
 #[cfg(test)]

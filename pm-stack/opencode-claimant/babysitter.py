@@ -120,8 +120,7 @@ def public_binding(binding):
     if not isinstance(binding, dict):
         return None
     return {
-        key: binding.get(key)
-        for key in ("task_id", "queue", "issue_number", "repo")
+        key: binding.get(key) for key in ("task_id", "queue", "issue_number", "repo")
     }
 
 

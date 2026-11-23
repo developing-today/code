@@ -84,6 +84,10 @@ pub const MAX_AUDIO_BYTES: usize = 64 * 1024;
 /// a cue's stated length in a range every presenter can schedule
 /// without overflow.
 pub const MAX_AUDIO_DURATION_MS: u32 = 3_600_000;
+/// Maximum controls accepted in one world widget document.
+pub const MAX_WIDGET_CONTROLS: usize = 64;
+/// Maximum serialized widget document size in bytes.
+pub const MAX_WIDGET_BYTES: usize = 64 * 1024;
 
 /// A validated view understood by more than one transport presenter.
 ///
@@ -106,6 +110,11 @@ pub enum WorldSurface {
     /// formats, durations and repeat flags, played by shells with an
     /// audio player; other shells use its text projection.
     Audio(AudioSurface),
+    /// A widget control list (`widget/1`): named controls from a
+    /// closed kind set (button, toggle, link), rendered natively by
+    /// shells with a widget presenter; other shells use its text
+    /// projection.
+    Widget(WidgetSurface),
 }
 
 impl WorldSurface {
@@ -121,6 +130,7 @@ impl WorldSurface {
             Self::Form(form) => form.text_projection(),
             Self::Scene(scene) => scene.text_projection(),
             Self::Audio(audio) => audio.text_projection(),
+            Self::Widget(widget) => widget.text_projection(),
         }
     }
 }
@@ -1108,6 +1118,191 @@ impl AudioSurface {
     }
 }
 
+/// A versioned `widget/1` document: a bounded list of descriptive
+/// controls. Guest input is data only: a control names a kind from a
+/// closed set and, where it acts, the id of a world action — there are
+/// no URLs, scripts or embedded payloads, so a presenter resolves each
+/// action id against the world's own actions and derives everything
+/// interactive from the description. The document shape is the struct
+/// shape, so a parsed widget document round-trips through
+/// [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WidgetSurface {
+    /// Widget format version. `widget/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the control list; the text projection's
+    /// first line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The document's controls, in document order. Ids are unique.
+    pub controls: Vec<WidgetControl>,
+}
+
+/// One named control in a [`WidgetSurface`]. The kind set is closed:
+/// guest documents reject unknown kinds.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WidgetControl {
+    /// An action control: presents its label; invoking it delivers
+    /// the named action to the world.
+    Button {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action invoking the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions. Absent names a display-only control.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+    },
+    /// A stateful control: presents its label and current state;
+    /// invoking it delivers the named action to the world.
+    Toggle {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action invoking the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions. Absent names a display-only control.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        /// The control's state as presented.
+        on: bool,
+    },
+    /// A navigation control: following it delivers the named action
+    /// to the world (for example, presenting another view).
+    Link {
+        /// Stable identifier, unique within the document.
+        id: String,
+        /// Human-readable name, used by the text projection and by
+        /// presenters that label controls.
+        label: String,
+        /// The world action following the control delivers, named by
+        /// id; a presenter resolves it against the world's own
+        /// actions.
+        action: String,
+    },
+}
+
+impl WidgetControl {
+    /// The control's stable identifier.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Button { id, .. } | Self::Toggle { id, .. } | Self::Link { id, .. } => id,
+        }
+    }
+
+    /// The control's human-readable name.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Button { label, .. } | Self::Toggle { label, .. } | Self::Link { label, .. } => {
+                label
+            }
+        }
+    }
+
+    /// The world action the control delivers, when it acts.
+    #[must_use]
+    pub fn action(&self) -> Option<&str> {
+        match self {
+            Self::Button { action, .. } | Self::Toggle { action, .. } => action.as_deref(),
+            Self::Link { action, .. } => Some(action),
+        }
+    }
+
+    /// The document spelling of the control's kind, used by the text
+    /// projection.
+    #[must_use]
+    pub const fn kind_str(&self) -> &'static str {
+        match self {
+            Self::Button { .. } => "button",
+            Self::Toggle { .. } => "toggle",
+            Self::Link { .. } => "link",
+        }
+    }
+}
+
+impl WidgetSurface {
+    /// Validate the version, control set, identifiers, safe text,
+    /// action references and total size. Hosts run this before any
+    /// presenter sees the document (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// control sets, duplicate ids, unsafe labels, unsafe action ids,
+    /// and oversize documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world widget version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid widget title"
+        );
+        ensure!(
+            !self.controls.is_empty() && self.controls.len() <= MAX_WIDGET_CONTROLS,
+            "invalid widget control count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for control in &self.controls {
+            ensure!(
+                safe_form_id(control.id()) && safe_form_text(control.label()),
+                "invalid widget control id or label"
+            );
+            ensure!(ids.insert(control.id()), "duplicate widget control id");
+            ensure!(
+                control.action().is_none_or(safe_form_id),
+                "invalid widget control action"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_WIDGET_BYTES,
+            "widget exceeds {MAX_WIDGET_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Widgets`),
+    /// then one numbered line per control naming its label, kind,
+    /// state (for a toggle) and action (when it acts). This is what a
+    /// shell without a widget presenter shows, so it is designed here,
+    /// with the kind, not discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Widgets".to_owned())];
+        for (index, control) in self.controls.iter().enumerate() {
+            let mut parts = vec![control.kind_str().to_owned()];
+            if let WidgetControl::Toggle { on, .. } = control {
+                parts.push(if *on {
+                    "on".to_owned()
+                } else {
+                    "off".to_owned()
+                });
+            }
+            if let Some(action) = control.action() {
+                parts.push(format!("action {action}"));
+            }
+            lines.push(format!(
+                "{}. {} ({})",
+                index + 1,
+                control.label(),
+                parts.join("; ")
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
 /// A cell-run delta between two consecutive screens (F12.11, first slice).
 ///
 /// A patch carries only the cells that changed, grouped into maximal runs of
@@ -1374,8 +1569,10 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .as_ref()
                     .and_then(|value| value.get("kind"))
                     .and_then(Value::as_str);
-                if matches!(kind, Some("screen" | "text" | "form" | "scene" | "audio"))
-                    || top_level_kind_is_duplicated(data)
+                if matches!(
+                    kind,
+                    Some("screen" | "text" | "form" | "scene" | "audio" | "widget")
+                ) || top_level_kind_is_duplicated(data)
                 {
                     return Err(err).context("duplicate JSON object key in world presentation");
                 }
@@ -1414,6 +1611,16 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 serde_json::from_value(value).context("decode world audio presentation")?;
             audio.validate()?;
             return Ok(Some(WorldSurface::Audio(audio)));
+        }
+        Some("widget") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let widget: WidgetSurface =
+                serde_json::from_value(value).context("decode world widget presentation")?;
+            widget.validate()?;
+            return Ok(Some(WorldSurface::Widget(widget)));
         }
         Some("text") => {
             let payload: TextPayload =
@@ -2630,16 +2837,121 @@ mod tests {
     }
 
     #[test]
+    fn widget_surface_parses_projects_and_round_trips() {
+        // Oracle: #12657 slice 1c — a versioned widget document is
+        // accepted by host validation, projects deterministically to
+        // text (the old-shell fallback), and round-trips through
+        // serialization.
+        let document = serde_json::json!({
+            "kind": "widget", "version": 1, "title": "Harbor Controls",
+            "controls": [
+                {"kind": "button", "id": "start", "label": "Start",
+                 "action": "start"},
+                {"kind": "toggle", "id": "lights", "label": "Lights",
+                 "action": "lights", "on": true},
+                {"kind": "link", "id": "enter", "label": "Enter the harbor",
+                 "action": "enter_harbor"}
+            ]
+        });
+        let parsed = parse_surface(&document.to_string()).unwrap().unwrap();
+        assert_eq!(
+            parsed.text_projection(),
+            "Harbor Controls\n1. Start (button; action start)\n2. Lights (toggle; on; action lights)\n3. Enter the harbor (link; action enter_harbor)"
+        );
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(parse_surface(&serialized).unwrap(), Some(parsed));
+
+        // Without a title the projection still names what the view is,
+        // and a display-only button names no action.
+        let untitled = parse_surface(
+            r#"{"kind":"widget","version":1,"controls":[{"kind":"button","id":"a","label":"A"}]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(untitled.text_projection(), "Widgets\n1. A (button)");
+    }
+
+    #[test]
+    fn widget_surface_rejects_unsafe_or_oversize_documents() {
+        // Oracle: #12657 criterion — malformed or oversized rich
+        // surfaces are refused by host validation (an Err from
+        // parse_surface, which the host turns into an error frame),
+        // never silently dropped to the legacy text path and never
+        // accepted.
+        let button = |id: &str| {
+            serde_json::json!({"kind": "button", "id": id, "label": "A", "action": "go"})
+        };
+        let widget = |controls: Value| {
+            serde_json::json!({"kind": "widget", "version": 1, "controls": controls}).to_string()
+        };
+        // Bad versions.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "widget", "version": 2, "controls": [button("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "widget", "version": 0, "controls": [button("a")]})
+                .to_string()
+        )
+        .is_err());
+        // Unknown fields, top level and per control
+        // (deny_unknown_fields) — in particular a control carries no
+        // URL or script.
+        assert!(parse_surface(
+            &serde_json::json!({"kind": "widget", "version": 1, "href": "https://example.invalid", "controls": [button("a")]})
+                .to_string()
+        )
+        .is_err());
+        assert!(parse_surface(&widget(serde_json::json!([
+            {"kind": "button", "id": "a", "label": "A", "action": "go",
+             "script": "run()"}
+        ])))
+        .is_err());
+        // Unknown control kind: the kind set is closed.
+        assert!(parse_surface(&widget(serde_json::json!([
+            {"kind": "slider", "id": "a", "label": "A", "action": "go"}
+        ])))
+        .is_err());
+        // A link names no action: following it must deliver one.
+        assert!(parse_surface(&widget(serde_json::json!([
+            {"kind": "link", "id": "a", "label": "A"}
+        ])))
+        .is_err());
+        // Empty and duplicate-id control sets.
+        assert!(parse_surface(&widget(serde_json::json!([]))).is_err());
+        assert!(parse_surface(&widget(serde_json::json!([button("a"), button("a")]))).is_err());
+        // Too many controls: the bound is 64 (MAX_WIDGET_CONTROLS).
+        let many: Vec<Value> = (0..65).map(|index| button(&format!("c{index}"))).collect();
+        assert!(parse_surface(&widget(Value::Array(many))).is_err());
+        // Unsafe label text (a JSON-escaped ESC) and an unsafe action
+        // id (a URL is not an action id).
+        assert!(parse_surface(&widget(serde_json::json!([
+            {"kind": "button", "id": "a", "label": "A\u{001b}[2J", "action": "go"}
+        ])))
+        .is_err());
+        assert!(parse_surface(&widget(serde_json::json!([
+            {"kind": "button", "id": "a", "label": "A",
+             "action": "https://example.invalid"}
+        ])))
+        .is_err());
+        // Oversize document: the serialized cap is 65536 bytes
+        // (MAX_WIDGET_BYTES); a single huge label trips it.
+        assert!(parse_surface(&widget(serde_json::json!([
+            {"kind": "button", "id": "a", "label": "x".repeat(70_000), "action": "go"}
+        ])))
+        .is_err());
+    }
+
+    #[test]
     fn unknown_rich_surface_kinds_stay_on_the_legacy_path() {
         // Forward-compat seam (#12657 triage): a rich kind this host does
         // not know is not an error — the document drops to the legacy
         // plain-text path, so a new-kind document is safe on an old host.
-        // (The widget kind lands in slice 1c; today it is unknown here,
-        // as is any kind no slice has named.)
-        assert_eq!(
-            parse_surface(r#"{"kind":"widget","version":1}"#).unwrap(),
-            None
-        );
+        // (The widget kind landed in slice 1c: a document that names
+        // the kind but fails validation — this one names no
+        // controls — is refused, not dropped to the legacy path.)
+        assert!(parse_surface(r#"{"kind":"widget","version":1}"#).is_err());
         assert_eq!(
             parse_surface(r#"{"kind":"hologram","version":1}"#).unwrap(),
             None

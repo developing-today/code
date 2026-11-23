@@ -117,7 +117,11 @@ test("validator accepts a well-formed packet and refuses malformed ones with the
   const badKind = fixPacket();
   (badKind["payload"] as JsonObject)["kind"] = "huge_fix";
   const kindErrors = verb(store, nativeEnv(), "validate", { packet: badKind })["errors"] as string[];
-  assert.ok(kindErrors.includes('payload.kind: must be one of ["ci_investigation", "feature_slice", "pr_shepherd", "second_pass", "small_fix", "triage"]'));
+  assert.ok(
+    kindErrors.includes(
+      'payload.kind: must be one of ["ci_investigation", "feature_slice", "pr_shepherd", "second_pass", "small_fix", "triage"]',
+    ),
+  );
 
   const offScale = fixPacket(4242, {}, { priority: 15 });
   const priErrors = verb(store, nativeEnv(), "validate", { packet: offScale })["errors"] as string[];
@@ -148,9 +152,7 @@ test("validator enforces dedupe-key family, repo and identity agreement", () => 
   const wrongIssue = fixPacket(4242);
   wrongIssue["dedupe_key"] = "repo-health:v1:fix:developing-today/code:issue:9999";
   const issueErrors = verb(store, nativeEnv(), "validate", { packet: wrongIssue })["errors"] as string[];
-  assert.ok(
-    issueErrors.includes("packet.dedupe_key: issue 9999 in key does not match payload.issue.number 4242"),
-  );
+  assert.ok(issueErrors.includes("packet.dedupe_key: issue 9999 in key does not match payload.issue.number 4242"));
 
   // No key at all: the patterns doc rides the error.
   const noKey = fixPacket();
@@ -185,9 +187,7 @@ test("validator checks the second_pass review block and the feature_slice block"
       "payload.review.pass: pass 2 exceeds pass_cap 1 — the termination cap is enforced at enqueue (design #2025 section 5.1)",
     ),
   );
-  assert.ok(
-    capErrors.includes("packet.dedupe_key: pass 1 in key does not match payload.review.pass 2"),
-  );
+  assert.ok(capErrors.includes("packet.dedupe_key: pass 1 in key does not match payload.review.pass 2"));
 
   const slice = fixPacket(4242, { kind: "feature_slice" });
   slice["dedupe_key"] = "repo-health:v1:slice:developing-today/code:issue:4242:slice-1";
@@ -271,12 +271,7 @@ test("enqueue reports a work-identity collision and honours dedupe_override", ()
 
 test("enqueue into a shadow queue requires deliberate intent", () => {
   const { store } = setup();
-  const refused = executeQueueVerb(
-    store,
-    "enqueue",
-    { queue: "repo-health-shadow", packet: fixPacket() },
-    hostedEnv(),
-  );
+  const refused = executeQueueVerb(store, "enqueue", { queue: "repo-health-shadow", packet: fixPacket() }, hostedEnv());
   assert.equal(refused["ok"], false);
   assert.equal(refused["exit"], 2);
   const allowed = executeQueueVerb(
@@ -379,11 +374,15 @@ test("acceptance 2 (race at the seam): a claim that loses the conditional update
     ): boolean {
       if (!this.raced && set.status === "claimed" && guard.status === "queued") {
         this.raced = true;
-        super.conditionalUpdateTask(id, { status: "queued" }, {
-          status: "claimed",
-          worker_id: "racer",
-          lease_until: "2999-01-01T00:00:00Z",
-        });
+        super.conditionalUpdateTask(
+          id,
+          { status: "queued" },
+          {
+            status: "claimed",
+            worker_id: "racer",
+            lease_until: "2999-01-01T00:00:00Z",
+          },
+        );
       }
       return super.conditionalUpdateTask(id, guard, set);
     }
@@ -535,7 +534,12 @@ test("heartbeat, checkpoint, park and wake round-trip a claim", () => {
     at: iso(clock),
   });
 
-  const parked = verb(store, nativeEnv(), "park", { task_id: id, worker: "worker-a", delay_seconds: 600, reason: "waiting on CI" });
+  const parked = verb(store, nativeEnv(), "park", {
+    task_id: id,
+    worker: "worker-a",
+    delay_seconds: 600,
+    reason: "waiting on CI",
+  });
   const parkedRow = parked["row"] as JsonObject;
   assert.equal(parkedRow["status"], "parked");
   assert.equal(parkedRow["wait_kind"], "timer");
@@ -564,14 +568,24 @@ test("fail: transient requeues with backoff, blocked parks the row, fatal termin
   enqueue(store, nativeEnv(), fixPacket());
   const claimed = claim(store, nativeEnv(), {});
   const id = (claimed["row"] as JsonObject)["id"] as number;
-  const failed = verb(store, nativeEnv(), "fail", { task_id: id, worker: "worker-a", error: "boom", reason_class: "transient" });
+  const failed = verb(store, nativeEnv(), "fail", {
+    task_id: id,
+    worker: "worker-a",
+    error: "boom",
+    reason_class: "transient",
+  });
   const failedRow = failed["row"] as JsonObject;
   assert.equal(failedRow["status"], "queued");
   assert.equal(failedRow["not_before"], iso(clock + 900), "first-attempt backoff is 15 minutes");
   clock += 901;
   const reclaimed = claim(store, nativeEnv(), {});
   assert.equal((reclaimed["row"] as JsonObject)["attempts"], 2);
-  const fatal = verb(store, nativeEnv(), "fail", { task_id: id, worker: "worker-a", error: "nope", reason_class: "fatal" });
+  const fatal = verb(store, nativeEnv(), "fail", {
+    task_id: id,
+    worker: "worker-a",
+    error: "nope",
+    reason_class: "fatal",
+  });
   assert.equal((fatal["row"] as JsonObject)["status"], "failed");
   const revived = verb(store, nativeEnv(), "revive", { task_id: id, worker: "worker-a", reason: "retry" });
   const revivedRow = revived["row"] as JsonObject;
@@ -931,7 +945,10 @@ test("fallback markers parse strictly and the fold contests, supersedes and rele
   // A release without an outcome, and a claim carrying one, are
   // not markers at all.
   assert.equal(parseMarker("<!-- fleet-claim v1 kind=release worker=felix ts=2026-01-01T00:00:00Z -->"), null);
-  assert.equal(parseMarker("<!-- fleet-claim v1 kind=claim worker=felix outcome=done ts=2026-01-01T00:00:00Z -->"), null);
+  assert.equal(
+    parseMarker("<!-- fleet-claim v1 kind=claim worker=felix outcome=done ts=2026-01-01T00:00:00Z -->"),
+    null,
+  );
   assert.equal(parseMarker("<!-- fleet-claim v1 kind=claim worker=bad worker! ts=2026-01-01T00:00:00Z -->"), null);
 
   const lease = 1800;

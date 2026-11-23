@@ -7,7 +7,7 @@ These are different things, though they coincide in this environment:
 - **Boot** — the kernel started. Detected via new `/proc/sys/kernel/random/boot_id` and `uptime` resetting.
 - **Recycle** — the sandbox was torn down and recreated. Detected via the overlay filesystem being wiped (files in `/`, `/usr/local/bin`, `/etc` are gone).
 
-Every new boot ID observed so far came with a wiped overlay, which is why the terms get used interchangeably. But a boot doesn't *have* to wipe the overlay — don't assume it.
+Every new boot ID observed so far came with a wiped overlay, which is why the terms get used interchangeably. But a boot doesn't _have_ to wipe the overlay — don't assume it.
 
 ## The Init System
 
@@ -36,17 +36,17 @@ This means worst-case recovery after a recycle is ~5 minutes.
 
 ### What Survives
 
-| Survives | Location |
-|---|---|
+| Survives       | Location                     |
+| -------------- | ---------------------------- |
 | Home directory | `/home/hatch` (btrfs, 100GB) |
-| Logs | `/home/hatch/logs/` |
-| Tools/scripts | `/home/hatch/tools/` |
-| Nix store | `/home/hatch/nix-persist/` |
+| Logs           | `/home/hatch/logs/`          |
+| Tools/scripts  | `/home/hatch/tools/`         |
+| Nix store      | `/home/hatch/nix-persist/`   |
 
-| Wiped | Location |
-|---|---|
-| System binaries | `/bin/`, `/usr/bin/` (except via init) |
-| Local binaries | `/usr/local/bin/` (restored by init) |
-| System config | `/etc/` (restored by init) |
-| The `/nix` symlink | `/nix` (restored by init) |
-| Systemd units | `/etc/systemd/system/` (restored by init if needed) |
+| Wiped              | Location                                            |
+| ------------------ | --------------------------------------------------- |
+| System binaries    | `/bin/`, `/usr/bin/` (except via init)              |
+| Local binaries     | `/usr/local/bin/` (restored by init)                |
+| System config      | `/etc/` (restored by init)                          |
+| The `/nix` symlink | `/nix` (restored by init)                           |
+| Systemd units      | `/etc/systemd/system/` (restored by init if needed) |

@@ -97,9 +97,7 @@ export async function makeHarness(): Promise<Harness> {
   ): Promise<string> {
     const h = { alg: "RS256", typ: "JWT", kid: KID, ...header };
     const input = `${b64urlEncode(JSON.stringify(h))}.${b64urlEncode(JSON.stringify(payload))}`;
-    const sig = new Uint8Array(
-      await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(input)),
-    );
+    const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(input)));
     return `${input}.${b64urlEncode(sig)}`;
   }
 

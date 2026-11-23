@@ -25,6 +25,12 @@ func TestProxyUpstreamTimeoutIsReachableFromTheEnvironment(t *testing.T) {
 		t.Helper()
 		e.run("ls") // starts the isolated daemon with its final environment/config
 		client := e.socketClient(t)
+		// The behaviour under test is the daemon-side proxy timeout
+		// (default 10m; 25ms below), not the harness client's own 3s
+		// bound: under CPU contention a starved daemon needs longer
+		// than that to forward a 200ms upstream response, and the
+		// client timeout would mask the status this probe reads.
+		client.Timeout = 60 * time.Second
 		req, err := http.NewRequest(http.MethodPost, "http://mcpx/v1/chat/completions",
 			strings.NewReader(`{"messages":[{"role":"user","content":"hello"}]}`))
 		if err != nil {

@@ -189,7 +189,9 @@ CONCURRENCY_CAP = 36
 LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-deleted"
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 LAUNCHED_BY_RECOVERY_ERROR_STOPPED = "opencode-claimant-recovery:error-stopped"
-ERROR_STOPPED_OUTCOMES = frozenset(("error", "failed", "failure", "timeout", "timed_out"))
+ERROR_STOPPED_OUTCOMES = frozenset(
+    ("error", "failed", "failure", "timeout", "timed_out")
+)
 
 
 # Where this process's mode came from (#10332): the file's path and
@@ -344,6 +346,7 @@ def log_fire(
     supervision: "List[Dict] | None" = None,
     babysitter: "Dict | None" = None,
     nudges: "Dict | None" = None,
+    gate_diagnostic: "Dict | None" = None,
 ) -> None:
     """Append a fire log entry to fires.jsonl.
 
@@ -374,35 +377,87 @@ def log_fire(
         "supervision": supervision,
         "babysitter": babysitter,
         "nudges": nudges,
+        "gate_diagnostic": gate_diagnostic,
     }
 
     with FIRES_FILE.open("a") as f:
         f.write(json.dumps(fire_entry) + "\n")
 
 
-def run_poll() -> Dict[str, Any]:
-    """Run poll.py to discover candidates and get system state."""
-    poll_script = PRIMARY_CLONE / "pm-stack" / "opencode-claimant" / "poll.py"
+# Preserve #13134’s production poll window; queue health has its own 15s cap.
+POLL_MAX_SECONDS = 300
+GATE_MAX_SECONDS = 315
+_POLL_PHASES = (
+    "session_census",
+    "active_sessions",
+    "broker_reads",
+    "ledger_read",
+    "snapshot",
+)
+_gate_diagnostic = None
 
-    if not poll_script.exists():
-        raise FileNotFoundError(f"poll.py not found at {poll_script}")
 
-    # Run poll.py from the primary clone
-    result = subprocess.run(
-        ["python3", str(poll_script)],
-        cwd=str(PRIMARY_CLONE),
-        capture_output=True,
-        text=True,
-        timeout=30,
+class PollFailure(RuntimeError):
+    def __init__(self, category, phase):
+        self.category = category
+        self.phase = phase
+        super().__init__(f"{category} during {phase}")
+
+
+def _poll_last_phase(stderr):
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    phases = {f"claimant-poll-phase:{phase}": phase for phase in _POLL_PHASES}
+    return next(
+        (
+            phases[line]
+            for line in reversed((stderr or "").splitlines())
+            if line in phases
+        ),
+        "poll_start",
     )
 
-    if result.returncode != 0:
-        raise RuntimeError(f"poll.py failed: {result.stderr}")
 
+def run_poll(*, timeout=POLL_MAX_SECONDS) -> Dict[str, Any]:
+    """Read a snapshot within one deadline; never log child output on error."""
+    poll_script = PRIMARY_CLONE / "pm-stack" / "opencode-claimant" / "poll.py"
+    if timeout <= 0:
+        raise PollFailure("deadline", "poll_start")
+    if not poll_script.exists():
+        raise PollFailure("entrypoint_missing", "poll_start")
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"poll.py returned invalid JSON: {e}")
+        result = subprocess.run(
+            ["python3", str(poll_script)],
+            cwd=str(PRIMARY_CLONE),
+            env={**os.environ, "OPENCODE_CLAIMANT_POLL_SECONDS": str(timeout)},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise PollFailure("deadline", _poll_last_phase(e.stderr)) from None
+    except OSError:
+        raise PollFailure("spawn_error", "poll_start") from None
+    phase = _poll_last_phase(result.stderr)
+    if result.returncode != 0:
+        raise PollFailure("child_exit", phase)
+    try:
+        data = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        raise PollFailure("invalid_snapshot", phase) from None
+    if not isinstance(data, dict) or not isinstance(data.get("candidates"), list):
+        raise PollFailure("invalid_snapshot", phase)
+    if type(data.get("cap_room")) is not int or data["cap_room"] < 0:
+        raise PollFailure("incomplete_snapshot", "session_census")
+    queues = data.get("queues")
+    if not isinstance(queues, dict) or any(
+        not isinstance(queues.get(q), dict) or queues[q].get("read_ok") is not True
+        for q in QUEUES
+    ):
+        raise PollFailure("incomplete_snapshot", "broker_reads")
+    if data.get("ledger_readable") is not True:
+        raise PollFailure("incomplete_snapshot", "ledger_read")
+    return data
 
 
 _poll_module = None
@@ -901,11 +956,14 @@ def gate_step() -> Optional[bool]:
     (`_fire_candidates`) that main() threads into every log_fire
     call and launch_step's candidate set.
     """
-    global _fire_candidates, _fire_health
+    global _fire_candidates, _fire_health, _gate_diagnostic
+    _gate_diagnostic = None
+    started = time.monotonic()
     _fire_candidates = None
     _fire_health = run_queue_health()
     try:
-        poll_data = run_poll()
+        remaining = GATE_MAX_SECONDS - (time.monotonic() - started)
+        poll_data = run_poll(timeout=min(POLL_MAX_SECONDS, remaining))
         candidates = poll_data.get("candidates", [])
         _fire_candidates = list(candidates)
 
@@ -940,7 +998,17 @@ def gate_step() -> Optional[bool]:
 
         return False
     except Exception as e:
-        print(f"Gate check failed: {e}")
+        category, phase = (
+            (e.category, e.phase)
+            if isinstance(e, PollFailure)
+            else ("unexpected_error", "gate")
+        )
+        _gate_diagnostic = {
+            "category": category,
+            "phase": phase,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        }
+        print(f"Gate check failed: {category} during {phase}")
         return None
 
 
@@ -1115,7 +1183,7 @@ def _take_prompt_wall() -> "str | None":
     return wall
 
 
-def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
+def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int, Dict]:
     """Collect up to `want` recorded handoffs from `queue`'s
     handoff sink WITHOUT naming a task id (#8097 Rule 1): each
     `repo-queue claim --handoff` lets the BROKER pick the next
@@ -1137,6 +1205,8 @@ def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
     `muse` selector is not the opencode claimant's to collect.
     """
     collected: Dict[int, Dict] = {}
+    started = time.monotonic()
+    outcome = "not_attempted"
     for _ in range(max(want, 0)):
         try:
             result = subprocess.run(
@@ -1159,16 +1229,41 @@ def _collect_handed_offs(queue: str, want: int) -> Dict[int, Dict]:
                 text=True,
                 timeout=15,
             )
-            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except subprocess.TimeoutExpired:
+            outcome = "timeout"
+            break
+        except OSError:
+            outcome = "spawn_error"
+            break
         except Exception:
+            outcome = "unexpected_error"
+            break
+        try:
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except ValueError:
+            outcome = "invalid_json" if result.returncode == 0 else "cli_nonzero"
+            break
+        except Exception:
+            outcome = "unexpected_error"
             break
         # cmd_claim prints the claimed row itself ({"task": null}
         # when nothing was claimed).
         row = data if isinstance(data, dict) else None
         claimed_id = row.get("id") if isinstance(row, dict) else None
         if claimed_id is None:
+            if result.returncode != 0:
+                outcome = "cli_nonzero"
+            elif row is not None and "task" in row and row["task"] is None:
+                outcome = "no_match"
+            else:
+                outcome = "missing_claim_row"
             break
         collected[claimed_id] = row
+        outcome = "row_returned"
+    if diagnostic is not None:
+        diagnostic.update(
+            category=outcome, elapsed_ms=round((time.monotonic() - started) * 1000)
+        )
     return collected
 
 
@@ -1606,8 +1701,15 @@ def launch_step(
                     handed_off_by_queue.get(c["queue"], 0) + 1
                 )
         collected: Dict[int, Dict] = {}
+        sink_diagnostics = {}
         for queue_name, want in handed_off_by_queue.items():
-            collected.update(_collect_handed_offs(queue_name, want))
+            diagnostic = {}
+            collected.update(
+                _collect_handed_offs(queue_name, want, diagnostic=diagnostic)
+            )
+            if diagnostic.get("category") == "row_returned":
+                diagnostic["category"] = "different_row"
+            sink_diagnostics[queue_name] = diagnostic
 
         for candidate in unbound_opencode:
             if provider_wall is not None:
@@ -1636,7 +1738,13 @@ def launch_step(
             # is never improvised.
             if candidate.get("status") == "handed_off":
                 if task_id not in collected:
-                    skips.append({"task_id": task_id, "reason": "sink_claim_failed"})
+                    skips.append(
+                        {
+                            "task_id": task_id,
+                            "reason": "sink_claim_failed",
+                            "sink_claim": sink_diagnostics[candidate["queue"]],
+                        }
+                    )
                     continue
                 candidate["status"] = "claimed"
                 candidate["worker_id"] = CLAIMANT_WORKER
@@ -2007,6 +2115,7 @@ def _fire(mode: str):
             [],
             None,
             [{"reason": "gate_unknown"}],
+            gate_diagnostic=_gate_diagnostic,
             health=fire_health,
             supervision=supervision_records,
             babysitter=babysitter_record,

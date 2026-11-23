@@ -52,6 +52,10 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_hardware_doc_init.py' -v
       - name: Run provider retirement gate contract tests (#5610)
         run: python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v
+      - name: Run restore row-count diff contract tests (#12788)
+        run: |
+          test -f scripts/tests/test_restore_row_count_diff.py
+          python3 -m unittest discover -s scripts/tests -p 'test_restore_row_count_diff.py' -v
       - name: Run auto-format workflow contract tests (#7664)
         run: python3 -m unittest discover -s scripts/tests -p 'test_auto_format_workflow.py' -v
       - name: Run power-guard timing validation tests (#6477)
