@@ -14,8 +14,13 @@ deployment job with the environment. Environment credential configuration and cr
 the existing Worker are outside this workflow.
 
 Upload creates no deployment. Its receipt binds the exact version ID
-returned in the pinned cf JSONL output file (not stdout) to the Worker/account, full source SHA, successful run
-attempt, and prior serving deployment. Start promotion with those exact
+returned in the pinned cf JSONL output file (not stdout) to the immutable
+Worker ID/account, full source SHA, successful run attempt, and prior serving
+deployment. The workflow resolves the fixed `pkarr` name with the
+[Beta Worker API](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/methods/get/)
+and verifies the tag and message on the exact version through the
+[Beta Version API](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/subresources/versions/methods/get/).
+Start promotion with those exact
 values. If traffic changed, prepare a new upload and review the new
 baseline. GitHub concurrency covers only this workflow. Pause the
 separate operator publisher or any other deployment path for the

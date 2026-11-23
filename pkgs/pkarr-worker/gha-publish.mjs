@@ -1,5 +1,6 @@
 // Offline validation of the pkarr release workflow's inputs and receipts.
-// Commands: input; environment <structure> <branches>; upload-id <cf-ndjson>;
+// Commands: input; environment <structure> <branches>; worker-id <beta-worker>;
+// upload-id <cf-ndjson>;
 // receipt <deployments> <version>;
 // authorize <receipt> <run-attempt> <comparison> <version> <deployments>;
 // verify <deployments> <receipt> <cf-created-deployment>; unchanged <before> <after>.
@@ -12,6 +13,7 @@ export const REPO = "developing-today/code";
 export const WORKFLOW = ".github/workflows/pkarr-worker-deploy.yml";
 const WORKER = "pkarr";
 const ENVIRONMENT = "pkarr-worker-production";
+const hexId = /^[a-f0-9]{32}$/;
 const uuid = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const sha = /^[a-f0-9]{40}$/;
 const positive = /^[1-9][0-9]{0,19}$/;
@@ -99,13 +101,20 @@ export function message(source, run, attempt) {
   return `pkarr ${source} run ${run} attempt ${attempt}`;
 }
 
-export function receipt({ account, version, source, run, attempt, baseline }) {
-  if (!matches(/^[a-f0-9]{32}$/, account) || !matches(uuid, version) ||
+export function workerIdentity(response) {
+  const worker = response?.result;
+  if (response?.success !== true || worker?.name !== WORKER ||
+      !matches(hexId, worker.id)) fail("unverified pkarr Worker identity");
+  return worker.id;
+}
+
+export function receipt({ account, workerId, version, source, run, attempt, baseline }) {
+  if (!matches(hexId, account) || !matches(hexId, workerId) || !matches(uuid, version) ||
       !matches(sha, source) || !matches(positive, run) || !matches(positive, attempt)) {
     fail("invalid receipt identity");
   }
   return {
-    schema: 1, repository: REPO, workflow: WORKFLOW, worker: WORKER,
+    schema: 2, repository: REPO, workflow: WORKFLOW, worker: WORKER, worker_id: workerId,
     account_sha256: createHash("sha256").update(account).digest("hex"),
     version, source, run, attempt, baseline,
   };
@@ -162,13 +171,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const read = (i) => JSON.parse(readFileSync(files[i], "utf8"));
     const env = process.env;
     const expected = {
-      account: env.CLOUDFLARE_ACCOUNT_ID, version: env.VERSION_ID,
+      account: env.CLOUDFLARE_ACCOUNT_ID, workerId: env.VERIFIED_WORKER_ID, version: env.VERSION_ID,
       source: env.UPLOAD_SOURCE_SHA, run: env.UPLOAD_RUN_ID, attempt: env.UPLOAD_RUN_ATTEMPT,
     };
     if (operation === "input" && files.length === 0) {
       dispatchInput({ operation: env.OPERATION, ...expected });
     } else if (operation === "environment" && files.length === 2) {
       validateEnvironment(read(0), read(1));
+    } else if (operation === "worker-id" && files.length === 1) {
+      console.log(workerIdentity(read(0)));
     } else if (operation === "upload-id" && files.length === 1) {
       console.log(parseUploadOutput(readFileSync(files[0], "utf8")));
     } else if (operation === "receipt" && files.length === 2) {

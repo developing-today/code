@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   authorize, dispatchInput, message, parseUploadOutput, receipt, REPO, serving,
-  uploadVersion, validateEnvironment, verifyPromotion, WORKFLOW,
+  uploadVersion, validateEnvironment, verifyPromotion, workerIdentity, WORKFLOW,
 } from "./gha-publish.mjs";
 
 const version = "1".repeat(8) + "-1111-1111-1111-" + "1".repeat(12);
@@ -13,7 +13,8 @@ const source = "b".repeat(40);
 const main = "c".repeat(40);
 const run = "12345";
 const attempt = "2";
-const expected = { account, version, source, run, attempt };
+const workerId = "d".repeat(32);
+const expected = { account, workerId, version, source, run, attempt };
 const deployment = (id, version_id, created_on) => ({ id, created_on, versions: [{ version_id, percentage: 100 }] });
 const current = { success: true, result: { deployments: [deployment(prior, other, "2026-11-23T06:00:00Z")] } };
 const validRun = {
@@ -48,6 +49,18 @@ test("exact dispatch input and pinned receipt format, never tag-list guesswork",
   for (const drift of [{ version: 2 }, { worker_name: "other" }, { worker_name_overridden: true }, { version_id: "newest-by-tag" }]) {
     assert.throws(() => uploadVersion({ ...exact, ...drift }), /invalid pkarr upload response/);
   }
+});
+
+test("Beta metadata identifies only the fixed pkarr Worker for the exact version lookup", () => {
+  const observed = { success: true, result: { name: "pkarr", id: workerId } };
+  assert.equal(workerIdentity(observed), workerId);
+  assert.throws(() => workerIdentity({ ...observed, success: false }));
+  assert.throws(() => workerIdentity({ ...observed, result: { ...observed.result, name: "pkarr-preview" } }));
+  assert.throws(() => workerIdentity({ ...observed, result: { ...observed.result, id: "pkarr" } }));
+  const x = evidence();
+  assert.equal(x.saved.worker_id, workerId);
+  assert.throws(() => authorize({ ...x, expected: { ...expected, workerId: "e".repeat(32) } }),
+    /receipt or serving baseline no longer matches/);
 });
 
 test("promote only the exact GitHub attempt, account, worker, full reachable SHA and candidate", () => {

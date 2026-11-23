@@ -126,6 +126,11 @@ jobs:
           [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ && -n "$CLOUDFLARE_API_TOKEN" ]]
           api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr"
           get() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api/$1"; }
+          beta="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/workers"
+          get_beta() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$beta/$1"; }
+          get_beta pkarr > "$RUNNER_TEMP/pkarr-worker.json"
+          VERIFIED_WORKER_ID="$(node gha-publish.mjs worker-id "$RUNNER_TEMP/pkarr-worker.json")"
+          export VERIFIED_WORKER_ID
           get deployments > "$RUNNER_TEMP/pkarr-before.json"
           # Refuse to upload unless the provider's prior serving state was readable.
           node gha-publish.mjs unchanged "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-before.json"
@@ -138,7 +143,9 @@ jobs:
           export VERSION_ID
           [[ "$VERSION_ID" =~ ^[a-f0-9-]{36}$ ]]
           export UPLOAD_RUN_ID="$GITHUB_RUN_ID" UPLOAD_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" UPLOAD_SOURCE_SHA="$GITHUB_SHA"
-          get "versions/$VERSION_ID" > "$RUNNER_TEMP/pkarr-version.json"
+          # Exact Beta version read includes annotations; the legacy version
+          # read does not document them. Legacy traffic and deployability stay unchanged.
+          get_beta "$VERIFIED_WORKER_ID/versions/$VERSION_ID" > "$RUNNER_TEMP/pkarr-version.json"
           get deployments > "$RUNNER_TEMP/pkarr-after.json"
           node gha-publish.mjs unchanged "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-after.json"
           node gha-publish.mjs receipt "$RUNNER_TEMP/pkarr-before.json" "$RUNNER_TEMP/pkarr-version.json" > "$RUNNER_TEMP/pkarr-upload.json"
@@ -180,8 +187,15 @@ jobs:
           [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[a-f0-9]{32}$ && -n "$CLOUDFLARE_API_TOKEN" ]]
           api="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/pkarr"
           get() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$api/$1"; }
+          beta="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/workers"
+          get_beta() { curl --fail --silent --show-error --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$beta/$1"; }
+          get_beta pkarr > "$RUNNER_TEMP/pkarr-worker.json"
+          VERIFIED_WORKER_ID="$(node gha-publish.mjs worker-id "$RUNNER_TEMP/pkarr-worker.json")"
+          export VERIFIED_WORKER_ID
           receipt="$RUNNER_TEMP/upload/pkarr-upload.json"
-          get "versions/$VERSION_ID" > "$RUNNER_TEMP/pkarr-version.json"
+          # Exact Beta version read includes annotations; the legacy version
+          # read does not document them. Legacy traffic and deployability stay unchanged.
+          get_beta "$VERIFIED_WORKER_ID/versions/$VERSION_ID" > "$RUNNER_TEMP/pkarr-version.json"
           get 'versions?deployable=true' | jq -e --arg id "$VERSION_ID" '.success == true and any(.result.items[]?; .id == $id)' > /dev/null
           get deployments > "$RUNNER_TEMP/pkarr-current.json"
           node gha-publish.mjs authorize "$receipt" "$RUNNER_TEMP/pkarr-run.json" "$RUNNER_TEMP/pkarr-comparison.json" \
