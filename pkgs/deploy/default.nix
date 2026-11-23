@@ -68,12 +68,27 @@ let
     # tarballs — the last of the four #12768 services to register.
     readyForAgent = callPackage ../ready-for-agent/package.nix { };
   };
-  jsonDefinitions = lib.mapAttrs (name: defn: defn // { package = "${defn.package}"; }) definitions;
+  # The registry names each target's store path without depending on it
+  # (code#12738): string context would make building the CLI realize every
+  # target package, check phases included, before `deploy` itself exists.
+  # The CLI builds a target's package only when that target is deployed,
+  # from the derivation recorded in targetDrvsJson.
+  jsonDefinitions = lib.mapAttrs (
+    name: defn: defn // { package = builtins.unsafeDiscardStringContext "${defn.package}"; }
+  ) definitions;
+  # name -> .drv path. unsafeDiscardOutputDependency keeps the .drv files in
+  # the CLI's closure (so `nix-store --realise` can build from them) without
+  # building their outputs.
+  targetDrvs = lib.mapAttrs (name: defn: builtins.unsafeDiscardOutputDependency defn.package.drvPath) (
+    lib.filterAttrs (name: defn: lib.isDerivation defn.package) definitions
+  );
+  registryJson = writeText "deploy-targets.json" (builtins.toJSON jsonDefinitions);
+  targetDrvsJson = writeText "deploy-target-drvs.json" (builtins.toJSON targetDrvs);
 in
 {
   deployTargets = definitions;
 
-  deployTargetsJson = writeText "deploy-targets.json" (builtins.toJSON jsonDefinitions);
+  deployTargetsJson = registryJson;
 
   deploy =
     runCommand "deploy-0.1.0"
@@ -87,6 +102,7 @@ in
       ''
         makeWrapper ${python3}/bin/python3 $out/bin/deploy \
           --add-flags ${./deploy.py} \
-          --set DEPLOY_REGISTRY ${writeText "deploy-targets.json" (builtins.toJSON jsonDefinitions)}
+          --set DEPLOY_REGISTRY ${registryJson} \
+          --set DEPLOY_TARGET_DRVS ${targetDrvsJson}
       '';
 }
