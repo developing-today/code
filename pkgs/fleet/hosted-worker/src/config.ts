@@ -12,7 +12,10 @@
 // held as bytes, and never logged or reported. Malformed material is a
 // configuration failure — that piece parses to null and the stamp path
 // fails closed (see stamp-sig.ts), exactly like a malformed tenancy
-// fixture.
+// fixture. The fleet App material for the hosted GitHub rotation
+// (#12585) parses the same way: malformed → null → the fixture writer
+// stands in locally and no real GitHub write is attempted with bad
+// material.
 
 import type { RpValidationConfig } from "./jwt.ts";
 import { parseTenancyFixture, type TenancyDirectory } from "./tenancy.ts";
@@ -35,6 +38,17 @@ export interface HostedEnv {
    * base64url raw Ed25519 public key. Several ids = the rotation
    * window; both editions' authorities appear here side by side. */
   STAMP_VERIFY_KEYS_JSON?: string;
+  /** Fleet App id (#12585): the hosted rotation point's App. */
+  GITHUB_APP_ID?: string;
+  /** Fleet App private key (#12585): base64url PKCS#8 RSA key. A
+   * secret, referenced by name only; never logged. (GitHub issues
+   * the key as a PEM download; provisioning converts it to PKCS#8 —
+   * the only RSA form WebCrypto imports.) */
+  GITHUB_APP_PRIVATE_KEY_PKCS8?: string;
+  /** Fleet App installation ids (#12585), comma-separated, in
+   * rotation order: rate-limit / permission refusals fail over to
+   * the next installation (the native #8887 rule). */
+  GITHUB_APP_INSTALLATION_IDS?: string;
 }
 
 /** Stamp signing key material: the parsed key, bytes only. */
@@ -51,6 +65,15 @@ export interface StampConfig {
   verifyKeys: ReadonlyMap<string, Uint8Array> | null;
 }
 
+/** Fleet App configuration for the hosted rotation point (#12585):
+ * the parsed App id, private-key bytes, and installation ids in
+ * rotation order. */
+export interface GitHubAppConfig {
+  appId: string;
+  privateKeyPkcs8: Uint8Array;
+  installationIds: number[];
+}
+
 export interface HostedConfig {
   version: string;
   /** RP validation config, or null when no issuer is configured. */
@@ -61,6 +84,10 @@ export interface HostedConfig {
   authConfigured: boolean;
   /** Stamp signature key material (#12586), independent of auth. */
   stamp: StampConfig;
+  /** Fleet App rotation configuration (#12585), or null when no
+   * (valid) App material is set — the Worker then wires the fixture
+   * GitHub writer (local/dev semantics, src/github.ts). */
+  github: GitHubAppConfig | null;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -128,6 +155,26 @@ function parseStampConfig(env: HostedEnv): StampConfig {
   return { signing, verifyKeys };
 }
 
+function parseGitHubAppConfig(env: HostedEnv): GitHubAppConfig | null {
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY_PKCS8 || !env.GITHUB_APP_INSTALLATION_IDS) {
+    return null;
+  }
+  if (!/^[0-9]+$/.test(env.GITHUB_APP_ID)) return null;
+  const pkcs8 = b64urlToBytesOrNull(env.GITHUB_APP_PRIVATE_KEY_PKCS8);
+  // A PKCS#8 RSA key is far larger than any Ed25519 material; the
+  // floor only rejects obvious garbage — the real check is the
+  // WebCrypto import at first use, which fails closed (502).
+  if (pkcs8 === null || pkcs8.length < 256) return null;
+  const installationIds: number[] = [];
+  for (const part of env.GITHUB_APP_INSTALLATION_IDS.split(",")) {
+    const trimmed = part.trim();
+    if (!/^[0-9]+$/.test(trimmed)) return null;
+    installationIds.push(Number(trimmed));
+  }
+  if (installationIds.length === 0) return null;
+  return { appId: env.GITHUB_APP_ID, privateKeyPkcs8: pkcs8, installationIds };
+}
+
 export function configFromEnv(env: HostedEnv): HostedConfig {
   const rp: RpValidationConfig | null = env.RP_ISSUER
     ? {
@@ -155,5 +202,6 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     tenancy,
     authConfigured: rp !== null && tenancy !== null,
     stamp: parseStampConfig(env),
+    github: parseGitHubAppConfig(env),
   };
 }

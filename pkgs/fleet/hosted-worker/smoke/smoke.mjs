@@ -2,16 +2,20 @@
 // in-process with a fixture RP provider key + tenancy fixture (the
 // test harness), then answers the acceptance questions against it —
 // health and capabilities answer with the hosted door's identity, a
-// door refuses the unauthenticated, and an authenticated caller
-// reaches the door stub. For a wrangler dev run instead: set RP_ISSUER
-// / TENANCY_FIXTURE_JSON in the environment and `npm run dev`, then
-// curl /health and /capabilities.
+// door refuses the unauthenticated, the session registry opens /
+// resolves / closes (#12584), and the stamping door creates a
+// stamped, signed item (#12585). For a wrangler dev run instead: set
+// RP_ISSUER / TENANCY_FIXTURE_JSON in the environment and
+// `npm run dev`, then curl /health and /capabilities.
 //
 // Run: npm run smoke
 
+import { configFromEnv } from "../src/config.ts";
+import { FixtureGitHubWriter } from "../src/github.ts";
 import { dispatch } from "../src/router.ts";
 import { FixtureSessionRegistry } from "../src/sessions.ts";
-import { bearerReq, makeHarness } from "../test/helpers.ts";
+import { FixtureMetadataStore } from "../src/stamping.ts";
+import { AUDIENCE, BINDING_A, ISSUER, bearerReq, makeHarness } from "../test/helpers.ts";
 
 const h = await makeHarness();
 const deps = { ...h.deps, sessions: new FixtureSessionRegistry() };
@@ -49,12 +53,71 @@ await check(
 );
 
 const token = await h.sign(h.rpPayload());
-await check(
-  "POST /v1/stamps (valid RP token)",
-  bearerReq("/v1/stamps", token, { method: "POST" }),
-  501,
-  (b) => b.error === "not_implemented",
+
+// Stamping door (#12585): a create through the real router with a
+// fixture stamp key + fixture store/writer. The caller's block
+// carries a forged picked_up_at; the stamp must overwrite it from
+// service sources while preserving the caller-owned direct_parent.
+const b64url = (bytes) => {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+const stampKeyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+const stampDeps = {
+  config: configFromEnv({
+    RP_ISSUER: ISSUER,
+    RP_AUDIENCE: AUDIENCE,
+    TENANCY_FIXTURE_JSON: JSON.stringify({
+      subjects: [{ issuer: ISSUER, subject: "user-sub-1", binding_id: BINDING_A, active: true }],
+      service_tokens: [],
+    }),
+    STAMP_SIGNING_KEY_PKCS8: b64url(new Uint8Array(await crypto.subtle.exportKey("pkcs8", stampKeyPair.privateKey))),
+    STAMP_SIGNING_KEY_ID: "smoke-key",
+    STAMP_VERIFY_KEYS_JSON: JSON.stringify({
+      "smoke-key": b64url(new Uint8Array(await crypto.subtle.exportKey("raw", stampKeyPair.publicKey))),
+    }),
+  }),
+  jwksFetcher: h.deps.jwksFetcher,
+  sessions: new FixtureSessionRegistry(),
+  metadataStore: new FixtureMetadataStore(),
+  githubWriter: new FixtureGitHubWriter(),
+};
+const callerBody = [
+  "Smoke item",
+  "",
+  "<!-- pm-metadata:start -->",
+  "```json",
+  JSON.stringify({
+    pm_meta: 1,
+    direct_parent: { repo: "developing-today/code", number: 9081, kind: "design" },
+    provenance: { picked_up_at: "1970-01-01T00:00:00.000Z" },
+  }),
+  "```",
+  "<!-- pm-metadata:end -->",
+].join("\n");
+const stamped = await dispatch(
+  bearerReq("/v1/stamps", token, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repo: "developing-today/code", kind: "issue", title: "Smoke create", body: callerBody }),
+  }),
+  stampDeps,
 );
+{
+  const body = await stamped.json();
+  const ok =
+    stamped.status === 201 &&
+    body.metadata_inserted === true &&
+    body.metadata.direct_parent?.number === 9081 &&
+    body.metadata.provenance.picked_up_at === null &&
+    String(body.metadata.provenance.stamp_sig).startsWith("v1.ed25519.smoke-key.");
+  console.log(`${ok ? "ok  " : "FAIL"} POST /v1/stamps (stamped create): HTTP ${stamped.status}`);
+  if (!ok) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(body)}`);
+  }
+}
 
 // Session registry (#12584): open -> resolve -> close -> resolve
 // refused, through the real router.

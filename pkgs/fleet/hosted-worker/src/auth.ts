@@ -34,8 +34,10 @@
 
 import type { HostedConfig } from "./config.ts";
 import { FailClosed } from "./errors.ts";
+import type { GitHubWriter } from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
 import type { SessionRegistry } from "./sessions.ts";
+import type { MetadataStore, QueueRecordSource } from "./stamping.ts";
 
 export type CallerKind = "rp" | "agent" | "service";
 
@@ -60,6 +62,18 @@ export interface AuthDeps {
   /** Session registry (#12584, src/sessions.ts). Absent → the
    * session routes fail closed with 503, like unconfigured auth. */
   sessions?: SessionRegistry;
+  /** Metadata store (#12585, src/stamping.ts). Absent → the stamping
+   * route fails closed with 503, like unconfigured auth. */
+  metadataStore?: MetadataStore;
+  /** GitHub writer (#12585, src/github.ts): the hosted rotation
+   * point or its fixture. Absent → the stamping route fails closed
+   * with 503. */
+  githubWriter?: GitHubWriter;
+  /** Queue record source (#12585, src/stamping.ts). Absent → no
+   * queue record is readable, so queue fields stamp null (the
+   * design §5 rule for work that is not queue-originated); the queue
+   * front door (#12589) wires the real source behind this seam. */
+  queueRecords?: QueueRecordSource;
 }
 
 export async function sha256Hex(text: string): Promise<string> {
