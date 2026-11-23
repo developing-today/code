@@ -48,6 +48,7 @@ mod replication;
 mod replication_receiver;
 pub mod signed;
 pub mod spill_gate;
+pub mod spill_pool;
 mod upgrade;
 mod util;
 
@@ -693,7 +694,11 @@ pub const WRITE_LEASE_RENEWAL_INTERVAL_MS: u64 = 10_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(rename_all = "snake_case")]
 pub enum LeaseRejectionReason {
-    /// The writer is not the current lease holder (or there is none).
+    /// No holder stands while the authority is fencing and selecting a
+    /// successor. The caller should retry with backoff against the pool.
+    #[error("world write rejected: holder_lost (retryable)")]
+    HolderLost,
+    /// The writer is not the current lease holder in steady state.
     #[error("world write rejected: not_holder (retryable)")]
     NotHolder,
     /// The writer presented an epoch other than the current one.
@@ -872,6 +877,9 @@ impl WriteLease {
         presented_epoch: u64,
         now_ms: u64,
     ) -> Result<(), LeaseRejectionReason> {
+        if self.holder.is_none() {
+            return Err(LeaseRejectionReason::HolderLost);
+        }
         if self.holder.as_deref() != Some(writer) {
             return Err(LeaseRejectionReason::NotHolder);
         }
