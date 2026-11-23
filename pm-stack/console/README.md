@@ -202,7 +202,9 @@ the Android app alike (which is the same site in Chrome).
   a name on the device (a UUID) and written to the browser's own
   database before it is sent (`public/outbox.js`), and before it waits
   its turn behind a send already under way, so a page closed meanwhile
-  loses nothing. One try is given a minute. With no connection it
+  loses nothing. One try is given a minute, and an answer that stops
+  arriving part-way is no answer (it is offered again, never taken for
+  a sign-in that ran out). With no connection it
   waits there, and is sent when the connection is back: by the page if
   the app is open, by the service worker if it is not (Background Sync,
   where the browser has it). The platform does an action once under its
@@ -219,6 +221,10 @@ the Android app alike (which is the same site in Chrome).
   is left out of the list while its answer is kept and not yet
   recorded, across a reload too, and is shown again if the answer is
   taken back or does not count.
+- **What is being typed is not lost to a send in the background.** A
+  bug report, a note or a message half written stays where it is when
+  something kept earlier gets sent and the screen is drawn again; it is
+  let go when it is sent.
 - **In the order it was done.** Something done now goes behind whatever
   is already waiting, oldest first, and is not sent ahead of it. Two
   about the same thing (an issue ranked twice, a task moved twice) keep

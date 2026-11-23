@@ -508,6 +508,22 @@ A third review found two more, both real, both in the page:
   (across a reload too) and back when the answer is taken back or does
   not count.
 
+A fourth review found three more, all real:
+
+- **A draft was erased by a send in the background.** When something
+  kept earlier was sent, the screen was drawn again whatever the owner
+  was doing, and a bug report, a note or a message half typed was
+  gone. A background send now draws the screen again only when nobody
+  is in the middle of something, and those three forms keep what is
+  typed across any redraw (as the prompt box already did).
+- **A cut-off answer was read as "sign in again".** An answer whose
+  body stops arriving is no answer, and is offered again; only a body
+  that arrives and is not JSON is taken for something other than the
+  platform.
+- **A failed answer could leave its question hidden**, if the list was
+  read while the answer was on its way. On failure the list is read
+  again whole.
+
 Checked: 342 tests under bun, the keeper's 25. 52 planted faults in
 the new code, all caught (two more were planted and found to change
 nothing: each is behind a second guard). In a real Chrome against both
@@ -516,7 +532,9 @@ and dark; the worker woken with the app closed; an older waiting rank
 and a new one leave the device in order and are done in order (and with
 the old direct send planted, that check fails); an answer kept, taken
 back and kept again, and an action done while another sender holds the
-turn and the page then closed (each fails against the code before its
+turn and the page then closed; a draft kept through a background send
+with the cursor in it and with it set aside, and a question back after
+its answer failed (each of these fails against the code before its
 fix); axe-core over 20
 screens, the dialogs and the toasts: no violations. The Worker in its
 real runtime passes its own checks.
