@@ -19,7 +19,7 @@ use crate::model::{
 use crate::profile;
 use crate::timeparse::{CalendarDuration, Rfc3339};
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyUsagePurpose};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
@@ -74,7 +74,10 @@ struct Parsed {
 
 impl Parsed {
     fn get(&self, name: &str) -> Option<&str> {
-        self.values.get(name).and_then(|v| v.last()).map(|s| s.as_str())
+        self.values
+            .get(name)
+            .and_then(|v| v.last())
+            .map(|s| s.as_str())
     }
     fn all(&self, name: &str) -> Vec<String> {
         self.values.get(name).cloned().unwrap_or_default()
@@ -92,11 +95,7 @@ impl Parsed {
     }
 }
 
-fn parse_args(
-    args: &[String],
-    value_flags: &[&str],
-    bool_flags: &[&str],
-) -> Result<Parsed> {
+fn parse_args(args: &[String], value_flags: &[&str], bool_flags: &[&str]) -> Result<Parsed> {
     let mut parsed = Parsed {
         positionals: Vec::new(),
         values: BTreeMap::new(),
@@ -120,12 +119,16 @@ fn parse_args(
                     Some(v) => v,
                     None => {
                         i += 1;
-                        args.get(i).cloned().ok_or_else(|| {
-                            CertError::usage(format!("--{name} needs a value"))
-                        })?
+                        args.get(i)
+                            .cloned()
+                            .ok_or_else(|| CertError::usage(format!("--{name} needs a value")))?
                     }
                 };
-                parsed.values.entry(name.to_string()).or_default().push(value);
+                parsed
+                    .values
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(value);
             } else {
                 return Err(CertError::usage(format!(
                     "unknown option --{name} (run 'fleet cert --help')"
@@ -160,14 +163,8 @@ fn emit(json_out: bool, text: String, value: Value) -> i32 {
 }
 
 /// The shared validity flags (§5.4/§6.3).
-fn validity(
-    p: &Parsed,
-    default_lifetime: CalendarDuration,
-) -> Result<(Rfc3339, Rfc3339)> {
-    let nb = p
-        .get("not-before")
-        .map(Rfc3339::parse)
-        .transpose()?;
+fn validity(p: &Parsed, default_lifetime: CalendarDuration) -> Result<(Rfc3339, Rfc3339)> {
+    let nb = p.get("not-before").map(Rfc3339::parse).transpose()?;
     let vf = p
         .get("valid-for")
         .map(CalendarDuration::parse)
@@ -271,7 +268,7 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
                         "root creation is a ceremony: name the root key destination \
                          explicitly — --private-store <dir> or --private-in-bundle \
                          (spec §24.3)",
-                    ))
+                    ));
                 }
             };
             let generation: u32 = p
@@ -282,7 +279,10 @@ fn root_cmd(args: &[String], json_out: bool) -> Result<i32> {
                 })
                 .transpose()?
                 .unwrap_or(1);
-            let (nb, na) = validity(&p, CalendarDuration::years(crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS))?;
+            let (nb, na) = validity(
+                &p,
+                CalendarDuration::years(crate::timeparse::ROOT_DEFAULT_LIFETIME_YEARS),
+            )?;
             let req = RootCreateRequest {
                 organization: p
                     .get("organization")
@@ -534,8 +534,8 @@ fn chain_cmd(args: &[String], json_out: bool) -> Result<i32> {
                     "  result: {}\n",
                     if report.valid { "VALID" } else { "INVALID" }
                 ));
-                let value = serde_json::to_value(&report)
-                    .map_err(|e| CertError::engine(e.to_string()))?;
+                let value =
+                    serde_json::to_value(&report).map_err(|e| CertError::engine(e.to_string()))?;
                 let code = emit(json_out, text, value);
                 return Ok(if report.valid { code } else { 1 });
             }
@@ -845,19 +845,46 @@ fn algorithms_cmd(args: &[String], json_out: bool) -> Result<i32> {
 // ---------------------------------------------------------------- explain / doctor
 
 const NOT_BUILT: &[(&str, &str)] = &[
-    ("revoke / crl", "revocation + signed CRLs (spec §13 phase F)"),
-    ("ocsp", "OCSP — only behind a functional responder (spec §4.3)"),
-    ("publish", "AIA/CDP publication machinery (spec §13 phase F)"),
+    (
+        "revoke / crl",
+        "revocation + signed CRLs (spec §13 phase F)",
+    ),
+    (
+        "ocsp",
+        "OCSP — only behind a functional responder (spec §4.3)",
+    ),
+    (
+        "publish",
+        "AIA/CDP publication machinery (spec §13 phase F)",
+    ),
     ("dns", "DNS plan/render/verify (spec §24.7)"),
-    ("trust", "trust-store install/export (spec §3.5 follow-through)"),
-    ("key", "key inspect/import/export/convert-public (spec §6.1)"),
+    (
+        "trust",
+        "trust-store install/export (spec §3.5 follow-through)",
+    ),
+    (
+        "key",
+        "key inspect/import/export/convert-public (spec §6.1)",
+    ),
     ("format", "format list/describe/export/convert (spec §7.5)"),
-    ("profile validate/scaffold", "profile validation + scaffolding (spec §6.1)"),
-    ("algorithms benchmark/doctor", "algorithm benchmarks (spec §6.1)"),
+    (
+        "profile validate/scaffold",
+        "profile validation + scaffolding (spec §6.1)",
+    ),
+    (
+        "algorithms benchmark/doctor",
+        "algorithm benchmarks (spec §6.1)",
+    ),
     ("batch", "batch plan/validate/apply (spec §6.5)"),
     ("inventory", "inventory list/show/search/audit (spec §6.1)"),
-    ("root/issuer renew/rotate/replace", "lifecycle verbs (spec §5.2)"),
-    ("bundle pack/unpack/diff/migrate", "bundle packaging verbs (spec §7)"),
+    (
+        "root/issuer renew/rotate/replace",
+        "lifecycle verbs (spec §5.2)",
+    ),
+    (
+        "bundle pack/unpack/diff/migrate",
+        "bundle packaging verbs (spec §7)",
+    ),
 ];
 
 fn explain_cmd(args: &[String], json_out: bool) -> Result<i32> {
@@ -905,7 +932,7 @@ no EKU). See `fleet cert profile list`."
         other => {
             return Err(CertError::usage(format!(
                 "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | profiles)"
-            )))
+            )));
         }
     };
     Ok(emit(
@@ -933,7 +960,8 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    let mut text = String::from("fleet cert doctor\n  engine self-test (generate + self-sign + verify):\n");
+    let mut text =
+        String::from("fleet cert doctor\n  engine self-test (generate + self-sign + verify):\n");
     for (info, ok) in &algo_results {
         text.push_str(&format!(
             "    {:10} {}\n",
@@ -965,7 +993,9 @@ fn engine_self_test(algo: AlgorithmId) -> bool {
         return false;
     };
     let mut params = CertificateParams::new(Vec::<String>::new()).expect("empty SAN list");
-    params.distinguished_name.push(DnType::CommonName, "fleet cert doctor self-test");
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "fleet cert doctor self-test");
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     let now = Rfc3339::now();

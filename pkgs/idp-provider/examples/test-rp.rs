@@ -21,7 +21,7 @@
 //! the discovery fetch to the userinfo response, so it excludes
 //! process startup.
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use idp_provider::{b64url, registry::random_b64url};
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier;
@@ -71,7 +71,8 @@ fn http(
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
-    let mut stream = TcpStream::connect(authority).map_err(|e| format!("connect {authority}: {e}"))?;
+    let mut stream =
+        TcpStream::connect(authority).map_err(|e| format!("connect {authority}: {e}"))?;
     let mut req = format!("{method} {path} HTTP/1.1\r\nhost: {authority}\r\nconnection: close\r\n");
     if let Some(b) = bearer {
         req.push_str(&format!("authorization: Bearer {b}\r\n"));
@@ -113,7 +114,11 @@ fn http(
             chunked = true;
         }
     }
-    let body = if chunked { dechunk(body) } else { body.to_string() };
+    let body = if chunked {
+        dechunk(body)
+    } else {
+        body.to_string()
+    };
     Ok((status, location, body))
 }
 
@@ -153,12 +158,18 @@ fn main() {
     };
 
     // 1. Discovery.
-    let (status, _l, body) = http("GET", &format!("{issuer}/.well-known/openid-configuration"), None, None)
-        .unwrap_or_else(|e| run(&e));
+    let (status, _l, body) = http(
+        "GET",
+        &format!("{issuer}/.well-known/openid-configuration"),
+        None,
+        None,
+    )
+    .unwrap_or_else(|e| run(&e));
     if status != 200 {
         run(&format!("discovery status {status}"));
     }
-    let discovery: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|_| run("discovery is not JSON"));
+    let discovery: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|_| run("discovery is not JSON"));
     if discovery["issuer"] != issuer {
         run("discovery issuer mismatch");
     }
@@ -172,15 +183,9 @@ fn main() {
     if status != 200 {
         run(&format!("jwks status {status}"));
     }
-    let jwks: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|_| run("jwks is not JSON"));
-    let jwk = &jwks["keys"][0];
-    let kid = jwk["kid"].as_str().unwrap_or("").to_string();
+    let jwks: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|_| run("jwks is not JSON"));
     let decode = |s: &str| B64URL.decode(s).unwrap_or_default();
-    let pubkey = RsaPublicKey::new(
-        BigUint::from_bytes_be(&decode(jwk["n"].as_str().unwrap_or(""))),
-        BigUint::from_bytes_be(&decode(jwk["e"].as_str().unwrap_or(""))),
-    )
-    .unwrap_or_else(|_| run("JWKS key is not a valid RSA public key"));
 
     // 3. Authorize (local door) with PKCE.
     let verifier = random_b64url(32);
@@ -197,7 +202,8 @@ fn main() {
         ("login_id", &login_id),
         ("credential", &credential),
     ]);
-    let (status, location, _body) = http("POST", authz_ep, Some(&form), None).unwrap_or_else(|e| run(&e));
+    let (status, location, _body) =
+        http("POST", authz_ep, Some(&form), None).unwrap_or_else(|e| run(&e));
     if mode == "deny" {
         // The proof's negative case: refusal is the success here.
         println!(
@@ -236,9 +242,14 @@ fn main() {
     if status != 200 {
         run(&format!("token status {status}: {body}"));
     }
-    let tokens: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|_| run("token response is not JSON"));
-    let id_token = tokens["id_token"].as_str().unwrap_or_else(|| run("no id_token"));
-    let access_token = tokens["access_token"].as_str().unwrap_or_else(|| run("no access_token"));
+    let tokens: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|_| run("token response is not JSON"));
+    let id_token = tokens["id_token"]
+        .as_str()
+        .unwrap_or_else(|| run("no id_token"));
+    let access_token = tokens["access_token"]
+        .as_str()
+        .unwrap_or_else(|| run("no access_token"));
 
     // 5. Verify the ID token against the JWKS key.
     let parts: Vec<&str> = id_token.split('.').collect();
@@ -247,9 +258,25 @@ fn main() {
     }
     let header: serde_json::Value =
         serde_json::from_slice(&decode(parts[0])).unwrap_or_else(|_| run("bad jwt header"));
-    if header["alg"] != "RS256" || header["kid"] != kid {
-        run("id_token header alg/kid does not match JWKS");
+    if header["alg"] != "RS256" {
+        run("id_token header alg is not RS256");
     }
+    // Select the JWKS key by the token's kid: during a rollover
+    // overlap the set holds several keys, and keys[0] is not
+    // necessarily the one that signed.
+    let kid = header["kid"].as_str().unwrap_or("").to_string();
+    let jwk = jwks["keys"]
+        .as_array()
+        .and_then(|keys| {
+            keys.iter()
+                .find(|k| k["kid"].as_str() == Some(kid.as_str()))
+        })
+        .unwrap_or_else(|| run("id_token kid is not in the JWKS"));
+    let pubkey = RsaPublicKey::new(
+        BigUint::from_bytes_be(&decode(jwk["n"].as_str().unwrap_or(""))),
+        BigUint::from_bytes_be(&decode(jwk["e"].as_str().unwrap_or(""))),
+    )
+    .unwrap_or_else(|_| run("JWKS key is not a valid RSA public key"));
     let signature = rsa::pkcs1v15::Signature::try_from(decode(parts[2]).as_slice())
         .unwrap_or_else(|_| run("bad signature encoding"));
     VerifyingKey::<Sha256>::new(pubkey)
@@ -262,11 +289,13 @@ fn main() {
     }
 
     // 6. Userinfo with the access token.
-    let (status, _l, body) = http("GET", userinfo_ep, None, Some(access_token)).unwrap_or_else(|e| run(&e));
+    let (status, _l, body) =
+        http("GET", userinfo_ep, None, Some(access_token)).unwrap_or_else(|e| run(&e));
     if status != 200 {
         run(&format!("userinfo status {status}"));
     }
-    let userinfo: serde_json::Value = serde_json::from_str(&body).unwrap_or_else(|_| run("userinfo is not JSON"));
+    let userinfo: serde_json::Value =
+        serde_json::from_str(&body).unwrap_or_else(|_| run("userinfo is not JSON"));
     if userinfo["sub"] != claims["sub"] {
         run("userinfo sub does not match id_token sub");
     }

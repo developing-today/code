@@ -1,1 +1,19 @@
-{"description":"Self-hosted mcpx MCP endpoint: Access-gated Worker front door proxying to the laptop bridge (developing-today/code#13657).","devDependencies":{"@cloudflare/workers-types":"^5.20261019.1","cf":"1.0.0-beta.20","typescript":"^5.6.0","vitest":"^4.1.0","wrangler":"4.152.0"},"name":"mcpx-worker","private":true,"scripts":{"deploy":"cf workers versions create","test":"vitest run","typecheck":"tsc --noEmit"},"type":"module","version":"0.1.0"}
+{
+  "description": "Self-hosted mcpx MCP endpoint: Access-gated Worker front door proxying to the laptop bridge (developing-today/code#13657).",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261019.1",
+    "cf": "1.0.0-beta.20",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.0",
+    "wrangler": "4.152.0"
+  },
+  "name": "mcpx-worker",
+  "private": true,
+  "scripts": {
+    "deploy": "cf workers versions create",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "version": "0.1.0"
+}

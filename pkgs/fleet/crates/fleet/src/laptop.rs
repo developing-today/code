@@ -105,22 +105,26 @@ fn parse_walk_args(args: &[String]) -> Result<WalkArgs, String> {
                 .map_err(|_| "exec: --timeout must be seconds".to_string())?;
         } else if a == "--cwd" {
             i += 1;
-            cwd = Some(
-                args.get(i)
-                    .ok_or("exec: --cwd needs a value")?
-                    .to_string(),
-            );
+            cwd = Some(args.get(i).ok_or("exec: --cwd needs a value")?.to_string());
         } else if let Some(v) = a.strip_prefix("--cwd=") {
             cwd = Some(v.to_string());
         } else {
-            return Err(format!("exec: unexpected argument {a} (command goes after --)"));
+            return Err(format!(
+                "exec: unexpected argument {a} (command goes after --)"
+            ));
         }
         i += 1;
     }
     Err("exec: missing -- before the command".into())
 }
 
-fn attempt(config: &Config, form: Form, cwd: Option<&str>, timeout_s: u64, cmd: &[String]) -> ServeOutcome {
+fn attempt(
+    config: &Config,
+    form: Form,
+    cwd: Option<&str>,
+    timeout_s: u64,
+    cmd: &[String],
+) -> ServeOutcome {
     match form.id {
         "T1" => crate::commander::serve(config, cwd, timeout_s, cmd),
         "T2" => crate::http::serve(config, cwd, timeout_s, cmd),
@@ -163,7 +167,13 @@ fn walk(config: &Config, args: &[String]) -> i32 {
     };
     for form in order {
         eprintln!("fleet: trying form {}", form.label());
-        match attempt(config, form, parsed.cwd.as_deref(), parsed.timeout_s, &parsed.cmd) {
+        match attempt(
+            config,
+            form,
+            parsed.cwd.as_deref(),
+            parsed.timeout_s,
+            &parsed.cmd,
+        ) {
             ServeOutcome::Served(code) => {
                 eprintln!("fleet: served by form {}", form.label());
                 return code;
@@ -180,7 +190,9 @@ fn walk(config: &Config, args: &[String]) -> i32 {
             }
         }
     }
-    eprintln!("fleet: no tier served the call (the individual forms, then the raw forms, then laptop-ssh remain)");
+    eprintln!(
+        "fleet: no tier served the call (the individual forms, then the raw forms, then laptop-ssh remain)"
+    );
     1
 }
 

@@ -110,7 +110,7 @@ async function setup(options: { direct?: boolean } = {}) {
   // direct reads and writes go through these, and only these. The data
   // here is newer than the host's last report, as it would be after the
   // laptop has been away for a while.
-  const githubCalls: { method: string; url: string; body?: string }[] = [];
+  const githubCalls: { method: string; url: string; body?: string; unchanged?: true }[] = [];
   const queueCalls: { sql: string; args: (string | number)[] }[] = [];
   const ghIssues: Record<
     number,
@@ -193,6 +193,13 @@ async function setup(options: { direct?: boolean } = {}) {
   /** Calls GitHub turns away for being one too many just now: the same
    * 403, with other words. */
   const ghLimits: ((method: string, url: string) => boolean)[] = [];
+  /** What GitHub says with such an answer of when to ask again, if a
+   * test has it say anything. */
+  const ghLimitSays: { headers: Record<string, string> } = { headers: {} };
+  /** GitHub tags what it answers a read with, and answers "not
+   * modified" to one asked for by the tag of what it would say. On
+   * for every test, as it is at GitHub; `unchanged` counts those. */
+  const ghTags = { on: true, unchanged: 0 };
   /** The queue store taking this side's token for reading only. */
   const queueReadOnly = { on: false };
   /** Calls GitHub gives no answer to at all, and calls it is slow to
@@ -549,7 +556,8 @@ async function setup(options: { direct?: boolean } = {}) {
     const u = String(url);
     const method = init?.method ?? "GET";
     if (u.startsWith("https://api.github.com/")) {
-      githubCalls.push({ method, url: u, body: init?.body });
+      const call: (typeof githubCalls)[number] = { method, url: u, body: init?.body };
+      githubCalls.push(call);
       for (const held of ghHolds) if (held.match(method, u)) await held.wait;
       if (ghDrops.some((drops) => drops(method, u))) throw new Error("socket hang up");
       // A token that may not do this, as GitHub says it.
@@ -564,6 +572,7 @@ async function setup(options: { direct?: boolean } = {}) {
         return {
           ok: false,
           status: 403,
+          headers: new Headers(ghLimitSays.headers),
           json: async () => ({ message: "API rate limit exceeded for user ID 1.", status: "403" }),
         };
       }
@@ -572,7 +581,21 @@ async function setup(options: { direct?: boolean } = {}) {
       }
       const says = ghSays.find((say) => say.match(method, u));
       if (says) return { ok: false, status: says.status, json: async () => ({ message: says.message }) };
-      return githubAnswer(method, u, init?.body);
+      const answer = githubAnswer(method, u, init?.body);
+      if (method !== "GET" || !answer.ok || !ghTags.on) return answer;
+      const etag = `W/"${Bun.hash(JSON.stringify(await answer.json())).toString(16)}"`;
+      if (init?.headers?.["if-none-match"] === etag) {
+        ghTags.unchanged++;
+        call.unchanged = true;
+        return {
+          ok: false,
+          status: 304,
+          headers: new Headers({ etag }),
+          // As a real answer with no body does.
+          json: async () => JSON.parse(""),
+        };
+      }
+      return { ...answer, headers: new Headers({ etag }) };
     }
     if (u === `${cfg.queueDbUrl}/v2/pipeline`) {
       // A token the queue store no longer takes.
@@ -803,7 +826,13 @@ async function setup(options: { direct?: boolean } = {}) {
   /** Each report the host sent, as it read. */
   const reports: { sections: { name: string }[]; have: Record<string, unknown> }[] = [];
   /** The signed Android build on the host, if any, and how often it was read to be sent. */
-  const build: { bytes: Uint8Array<ArrayBuffer> | null; at: number; reads: number; corrupt: boolean; unreadable: boolean } = {
+  const build: {
+    bytes: Uint8Array<ArrayBuffer> | null;
+    at: number;
+    reads: number;
+    corrupt: boolean;
+    unreadable: boolean;
+  } = {
     bytes: null,
     at: 0,
     reads: 0,
@@ -1009,6 +1038,8 @@ async function setup(options: { direct?: boolean } = {}) {
     ghStarted,
     ghOdd,
     ghRefuses,
+    ghLimitSays,
+    ghTags,
     ghLimits,
     ghDrops,
     ghSays,
@@ -1056,6 +1087,7 @@ describe("before the host's first report", () => {
       directReady: false,
       refused: [],
       selfCheck: null,
+      github: { answers: 0, unchanged: 0, kept: 0, quiet: { core: null, search: null } },
       hostSeen: null,
       hostVersion: null,
       androidBuild: null,
@@ -3738,7 +3770,11 @@ describe("the edge does the core itself", () => {
       about: { issue: 301 },
       rank: "expedite",
     });
-    expect(((await note.json()) as { result: Record<string, unknown> }).result).toMatchObject({ issue: 301, commented: true, queued: true });
+    expect(((await note.json()) as { result: Record<string, unknown> }).result).toMatchObject({
+      issue: 301,
+      commented: true,
+      queued: true,
+    });
     expect((w.ghComments[301] ?? []).some((c) => c.body.startsWith("do this first\n\n---\n"))).toBe(true);
     expect(w.ghLabels[301]).toEqual(["owner/intake", "expedite"]);
     // As a session: the owner's prompt, with the routing labels added.
@@ -3748,7 +3784,11 @@ describe("the edge does the core itself", () => {
       text: "pick these up first",
       mode: "session",
     });
-    expect(((await session.json()) as { result: Record<string, unknown> }).result).toMatchObject({ issue: 501, commented: false, queued: true });
+    expect(((await session.json()) as { result: Record<string, unknown> }).result).toMatchObject({
+      issue: 501,
+      commented: false,
+      queued: true,
+    });
     expect(w.ghLabels[501]).toEqual(["owner/prompt", "expedite", "source/human", "owner/intake", "app/fleet"]);
     // Three tasks wait for a machine, each as the action that builds it there.
     const at = new Date(w.now.t).toISOString();
@@ -4295,6 +4335,211 @@ describe("the edge does the core itself", () => {
     expect((await w.core()).doc.board.counts).toEqual(QUEUE_NOW);
   });
 
+  /** The document pull requests and ranked issues are in. */
+  const opsDoc = async (w: World) =>
+    (await (await w.browse("/console/api/doc/ops")).json()) as {
+      prs: unknown;
+      priorities: unknown;
+      health: Record<string, { ok: boolean; error: string | null }>;
+      read: Record<string, string | null>;
+      good: Record<string, string | null>;
+    };
+  const githubSaid = async (w: World) =>
+    (
+      (await (await w.browse("/console/health", { token: null })).json()) as {
+        github: {
+          answers: number;
+          unchanged: number;
+          kept: number;
+          quiet: { core: number | null; search: number | null };
+        };
+      }
+    ).github;
+
+  test('a list that has not changed is asked for by its tag: GitHub is asked as often, says "not modified", and what is shown is the same', async () => {
+    const w = await primary();
+    const list = () => w.githubCalls.filter((c) => /\/pulls\?/.test(c.url));
+    const pulls = () => list().length;
+    const unchanged = () => list().filter((c) => c.unchanged).length;
+    const first = await opsDoc(w);
+    await settle(w);
+    expect(JSON.stringify(first.prs)).toContain("Fresh PR");
+    expect([pulls(), unchanged()]).toEqual([1, 0]);
+    // Past the time the list of pull requests is read again.
+    w.now.t += 91_000;
+    await opsDoc(w);
+    await settle(w);
+    const second = await opsDoc(w);
+    await settle(w);
+    // It was asked for once more, by its tag, and that cost nothing of the hour's allowance.
+    expect([pulls(), unchanged()]).toEqual([2, 1]);
+    expect(second.prs).toEqual(first.prs);
+    // The list changes at GitHub: the tag no longer fits, the answer is a full one, and it is what is shown.
+    w.ghPrs.push({
+      ...w.ghPrs[0],
+      number: 56,
+      title: "Another PR",
+      html_url: "https://github.com/developing-today/code/pull/56",
+      head: { ref: "queue/56", sha: "5656565656565656565656565656565656565656" },
+    });
+    w.now.t += 91_000;
+    await opsDoc(w);
+    await settle(w);
+    const third = await opsDoc(w);
+    await settle(w);
+    expect([pulls(), unchanged()]).toEqual([3, 1]);
+    expect(JSON.stringify(third.prs)).toContain("Another PR");
+    // Health says it from outside: every answer of GitHub's, and how many were "not modified".
+    const said = await githubSaid(w);
+    await settle(w);
+    expect([said.unchanged, said.answers]).toEqual([w.ghTags.unchanged, w.githubCalls.length]);
+    expect([said.kept > 0, said.quiet]).toEqual([true, { core: null, search: null }]);
+    // A GitHub that gave no tags is the same to look at: every answer a full one.
+    const plain = await primary();
+    plain.ghTags.on = false;
+    const a = await opsDoc(plain);
+    await settle(plain);
+    plain.now.t += 91_000;
+    await opsDoc(plain);
+    await settle(plain);
+    expect((await opsDoc(plain)).prs).toEqual(a.prs);
+    expect(plain.ghTags.unchanged).toBe(0);
+  });
+
+  test("the hour's allowance used up: GitHub's own time is kept to, nothing that draws on it is asked until then, and the last good copy says why and when", async () => {
+    const w = await primary();
+    const first = { core: (await w.core()).doc, ops: await opsDoc(w) };
+    await settle(w);
+    // No machine either: what this side kept is all there is to show.
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // GitHub: the account's allowance for the hour is used up, and comes back in forty minutes.
+    // Searches it counts apart, and those it still answers.
+    w.now.t += 181_000;
+    const back = Math.floor((w.now.t + 40 * 60_000) / 1000) * 1000;
+    w.ghLimits.push((_method, url) => !url.includes("/search/"));
+    w.ghLimitSays.headers = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
+    const hourly = () => w.githubCalls.filter((c) => !c.url.includes("/search/")).length;
+    const searches = () => w.githubCalls.length - hourly();
+    const before = { hourly: hourly(), searches: searches() };
+    const look = async () => {
+      await w.core();
+      await opsDoc(w);
+      await settle(w);
+      const seen = { core: (await w.core()).doc, ops: await opsDoc(w) };
+      await settle(w);
+      return seen;
+    };
+    const limited = await look();
+    // It was told once, by the first thing it asked. Nothing else that draws on the hour was
+    // asked: not the other list of that round, and not the second look.
+    expect(hourly()).toBe(before.hourly + 1);
+    expect([limited.ops.prs, limited.ops.priorities, limited.core.asks]).toEqual([
+      first.ops.prs,
+      first.ops.priorities,
+      first.core.asks,
+    ]);
+    for (const section of [limited.ops.health.prs, limited.core.health.asks]) {
+      expect(section.ok).toBe(false);
+      expect(section.error).toContain(`GitHub says to ask again at ${new Date(back).toISOString()}`);
+      expect(section.error).toMatch(/API rate limit exceeded/);
+    }
+    // How old the copy shown is, is when it was read, which the failed tries leave alone;
+    // when each was last tried has moved on.
+    expect([limited.ops.good.prs, limited.core.good.asks]).toEqual([first.ops.good.prs, first.core.good.asks]);
+    expect(limited.ops.good.prs).toBe(first.ops.read.prs);
+    expect(Date.parse(limited.ops.read.prs ?? "")).toBeGreaterThan(Date.parse(first.ops.read.prs ?? ""));
+    // Ranked issues are a search: read as ever.
+    expect(limited.ops.health.priorities.ok).toBe(true);
+    expect(searches()).toBeGreaterThan(before.searches);
+    // Twenty minutes with nobody looking: the two lists are still not this side's to read, and
+    // it has not claimed them back in between only to be turned away again.
+    const refused = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+    w.now.t += 20 * 60_000;
+    expect(await refused()).toEqual(["read.asks", "read.prs"]);
+    await settle(w);
+    // Something the owner does meanwhile is not sent either: it is kept, not lost.
+    const tried = await w.act("issue.rank", { issue: 301, rank: "next" });
+    expect(await tried.json()).toMatchObject({ ok: true, held: true });
+    expect(hourly()).toBe(before.hourly + 1);
+    // That kind of action is left to a machine for five minutes, as when no time is given,
+    // and not for the rest of the hour: what failed beside a call held back may have
+    // failed for a reason of its own. (Tried again here, it is held back again.)
+    expect(await refused()).toEqual(["issue.rank", "read.asks", "read.prs"]);
+    w.now.t += 5 * 60_000 + 1_000;
+    expect(await refused()).toEqual(["read.asks", "read.prs"]);
+    await settle(w);
+    // For the rest of the forty: screens looked at, minutes passing, the check that health
+    // makes. None of it asks GitHub for anything counted by the hour, and what is held back
+    // here is not counted as an answer of GitHub's.
+    for (let minute = 28; minute < 40; minute += 3) {
+      w.now.t += 3 * 60_000;
+      await look();
+      const said = await githubSaid(w);
+      await settle(w);
+      expect([minute, said.quiet, said.answers]).toEqual([minute, { core: back, search: null }, w.githubCalls.length]);
+      expect([minute, hourly()]).toEqual([minute, before.hourly + 1]);
+    }
+    // The time comes, and GitHub answers again: it is asked, and what it says is shown with nothing wrong.
+    w.ghLimits.length = 0;
+    w.now.t = back + 181_000;
+    const after = await look();
+    expect(hourly()).toBeGreaterThan(before.hourly + 1);
+    expect((await githubSaid(w)).quiet).toEqual({ core: null, search: null });
+    expect([after.ops.health.prs.ok, after.ops.health.priorities.ok, after.core.health.asks.ok]).toEqual([
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  test("turned away with no time given, this side asks again in five minutes as before; a time that cannot be right is kept to for a little over an hour, no longer", async () => {
+    const w = await primary();
+    await opsDoc(w);
+    await settle(w);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const pulls = () => w.githubCalls.filter((c) => /\/pulls\?/.test(c.url)).length;
+    const look = async () => {
+      await opsDoc(w);
+      await settle(w);
+    };
+    // No time given: nothing else is held back, and the list is left alone for five minutes
+    // and read again at its next turn after them.
+    w.now.t += 91_000;
+    w.ghLimits.push((method, url) => method === "GET" && /\/pulls\?/.test(url));
+    await look();
+    expect(pulls()).toBe(2);
+    // (Health makes its own check of each read the first time it is asked: one more.)
+    expect((await githubSaid(w)).quiet).toEqual({ core: null, search: null });
+    await settle(w);
+    const before = pulls();
+    expect(before).toBe(3);
+    w.now.t += 4 * 60_000;
+    await look();
+    expect(pulls()).toBe(before);
+    w.now.t += 2 * 60_000;
+    await look();
+    expect(pulls()).toBe(before + 1);
+    // A time a day off: kept to for a little over an hour, no longer.
+    w.ghLimitSays.headers = { "retry-after": String(24 * 60 * 60) };
+    w.now.t += 5 * 60_000 + 1_000;
+    const told = w.now.t;
+    await look();
+    expect(pulls()).toBe(before + 2);
+    // (Said in seconds, it is said of the caller: searches are hushed with the rest.)
+    expect((await githubSaid(w)).quiet).toEqual({ core: told + 65 * 60_000, search: told + 65 * 60_000 });
+    // And the owner saying "try again now" is taken at their word: the list is asked for at
+    // its next turn, not an hour on.
+    await w.act("edge.retry", {});
+    w.ghLimits.length = 0;
+    w.now.t += 91_000;
+    await look();
+    expect(pulls()).toBe(before + 3);
+    expect((await githubSaid(w)).quiet).toEqual({ core: null, search: null });
+  });
+
   test("turned away for calling too often is not refused for the hour: the laptop does it meanwhile, and this side tries again in five minutes", async () => {
     const w = await primary();
     const health = async () =>
@@ -4595,6 +4840,146 @@ describe("the edge does the core itself", () => {
       held: true,
       result: null,
     });
+  });
+
+  test("an older held action the laptop never took is done here first, under its own name", async () => {
+    const w = await primary();
+    const comment = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+    // This side is turned away for comments, so the older one waits.
+    w.ghRefuses.push(comment);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const olderId = "0f000000-0000-4000-8000-000000000001";
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older" }, olderId)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    // The token is put right and this side takes comments back.
+    w.ghRefuses.length = 0;
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    // A newer comment about the same issue: the older one the laptop
+    // never took is done here first, under its own name, then the newer.
+    const newerId = "0f000000-0000-4000-8000-000000000002";
+    const second = await w.act("issue.comment", { issue: 7, text: "newer" }, newerId);
+    const done = (await second.json()) as { ok?: boolean; held?: boolean };
+    expect(done).toMatchObject({ ok: true });
+    expect(done.held).toBeUndefined();
+    const posted = w.githubCalls
+      .filter((c) => comment(c.method, c.url))
+      .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
+    // The refused first try is recorded too: the two that count come last, in order.
+    expect(posted.slice(-2)).toEqual(["older", "newer"]);
+    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
+    expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
+    expect(w.stored.get("handed") ?? []).toEqual([]);
+  });
+
+  test("a held rank is replaced by a newer rank about the same issue: the last one wins", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/201\/labels$/.test(url);
+    // This side is turned away for labelling, so the older rank waits.
+    w.ghRefuses.push(labels);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const olderId = "0f000000-0000-4000-8000-000000000011";
+    expect(await (await w.act("issue.rank", { issue: 201, rank: "next" }, olderId)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
+    // The token is put right and this side takes ranking back.
+    w.ghRefuses.length = 0;
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    // A newer rank about the same issue: the older one is dropped as
+    // replaced, and only the newer is done.
+    const newerId = "0f000000-0000-4000-8000-000000000012";
+    const second = await w.act("issue.rank", { issue: 201, rank: "now" }, newerId);
+    expect(await second.json()).toMatchObject({ ok: true });
+    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(w.stored.get(`a:${olderId}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 409 });
+    expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.rank", state: "done" });
+    expect(w.ghLabels[201]).toContain("now");
+    expect(w.ghLabels[201]).not.toContain("next");
+  });
+
+  test("an older held action handed to the laptop blocks a newer one about the same thing", async () => {
+    const w = await primary();
+    const comment = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+    // This side is turned away for comments, so the older one waits.
+    w.ghRefuses.push(comment);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const olderId = "0f000000-0000-4000-8000-000000000021";
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older" }, olderId)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    // The token is put right and this side takes comments back.
+    w.ghRefuses.length = 0;
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    // The laptop reports and is handed the older one, which it does.
+    await w.hostReads();
+    const answer = await w.link.now.once();
+    expect(answer?.commands.map((c) => c.id)).toEqual([olderId]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    expect(w.stored.get("handed")).toEqual([olderId]);
+    // A newer comment about the same issue waits behind the handed one:
+    // it is kept, not done here.
+    const newerId = "0f000000-0000-4000-8000-000000000022";
+    const second = await w.act("issue.comment", { issue: 7, text: "newer" }, newerId);
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null });
+    expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
+    // Nothing was done here: the laptop did the older, the newer waits.
+    // The only call this side made was the older one's refused try.
+    expect(
+      w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body),
+    ).toEqual(['{"body":"older"}']);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
+  test("a newer action about something else is not held behind an older one", async () => {
+    const w = await primary();
+    const comment = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+    // This side is turned away for comments, so the older one waits.
+    w.ghRefuses.push(comment);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const olderId = "0f000000-0000-4000-8000-000000000031";
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older" }, olderId)).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    // The token is put right and this side takes comments back.
+    w.ghRefuses.length = 0;
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    // A newer comment about another issue goes straight through.
+    const newerId = "0f000000-0000-4000-8000-000000000032";
+    const second = await w.act("issue.comment", { issue: 8, text: "unrelated" }, newerId);
+    const done = (await second.json()) as { ok?: boolean; held?: boolean };
+    expect(done).toMatchObject({ ok: true });
+    expect(done.held).toBeUndefined();
+    expect((w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue)).toEqual([
+      7,
+    ]);
+    const posted = w.githubCalls
+      .filter((c) => comment(c.method, c.url))
+      .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
+    expect(posted.slice(-1)).toEqual(["unrelated"]);
+    expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
   });
 });
 

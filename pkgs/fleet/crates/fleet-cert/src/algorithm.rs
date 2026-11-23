@@ -305,7 +305,11 @@ mod tests {
         let (list, _) = parse_algorithm_list("rsa,rsa,ed25519").unwrap();
         assert_eq!(
             list,
-            [AlgorithmId::Rsa4096, AlgorithmId::Rsa4096, AlgorithmId::Ed25519]
+            [
+                AlgorithmId::Rsa4096,
+                AlgorithmId::Rsa4096,
+                AlgorithmId::Ed25519
+            ]
         );
     }
 }

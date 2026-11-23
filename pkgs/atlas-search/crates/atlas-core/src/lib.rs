@@ -133,10 +133,10 @@ pub use manifest::{
     LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
     parse_manifest_rows,
 };
+pub use occurrences::{ChunkOccurrence, lookup_by_hash};
 pub use owner_inventory::{
     INVENTORY_FORMAT, OwnerInventory, OwnerInventoryFinding, PatternClass, SECRET_REFERENCE_ENV,
 };
-pub use occurrences::{ChunkOccurrence, lookup_by_hash};
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
     run_get_chunk_with_context, run_search, run_search_traced, run_search_with_executor,

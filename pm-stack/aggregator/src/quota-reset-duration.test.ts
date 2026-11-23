@@ -129,10 +129,7 @@ describe("deriveResetDurationRecords — degenerate jitter widens to the observa
     // them: every midpoint estimate lands on the published
     // instant, so the raw spread is zero.
     const obs = history([-19.75, -14.75, -9.75, -4.75, 6], [0, 0, 0, 0], -22, -0.5);
-    const records = deriveResetDurationRecords(
-      fforecast({ claude: [fpool([fwindow()])] }),
-      new Map([[KEY, obs]]),
-    );
+    const records = deriveResetDurationRecords(fforecast({ claude: [fpool([fwindow()])] }), new Map([[KEY, obs]]));
     expect(records).toHaveLength(1);
     const p = records[0].prediction;
     expect(records[0].state).toBe("predicted");
@@ -146,15 +143,18 @@ describe("deriveResetDurationRecords — degenerate jitter widens to the observa
 describe("deriveResetDurationRecords — subjects", () => {
   test("only walled and near-wall windows publish; the projected wall rides in the detail", () => {
     const windows = [
-      fwindow({ name: "5-hour", state: "projected", projectedWallAt: Date.parse(at(2)), durationUntilWallMs: 2 * H, pctNow: 92 }),
+      fwindow({
+        name: "5-hour",
+        state: "projected",
+        projectedWallAt: Date.parse(at(2)),
+        durationUntilWallMs: 2 * H,
+        pctNow: 92,
+      }),
       fwindow({ name: "7d", state: "projected", wallsBeforeReset: false, projectedWallAt: Date.parse(at(30)) }),
       fwindow({ name: "monthly", state: "no-wall-before-reset", wallsBeforeReset: false }),
       fwindow({ name: "api", state: "insufficient-history", wallsBeforeReset: null, pctNow: null }),
     ];
-    const records = deriveResetDurationRecords(
-      fforecast({ claude: [fpool(windows)] }),
-      new Map([[KEY, JITTERED]]),
-    );
+    const records = deriveResetDurationRecords(fforecast({ claude: [fpool(windows)] }), new Map([[KEY, JITTERED]]));
     expect(records).toHaveLength(1);
     expect(records[0].subject.window).toBe("5-hour");
     expect(records[0].state).toBe("predicted");
@@ -174,10 +174,7 @@ describe("deriveResetDurationRecords — honesty states", () => {
 
   test("a single observed period measures no jitter: insufficient_history", () => {
     const obs = history([6], [], -4, -0.5);
-    const records = deriveResetDurationRecords(
-      fforecast({ claude: [fpool([fwindow()])] }),
-      new Map([[KEY, obs]]),
-    );
+    const records = deriveResetDurationRecords(fforecast({ claude: [fpool([fwindow()])] }), new Map([[KEY, obs]]));
     expect(records).toHaveLength(1);
     expect(records[0].state).toBe("insufficient_history");
     expect(records[0].prediction).toBeNull();
@@ -281,10 +278,7 @@ describe("deriveResetDurationRecords — null-reset readings across a rollover",
       { ts: at(-4), resetsAt: at(0) },
       { ts: at(-3), resetsAt: at(0) },
     ];
-    const records = deriveResetDurationRecords(
-      fforecast({ claude: [fpool([fwindow()])] }),
-      new Map([[KEY, obs]]),
-    );
+    const records = deriveResetDurationRecords(fforecast({ claude: [fpool([fwindow()])] }), new Map([[KEY, obs]]));
     expect(records).toHaveLength(1);
     const r = records[0];
     expect(r.state).toBe("predicted");

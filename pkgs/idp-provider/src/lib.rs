@@ -6,6 +6,14 @@
 //! completing the authorization-code + PKCE (S256) flow, signed
 //! RS256 with the Slice 2 OIDC private key.
 //!
+//! The federated doors (#13411 GitHub, #13412 Google, #13414
+//! Microsoft) hang off `/door/{name}/start|callback` and link into
+//! the same account row; link state lives in the runtime identity
+//! store (#13415), seeded from the provider config. Signing keys
+//! are a set (Slice 5 rollover): the JWKS can publish several
+//! certificates at once, tokens are signed with the configured
+//! active kid, and verification accepts every published kid.
+//!
 //! The JWKS `kid` is the certificate's SHA-256 thumbprint in
 //! base64url form — the `x5t#S256` convention recorded on #13686 — so
 //! relying parties can pin either form. The private key is loaded
@@ -19,21 +27,27 @@
 //! path; SSO never rebinds an id key (#2060).
 
 pub mod audit;
+pub mod doors;
 pub mod flow;
+pub mod identities;
 pub mod registry;
 pub mod signing;
+pub mod upstream;
+pub mod verify;
 
 use audit::AuditLog;
-use axum::{routing::get, Json, Router};
-use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
+use axum::{Json, Router, routing::get};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64_STD};
 use der::Decode;
 use flow::FlowState;
+use identities::IdentityStore;
 use pkcs1::DecodeRsaPublicKey;
-use rsa::{traits::PublicKeyParts, RsaPublicKey};
-use serde::Serialize;
+use rsa::{RsaPublicKey, traits::PublicKeyParts};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
+use upstream::DoorRuntime;
 use x509_cert::Certificate;
 
 pub const DEFAULT_ISSUER: &str = "http://127.0.0.1:8911";
@@ -53,9 +67,22 @@ pub struct Config {
     /// (on-host, under `IDP_CA_HOME`). Required when a provider
     /// registry config is set.
     pub signing_key_path: Option<PathBuf>,
+    /// Full certificate list for the JWKS, in order (Slice 5
+    /// rollover: more than one during the overlap). When empty,
+    /// `oidc_cert_path` alone is used.
+    pub oidc_cert_paths: Vec<PathBuf>,
+    /// Full signing-key list, parallel to `oidc_cert_paths`. When
+    /// empty, `signing_key_path` alone is used.
+    pub signing_key_paths: Vec<PathBuf>,
+    /// The `kid` new tokens are signed with, when the key set
+    /// holds several. Default: the first certificate's kid.
+    pub oidc_active_kid: Option<String>,
     /// Audit DB path override (else the registry config's
     /// `audit_db_path`, else in-memory).
     pub audit_db_path: Option<PathBuf>,
+    /// Identity store DB path override (else the registry config's
+    /// `identity_db_path`, else in-memory).
+    pub identity_db_path: Option<PathBuf>,
 }
 
 impl Config {
@@ -73,6 +100,23 @@ impl Config {
         let audit_db_path = std::env::var("IDP_PROVIDER_AUDIT_DB")
             .map(PathBuf::from)
             .ok();
+        let identity_db_path = std::env::var("IDP_PROVIDER_IDENTITY_DB")
+            .map(PathBuf::from)
+            .ok();
+        let split_paths = |name: &str| -> Vec<PathBuf> {
+            std::env::var(name)
+                .map(|v| {
+                    v.split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(PathBuf::from)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let oidc_cert_paths = split_paths("IDP_PROVIDER_OIDC_CERTS");
+        let signing_key_paths = split_paths("IDP_PROVIDER_OIDC_KEYS");
+        let oidc_active_kid = std::env::var("IDP_PROVIDER_OIDC_ACTIVE_KID").ok();
         Config {
             issuer: issuer.trim_end_matches('/').to_string(),
             bind,
@@ -80,6 +124,10 @@ impl Config {
             provider_config_path,
             signing_key_path,
             audit_db_path,
+            identity_db_path,
+            oidc_cert_paths,
+            signing_key_paths,
+            oidc_active_kid,
         }
     }
 }
@@ -117,7 +165,7 @@ pub fn cert_thumbprint_sha256(der_bytes: &[u8]) -> String {
     b64url(&Sha256::digest(der_bytes))
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Jwk {
     pub kty: String,
     #[serde(rename = "use")]
@@ -130,15 +178,15 @@ pub struct Jwk {
     pub e: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Jwks {
     pub keys: Vec<Jwk>,
 }
 
-/// Build the JWKS by parsing the configured signing certificate PEM:
-/// extract the RSA public key and set kid = x5t#S256 = the SHA-256
+/// Build one JWK by parsing a signing certificate PEM: extract
+/// the RSA public key and set kid = x5t#S256 = the SHA-256
 /// thumbprint of the certificate DER.
-pub fn jwks_from_cert_pem(pem: &str) -> Result<Jwks, String> {
+pub fn jwk_from_cert_pem(pem: &str) -> Result<Jwk, String> {
     let der_bytes = pem_to_der(pem)?;
     let thumbprint = cert_thumbprint_sha256(&der_bytes);
     let cert = Certificate::from_der(&der_bytes)
@@ -150,7 +198,7 @@ pub fn jwks_from_cert_pem(pem: &str) -> Result<Jwks, String> {
         .ok_or("subject public key bit string is not byte-aligned")?;
     let pubkey = RsaPublicKey::from_pkcs1_der(pk_der)
         .map_err(|e| format!("RSA public key parse failed: {e}"))?;
-    let jwk = Jwk {
+    Ok(Jwk {
         kty: "RSA".to_string(),
         use_: "sig".to_string(),
         alg: "RS256".to_string(),
@@ -158,8 +206,25 @@ pub fn jwks_from_cert_pem(pem: &str) -> Result<Jwks, String> {
         x5t_s256: thumbprint,
         n: b64url(&pubkey.n().to_bytes_be()),
         e: b64url(&pubkey.e().to_bytes_be()),
-    };
-    Ok(Jwks { keys: vec![jwk] })
+    })
+}
+
+/// Build the JWKS from one signing certificate PEM.
+pub fn jwks_from_cert_pem(pem: &str) -> Result<Jwks, String> {
+    Ok(Jwks {
+        keys: vec![jwk_from_cert_pem(pem)?],
+    })
+}
+
+/// Build the JWKS from several signing certificate PEMs — the
+/// rollover overlap shape (Slice 5): every key is published, and
+/// relying parties pick by `kid`.
+pub fn jwks_from_cert_pems(pems: &[&str]) -> Result<Jwks, String> {
+    let mut keys = Vec::new();
+    for pem in pems {
+        keys.push(jwk_from_cert_pem(pem)?);
+    }
+    Ok(Jwks { keys })
 }
 
 #[derive(Clone)]
@@ -232,6 +297,8 @@ pub fn build_app_with_flow(config: Config, jwks: Jwks, flow: Option<Arc<FlowStat
         )
         .route("/token", axum::routing::post(flow::token))
         .route("/userinfo", get(flow::userinfo))
+        .route("/door/{name}/start", get(doors::door_start))
+        .route("/door/{name}/callback", get(doors::door_callback))
         .with_state(state)
 }
 
@@ -244,45 +311,113 @@ pub fn build_app_with_flow(config: Config, jwks: Jwks, flow: Option<Arc<FlowStat
 /// match the published certificate behind the JWKS — any failure is
 /// a startup error, never a degraded provider.
 pub fn app_from_config(config: Config) -> Result<Router, String> {
-    let pem = std::fs::read_to_string(&config.oidc_cert_path).map_err(|e| {
-        format!(
-            "failed to read OIDC signing cert at {}: {e}",
-            config.oidc_cert_path.display()
-        )
-    })?;
-    let jwks = jwks_from_cert_pem(&pem)?;
+    // The served key set: the configured certificate list, or the
+    // single certificate path when no list is configured.
+    let cert_paths: Vec<PathBuf> = if config.oidc_cert_paths.is_empty() {
+        vec![config.oidc_cert_path.clone()]
+    } else {
+        config.oidc_cert_paths.clone()
+    };
+    let mut pems: Vec<String> = Vec::new();
+    for path in &cert_paths {
+        pems.push(std::fs::read_to_string(path).map_err(|e| {
+            format!(
+                "failed to read OIDC signing cert at {}: {e}",
+                path.display()
+            )
+        })?);
+    }
+    let pem_refs: Vec<&str> = pems.iter().map(|s| s.as_str()).collect();
+    let jwks = jwks_from_cert_pems(&pem_refs)?;
 
     let flow = match &config.provider_config_path {
         None => None,
         Some(cfg_path) => {
             let registry = registry::ProviderConfig::load(cfg_path)?;
-            let key_path = config
-                .signing_key_path
-                .clone()
-                .ok_or("IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set")?;
+            // The key list is parallel to the certificate list;
+            // with no list configured it is the single key path.
+            let key_paths: Vec<PathBuf> =
+                if !config.signing_key_paths.is_empty() {
+                    config.signing_key_paths.clone()
+                } else {
+                    vec![config.signing_key_path.clone().ok_or(
+                        "IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set",
+                    )?]
+                };
+            if key_paths.len() != cert_paths.len() {
+                return Err(format!(
+                    "signing key count ({}) does not match certificate count ({})",
+                    key_paths.len(),
+                    cert_paths.len()
+                ));
+            }
             let passphrase = std::env::var("IDP_CA_PASSPHRASE").map_err(|_| {
                 "IDP_CA_PASSPHRASE is not set (the launcher fetches it from the vault by name into process memory)"
             })?;
-            let key = signing::load_signing_key(&key_path, &passphrase)?;
-            let signer = signing::TokenSigner::new(key, jwks.keys[0].kid.clone());
-            // Prove the loaded private key is the published cert's
-            // key before serving anything.
-            let (n, e) = signer.public_components();
-            if b64url(&n) != jwks.keys[0].n || b64url(&e) != jwks.keys[0].e {
-                return Err(
-                    "loaded signing key does not match the published OIDC signing certificate"
-                        .to_string(),
-                );
+            // Load every key and prove each one matches the
+            // published certificate at the same position before
+            // serving anything.
+            let mut pairs: Vec<(rsa::RsaPrivateKey, String)> = Vec::new();
+            for (i, key_path) in key_paths.iter().enumerate() {
+                let key = signing::load_signing_key(key_path, &passphrase)?;
+                let kid = jwks.keys[i].kid.clone();
+                let probe = signing::TokenSigner::new(key.clone(), kid.clone());
+                let (n, e) = probe.public_components();
+                if b64url(&n) != jwks.keys[i].n || b64url(&e) != jwks.keys[i].e {
+                    return Err(format!(
+                        "loaded signing key {} does not match its published OIDC signing certificate",
+                        key_path.display()
+                    ));
+                }
+                pairs.push((key, kid));
             }
+            let active_kid = config
+                .oidc_active_kid
+                .clone()
+                .unwrap_or_else(|| jwks.keys[0].kid.clone());
+            let signer = signing::TokenSigner::from_keys(pairs, &active_kid)?;
             let audit_path = config
                 .audit_db_path
                 .clone()
                 .or_else(|| registry.audit_db_path.clone());
             let audit = Arc::new(AuditLog::open(audit_path.as_deref())?);
+            let identity_path = config
+                .identity_db_path
+                .clone()
+                .or_else(|| registry.identity_db_path.clone());
+            let identities = Arc::new(IdentityStore::open(identity_path.as_deref())?);
+            // Resolve each door's client secret from the
+            // environment variable its config names (the launcher
+            // fills it from the vault by name). A door without its
+            // secret — or an OIDC door without issuer/JWKS — stays
+            // disabled: its start endpoint denies with an audit
+            // record, and the rest of the provider is unaffected.
+            let doors: Vec<DoorRuntime> = registry
+                .doors
+                .iter()
+                .map(|d| {
+                    let secret = std::env::var(&d.client_secret_env)
+                        .ok()
+                        .filter(|s| !s.is_empty());
+                    let rt = DoorRuntime {
+                        config: d.clone(),
+                        client_secret: secret,
+                    };
+                    if !rt.enabled() {
+                        eprintln!(
+                            "idp-provider: door {} disabled (secret env {} unset or OIDC issuer/JWKS unconfigured)",
+                            d.name, d.client_secret_env
+                        );
+                    }
+                    rt
+                })
+                .collect();
             Some(Arc::new(FlowState::new(
                 registry,
                 signer,
                 audit,
+                identities,
+                doors,
                 config.issuer.clone(),
             )))
         }

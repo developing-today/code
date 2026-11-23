@@ -156,6 +156,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     placementGuardEnabled: /^(1|true|yes)$/i.test(env.PM_DISPATCH_PLACEMENT_GUARD?.trim() ?? ""),
     placementRecordExecutable: s(env.PM_DISPATCH_PLACEMENT_RECORD, "placement-record"),
     placementPolicyFile: s(env.PM_DISPATCH_PLACEMENT_POLICY, ""),
-    quotaCurrentFile: s(env.QUOTA_CURRENT_PATH, join(homedir(), ".local", "state", "pm-aggregator", "quota-current.json")),
+    quotaCurrentFile: s(
+      env.QUOTA_CURRENT_PATH,
+      join(homedir(), ".local", "state", "pm-aggregator", "quota-current.json"),
+    ),
   };
 }

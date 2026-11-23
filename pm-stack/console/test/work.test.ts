@@ -768,6 +768,25 @@ describe("the state kept ready", () => {
     expect(body.health.board).toEqual({ ok: false, error: "source is down" });
     expect(after.etag).not.toBe(good.etag);
     expect(after.asOf).toBe(now - 1_000); // the board is a second past its interval
+    // Two times travel with it: when the board was last tried, which the failed try moved
+    // on, and when what is shown of it was read, which it did not.
+    const wasRead = new Date(now - 11_000).toISOString();
+    expect([body.read.board, body.good.board]).toEqual([new Date(now).toISOString(), wasRead]);
+    expect(JSON.parse(good.body).good.board).toBe(wasRead);
+    // Tried again and failing again an hour on, the copy is as old as it is, not as the try.
+    now += 3_600_000;
+    await docs.refresh("board");
+    const later = JSON.parse((await docs.doc("core")).body);
+    expect([later.read.board, later.good.board]).toEqual([new Date(now).toISOString(), wasRead]);
+    // Read again, both are now.
+    s.break(false);
+    now += 11_000;
+    await docs.refresh("board");
+    const mended = JSON.parse((await docs.doc("core")).body);
+    expect([mended.read.board, mended.good.board]).toEqual([new Date(now).toISOString(), new Date(now).toISOString()]);
+    // A section never read has neither.
+    const never = new Docs(all({ ttlMs: 10_000, load: async () => new Promise(() => {}) }), () => now);
+    expect(never.goodAt("board")).toBe(0);
   });
 
   test("a copy kept from before is shown at once and read again behind the same answer", async () => {
@@ -1026,7 +1045,9 @@ describe("the interface's endpoints", () => {
     expect(await second.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 }, again: true });
     expect(moves()).toBe(1);
     // Its record of what was done carries the name, once.
-    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { id: string; status: string }[] };
+    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as {
+      acts: { id: string; status: string }[];
+    };
     expect(core.acts.map((a: { id: string; status: string }) => [a.id, a.status])).toEqual([[id, "done"]]);
     // With nowhere to write names down, an action is done as often as it is asked: as it always was.
     const bare = deps();
@@ -1232,7 +1253,9 @@ describe("the interface's endpoints", () => {
       ["need.comment", "done", { ref: `${REPO}#5` }],
     ]);
     expect(JSON.stringify(audited)).not.toContain("private words");
-    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { kind: string; status: string }[] };
+    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as {
+      acts: { kind: string; status: string }[];
+    };
     expect(core.acts.map((a: { kind: string; status: string }) => [a.kind, a.status])).toEqual([
       ["need.comment", "done"],
       ["task.move", "done"],
@@ -1250,7 +1273,9 @@ describe("the interface's endpoints", () => {
       expect((await handle(post("/console/api/act", body), d)).status).toBe(400);
     }
     expect(w.calls.length).toBe(before);
-    const failed = ((await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { kind: string; status: string }[] }).acts[0];
+    const failed = (
+      (await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { kind: string; status: string }[] }
+    ).acts[0];
     expect([failed.kind, failed.status]).toEqual(["task.move", "failed"]);
     await expect(perform(actions(w.ops, new Work(w.ops)), deps().docs, "__proto__", {})).rejects.toThrow(
       /not an action/,

@@ -46,7 +46,7 @@ Governing decisions consumed, not re-opened:
   component). This slice names the append seam it writes through and
   invents no second journal.
 - **AUTH-05** (#9208): owns the trusted principal/provenance record in
-  `src/work/authority.rs`. Attribution *of activity to a Fleet session*
+  `src/work/authority.rs`. Attribution _of activity to a Fleet session_
   is HYD-07's ([#9509](https://github.com/developing-today/code/issues/9509),
   design record merged 2026-11-23); this slice records external
   observations and never claims session attribution.
@@ -122,14 +122,14 @@ and that is exactly the failure this slice exists to prevent.
 Each item and each observation carries these, kept distinct
 (FDR-PMO-004):
 
-| Time | Meaning | Trust |
-| --- | --- | --- |
-| `occurred_at` | when the source says the event happened (comment `created_at`, commit author/committer time) | source-claimed |
-| `source_updated_at` | the source's own last-modified marker (`updated_at`, `edited_at`) | source-claimed; **not** a cursor |
-| `observed_at` | when Fleet's ingestion durably saw this item | Fleet-authoritative |
-| `first_observed_at` | `observed_at` of the observation that first created the record | Fleet-authoritative |
+| Time                | Meaning                                                                                      | Trust                            |
+| ------------------- | -------------------------------------------------------------------------------------------- | -------------------------------- |
+| `occurred_at`       | when the source says the event happened (comment `created_at`, commit author/committer time) | source-claimed                   |
+| `source_updated_at` | the source's own last-modified marker (`updated_at`, `edited_at`)                            | source-claimed; **not** a cursor |
+| `observed_at`       | when Fleet's ingestion durably saw this item                                                 | Fleet-authoritative              |
+| `first_observed_at` | `observed_at` of the observation that first created the record                               | Fleet-authoritative              |
 
-`source_updated_at` orders *observations of edits* and is evidence; it
+`source_updated_at` orders _observations of edits_ and is evidence; it
 is never used as a high-water mark or a cursor (HYD-05 §8: legacy
 `last_checked_at` is not trusted, and no timestamp is a continuation).
 `observed_at` is the only time Fleet asserts on its own authority, and
@@ -151,7 +151,7 @@ observation stays addressable and unchanged, and a current-item
 projection selects the newest valid observation (§3).
 
 Digests make equality cheap and deterministic; they are never treated
-as proof of *what* changed, only of *whether* the body-of-record
+as proof of _what_ changed, only of _whether_ the body-of-record
 changed. Fields outside the digest (for example, a label the endpoint
 returns inconsistently) must be listed as such in the implementation
 issue rather than silently excluded.
@@ -191,9 +191,9 @@ marker happens to be unchanged.
   `visibility`, and `before`/`after` refs.
 
 There is one journal and one activity store, not two. The append seam
-is the JRN-01 event append; this slice owns the *payload kind and the
-revision rule*, JRN-01 owns *the envelope and its correction
-semantics*. A revision is an append of a new event that references the
+is the JRN-01 event append; this slice owns the _payload kind and the
+revision rule_, JRN-01 owns _the envelope and its correction
+semantics_. A revision is an append of a new event that references the
 prior activity observation (`supersedes_event_id`-style ref is used for
 journal corrections; activity revisions carry
 `supersedes_observation_id` and never rewrite the prior observation).
@@ -244,11 +244,11 @@ mechanisms**, neither of which alone is a completeness proof:
 **Overlap is not proof.** A bounded overlap window is a probability
 reduction, not a guarantee: an edit older than the window, or one whose
 marker the source does not bump, is invisible to the sweep. The design
-therefore states per resource/endpoint whether the source *can* expose
+therefore states per resource/endpoint whether the source _can_ expose
 "changed since" and with what lag; where it cannot, that endpoint
 carries a declared **coverage limitation**, and reconciliation cadence
 is the only mitigation. A `changes` result must render a
-coverage-limited endpoint as "no *observed* changes", never as "no
+coverage-limited endpoint as "no _observed_ changes", never as "no
 changes".
 
 Shifting pages are expected (HYD-05 §4): an insertion during a
@@ -336,15 +336,15 @@ Reference model asserts:
 
 ### 7.2 Negative fixtures
 
-| Case | Expected behavior |
-| --- | --- |
-| Edit behind creation cursor (the two named tests) | One item, new revision, appended observation; replay is a no-op |
-| Equal `updated_at` on distinct edits | Digest decides; any real content change is a revision, marker equality alone never hides it |
-| Shifting pages during walk | Re-presentation dedupes; no item skipped; no duplicate creation |
-| Absent deletion (item disappears, no source statement) | No tombstone inferred; `deletion_visibility: gap` reported for that endpoint |
-| Authoritative deletion/minimize event | `tombstoned`/`minimized` observation appended; prior observations and identity retained |
-| Minimized then restored | `restored` observation appended; item remains one logical item |
-| Repeat page / duplicate delivery | Repeat ingestion is a no-op beyond the ingest record; webhook delivery ID deduped separately from resource revision |
+| Case                                                   | Expected behavior                                                                                                            |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| Edit behind creation cursor (the two named tests)      | One item, new revision, appended observation; replay is a no-op                                                              |
+| Equal `updated_at` on distinct edits                   | Digest decides; any real content change is a revision, marker equality alone never hides it                                  |
+| Shifting pages during walk                             | Re-presentation dedupes; no item skipped; no duplicate creation                                                              |
+| Absent deletion (item disappears, no source statement) | No tombstone inferred; `deletion_visibility: gap` reported for that endpoint                                                 |
+| Authoritative deletion/minimize event                  | `tombstoned`/`minimized` observation appended; prior observations and identity retained                                      |
+| Minimized then restored                                | `restored` observation appended; item remains one logical item                                                               |
+| Repeat page / duplicate delivery                       | Repeat ingestion is a no-op beyond the ingest record; webhook delivery ID deduped separately from resource revision          |
 | Changed body with unchanged digest-covered fields only | Implementation issue must name digest-covered fields; the fixture pins the expected behavior explicitly, no silent exclusion |
 
 No mock-only claim of deployed or live behavior: the oracle runs
@@ -408,15 +408,15 @@ Full per-occurrence text for every allocated ID is in
 this table records only which part of this design speaks to each
 group — it claims design coverage, not implementation.
 
-| IDs | Where addressed |
-| --- | --- |
-| C-R119, C-R120, C-R121, C-R122 | §2, §4, §6 — per-source cursors and their commit rule (consumed from HYD-05); revisions and observations distinguished from creations |
-| C-R111, C-R112, C-R118 | §3, §8 — the activity/changes read surface and its additive outcomes |
-| C-R005, C-R009, C-R107, C-R108 | §4, §5 — changed-item detection over the existing list surfaces; deletion/minimize evidence |
-| C-R150, C-R151 | §2, §6, §8 — durable provenance/times and legacy-cursor treatment |
-| H-R014, H-R016, H-R017, H-R024, H-R031 | §7, §8, §9 — oracle, compatibility, gates carried into the implementation issue |
-| O-R022, O-R023, O-R028, O-R030, O-R049, O-R050 | §4, §5, §7 — candidate/example occurrences behind overlap-not-proof, deletion gap, and the negative fixtures |
-| P-R009, P-R012, P-R015, P-R016, P-R018, P-R027, P-R039, P-R050, P-R051, P-R065, P-R066 | §2, §3, §6 — proposal occurrences behind the record model, the journal seam, and the atomic commit |
+| IDs                                                                                    | Where addressed                                                                                                                       |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| C-R119, C-R120, C-R121, C-R122                                                         | §2, §4, §6 — per-source cursors and their commit rule (consumed from HYD-05); revisions and observations distinguished from creations |
+| C-R111, C-R112, C-R118                                                                 | §3, §8 — the activity/changes read surface and its additive outcomes                                                                  |
+| C-R005, C-R009, C-R107, C-R108                                                         | §4, §5 — changed-item detection over the existing list surfaces; deletion/minimize evidence                                           |
+| C-R150, C-R151                                                                         | §2, §6, §8 — durable provenance/times and legacy-cursor treatment                                                                     |
+| H-R014, H-R016, H-R017, H-R024, H-R031                                                 | §7, §8, §9 — oracle, compatibility, gates carried into the implementation issue                                                       |
+| O-R022, O-R023, O-R028, O-R030, O-R049, O-R050                                         | §4, §5, §7 — candidate/example occurrences behind overlap-not-proof, deletion gap, and the negative fixtures                          |
+| P-R009, P-R012, P-R015, P-R016, P-R018, P-R027, P-R039, P-R050, P-R051, P-R065, P-R066 | §2, §3, §6 — proposal occurrences behind the record model, the journal seam, and the atomic commit                                    |
 
 ## 11. Non-goals
 

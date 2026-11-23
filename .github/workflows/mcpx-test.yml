@@ -574,7 +574,19 @@ jobs:
   ci-ok:
     name: "mcpx-test ci-ok"
     needs:
-      [init, unit, lint, plugin-ts, e2e, nix-e2e, e2e-host-linux-arm64, e2e-no-deno, container-e2e, remote-smoke, remote-e2e]
+      [
+        init,
+        unit,
+        lint,
+        plugin-ts,
+        e2e,
+        nix-e2e,
+        e2e-host-linux-arm64,
+        e2e-no-deno,
+        container-e2e,
+        remote-smoke,
+        remote-e2e,
+      ]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10

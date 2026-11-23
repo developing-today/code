@@ -51,14 +51,9 @@ async function accessJwt(claims: Record<string, unknown>): Promise<string> {
     exp: Math.floor(Date.now() / 1000) + 600,
     ...claims,
   };
-  const encode = (obj: unknown) =>
-    base64urlEncode(new TextEncoder().encode(JSON.stringify(obj)));
+  const encode = (obj: unknown) => base64urlEncode(new TextEncoder().encode(JSON.stringify(obj)));
   const signingInput = `${encode(header)}.${encode(payload)}`;
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    privateKey,
-    new TextEncoder().encode(signingInput),
-  );
+  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", privateKey, new TextEncoder().encode(signingInput));
   return `${signingInput}.${base64urlEncode(new Uint8Array(signature))}`;
 }
 

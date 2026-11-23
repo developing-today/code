@@ -1,8 +1,10 @@
-//! # ID - Peer-to-Peer File Sharing with Iroh
+//! # ID — peer-to-peer platform and Rust facade
 //!
-//! `id` is a peer-to-peer file sharing tool and library built on the [Iroh](https://iroh.computer)
-//! networking stack. It provides content-addressed blob storage with human-readable naming via tags,
-//! enabling secure, decentralized file sharing between peers.
+//! `id` is a peer-to-peer platform and Rust facade built on the
+//! [Iroh](https://iroh.computer) networking stack. Its workspace includes
+//! content-addressed file sharing, a sandboxed world runtime, directory,
+//! group, sync, currency, and optional web layers. The command application
+//! is implemented by `id-cli`; this facade preserves the public `id::` paths.
 //!
 //! ## Overview
 //!
@@ -22,10 +24,10 @@
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
 //! │                         CLI / REPL                              │
-//! │  (main.rs - command dispatch, repl/runner.rs - interactive)    │
+//! │          id-cli command layer (facade re-exports)                │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │                      Command Handlers                           │
-//! │  put.rs │ get.rs │ find.rs │ list.rs │ serve.rs │ id.rs │ tag.rs│
+//! │   commands, protocol, store, tags, worlds, directory, sync       │
 //! ├─────────────────────────────────────────────────────────────────┤
 //! │              Protocol Layer (protocol.rs)                       │
 //! │  MetaRequest/Response │ FindMatch │ MetaProtocol               │
@@ -41,15 +43,12 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## Modules
+//! ## Facade modules
 //!
-//! - [`cli`] - Command-line argument parsing with clap
-//! - [`commands`] - Command implementations (put, get, find, list, serve, tag, etc.)
-//! - [`protocol`] - Network protocol types for metadata exchange
-//! - [`store`] - Blob storage and keypair management
-//! - [`tags`] - Metadata tag storage using iroh-docs CRDT documents
-//! - [`repl`] - Interactive REPL with shell-like features
-//! - [`helpers`] - Utility functions for parsing and formatting
+//! The root crate contains platform services and re-exports modules from
+//! workspace members, including `id-cli`, `id-core`, `id-caps`, `id-sync`,
+//! `id-worlds`, `id-directory`, and `id-web` (feature-gated). The facade's
+//! `cli`, `commands`, and `repl` paths are provided by `id-cli`.
 //!
 //! ## Signing contract — sign only what receipt would accept
 //!

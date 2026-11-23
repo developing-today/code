@@ -47,13 +47,35 @@
 //! calling [`ConversionVerifier::record_posted`]; verification
 //! itself never commits.
 //!
-//! Scope boundary: this module verifies; it does not settle.
-//! Composing the verified conversion into the linked transfer
-//! chain and wiring this flow into the gateway service's
-//! request pipeline is the execution slice (#3802) — the F3
-//! `Convert` op carries no authorisation reference, so the
-//! submission shape here (presented chain objects plus named
-//! liquidity accounts) is the input that slice will adapt.
+//! **Quotes (#3802, Phase 3 of #2290).** The gateway also
+//! issues short-lived quotes against a verified submission
+//! ([`ConversionVerifier::issue_quote`]): a control-plane
+//! record — not a graph object — pinning the folded
+//! authorisation's version and event hash, the amount `x`,
+//! the scale-aware `computed_y` (the pure layer's
+//! [`crate::conversion::convert_amount`]: exact integer
+//! rational, floored in the LP's favour), the fee, and a
+//! 60-second lifetime (#2063 §2.2). A submission that
+//! executes under a quote
+//! ([`ConversionVerifier::verify_quoted`]) must reference an
+//! unexpired quote and re-runs every check above at
+//! submission time; a re-issued (new version) or revoked
+//! authorisation never silently satisfies an old quote —
+//! the version/event-hash pin is compared against the fresh
+//! fold and any mismatch fails pre-flight. Execution under
+//! a quote pays exactly the quoted `computed_y` and fee.
+//! Issuance commits no usage: a quote is not a posting, and
+//! the cap is re-checked by the submission's own live-state
+//! checks.
+//!
+//! Scope boundary: this module verifies and quotes; it does
+//! not settle. Composing the verified conversion into the
+//! linked transfer chain and wiring this flow into the
+//! gateway service's request pipeline is the execution
+//! programme beyond #3802 — the F3 `Convert` op carries no
+//! authorisation reference, so the submission shape here
+//! (presented chain objects plus named liquidity accounts)
+//! is the input that work will adapt.
 
 use std::collections::BTreeMap;
 
@@ -65,6 +87,7 @@ use super::{
     RateAuthorisation, RateAuthorisationRevoke, fold_authorisation,
 };
 use crate::chain::{self, Event};
+use crate::conversion::{convert_amount, fee_amount};
 use crate::hosted_binding::hex_encode;
 
 /// The liquidity-provider tiers of #2063 §2.3. Either tier is
@@ -368,6 +391,34 @@ pub enum FailedPreSubmit {
     /// than treating as a free conversion).
     #[error("amount does not convert to a positive destination amount")]
     UnconvertibleAmount,
+    /// Quoted submissions (#3802): no quote with the referenced
+    /// id has been issued by this gateway.
+    #[error("no quote with this id has been issued")]
+    UnknownQuote,
+    /// Quoted submissions (#3802): the referenced quote's
+    /// lifetime has elapsed at submission time.
+    #[error("quote expired at {quote_expires_at}")]
+    QuoteExpired {
+        /// The quote's expiry (unix seconds).
+        quote_expires_at: u64,
+    },
+    /// Quoted submissions (#3802): the quote was issued for a
+    /// different authorisation, or for a different amount, than
+    /// the submission carries — an altered quote reference
+    /// cannot be executed.
+    #[error("submission does not match the quote it references")]
+    QuoteMismatch,
+    /// Quoted submissions (#3802): the authorisation has been
+    /// re-issued since the quote was issued — the live fold is
+    /// a different version, or a different event, than the one
+    /// the quote pins, so the quote no longer binds.
+    #[error("quote pins authorisation version {quoted_version}, but version {live_version} is live")]
+    QuoteStale {
+        /// The version the quote was issued against.
+        quoted_version: u64,
+        /// The version the submission-time fold stands at.
+        live_version: u64,
+    },
 }
 
 impl FailedPreSubmit {
@@ -399,6 +450,106 @@ pub struct VerifiedConversion {
     /// The volume left under the authorisation's cap after this
     /// conversion posts.
     pub remaining_volume: u128,
+}
+
+/// The lifetime of an issued quote, in seconds (#2063 §2.2,
+/// adopted by the #2290 design record).
+pub const QUOTE_LIFETIME_SECS: u64 = 60;
+
+/// A gateway-issued quote (#3802): a short-lived control-plane
+/// record — not a graph object — pinning one authorisation
+/// version, by its event hash, to one amount and the exact
+/// destination amount and fee a conversion under it executes
+/// with. The version + event-hash pin is the binding: a
+/// re-issued or revoked authorisation never silently
+/// satisfies an old quote, because execution re-runs the
+/// live-state checks and compares the fresh fold against
+/// this pin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConversionQuote {
+    /// The quote's control-plane id (gateway-generated, unique
+    /// in the gateway's store).
+    pub quote_id: u128,
+    /// The authorisation the quote was issued against.
+    pub authorisation_id: u128,
+    /// The folded version of that authorisation at issuance.
+    pub authorisation_version: u64,
+    /// The operation id (BLAKE3 over the signed header bytes)
+    /// of the presented authorisation event that folded live
+    /// at issuance.
+    pub authorisation_event_hash: Hash,
+    /// The source amount quoted, in source-ledger units.
+    pub x: u128,
+    /// The destination amount at issuance: the scale-aware
+    /// integer-rational rule, floored in the LP's favour.
+    pub computed_y: u128,
+    /// The fee at issuance, in source-ledger units: `floor(x ·
+    /// fee_bps / 10_000)`, or zero when the authorisation
+    /// carries no fee.
+    pub fee: u128,
+    /// When the gateway issued the quote (unix seconds).
+    pub issued_at: u64,
+    /// `issued_at + QUOTE_LIFETIME_SECS`; no execution at or
+    /// after this time.
+    pub quote_expires_at: u64,
+}
+
+impl ConversionQuote {
+    /// Whether the quote's lifetime has elapsed at `now`.
+    #[must_use]
+    pub const fn is_expired(&self, now: u64) -> bool {
+        now >= self.quote_expires_at
+    }
+}
+
+/// A conversion verified against the quote it executes
+/// under (#3802): the quote itself, whose `computed_y` and
+/// `fee` are the exact amounts the execution layer must use,
+/// plus the submission-time verification facts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedQuotedConversion {
+    /// The quote the submission referenced and was bound to.
+    pub quote: ConversionQuote,
+    /// The LP tier the issuer was verified under.
+    pub tier: LpTier,
+    /// The bound source liquidity account (== the named one).
+    pub source_account: u128,
+    /// The bound destination liquidity account (== the named
+    /// one).
+    pub dest_account: u128,
+    /// The volume left under the authorisation's cap after
+    /// this conversion posts.
+    pub remaining_volume: u128,
+}
+
+impl VerifiedQuotedConversion {
+    /// The source amount: exactly the quoted `x`.
+    #[must_use]
+    pub const fn amount(&self) -> u128 {
+        self.quote.x
+    }
+
+    /// The destination amount the execution must pay: exactly
+    /// the quoted `computed_y`, never a recomputation.
+    #[must_use]
+    pub const fn dest_amount(&self) -> u128 {
+        self.quote.computed_y
+    }
+
+    /// The fee the execution must charge: exactly the quoted
+    /// fee, never a recomputation.
+    #[must_use]
+    pub const fn fee(&self) -> u128 {
+        self.quote.fee
+    }
+}
+
+/// A verified submission plus the operation id of the exact
+/// presented authorisation event its fold stands at — the
+/// pin a quote binds to (#3802).
+struct FoldedVerification {
+    verified: VerifiedConversion,
+    authorisation_event_hash: Hash,
 }
 
 /// Gateway-side usage accounting: the volume posted against
@@ -434,15 +585,17 @@ impl ConversionUsage {
 }
 
 /// The gateway's conversion verifier: the verification flow
-/// plus the usage state it reads. One instance is the gateway's
-/// single consult point at submission time.
+/// plus the gateway-side state it reads — the usage book and
+/// the issued-quote book (#3802). One instance is the
+/// gateway's single consult point at submission time.
 #[derive(Clone, Debug, Default)]
 pub struct ConversionVerifier {
     usage: ConversionUsage,
+    quotes: BTreeMap<u128, ConversionQuote>,
 }
 
 impl ConversionVerifier {
-    /// A verifier with an empty usage book.
+    /// A verifier with empty usage and quote books.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -452,6 +605,12 @@ impl ConversionVerifier {
     #[must_use]
     pub const fn usage(&self) -> &ConversionUsage {
         &self.usage
+    }
+
+    /// The quote this gateway issued under `quote_id`, if any.
+    #[must_use]
+    pub fn quote(&self, quote_id: u128) -> Option<&ConversionQuote> {
+        self.quotes.get(&quote_id)
     }
 
     /// Commit posted volume (execution layer only; see
@@ -474,9 +633,25 @@ impl ConversionVerifier {
         control: &impl ConversionControl,
         submission: &ConversionSubmission,
     ) -> Result<VerifiedConversion, FailedPreSubmit> {
+        self.verify_folded(control, submission)
+            .map(|folded| folded.verified)
+    }
+
+    /// [`Self::verify`] plus the operation id of the exact
+    /// presented authorisation event the fold stands at — the
+    /// pin quote issuance binds to (#3802).
+    fn verify_folded(
+        &self,
+        control: &impl ConversionControl,
+        submission: &ConversionSubmission,
+    ) -> Result<FoldedVerification, FailedPreSubmit> {
         // Step 1: chain decode + signature for every presented
         // object; authorisation bodies must name their author.
+        // The event ids are kept alongside the bodies so the
+        // folded live body can be traced back to the exact
+        // presented event that carried it.
         let mut authorisations = Vec::with_capacity(submission.authorisations.len());
+        let mut authorisation_event_ids = Vec::with_capacity(submission.authorisations.len());
         for presented in &submission.authorisations {
             let event = decode_presented(presented, RATE_AUTHORISATION_KIND)?;
             let body = RateAuthorisation::from_body(&presented.body)
@@ -484,6 +659,7 @@ impl ConversionVerifier {
             if super::author_id(&event) != body.issuer_id {
                 return Err(FailedPreSubmit::IssuerMismatch);
             }
+            authorisation_event_ids.push(event.id);
             authorisations.push((super::author_id(&event), body));
         }
         let mut revokes = Vec::with_capacity(submission.revokes.len());
@@ -514,6 +690,18 @@ impl ConversionVerifier {
                 ..
             } => (authorisation, Some(*effective_at)),
         };
+
+        // The exact presented event the fold stands at: the
+        // fold's live body is one of the presented bodies by
+        // construction, so its carrier is found by equality.
+        // The fallback is unreachable in practice and typed
+        // rather than a panic.
+        let authorisation_event_hash = authorisations
+            .iter()
+            .zip(&authorisation_event_ids)
+            .find(|((_, body), _)| body == authorisation)
+            .map(|(_, event_id)| *event_id)
+            .ok_or(FailedPreSubmit::UnknownAuthorisation)?;
 
         // Step 2: LP-tier eligibility for the folded pair.
         let tier = control
@@ -580,13 +768,136 @@ impl ConversionVerifier {
             .filter(|dest| *dest > 0)
             .ok_or(FailedPreSubmit::UnconvertibleAmount)?;
 
-        Ok(VerifiedConversion {
-            authorisation: authorisation.clone(),
-            tier,
-            source_account: submission.source_account,
-            dest_account: submission.dest_account,
-            dest_amount,
-            remaining_volume: remaining_volume - submission.amount,
+        Ok(FoldedVerification {
+            verified: VerifiedConversion {
+                authorisation: authorisation.clone(),
+                tier,
+                source_account: submission.source_account,
+                dest_account: submission.dest_account,
+                dest_amount,
+                remaining_volume: remaining_volume - submission.amount,
+            },
+            authorisation_event_hash,
+        })
+    }
+
+    /// Issue a quote against a submission (#3802): the
+    /// submission is verified exactly as at execution (the
+    /// four steps above, at the submission's `now`), then the
+    /// folded authorisation's version and event hash are
+    /// pinned into a [`ConversionQuote`] with the scale-aware
+    /// `computed_y`, the fee, and a [`QUOTE_LIFETIME_SECS`]
+    /// lifetime. The quote is stored in this verifier's quote
+    /// book under `quote_id` — a gateway-generated id, unique
+    /// in the book, in the same caller-supplies-the-id shape
+    /// as the pure layer's transfer ids — and returned.
+    ///
+    /// Issuance commits no usage: a quote is not a posting,
+    /// and a conversion under it re-checks the cap in its own
+    /// live-state checks at submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`FailedPreSubmit`] for the first
+    /// check the submission fails, exactly as [`Self::verify`]
+    /// would refuse it; no quote is stored for a refused
+    /// issuance. A conversion whose scale-aware output rounds
+    /// to zero is refused as
+    /// [`FailedPreSubmit::UnconvertibleAmount`], even when the
+    /// unscaled rate check in verification passed.
+    pub fn issue_quote(
+        &mut self,
+        control: &impl ConversionControl,
+        submission: &ConversionSubmission,
+        quote_id: u128,
+        source_scale: u32,
+        dest_scale: u32,
+    ) -> Result<ConversionQuote, FailedPreSubmit> {
+        let folded = self.verify_folded(control, submission)?;
+        let authorisation = &folded.verified.authorisation;
+        let computed_y = convert_amount(
+            submission.amount,
+            authorisation.rate_num,
+            authorisation.rate_den,
+            source_scale,
+            dest_scale,
+        )
+        .map_err(|_| FailedPreSubmit::UnconvertibleAmount)?;
+        // A validated authorisation's fee_bps is at most
+        // 10_000, so `fee_amount` cannot refuse here; the error
+        // arm is unreachable but typed.
+        let fee = match authorisation.fee_bps {
+            Some(fee_bps) => fee_amount(submission.amount, fee_bps)
+                .map_err(|_| FailedPreSubmit::UnconvertibleAmount)?,
+            None => 0,
+        };
+        let quote = ConversionQuote {
+            quote_id,
+            authorisation_id: authorisation.authorisation_id,
+            authorisation_version: authorisation.version,
+            authorisation_event_hash: folded.authorisation_event_hash,
+            x: submission.amount,
+            computed_y,
+            fee,
+            issued_at: submission.now,
+            quote_expires_at: submission.now.saturating_add(QUOTE_LIFETIME_SECS),
+        };
+        self.quotes.insert(quote_id, quote.clone());
+        Ok(quote)
+    }
+
+    /// Verify a submission that executes under a quote
+    /// (#3802): the submission references a quote this gateway
+    /// issued, and execution binds to it. The quote must exist
+    /// in this verifier's book, be unexpired at submission
+    /// time, and have been issued for this authorisation and
+    /// this amount; then every live-state check re-runs at
+    /// submission (the gateway-side revocation consult
+    /// included — a since-revoked authorisation is refused by
+    /// the re-run, never by the quote), and the fresh fold
+    /// must still stand at the version and event the quote
+    /// pins. The returned conversion executes with exactly
+    /// the quoted `computed_y` and fee.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`FailedPreSubmit`] for the first
+    /// check the submission fails; every variant is a
+    /// pre-flight refusal with zero ledger writes.
+    pub fn verify_quoted(
+        &self,
+        control: &impl ConversionControl,
+        submission: &ConversionSubmission,
+        quote_id: u128,
+    ) -> Result<VerifiedQuotedConversion, FailedPreSubmit> {
+        let quote = self
+            .quotes
+            .get(&quote_id)
+            .ok_or(FailedPreSubmit::UnknownQuote)?;
+        if quote.is_expired(submission.now) {
+            return Err(FailedPreSubmit::QuoteExpired {
+                quote_expires_at: quote.quote_expires_at,
+            });
+        }
+        if quote.authorisation_id != submission.authorisation_id || quote.x != submission.amount
+        {
+            return Err(FailedPreSubmit::QuoteMismatch);
+        }
+        let folded = self.verify_folded(control, submission)?;
+        if folded.verified.authorisation.version != quote.authorisation_version
+            || folded.authorisation_event_hash != quote.authorisation_event_hash
+        {
+            return Err(FailedPreSubmit::QuoteStale {
+                quoted_version: quote.authorisation_version,
+                live_version: folded.verified.authorisation.version,
+            });
+        }
+        Ok(VerifiedQuotedConversion {
+            quote: quote.clone(),
+            tier: folded.verified.tier,
+            source_account: folded.verified.source_account,
+            dest_account: folded.verified.dest_account,
+            remaining_volume: folded.verified.remaining_volume,
         })
     }
 }
@@ -1097,5 +1408,272 @@ mod tests {
             &submission,
             &FailedPreSubmit::AmountAboveMax { max_amount: 50 },
         );
+    }
+
+    /// Issue a quote for the valid submission under
+    /// `quote_id`, at equal ledger scales, on a verifier whose
+    /// books the test keeps.
+    fn issue_valid_quote(verifier: &mut ConversionVerifier, quote_id: u128) -> ConversionQuote {
+        verifier
+            .issue_quote(&eligible_control(), &valid_submission(), quote_id, 0, 0)
+            .unwrap()
+    }
+
+    /// The acceptance shape for a refused quoted submission,
+    /// as in [`assert_pre_submit`]: the expected typed
+    /// variant, FAILED_PRE_SUBMIT disposition, usage
+    /// untouched, and zero ledger writes.
+    fn assert_quoted_pre_submit(
+        verifier: &ConversionVerifier,
+        control: &impl ConversionControl,
+        submission: &ConversionSubmission,
+        quote_id: u128,
+        expected: &FailedPreSubmit,
+    ) {
+        let ledger = InMemoryLedger::default();
+        let used_before = verifier.usage().used_volume(submission.authorisation_id);
+        let error = verifier
+            .verify_quoted(control, submission, quote_id)
+            .expect_err("quoted submission must be refused pre-flight");
+        assert_eq!(
+            std::mem::discriminant(&error),
+            std::mem::discriminant(expected),
+            "expected {expected:?}, got {error:?}"
+        );
+        assert_eq!(error.disposition(), "FAILED_PRE_SUBMIT");
+        assert_eq!(
+            verifier.usage().used_volume(submission.authorisation_id),
+            used_before,
+            "a refused submission must not commit usage"
+        );
+        for ledger_id in [SOURCE_LEDGER_ID, DEST_LEDGER_ID] {
+            assert!(
+                ledger
+                    .try_accounts_on_ledger(ledger_id)
+                    .unwrap()
+                    .is_empty(),
+                "zero TigerBeetle account writes"
+            );
+            assert!(
+                ledger
+                    .try_transfers_on_ledger(ledger_id, 100)
+                    .unwrap()
+                    .is_empty(),
+                "zero TigerBeetle transfer writes"
+            );
+        }
+    }
+
+    #[test]
+    fn quote_issuance_pins_the_folded_authorisation_and_amounts() {
+        // Oracle: #3802 build item 1 and the #2290 design
+        // record — the quote record is {quote_id,
+        // authorisation_id, authorisation_version,
+        // authorisation_event_hash, x, computed_y, fee,
+        // issued_at, quote_expires_at} with a 60-second
+        // lifetime.
+        let mut verifier = ConversionVerifier::new();
+        let submission = valid_submission();
+        let event_hash = submission.authorisations[0].event.id;
+        let quote = verifier
+            .issue_quote(&eligible_control(), &submission, 42, 0, 0)
+            .unwrap();
+        assert_eq!(quote.quote_id, 42);
+        assert_eq!(quote.authorisation_id, 7);
+        assert_eq!(quote.authorisation_version, 1);
+        assert_eq!(quote.authorisation_event_hash, event_hash);
+        assert_eq!(quote.x, 100);
+        // Equal scales: floor(100 · 8123 / 10000) = 81.
+        assert_eq!(quote.computed_y, 81);
+        // The worked-example authorisation carries no fee.
+        assert_eq!(quote.fee, 0);
+        assert_eq!(quote.issued_at, NOW);
+        assert_eq!(QUOTE_LIFETIME_SECS, 60);
+        assert_eq!(quote.quote_expires_at, NOW + QUOTE_LIFETIME_SECS);
+        // The gateway's book holds the issued quote; issuance
+        // committed no usage.
+        assert_eq!(verifier.quote(42), Some(&quote));
+        assert_eq!(verifier.usage().used_volume(7), 0);
+    }
+
+    #[test]
+    fn quote_computed_y_is_scale_aware_and_fee_is_quoted() {
+        // Oracle: #3802 build item 1 — computed_y uses the
+        // scale-aware integer-rational rule, and the fee is
+        // quoted from the authorisation's fee_bps in source
+        // units.
+        let mut auth = authorisation();
+        auth.fee_bps = Some(100); // 1%
+        let mut submission = valid_submission();
+        submission.authorisations = vec![presented_auth(&auth)];
+        let mut verifier = ConversionVerifier::new();
+        // Source scale 0, destination scale 2:
+        // floor(100 · 8123 · 10^2 / (10000 · 10^0)) = 8123.
+        let quote = verifier
+            .issue_quote(&eligible_control(), &submission, 43, 0, 2)
+            .unwrap();
+        assert_eq!(quote.computed_y, 8123);
+        // floor(100 · 100 / 10_000) = 1.
+        assert_eq!(quote.fee, 1);
+    }
+
+    #[test]
+    fn quote_issuance_refuses_what_verification_refuses() {
+        // Oracle: #3802 — a quote is issued only against a
+        // submission that verifies at issuance; a refused
+        // issuance stores no quote.
+        let mut submission = valid_submission();
+        submission.revokes = vec![presented_revoke(&RateAuthorisationRevoke {
+            authorisation_id: 7,
+            revoked_version_from: 1,
+            effective_at: NOW - 1,
+            reason: None,
+        })];
+        let mut verifier = ConversionVerifier::new();
+        let error = verifier
+            .issue_quote(&eligible_control(), &submission, 49, 0, 0)
+            .expect_err("issuance against a revoked authorisation must be refused");
+        assert_eq!(
+            std::mem::discriminant(&error),
+            std::mem::discriminant(&FailedPreSubmit::Revoked {
+                effective_at: NOW - 1,
+            })
+        );
+        assert_eq!(verifier.quote(49), None);
+    }
+
+    #[test]
+    fn expired_quote_is_refused_pre_submit() {
+        // Oracle: #3802 acceptance — an expired quote refused.
+        let mut verifier = ConversionVerifier::new();
+        let quote = issue_valid_quote(&mut verifier, 44);
+        let mut submission = valid_submission();
+        submission.now = quote.quote_expires_at;
+        assert_quoted_pre_submit(
+            &verifier,
+            &eligible_control(),
+            &submission,
+            44,
+            &FailedPreSubmit::QuoteExpired {
+                quote_expires_at: NOW + QUOTE_LIFETIME_SECS,
+            },
+        );
+    }
+
+    #[test]
+    fn quote_against_since_revoked_authorisation_is_refused_pre_submit() {
+        // Oracle: #3802 acceptance — a quote against a
+        // since-revoked authorisation refused: execution
+        // re-runs the live-state checks, and the revocation
+        // consult refuses it.
+        let mut verifier = ConversionVerifier::new();
+        issue_valid_quote(&mut verifier, 45);
+        let mut submission = valid_submission();
+        submission.revokes = vec![presented_revoke(&RateAuthorisationRevoke {
+            authorisation_id: 7,
+            revoked_version_from: 1,
+            effective_at: NOW - 1,
+            reason: None,
+        })];
+        assert_quoted_pre_submit(
+            &verifier,
+            &eligible_control(),
+            &submission,
+            45,
+            &FailedPreSubmit::Revoked {
+                effective_at: NOW - 1,
+            },
+        );
+    }
+
+    #[test]
+    fn quote_against_superseded_version_is_refused_pre_submit() {
+        // Oracle: #3802 acceptance — a quote against a
+        // superseded version refused: the fresh fold stands at
+        // v2, which the quote's version/event pin does not
+        // match.
+        let mut verifier = ConversionVerifier::new();
+        issue_valid_quote(&mut verifier, 46);
+        let mut v2 = authorisation();
+        v2.version = 2;
+        let v1 = presented_auth(&authorisation());
+        let v2_event = {
+            let event = sign_authorisation(&lp_key(), 1, Some(v1.event.id), &v2, vec![]).unwrap();
+            PresentedObject {
+                event,
+                body: v2.body().unwrap(),
+            }
+        };
+        let mut submission = valid_submission();
+        submission.authorisations = vec![v1, v2_event];
+        assert_quoted_pre_submit(
+            &verifier,
+            &eligible_control(),
+            &submission,
+            46,
+            &FailedPreSubmit::QuoteStale {
+                quoted_version: 1,
+                live_version: 2,
+            },
+        );
+    }
+
+    #[test]
+    fn unknown_quote_is_refused_pre_submit() {
+        // Oracle: #3802 build item 2 — execution must
+        // reference an issued quote; an id this gateway never
+        // issued binds to nothing.
+        assert_quoted_pre_submit(
+            &ConversionVerifier::new(),
+            &eligible_control(),
+            &valid_submission(),
+            999,
+            &FailedPreSubmit::UnknownQuote,
+        );
+    }
+
+    #[test]
+    fn quote_for_a_different_amount_is_refused_pre_submit() {
+        // Oracle: #3802 build item 2 and #2063 table C — an
+        // altered quote cannot be executed: the quote binds
+        // exactly one amount.
+        let mut verifier = ConversionVerifier::new();
+        issue_valid_quote(&mut verifier, 48);
+        let mut submission = valid_submission();
+        submission.amount = 200;
+        assert_quoted_pre_submit(
+            &verifier,
+            &eligible_control(),
+            &submission,
+            48,
+            &FailedPreSubmit::QuoteMismatch,
+        );
+    }
+
+    #[test]
+    fn valid_quote_executes_with_exactly_the_quoted_amounts() {
+        // Oracle: #3802 acceptance — a valid quote executing
+        // with exactly the quoted y and fee.
+        let mut auth = authorisation();
+        auth.fee_bps = Some(100);
+        let mut submission = valid_submission();
+        submission.authorisations = vec![presented_auth(&auth)];
+        let mut verifier = ConversionVerifier::new();
+        let quote = verifier
+            .issue_quote(&eligible_control(), &submission, 47, 0, 2)
+            .unwrap();
+        submission.now = NOW + 30;
+        let executed = verifier
+            .verify_quoted(&eligible_control(), &submission, 47)
+            .unwrap();
+        assert_eq!(executed.quote, quote);
+        assert_eq!(executed.amount(), 100);
+        assert_eq!(executed.dest_amount(), quote.computed_y);
+        assert_eq!(executed.dest_amount(), 8123);
+        assert_eq!(executed.fee(), quote.fee);
+        assert_eq!(executed.fee(), 1);
+        assert_eq!(executed.remaining_volume, 1_000_000 - 100);
+        // Execution verification alone commits no usage.
+        assert_eq!(verifier.usage().used_volume(7), 0);
     }
 }

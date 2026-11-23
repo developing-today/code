@@ -11,6 +11,12 @@
 //! in [`crate::event_sync`], so a revision one node signs into its store is in the sync set the
 //! next session carries to a peer (#792).
 //!
+//! The store is held through [`SharedEventStore`], not by value: the store directory is
+//! single-opener, so every seam that reads the node's graph must read the one opened store.
+//! [`LocalEvents::shared_store`] hands out a clone of the handle, which is what lets
+//! `id serve` build the chained-relay gate's graph frontier over the same store this
+//! type writes (#5534).
+//!
 //! The reads walk every applied event, which is fine for the CLI and is not an index. The document
 //! and tag rules are the ones in [`id_store::documents`] and [`id_store::tag_claims`].
 
@@ -18,7 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use p2panda_core::{Hash, SigningKey};
 
 use crate::event_store::{Block, BlockKind, BlockLookup, EventStore, Ingest, StoreError};
@@ -34,6 +40,7 @@ use id_store::notes::{
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
 };
 use id_store::search::{Hit, ValueMatch, search_store};
+use id_store::store_traits::SharedEventStore;
 use id_store::tag_claims::{
     CLEAR_KIND, Claim, LocalClaim, MAX_CLEAR_CLAIMS, SET_KIND, TagOp, TagScope, check_op,
 };
@@ -216,9 +223,14 @@ fn fold_remote_notes(
 }
 
 /// The event store, and the key the node signs its events with.
+///
+/// The store is held through the shared handle ([`SharedEventStore`]):
+/// clones handed out by [`LocalEvents::shared_store`] read and ingest
+/// the same store, which is the only store this node opens — the store
+/// directory admits one opener, so a second seam cannot open its own.
 #[derive(Debug)]
 pub struct LocalEvents {
-    store: EventStore,
+    store: SharedEventStore<EventStore>,
     /// The node's own local-only claims (#1793): never signed, never synced.
     local: LocalClaims,
     key: SigningKey,
@@ -232,32 +244,54 @@ impl LocalEvents {
     /// # Errors
     ///
     /// Fails if the store cannot be opened, for example while another process has it open.
-    /// The blob references in this node's event store, for the blob gate's index
-    /// (`EventStore::document_references`).
-    ///
-    /// # Errors
-    ///
-    /// Returns a store error if the read fails.
-    pub fn document_references(
-        &self,
-    ) -> Result<Vec<(iroh_blobs::Hash, Option<p2panda_core::Hash>)>, StoreError> {
-        self.store.document_references()
-    }
-
     pub fn open(dir: &Path, key: SigningKey) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let store = EventStore::open(dir, WaitingLimits::default(), now_ms())?;
         let local = LocalClaims::open(dir).context("open the local claim store")?;
         Ok(Self {
-            store,
+            store: SharedEventStore::new(store),
             local,
             key,
             chat_rate: SendRate::default(),
         })
     }
 
+    /// A clone of the handle on this node's store: the same store every
+    /// method here reads and writes, behind the shared lock. This is
+    /// the seam `id serve` builds the chained-relay gate's graph
+    /// frontier from (#5534) — the frontier authorizes from the
+    /// membership state this node has actually accepted, because there
+    /// is only the one store behind both.
+    #[must_use]
+    pub fn shared_store(&self) -> SharedEventStore<EventStore> {
+        self.store.clone()
+    }
+
+    /// Runs `op` against the store under its read lock. The store's own
+    /// error is preserved; a poisoned lock (a holder panicked with the
+    /// store) is reported the way the sync seam reports it.
+    fn read_store<T>(&self, op: impl FnOnce(&EventStore) -> Result<T, StoreError>) -> Result<T> {
+        match self.store.read(|store| Ok(op(store))) {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_poisoned) => Err(anyhow!("the event store lock is poisoned")),
+        }
+    }
+
+    /// The blob references in this node's event store, for the blob gate's index
+    /// (`EventStore::document_references`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the read fails.
+    pub fn document_references(
+        &self,
+    ) -> Result<Vec<(iroh_blobs::Hash, Option<p2panda_core::Hash>)>> {
+        self.read_store(|store| store.document_references())
+    }
+
     /// Runs one range-sync session over `conn` against this node's store: the session
-    /// [`crate::event_store::sync::sync_over`] drives, with this store as its sync set.
+    /// [`crate::event_store::sync::sync_over_shared`] drives, with this store as its sync set.
     /// `initiator` is the side that dialed. Every event that arrives is decided by the
     /// store's own ingest, so a tampered or unsigned event is refused, never applied.
     ///
@@ -272,7 +306,12 @@ impl LocalEvents {
         deadline: std::time::Duration,
         gate: &crate::pull_policy::PullGate,
     ) -> Result<crate::event_store::sync::Outcome> {
-        crate::event_store::sync::sync_over(
+        // The session runs over the shared handle's `RangeStore`
+        // seam, which locks the store per step and never across an
+        // await — so a session no longer blocks the node's other
+        // store users behind its network waits, and this future
+        // stays `Send` for the serve router's protocol handler.
+        crate::event_store::sync::sync_over_shared(
             &mut self.store,
             conn,
             initiator,
@@ -305,9 +344,9 @@ impl LocalEvents {
     /// gives for the identity event itself.
     pub fn ensure_identity_event(&mut self) -> Result<Option<Hash>> {
         let author = self.author();
-        let chain = self.store.chain(&author)?.unwrap_or_default();
+        let chain = self.read_store(|store| store.chain(&author))?.unwrap_or_default();
         for seq in 0..chain.next_seq {
-            if let Some(event) = self.store.event(&author, seq)? {
+            if let Some(event) = self.read_store(|store| store.event(&author, seq))? {
                 if is_identity_kind(&event.header.extensions.kind) {
                     return Ok(None);
                 }
@@ -326,8 +365,7 @@ impl LocalEvents {
     ///
     /// Fails if the block row cannot be written.
     pub fn add_block(&self, block: &Block) -> Result<()> {
-        self.store
-            .add_block(block)
+        self.read_store(|store| store.add_block(block))
             .context("add the operator block row")
     }
 
@@ -338,8 +376,7 @@ impl LocalEvents {
     ///
     /// Fails if the block row cannot be removed.
     pub fn remove_block(&self, kind: BlockKind, value: &[u8]) -> Result<bool> {
-        self.store
-            .remove_block(kind, value)
+        self.read_store(|store| store.remove_block(kind, value))
             .context("remove the operator block row")
     }
 
@@ -350,7 +387,8 @@ impl LocalEvents {
     ///
     /// Fails if the block rows cannot be read.
     pub fn blocks(&self) -> Result<Vec<Block>> {
-        self.store.blocks().context("read the operator block rows")
+        self.read_store(|store| store.blocks())
+            .context("read the operator block rows")
     }
 
     /// Whether (`kind`, `value`) is blocked right now, judged against the
@@ -430,7 +468,7 @@ impl LocalEvents {
     pub fn send_chat(&mut self, group: Hash, message: ChatMessage) -> Result<Hash> {
         message.check()?;
         let author = self.author();
-        if !self.store.roster(&group)?.contains(&author) {
+        if !self.read_store(|store| store.roster(&group))?.contains(&author) {
             bail!(
                 "the node's key is not a member of the channel group, so its chat write is refused at admission"
             );
@@ -470,7 +508,7 @@ impl LocalEvents {
     pub fn send_anchor(&mut self, group: Hash, anchor: ChatAnchor) -> Result<Hash> {
         anchor.check()?;
         let author = self.author();
-        if !self.store.roster(&group)?.contains(&author) {
+        if !self.read_store(|store| store.roster(&group))?.contains(&author) {
             bail!(
                 "the node's key is not a member of the channel group, so its anchor write is refused at admission"
             );
@@ -495,7 +533,7 @@ impl LocalEvents {
     ///
     /// Fails if the node is not a member of the group, or the store cannot be read.
     pub fn anchor_projection(&self, group: Hash) -> Result<AnchorProjection> {
-        let records = self.store.anchor_records(&group, &self.author())?;
+        let records = self.read_store(|store| store.anchor_records(&group, &self.author()))?;
         Ok(project_anchors(records))
     }
 
@@ -507,7 +545,7 @@ impl LocalEvents {
     ///
     /// Fails if the node is not a member of the group, or the store cannot be read.
     pub fn chat_timeline(&self, group: Hash) -> Result<Vec<ChatRecord>> {
-        Ok(self.store.chat_timeline(&group, &self.author())?)
+        Ok(self.read_store(|store| store.chat_timeline(&group, &self.author()))?)
     }
 
     /// Sets the tag `name` on `subject`, with `value` if given. The new claim's ID is the event's.
@@ -572,8 +610,7 @@ impl LocalEvents {
         let me = self.author();
         let mut moved = 0;
         let shared: Vec<Claim> = self
-            .store
-            .tag_claims()?
+            .read_store(|store| store.tag_claims())?
             .into_iter()
             .filter(|claim| claim.subject == subject && claim.name == name && claim.author == me)
             .collect();
@@ -671,8 +708,7 @@ impl LocalEvents {
             .collect();
         let removed_local = self.local.clear(&self.author(), subject, name)?;
         let claims: Vec<Claim> = self
-            .store
-            .tag_claims()?
+            .read_store(|store| store.tag_claims())?
             .into_iter()
             .filter(|claim| claim.subject == subject && claim.name == name)
             .collect();
@@ -756,8 +792,7 @@ impl LocalEvents {
     /// Fails if the store cannot be read.
     pub fn tags_on(&self, subject: Hash) -> Result<Vec<Claim>> {
         let mut claims: Vec<Claim> = self
-            .store
-            .tag_claims()?
+            .read_store(|store| store.tag_claims())?
             .into_iter()
             .filter(|claim| claim.subject == subject)
             .collect();
@@ -778,7 +813,7 @@ impl LocalEvents {
     ///
     /// Fails if the store cannot be read.
     pub fn review_tags(&self) -> Result<Vec<Claim>> {
-        let mut claims = self.store.tag_claims()?;
+        let mut claims = self.read_store(|store| store.tag_claims())?;
         claims.extend(self.local.claims().iter().map(LocalClaim::as_claim));
         claims.sort_by_key(|claim| (claim.scope == TagScope::Local, *claim.id.as_bytes()));
         Ok(claims)
@@ -791,7 +826,7 @@ impl LocalEvents {
     /// Fails if the store cannot be read.
     pub fn search(&self, name: &str, value: Option<&str>) -> Result<Vec<Hit>> {
         let matching = value.map_or(ValueMatch::Any, ValueMatch::Exact);
-        let mut hits = search_store(&self.store, name, matching)?;
+        let mut hits = self.read_store(|store| search_store(store, name, matching))?;
         // Local claims are this node's own, so they are part of this node's search answer (#1793).
         // They are folded in per subject, so a subject with both kinds reports one hit.
         for claim in self.local.matching(name, value) {
@@ -965,8 +1000,7 @@ impl LocalEvents {
     /// Fails if the store cannot be read.
     pub fn frontier(&self) -> Result<Vec<Head>> {
         Ok(self
-            .store
-            .chains()?
+            .read_store(|store| store.chains())?
             .into_iter()
             .filter_map(|(author, chain)| {
                 chain.head.map(|event| Head {
@@ -1034,14 +1068,21 @@ impl LocalEvents {
     /// Every applied event: its entry if it is a document or tag event, and its parents, which are
     /// its `after` and its backlink.
     fn log(&self) -> Result<Log> {
+        // One read lock for the whole walk, so the entries and their
+        // parents come from one snapshot of the store.
+        let applied = self.read_store(|store| {
+            let mut events = Vec::new();
+            for (author, _) in store.chains()? {
+                events.extend(store.applied_events(&author, None, None, usize::MAX)?);
+            }
+            Ok(events)
+        })?;
         let mut entries = HashMap::new();
         let mut parents = HashMap::new();
-        for (author, _) in self.store.chains()? {
-            for event in self.store.applied_events(&author, None, None, usize::MAX)? {
-                parents.insert(event.id, parents_of(&event));
-                if let Some(entry) = entry_of(&event) {
-                    entries.insert(event.id, entry);
-                }
+        for event in &applied {
+            parents.insert(event.id, parents_of(event));
+            if let Some(entry) = entry_of(event) {
+                entries.insert(event.id, entry);
             }
         }
         Ok((entries, parents))
@@ -1119,7 +1160,7 @@ impl LocalEvents {
     ) -> Result<Hash> {
         let author = self.author();
         let after = self.bounded_after(required)?;
-        let chain = self.store.chain(&author)?.unwrap_or_default();
+        let chain = self.read_store(|store| store.chain(&author))?.unwrap_or_default();
         let ext = ChainExt {
             kind: kind.to_owned(),
             group,
@@ -1135,7 +1176,7 @@ impl LocalEvents {
             anchor,
         };
         let event = sign(&self.key, chain.next_seq, chain.head, None, ext)?;
-        match self.store.ingest(&event.bytes, now_ms())? {
+        match self.store.ingest(&event.bytes, None, now_ms())? {
             Ingest::Accepted { id, .. } => Ok(id),
             refused => bail!("the store did not apply the {kind} event: {refused:?}"),
         }
@@ -1460,7 +1501,7 @@ mod tests {
             },
         )
         .unwrap();
-        let ingested = events.store.ingest(&foreign.bytes, now_ms()).unwrap();
+        let ingested = events.store.ingest(&foreign.bytes, None, now_ms()).unwrap();
         assert!(matches!(ingested, Ingest::Accepted { .. }), "{ingested:?}");
         let notes = events.notes().unwrap();
         assert_eq!(notes.len(), 1);
@@ -1545,8 +1586,7 @@ mod tests {
             .unwrap();
         let author = events.author();
         let applied = events
-            .store
-            .applied_events(&author, None, None, usize::MAX)
+            .read_store(|store| store.applied_events(&author, None, None, usize::MAX))
             .unwrap();
         let event = applied.iter().find(|e| e.id == revision).unwrap();
         assert!(event.header.extensions.after.contains(&note));
@@ -1621,7 +1661,7 @@ mod tests {
     fn test_local_claim_is_reviewable_but_never_enters_the_shared_store() {
         let (_dir, mut events) = open_events();
         let subject = publish_subject(&mut events);
-        let before = events.store.sync_entries().unwrap();
+        let before = events.read_store(|store| store.sync_entries()).unwrap();
 
         let id = events
             .set_tag_scoped(subject, "city", Some("Oslo"), TagScope::Local)
@@ -1631,8 +1671,8 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, id);
         assert_eq!(visible[0].scope, TagScope::Local);
-        assert!(events.store.tag_claims().unwrap().is_empty());
-        assert_eq!(events.store.sync_entries().unwrap(), before);
+        assert!(events.read_store(|store| store.tag_claims()).unwrap().is_empty());
+        assert_eq!(events.read_store(|store| store.sync_entries()).unwrap(), before);
         assert_eq!(events.review_tags().unwrap(), visible);
         assert_eq!(
             events.search("city", Some("Oslo")).unwrap()[0].claims,
@@ -1666,13 +1706,12 @@ mod tests {
         // Two passes: an event whose predecessor has not landed yet waits,
         // and the second pass delivers it, as a later sync session would.
         for _ in 0..2 {
-            for (_key, id) in events.store.sync_entries().unwrap() {
+            for (_key, id) in events.read_store(|store| store.sync_entries()).unwrap() {
                 let bytes = events
-                    .store
-                    .sync_bytes(&id)
+                    .read_store(|store| store.sync_bytes(&id))
                     .unwrap()
                     .expect("a sync entry's bytes are stored");
-                peer.store.ingest(&bytes, 0).unwrap();
+                peer.store.ingest(&bytes, None, 0).unwrap();
             }
         }
 
@@ -1709,7 +1748,7 @@ mod tests {
         assert_eq!(shared[0].scope, TagScope::Shared);
         assert_ne!(shared[0].id, local_id);
         assert!(events.local.claims().is_empty());
-        assert_eq!(events.store.tag_claims().unwrap(), shared);
+        assert_eq!(events.read_store(|store| store.tag_claims()).unwrap(), shared);
 
         assert_eq!(
             events
@@ -1720,7 +1759,7 @@ mod tests {
         let local = events.tags_on(subject).unwrap();
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].scope, TagScope::Local);
-        assert!(events.store.tag_claims().unwrap().is_empty());
+        assert!(events.read_store(|store| store.tag_claims()).unwrap().is_empty());
     }
 
     #[test]
@@ -1748,7 +1787,7 @@ mod tests {
             1
         );
 
-        let shared = events.store.tag_claims().unwrap();
+        let shared = events.read_store(|store| store.tag_claims()).unwrap();
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].value.as_deref(), Some("Oslo"));
         let remaining = events.local.claims();
@@ -1761,7 +1800,7 @@ mod tests {
     fn test_clear_tag_removes_local_claims_without_signing_a_clear() {
         let (_dir, mut events) = open_events();
         let subject = publish_subject(&mut events);
-        let before = events.store.sync_entries().unwrap();
+        let before = events.read_store(|store| store.sync_entries()).unwrap();
         events
             .set_tag_scoped(subject, "city", Some("Oslo"), TagScope::Local)
             .unwrap();
@@ -1770,13 +1809,71 @@ mod tests {
 
         assert_eq!(count, 1);
         assert!(events.tags_on(subject).unwrap().is_empty());
-        assert_eq!(events.store.sync_entries().unwrap(), before);
+        assert_eq!(events.read_store(|store| store.sync_entries()).unwrap(), before);
     }
 
     fn open_events() -> (tempfile::TempDir, LocalEvents) {
         let dir = tempfile::tempdir().unwrap();
         let events = LocalEvents::open(dir.path(), SigningKey::from_bytes(&[7; 32])).unwrap();
         (dir, events)
+    }
+
+    #[test]
+    fn test_shared_store_handle_reads_and_feeds_the_same_store() {
+        // #5534: the store behind `LocalEvents` is the node's one
+        // store, held through the shared handle. A clone of the handle
+        // sees this node's writes, and events ingested through the
+        // handle are visible to this node's own reads — the property
+        // `id serve` needs to build the relay gate's graph frontier
+        // over the store `LocalEvents` writes.
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut events = LocalEvents::open(dir.path(), key(7)).unwrap();
+        let shared = events.shared_store();
+
+        // Out: the identity event `LocalEvents` publishes is the head
+        // of the author's chain as the handle reads it.
+        let identity = events
+            .ensure_identity_event()
+            .unwrap()
+            .expect("the first identity event is published");
+        let chain = shared
+            .read(|store| Ok(store.chain(&events.author())?))
+            .unwrap()
+            .expect("the author's chain is in the shared store");
+        assert_eq!(chain.head, Some(identity));
+
+        // In: a foreign identity event ingested through the handle
+        // appears in this node's frontier.
+        let foreign = sign(
+            &key(9),
+            0,
+            None,
+            None,
+            ChainExt {
+                kind: IDENTITY_KIND.to_owned(),
+                group: None,
+                after: Vec::new(),
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        let ingested = shared.ingest(&foreign.bytes, None, now_ms()).unwrap();
+        assert!(matches!(ingested, Ingest::Accepted { .. }), "{ingested:?}");
+        let frontier = events.frontier().unwrap();
+        assert!(
+            frontier.iter().any(|head| head.author
+                == *key(9).verifying_key().as_bytes()
+                && head.event == foreign.id),
+            "the foreign event is missing from the frontier: {frontier:?}"
+        );
     }
 
     fn publish_subject(events: &mut LocalEvents) -> Hash {
@@ -1918,7 +2015,7 @@ mod chat_tests {
     fn node(dir: &Path, key: SigningKey, create: &Event, body: &[u8]) -> LocalEvents {
         let mut node = LocalEvents::open(dir, key).unwrap();
         node.store
-            .ingest_with_body(&create.bytes, Some(body), 0)
+            .ingest(&create.bytes, Some(body), 0)
             .unwrap();
         node
     }
@@ -1927,23 +2024,21 @@ mod chat_tests {
     /// would.
     fn exchange(from: &LocalEvents, to: &mut LocalEvents) {
         let events = from
-            .store
-            .applied_events(&from.author(), None, None, usize::MAX)
+            .read_store(|store| store.applied_events(&from.author(), None, None, usize::MAX))
             .unwrap();
         for event in &events {
             if matches!(
                 event.header.extensions.kind.as_str(),
                 CHAT_MESSAGE_KIND | CHAT_ANCHOR_KIND
             ) {
-                to.store.ingest(&event.bytes, now_ms()).unwrap();
+                to.store.ingest(&event.bytes, None, now_ms()).unwrap();
             }
         }
     }
 
     /// How many applied `chat.anchor.v1` events `node` holds.
     fn anchor_events(node: &LocalEvents) -> usize {
-        node.store
-            .applied_events(&node.author(), None, None, usize::MAX)
+        node.read_store(|store| store.applied_events(&node.author(), None, None, usize::MAX))
             .unwrap()
             .iter()
             .filter(|event| event.header.extensions.kind == CHAT_ANCHOR_KIND)
@@ -1971,7 +2066,7 @@ mod chat_tests {
         // A non-member's write is refused at admission: nothing is signed or recorded.
         let refused = node_c.send_chat(group, ChatMessage::new("carol here", Vec::new()).unwrap());
         assert!(refused.is_err());
-        assert!(node_c.store.chat_records(&group).unwrap().is_empty());
+        assert!(node_c.read_store(|store| store.chat_records(&group)).unwrap().is_empty());
 
         let first = node_a
             .send_chat(

@@ -24,13 +24,14 @@ function signedRequest(payload: unknown, event = "issues", action = "opened", se
       closed_at: null,
     },
   };
-  const overrides = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const overrides = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
   const rawBody = JSON.stringify({
     ...base,
     ...overrides,
-    issue: overrides.issue && typeof overrides.issue === "object"
-      ? { ...base.issue, ...overrides.issue as object }
-      : base.issue,
+    issue:
+      overrides.issue && typeof overrides.issue === "object"
+        ? { ...base.issue, ...(overrides.issue as object) }
+        : base.issue,
   });
   const signature = createHmac("sha256", secret).update(rawBody).digest("hex");
   return new Request("http://localhost/webhooks/github", {
@@ -50,8 +51,12 @@ describe("GitHub metadata webhook listener", () => {
       secret: async () => SECRET,
       db,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
-      writeBack: async (item, body) => { writes.push({ number: item.number, body }); },
-      enqueueTriage: async (packet) => { enqueued.push(packet); },
+      writeBack: async (item, body) => {
+        writes.push({ number: item.number, body });
+      },
+      enqueueTriage: async (packet) => {
+        enqueued.push(packet);
+      },
       now: () => NOW,
     });
 
@@ -102,13 +107,17 @@ describe("GitHub metadata webhook listener", () => {
       db,
       epicSlugs: async () => new Map(),
       writeBack: async () => {},
-      enqueueTriage: async (packet) => { enqueued.push(packet); },
+      enqueueTriage: async (packet) => {
+        enqueued.push(packet);
+      },
       now: () => NOW,
     });
 
     try {
       const response = await handler(
-        signedRequest({ issue: { ...(({} as Record<string, unknown>)), number: 4242, labels: [{ name: "kind/feature" }] } }),
+        signedRequest({
+          issue: { ...({} as Record<string, unknown>), number: 4242, labels: [{ name: "kind/feature" }] },
+        }),
       );
       expect(response.status).toBe(202);
       expect(await response.json()).toMatchObject({ accepted: true, outcome: "needs-triage" });
@@ -153,7 +162,9 @@ describe("GitHub metadata webhook listener", () => {
       secret: async () => SECRET,
       db,
       epicSlugs: async () => new Map([["pm-board", { repo: "developing-today/code", number: 9060 }]]),
-      writeBack: async (item, body) => { writes.push({ number: item.number, body }); },
+      writeBack: async (item, body) => {
+        writes.push({ number: item.number, body });
+      },
       enqueueTriage: async () => {},
       now: () => NOW,
     });

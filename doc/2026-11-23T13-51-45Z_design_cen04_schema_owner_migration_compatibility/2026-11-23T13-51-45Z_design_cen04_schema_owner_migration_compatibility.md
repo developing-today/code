@@ -40,9 +40,9 @@ Governing decisions consumed, not re-opened:
   (issue comment 6845605876), not a claim of global absence. §6
   states what that disposition does and does not gate now.
 - **Census component** (`components/9198-requirement-crosswalk-current-state-census.md`):
-  §3's table is the *domain-level* ownership crosswalk (which
+  §3's table is the _domain-level_ ownership crosswalk (which
   component owns which requirement family). This record is the
-  *fact-level* matrix the same component's CEN-04 spec calls for;
+  _fact-level_ matrix the same component's CEN-04 spec calls for;
   the two do not compete. The census's V1 facts are pinned at
   `a038f084`; where current main has moved past the pin, this record
   says so explicitly (see the priority row, §3.3).
@@ -93,8 +93,8 @@ Verified state at writing (2026-11-23, origin/main `ba7ea99e9`):
 ## 1. Intent
 
 Every schema-coupled design in this program keeps arriving at the
-same unasked question: *this fact needs to persist — whose is it,
-where does it live, and what already-existing thing is it not?* The
+same unasked question: _this fact needs to persist — whose is it,
+where does it live, and what already-existing thing is it not?_ The
 answers existed, but scattered: a principle in #8575, a task model
 in #3424, an audit in #8579, a DDL const in the broker, a store map
 in PM Stack, and hard-won name distinctions (`events` is not the
@@ -126,7 +126,7 @@ write API. Ownership kinds used in the matrix:
 - **Coordination store** — durable enough to survive a process
   restart, ephemeral by design intent: wiping it loses in-flight
   coordination, never history (#8575's wipe test).
-- **Request ledger** — an append-only record of *requests* and their
+- **Request ledger** — an append-only record of _requests_ and their
   outcomes (the aggregator action store). A ledger entry is evidence
   an effect was asked for; it is never the applied state itself.
 - **Projection** — a rebuildable read model (Project boards, the
@@ -191,7 +191,7 @@ is not a second store of these facts).
 - **Read API:** broker `show`/`list`/`timeline`; the hosted query
   door (#12587) reads the metadata store for GitHub-item state —
   a different fact (§3.10), not this one.
-- **Legacy mapping:** GitHub issue open/closed state is *not* task
+- **Legacy mapping:** GitHub issue open/closed state is _not_ task
   state; the fallback-claim protocol (§3.13) exists precisely
   because the two are reconciled, never conflated. A task whose
   issue closed is dispositioned through the broker, not by copying
@@ -236,12 +236,12 @@ is not a second store of these facts).
   same row), `heartbeat`, `release`, and the claim-transfer verbs.
   **Read API:** broker `show`/`list`; REL-02
   ([#9512](https://github.com/developing-today/code/issues/9512),
-  OPEN) owns the claim/lease *contract compatibility* design —
+  OPEN) owns the claim/lease _contract compatibility_ design —
   fencing vocabulary (`lease_generation` already exists as a
   `contracts.rs` Command field) and the shared-file sequencing edge
   on `turso_queue.rs` that HYD-05 §9 records.
 - **Legacy mapping:** a GitHub fallback-claim marker (§3.13) is a
-  claim *record* for broker-down operation; when the broker is up,
+  claim _record_ for broker-down operation; when the broker is up,
   the broker's lease is the fact and the marker is its receipt.
 - **Disposition:** reuse; contract refinements extend via REL-02.
   **Migration/rollback:** none contemplated.
@@ -368,8 +368,8 @@ is not a second store of these facts).
 - **Owner:** GitHub is the system of record for the item itself
   (title, body, state, labels, Project fields), written through
   the single Project writer / `fleet gh` surfaces. **Home of the
-  Fleet-stamped metadata:** the pm-metadata block *inside the
-  GitHub body* — the §5 provenance set stamped in full from fleet
+  Fleet-stamped metadata:** the pm-metadata block _inside the
+  GitHub body_ — the §5 provenance set stamped in full from fleet
   sources only, signed when a key is configured (#12586's
   signature; native create path #9073 slice 9; hosted stamping
   door #12585). The block travels with the item; there is no
@@ -422,7 +422,7 @@ is not a second store of these facts).
 
 ### 3.13 Degraded-mode surfaces — replica and fallback markers
 
-Two surfaces hold broker facts *away* from the broker store
+Two surfaces hold broker facts _away_ from the broker store
 without owning them; the matrix names them so nobody mistakes
 either for a second authority:
 
@@ -438,8 +438,8 @@ either for a second authority:
   broker cannot be claimed through, workers coordinate by
   machine-readable markers in GitHub issue comments (claim,
   heartbeat, release, completion with the full disposition
-  record). The marker stream is the coordination record *for the
-  outage window*; the broker consumes it on return. It is not a
+  record). The marker stream is the coordination record _for the
+  outage window_; the broker consumes it on return. It is not a
   receipt store (§3.9) and not item metadata (§3.10).
 
 ### 3.14 PM Stack stores — pointer rows and one live conflict
@@ -493,22 +493,22 @@ boundaries:
 The done check's negative list, in one place. Each pair is two
 facts, however similar the names:
 
-| Claimed equivalence | Refused because |
-| --- | --- |
-| broker `events` = #9208 journal | `events` is the broker's per-task timeline; the journal is the typed-relations decision record, unbuilt (§3.6) |
-| broker `events` = PM `shared_events` | different owners (broker vs aggregator line), different facts (timeline vs cross-service outcomes) (§3.6, §3.14) |
-| `blocked_deps` = free-text block reason | text is unqueryable legacy; only typed `block` targets are edges (§3.5) |
-| `merge_intents` = creator outbox | merge ordering vs scoped creation; neither creates the other's effects (§3.11) |
-| `creation_outbox` = general mutation outbox | the landed outbox is one scoped producer; the general outbox is REL-04's unbuilt design (§3.9) |
-| `tasks.result` = operation receipt | a verified task outcome vs REL-03's per-operation idempotent receipt, unbuilt (§3.9) |
-| checkpoint = note | opaque worker state vs authored content under field authority (§3.7) |
-| GitHub label = priority | labels are normalized input/projection; `tasks.priority` is the fact (§3.3) |
-| GitHub issue state = task state | reconciled by disposition, never copied (§3.2) |
-| pm-metadata mirror row = the block | the block in the GitHub body is the record; the mirror is a rebuildable projection (§3.10) |
-| projector ACK = Fleet command acceptance | projection intake vs the broker's authorized acceptance (§3.14) |
-| replica row = broker row | the replica is a resilience cache; conflicts surface, never merge silently (§3.13) |
-| fallback marker = receipt | a coordination record for an outage window, consumed by the broker on return (§3.13) |
-| `tasks.last_checked_at` = ingestion cursor | park re-verification field vs HYD-05's continuation state, unbuilt (§3.8) |
+| Claimed equivalence                         | Refused because                                                                                                  |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| broker `events` = #9208 journal             | `events` is the broker's per-task timeline; the journal is the typed-relations decision record, unbuilt (§3.6)   |
+| broker `events` = PM `shared_events`        | different owners (broker vs aggregator line), different facts (timeline vs cross-service outcomes) (§3.6, §3.14) |
+| `blocked_deps` = free-text block reason     | text is unqueryable legacy; only typed `block` targets are edges (§3.5)                                          |
+| `merge_intents` = creator outbox            | merge ordering vs scoped creation; neither creates the other's effects (§3.11)                                   |
+| `creation_outbox` = general mutation outbox | the landed outbox is one scoped producer; the general outbox is REL-04's unbuilt design (§3.9)                   |
+| `tasks.result` = operation receipt          | a verified task outcome vs REL-03's per-operation idempotent receipt, unbuilt (§3.9)                             |
+| checkpoint = note                           | opaque worker state vs authored content under field authority (§3.7)                                             |
+| GitHub label = priority                     | labels are normalized input/projection; `tasks.priority` is the fact (§3.3)                                      |
+| GitHub issue state = task state             | reconciled by disposition, never copied (§3.2)                                                                   |
+| pm-metadata mirror row = the block          | the block in the GitHub body is the record; the mirror is a rebuildable projection (§3.10)                       |
+| projector ACK = Fleet command acceptance    | projection intake vs the broker's authorized acceptance (§3.14)                                                  |
+| replica row = broker row                    | the replica is a resilience cache; conflicts surface, never merge silently (§3.13)                               |
+| fallback marker = receipt                   | a coordination record for an outage window, consumed by the broker on return (§3.13)                             |
+| `tasks.last_checked_at` = ingestion cursor  | park re-verification field vs HYD-05's continuation state, unbuilt (§3.8)                                        |
 
 ## 5. The field-admission gate
 
@@ -547,7 +547,7 @@ access limits are in its record). Consequences, stated once so no
 slice has to re-derive them:
 
 - QTI contributes **no schema, table, or field** to this matrix.
-  There is nothing to be compatible *with*; the candidates the
+  There is nothing to be compatible _with_; the candidates the
   census named (#3424, #8575, #8579, #8580–#8585) are the
   compatibility evidence base, and §3 crosswalks against them.
 - The delivery plan's hard gate — "QTI disposition plus
@@ -676,7 +676,7 @@ end-to-end acceptance (blocked resume §3.5, verified merge/close
 
 - No table, column, migration, or store is created, chosen, or
   moved by this record; the two `absent` rows (§3.8, §3.9) are
-  decisions to *not yet* persist, with their conditions named.
+  decisions to _not yet_ persist, with their conditions named.
 - No new queue, database, scheduler, service, resolver,
   executable, or GitHub client (the slice body's boundary,
   restated).

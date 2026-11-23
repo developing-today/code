@@ -87,7 +87,10 @@ export function base64urlEncode(bytes: Uint8Array): string {
 }
 
 function base64urlDecode(value: string): Uint8Array {
-  const padded = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const padded = value
+    .replaceAll("-", "+")
+    .replaceAll("_", "/")
+    .padEnd(Math.ceil(value.length / 4) * 4, "=");
   const binary = atob(padded);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -109,9 +112,7 @@ function randomToken(bytes = 32): string {
 }
 
 function randomHex(bytes = 16): string {
-  return [...crypto.getRandomValues(new Uint8Array(bytes))]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // Constant-time comparison for secret material. Length is not secret
@@ -202,10 +203,14 @@ export async function registerClient(request: Request, env: OAuthEnv): Promise<R
     );
   }
   if (body.token_endpoint_auth_method !== undefined && body.token_endpoint_auth_method !== "none") {
-    return oauthError("invalid_client_metadata", "only token_endpoint_auth_method \"none\" (public client) is supported");
+    return oauthError("invalid_client_metadata", 'only token_endpoint_auth_method "none" (public client) is supported');
   }
-  const grantTypes = Array.isArray(body.grant_types) ? body.grant_types.filter((g) => typeof g === "string") : ["authorization_code"];
-  const responseTypes = Array.isArray(body.response_types) ? body.response_types.filter((g) => typeof g === "string") : ["code"];
+  const grantTypes = Array.isArray(body.grant_types)
+    ? body.grant_types.filter((g) => typeof g === "string")
+    : ["authorization_code"];
+  const responseTypes = Array.isArray(body.response_types)
+    ? body.response_types.filter((g) => typeof g === "string")
+    : ["code"];
   const clientName = typeof body.client_name === "string" ? body.client_name : undefined;
 
   const clientId = randomHex(16);
@@ -291,13 +296,9 @@ export async function verifyAccessAssertion(request: Request, env: OAuthEnv): Pr
 
   let verified = false;
   try {
-    const key = await crypto.subtle.importKey(
-      "jwk",
-      jwk,
-      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
+    const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, [
+      "verify",
+    ]);
     verified = await crypto.subtle.verify(
       "RSASSA-PKCS1-v1_5",
       key,
@@ -339,7 +340,8 @@ function redirectWithParams(redirectUri: string, params: Record<string, string>)
 
 export async function authorizeGet(request: Request, env: OAuthEnv): Promise<Response> {
   const claims = await verifyAccessAssertion(request, env);
-  if (!claims) return authorizeErrorPage(403, "This page is only reachable through the owner's Cloudflare Access sign-in.");
+  if (!claims)
+    return authorizeErrorPage(403, "This page is only reachable through the owner's Cloudflare Access sign-in.");
 
   const url = new URL(request.url);
   const params = url.searchParams;
@@ -394,7 +396,8 @@ that you can revoke by deleting them from the Worker's KV namespace.</p>
 
 export async function authorizePost(request: Request, env: OAuthEnv): Promise<Response> {
   const claims = await verifyAccessAssertion(request, env);
-  if (!claims) return authorizeErrorPage(403, "This page is only reachable through the owner's Cloudflare Access sign-in.");
+  if (!claims)
+    return authorizeErrorPage(403, "This page is only reachable through the owner's Cloudflare Access sign-in.");
 
   const form = await request.formData();
   const nonce = form.get("nonce");
@@ -461,7 +464,12 @@ export async function tokenEndpoint(request: Request, env: OAuthEnv): Promise<Re
     const clientId = form.get("client_id");
     const redirectUri = form.get("redirect_uri");
     const verifier = form.get("code_verifier");
-    if (typeof code !== "string" || typeof clientId !== "string" || typeof redirectUri !== "string" || typeof verifier !== "string") {
+    if (
+      typeof code !== "string" ||
+      typeof clientId !== "string" ||
+      typeof redirectUri !== "string" ||
+      typeof verifier !== "string"
+    ) {
       return oauthError("invalid_request", "code, client_id, redirect_uri and code_verifier are required");
     }
     const codeKey = `code:${await sha256Hex(code)}`;
@@ -471,8 +479,10 @@ export async function tokenEndpoint(request: Request, env: OAuthEnv): Promise<Re
     // failed PKCE or binding check cannot be retried against it.
     await env.OAUTH_KV.delete(codeKey);
     if (record.exp <= Math.floor(Date.now() / 1000)) return oauthError("invalid_grant", "authorization code expired");
-    if (record.client_id !== clientId) return oauthError("invalid_grant", "client_id does not match the authorization request");
-    if (record.redirect_uri !== redirectUri) return oauthError("invalid_grant", "redirect_uri does not match the authorization request");
+    if (record.client_id !== clientId)
+      return oauthError("invalid_grant", "client_id does not match the authorization request");
+    if (record.redirect_uri !== redirectUri)
+      return oauthError("invalid_grant", "redirect_uri does not match the authorization request");
     if ((await sha256Base64url(verifier)) !== record.code_challenge) {
       return oauthError("invalid_grant", "PKCE code_verifier does not match the challenge");
     }

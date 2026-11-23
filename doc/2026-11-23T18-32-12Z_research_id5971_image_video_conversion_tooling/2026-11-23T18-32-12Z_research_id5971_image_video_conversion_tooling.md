@@ -18,13 +18,13 @@ record instead of redoing it:
 
 - **Selection is already designed; conversion was not.** #6011 (closed) fixed the client-side
   rendering ladder — kitty graphics → sixel → iTerm2 inline → Unicode symbols → plain ASCII —
-  with probing per rung, and states explicitly that it is *distinct from the conversion
-  research*: the ladder chooses a tier, it does not say how media becomes that tier's bytes.
+  with probing per rung, and states explicitly that it is _distinct from the conversion
+  research_: the ladder chooses a tier, it does not say how media becomes that tier's bytes.
   That gap is this document.
 - **Detection already exists in code.** `pkgs/id/crates/id-worlds/src/world_terminal.rs`
   probes and records a `kitty_graphics` capability bit (and the sixel bit) per connection;
   tier 1 in the #786 design (`doc/2026-11-01_design_id786.md`) is selected on exactly those
-  bits. No graphics *encoder* or media converter exists anywhere in the repo yet.
+  bits. No graphics _encoder_ or media converter exists anywhere in the repo yet.
 - **The boundary is already drawn.** The #786 design rules that the presenter owns graphics
   encoding, a guest may never supply kitty/sixel escape bytes, and the encoder is exercised
   with a bounded, test-owned image fixture. Conversion therefore lives presenter-side (or in
@@ -76,11 +76,11 @@ The protocol is an APC escape sequence (`ESC _G <control> ; <payload> ESC \`):
 
 ### 2.2 Stills vs animation vs video, honestly
 
-| Use | Path | Verdict |
-| --- | --- | --- |
-| Still image | PNG payload, transmit once, place by ID | Cheap and exact; the primary tier |
-| Short loop (sprite, reaction GIF-class) | Upload-once animation frames, terminal plays locally | Good at bounded geometry (≤ a few hundred px, tens of frames) |
-| Long/streaming video | Per-frame transmission | **Not viable as a stored format.** Even PNG-per-frame at modest geometry is hundreds of KB per frame; viable only as a live presenter-side stream at small geometry/low fps, where the symbols/ASCII tiers usually win on cost anyway |
+| Use                                     | Path                                                 | Verdict                                                                                                                                                                                                                               |
+| --------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Still image                             | PNG payload, transmit once, place by ID              | Cheap and exact; the primary tier                                                                                                                                                                                                     |
+| Short loop (sprite, reaction GIF-class) | Upload-once animation frames, terminal plays locally | Good at bounded geometry (≤ a few hundred px, tens of frames)                                                                                                                                                                         |
+| Long/streaming video                    | Per-frame transmission                               | **Not viable as a stored format.** Even PNG-per-frame at modest geometry is hundreds of KB per frame; viable only as a live presenter-side stream at small geometry/low fps, where the symbols/ASCII tiers usually win on cost anyway |
 
 ### 2.3 Terminal support matrix
 
@@ -88,21 +88,21 @@ Support as of this writing (November 2026), stills unless noted. "Partial" means
 typically no animation, no unicode placeholders, or placement limits — which is why §2.1's
 query, not a name table, is the authority at runtime.
 
-| Terminal | Kitty graphics | Sixel | iTerm2 inline | Notes |
-| --- | --- | --- | --- | --- |
-| kitty | Full (reference) | — | — | Protocol author; animation + placeholders complete |
-| Ghostty | Yes | — | — | Broad implementation; animation is the least mature part |
-| WezTerm | Yes (stills) | Experimental | Yes | Kitty animation frames not composited; also the widest protocol coverage overall |
-| Konsole | Partial | Yes | — | Kitty support is a subset; sixel is the reliable path |
-| Contour | Recent/partial | Yes | — | Sixel primary |
-| foot | — | Yes | — | Wayland only |
-| xterm | — | Yes (vt340 mode) | — | Needs sixel-capable build/config |
-| mlterm | — | Yes | — | |
-| Windows Terminal | — | Yes | — | Sixel since 1.22 |
-| iTerm2 | — | — | Yes (reference) | macOS |
-| VS Code terminal | — | Recent | Yes | |
-| mintty / Tabby / Hyper | — | — | Yes | |
-| Alacritty, GNOME Terminal, Ptyxis | — | — | — | Symbols/ASCII tiers are the whole story here |
+| Terminal                          | Kitty graphics   | Sixel            | iTerm2 inline   | Notes                                                                            |
+| --------------------------------- | ---------------- | ---------------- | --------------- | -------------------------------------------------------------------------------- |
+| kitty                             | Full (reference) | —                | —               | Protocol author; animation + placeholders complete                               |
+| Ghostty                           | Yes              | —                | —               | Broad implementation; animation is the least mature part                         |
+| WezTerm                           | Yes (stills)     | Experimental     | Yes             | Kitty animation frames not composited; also the widest protocol coverage overall |
+| Konsole                           | Partial          | Yes              | —               | Kitty support is a subset; sixel is the reliable path                            |
+| Contour                           | Recent/partial   | Yes              | —               | Sixel primary                                                                    |
+| foot                              | —                | Yes              | —               | Wayland only                                                                     |
+| xterm                             | —                | Yes (vt340 mode) | —               | Needs sixel-capable build/config                                                 |
+| mlterm                            | —                | Yes              | —               |                                                                                  |
+| Windows Terminal                  | —                | Yes              | —               | Sixel since 1.22                                                                 |
+| iTerm2                            | —                | —                | Yes (reference) | macOS                                                                            |
+| VS Code terminal                  | —                | Recent           | Yes             |                                                                                  |
+| mintty / Tabby / Hyper            | —                | —                | Yes             |                                                                                  |
+| Alacritty, GNOME Terminal, Ptyxis | —                | —                | —               | Symbols/ASCII tiers are the whole story here                                     |
 
 Multiplexers cut across every row: tmux passes kitty graphics only with passthrough
 enabled and degrades placements; #6011 already records tmux passthrough as a recurring
@@ -119,18 +119,18 @@ image crate for decode/resize/encode. What the field actually offers is (a) full
 that bundle the whole ladder, useful as references and oracles, and (b) component libraries
 for the non-kitty tiers. Licenses are the deciding constraint, per the licensing program.
 
-| Tool | What it is | Tiers | License | Usable as |
-| --- | --- | --- | --- | --- |
-| Hand-rolled APC encoder + `image` crate (Rust) | Decode/resize in `image`, PNG or RGBA+zlib payload, chunk, place | Kitty | `image` is MIT OR Apache-2.0 | **The build recommendation (§6)** |
-| kitty `icat` kitten | The reference image display tool | Kitty | GPL-3.0 | Behavioral oracle; external tool only |
-| chafa | The reference all-format converter (stills, animated GIF/WebP/APNG) | Kitty, sixel, iTerm2, symbols, ASCII | Library LGPL-3.0+; CLI GPL-3.0+ | Oracle + fallback reference; link the library only with LGPL obligations accepted, never bundle the CLI |
-| timg | Image/video viewer-converter (FFmpeg decode) | Kitty, sixel, iTerm2, halfblock | GPL-3.0 | Oracle for video-over-kitty behavior; external only |
-| viu | Rust image viewer | Kitty, sixel, iTerm2, halfblock | MIT | Prior art in our language; embeddable shape |
-| term-image | Python library | Kitty, sixel, iTerm2 (+ placeholders) | MIT | Reference for placeholder handling |
-| notcurses | Terminal UI library with blitters + video via FFmpeg | Kitty, sixel, iTerm2, symbols | Apache-2.0 | Embeddable, but a whole UI stack to adopt for one blitter |
-| libsixel | The standard sixel encoder library | Sixel | MIT | **The sixel tier's encoder (§6)** |
-| mpv (`--vo=kitty` / `--vo=sixel` / `--vo=tct`) | Media player with terminal video outputs | Kitty, sixel, text | GPL-2.0+ (LGPL parts) | Existence proof for live video at small geometry; external player, not a component |
-| yazi image adapter | File manager's probe+encode layer | Kitty, sixel, iTerm2 | MIT | Prior art for probe/encode integration in Rust |
+| Tool                                           | What it is                                                          | Tiers                                 | License                         | Usable as                                                                                               |
+| ---------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Hand-rolled APC encoder + `image` crate (Rust) | Decode/resize in `image`, PNG or RGBA+zlib payload, chunk, place    | Kitty                                 | `image` is MIT OR Apache-2.0    | **The build recommendation (§6)**                                                                       |
+| kitty `icat` kitten                            | The reference image display tool                                    | Kitty                                 | GPL-3.0                         | Behavioral oracle; external tool only                                                                   |
+| chafa                                          | The reference all-format converter (stills, animated GIF/WebP/APNG) | Kitty, sixel, iTerm2, symbols, ASCII  | Library LGPL-3.0+; CLI GPL-3.0+ | Oracle + fallback reference; link the library only with LGPL obligations accepted, never bundle the CLI |
+| timg                                           | Image/video viewer-converter (FFmpeg decode)                        | Kitty, sixel, iTerm2, halfblock       | GPL-3.0                         | Oracle for video-over-kitty behavior; external only                                                     |
+| viu                                            | Rust image viewer                                                   | Kitty, sixel, iTerm2, halfblock       | MIT                             | Prior art in our language; embeddable shape                                                             |
+| term-image                                     | Python library                                                      | Kitty, sixel, iTerm2 (+ placeholders) | MIT                             | Reference for placeholder handling                                                                      |
+| notcurses                                      | Terminal UI library with blitters + video via FFmpeg                | Kitty, sixel, iTerm2, symbols         | Apache-2.0                      | Embeddable, but a whole UI stack to adopt for one blitter                                               |
+| libsixel                                       | The standard sixel encoder library                                  | Sixel                                 | MIT                             | **The sixel tier's encoder (§6)**                                                                       |
+| mpv (`--vo=kitty` / `--vo=sixel` / `--vo=tct`) | Media player with terminal video outputs                            | Kitty, sixel, text                    | GPL-2.0+ (LGPL parts)           | Existence proof for live video at small geometry; external player, not a component                      |
+| yazi image adapter                             | File manager's probe+encode layer                                   | Kitty, sixel, iTerm2                  | MIT                             | Prior art for probe/encode integration in Rust                                                          |
 
 Two consequences:
 
@@ -139,7 +139,7 @@ Two consequences:
    dependencies, and it can be conformance-tested against `icat`/chafa output.
 2. **GPL tools are oracles, not parts.** icat, timg, mpv, and the chafa CLI may be run by a
    user who has them, and their behavior defines correctness — but none may be linked or
-   shipped. The chafa *library* is the one borderline case (LGPL-3.0+): usable from a
+   shipped. The chafa _library_ is the one borderline case (LGPL-3.0+): usable from a
    separate process or with LGPL compliance for dynamic linking; §6 does not need it.
 
 ## 4. Video-to-ASCII and stills-to-ASCII
@@ -158,14 +158,14 @@ separate:
 - **Braille**: 2×4 dot matrix per cell; best line-art/edge rendition, effectively monochrome
   per cell.
 
-| Tool | Shape | Stills | Video | Color | License | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| chafa (symbols mode) | Symbols + ASCII | Yes | Animated formats; video files via media loaders | Truecolor | LGPL-3.0+ lib / GPL-3.0+ CLI | The quality reference for the symbols rung |
-| ascii-image-converter | ASCII + braille | Yes | — | ANSI color | Apache-2.0 | Go; the permissive prior art for the stills sampler |
-| jp2a | ASCII | Yes (JPEG) | — | Mono / ANSI | GPL-2.0 | The classic jp2a-style pipeline of the brief; external only |
-| video-to-ascii | ASCII / block chars | — | Yes (FFmpeg frames) | ANSI 256 | MIT | Python; exports a self-playing shell script of frames |
-| mpv `--vo=tct`, mplayer `-vo aa/caca` | Text / symbols | — | Yes, in-player | tct truecolor; aa mono | GPL-2.0+ / aalib LGPL-2.0+ | Legacy lineage; proves decode+sample in one process |
-| `vt` | Symbols + protocol tiers | — | Yes | Truecolor | (Go; cited by #6011) | Terminal video player riding the same ladder |
+| Tool                                  | Shape                    | Stills     | Video                                           | Color                  | License                      | Notes                                                       |
+| ------------------------------------- | ------------------------ | ---------- | ----------------------------------------------- | ---------------------- | ---------------------------- | ----------------------------------------------------------- |
+| chafa (symbols mode)                  | Symbols + ASCII          | Yes        | Animated formats; video files via media loaders | Truecolor              | LGPL-3.0+ lib / GPL-3.0+ CLI | The quality reference for the symbols rung                  |
+| ascii-image-converter                 | ASCII + braille          | Yes        | —                                               | ANSI color             | Apache-2.0                   | Go; the permissive prior art for the stills sampler         |
+| jp2a                                  | ASCII                    | Yes (JPEG) | —                                               | Mono / ANSI            | GPL-2.0                      | The classic jp2a-style pipeline of the brief; external only |
+| video-to-ascii                        | ASCII / block chars      | —          | Yes (FFmpeg frames)                             | ANSI 256               | MIT                          | Python; exports a self-playing shell script of frames       |
+| mpv `--vo=tct`, mplayer `-vo aa/caca` | Text / symbols           | —          | Yes, in-player                                  | tct truecolor; aa mono | GPL-2.0+ / aalib LGPL-2.0+   | Legacy lineage; proves decode+sample in one process         |
+| `vt`                                  | Symbols + protocol tiers | —          | Yes                                             | Truecolor              | (Go; cited by #6011)         | Terminal video player riding the same ladder                |
 
 ### 4.2 Quality, speed, color — the honest summary
 
@@ -180,7 +180,7 @@ separate:
 - **Frame-diffing dominates bandwidth.** Emitting only changed cell runs per frame (the
   presenter's diff machinery from #786 already does this for cell grids) cuts ASCII-video
   bandwidth by an order of magnitude versus full-frame text; a pre-rendered full-frame ASCII
-  stream at 200×60 and 15 fps is ~1.5 MB/s — *larger than the video it came from* at small
+  stream at 200×60 and 15 fps is ~1.5 MB/s — _larger than the video it came from_ at small
   geometry. This kills the "convert video to ASCII at upload" idea on arithmetic alone (§5).
 
 ### 4.3 Licensing rule the survey implies
@@ -207,16 +207,16 @@ conversion's output depends on.**
 
 Applied:
 
-| Conversion | Placement | Why |
-| --- | --- | --- |
-| Format normalization, size/pixel/frame caps, metadata & payload stripping (decode-and-re-encode sanitization) | **Upload** | Viewer-independent; also the security checkpoint — assets enter by ID only after this |
-| Poster frame / static preview derivative | **Upload** | Viewer-independent; one per asset |
-| Web/share derivatives (ordinary image files for non-terminal surfaces) | **Upload** | Viewer-independent |
-| Kitty / sixel / iTerm2 encoding | **Render** (presenter) | Output is a function of probed tier + geometry; PNG passthrough also means the "conversion" is nearly free at render time |
-| Short-loop animation frame set (kitty `a=f`) | **Render**, from the stored original | Frame geometry is viewer-dependent; the upload-time alternative (one frame set per geometry bucket) multiplies storage for a niche path — revisit only if a hot asset class proves it |
-| Symbols / ASCII sampling (stills) | **Render** | Geometry- and ramp-dependent; cost is negligible next to decode |
-| Video decode + sampling (ASCII/symbols video) | **Render** | §4.2's arithmetic: a pre-rendered ASCII stream is geometry-locked and larger than the source video; decode is the real cost and is tier-independent, so it sits next to the sampler |
-| Long-video "kitty streaming" | **Not offered** | §2.2: not a viable stored or streamed tier; video viewers get the symbols/ASCII tiers, or an ordinary video surface outside the terminal ladder |
+| Conversion                                                                                                    | Placement                            | Why                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Format normalization, size/pixel/frame caps, metadata & payload stripping (decode-and-re-encode sanitization) | **Upload**                           | Viewer-independent; also the security checkpoint — assets enter by ID only after this                                                                                                 |
+| Poster frame / static preview derivative                                                                      | **Upload**                           | Viewer-independent; one per asset                                                                                                                                                     |
+| Web/share derivatives (ordinary image files for non-terminal surfaces)                                        | **Upload**                           | Viewer-independent                                                                                                                                                                    |
+| Kitty / sixel / iTerm2 encoding                                                                               | **Render** (presenter)               | Output is a function of probed tier + geometry; PNG passthrough also means the "conversion" is nearly free at render time                                                             |
+| Short-loop animation frame set (kitty `a=f`)                                                                  | **Render**, from the stored original | Frame geometry is viewer-dependent; the upload-time alternative (one frame set per geometry bucket) multiplies storage for a niche path — revisit only if a hot asset class proves it |
+| Symbols / ASCII sampling (stills)                                                                             | **Render**                           | Geometry- and ramp-dependent; cost is negligible next to decode                                                                                                                       |
+| Video decode + sampling (ASCII/symbols video)                                                                 | **Render**                           | §4.2's arithmetic: a pre-rendered ASCII stream is geometry-locked and larger than the source video; decode is the real cost and is tier-independent, so it sits next to the sampler   |
+| Long-video "kitty streaming"                                                                                  | **Not offered**                      | §2.2: not a viable stored or streamed tier; video viewers get the symbols/ASCII tiers, or an ordinary video surface outside the terminal ladder                                       |
 
 **Caching makes the split cheap.** Derivatives — uploaded or rendered — are keyed
 `(content hash, tier, geometry bucket, converter version)` in the content-addressed media
@@ -304,10 +304,10 @@ either is claimed as supported rather than merely detected.
 
 ## Amendment — 2026-11-23 (later the same day): the kitty encoder survey
 
-*Added after Drewry challenged §3's headline conclusion, naming kittage, little-kitty,
+_Added after Drewry challenged §3's headline conclusion, naming kittage, little-kitty,
 rasteroid, zellij, ghostty, and kitty-graphics-protocol-rs as implementations the survey
 should have covered. He was right. This section corrects the record; the original text
-above is unchanged.*
+above is unchanged._
 
 ### A.1 What was wrong
 
@@ -319,7 +319,7 @@ kitty graphics commands. Those exist, in Rust, today, and two of them cover most
 what §6.2 proposed to hand-roll. What survives the correction: §2's protocol mechanics,
 §4's placement analysis, §5's conversion-tool survey, §6.1/§6.3, §7's sequencing, and
 §6.2's wire-format description of what an encoder must emit. What changes is only the
-*build* decision — revised in A.3.
+_build_ decision — revised in A.3.
 
 Two factual updates to §2.3 fell out of the same pass:
 
@@ -341,20 +341,20 @@ Checked 2026-11-23 against crates.io, docs.rs, lib.rs, and project documentation
 4096-character chunking, image IDs, placements, an `a=q` query/response round-trip) and
 what §7 needs later (unicode placeholders, animation).
 
-| Project | Kind | Language | License | Coverage | State | Fit for #13623 |
-| --- | --- | --- | --- | --- | --- | --- |
-| kittage 0.4.0 | client encoder library | Rust | **MPL-2.0** | Everything except animation frames: all mediums (direct/file/temp/shared-memory), configurable chunk size, zlib compression, image IDs/numbers, placements incl. relative placements, virtual placements (unicode placeholders), delete, query + response reading (sync and async), tmux passthrough | 15 releases since 2025-08, latest 2026-04; ~13K downloads | Fullest fit of anything surveyed — held only by license class (A.3) |
-| little_kitty 0.0.3 (crate `little-kitty`) | client encoder library, low-level | Rust | **MIT OR Apache-2.0** | Generic control-key composition; its published docs demonstrate `a=T` transmit-and-place with `f=100`, file payloads, image IDs, `U=1` placeholder registration, `a=q` with expected response, and a support probe; tmux wrapping; response reader. No chunk-splitting helper appears in its documented surface (`write_base64` emits a payload whole) — verify at adoption | First published 2026-03; 3 releases; ~1K downloads | **Recommended base (A.3)** — permissive under §4.3 as written; the layer it provides is ~1.1K lines, thin enough to vendor under its own terms if it stalls |
-| kitty-graphics-protocol 0.1.3 | client encoder library | Rust | MIT | Claims everything: RGB/RGBA/PNG, chunked transfer (default 4 KB), animation, placeholders, placements, detection | All 4 versions published on a single day (2026-02-28); docs.rs fails to build it; ~860 downloads | Not adoptable on current evidence — claims unverified, no maintenance signal; its `serialize_chunked` design is a useful reference |
-| rasteroid 0.4.0 | encoder library (under the mcat viewer) | Rust | MIT | Kitty transmit-at-cursor only (`encode_image`, `encode_frames` for redraw-style animation); no image-ID, placement, placeholder, or query API | Active: 14 releases, mcat maintained | Does not cover #13623's transmit-by-ID + placement scope |
-| ratatui-image 11.x | encoder library (ratatui widget) | Rust | MIT | Kitty backend transmits RGBA in chunks and renders **only** via unicode placeholders written into ratatui's cell buffer | Very active; hundreds of dependent crates; cross-terminal screenshot QA | Architectural mismatch: pkgs/id does not use ratatui, and #13623 needs direct placement by ID. Field reports note its placeholder path does not render in WezTerm — at least one downstream project hand-rolled direct placement for exactly that reason |
-| viuer 0.11 | encoder library (under the viu viewer) | Rust | MIT (lib.rs also lists LGPL-3.0-or-later, via its sixel dependency) | Viewer-grade kitty: print at cursor; no IDs, placements, or placeholders | Maintained (2025-12) | Same class as the original survey's viu row; not #13623 scope |
-| yazi-adapter 26.x | application adapter (Yazi file manager) | Rust | MIT | Production kitty encoding incl. chunking and placeholders, inside Yazi's preview pipeline | Released with Yazi (latest 2026-05) | Prior art / behavioral reference, as the original survey had it; its API is Yazi's adapter surface, not a general encoder |
-| charmbracelet/x/ansi `kitty` | client encoder + decoder library | Go | MIT | Full: chunking (`MaxChunkSize`), all actions incl. animation frames, placeholders, complete delete taxonomy, plus a payload decoder | Actively maintained (v0.10.x) | Wrong language for pkgs/id; the best cross-language cross-check for #13623's golden fixtures |
-| zellij 0.45+ | terminal multiplexer (protocol intermediary) | Rust | MIT | Parses client kitty streams, tracks placements per pane, re-emits to host; `o=z` recompression when the host supports it | Current (0.46, 2026-11) | Not a library and not published as one; evidence for §2.3's multiplexer caveat and a placement-tracking reference |
-| ghostty 1.4 | terminal (renderer) | Zig | MIT | Project claims 100% of the published spec incl. animation and relative placements | Released 2026-10-27 | Conformance target and reference implementation; terminal-side, not a client encoder |
-| bboxy450_kitty_graphics 0.2.0 | terminal-side protocol state machine | Rust | non-standard | Chunked assembly, RGB/RGBA/PNG, display/delete/query; explicitly no file/shared-memory mediums, animation, or placeholders | Published 2026-11-13; 40 downloads | Terminal-side; completeness only |
-| xterm.js addon-image | terminal-side renderer | TypeScript | MIT | Full kitty command parsing/rendering in the browser terminal | Maintained with xterm.js | Terminal-side; completeness only |
+| Project                                   | Kind                                         | Language   | License                                                             | Coverage                                                                                                                                                                                                                                                                                                                                                                    | State                                                                                            | Fit for #13623                                                                                                                                                                                                                                           |
+| ----------------------------------------- | -------------------------------------------- | ---------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| kittage 0.4.0                             | client encoder library                       | Rust       | **MPL-2.0**                                                         | Everything except animation frames: all mediums (direct/file/temp/shared-memory), configurable chunk size, zlib compression, image IDs/numbers, placements incl. relative placements, virtual placements (unicode placeholders), delete, query + response reading (sync and async), tmux passthrough                                                                        | 15 releases since 2025-08, latest 2026-04; ~13K downloads                                        | Fullest fit of anything surveyed — held only by license class (A.3)                                                                                                                                                                                      |
+| little_kitty 0.0.3 (crate `little-kitty`) | client encoder library, low-level            | Rust       | **MIT OR Apache-2.0**                                               | Generic control-key composition; its published docs demonstrate `a=T` transmit-and-place with `f=100`, file payloads, image IDs, `U=1` placeholder registration, `a=q` with expected response, and a support probe; tmux wrapping; response reader. No chunk-splitting helper appears in its documented surface (`write_base64` emits a payload whole) — verify at adoption | First published 2026-03; 3 releases; ~1K downloads                                               | **Recommended base (A.3)** — permissive under §4.3 as written; the layer it provides is ~1.1K lines, thin enough to vendor under its own terms if it stalls                                                                                              |
+| kitty-graphics-protocol 0.1.3             | client encoder library                       | Rust       | MIT                                                                 | Claims everything: RGB/RGBA/PNG, chunked transfer (default 4 KB), animation, placeholders, placements, detection                                                                                                                                                                                                                                                            | All 4 versions published on a single day (2026-02-28); docs.rs fails to build it; ~860 downloads | Not adoptable on current evidence — claims unverified, no maintenance signal; its `serialize_chunked` design is a useful reference                                                                                                                       |
+| rasteroid 0.4.0                           | encoder library (under the mcat viewer)      | Rust       | MIT                                                                 | Kitty transmit-at-cursor only (`encode_image`, `encode_frames` for redraw-style animation); no image-ID, placement, placeholder, or query API                                                                                                                                                                                                                               | Active: 14 releases, mcat maintained                                                             | Does not cover #13623's transmit-by-ID + placement scope                                                                                                                                                                                                 |
+| ratatui-image 11.x                        | encoder library (ratatui widget)             | Rust       | MIT                                                                 | Kitty backend transmits RGBA in chunks and renders **only** via unicode placeholders written into ratatui's cell buffer                                                                                                                                                                                                                                                     | Very active; hundreds of dependent crates; cross-terminal screenshot QA                          | Architectural mismatch: pkgs/id does not use ratatui, and #13623 needs direct placement by ID. Field reports note its placeholder path does not render in WezTerm — at least one downstream project hand-rolled direct placement for exactly that reason |
+| viuer 0.11                                | encoder library (under the viu viewer)       | Rust       | MIT (lib.rs also lists LGPL-3.0-or-later, via its sixel dependency) | Viewer-grade kitty: print at cursor; no IDs, placements, or placeholders                                                                                                                                                                                                                                                                                                    | Maintained (2025-12)                                                                             | Same class as the original survey's viu row; not #13623 scope                                                                                                                                                                                            |
+| yazi-adapter 26.x                         | application adapter (Yazi file manager)      | Rust       | MIT                                                                 | Production kitty encoding incl. chunking and placeholders, inside Yazi's preview pipeline                                                                                                                                                                                                                                                                                   | Released with Yazi (latest 2026-05)                                                              | Prior art / behavioral reference, as the original survey had it; its API is Yazi's adapter surface, not a general encoder                                                                                                                                |
+| charmbracelet/x/ansi `kitty`              | client encoder + decoder library             | Go         | MIT                                                                 | Full: chunking (`MaxChunkSize`), all actions incl. animation frames, placeholders, complete delete taxonomy, plus a payload decoder                                                                                                                                                                                                                                         | Actively maintained (v0.10.x)                                                                    | Wrong language for pkgs/id; the best cross-language cross-check for #13623's golden fixtures                                                                                                                                                             |
+| zellij 0.45+                              | terminal multiplexer (protocol intermediary) | Rust       | MIT                                                                 | Parses client kitty streams, tracks placements per pane, re-emits to host; `o=z` recompression when the host supports it                                                                                                                                                                                                                                                    | Current (0.46, 2026-11)                                                                          | Not a library and not published as one; evidence for §2.3's multiplexer caveat and a placement-tracking reference                                                                                                                                        |
+| ghostty 1.4                               | terminal (renderer)                          | Zig        | MIT                                                                 | Project claims 100% of the published spec incl. animation and relative placements                                                                                                                                                                                                                                                                                           | Released 2026-10-27                                                                              | Conformance target and reference implementation; terminal-side, not a client encoder                                                                                                                                                                     |
+| bboxy450_kitty_graphics 0.2.0             | terminal-side protocol state machine         | Rust       | non-standard                                                        | Chunked assembly, RGB/RGBA/PNG, display/delete/query; explicitly no file/shared-memory mediums, animation, or placeholders                                                                                                                                                                                                                                                  | Published 2026-11-13; 40 downloads                                                               | Terminal-side; completeness only                                                                                                                                                                                                                         |
+| xterm.js addon-image                      | terminal-side renderer                       | TypeScript | MIT                                                                 | Full kitty command parsing/rendering in the browser terminal                                                                                                                                                                                                                                                                                                                | Maintained with xterm.js                                                                         | Terminal-side; completeness only                                                                                                                                                                                                                         |
 
 Nothing in the original §3 table was a protocol library — every entry was a converter or
 an application — which is precisely the gap. Those entries stand as converter/application
@@ -388,7 +388,7 @@ permissively-licensed library provides.**
    hardens. This amendment does not make that ruling.
 4. **What does not change:** §6.2's wire spec (it now describes what the library must
    emit, and the fixtures still verify exactly that); §7's sequencing; the probe-gated
-   posture (`a=q` before commitment, never TERM names); and §3's *converter* conclusions
+   posture (`a=q` before commitment, never TERM names); and §3's _converter_ conclusions
    (chafa/libsixel/notcurses remain the conversion-side story — this correction concerns
    only the protocol-encoder layer).
 
@@ -403,4 +403,3 @@ query with expected response, support probe; `KittyCommandWriter` surface); Ghos
 protocol-status documentation and 1.4 release notes; Zellij 0.45.0 release notes and
 configuration documentation (`support_kitty_graphics_protocol`); charmbracelet/x/ansi
 `kitty` package documentation (pkg.go.dev).
-

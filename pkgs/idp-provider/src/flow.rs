@@ -9,21 +9,30 @@
 //! credential serves a small login form; the form POSTs back to
 //! `/authorize` with the local credential, which is verified against
 //! the PBKDF2 hash in the on-host provider config (never in the
-//! repo). The deny-by-default allowlist is enforced in the provider
-//! before the credential is even checked, and EVERY authorize/token
-//! attempt — allowed, denied, or form challenge — is appended to the
-//! audit record. A failed audit write fails the attempt closed.
+//! repo). The form also lists the configured federated doors
+//! (#13411/#13412/#13414), which start at `/door/{name}/start` and
+//! are handled in `doors.rs`.
+//!
+//! The deny-by-default allowlist is enforced in the provider before
+//! the credential is even checked, and EVERY authorize/token
+//! attempt — allowed, denied, or form challenge — is appended to
+//! the audit record. A failed audit write fails the attempt closed.
+//! Link state lives in the identity store (#13415): the local door
+//! checks it exactly like a federated door does.
 
 use crate::audit::AuditLog;
+use crate::doors::PendingDoor;
+use crate::identities::IdentityStore;
 use crate::registry::{
-    now_unix, random_b64url, verify_credential, ProviderConfig, LOCAL_DOOR_PROVIDER,
+    LOCAL_DOOR_PROVIDER, ProviderConfig, now_unix, random_b64url, url_encode, verify_credential,
 };
 use crate::signing::TokenSigner;
+use crate::upstream::DoorRuntime;
 use axum::{
-    extract::{Form, Query, State},
-    http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Response},
     Json,
+    extract::{Form, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{Html, IntoResponse, Response},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -49,8 +58,18 @@ pub struct FlowState {
     pub registry: ProviderConfig,
     pub signer: TokenSigner,
     pub audit: Arc<AuditLog>,
+    /// Link state for the account's identities (#13415), seeded
+    /// from the registry config at construction.
+    pub identities: Arc<IdentityStore>,
+    /// Configured federated doors (empty until doors are
+    /// registered and configured on-host).
+    pub doors: Vec<DoorRuntime>,
+    /// HTTP client for upstream door calls.
+    pub http: reqwest::Client,
+    /// Parked federated-door authorize requests, by state handle.
+    pub pending_doors: Mutex<HashMap<String, PendingDoor>>,
     codes: Mutex<HashMap<String, AuthCode>>,
-    issuer: String,
+    pub issuer: String,
 }
 
 impl FlowState {
@@ -58,12 +77,21 @@ impl FlowState {
         registry: ProviderConfig,
         signer: TokenSigner,
         audit: Arc<AuditLog>,
+        identities: Arc<IdentityStore>,
+        doors: Vec<DoorRuntime>,
         issuer: String,
     ) -> Self {
+        // The config's identity list is the store's seed (#13415);
+        // after seeding, the store is authoritative.
+        let _ = identities.seed(&registry.account.account_id, &registry.account.identities);
         FlowState {
             registry,
             signer,
             audit,
+            identities,
+            doors,
+            http: reqwest::Client::new(),
+            pending_doors: Mutex::new(HashMap::new()),
             codes: Mutex::new(HashMap::new()),
             issuer,
         }
@@ -85,7 +113,7 @@ pub struct AuthorizeParams {
     pub credential: Option<String>,
 }
 
-fn err_json(status: StatusCode, error: &str, description: &str) -> Response {
+pub(crate) fn err_json(status: StatusCode, error: &str, description: &str) -> Response {
     (
         status,
         Json(serde_json::json!({"error": error, "error_description": description})),
@@ -96,7 +124,7 @@ fn err_json(status: StatusCode, error: &str, description: &str) -> Response {
 /// Audit-then-error helper: records a denied attempt and returns the
 /// error response. If the audit write itself fails, the attempt
 /// still fails (with a plainer error) — never succeeds unaudited.
-fn denied(
+pub(crate) fn denied(
     flow: &FlowState,
     endpoint: &str,
     reason: &str,
@@ -119,7 +147,170 @@ fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn login_form(p: &AuthorizeParams) -> Html<String> {
+/// A relying-party authorize request that passed the static checks
+/// shared by every door: known client, registered redirect URI,
+/// `response_type=code`, PKCE S256, `openid` scope.
+pub struct ValidatedAuthorize {
+    pub client_id: String,
+    pub redirect_uri: String,
+    pub code_challenge: String,
+    pub scope: String,
+}
+
+/// The static authorize-request checks, in the local door's order,
+/// with the local door's audit rows. Used by `/authorize` itself
+/// and by the federated doors' start handler — a request that
+/// would be denied here is denied before the user is sent upstream.
+pub(crate) fn validate_authorize_request(
+    flow: &FlowState,
+    p: &AuthorizeParams,
+) -> Result<ValidatedAuthorize, Response> {
+    let client_id = p.client_id.clone().unwrap_or_default();
+    let login_id = p.login_id.clone().unwrap_or_default();
+    let identity_key = if login_id.is_empty() {
+        String::new()
+    } else {
+        format!("{LOCAL_DOOR_PROVIDER}:{login_id}")
+    };
+
+    let client = match flow.registry.client(&client_id) {
+        Some(c) => c,
+        None => {
+            return Err(denied(
+                flow,
+                "authorize",
+                "unknown_client",
+                &client_id,
+                &identity_key,
+                StatusCode::BAD_REQUEST,
+                "invalid_client",
+                "unknown client_id",
+            ));
+        }
+    };
+    let redirect_uri = p.redirect_uri.clone().unwrap_or_default();
+    if !client.redirect_uris.iter().any(|u| u == &redirect_uri) {
+        return Err(denied(
+            flow,
+            "authorize",
+            "redirect_uri_mismatch",
+            &client_id,
+            &identity_key,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "redirect_uri is not registered for this client",
+        ));
+    }
+    if p.response_type.as_deref() != Some("code") {
+        return Err(denied(
+            flow,
+            "authorize",
+            "unsupported_response_type",
+            &client_id,
+            &identity_key,
+            StatusCode::BAD_REQUEST,
+            "unsupported_response_type",
+            "only response_type=code is supported",
+        ));
+    }
+    if p.code_challenge_method.as_deref() != Some("S256")
+        || p.code_challenge.as_deref().unwrap_or("").is_empty()
+    {
+        return Err(denied(
+            flow,
+            "authorize",
+            "pkce_s256_required",
+            &client_id,
+            &identity_key,
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "PKCE with code_challenge_method=S256 is required",
+        ));
+    }
+    let scope = p.scope.clone().unwrap_or_default();
+    if !scope.split_whitespace().any(|s| s == "openid") {
+        return Err(denied(
+            flow,
+            "authorize",
+            "openid_scope_required",
+            &client_id,
+            &identity_key,
+            StatusCode::BAD_REQUEST,
+            "invalid_scope",
+            "scope must include openid",
+        ));
+    }
+    Ok(ValidatedAuthorize {
+        client_id,
+        redirect_uri,
+        code_challenge: p.code_challenge.clone().unwrap_or_default(),
+        scope,
+    })
+}
+
+/// Mint a single-use authorization code bound to an already-gated
+/// identity, and audit the issuance under `audit_endpoint`
+/// (`authorize` for the local door, `door/{name}` for a federated
+/// door). A failed audit write burns the code and fails closed.
+pub(crate) fn issue_code(
+    flow: &FlowState,
+    client_id: &str,
+    redirect_uri: &str,
+    code_challenge: &str,
+    identity_key: &str,
+    nonce: Option<&str>,
+    scope: &str,
+    audit_endpoint: &str,
+) -> Result<String, Response> {
+    let code = random_b64url(32);
+    let record = AuthCode {
+        client_id: client_id.to_string(),
+        redirect_uri: redirect_uri.to_string(),
+        code_challenge: code_challenge.to_string(),
+        account_id: flow.registry.account.account_id.clone(),
+        identity_key: identity_key.to_string(),
+        nonce: nonce.map(|s| s.to_string()),
+        scope: scope.to_string(),
+        expires_at: now_unix() + CODE_TTL_SECS,
+    };
+    match flow.codes.lock() {
+        Ok(mut codes) => {
+            codes.insert(code.clone(), record);
+        }
+        Err(_) => {
+            return Err(err_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                "code store unavailable",
+            ));
+        }
+    }
+    if flow
+        .audit
+        .record(
+            audit_endpoint,
+            "allowed",
+            "code_issued",
+            client_id,
+            identity_key,
+        )
+        .is_err()
+    {
+        // Fail closed: an unaudited success is not a success. Burn
+        // the code we just minted.
+        if let Ok(mut codes) = flow.codes.lock() {
+            codes.remove(&code);
+        }
+        return Err(err_json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "audit write failed",
+        ));
+    }
+    Ok(code)
+}
+
+fn login_form(flow: &FlowState, p: &AuthorizeParams) -> Html<String> {
     let hidden = |name: &str, value: &Option<String>| -> String {
         match value {
             Some(v) => format!(
@@ -140,93 +331,72 @@ fn login_form(p: &AuthorizeParams) -> Html<String> {
         hidden("code_challenge_method", &p.code_challenge_method),
     ]
     .concat();
+    // Federated doors: one link per enabled door, carrying the
+    // relying party's authorize parameters to the door's start
+    // endpoint (which re-validates them before redirecting).
+    let door_query = [
+        ("response_type", &p.response_type),
+        ("client_id", &p.client_id),
+        ("redirect_uri", &p.redirect_uri),
+        ("scope", &p.scope),
+        ("state", &p.state),
+        ("nonce", &p.nonce),
+        ("code_challenge", &p.code_challenge),
+        ("code_challenge_method", &p.code_challenge_method),
+    ]
+    .iter()
+    .filter_map(|(k, v)| {
+        v.as_ref()
+            .map(|v| format!("{}={}", url_encode(k), url_encode(v)))
+    })
+    .collect::<Vec<_>>()
+    .join("&");
+    let door_links = flow
+        .doors
+        .iter()
+        .filter(|d| d.enabled())
+        .map(|d| {
+            let label = if d.config.display_name.is_empty() {
+                d.name().to_string()
+            } else {
+                d.config.display_name.clone()
+            };
+            format!(
+                "<li><a href=\"/door/{}/start?{}\">Sign in with {}</a></li>",
+                html_escape(d.name()),
+                html_escape(&door_query),
+                html_escape(&label)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let doors_block = if door_links.is_empty() {
+        String::new()
+    } else {
+        format!("<p>Or sign in with a linked door:</p><ul>{door_links}</ul>")
+    };
     Html(format!(
         "<!doctype html><html><head><title>devtoday SSO — local door</title></head>\
          <body><h1>devtoday SSO</h1><p>Sign in with your devtoday local identity.</p>\
          <form method=\"post\" action=\"/authorize\">{hiddens}\
          <label>Local identity <input name=\"login_id\" autocomplete=\"username\"></label>\
          <label>Credential <input type=\"password\" name=\"credential\" autocomplete=\"current-password\"></label>\
-         <button type=\"submit\">Sign in</button></form></body></html>"
+         <button type=\"submit\">Sign in</button></form>{doors_block}</body></html>"
     ))
 }
 
 fn authorize(flow: &FlowState, p: AuthorizeParams) -> Response {
-    let client_id = p.client_id.clone().unwrap_or_default();
+    let valid = match validate_authorize_request(flow, &p) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let client_id = valid.client_id.clone();
     let login_id = p.login_id.clone().unwrap_or_default();
     let identity_key = if login_id.is_empty() {
         String::new()
     } else {
         format!("{LOCAL_DOOR_PROVIDER}:{login_id}")
     };
-
-    // Static client registry — unknown clients never get a redirect.
-    let client = match flow.registry.client(&client_id) {
-        Some(c) => c,
-        None => {
-            return denied(
-                flow,
-                "authorize",
-                "unknown_client",
-                &client_id,
-                &identity_key,
-                StatusCode::BAD_REQUEST,
-                "invalid_client",
-                "unknown client_id",
-            )
-        }
-    };
-    let redirect_uri = p.redirect_uri.clone().unwrap_or_default();
-    if !client.redirect_uris.iter().any(|u| u == &redirect_uri) {
-        return denied(
-            flow,
-            "authorize",
-            "redirect_uri_mismatch",
-            &client_id,
-            &identity_key,
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "redirect_uri is not registered for this client",
-        );
-    }
-    if p.response_type.as_deref() != Some("code") {
-        return denied(
-            flow,
-            "authorize",
-            "unsupported_response_type",
-            &client_id,
-            &identity_key,
-            StatusCode::BAD_REQUEST,
-            "unsupported_response_type",
-            "only response_type=code is supported",
-        );
-    }
-    if p.code_challenge_method.as_deref() != Some("S256")
-        || p.code_challenge.as_deref().unwrap_or("").is_empty()
-    {
-        return denied(
-            flow,
-            "authorize",
-            "pkce_s256_required",
-            &client_id,
-            &identity_key,
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "PKCE with code_challenge_method=S256 is required",
-        );
-    }
-    let scope = p.scope.clone().unwrap_or_default();
-    if !scope.split_whitespace().any(|s| s == "openid") {
-        return denied(
-            flow,
-            "authorize",
-            "openid_scope_required",
-            &client_id,
-            &identity_key,
-            StatusCode::BAD_REQUEST,
-            "invalid_scope",
-            "scope must include openid",
-        );
-    }
 
     // No credential presented yet: serve the local-door login form.
     // This is a challenge, not an authentication attempt outcome.
@@ -238,7 +408,7 @@ fn authorize(flow: &FlowState, p: AuthorizeParams) -> Response {
             &client_id,
             "",
         );
-        return login_form(&p).into_response();
+        return login_form(flow, &p).into_response();
     }
 
     // Deny-by-default gate, enforced in the provider, BEFORE the
@@ -256,7 +426,7 @@ fn authorize(flow: &FlowState, p: AuthorizeParams) -> Response {
             "identity is not on the allowlist",
         );
     }
-    if !flow.registry.is_linked(LOCAL_DOOR_PROVIDER, &login_id) {
+    if !flow.identities.is_active(LOCAL_DOOR_PROVIDER, &login_id) {
         return denied(
             flow,
             "authorize",
@@ -285,52 +455,20 @@ fn authorize(flow: &FlowState, p: AuthorizeParams) -> Response {
     }
 
     // Success: mint a single-use authorization code.
-    let code = random_b64url(32);
-    let record = AuthCode {
-        client_id: client_id.clone(),
-        redirect_uri: redirect_uri.clone(),
-        code_challenge: p.code_challenge.clone().unwrap_or_default(),
-        account_id: flow.registry.account.account_id.clone(),
-        identity_key: identity_key.clone(),
-        nonce: p.nonce.clone(),
-        scope: scope.clone(),
-        expires_at: now_unix() + CODE_TTL_SECS,
+    let code = match issue_code(
+        flow,
+        &valid.client_id,
+        &valid.redirect_uri,
+        &valid.code_challenge,
+        &identity_key,
+        p.nonce.as_deref(),
+        &valid.scope,
+        "authorize",
+    ) {
+        Ok(c) => c,
+        Err(resp) => return resp,
     };
-    match flow.codes.lock() {
-        Ok(mut codes) => {
-            codes.insert(code.clone(), record);
-        }
-        Err(_) => {
-            return err_json(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                "code store unavailable",
-            )
-        }
-    }
-    if flow
-        .audit
-        .record(
-            "authorize",
-            "allowed",
-            "code_issued",
-            &client_id,
-            &identity_key,
-        )
-        .is_err()
-    {
-        // Fail closed: an unaudited success is not a success. Burn
-        // the code we just minted.
-        if let Ok(mut codes) = flow.codes.lock() {
-            codes.remove(&code);
-        }
-        return err_json(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "server_error",
-            "audit write failed",
-        );
-    }
-    let mut location = format!("{redirect_uri}?code={code}");
+    let mut location = format!("{}?code={code}", valid.redirect_uri);
     if let Some(state) = &p.state {
         location.push_str(&format!("&state={state}"));
     }
@@ -382,7 +520,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
                 StatusCode::SERVICE_UNAVAILABLE,
                 "server_error",
                 "token flow is not configured on this provider instance",
-            )
+            );
         }
     };
     let client_id = p.client_id.clone().unwrap_or_default();
@@ -409,7 +547,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "server_error",
                     "code store unavailable",
-                )
+                );
             }
         };
         codes.remove(&code)
@@ -426,7 +564,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
                 StatusCode::BAD_REQUEST,
                 "invalid_grant",
                 "authorization code is unknown, expired, or already used",
-            )
+            );
         }
     };
     let identity = record.identity_key.clone();
@@ -515,7 +653,7 @@ pub async fn token(State(st): State<crate::AppState>, Form(p): Form<TokenParams>
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
                 "token signing failed",
-            )
+            );
         }
     };
     if flow
@@ -547,7 +685,7 @@ pub async fn userinfo(State(st): State<crate::AppState>, headers: HeaderMap) -> 
                 StatusCode::SERVICE_UNAVAILABLE,
                 "server_error",
                 "userinfo is not configured on this provider instance",
-            )
+            );
         }
     };
     let token_value = headers
@@ -560,8 +698,8 @@ pub async fn userinfo(State(st): State<crate::AppState>, headers: HeaderMap) -> 
             return err_json(
                 StatusCode::UNAUTHORIZED,
                 "invalid_token",
-                "a Bearer access token is required",
-            )
+                "a Bearer <redacted> token is required",
+            );
         }
     };
     let claims = match flow.signer.verify_jwt(token_value) {

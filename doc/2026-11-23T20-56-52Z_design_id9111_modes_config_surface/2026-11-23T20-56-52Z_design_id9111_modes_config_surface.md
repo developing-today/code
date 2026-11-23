@@ -55,17 +55,17 @@ A thing is **config** when an operator may legitimately choose a different value
 correct for every value in the allowed range. It is a **primitive** when changing it changes what the
 protocol means, or when it is a guarantee a peer relies on.
 
-| Put it in config (behaviour)                                                                        | Keep it a primitive (mechanism or invariant)                                                                                                                              |
-| --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Which mode bundle applies; per-mode defaults                                                        | The acceptance gate (signature, signer, semantics, scope) — not disableable                                                                                                |
-| Peer class and operation set per peer (ceiling and grant)                                           | Class semantics (what `send_only` means); class is a ceiling, not a grant                                                                                                 |
-| Link kind selection per peer and per operation (sync, query/fan-out, send-only, control)           | The wire contract of each link kind; a link kind cannot add an unauthenticated path                                                                                       |
-| Storage binding: which adapter family backs which store, its durability and retention class        | The port contract each adapter must meet (atomic scope, unknown-outcome readback, conformance)                                                                            |
-| Data-tier and storage-tier placement and retention mapped from tier identifiers                     | Tier identifiers are signed, versioned data; reclassification creates a new version, never mutates an old one                                                            |
-| Fan-out `priority`, `timeout_ms`, `deadline_ms`, `per_peer_timeout_ms`, `peer_breadth`, `max_hops` (within ceiling) | The hop ceiling (8), budgets that are finite by construction, provenance, duplicate and loop rejection                                                                  |
-| Local rating weights and thresholds (Part B V4)                                                      | Rejection observability; emergency peer disable; key revocation                                                                                                           |
-| Namespace registry reference and `shorthand_policy` / `defaultSlot`                                  | Core parsing of `id://` and the two address cores                                                                                                                          |
-| Sync scope and retention within a declared maximum                                                   | Signed-and-validated acceptance; finite dedup retention with a bounded hard maximum                                                                                       |
+| Put it in config (behaviour)                                                                                        | Keep it a primitive (mechanism or invariant)                                                                  |
+| ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Which mode bundle applies; per-mode defaults                                                                        | The acceptance gate (signature, signer, semantics, scope) — not disableable                                   |
+| Peer class and operation set per peer (ceiling and grant)                                                           | Class semantics (what `send_only` means); class is a ceiling, not a grant                                     |
+| Link kind selection per peer and per operation (sync, query/fan-out, send-only, control)                            | The wire contract of each link kind; a link kind cannot add an unauthenticated path                           |
+| Storage binding: which adapter family backs which store, its durability and retention class                         | The port contract each adapter must meet (atomic scope, unknown-outcome readback, conformance)                |
+| Data-tier and storage-tier placement and retention mapped from tier identifiers                                     | Tier identifiers are signed, versioned data; reclassification creates a new version, never mutates an old one |
+| Fan-out `priority`, `timeout_ms`, `deadline_ms`, `per_peer_timeout_ms`, `peer_breadth`, `max_hops` (within ceiling) | The hop ceiling (8), budgets that are finite by construction, provenance, duplicate and loop rejection        |
+| Local rating weights and thresholds (Part B V4)                                                                     | Rejection observability; emergency peer disable; key revocation                                               |
+| Namespace registry reference and `shorthand_policy` / `defaultSlot`                                                 | Core parsing of `id://` and the two address cores                                                             |
+| Sync scope and retention within a declared maximum                                                                  | Signed-and-validated acceptance; finite dedup retention with a bounded hard maximum                           |
 
 **Rule R-1 (split test).** A key is config only if (a) it has a default, (b) its every allowed value
 is safe under the gate, and (c) it does not appear in the list of invariants in §5.3. Otherwise it is
@@ -83,21 +83,21 @@ decides what it may do. Config never supplies code.
 One `ConfigDocument` per deployment, in a single file format (§6). It has these top-level keys. Each
 key is mandatory or optional as shown; unknown top-level keys are a load error (§6.4).
 
-| Key                  | Required | Meaning                                                                                                   |
-| -------------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `schema_version`     | yes      | Integer. This record defines `1`. A newer major rejects the file; a newer minor adds optional keys only.  |
-| `config_id`          | yes      | Stable string identifying the deployment's config lineage.                                                |
-| `revision`           | yes      | Monotonic integer. Activation rejects a revision lower than the active one (§6.6).                        |
-| `mode`               | yes      | Name of a mode bundle (§4). Must resolve to a built-in or an allowlisted bundle.                          |
-| `protocol_versions`  | no       | Allowlist of protocol versions this node will negotiate. Default: the versions the binary implements.      |
-| `ceilings`           | no       | Hard resource ceilings (§5.2). Non-overridable. Defaults in §5.2.                                         |
-| `peers`              | no       | Array of peer entries (§3.2). Default: empty (no peers; local-only).                                      |
-| `links`              | no       | Link-kind bindings (§3.3). Default: sync and query disabled.                                              |
-| `storage`            | no       | Storage bindings (§3.4). Default: the local persistent store only.                                        |
-| `tiers`              | no       | Tier identifiers → placement and retention (§3.5). Default: none; all records in tier `default`.           |
-| `namespaces`         | no       | Reference to the server-local namespace registry (#9116). Default: built-in registry only.                |
-| `extensions`         | no       | Map keyed by namespaced name `vendor.name`. Retained; never executed unless understood and authorized.    |
-| `fanout`             | no       | The #9144 fan-out keys (§7). Default: empty remote list, local-only behaviour.                            |
+| Key                 | Required | Meaning                                                                                                  |
+| ------------------- | -------- | -------------------------------------------------------------------------------------------------------- |
+| `schema_version`    | yes      | Integer. This record defines `1`. A newer major rejects the file; a newer minor adds optional keys only. |
+| `config_id`         | yes      | Stable string identifying the deployment's config lineage.                                               |
+| `revision`          | yes      | Monotonic integer. Activation rejects a revision lower than the active one (§6.6).                       |
+| `mode`              | yes      | Name of a mode bundle (§4). Must resolve to a built-in or an allowlisted bundle.                         |
+| `protocol_versions` | no       | Allowlist of protocol versions this node will negotiate. Default: the versions the binary implements.    |
+| `ceilings`          | no       | Hard resource ceilings (§5.2). Non-overridable. Defaults in §5.2.                                        |
+| `peers`             | no       | Array of peer entries (§3.2). Default: empty (no peers; local-only).                                     |
+| `links`             | no       | Link-kind bindings (§3.3). Default: sync and query disabled.                                             |
+| `storage`           | no       | Storage bindings (§3.4). Default: the local persistent store only.                                       |
+| `tiers`             | no       | Tier identifiers → placement and retention (§3.5). Default: none; all records in tier `default`.         |
+| `namespaces`        | no       | Reference to the server-local namespace registry (#9116). Default: built-in registry only.               |
+| `extensions`        | no       | Map keyed by namespaced name `vendor.name`. Retained; never executed unless understood and authorized.   |
+| `fanout`            | no       | The #9144 fan-out keys (§7). Default: empty remote list, local-only behaviour.                           |
 
 Secrets are never inline. A key that needs a secret takes a reference `{ "secret_ref": "<name>" }`
 resolved by the secrets store at activation. Resolved output shows the reference, not the value.
@@ -140,12 +140,12 @@ A link kind is a transport capability choice, bound per peer and per operation. 
 the same peer may be reached by different kinds for different work; it is a primitive because each
 kind's wire contract is fixed by its protocol.
 
-| Link kind     | Carries                                              | Allowed classes                                  | Config keys                                  |
-| ------------- | ---------------------------------------------------- | ------------------------------------------------ | -------------------------------------------- |
-| `sync`        | Signed events and objects, both directions per ops   | `fully_trusted`, `accept_signed_from`, `send_only` (send side only) | `sync_scope`, `retention_class`, `adapter`   |
-| `query`       | Read-only queries and signed answers (fan-out, #9144) | `fully_trusted`, `accept_signed_from` (query-out); `fully_trusted` + `relay_granted` (relay) | `timeout_ms`, `per_peer_timeout_ms`          |
-| `send_only`   | Outbound-only delivery, no inbound acceptance        | `send_only`                                      | `adapter`, `retention_class`                 |
-| `control`     | Emergency peer disable, key revocation messages      | any; always available                            | none (cannot be disabled, §5.3)              |
+| Link kind   | Carries                                               | Allowed classes                                                                              | Config keys                                |
+| ----------- | ----------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `sync`      | Signed events and objects, both directions per ops    | `fully_trusted`, `accept_signed_from`, `send_only` (send side only)                          | `sync_scope`, `retention_class`, `adapter` |
+| `query`     | Read-only queries and signed answers (fan-out, #9144) | `fully_trusted`, `accept_signed_from` (query-out); `fully_trusted` + `relay_granted` (relay) | `timeout_ms`, `per_peer_timeout_ms`        |
+| `send_only` | Outbound-only delivery, no inbound acceptance         | `send_only`                                                                                  | `adapter`, `retention_class`               |
+| `control`   | Emergency peer disable, key revocation messages       | any; always available                                                                        | none (cannot be disabled, §5.3)            |
 
 `links` in the document holds **defaults per kind**: `links.sync.adapter`, `links.query.timeout_ms`,
 and so on. Per-peer values in `peers[]` override them within the ceilings. Per-operation overrides
@@ -198,11 +198,11 @@ identity or privilege (summit crosscut).
 
 Built-in modes at this record's date:
 
-| Mode              | What it sets (defaults only)                                                                                  |
-| ----------------- | ------------------------------------------------------------------------------------------------------------- |
-| `single-node`     | No peers; `fanout.remotes = []`; `links` all off; local store only. Behaves as v1 local-only.                 |
+| Mode              | What it sets (defaults only)                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| `single-node`     | No peers; `fanout.remotes = []`; `links` all off; local store only. Behaves as v1 local-only.                   |
 | `hosted-tenant`   | Peers allowed only from the tenant's configured list; relay off; hosted service is an ordinary configured peer. |
-| `federated-relay` | Peers allowed; `relay` allowed only for `fully_trusted` peers with `relay_granted`; `max_hops = 3`.           |
+| `federated-relay` | Peers allowed; `relay` allowed only for `fully_trusted` peers with `relay_granted`; `max_hops = 3`.             |
 
 A mode may set any **behavioural** default in §3 and §7. It may not set a ceiling (§5.2), an invariant
 (§5.3), a class ceiling, or an identity. A custom mode is a file in the `modes/` directory of the config
@@ -222,15 +222,15 @@ ceiling by setting a mode default above it.
 
 ### 5.2 Hard ceilings (non-overridable)
 
-| Key                             | Default | Ceiling (reject above) | Source                    |
-| ------------------------------- | ------- | ---------------------- | ------------------------- |
-| `fanout.max_hops`               | 3       | **8**                  | #9144 §5.1, Q1            |
-| `fanout.peer_breadth`           | 4       | 16                     | this record; #9144 §5.3   |
-| `fanout.deadline_ms`            | 5000    | 60000                  | #9144 Q5                  |
-| `fanout.per_peer_timeout_ms`    | 2000    | 30000                  | #9144 Q5                  |
-| `ceilings.max_response_bytes`   | 4 MiB   | 64 MiB                 | Part B budgets            |
-| `ceilings.max_work_units`       | 10000   | 1000000                | Part B budgets            |
-| `ceilings.dedup_retention_s`    | 86400   | 604800                 | Part B finite dedup       |
+| Key                           | Default | Ceiling (reject above) | Source                  |
+| ----------------------------- | ------- | ---------------------- | ----------------------- |
+| `fanout.max_hops`             | 3       | **8**                  | #9144 §5.1, Q1          |
+| `fanout.peer_breadth`         | 4       | 16                     | this record; #9144 §5.3 |
+| `fanout.deadline_ms`          | 5000    | 60000                  | #9144 Q5                |
+| `fanout.per_peer_timeout_ms`  | 2000    | 30000                  | #9144 Q5                |
+| `ceilings.max_response_bytes` | 4 MiB   | 64 MiB                 | Part B budgets          |
+| `ceilings.max_work_units`     | 10000   | 1000000                | Part B budgets          |
+| `ceilings.dedup_retention_s`  | 86400   | 604800                 | Part B finite dedup     |
 
 The ceilings in the second and later rows are proposed starting values, changeable by amending this
 record. The `fanout` values are fixed by #9144. The table's "ceiling" column is the reject boundary.
@@ -339,14 +339,14 @@ digest. Secrets appear as references. This output is what an operator reviews be
 
 These are the keys #9144 §8 and §11.1 name. Each has the default and ceiling given there or here.
 
-| Key                    | Type                                              | Default   | Validation                                                          |
-| ---------------------- | ------------------------------------------------- | --------- | ------------------------------------------------------------------- |
-| `fanout.remotes[]`     | list of `{peer_id, priority, relay, timeout_ms?, scope?}` | `[]` (local-only) | `peer_id` must exist in `peers[]`; `priority` integer; ties broken by list position |
-| `fanout.remotes[].relay` | bool                                            | `false`   | `true` only if the peer is `fully_trusted` with `relay_granted` (§7.3) |
-| `fanout.max_hops`      | integer                                           | `3`       | `1 ≤ n ≤ 8`; **a value above 8 is rejected** at load                 |
-| `fanout.deadline_ms`   | integer                                           | `5000`    | `1 ≤ n ≤ 60000`                                                     |
-| `fanout.per_peer_timeout_ms` | integer                                     | `2000`    | `1 ≤ n ≤ 30000`; must be ≤ `deadline_ms` or it is clamped and logged |
-| `fanout.peer_breadth`  | integer                                           | `4`       | `1 ≤ n ≤ 16`                                                        |
+| Key                          | Type                                                      | Default           | Validation                                                                          |
+| ---------------------------- | --------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------- |
+| `fanout.remotes[]`           | list of `{peer_id, priority, relay, timeout_ms?, scope?}` | `[]` (local-only) | `peer_id` must exist in `peers[]`; `priority` integer; ties broken by list position |
+| `fanout.remotes[].relay`     | bool                                                      | `false`           | `true` only if the peer is `fully_trusted` with `relay_granted` (§7.3)              |
+| `fanout.max_hops`            | integer                                                   | `3`               | `1 ≤ n ≤ 8`; **a value above 8 is rejected** at load                                |
+| `fanout.deadline_ms`         | integer                                                   | `5000`            | `1 ≤ n ≤ 60000`                                                                     |
+| `fanout.per_peer_timeout_ms` | integer                                                   | `2000`            | `1 ≤ n ≤ 30000`; must be ≤ `deadline_ms` or it is clamped and logged                |
+| `fanout.peer_breadth`        | integer                                                   | `4`               | `1 ≤ n ≤ 16`                                                                        |
 
 Notes that come from #9144:
 
@@ -381,15 +381,15 @@ and the Part A knobs (namespace registry reference, `shorthand_policy`, `default
 in the **same** document, in separate sections so the planes stay separate (summit crosscut: "peer,
 link, storage, data-tier, and namespace axes remain distinct").
 
-| Plane           | Section              | Owner of meaning                                       |
-| --------------- | -------------------- | ------------------------------------------------------ |
-| Mode            | `mode`, `modes/`     | #9111                                                  |
-| Peer / trust    | `peers[]`            | #9141                                                  |
-| Link            | `links`, `peers[].overrides` | #9111 (kinds fixed by their protocols)          |
-| Storage         | `storage`            | storage owners; #9082 for ID backends                  |
-| Tier            | `tiers`              | #9084 for content lifecycle; #9111 for the map         |
-| Fan-out         | `fanout`             | #9144 meaning; #9111 format                            |
-| Namespace       | `namespaces`         | #9116                                                  |
+| Plane        | Section                      | Owner of meaning                               |
+| ------------ | ---------------------------- | ---------------------------------------------- |
+| Mode         | `mode`, `modes/`             | #9111                                          |
+| Peer / trust | `peers[]`                    | #9141                                          |
+| Link         | `links`, `peers[].overrides` | #9111 (kinds fixed by their protocols)         |
+| Storage      | `storage`                    | storage owners; #9082 for ID backends          |
+| Tier         | `tiers`                      | #9084 for content lifecycle; #9111 for the map |
+| Fan-out      | `fanout`                     | #9144 meaning; #9111 format                    |
+| Namespace    | `namespaces`                 | #9116                                          |
 
 Defaults for Part A namespace knobs: `shorthand_policy` is absent on every namespace, so a bare-string
 request returns `missing_shorthand_policy` (Part A, #9116). No global namespace registry is
@@ -397,20 +397,20 @@ consulted (#9116).
 
 ## 8. Requirement traceability
 
-| Requirement (source)                                                                 | Where answered                 |
-| ------------------------------------------------------------------------------------ | ------------------------------ |
-| #9111 §7: modes, link kinds, storages, tiering as config; primitives for mechanism   | §2, §3.3–3.5, §4               |
-| #9111 §7: peer/trust knobs (Part B) and namespace knobs (Part A) in one schema       | §7.4, §3.2                     |
-| #9111 acceptance: open questions with chosen defaults                                | §9                             |
-| #9111 acceptance: implementation issues named for implementable parts                | §10                            |
-| #9106 Part A: server-local namespace registry, no global lookup                       | §3.1, §7.4                     |
-| #9144 §8: `remotes[]`, `relay`, `max_hops`, `deadline_ms`, `per_peer_timeout_ms`, `peer_breadth` keys and defaults | §7.1, §5.2 |
-| #9144 §11.1: validation rejects `max_hops` above 8; a config test per default and ceiling | §7.1, §10 (issue 9111-F1)   |
-| #9141 §1–§4: classes, the gate, operations, relay grant, `policy_version`, expiry    | §3.2, §5.3, §6.6               |
-| #9141 §5 defaults (relay not implied; class change without grandfathering; expiry = unknown) | §3.2, §6.6              |
-| #9110 / S0.1–S0.17: primitives, adapters, hooks; adding a backend is additive         | §2, §3.4, §6.7                 |
-| Summit crosscut: resolution order, ceilings narrow, fail-closed, two-phase activation | §6.2–6.6                      |
-| Summit Part B: config may not disable validation, bounds, provenance, dedup, revocation | §5.3                       |
+| Requirement (source)                                                                                               | Where answered            |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------- |
+| #9111 §7: modes, link kinds, storages, tiering as config; primitives for mechanism                                 | §2, §3.3–3.5, §4          |
+| #9111 §7: peer/trust knobs (Part B) and namespace knobs (Part A) in one schema                                     | §7.4, §3.2                |
+| #9111 acceptance: open questions with chosen defaults                                                              | §9                        |
+| #9111 acceptance: implementation issues named for implementable parts                                              | §10                       |
+| #9106 Part A: server-local namespace registry, no global lookup                                                    | §3.1, §7.4                |
+| #9144 §8: `remotes[]`, `relay`, `max_hops`, `deadline_ms`, `per_peer_timeout_ms`, `peer_breadth` keys and defaults | §7.1, §5.2                |
+| #9144 §11.1: validation rejects `max_hops` above 8; a config test per default and ceiling                          | §7.1, §10 (issue 9111-F1) |
+| #9141 §1–§4: classes, the gate, operations, relay grant, `policy_version`, expiry                                  | §3.2, §5.3, §6.6          |
+| #9141 §5 defaults (relay not implied; class change without grandfathering; expiry = unknown)                       | §3.2, §6.6                |
+| #9110 / S0.1–S0.17: primitives, adapters, hooks; adding a backend is additive                                      | §2, §3.4, §6.7            |
+| Summit crosscut: resolution order, ceilings narrow, fail-closed, two-phase activation                              | §6.2–6.6                  |
+| Summit Part B: config may not disable validation, bounds, provenance, dedup, revocation                            | §5.3                      |
 
 ## 9. Open questions with chosen defaults
 
@@ -465,16 +465,16 @@ These are named, not filed. Each is a granular, implementable part. The summit c
 to 9111-05 in `crosscut/implementation-slices.json`; the titles below follow that list and add the
 fan-out and validation parts this record defines.
 
-| Name    | Title (proposed)                                                                 | Owns                                   |
-| ------- | -------------------------------------------------------------------------------- | -------------------------------------- |
-| 9111-01 | Define versioned configuration schema and hard invariants                        | §3.1, §5.2, §5.3, §6.1                 |
-| 9111-02 | Implement mode bundles and safe override precedence                              | §4, §6.2, §6.3                         |
-| 9111-03 | Model peer, link, storage, tier, and namespace planes independently              | §3.2–3.5, §7.4                         |
-| 9111-04 | Add capability negotiation and downgrade rejection                               | §6.5 step 4, §3.4                      |
-| 9111-05 | Stage config activation and rollback by revision                                 | §6.6, Q10, Q11                         |
-| 9111-F1 | Validate fan-out config keys with a default and ceiling test for each (#9144 §11.1) | §7.1, §5.2                          |
-| 9111-F2 | Print resolved config with per-value provenance and digest (explain output)      | §6.8                                   |
-| 9111-F3 | Canonical JSON loader with duplicate-key and unknown-key rejection               | §6.1, §6.4, §6.5 step 1                |
+| Name    | Title (proposed)                                                                    | Owns                    |
+| ------- | ----------------------------------------------------------------------------------- | ----------------------- |
+| 9111-01 | Define versioned configuration schema and hard invariants                           | §3.1, §5.2, §5.3, §6.1  |
+| 9111-02 | Implement mode bundles and safe override precedence                                 | §4, §6.2, §6.3          |
+| 9111-03 | Model peer, link, storage, tier, and namespace planes independently                 | §3.2–3.5, §7.4          |
+| 9111-04 | Add capability negotiation and downgrade rejection                                  | §6.5 step 4, §3.4       |
+| 9111-05 | Stage config activation and rollback by revision                                    | §6.6, Q10, Q11          |
+| 9111-F1 | Validate fan-out config keys with a default and ceiling test for each (#9144 §11.1) | §7.1, §5.2              |
+| 9111-F2 | Print resolved config with per-value provenance and digest (explain output)         | §6.8                    |
+| 9111-F3 | Canonical JSON loader with duplicate-key and unknown-key rejection                  | §6.1, §6.4, §6.5 step 1 |
 
 F1 and F3 are the first implementable parts that do not depend on a new adapter. F1 is the #9144 §11.1
 item that was to be recorded as a comment on #9111; this record takes it into the schema instead, and

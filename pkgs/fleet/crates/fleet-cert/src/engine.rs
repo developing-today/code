@@ -15,24 +15,24 @@
 //!   clamp recorded as a manifest warning (§5.4: a leaf must not
 //!   outlive its issuer).
 
-use crate::algorithm::{check_ca_policy, AlgorithmId};
+use crate::algorithm::{AlgorithmId, check_ca_policy};
 use crate::bundle::{
-    load_bundle, pem_encode, read_artifact, sha256_hex, write_bundle, Artifact, Bundle,
+    Artifact, Bundle, load_bundle, pem_encode, read_artifact, sha256_hex, write_bundle,
 };
-use crate::chain::{parse_cert, validate_chain, CertInfo, ChainReport, TrustSelection};
+use crate::chain::{CertInfo, ChainReport, TrustSelection, parse_cert, validate_chain};
 use crate::error::{CertError, Result};
 use crate::graph::{CrossSigningMode, GraphPolicy};
 use crate::model::{
-    BundleManifest, BundleType, CertRecord, IssuerCreateRequest, LeafIssueRequest, ParentRef,
-    RootCreateRequest, MANIFEST_SCHEMA,
+    BundleManifest, BundleType, CertRecord, IssuerCreateRequest, LeafIssueRequest, MANIFEST_SCHEMA,
+    ParentRef, RootCreateRequest,
 };
-use crate::naming::{slugify, GenerationPartition};
+use crate::naming::{GenerationPartition, slugify};
 use crate::profile::leaf_profile;
 use crate::timeparse::Rfc3339;
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, DnValue, IsCa, Issuer, KeyPair, KeyUsagePurpose,
-    RsaKeySize, SerialNumber, PKCS_ECDSA_P256_SHA256, PKCS_ED25519, PKCS_ML_DSA_44,
-    PKCS_RSA_SHA256,
+    PKCS_ECDSA_P256_SHA256, PKCS_ED25519, PKCS_ML_DSA_44, PKCS_RSA_SHA256, RsaKeySize,
+    SerialNumber,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -187,8 +187,7 @@ fn ca_params_for(
     not_before: Rfc3339,
     not_after: Rfc3339,
 ) -> CertificateParams {
-    let mut params = CertificateParams::new(Vec::<String>::new())
-        .expect("empty SAN list is valid");
+    let mut params = CertificateParams::new(Vec::<String>::new()).expect("empty SAN list is valid");
     params.distinguished_name = distinguished_name(org, country, ou, cn);
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(path_len));
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
@@ -214,10 +213,13 @@ impl CaHandle {
         subject_key: &KeyPair,
     ) -> Result<rcgen::Certificate> {
         match &self.signer {
-            CaSigner::Classical(key) => Ok(subject_params
-                .signed_by(subject_key, &Issuer::new(self.params.clone(), key))?),
-            CaSigner::MlDsa(signer) => Ok(subject_params
-                .signed_by(subject_key, &Issuer::new(self.params.clone(), signer.as_ref()))?),
+            CaSigner::Classical(key) => Ok(
+                subject_params.signed_by(subject_key, &Issuer::new(self.params.clone(), key))?
+            ),
+            CaSigner::MlDsa(signer) => Ok(subject_params.signed_by(
+                subject_key,
+                &Issuer::new(self.params.clone(), signer.as_ref()),
+            )?),
         }
     }
 }
@@ -236,14 +238,17 @@ fn load_ca(
     path_len: u8,
 ) -> Result<CaHandle> {
     let pem = read_artifact(bundle, &record.cert_path)?;
-    let blocks = crate::bundle::pem_decode_all(std::str::from_utf8(&pem).map_err(|_| {
-        CertError::manifest(format!("{} is not UTF-8 PEM", record.cert_path))
-    })?)?;
+    let blocks = crate::bundle::pem_decode_all(
+        std::str::from_utf8(&pem)
+            .map_err(|_| CertError::manifest(format!("{} is not UTF-8 PEM", record.cert_path)))?,
+    )?;
     let der = blocks
         .into_iter()
         .find(|(label, _)| label == "CERTIFICATE")
         .map(|(_, der)| der)
-        .ok_or_else(|| CertError::manifest(format!("no CERTIFICATE block in {}", record.cert_path)))?;
+        .ok_or_else(|| {
+            CertError::manifest(format!("no CERTIFICATE block in {}", record.cert_path))
+        })?;
     let cert = parse_cert(&der)?;
     // The key file name comes from the manifest record when the key
     // lives in the bundle; for external-store custody the creation
@@ -253,7 +258,11 @@ fn load_ca(
     let key_file = record
         .key_path
         .as_deref()
-        .and_then(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()))
+        .and_then(|p| {
+            Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| match record.role.as_str() {
             "root" => format!("{}.pk8", record.algorithm.name()),
@@ -291,17 +300,25 @@ fn record_from_der(
     let info = parse_cert(der)?;
     Ok(CertRecord {
         role: role.to_string(),
-        algorithm: info
-            .subject_algorithm
-            .ok_or_else(|| CertError::engine("issued certificate has an unregistered subject algorithm"))?,
+        algorithm: info.subject_algorithm.ok_or_else(|| {
+            CertError::engine("issued certificate has an unregistered subject algorithm")
+        })?,
         signer_algorithm: None, // filled by caller when not self-signed
         partition: partition.to_string(),
         primary,
         subject_dn: info.subject_dn.clone(),
         issuer_dn: info.issuer_dn.clone(),
         serial_hex: info.serial_hex.clone(),
-        ski_hex: info.ski.as_deref().map(crate::chain::hex_bytes).unwrap_or_default(),
-        aki_hex: info.aki.as_deref().map(crate::chain::hex_bytes).unwrap_or_default(),
+        ski_hex: info
+            .ski
+            .as_deref()
+            .map(crate::chain::hex_bytes)
+            .unwrap_or_default(),
+        aki_hex: info
+            .aki
+            .as_deref()
+            .map(crate::chain::hex_bytes)
+            .unwrap_or_default(),
         fingerprint_sha256: info.fingerprint_sha256.clone(),
         not_before: info.not_before,
         not_after: info.not_after,
@@ -352,10 +369,7 @@ fn key_rel_path(file_name: &str) -> String {
 
 /// Where a created bundle's keys physically go, and the manifest's
 /// custody class for them.
-fn key_destination(
-    out_dir: &Path,
-    private_store: &Option<PathBuf>,
-) -> (PathBuf, &'static str) {
+fn key_destination(out_dir: &Path, private_store: &Option<PathBuf>) -> (PathBuf, &'static str) {
     match private_store {
         Some(store) => (store.clone(), "external-store"),
         None => (out_dir.join("private/keys"), "bundle-private"),
@@ -754,7 +768,8 @@ pub fn create_issuer_set(req: &IssuerCreateRequest, out_dir: &Path) -> Result<Bu
                 visibility: "public".into(),
                 bytes: pem_encode("CERTIFICATE", &der).into_bytes(),
             });
-            let mut rec = record_from_der(&der, "issuer", partition, i == 0, rel, key_path.clone())?;
+            let mut rec =
+                record_from_der(&der, "issuer", partition, i == 0, rel, key_path.clone())?;
             rec.signer_algorithm = Some(*signer_algo);
             records.push(rec);
         }
@@ -985,11 +1000,7 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
         None,
         warnings,
     )?;
-    manifest.bundle_id = format!(
-        "leaf-{}-{}",
-        manifest.slug,
-        &rec.fingerprint_sha256[..12]
-    );
+    manifest.bundle_id = format!("leaf-{}-{}", manifest.slug, &rec.fingerprint_sha256[..12]);
     manifest.certificates = vec![rec];
     let manifest = write_bundle(out_dir, manifest, &artifacts)?;
     Ok(manifest)
@@ -1101,8 +1112,7 @@ pub fn collect_pool(bundles: &[&Bundle]) -> Result<Vec<CertInfo>> {
     for bundle in bundles {
         for record in &bundle.manifest.certificates {
             let pem = read_artifact(bundle, &record.cert_path)?;
-            let blocks =
-                crate::bundle::pem_decode_all(std::str::from_utf8(&pem).unwrap_or(""))?;
+            let blocks = crate::bundle::pem_decode_all(std::str::from_utf8(&pem).unwrap_or(""))?;
             for (label, der) in blocks {
                 if label == "CERTIFICATE" {
                     out.push(parse_cert(&der)?);

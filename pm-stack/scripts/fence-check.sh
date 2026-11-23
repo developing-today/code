@@ -46,45 +46,54 @@ USAGE
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --unreachable)
-      UNREACHABLE=1
-      shift
-      ;;
-    --units-dir|--containers-file)
-      opt="$1"
-      [ "$#" -ge 2 ] || { echo "fence-check: $opt requires a value" >&2; exit 2; }
-      val="$2"
-      [ -n "$val" ] || { echo "fence-check: $opt requires a non-empty value" >&2; exit 2; }
-      case "$opt" in
-        --units-dir) UNITS_DIR="$val" ;;
-        --containers-file) CONTAINERS_FILE="$val" ;;
-      esac
-      shift 2
-      ;;
-    --units-dir=*|--containers-file=*)
-      opt="${1%%=*}"
-      val="${1#*=}"
-      [ -n "$val" ] || { echo "fence-check: $opt requires a non-empty value" >&2; exit 2; }
-      case "$opt" in
-        --units-dir) UNITS_DIR="$val" ;;
-        --containers-file) CONTAINERS_FILE="$val" ;;
-      esac
-      shift
-      ;;
-    --*)
-      echo "fence-check: unexpected argument '$1'" >&2
-      usage >&2
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --unreachable)
+    UNREACHABLE=1
+    shift
+    ;;
+  --units-dir | --containers-file)
+    opt="$1"
+    [ "$#" -ge 2 ] || {
+      echo "fence-check: $opt requires a value" >&2
       exit 2
-      ;;
-    *)
-      echo "fence-check: unexpected argument '$1'" >&2
-      usage >&2
+    }
+    val="$2"
+    [ -n "$val" ] || {
+      echo "fence-check: $opt requires a non-empty value" >&2
       exit 2
-      ;;
+    }
+    case "$opt" in
+    --units-dir) UNITS_DIR="$val" ;;
+    --containers-file) CONTAINERS_FILE="$val" ;;
+    esac
+    shift 2
+    ;;
+  --units-dir=* | --containers-file=*)
+    opt="${1%%=*}"
+    val="${1#*=}"
+    [ -n "$val" ] || {
+      echo "fence-check: $opt requires a non-empty value" >&2
+      exit 2
+    }
+    case "$opt" in
+    --units-dir) UNITS_DIR="$val" ;;
+    --containers-file) CONTAINERS_FILE="$val" ;;
+    esac
+    shift
+    ;;
+  --*)
+    echo "fence-check: unexpected argument '$1'" >&2
+    usage >&2
+    exit 2
+    ;;
+  *)
+    echo "fence-check: unexpected argument '$1'" >&2
+    usage >&2
+    exit 2
+    ;;
   esac
 done
 

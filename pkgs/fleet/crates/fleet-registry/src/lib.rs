@@ -82,6 +82,11 @@ pub enum Capability {
     /// roots, issuers, leaves, chains and bundles (code#9157, fleet CA
     /// program #9155). A working-seat client surface, so full only.
     Cert,
+    /// `fleet actions …` — live short-lived exec sessions inside
+    /// GitHub Actions runners (#13774): the seat verbs, the
+    /// runner-side agent, and the egress helper. A working-seat
+    /// client surface, so full only.
+    Actions,
 }
 
 impl Capability {
@@ -109,6 +114,7 @@ impl Capability {
             Capability::LaptopSsh => "laptop-ssh",
             Capability::Laptop => "laptop",
             Capability::Cert => "cert",
+            Capability::Actions => "actions",
         }
     }
 
@@ -135,6 +141,7 @@ impl Capability {
         Capability::LaptopSsh,
         Capability::Laptop,
         Capability::Cert,
+        Capability::Actions,
     ];
 }
 
@@ -392,7 +399,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Cert,
         aliases: &["pki"],
         subcommands: &[
-            "root", "issuer", "leaf", "chain", "bundle", "profile", "algorithms", "explain",
+            "root",
+            "issuer",
+            "leaf",
+            "chain",
+            "bundle",
+            "profile",
+            "algorithms",
+            "explain",
             "doctor",
         ],
     },
@@ -435,6 +449,14 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Laptop,
         aliases: &[],
         subcommands: &["tiers", "exec"],
+    },
+    Domain {
+        name: "actions",
+        summary: "Live short-lived exec sessions inside GitHub Actions runners (#13774), coordinator-handed-off: start a session in a runner, run commands in it, stream its IO, renew or extend its lease, close it.",
+        capabilities: &[Capability::Actions],
+        primary: Capability::Actions,
+        aliases: &[],
+        subcommands: &["exec", "agent", "put"],
     },
 ];
 

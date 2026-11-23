@@ -262,6 +262,149 @@ function formatCandidate(candidate) {
   return `${candidate.provider}/${candidate.model}${candidate.effort ? `#${candidate.effort}` : ''}`;
 }
 
+// Wall scoping (code#13693, 2026-11-23): the closed vocabulary for a
+// provider block's optional "wallScope" declaration -- the scope at
+// which the provider's quota cap actually binds. Absent = inferred
+// scope; a declared value is the override consumed when inference gets
+// a provider wrong.
+export const WALL_SCOPES = ['per-model', 'provider', 'account'];
+
+// The credential / endpoint declarations a provider block can carry, by
+// the labels the alias invariant compares. An alias must inherit these
+// from its base silently: re-declaring one with a DIFFERENT value would
+// quietly give the alias a different credential or endpoint than the
+// account it is an alias of.
+function providerConnectionDeclarations(block) {
+  const declarations = {};
+  if (!isObject(block)) return declarations;
+  const record = (label, value) => {
+    if (value !== undefined) declarations[label] = value;
+  };
+  record('apiKey', block.apiKey);
+  record('credential', block.credential);
+  record('baseURL', block.baseURL);
+  record('api', block.api);
+  if (isObject(block.options)) {
+    record('options.apiKey', block.options.apiKey);
+    record('options.credential', block.options.credential);
+    record('options.baseURL', block.options.baseURL);
+    record('options.api', block.options.api);
+  }
+  return declarations;
+}
+
+// Every concrete provider/model seat named anywhere in model_routes:
+// string targets, object targets, and weights keys (a weights key is a
+// seat the pool weighs, so it names the leaf exactly as a target does).
+function routeSeatReferences(config) {
+  const seats = [];
+  const modelRoutes = activeMap(config, 'model_routes');
+  if (!isObject(modelRoutes)) return seats;
+  for (const [routeName, route] of Object.entries(modelRoutes)) {
+    if (!isObject(route)) continue;
+    if (Array.isArray(route.targets)) {
+      route.targets.forEach((target, index) => {
+        const reference = typeof target === 'string' ? target : isObject(target) ? target.model : null;
+        const parsed = typeof reference === 'string' ? splitModelReference(reference) : null;
+        if (parsed) seats.push({ ...parsed, route: routeName, where: `model route "${routeName}" targets[${index}]` });
+      });
+    }
+    if (isObject(route.weights)) {
+      for (const key of Object.keys(route.weights)) {
+        const parsed = splitModelReference(key);
+        if (parsed) seats.push({ ...parsed, route: routeName, where: `model route "${routeName}" weights` });
+      }
+    }
+  }
+  return seats;
+}
+
+// Explicit per-route seat weights, keyed "route|provider/model".
+// Weights keys name the leaf exactly as targets do (see
+// routeSeatReferences); the paid-tail exemption in rule (c) compares
+// the free alias seat's weight against the base seat's weight within
+// one route, so it needs the numbers, not just the references.
+function routeSeatWeights(config) {
+  const weights = new Map();
+  const modelRoutes = activeMap(config, 'model_routes');
+  if (!isObject(modelRoutes)) return weights;
+  for (const [routeName, route] of Object.entries(modelRoutes)) {
+    if (!isObject(route) || !isObject(route.weights)) continue;
+    for (const [key, value] of Object.entries(route.weights)) {
+      const parsed = splitModelReference(key);
+      if (parsed && typeof value === 'number') {
+        weights.set(`${routeName}|${parsed.provider}/${parsed.model}`, value);
+      }
+    }
+  }
+  return weights;
+}
+
+// Wall-scope declarations and the free/paid alias split invariants:
+// (a) a wallScope value outside the closed vocabulary fails, naming
+//     the provider;
+// (b) an instanceOf alias whose id ends in -free must not declare an
+//     apiKey/credential or baseURL that differs from its base
+//     provider's -- inheriting silently is the correct shape;
+// (c) a model in a -free alias's catalog must not also be seated under
+//     the paid base id anywhere in the routes -- that seat would let a
+//     wall on the base bench the free model the split exists to free.
+//     Paid-tail exemption (code#13677, 2026-11-23): when free and paid
+//     are billing states of the SAME model on the SAME account (the
+//     OpenAI data-sharing shape -- complimentary tokens first, paid
+//     after), the base seat is the designed late fallback, not a
+//     split violation, provided the same route also seats the model
+//     via the -free alias at a STRICTLY GREATER explicit weight. The
+//     exemption is fail-closed: either seat missing a weight, or the
+//     base seat weighing as much as or more than the free seat, keeps
+//     the failure.
+export function inspectProviderWallRules(config) {
+  const issues = [];
+  const providers = isObject(config?.provider) ? config.provider : {};
+  const wallScopeSet = new Set(WALL_SCOPES);
+  for (const [providerID, block] of Object.entries(providers)) {
+    if (!isObject(block)) continue;
+    if (block.wallScope !== undefined && !wallScopeSet.has(block.wallScope)) {
+      issues.push(
+        `wallScope: provider "${providerID}" declares unknown wallScope ${JSON.stringify(block.wallScope)} (closed vocabulary: ${WALL_SCOPES.join(', ')})`,
+      );
+    }
+  }
+
+  const seats = routeSeatReferences(config);
+  for (const [providerID, block] of Object.entries(providers)) {
+    if (!providerID.endsWith('-free') || !isObject(block) || typeof block.instanceOf !== 'string') continue;
+    const baseID = block.instanceOf;
+    const base = providers[baseID];
+
+    const aliasDeclarations = providerConnectionDeclarations(block);
+    const baseDeclarations = providerConnectionDeclarations(base);
+    for (const [label, value] of Object.entries(aliasDeclarations)) {
+      if (JSON.stringify(value) !== JSON.stringify(baseDeclarations[label])) {
+        issues.push(
+          `wallScope: free alias "${providerID}" declares ${label} ${JSON.stringify(value)} differing from its base provider "${baseID}" (${JSON.stringify(baseDeclarations[label]) ?? 'undeclared'}); a -free alias must inherit its base's credential and endpoint silently`,
+        );
+      }
+    }
+
+    if (isObject(block.models) && isObject(base)) {
+      const weights = routeSeatWeights(config);
+      for (const model of Object.keys(block.models)) {
+        for (const seat of seats) {
+          if (seat.provider !== baseID || seat.model !== model) continue;
+          const freeWeight = weights.get(`${seat.route}|${providerID}/${model}`);
+          const baseWeight = weights.get(`${seat.route}|${baseID}/${model}`);
+          if (freeWeight !== undefined && baseWeight !== undefined && baseWeight < freeWeight) continue;
+          issues.push(
+            `wallScope: model "${model}" is in free alias "${providerID}"'s catalog but is also seated under its paid base "${baseID}" at ${seat.where}; seat it via the alias so a wall on the base cannot bench it -- or, for a same-model paid tail, seat it via the alias in the same route at a strictly greater weight (the free-first / paid-tail shape, code#13677)`,
+          );
+        }
+      }
+    }
+  }
+  return issues;
+}
+
 export function inspectRouteRules(config) {
   const issues = [];
   const issueSet = new Set();
@@ -564,6 +707,9 @@ export function inspectRouteRules(config) {
       }
     }
   }
+
+  // Wall-scope declarations + free/paid alias invariants (code#13693).
+  for (const issue of inspectProviderWallRules(config)) addIssue(issue);
 
   return { tiers, issues };
 }

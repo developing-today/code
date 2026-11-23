@@ -244,9 +244,9 @@ describe("renderPredictionRange — the shared §4 formatter (#13408)", () => {
   // ranges so the kinds cannot drift apart silently. Oracle:
   // design §4 and quota-downtime.test.ts.
   test("a same-day future range renders in duration form, half-hour rounded", () => {
-    expect(renderPredictionRange("2026-10-01T16:15:00.000Z", "2026-10-01T19:45:00.000Z", "2026-10-01T14:00:00.000Z")).toBe(
-      "between 2.5 and 6 hours from now",
-    );
+    expect(
+      renderPredictionRange("2026-10-01T16:15:00.000Z", "2026-10-01T19:45:00.000Z", "2026-10-01T14:00:00.000Z"),
+    ).toBe("between 2.5 and 6 hours from now");
   });
 
   test("a multi-day range crossing Chicago day boundaries renders in calendar form", () => {

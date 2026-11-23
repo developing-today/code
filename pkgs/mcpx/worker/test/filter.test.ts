@@ -66,9 +66,7 @@ function toolsListPayload() {
 
 async function readSseJson(res: Response): Promise<any> {
   const text = await res.text();
-  const line = text
-    .split("\n")
-    .find((entry) => entry.startsWith("data:"));
+  const line = text.split("\n").find((entry) => entry.startsWith("data:"));
   if (!line) throw new Error(`no SSE data line in ${JSON.stringify(text)}`);
   return JSON.parse(line.slice("data:".length).trim());
 }
@@ -93,10 +91,7 @@ describe("tools/list filtering", () => {
 
   it("selected profile adds mcpx_call and mcpx_batch but never exec/extras", async () => {
     stubBridge(toolsListPayload());
-    const res = await worker.fetch(
-      post("/mcp?ns=codedb,fff", { jsonrpc: "2.0", id: 1, method: "tools/list" }),
-      env,
-    );
+    const res = await worker.fetch(post("/mcp?ns=codedb,fff", { jsonrpc: "2.0", id: 1, method: "tools/list" }), env);
     const message = await readSseJson(res);
     expect(message.result.tools.map((tool: any) => tool.name)).toEqual([
       "mcpx_namespaces",

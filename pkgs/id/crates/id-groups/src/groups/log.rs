@@ -124,11 +124,16 @@ impl GroupLog {
     /// Fails if the events cannot be folded, or the file cannot be written. Nothing is written when
     /// the fold fails.
     pub fn record(&mut self, author: Key, group: Option<Hash>, body: Body) -> Result<Recorded> {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .ok();
         let mut event = Event {
             id: Hash::from_bytes([0; 32]),
             author,
             after: self.heads(),
             group,
+            at,
             body,
         };
         // The ID is the hash of the event with a placeholder ID. Each event names every event before

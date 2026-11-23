@@ -5,11 +5,11 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64_STD};
 use der::Decode;
-use idp_provider::{app_from_config, b64url, Config};
+use idp_provider::{Config, app_from_config, b64url};
 use pkcs1::DecodeRsaPublicKey;
-use rsa::{traits::PublicKeyParts, RsaPublicKey};
+use rsa::{RsaPublicKey, traits::PublicKeyParts};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tower::ServiceExt;
@@ -37,6 +37,10 @@ fn test_config() -> Config {
         provider_config_path: None,
         signing_key_path: None,
         audit_db_path: None,
+        identity_db_path: None,
+        oidc_cert_paths: vec![],
+        signing_key_paths: vec![],
+        oidc_active_kid: None,
     }
 }
 
