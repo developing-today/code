@@ -1873,7 +1873,13 @@ impl HostedBindingService {
     /// Verify the key signature from the record's own stored transcript
     /// (§1.2): reconstruct the signed message from `challenge_id`, `sub`,
     /// `iroh_id`, `nonce`, and `expires_at` with no hosted-service access.
-    /// Returns `false` on any malformed field or mismatch.
+    /// The transcript names the key that performed the binding ceremony;
+    /// after a rebind that is a superseded key, so the transcript's key
+    /// must be the record's current key or one of its `history` keys —
+    /// the chain steps themselves are backed separately (§4.4 records,
+    /// checked by the caller). The record's current shape, current key
+    /// included, is covered by the service attestation, not by this
+    /// signature. Returns `false` on any malformed field or mismatch.
     #[must_use]
     pub fn verify_key_signature(record: &BindingRecord) -> bool {
         let transcript = &record.challenge_transcript;
@@ -1891,7 +1897,11 @@ impl HostedBindingService {
         };
         if transcript.challenge_id != record.challenge_id
             || transcript.sub != record.sub
-            || transcript.iroh_id != record.iroh_id
+            || (transcript.iroh_id != record.iroh_id
+                && !record
+                    .history
+                    .iter()
+                    .any(|entry| entry.iroh_id == transcript.iroh_id))
         {
             return false;
         }

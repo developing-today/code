@@ -110,8 +110,16 @@ jobs:
           # seconds on first contact passed every bun test). This runs
           # the bundle in the Worker runtime itself, with a host on port
           # 4898, and makes the checks that need no sign-in.
+          #
+          # It is started as it runs when it does the core itself: the
+          # switch on, and two made-up tokens that open nothing. The same
+          # port stands in for GitHub's API and for the queue store, so
+          # the Worker's own reads of both are made in this runtime too.
           (cd edge && npx wrangler dev --port 8799 --persist-to "$RUNNER_TEMP/pm-edge-state" \
             --var PUBLIC_HOST:localhost --var HOST_ORIGIN:http://127.0.0.1:4898 --var VERSION:smoke \
+            --var EDGE_DIRECT:on --var GITHUB_TOKEN:smoke-github --var QUEUE_TOKEN:smoke-queue \
+            --var GITHUB_API_ORIGIN:http://127.0.0.1:4898/github \
+            --var QUEUE_DB_ORIGIN:http://127.0.0.1:4898/queue \
             >"$RUNNER_TEMP/wrangler-dev.log" 2>&1 &)
           up=false
           for _ in $(seq 1 60); do
@@ -126,7 +134,7 @@ jobs:
             tail -n 60 "$RUNNER_TEMP/wrangler-dev.log" >&2
             exit 1
           fi
-          if ! bun run scripts/edge-smoke.ts; then
+          if ! SMOKE_PRIMARY=1 bun run scripts/edge-smoke.ts; then
             tail -n 60 "$RUNNER_TEMP/wrangler-dev.log" >&2
             exit 1
           fi

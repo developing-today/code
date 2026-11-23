@@ -4,7 +4,7 @@
 
 See also [The bridge: fleet messaging](../concepts/bridge.md).
 
-Known discrepancy: every per-verb help invocation returns **one shared USAGE text** for the whole domain — there is no per-verb help in source, despite the domain status line "(options: fleet bridge &lt;command&gt; --help)". The per-verb sections below are written from source semantics.
+Each verb has its own help: `fleet bridge <command> --help` prints that verb's usage section plus the shared defaults-and-exit-codes footer, as the domain status line advertises. A bare `fleet bridge --help` prints the whole-domain usage text.
 
 ## Tokens, URLs, and defaults (all verbs)
 

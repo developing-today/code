@@ -327,8 +327,10 @@ impl InviteEvent {
     ///
     /// # Errors
     ///
-    /// Fails if a source invite's depth exceeds [`MAX_SOURCE_DEPTH`] (§2), or the
-    /// encoded body exceeds [`MAX_BODY_LEN`] (§1).
+    /// Fails if an invite's depth exceeds [`MAX_SOURCE_DEPTH`] (§2) — a source
+    /// invite's directly, and a child invite's too: terms are public and can be
+    /// built without [`InviteBody::child_terms`], so signing enforces the cap on
+    /// both — or the encoded body exceeds [`MAX_BODY_LEN`] (§1).
     pub fn sign_terms(
         key: &SigningKey,
         ticket: &EndpointTicket,
@@ -338,6 +340,12 @@ impl InviteEvent {
             ensure!(
                 terms.depth_remaining <= MAX_SOURCE_DEPTH,
                 "a source invite's depth is {}, over the cap of {MAX_SOURCE_DEPTH}",
+                terms.depth_remaining
+            );
+        } else {
+            ensure!(
+                terms.depth_remaining <= MAX_SOURCE_DEPTH,
+                "a child invite's depth is {}, over the cap of {MAX_SOURCE_DEPTH}",
                 terms.depth_remaining
             );
         }

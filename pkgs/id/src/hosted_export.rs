@@ -13,9 +13,12 @@
 //! ## What is here
 //!
 //! - [`ExportObject`] / [`ExportBlob`]: self-authenticating content.
-//!   An object's hash is SHA-256 of its bytes and its signature is the
-//!   producing key's signature over that hash; a blob's hash is
-//!   SHA-256 of its bytes. Objects carry the blob hashes they cite.
+//!   An object's bytes are a stored signed envelope (a p2panda
+//!   header, the graph's native object form) carried verbatim; its
+//!   hash is SHA-256 of those bytes and its signature is the
+//!   envelope's own signature, over the canonical header encoding,
+//!   by the envelope's author. A blob's hash is SHA-256 of its
+//!   bytes. Objects carry the blob hashes they cite.
 //! - [`ExportManifest`]: `{export_id, binding_id, iroh_id, created_at,
 //!   object_count, blob_count, sha256 of the concatenated object
 //!   hashes}` (§6.1 item 4), signed by the user's Iroh root key when
@@ -28,15 +31,22 @@
 //!   ingested. Every refusal is a typed [`ExportError`] naming the
 //!   rule that failed; a partial or tampered export imports nothing.
 //!
-//! ## What is not here
+//! ## Production (slice 4b, #13157)
 //!
-//! The enumeration of a live per-user store (the slice-3 DO scaffold)
-//! and R2 blob fetching: `build_export` takes the object/blob sets as
-//! inputs, so the DO/R2 wiring is a follow-on that feeds it. Ingest
-//! itself (§6.2 step 4) lives in [`crate::hosted_ingest`], downstream
-//! of a verified import.
+//! The enumeration of a live per-user store and R2 blob fetching
+//! live in the hosted data plane: `hosted-worker/src/export.ts`
+//! enumerates the DO's applied events and fetches the blobs they
+//! cite, and the DO's `GET /v1/bridge/export` route serves the sets
+//! in the wire shape of these types for [`build_export`] to
+//! assemble. [`ExportObject::from_envelope`] is the same mapping on
+//! this side. The object-model mapping the wiring settles —
+//! envelope bytes verbatim, SHA-256 as the export-layer digest,
+//! the envelope's own signature as the object's signature, blob
+//! citations resolved by content from BLAKE3 to SHA-256 — is
+//! recorded in the spec as §6.3. Ingest itself (§6.2 step 4) lives
+//! in [`crate::hosted_ingest`], downstream of a verified import.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -89,37 +99,73 @@ fn verify_hex_signature(public_key_hex: &str, message: &[u8], signature_hex: &st
 }
 
 /// One signed graph object in an export (§6.1 item 1): self-
-/// authenticating by construction — `hash` is SHA-256 of `bytes` and
-/// `signature` is `signer`'s signature over the hash bytes.
+/// authenticating by construction. `bytes` is the stored signed
+/// envelope verbatim (never re-encoded, never re-signed), `hash`
+/// is SHA-256 of `bytes`, and `signature` is the envelope's own
+/// signature over the canonical header encoding, by `signer`, the
+/// envelope's author (§6.3).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportObject {
     /// SHA-256 of `bytes`, hex.
     pub hash: String,
     /// The producing key (an Iroh root key in the binding chain), hex.
     pub signer: String,
-    /// Signature over the 32 hash bytes, hex.
+    /// The envelope's own signature, hex.
     pub signature: String,
-    /// Hashes of the blobs this object cites (§6.2 step 3), hex.
+    /// Hashes of the blobs this object cites (§6.2 step 3), hex:
+    /// SHA-256 names, resolved from the envelope's BLAKE3 content
+    /// citations by content (§6.3).
     pub blob_refs: Vec<String>,
-    /// The object bytes.
+    /// The object bytes: the stored envelope, verbatim.
     pub bytes: Vec<u8>,
 }
 
 impl ExportObject {
-    /// Build and sign an object from its bytes.
-    #[must_use]
-    pub fn new(signing_key: &SigningKey, bytes: Vec<u8>, blob_refs: Vec<String>) -> Self {
-        let hash = sha256_hex(&bytes);
-        let hash_bytes = hex_decode(&hash, 32).unwrap_or_default();
-        let signature = signing_key.sign(&hash_bytes).to_bytes();
-        Self {
-            hash,
-            signer: hex_encode(&signing_key.verifying_key().to_bytes()),
-            signature: hex_encode(&signature),
+    /// Map a stored envelope to its export object (§6.3). The
+    /// envelope is decoded exactly as [`crate::chain::decode`]
+    /// does, which verifies its signature; the author and signature
+    /// are read from the envelope itself — nothing is re-signed,
+    /// and a stored form that does not decode is refused rather
+    /// than carried.
+    ///
+    /// `blob_refs` are the object's citations already resolved to
+    /// SHA-256 blob names by content (see
+    /// [`cited_content_hashes`]); resolving them needs the store's
+    /// blobs, so it is the producer's step, not this mapping's.
+    ///
+    /// # Errors
+    ///
+    /// [`ExportError::ObjectSignatureInvalid`] when the bytes are
+    /// not a verifiable signed envelope.
+    pub fn from_envelope(bytes: Vec<u8>, blob_refs: Vec<String>) -> Result<Self, ExportError> {
+        let event =
+            crate::chain::decode(&bytes).map_err(|_| ExportError::ObjectSignatureInvalid)?;
+        Ok(Self {
+            hash: sha256_hex(&bytes),
+            signer: hex_encode(event.header.verifying_key.as_bytes()),
+            signature: hex_encode(&event.header.signature.to_bytes()),
             blob_refs,
             bytes,
-        }
+        })
     }
+}
+
+/// The BLAKE3 content hashes an envelope cites: the `content` of
+/// its document payload (`document.put`), and nothing else — in
+/// the current `ChainExt` form one envelope cites at most one
+/// content. The producer resolves each citation to the SHA-256
+/// name of the blob whose bytes hash (BLAKE3) to it (§6.3).
+///
+/// # Errors
+///
+/// [`ExportError::ObjectSignatureInvalid`] when the bytes are not
+/// a verifiable signed envelope.
+pub fn cited_content_hashes(bytes: &[u8]) -> Result<Vec<String>, ExportError> {
+    let event = crate::chain::decode(bytes).map_err(|_| ExportError::ObjectSignatureInvalid)?;
+    Ok(match &event.header.extensions.document {
+        Some(document) => vec![document.content.to_hex()],
+        None => Vec::new(),
+    })
 }
 
 /// One blob in an export (§6.1 item 2), carried by hash: `hash` is
@@ -533,11 +579,17 @@ pub fn verify_import(
         if sha256_hex(&object.bytes) != object.hash {
             return Err(ExportError::ObjectHashMismatch);
         }
-        let Some(hash_bytes) = hex_decode(&object.hash, 32) else {
-            return Err(ExportError::ObjectHashMismatch);
-        };
-        if !chain_keys.contains(&object.signer.as_str())
-            || !verify_hex_signature(&object.signer, &hash_bytes, &object.signature)
+        // The object's signature verifies in the object's own
+        // scheme (§6.3): decoding the envelope as chain.rs does
+        // verifies its signature over the canonical header
+        // encoding; the decoded author must be the named signer, a
+        // binding-chain key, and the decoded signature must be the
+        // carried one.
+        let event =
+            crate::chain::decode(&object.bytes).map_err(|_| ExportError::ObjectSignatureInvalid)?;
+        if hex_encode(event.header.verifying_key.as_bytes()) != object.signer
+            || !chain_keys.contains(&object.signer.as_str())
+            || hex_encode(&event.header.signature.to_bytes()) != object.signature
         {
             return Err(ExportError::ObjectSignatureInvalid);
         }
@@ -597,15 +649,63 @@ mod tests {
             .unwrap()
     }
 
+    fn panda_key(key: &SigningKey) -> p2panda_core::SigningKey {
+        p2panda_core::SigningKey::from_bytes(&key.to_bytes())
+    }
+
+    fn ext(kind: &str, document: Option<crate::documents::DocumentRef>) -> crate::chain::ChainExt {
+        crate::chain::ChainExt {
+            kind: kind.to_owned(),
+            group: None,
+            after: Vec::new(),
+            tag: None,
+            document,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
+            anchor: None,
+        }
+    }
+
+    /// A signed envelope authored by `key`, in the form the store
+    /// holds it.
+    fn envelope(
+        key: &SigningKey,
+        seq: u32,
+        backlink: Option<p2panda_core::Hash>,
+        ext: crate::chain::ChainExt,
+    ) -> crate::chain::Event {
+        crate::chain::sign(&panda_key(key), seq, backlink, None, ext).unwrap()
+    }
+
+    fn message_object(key: &SigningKey) -> ExportObject {
+        let event = envelope(key, 0, None, ext("message", None));
+        ExportObject::from_envelope(event.bytes, Vec::new()).unwrap()
+    }
+
+    /// A `document.put` object citing `content`, with the citation
+    /// resolved to `blob`'s SHA-256 name as the producer resolves
+    /// it (§6.3): the envelope cites the content's BLAKE3, the
+    /// export names the blob by SHA-256.
+    fn document_object(key: &SigningKey, blob: &ExportBlob, content: &[u8]) -> ExportObject {
+        let document = crate::documents::DocumentRef::for_bytes("text/plain", content).unwrap();
+        let event = envelope(key, 0, None, ext("document.put", Some(document)));
+        assert_eq!(
+            cited_content_hashes(&event.bytes).unwrap(),
+            vec![p2panda_core::Hash::digest(content).to_hex()]
+        );
+        ExportObject::from_envelope(event.bytes, vec![blob.hash.clone()]).unwrap()
+    }
+
     fn sample_export(cse: Option<bool>) -> (HostedBindingService, HostedExport) {
         let mut svc = service();
         let binding = bind(&mut svc, 21, cse);
-        let blob = ExportBlob::new(b"blob payload".to_vec());
-        let object = ExportObject::new(
-            &root_key(21),
-            b"object payload".to_vec(),
-            vec![blob.hash.clone()],
-        );
+        let content = b"blob payload";
+        let blob = ExportBlob::new(content.to_vec());
+        let object = document_object(&root_key(21), &blob, content);
         let export = build_export(
             &svc,
             &binding,
@@ -662,6 +762,18 @@ mod tests {
     }
 
     #[test]
+    fn forged_object_signature_is_refused() {
+        // A valid envelope whose carried signature field names a
+        // different signature: the field is not decorative (§6.3).
+        let (_svc, mut export) = sample_export(None);
+        export.objects[0].signature = hex_encode(&[7u8; 64]);
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::ObjectSignatureInvalid)
+        );
+    }
+
+    #[test]
     fn substituted_blob_is_refused() {
         // Object signatures and the objects digest do not cover blob
         // bytes; the blob hash check (§6.2 step 3) is what catches a
@@ -696,7 +808,7 @@ mod tests {
     fn unkeyed_export_needs_operator_confirmation() {
         let mut svc = service();
         let binding = bind(&mut svc, 21, None);
-        let object = ExportObject::new(&root_key(21), b"object".to_vec(), Vec::new());
+        let object = message_object(&root_key(21));
         let export = build_export(
             &svc,
             &binding,
@@ -745,7 +857,7 @@ mod tests {
     fn object_from_a_key_outside_the_chain_is_refused() {
         let mut svc = service();
         let binding = bind(&mut svc, 21, None);
-        let foreign = ExportObject::new(&root_key(77), b"foreign".to_vec(), Vec::new());
+        let foreign = message_object(&root_key(77));
         let export = build_export(
             &svc,
             &binding,
@@ -760,5 +872,121 @@ mod tests {
             verify_import(&export, false),
             Err(ExportError::ObjectSignatureInvalid)
         );
+    }
+
+    #[test]
+    fn envelope_mapping_is_verbatim() {
+        // §6.3: the export object is the stored envelope — hash is
+        // SHA-256 of the envelope bytes, signer its author,
+        // signature the envelope's own; nothing re-signed.
+        let key = root_key(21);
+        let event = envelope(&key, 0, None, ext("message", None));
+        let object = ExportObject::from_envelope(event.bytes.clone(), Vec::new()).unwrap();
+        assert_eq!(object.bytes, event.bytes);
+        assert_eq!(object.hash, sha256_hex(&event.bytes));
+        assert_eq!(object.signer, hex_encode(&key.verifying_key().to_bytes()));
+        assert_eq!(
+            object.signature,
+            hex_encode(&event.header.signature.to_bytes())
+        );
+        assert!(cited_content_hashes(&event.bytes).unwrap().is_empty());
+        // Bytes that are not a verifiable envelope are refused.
+        assert_eq!(
+            ExportObject::from_envelope(b"not an envelope".to_vec(), Vec::new()),
+            Err(ExportError::ObjectSignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn produced_sets_fixture_verifies() {
+        // The cross-language contract (slice 4b): the hosted-worker
+        // suite seeds a per-user DO from the seed-7 key and pins
+        // the produced sets to this fixture; here the same sets,
+        // assembled with a binding whose root key is that key, must
+        // pass verify_import with matching counts and digest.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/hosted-worker/test/fixtures/hosted-export-sets.json"
+        );
+        let text = std::fs::read_to_string(path).unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let objects: Vec<ExportObject> = serde_json::from_value(wire["objects"].clone()).unwrap();
+        let blobs: Vec<ExportBlob> = serde_json::from_value(wire["blobs"].clone()).unwrap();
+
+        let mut svc = service();
+        let binding = bind(&mut svc, 7, None);
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            objects,
+            blobs,
+            Some(&root_key(7)),
+            "export-fixture",
+            CREATED,
+        );
+        assert_eq!(
+            export.manifest.objects_digest,
+            wire["objects_digest"].as_str().unwrap()
+        );
+        let verified = verify_import(&export, false).unwrap();
+        assert_eq!(
+            verified.object_count,
+            wire["object_count"].as_u64().unwrap()
+        );
+        assert_eq!(verified.blob_count, wire["blob_count"].as_u64().unwrap());
+        assert_eq!(verified.object_count, 4);
+        assert_eq!(verified.blob_count, 2);
+    }
+
+    #[test]
+    fn rebind_history_export_verifies() {
+        // A store with a rebind history: objects authored by the
+        // old root key and by the current one both verify, backed
+        // by the rebind record (§6.2 step 2, §4.4).
+        use crate::hosted_binding::{REBIND_VIA_DELAYED, RebindRecord};
+        const T0: u64 = 1_700_000_000;
+        let mut svc = service();
+        svc.set_now_override(Some(T0));
+        let binding = bind(&mut svc, 21, None);
+        let new_key = root_key(22);
+
+        let challenge = svc
+            .request_challenge(SUB, &new_key.verifying_key().to_bytes())
+            .unwrap();
+        let proof = new_key.sign(&HostedBindingService::canonical_transcript(&challenge));
+        let (request, _) = svc
+            .request_delayed_rebind(SUB, &challenge.challenge_id, &proof.to_bytes())
+            .unwrap();
+        let probe = RebindRecord {
+            rebind_id: String::new(),
+            binding_id: binding.binding_id.clone(),
+            old_iroh_id: binding.iroh_id.clone(),
+            new_iroh_id: hex_encode(&new_key.verifying_key().to_bytes()),
+            effective_at: String::new(),
+            via: REBIND_VIA_DELAYED.to_owned(),
+            service_signature: String::new(),
+            new_key_countersignature: String::new(),
+        };
+        let counter = new_key.sign(&probe.countersign_bytes()).to_bytes();
+        svc.set_now_override(Some(T0 + crate::hosted_binding::REBIND_WAITING_PERIOD_SECS));
+        let (updated, record) = svc.effect_due_rebind(&request.rebind_id, &counter).unwrap();
+        assert_eq!(updated.history.len(), 1);
+
+        let objects = vec![message_object(&root_key(21)), message_object(&new_key)];
+        let export = build_export(
+            &svc,
+            &updated,
+            vec![record],
+            objects,
+            Vec::new(),
+            Some(&new_key),
+            "export-rebind",
+            CREATED,
+        );
+        let verified = verify_import(&export, false).unwrap();
+        assert_eq!(verified.object_count, 2);
+        assert_eq!(verified.blob_count, 0);
+        assert_eq!(verified.iroh_id, updated.iroh_id);
     }
 }

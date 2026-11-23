@@ -11,11 +11,11 @@ handled.
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-bridge/src/lib.rs
 
-One documentation fact first: there is **one usage text for the whole
-domain** and no per-verb help in source — every per-verb `--help` prints the
-same shared usage block, despite the domain help's "(options: fleet bridge
-&lt;command&gt; --help)" status line. This chapter is the per-verb reference the
-help does not provide.
+One documentation fact first: every verb has its own help —
+`fleet bridge <command> --help` prints that verb's usage section plus the
+shared defaults-and-exit-codes footer, and a bare `fleet bridge --help`
+prints the whole-domain usage text. This chapter is the per-verb reference
+in prose form.
 
 ## The two verb families
 

@@ -31,6 +31,17 @@
 //! `screen_revision` token does not name the latest observed revision
 //! is refused as stale input and audited.
 //!
+//! Per-tool rate limits (section 6.3) are enforced here too: a role
+//! may cap admitted calls to a tool inside a sliding window —
+//! `chat.post` is the spam-prone surface the design names — and a
+//! call past the cap is refused and audited, charged nothing.
+//!
+//! This module is the one surviving policy point for the spike.
+//! Spike step 4 landed twice (#7916); #13202 reconciled the two
+//! implementations into this one, porting the standalone policy
+//! point's per-tool rate limits, structured park event, and
+//! refusal-code summary breakdown here before deleting it.
+//!
 //! `world.leave` is the exit, not an in-world action: it is never
 //! refused by the ceiling or the quota (an agent must always be able
 //! to leave, even parked or out of budget), it is charged nothing, and
@@ -42,7 +53,7 @@
 //! invoke into the single `input` frame that carries it — one
 //! invocation per call, no chaining.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -53,6 +64,47 @@ use crate::mcp_bridge::{BridgeError, BridgeSession, ToolAction, ToolDefinition};
 /// The world event text emitted when quota exhaustion parks an agent
 /// (design section 6.2, findings Q3b: visible, never silent).
 pub const QUOTA_PARK_EVENT: &str = "agent parked, quota exhausted";
+
+/// A per-tool rate limit (design section 6.3), part of the role.
+///
+/// At most `max_calls` admitted calls to `tool` within any
+/// `window_secs` sliding window. Rate limits apply in addition to
+/// quota; `chat.post` is the spam-prone surface the design names.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RateLimit {
+    /// Tool the limit applies to, e.g. `chat.post`.
+    pub tool: String,
+    /// Admitted calls allowed inside the window.
+    pub max_calls: u64,
+    /// Window length, seconds.
+    pub window_secs: u64,
+}
+
+/// The park world event (design section 6.2).
+///
+/// Emitted when quota exhaustion parks an agent. "Agent parked,
+/// quota exhausted" is a first-class world event the owner sees,
+/// never a silent failure; the shape is the section 9.3
+/// local-budget event F12.10 will consume.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ParkEvent {
+    /// Event kind: always `agent_parked`.
+    pub kind: String,
+    /// Machine-readable reason: always `quota_exhausted`.
+    pub reason: String,
+    /// Owner-facing message: [`QUOTA_PARK_EVENT`].
+    pub message: String,
+    /// The parked agent's public key.
+    pub agent_key: [u8; 32],
+    /// The world the session is connected to.
+    pub world: String,
+    /// Host time of the park, unix seconds.
+    pub at: u64,
+    /// Quota spent when the park happened.
+    pub quota_spent: Quota,
+    /// The session budget that was exhausted.
+    pub quota_budget: Quota,
+}
 
 /// The capability ceiling set at role grant (design section 6.1).
 ///
@@ -157,6 +209,9 @@ pub struct RoleGrant {
     pub ceiling: CapabilityCeiling,
     /// The per-session quota budget for this session.
     pub quota: Quota,
+    /// Per-tool rate limits for this session (design section 6.3),
+    /// part of the role: empty when the role caps no tool.
+    pub rate_limits: Vec<RateLimit>,
 }
 
 /// The outcome of one agent action, as recorded in the audit log
@@ -187,6 +242,16 @@ pub enum AuditOutcome {
         /// The latest revision the host has observed.
         current: u64,
     },
+    /// The action exceeded the role's per-tool rate limit (design
+    /// section 6.3). Never executed, charged nothing.
+    RefusedRateLimit {
+        /// The tool whose limit was hit.
+        tool: String,
+        /// Admitted calls allowed inside the window.
+        limit: u64,
+        /// Window length, seconds.
+        window_secs: u64,
+    },
     /// The policy point admitted the action and the bridge refused
     /// it (unknown tool, invalid arguments, no frame mapping, ...).
     /// The charge stands: the attempt consumed the host's work.
@@ -194,6 +259,24 @@ pub enum AuditOutcome {
         /// The bridge refusal, debug-formatted.
         detail: String,
     },
+}
+
+impl AuditOutcome {
+    /// The stable machine-readable refusal code for this outcome,
+    /// or `None` for an executed action. The owner summary's
+    /// refusal breakdown is keyed by these codes.
+    #[must_use]
+    pub const fn refusal_code(&self) -> Option<&'static str> {
+        match self {
+            Self::Executed => None,
+            Self::RefusedCeiling { .. } => Some("ceiling"),
+            Self::RefusedQuota { .. } => Some("quota"),
+            Self::RefusedParked => Some("parked"),
+            Self::RefusedStaleInput { .. } => Some("stale_input"),
+            Self::RefusedRateLimit { .. } => Some("rate_limited"),
+            Self::RefusedBridge { .. } => Some("bridge"),
+        }
+    }
 }
 
 /// One signed, hash-chained audit event (design section 7).
@@ -450,6 +533,9 @@ pub struct OwnerSummary {
     /// Actions refused, for any reason. Refusals are the
     /// highest-signal events and are never sampled away.
     pub refusals: u64,
+    /// Refusals broken down by stable refusal code
+    /// ([`AuditOutcome::refusal_code`]).
+    pub refusals_by_code: BTreeMap<String, u64>,
     /// Total quota spent across the session.
     pub spend: Quota,
     /// Whether the agent is currently parked.
@@ -492,6 +578,8 @@ pub enum RefusalKind {
     Parked,
     /// The stale-decision token did not name the current revision.
     StaleInput,
+    /// The action exceeded the role's per-tool rate limit.
+    RateLimited,
     /// Admitted by the policy point, refused by the bridge.
     Bridge,
 }
@@ -504,8 +592,8 @@ pub struct PolicyRefusal {
     /// Human-readable detail for the caller and the audit record.
     pub detail: String,
     /// The world event the driver must surface, when this refusal
-    /// parked the agent ([`QUOTA_PARK_EVENT`]); `None` otherwise.
-    pub park_event: Option<String>,
+    /// parked the agent; `None` otherwise.
+    pub park_event: Option<ParkEvent>,
 }
 
 /// What the bridge driver must do with one policy-checked tool call.
@@ -529,6 +617,7 @@ pub struct PolicySession {
     spend: Quota,
     parked: bool,
     object_classes: BTreeMap<String, String>,
+    admitted_at: BTreeMap<String, VecDeque<u64>>,
 }
 
 impl PolicySession {
@@ -544,6 +633,7 @@ impl PolicySession {
             spend: Quota::zero(),
             parked: false,
             object_classes: BTreeMap::new(),
+            admitted_at: BTreeMap::new(),
         }
     }
 
@@ -597,10 +687,14 @@ impl PolicySession {
     pub fn owner_summary(&self) -> OwnerSummary {
         let mut executed = 0u64;
         let mut refusals = 0u64;
+        let mut refusals_by_code: BTreeMap<String, u64> = BTreeMap::new();
         for event in self.audit.events() {
             match event.outcome {
                 AuditOutcome::Executed => executed += 1,
                 _ => refusals += 1,
+            }
+            if let Some(code) = event.outcome.refusal_code() {
+                *refusals_by_code.entry(code.to_owned()).or_default() += 1;
             }
         }
         OwnerSummary {
@@ -610,6 +704,7 @@ impl PolicySession {
             actions: self.audit.events().len() as u64,
             executed,
             refusals,
+            refusals_by_code,
             spend: self.spend,
             parked: self.parked,
         }
@@ -655,9 +750,11 @@ impl PolicySession {
     }
 
     /// Run one agent tool call through the policy point, in the
-    /// design's order: ceiling, quota, execution — with exactly one
-    /// audit event whatever the verdict.
-    pub fn act(&mut self, name: &str, arguments: &serde_json::Value) -> PolicyOutcome {
+    /// design's order: ceiling, stale-decision, rate limit, quota,
+    /// execution — with exactly one audit event whatever the
+    /// verdict. `now` is the host time, unix seconds; it drives the
+    /// rate-limit windows and stamps the park event.
+    pub fn act(&mut self, name: &str, arguments: &serde_json::Value, now: u64) -> PolicyOutcome {
         let object = audit_object(name, arguments);
         // The exit is never refused: not by the ceiling, not by the
         // quota, not by parking. It is charged nothing and audited.
@@ -715,6 +812,27 @@ impl PolicySession {
                 park_event: None,
             });
         }
+        if let Some(limit) = self.rate_limit_hit(name, now) {
+            self.audit.append(
+                &self.grant,
+                name,
+                object,
+                Quota::zero(),
+                AuditOutcome::RefusedRateLimit {
+                    tool: name.to_owned(),
+                    limit: limit.max_calls,
+                    window_secs: limit.window_secs,
+                },
+            );
+            return PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::RateLimited,
+                detail: format!(
+                    "rate limit for {name}: {} admitted calls per {}s window",
+                    limit.max_calls, limit.window_secs
+                ),
+                park_event: None,
+            });
+        }
         let charge = charge_for(name);
         if let Some(axis) = Quota::exceeded_axis(self.grant.quota, self.spend, charge) {
             self.parked = true;
@@ -730,11 +848,45 @@ impl PolicySession {
             return PolicyOutcome::Refused(PolicyRefusal {
                 kind: RefusalKind::Quota,
                 detail: format!("quota exhausted on the {axis} axis"),
-                park_event: Some(QUOTA_PARK_EVENT.to_owned()),
+                park_event: Some(ParkEvent {
+                    kind: "agent_parked".to_owned(),
+                    reason: "quota_exhausted".to_owned(),
+                    message: QUOTA_PARK_EVENT.to_owned(),
+                    agent_key: self.grant.agent_key,
+                    world: self.grant.world.clone(),
+                    at: now,
+                    quota_spent: self.spend,
+                    quota_budget: self.grant.quota,
+                }),
             });
         }
         self.spend.add(charge);
+        self.admitted_at
+            .entry(name.to_owned())
+            .or_default()
+            .push_back(now);
         self.execute(name, arguments, object, charge)
+    }
+
+    /// The rate limit this call hits at `now`, if any (design
+    /// section 6.3): the role's limit for the tool, once the
+    /// admitted calls inside the trailing window reach its cap.
+    /// Expired admissions slide out of the window as a side effect.
+    fn rate_limit_hit(&mut self, name: &str, now: u64) -> Option<RateLimit> {
+        let limit = self
+            .grant
+            .rate_limits
+            .iter()
+            .find(|limit| limit.tool == name)?
+            .clone();
+        let window = self.admitted_at.entry(name.to_owned()).or_default();
+        while window
+            .front()
+            .is_some_and(|at| now.saturating_sub(*at) >= limit.window_secs)
+        {
+            window.pop_front();
+        }
+        (window.len() as u64 >= limit.max_calls).then_some(limit)
     }
 
     /// The ceiling check (step 1). Returns the refusal detail when
@@ -856,6 +1008,8 @@ mod tests {
         SigningKey::from_bytes(&[7; 32])
     }
 
+    const TEST_NOW: u64 = 1_700_000_000;
+
     fn grant() -> RoleGrant {
         let mut tools: BTreeSet<String> = v1_tool_definitions()
             .iter()
@@ -879,6 +1033,7 @@ mod tests {
                 tool_calls: 32,
                 program_invocations: 1,
             },
+            rate_limits: Vec::new(),
         }
     }
 
@@ -892,7 +1047,7 @@ mod tests {
 
     fn joined(grant: RoleGrant) -> PolicySession {
         let mut session = session(grant);
-        let outcome = session.act("world.join", &json!({ "capability": "cap-1" }));
+        let outcome = session.act("world.join", &json!({ "capability": "cap-1" }), TEST_NOW);
         assert!(
             matches!(outcome, PolicyOutcome::Executed(ToolAction::SendFrame(_))),
             "{outcome:?}"
@@ -912,7 +1067,7 @@ mod tests {
             let mut scoped_grant = grant();
             scoped_grant.ceiling.tools.remove("chat.post");
             let mut scoped_session = joined(scoped_grant);
-            let outcome = scoped_session.act("chat.post", &json!({ "text": "hello" }));
+            let outcome = scoped_session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
             assert!(matches!(
                 outcome,
                 PolicyOutcome::Refused(PolicyRefusal {
@@ -935,7 +1090,8 @@ mod tests {
         let mut elsewhere_grant = grant();
         elsewhere_grant.world = "elsewhere".to_owned();
         let mut elsewhere_session = session(elsewhere_grant);
-        let outcome = elsewhere_session.act("world.join", &json!({ "capability": "cap-1" }));
+        let outcome =
+            elsewhere_session.act("world.join", &json!({ "capability": "cap-1" }), TEST_NOW);
         assert!(matches!(
             outcome,
             PolicyOutcome::Refused(PolicyRefusal {
@@ -951,12 +1107,18 @@ mod tests {
         let mut grant = grant();
         grant.quota.frames = 1; // the join spends the only frame
         let mut session = joined(grant);
-        let outcome = session.act("chat.post", &json!({ "text": "hello" }));
+        let outcome = session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
         let PolicyOutcome::Refused(refusal) = outcome else {
             panic!("quota refusal expected, got {outcome:?}");
         };
         assert_eq!(refusal.kind, RefusalKind::Quota);
-        assert_eq!(refusal.park_event.as_deref(), Some(QUOTA_PARK_EVENT));
+        let park = refusal.park_event.as_ref().expect("park event present");
+        assert_eq!(park.kind, "agent_parked");
+        assert_eq!(park.reason, "quota_exhausted");
+        assert_eq!(park.message, QUOTA_PARK_EVENT);
+        assert_eq!(park.world, "tic-tac-toe");
+        assert_eq!(park.quota_budget.frames, 1);
+        assert_eq!(park.quota_spent.frames, 1);
         assert!(session.is_parked());
         assert!(matches!(
             last_outcome(&session),
@@ -964,7 +1126,7 @@ mod tests {
         ));
         // Parked actions are refused without a charge...
         let spend_before = session.spend();
-        let outcome = session.act("screen.read", &json!({}));
+        let outcome = session.act("screen.read", &json!({}), TEST_NOW);
         assert!(matches!(
             outcome,
             PolicyOutcome::Refused(PolicyRefusal {
@@ -975,7 +1137,7 @@ mod tests {
         assert_eq!(session.spend(), spend_before);
         // ...but the agent can always leave.
         assert_eq!(
-            session.act("world.leave", &json!({})),
+            session.act("world.leave", &json!({}), TEST_NOW),
             PolicyOutcome::Executed(ToolAction::Close)
         );
         let summary = session.owner_summary();
@@ -989,9 +1151,10 @@ mod tests {
         session.act(
             "screen.subscribe",
             &json!({ "event_classes": ["chat_posted"] }),
+            TEST_NOW,
         );
-        session.act("chat.post", &json!({ "text": "hello" }));
-        session.act("host.exec", &json!({})); // ceiling refusal
+        session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
+        session.act("host.exec", &json!({}), TEST_NOW); // ceiling refusal
         session.verify_audit().unwrap();
 
         let key = session.host_verifying_key();
@@ -1020,7 +1183,7 @@ mod tests {
     #[test]
     fn audit_events_round_trip_through_serde_and_still_verify() {
         let mut session = joined(grant());
-        session.act("chat.post", &json!({ "text": "hello" }));
+        session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
         let bytes = serde_json::to_vec(session.audit_events()).unwrap();
         let restored: Vec<AuditEvent> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(restored, session.audit_events());
@@ -1033,10 +1196,11 @@ mod tests {
         session.act(
             "screen.subscribe",
             &json!({ "event_classes": ["chat_posted"] }),
+            TEST_NOW,
         ); // 1 frame + 1 tool call
-        session.act("screen.read", &json!({})); // 1 tool call
-        session.act("chat.post", &json!({ "text": "hi" })); // 1 frame + 1 tool call
-        session.act("host.exec", &json!({})); // ceiling refusal, no charge
+        session.act("screen.read", &json!({}), TEST_NOW); // 1 tool call
+        session.act("chat.post", &json!({ "text": "hi" }), TEST_NOW); // 1 frame + 1 tool call
+        session.act("host.exec", &json!({}), TEST_NOW); // ceiling refusal, no charge
         let summary = session.owner_summary();
         assert_eq!(summary.actions, 5);
         assert_eq!(summary.executed, 4);
@@ -1068,6 +1232,7 @@ mod tests {
         let outcome = session.act(
             "chat.post",
             &json!({ "text": "move", "screen_revision": 2 }),
+            TEST_NOW,
         );
         assert!(matches!(
             outcome,
@@ -1087,6 +1252,7 @@ mod tests {
         let outcome = session.act(
             "chat.post",
             &json!({ "text": "move", "screen_revision": 3 }),
+            TEST_NOW,
         );
         assert!(matches!(
             outcome,
@@ -1108,12 +1274,20 @@ mod tests {
         }));
         // An observed class inside the ceiling: admitted.
         assert!(matches!(
-            session.act("object.inspect", &json!({ "entity_ref": "cell-4" })),
+            session.act(
+                "object.inspect",
+                &json!({ "entity_ref": "cell-4" }),
+                TEST_NOW
+            ),
             PolicyOutcome::Executed(ToolAction::Local(_))
         ));
         // An observed class outside the ceiling: refused.
         assert!(matches!(
-            session.act("object.inspect", &json!({ "entity_ref": "safe-1" })),
+            session.act(
+                "object.inspect",
+                &json!({ "entity_ref": "safe-1" }),
+                TEST_NOW
+            ),
             PolicyOutcome::Refused(PolicyRefusal {
                 kind: RefusalKind::Ceiling,
                 ..
@@ -1121,7 +1295,11 @@ mod tests {
         ));
         // A class:id reference carries its class without a frame.
         assert!(matches!(
-            session.act("object.inspect", &json!({ "entity_ref": "vault:9" })),
+            session.act(
+                "object.inspect",
+                &json!({ "entity_ref": "vault:9" }),
+                TEST_NOW
+            ),
             PolicyOutcome::Refused(PolicyRefusal {
                 kind: RefusalKind::Ceiling,
                 ..
@@ -1134,7 +1312,7 @@ mod tests {
         let mut session = joined(grant());
         // Outside the allowlist: ceiling refusal, no program charge.
         assert!(matches!(
-            session.act("program.invoke", &json!({ "program": "wipe" })),
+            session.act("program.invoke", &json!({ "program": "wipe" }), TEST_NOW),
             PolicyOutcome::Refused(PolicyRefusal {
                 kind: RefusalKind::Ceiling,
                 ..
@@ -1147,7 +1325,8 @@ mod tests {
         assert_eq!(
             session.act(
                 "program.invoke",
-                &json!({ "program": "scorekeeper", "object": "board", "arguments": "4" })
+                &json!({ "program": "scorekeeper", "object": "board", "arguments": "4" }),
+                TEST_NOW
             ),
             PolicyOutcome::Executed(ToolAction::SendFrame(
                 json!({ "type": "input", "data_hex": "34" })
@@ -1164,7 +1343,7 @@ mod tests {
     #[test]
     fn the_agent_cannot_mutate_the_log_or_its_quota() {
         let mut session = joined(grant());
-        session.act("chat.post", &json!({ "text": "hello" }));
+        session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
         // The spend comes out by value: scribbling on the copy does
         // not reach the session's ledger.
         let mut copy = session.spend();
@@ -1176,5 +1355,59 @@ mod tests {
         // verifies after every read.
         assert_eq!(session.audit_events().len(), 2);
         session.verify_audit().unwrap();
+    }
+
+    #[test]
+    fn rate_limit_refuses_beyond_the_role_limit_and_the_window_slides() {
+        let mut grant = grant();
+        grant.rate_limits = vec![RateLimit {
+            tool: "chat.post".to_owned(),
+            max_calls: 2,
+            window_secs: 60,
+        }];
+        let mut session = joined(grant);
+        // Two admitted posts inside the window. (The join is a
+        // different tool and never counts against this limit.)
+        assert!(matches!(
+            session.act("chat.post", &json!({ "text": "one" }), TEST_NOW),
+            PolicyOutcome::Executed(_)
+        ));
+        assert!(matches!(
+            session.act("chat.post", &json!({ "text": "two" }), TEST_NOW + 1),
+            PolicyOutcome::Executed(_)
+        ));
+        // The third is refused by the rate limit, audited, and
+        // charged nothing.
+        let spend_before = session.spend();
+        let outcome = session.act("chat.post", &json!({ "text": "three" }), TEST_NOW + 2);
+        assert!(matches!(
+            outcome,
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::RateLimited,
+                ..
+            })
+        ));
+        assert!(matches!(
+            last_outcome(&session),
+            AuditOutcome::RefusedRateLimit { .. }
+        ));
+        assert_eq!(session.spend(), spend_before);
+        // Once the window slides past the admitted calls, the tool
+        // admits again.
+        assert!(matches!(
+            session.act("chat.post", &json!({ "text": "later" }), TEST_NOW + 62),
+            PolicyOutcome::Executed(_)
+        ));
+    }
+
+    #[test]
+    fn owner_summary_breaks_refusals_down_by_code() {
+        let mut session = joined(grant());
+        session.act("host.exec", &json!({}), TEST_NOW); // ceiling refusal
+        session.act("host.exec", &json!({}), TEST_NOW); // ceiling refusal again
+        let summary = session.owner_summary();
+        assert_eq!(summary.refusals, 2);
+        assert_eq!(summary.refusals_by_code.get("ceiling"), Some(&2));
+        assert_eq!(summary.refusals_by_code.len(), 1);
     }
 }

@@ -36,6 +36,10 @@ use serde_json::{Value, json};
 
 const TIC_TAC_TOE: &[u8] = include_bytes!("../apps/tic-tac-toe/program/tic-tac-toe.wasm");
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// The time reading handed to the policy point. The spike's role
+/// caps no tool, so the reading never refuses a call; the reconciled
+/// policy point takes it for its per-tool rate-limit windows.
+const SPIKE_NOW: u64 = 1_700_000_000;
 
 /// A loopback endpoint that uses no relay or discovery.
 async fn endpoint() -> Endpoint {
@@ -90,6 +94,7 @@ fn spike_grant() -> RoleGrant {
             tool_calls: 32,
             program_invocations: 1,
         },
+        rate_limits: Vec::new(),
     }
 }
 
@@ -103,7 +108,7 @@ struct SpikeDriver {
 
 impl SpikeDriver {
     async fn call(&mut self, name: &str, arguments: Value) -> PolicyOutcome {
-        let outcome = self.session.act(name, &arguments);
+        let outcome = self.session.act(name, &arguments, SPIKE_NOW);
         match &outcome {
             PolicyOutcome::Executed(ToolAction::SendFrame(frame)) => {
                 let frame = frame.clone();

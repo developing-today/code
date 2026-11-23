@@ -255,14 +255,13 @@ fn stub(surface: &Surface, domain_name: &str, state: &CapState, invoked_as: &str
             ));
         }
         CapState::Available => {
-            // The step-1 form: compiled in, nothing behind it yet.
+            // Compiled in, nothing behind it yet: the not-implemented state.
             out.push_str(&format!(
                 "fleet: '{domain_name}' is included in this build but not implemented yet.\n"
             ));
             out.push_str(&format!("Enabled capabilities: {caps}.\n"));
             out.push_str(&format!(
-                "This is the {build} build ({VERSION}) — the step-1 skeleton of epic #5412; \
-                 the '{domain_name}' domain lands in a later step.\n"
+                "This is the {build} build ({VERSION}). '{domain_name}' is not implemented in this build.\n"
             ));
         }
     }
@@ -410,10 +409,12 @@ fn print_domain_help(surface: &Surface, d: &Domain) {
             "bridge" => "included in this build (options: fleet bridge <command> --help)",
             "agent" => "included in this build (options: fleet agent --help)",
             "shell" => "included in this build (options: fleet shell --help)",
+            "gh" => "included in this build",
+            "laptop-agent" => "included in this build",
             "serve" => {
                 "included in this build (queue-broker, secrets-broker, search and proxy roles)"
             }
-            _ => "included in this build (implementation lands in a later step of epic #5412)",
+            _ => "included in this build",
         },
         CapState::NotInBuild => {
             "not in this build — invoking it prints the capability stub (exit 69)"

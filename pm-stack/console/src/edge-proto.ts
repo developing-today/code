@@ -21,13 +21,13 @@ import type { Issuer } from "./config.ts";
 
 /** What the edge needs to know to recognise the owner. It comes from the
  * host in every sync, so there is one place it is set. The last four
- * fields are what the edge needs to read and write by itself while the
- * laptop is away: where the queue store is and which token opens it, how
- * the owner's prompts are marked, and which repositories hold his
- * needs-me items. They are absent from configs stored or reported
- * before direct mode existed: those still validate, with the fields
- * empty, and direct capabilities stay off until a config carries them
- * (see Edge.directConfigReady). */
+ * fields are what the edge needs to read and write by itself: where the
+ * queue store is and which token opens it, how the owner's prompts are
+ * marked, and which repositories hold his needs-me items. They are
+ * absent from configs stored or reported before the edge could do that:
+ * those still validate, with the fields empty, and the edge does not do
+ * the core itself until a config carries them (see
+ * Edge.directConfigReady). */
 export interface EdgeConfig {
   owners: string[];
   certNames: string[];
@@ -171,6 +171,9 @@ export interface SyncResponse {
   commands: Held[];
   /** The edge's merged phone-link state, containing hashes only. */
   phones: PhoneLinks;
+  /** Sections the edge reads itself, and so need not be sent to it.
+   * Absent from an edge that reads none. */
+  owns?: string[];
 }
 
 /** Actions that may be done late, when the host is back. The rest act on
@@ -288,8 +291,8 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     });
   }
   if (typeof v.repo !== "string" || typeof v.queue !== "string" || typeof v.androidPackage !== "string") return null;
-  // The direct fields: present ones must be well-formed, absent ones
-  // are a config from before direct mode, which still validates.
+  // The fields the edge acts by: present ones must be well-formed,
+  // absent ones are a config from before it could, which still validates.
   if (v.queueDbUrl !== undefined && (typeof v.queueDbUrl !== "string" || !/^https:\/\//.test(v.queueDbUrl)))
     return null;
   if (v.queueTokenName !== undefined && typeof v.queueTokenName !== "string") return null;

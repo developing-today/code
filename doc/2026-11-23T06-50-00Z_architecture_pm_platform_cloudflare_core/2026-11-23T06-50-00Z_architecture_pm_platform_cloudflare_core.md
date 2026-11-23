@@ -210,3 +210,155 @@ Step 2 is built (`src/plan.ts`, with its screens under More).
 
 Not in this step: at the edge these reads and `intake.send` still go to
 the laptop (held when it is away). Step 3 moves them.
+
+## 2026-11-23T11:10Z Update: the edge does the core itself
+
+Step 3 is built. What changed from the plan above is in how, not what.
+
+- **One gate.** `primary`: the switch on, both tokens there, and a
+  machine's report having said where things are. The minute of silence
+  that used to be waited for is gone, and with it the two-source
+  problem it was avoiding, which is settled the other way round: a
+  section the edge reads is the edge's alone. The laptop's copy of it
+  is not taken, nor its word on how current it is; the edge names those
+  sections in its answer to a report (`owns`) and the laptop stops
+  sending them. Turn the switch off and the laptop's next report brings
+  them back.
+- **The edge reads the way the laptop does.** There is no separate
+  path any more for a read made at the edge: each such section's loader
+  reads its source, and the document keeper (`src/docs.ts`) does the
+  rest as it does on the laptop: its interval, one read at a time, the
+  last good copy and the reason when a read fails. A document is
+  answered at once from what there is and a stale section is read
+  behind the answer. Measured in the Worker runtime before relying on
+  it: a read started behind an answer finishes, with or without being
+  handed to `waitUntil`, and a wake can read and write.
+- **Across restarts.** The object is put away when idle, so everything
+  it would otherwise learn again is kept: each good read (content
+  written only when it changes), and through the kept list of prompts
+  what each thread held, so a restart reads the list and no thread that
+  has not changed. Without that, a wake a minute would have meant every
+  thread every minute.
+- **Notifications with no machine.** While a device is subscribed the
+  object wakes itself each minute, reads the prompts and tells the
+  owner of a reply. The same wake notices a laptop gone quiet, and a
+  telling that failed is tried again a minute on (it used to wait for
+  the next report, which a quiet laptop never sends).
+- **More done here.** Merge, start a deploy, and intake, beside what
+  was already there. The reads that need only GitHub and the queue
+  store are one module (`src/reads.ts`) used by the laptop's server and
+  the edge alike: one pull request's page, the queue by state, ranked
+  issues, releases, roadmaps, bugs, intake.
+- **A refusal is handed on.** The edge's token is a fine-grained one
+  for automation, and what it may do was not known when this was
+  written; the laptop's own way in is another credential. So that
+  moving an action to the edge can never take it away from the owner:
+  when the edge's token is refused before anything was written, the
+  action goes to the laptop exactly as it did before, the edge leaves
+  that kind to the laptop for an hour, and health lists it under
+  `refused`. That list is how a missing permission will be seen.
+- **On by default.** `expose.py` gives the Worker its tokens unless told
+  off (`--edge-direct off`, or the switch under More, Cloudflare, both
+  remembered). This is the decision recorded above under "Decision",
+  point 3: the owner asked for Cloudflare to carry the core, and that
+  cannot happen without them. No value passes through anything but the
+  laptop's own script and Cloudflare's API. A run that was never told
+  and cannot do it says so and does not fail, so the rest of what that
+  script keeps is not held up.
+- **Checked.** 281 tests: 257 under bun and the keeper's 24. 82 planted
+  faults in the edge and its shared pieces: 78 caught, four that change
+  nothing that can be reached. 10 in the keeper's default: all caught. The
+  bundle in the real Worker runtime with the switch on, against
+  stand-ins for GitHub and the queue store on the runner: its own read
+  of each kind came back good, each carrying its token; this now runs
+  on every deploy. A phone-sized Chrome over the app's changed screens,
+  and axe-core over all 19 and the Cloudflare screen in each of its
+  states, light and dark: no violations.
+
+Not done in this step, and still a machine's: filing a queue task (held
+for one, as before); questions, needs and sessions; units, agents and
+messages; the sign-in settings. The edge still learns where things are
+from a machine's first report. Each has an issue (step 6).
+
+## 2026-11-23T11:12Z Update: step 3 after review
+
+Review of the change above (Codex, and a second reading of it here)
+found five ways it could show the owner less than the laptop did. All
+are closed in the same change, before it was merged.
+
+- **`off` was forgotten on a laptop that never had it on.** With on as
+  the default, `--edge-direct off` before any run had turned it on
+  took nothing away and remembered nothing, so the timer's next run
+  turned it on. It is remembered now, before the tidying, so a tidying
+  that is refused leaves the mode off all the same.
+- **After a restart, an action's change could be shown as it was
+  before.** The first look of an object that has just started shows
+  the copy kept from before; the read after an action took that
+  shortcut. What an action touched is now read from its source, always.
+- **What a machine did was not read again here.** A section the edge
+  reads is not taken from a machine, so an action the laptop did (one
+  handed on after a refusal, one only a machine does, one held and done
+  late) showed only when the section's interval came round: up to three
+  minutes for ranked issues. The laptop already says which sections an
+  action changed; those the edge reads are now read again at once.
+- **A refused read had nowhere to go.** Actions were handed on when the
+  edge's token was refused; sections were not, and a screen that
+  answers in part (the deploys, a roadmap) was answered here with its
+  error. Now a section the edge is refused for is the laptop's again for
+  the hour (out of `owns`, the laptop's copy shown, health saying
+  `read.<section>`), and a refused or part-refused screen is asked of
+  the laptop while one is reporting. This is the same rule as for
+  actions, and for the same reason: what the edge's token may do was
+  not known when this was built, and giving the edge its tokens must
+  not be able to take anything away.
+- **A read under way was trusted after a change.** The document keeper
+  shared a read already in flight, which may have been taken before
+  the action finished, and then counted the section fresh. After a
+  change it now waits for that read and reads once more
+  (`Docs.reread`); on the laptop too.
+
+Three more came out of building those, each a way the hand-over itself
+could have gone wrong:
+
+- **Calling too often looked like a refusal.** GitHub answers both
+  with a 403. The token is the fleet's too, and search (which the
+  ranked issues are read with) is what runs out first; an hour with a
+  machine for that is too long when no machine is there. It is told
+  apart by GitHub's own words, and handed on for five minutes.
+- **Reading the queue counted as having written.** Every call of the
+  queue store was noted as a write, so an action refused after it had
+  only read the queue was said as a failure when a machine could have
+  done it, and a section's refusal could be hidden by another
+  section's good read at the same moment. A request of the queue store
+  is now a write only if a statement in it is not a SELECT, and a
+  section is judged by the answers of the services it is read from.
+- **Turned away with nobody looking, the wakes would have ended.** The
+  minute's wake runs only while the edge reads the prompts. When it is
+  turned away for them the object now asks to be woken when that time
+  is up, if a device is there to tell.
+- **The hand-over was forgotten whenever the object was put away.** It
+  was kept in memory only. An object that starts again would have
+  claimed every section afresh, told the laptop so, and been refused
+  again on the next look: with the app closed, the laptop's copy of the
+  prompts would never have been taken, and no reply would have been
+  told of. What the edge is turned away for is now kept in its storage
+  until its time is up, and the owner can have it tried again at once
+  (More, Cloudflare, "Try again now") when the token has been put right.
+
+One thing found on the way that is not about the edge: text on the
+status colours. The success toast on the light page (3.3 to 1) and the
+failure toast and the danger button on the dark one (3.35 to 1) were
+below what can be read comfortably; none of them is on screen when the
+screens are scanned, which is how they were missed. Each status colour
+now has an ink of its own per theme, and a test measures every such
+pair with the WCAG formula on each run.
+
+Checked again: 302 tests (277 under bun, the keeper's 25). 65 more
+planted faults in all of this: 62 caught, three that change nothing
+that can be seen (a section a machine reads being read once more from
+the copy here; a wake that would find nothing to do; a kept entry past
+its time, which is dropped on first use anyway). The bundle in the
+Worker runtime with the switch on: all checks passed. A phone-sized
+Chrome over the Cloudflare screen in each state with the new control,
+and axe-core over the toasts and the danger dialog while they show,
+light and dark: no violations (three before the inks).
