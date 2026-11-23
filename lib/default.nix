@@ -1451,6 +1451,27 @@ let
     }
   );
 
+  # Archer Slack collector (pkgs/fleet/archer-slack/collector;
+  # code#2137 S2): the Socket Mode listener the laptop's
+  # archer-slack-collector user service runs (nixos/services/
+  # archer-slack callPackages the same file); this output makes
+  # `nix build .#archer-slack-collector` the package-level check,
+  # per the #8171 app + derivation + service surface.
+  make-archer-slack = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      archerSlackCollector = pkgs.callPackage ../pkgs/fleet/archer-slack/collector/package.nix { };
+    in
+    {
+      packages.archer-slack-collector = archerSlackCollector;
+      apps.archer-slack-collector = {
+        type = "app";
+        program = "${archerSlackCollector}/bin/archer-slack-collector";
+      };
+    }
+  );
+
   # deploy registry + CLI (pkgs/deploy; issue #5766 slice 1):
   # deployTargets merges this repo's service definitions (design
   # 2026-11-04 section 3); the checks pin the packet's acceptance --
@@ -1812,6 +1833,7 @@ let
         make-mcpx-overlay
         make-mcpx-modules
         make-pm-stack
+        make-archer-slack
         make-laptop-backups-checks
         make-fleet
         make-deploy

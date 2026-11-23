@@ -20,8 +20,10 @@
 //! verdict is the claim-time staleness check's job, #10626).
 //!
 //! Only kinds that work one issue one way take part: small_fix,
-//! triage, and pr_shepherd (per PR set). ci_investigation and
-//! second_pass are recurring by design and file as before. A packet
+//! triage, and pr_shepherd (per PR set). ci_investigation,
+//! second_pass and feature_slice are recurring by design and file
+//! as before — a feature_slice parent issue carries many slices in
+//! parallel, one dedupe key per slice ordinal (#12233 F2c). A packet
 //! may declare `dedupe_exempt: true` (a recurring kind) or
 //! `dedupe_override: "<reason>"` (a deliberate parallel, recorded
 //! as a `dedupe_override` event on the new task). A quarantined
@@ -200,7 +202,7 @@ mod tests {
 
     #[test]
     fn recurring_kinds_exempt_and_issueless_take_no_part() {
-        for kind in ["ci_investigation", "second_pass"] {
+        for kind in ["ci_investigation", "second_pass", "feature_slice"] {
             let p = json!({"kind": kind, "repo": "developing-today/code", "issue": {"number": 5}});
             assert!(work_identity(&task("queued", p)).is_none(), "{kind}");
         }
