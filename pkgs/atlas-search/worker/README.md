@@ -61,6 +61,21 @@ query, result, meta}`.
 - Add an LRU sweeper when there are 10,000 cached queries or 1 GB of
   aggregate cache storage. Until then, entries have no TTL.
 
+## D1 tenant hot cache (#9134, flag off)
+
+The `HOT_CACHE` D1 binding and the store module in
+`src/hot_cache.ts` implement §8 item 1 of the D1 tenant hot cache
+design (`doc/2026-11-23T08-06-00Z_design_atlas_d1_tenant_hot_cache/`):
+the §5 `hot_cache` schema (migration `migrations/0001_hot_cache.sql`)
+plus get/put/touch/evict primitives. The tier is gated by
+`HOT_CACHE_ENABLED` (default `"false"`); with the flag off nothing
+reads or writes the cache and the read path is unchanged. Freshness
+(#13101), admission/eviction (#13103), and read-path integration
+(#13105) are separate follow-ons. The committed `database_id` is a
+local placeholder: the real `atlas-hot-cache` database is created at
+deploy time and its id replaces the placeholder in both
+`wrangler.toml` and `cloudflare.config.ts`.
+
 ## Secrets (names only; set with `wrangler secret put`)
 
 `GATE_TOKEN`, `SERVICE_TOKEN` (the service's `cf-worker` client
