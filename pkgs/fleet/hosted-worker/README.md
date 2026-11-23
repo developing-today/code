@@ -85,6 +85,26 @@ the service skeleton from #12583; each door is filled by its own issue.
   next installation, the native #8887 rule. Callers never see a
   GitHub token, and there is no raw passthrough: every hosted GitHub
   write goes through a verb that can stamp.
+- **Metadata query surface** (`src/routes/query.ts`, `src/query.ts`,
+  `src/query-cli.ts`, #12587; design §7.1, #9060 §13 + §15):
+  `GET|POST /v1/query` list/filter issues and PRs by Metadata
+  fields — direct parent, session, lane, host, queue id, link
+  relation/status pairs — served from the metadata store, scoped to
+  the caller's tenancy. GitHub is the fallback for fields the DB
+  has not yet ingested (§13): with a repo named, matching items
+  that exist only on GitHub join the results (source `github`),
+  attributed to a tenancy by their stamped `auth_subject`. Every
+  DB result whose current body can be read is divergence-checked
+  (§15): a body block that differs from the DB row is reported as a
+  finding naming the differing fields, and the served Metadata is
+  the body's — bodies win on content; each result also carries the
+  #12586 stamp verification of the served provenance. The TS CLI
+  query verbs (`src/query-cli.ts`) build the same filter from flags
+  and render the same document, JSON first. **The collector's read
+  path** is this surface: a service token scoped to the `query`
+  door, one filtered read per genealogy slice; high-volume
+  consumers use the direct-Turso read path (design §3.3 rule 1)
+  instead.
 - **Health + capabilities** (`src/health.ts`, `src/capabilities.ts`):
   public identity surface. `/capabilities` mirrors the native
   `fleet capabilities` JSON shape — same `build` / `capabilities` /
@@ -92,7 +112,7 @@ the service skeleton from #12583; each door is filled by its own issue.
   with hosted additions (`domains[].hosted` disposition from design
   §2, `filling_issue`, and a `doors` list). A domain reports
   available only when its filling issue landed: so far the
-  hosted-transformed `gh` domain, via the stamping door.
+  hosted-transformed `gh` domain, via the stamping and query doors.
 
 ## What is a stub
 
@@ -101,7 +121,6 @@ The remaining door routes authenticate, then answer
 
 | Door      | Routes                                  | Filled by |
 | --------- | --------------------------------------- | --------- |
-| query     | `GET|POST /v1/query`                    | #12587    |
 | queue     | `POST /v1/queue`                        | #12589    |
 | ingestion | `POST /v1/ingestion/github`             | #12590    |
 | sync      | `POST /v1/sync/project`, `POST /v1/sync/queue-github` | #12591 |
@@ -142,6 +161,15 @@ so it does not appear in the capabilities `doors` list.
   the App rotation writer when fleet App configuration is present
   and the fixture writer otherwise (local/dev semantics — this
   package is not deployed).
+- **GitHub item source**: `GitHubItemSource` (`src/github.ts`) is
+  the query door's read seam — current bodies for the §13 fallback
+  scan and the §15 divergence check. Both writer classes implement
+  it (the App rotation class over the same installation tokens; the
+  fixture over its recorded items, where mutating a recorded body
+  simulates a hand-edit), and the Worker wires the same object as
+  writer and source. The query door's fallback scan is bounded
+  (10 pages of 100 per repo); ingestion (#12590) is the
+  completeness mechanism.
 
 ## Develop
 

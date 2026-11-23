@@ -94,5 +94,5 @@ test("capabilities mirrors the native shape with hosted values", async () => {
   );
   const doorById = new Map(doc.doors.map((d) => [d.id, d]));
   assert.equal(doorById.get("stamping")?.state, "live");
-  assert.equal(doorById.get("query")?.state, "stub");
+  assert.equal(doorById.get("query")?.state, "live");
 });

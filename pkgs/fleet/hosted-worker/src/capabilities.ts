@@ -23,8 +23,9 @@
 // Truth, kept current per door: the route modules for the hosted
 // doors are compiled in; a domain reports available only when its
 // filling issue has landed the business logic. The stamping create
-// path (#12585) made the hosted-transformed `gh` domain available;
-// the remaining doors are still stubs, and the document says so.
+// path (#12585) made the hosted-transformed `gh` domain available,
+// and the query door (#12587) is live over the same domain; the
+// remaining doors are still stubs, and the document says so.
 
 import { SERVICE_NAME, type HostedConfig } from "./config.ts";
 
@@ -38,7 +39,7 @@ export interface HostedDoor {
 
 export const HOSTED_DOORS: HostedDoor[] = [
   { id: "stamping", routes: ["POST /v1/stamps"], fillingIssue: "#12585", state: "live" },
-  { id: "query", routes: ["GET /v1/query", "POST /v1/query"], fillingIssue: "#12587" },
+  { id: "query", routes: ["GET /v1/query", "POST /v1/query"], fillingIssue: "#12587", state: "live" },
   { id: "queue", routes: ["POST /v1/queue"], fillingIssue: "#12589" },
   { id: "ingestion", routes: ["POST /v1/ingestion/github"], fillingIssue: "#12590" },
   { id: "sync", routes: ["POST /v1/sync/project", "POST /v1/sync/queue-github"], fillingIssue: "#12591" },

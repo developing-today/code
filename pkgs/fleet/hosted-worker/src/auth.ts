@@ -34,7 +34,7 @@
 
 import type { HostedConfig } from "./config.ts";
 import { FailClosed } from "./errors.ts";
-import type { GitHubWriter } from "./github.ts";
+import type { GitHubItemSource, GitHubWriter } from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
 import type { SessionRegistry } from "./sessions.ts";
 import type { MetadataStore, QueueRecordSource } from "./stamping.ts";
@@ -69,6 +69,12 @@ export interface AuthDeps {
    * point or its fixture. Absent → the stamping route fails closed
    * with 503. */
   githubWriter?: GitHubWriter;
+  /** GitHub item source (#12587, src/github.ts): the query door's
+   * read path to current bodies — the §13 fallback scan and the
+   * §15 divergence check. Absent → the query door serves DB rows
+   * with body_checked false and runs no fallback; the store stays
+   * the required dependency. */
+  githubItems?: GitHubItemSource;
   /** Queue record source (#12585, src/stamping.ts). Absent → no
    * queue record is readable, so queue fields stamp null (the
    * design §5 rule for work that is not queue-originated); the queue

@@ -3,8 +3,9 @@
 // test harness), then answers the acceptance questions against it —
 // health and capabilities answer with the hosted door's identity, a
 // door refuses the unauthenticated, the session registry opens /
-// resolves / closes (#12584), and the stamping door creates a
-// stamped, signed item (#12585). For a wrangler dev run instead: set
+// resolves / closes (#12584), the stamping door creates a
+// stamped, signed item (#12585), and the query door finds it by its
+// Metadata fields (#12587). For a wrangler dev run instead: set
 // RP_ISSUER / TENANCY_FIXTURE_JSON in the environment and
 // `npm run dev`, then curl /health and /capabilities.
 //
@@ -64,6 +65,7 @@ const b64url = (bytes) => {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 const stampKeyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+const smokeWriter = new FixtureGitHubWriter();
 const stampDeps = {
   config: configFromEnv({
     RP_ISSUER: ISSUER,
@@ -81,7 +83,8 @@ const stampDeps = {
   jwksFetcher: h.deps.jwksFetcher,
   sessions: new FixtureSessionRegistry(),
   metadataStore: new FixtureMetadataStore(),
-  githubWriter: new FixtureGitHubWriter(),
+  githubWriter: smokeWriter,
+  githubItems: smokeWriter,
 };
 const callerBody = [
   "Smoke item",
@@ -116,6 +119,45 @@ const stamped = await dispatch(
   if (!ok) {
     failures++;
     console.log(`     body: ${JSON.stringify(body)}`);
+  }
+}
+
+// Query door (#12587): the just-stamped item is findable by its
+// Metadata fields, served from the DB with its body checked and no
+// divergence; the same filter over POST answers identically.
+{
+  const viaGet = await dispatch(
+    bearerReq(`/v1/query?repo=${encodeURIComponent("developing-today/code")}`, token),
+    stampDeps,
+  );
+  const getDoc = await viaGet.json();
+  const found = getDoc.results?.find((r) => r.number === 1);
+  const okGet =
+    viaGet.status === 200 &&
+    found?.source === "db" &&
+    found?.body_checked === true &&
+    found?.divergence === null &&
+    found?.stamp?.status === "verified";
+  console.log(`${okGet ? "ok  " : "FAIL"} GET /v1/query (stamped item, no divergence): HTTP ${viaGet.status}`);
+  if (!okGet) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(getDoc)}`);
+  }
+
+  const viaPost = await dispatch(
+    bearerReq("/v1/query", token, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ direct_parent: "developing-today/code#9081" }),
+    }),
+    stampDeps,
+  );
+  const postDoc = await viaPost.json();
+  const okPost = viaPost.status === 200 && postDoc.count === 1 && postDoc.results[0].number === 1;
+  console.log(`${okPost ? "ok  " : "FAIL"} POST /v1/query (by direct_parent): HTTP ${viaPost.status}`);
+  if (!okPost) {
+    failures++;
+    console.log(`     body: ${JSON.stringify(postDoc)}`);
   }
 }
 
