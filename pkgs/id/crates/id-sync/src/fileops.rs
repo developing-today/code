@@ -38,6 +38,10 @@
 //!   [`FileOps::rename`] (the source name ceases to exist), and are never copied
 //!   by [`FileOps::copy`], which sets only the `archive.replace` it creates
 //!   itself for a file it replaces.
+//! - **Archives are dropped only with their owner.** [`FileOps::delete`]
+//!   validates its name like every other entry point, so naming an archive
+//!   tag itself is refused with [`FileOpError::ReservedArchiveName`]; there
+//!   is no per-archive delete.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
