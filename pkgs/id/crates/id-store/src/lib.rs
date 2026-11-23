@@ -37,6 +37,7 @@ pub mod graph_index;
 pub mod identity;
 pub mod issuer_rotation;
 pub mod media;
+pub mod namespace_registry;
 pub mod note_checkpoints;
 pub mod note_blocks;
 pub mod note_links;
