@@ -13,8 +13,10 @@ Supabase (`agent.mirror_*`) to the dedicated Turso DB `muse-mirror`
 tables (219,105 rows, parity-verified). The job was paused for the migration
 and is **safe to unpause** — see the status banner at the top of JOB-BODY.md
 for the first-run checks. Nothing in this directory writes to Postgres
-anymore; `load_rows_pg.py` / `run_sql_pg.py` are the retired PG versions,
-kept for reference/rollback only.
+anymore; the retired PG versions (`load_rows_pg.py` / `run_sql_pg.py`)
+were removed 2026-11-23 under code#13245 — the muse-dev2 Supabase project
+they targeted no longer exists, so the rollback they were kept for is
+impossible. Their last state is in git history before that removal.
 
 ## Files
 
