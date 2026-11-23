@@ -37,4 +37,12 @@ jobs:
           CF_SMOKE_INIT_EXPECTED_ZONE_IDS: ${{ secrets.CF_SMOKE_INIT_EXPECTED_ZONE_IDS }}
           CF_SMOKE_INIT_WRITE_TOKEN: ${{ secrets.CF_SMOKE_INIT_WRITE_TOKEN }}
           CF_SMOKE_INIT_READ_TOKEN: ${{ secrets.CF_SMOKE_INIT_READ_TOKEN }}
+          BOOTSTRAP_RECEIPT_PATH: ${{ runner.temp }}/smoke-init-receipt.json
         run: node pm-stack/private-laptop-bridge/bootstrap-smoke.mjs
+      - name: Preserve verified smoke initialization receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: private-laptop-smoke-init-${{ github.run_id }}
+          path: ${{ runner.temp }}/smoke-init-receipt.json
+          if-no-files-found: error
+          retention-days: 14

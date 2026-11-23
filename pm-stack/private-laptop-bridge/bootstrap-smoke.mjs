@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // Create the smoke Worker metadata object only. No script/version/deployment,
 // routes, domains, workers.dev setting changes, or settings updates are made.
+import { createHash } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
 
 export const API = 'https://api.cloudflare.com/client/v4';
 export const ACCOUNT_SUFFIX = 'cbfa';
 export const WORKER_NAME = 'private-laptop-bridge-smoke';
+export const INIT_WORKFLOW = '.github/workflows/private-laptop-bridge-smoke-init.yml';
 const PAGE_SIZE = 50;
 const VERSION_PAGE_SIZE = 100;
 
@@ -97,23 +100,37 @@ function assertWorker(worker) {
 async function listAll(fetchImpl, accountId, readToken, pathname, pageSize, params = {}) {
   const all = [];
   let expectedTotal;
+  let expectedPages;
   for (let page = 1; page <= 100; page += 1) {
     const query = new URLSearchParams({ ...params, page: String(page), per_page: String(pageSize) });
     const { result, resultInfo } = await request(fetchImpl, accountId, readToken, `${pathname}?${query}`);
     if (!Array.isArray(result)) fail('Cloudflare list response was not an array');
     all.push(...result);
-    if (!resultInfo || !Number.isInteger(resultInfo.total_pages) || resultInfo.total_pages < 0 || resultInfo.total_pages > 100 ||
-        !Number.isInteger(resultInfo.total_count) || resultInfo.total_count < 0) {
-      fail('Cloudflare pagination metadata is missing or invalid');
+    if (resultInfo !== undefined) {
+      if (!resultInfo || typeof resultInfo !== 'object' || Array.isArray(resultInfo)) fail('Cloudflare pagination metadata is invalid');
+      if (resultInfo.page !== undefined && resultInfo.page !== page) fail('Cloudflare pagination page does not match the request');
+      if (resultInfo.per_page !== undefined && resultInfo.per_page !== pageSize) fail('Cloudflare pagination size does not match the request');
+      if (resultInfo.count !== undefined && resultInfo.count !== result.length) fail('Cloudflare pagination item count is inconsistent');
+      if (resultInfo.total_count !== undefined) {
+        if (!Number.isInteger(resultInfo.total_count) || resultInfo.total_count < 0) fail('Cloudflare pagination total count is invalid');
+        if (expectedTotal === undefined) expectedTotal = resultInfo.total_count;
+        if (resultInfo.total_count !== expectedTotal) fail('Cloudflare list changed during pagination');
+      }
+      if (resultInfo.total_pages !== undefined) {
+        if (!Number.isInteger(resultInfo.total_pages) || resultInfo.total_pages < 0 || resultInfo.total_pages > 100) fail('Cloudflare pagination total pages is invalid');
+        if (expectedPages === undefined) expectedPages = resultInfo.total_pages;
+        if (resultInfo.total_pages !== expectedPages) fail('Cloudflare list changed during pagination');
+      }
     }
-    if (expectedTotal === undefined) expectedTotal = resultInfo.total_count;
-    if (resultInfo.total_count !== expectedTotal) fail('Cloudflare list changed during pagination');
-    if (resultInfo.total_pages === 0 && page === 1 && expectedTotal === 0 && all.length === 0) return all;
-    if (resultInfo.total_pages < page) fail('Cloudflare pagination metadata is missing or invalid');
-    if (page >= resultInfo.total_pages) {
-      if (all.length !== expectedTotal) fail('Cloudflare list did not return its complete item count');
+    if (expectedTotal !== undefined && all.length > expectedTotal) fail('Cloudflare list exceeded its reported total count');
+    const completeByPages = expectedPages !== undefined && (expectedPages === 0 ? page === 1 && all.length === 0 : page >= expectedPages);
+    const completeByCount = expectedTotal !== undefined && all.length === expectedTotal;
+    const completeByShortPage = result.length < pageSize;
+    if (completeByPages || completeByCount || (expectedPages === undefined && expectedTotal === undefined && completeByShortPage)) {
+      if (expectedTotal !== undefined && all.length !== expectedTotal) fail('Cloudflare list did not return its complete item count');
       return all;
     }
+    if (result.length < pageSize && !completeByCount) fail('Cloudflare list ended before its reported total count');
   }
   fail('Cloudflare pagination exceeded the hard page bound');
 }
@@ -146,22 +163,29 @@ async function listZones(fetchImpl, accountId, readToken, expectedZoneIds) {
       pageIds.add(id);
     }
     all.push(...result);
-    if (!resultInfo || resultInfo.page !== page || resultInfo.per_page !== PAGE_SIZE ||
-        !Number.isInteger(resultInfo.total_pages) || resultInfo.total_pages < 0 || resultInfo.total_pages > 100 ||
-        !Number.isInteger(resultInfo.total_count) || resultInfo.total_count !== expectedZoneIds.length ||
-        (resultInfo.total_count > 0 && resultInfo.total_pages !== Math.ceil(resultInfo.total_count / PAGE_SIZE)) ||
-        (resultInfo.count !== undefined && resultInfo.count !== result.length)) {
-      fail('Cloudflare zone pagination metadata is missing or invalid');
+    if (resultInfo !== undefined) {
+      if (!resultInfo || typeof resultInfo !== 'object' || Array.isArray(resultInfo)) fail('Cloudflare zone pagination metadata is invalid');
+      if (resultInfo.page !== undefined && resultInfo.page !== page) fail('Cloudflare zone page does not match the request');
+      if (resultInfo.per_page !== undefined && resultInfo.per_page !== PAGE_SIZE) fail('Cloudflare zone page size does not match the request');
+      if (resultInfo.count !== undefined && resultInfo.count !== result.length) fail('Cloudflare zone page count is inconsistent');
+      if (resultInfo.total_count !== undefined) {
+        if (!Number.isInteger(resultInfo.total_count) || resultInfo.total_count !== expectedZoneIds.length) fail('Cloudflare zone total count differs from approved inventory');
+        if (expectedTotal === undefined) expectedTotal = resultInfo.total_count;
+        if (resultInfo.total_count !== expectedTotal) fail('Cloudflare zone inventory changed during pagination');
+      }
+      if (resultInfo.total_pages !== undefined) {
+        if (!Number.isInteger(resultInfo.total_pages) || resultInfo.total_pages < 0 || resultInfo.total_pages > 100) fail('Cloudflare zone total pages is invalid');
+        if (resultInfo.total_pages > 0 && expectedZoneIds.length > 0 && resultInfo.total_pages !== Math.ceil(expectedZoneIds.length / PAGE_SIZE)) fail('Cloudflare zone total pages differs from approved inventory');
+        if (expectedPages === undefined) expectedPages = resultInfo.total_pages;
+        if (resultInfo.total_pages !== expectedPages) fail('Cloudflare zone inventory changed during pagination');
+      }
     }
-    if (expectedTotal === undefined) expectedTotal = resultInfo.total_count;
-    if (expectedPages === undefined) expectedPages = resultInfo.total_pages;
-    if (resultInfo.total_count !== expectedTotal || resultInfo.total_pages !== expectedPages) fail('Cloudflare zone inventory changed during pagination');
-    if ((resultInfo.total_pages === 0 || resultInfo.total_pages === 1) && page === 1 && expectedTotal === 0 && all.length === 0) return all;
-    if (resultInfo.total_pages < page) fail('Cloudflare zone pagination metadata is missing or invalid');
-    if (page >= resultInfo.total_pages) {
-      if (all.length !== expectedTotal) fail('Cloudflare zone inventory is incomplete');
-      return all;
-    }
+    if (all.length > expectedZoneIds.length) fail('Cloudflare zone inventory exceeds approved inventory');
+    const completeByCount = all.length === expectedZoneIds.length;
+    const completeByPages = expectedPages !== undefined && (expectedPages === 0 ? page === 1 && all.length === 0 : page >= expectedPages);
+    if (completeByCount && (expectedPages === undefined || completeByPages)) return all;
+    if (result.length < PAGE_SIZE && !completeByCount) fail('Cloudflare zone inventory ended before all approved zones were returned');
+    if (expectedPages !== undefined && page >= expectedPages && !completeByCount) fail('Cloudflare zone inventory is incomplete');
   }
   fail('Cloudflare zone pagination exceeded the hard page bound');
 }
@@ -189,6 +213,10 @@ async function assertNoRoutes(fetchImpl, accountId, readToken, expectedZoneIds) 
 async function assertNoVersionsAndDeployments(fetchImpl, accountId, readToken, workerId) {
   const versions = await listAll(fetchImpl, accountId, readToken, `/workers/workers/${encodeURIComponent(workerId)}/versions`, VERSION_PAGE_SIZE);
   if (versions.length !== 0) fail('Smoke Worker already has a version; no upload or deployment was attempted');
+  await assertNoDeployments(fetchImpl, accountId, readToken);
+}
+
+async function assertNoDeployments(fetchImpl, accountId, readToken) {
   const { result, resultInfo } = await request(fetchImpl, accountId, readToken, `/workers/scripts/${encodeURIComponent(WORKER_NAME)}/deployments?page=1&per_page=100`);
   if (!result || typeof result !== 'object' || Array.isArray(result) || !Object.hasOwn(result, 'deployments') ||
       !Array.isArray(result.deployments) || result.deployments.length !== 0 ||
@@ -202,6 +230,52 @@ async function readWorker(fetchImpl, accountId, readToken) {
   return response.absent ? null : assertWorker(response.result);
 }
 
+export async function verifySmokeEmptyTarget({ approvedAccountId, readToken, expectedZoneIds, expectedWorkerId, fetchImpl = fetch }) {
+  if (!/^[a-f0-9]{32}$/i.test(approvedAccountId ?? '') || !approvedAccountId.toLowerCase().endsWith(ACCOUNT_SUFFIX)) fail('approved account configuration is missing or invalid');
+  if (typeof readToken !== 'string' || readToken.length < 20) fail('bootstrap read-only credential is missing');
+  const zones = parseExpectedZoneIds(expectedZoneIds);
+  const worker = await readWorker(fetchImpl, approvedAccountId, readToken);
+  if (!worker) fail('Smoke Worker is not initialized; no upload was attempted');
+  if (expectedWorkerId !== undefined && worker.id !== expectedWorkerId) fail('Smoke Worker identity differs from the initialization receipt');
+  await assertNoRoutes(fetchImpl, approvedAccountId, readToken, zones);
+  await assertNoVersionsAndDeployments(fetchImpl, approvedAccountId, readToken, worker.id);
+  return { workerId: worker.id, workerName: worker.name };
+}
+
+export async function verifySmokePostUpload({ approvedAccountId, readToken, expectedZoneIds, expectedWorkerId, fetchImpl = fetch }) {
+  if (!/^[a-f0-9]{32}$/i.test(approvedAccountId ?? '') || !approvedAccountId.toLowerCase().endsWith(ACCOUNT_SUFFIX)) fail('approved account configuration is missing or invalid');
+  if (typeof readToken !== 'string' || readToken.length < 20) fail('bootstrap read-only credential is missing');
+  const zones = parseExpectedZoneIds(expectedZoneIds);
+  const worker = await readWorker(fetchImpl, approvedAccountId, readToken);
+  if (!worker) fail('Smoke Worker disappeared after version upload');
+  if (expectedWorkerId !== undefined && worker.id !== expectedWorkerId) fail('Smoke Worker identity changed after version upload');
+  await assertNoRoutes(fetchImpl, approvedAccountId, readToken, zones);
+  await assertNoDeployments(fetchImpl, approvedAccountId, readToken);
+  return { workerId: worker.id, workerName: worker.name };
+}
+
+export function createInitReceipt({ approvedAccountId, workerId, status, repository, sourceSha, runId, runAttempt, event, branch }) {
+  if (!/^[a-f0-9]{32}$/i.test(approvedAccountId ?? '') || !approvedAccountId.toLowerCase().endsWith(ACCOUNT_SUFFIX)) fail('approved account configuration is missing or invalid');
+  if (!/^[a-f0-9]{32}$/i.test(workerId ?? '') || !['created', 'already-present'].includes(status)) fail('verified smoke Worker result is invalid');
+  if (repository !== 'developing-today/code' || event !== 'workflow_dispatch' || branch !== 'main' ||
+      !/^[a-f0-9]{40}$/.test(sourceSha ?? '') || !/^\d{1,20}$/.test(String(runId ?? '')) ||
+      !Number.isInteger(runAttempt) || runAttempt < 1) fail('trusted workflow run metadata is invalid');
+  return {
+    schema: 1,
+    repository,
+    workflow: INIT_WORKFLOW,
+    event,
+    branch,
+    source_sha: sourceSha,
+    run_id: String(runId),
+    run_attempt: runAttempt,
+    account_id_sha256: createHash('sha256').update(approvedAccountId.toLowerCase()).digest('hex'),
+    worker_name: WORKER_NAME,
+    worker_id: workerId.toLowerCase(),
+    status,
+  };
+}
+
 export async function bootstrapSmoke({ approvedAccountId, writeToken, readToken, expectedZoneIds, fetchImpl = fetch }) {
   const approved = validateInputs({ approvedAccountId, writeToken, readToken, expectedZoneIds });
   const accountId = approved.approvedAccountId;
@@ -210,7 +284,7 @@ export async function bootstrapSmoke({ approvedAccountId, writeToken, readToken,
   if (before) {
     await assertNoRoutes(fetchImpl, accountId, readToken, approved.expectedZoneIds);
     await assertNoVersionsAndDeployments(fetchImpl, accountId, readToken, before.id);
-    return 'already-present';
+    return { status: 'already-present', workerId: before.id };
   }
 
   // The complete account route inventory is checked immediately before the
@@ -224,18 +298,33 @@ export async function bootstrapSmoke({ approvedAccountId, writeToken, readToken,
   if (!after || after.id !== created.result.id) fail('Created Worker identity does not match read-only provider readback');
   await assertNoRoutes(fetchImpl, accountId, readToken, approved.expectedZoneIds);
   await assertNoVersionsAndDeployments(fetchImpl, accountId, readToken, after.id);
-  return 'created';
+  return { status: 'created', workerId: after.id };
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   try {
-    const status = await bootstrapSmoke({
+    const approvedAccountId = process.env.CF_SMOKE_INIT_APPROVED_ACCOUNT_ID;
+    const result = await bootstrapSmoke({
       approvedAccountId: process.env.CF_SMOKE_INIT_APPROVED_ACCOUNT_ID,
       expectedZoneIds: process.env.CF_SMOKE_INIT_EXPECTED_ZONE_IDS,
       writeToken: process.env.CF_SMOKE_INIT_WRITE_TOKEN,
       readToken: process.env.CF_SMOKE_INIT_READ_TOKEN,
     });
-    console.log(`Smoke Worker init preflight passed (${status}); no code or deployment was uploaded.`);
+    const receiptPath = process.env.BOOTSTRAP_RECEIPT_PATH;
+    if (!receiptPath) fail('init receipt output path is missing');
+    const receipt = createInitReceipt({
+      approvedAccountId,
+      workerId: result.workerId,
+      status: result.status,
+      repository: process.env.GITHUB_REPOSITORY,
+      sourceSha: process.env.GITHUB_SHA,
+      runId: process.env.GITHUB_RUN_ID,
+      runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+      event: process.env.GITHUB_EVENT_NAME,
+      branch: process.env.GITHUB_REF_NAME,
+    });
+    await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
+    console.log(`Smoke Worker init preflight passed (${result.status}); no code or deployment was uploaded.`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'Smoke Worker initialization failed');
     process.exitCode = 1;
