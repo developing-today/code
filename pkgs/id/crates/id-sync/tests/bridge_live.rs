@@ -301,7 +301,8 @@ async fn live_native_against_hosted_bridge_converges_both_directions() {
         "http://127.0.0.1:{}/__harness/{binding}/{binding}/{iroh_hex}/us",
         worker.port
     );
-    let ws_url = format!("{base}/v1/bridge/ws");
+    let ws_base = base.replacen("http://", "ws://", 1);
+    let ws_url = format!("{ws_base}/v1/bridge/ws");
     worker.wait_ready(&base).await;
 
     let now = now_ms();
