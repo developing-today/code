@@ -24,7 +24,14 @@ export type Run = (argv: string[], opts?: { stdin?: string; timeoutMs?: number }
 export type Fetch = (
   url: string,
   init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal },
-) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+  /** What the answer says of itself, where the caller reads it (the
+   * edge does, for GitHub's tag on an answer and when to ask again). */
+  headers?: { get(name: string): string | null };
+}>;
 export type Row = Record<string, string | number | null>;
 /** Queue priorities, most urgent first (the queue's design scale). */
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
