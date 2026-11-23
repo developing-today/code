@@ -335,7 +335,7 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `pm-kaneo-sync-guard.timer` | `OnCalendar=*-*-* *:00:00` | `pm-kaneo-sync-guard.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-14 | 2026-11-15 |
 | `pm-projector-reconcile.timer` | `OnCalendar=*-*-* *:00/15:00` | `pm-projector-reconcile.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `pm-tunnel-watchdog.timer` (Nix-configured; not yet loaded) | `OnUnitActiveSec=2min,OnBootSec=2min` (not live-verified) | `pm-tunnel-watchdog.service` | laptop (user systemd) | not recorded | not recorded | 2026-11-11 | 2026-11-11 |
-| `quota-gatherer.timer` | `OnCalendar=*-*-* *:00/15:00` | `quota-gatherer.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
+| `quota-gatherer.timer` | `OnCalendar=*-*-* *:00/15:00` | `quota-gatherer.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-22 |
 | `repo-archive-backup.timer` | `OnCalendar=*-*-* 05:15:00` | `repo-archive-backup.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `repo-universe-issue-check.timer` | `OnCalendar=*-*-* 00:00:00` | `repo-universe-issue-check.service` | laptop (user systemd) | not recorded | not recorded | not recorded | 2026-11-04 |
 | `queue-coverage-reconcile.timer` (repo-shipped, not yet installed) | `OnCalendar=*-*-* *:41:00` | `queue-coverage-reconcile.service` | laptop (user systemd; code#7016) | not recorded | not recorded | 2026-11-08 | 2026-11-08 |
