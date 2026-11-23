@@ -48,7 +48,7 @@ jobs:
           : > probe-result.txt
           for repo in developing-today/fleet developing-today-forks/fleet; do
             slug="${repo//\//-}"
-            if ! gh api "repos/${repo}/actions/workflows/sync-upstream.yml/runs?per_page=10" \
+            if ! gh api "repos/${repo}/actions/workflows/sync-upstream.yml/runs?per_page=100" \
                 --jq '.workflow_runs' > "/tmp/runs-${slug}.json"; then
               echo "repo=${repo} verdict=fail detail=could not list sync-upstream runs" >> probe-result.txt
               failed=1

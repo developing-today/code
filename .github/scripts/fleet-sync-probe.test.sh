@@ -157,6 +157,13 @@ RC=0
 python3 "$PROBE" --repo x --runs-json "$TMP/bare-list.json" --nope >"$TMP/out" 2>&1 || RC=$?
 if [ "$RC" -ne 2 ]; then echo "FAIL: unknown flag should exit 2 (got $RC)" >&2; cat "$TMP/out" >&2; exit 1; fi
 echo "pass: unknown flag exits 2"
+# An abbreviated (but unambiguous) flag must also be rejected: the
+# probe's parser is strict (allow_abbrev=False) per the operator script
+# argument contract (#3352).
+RC=0
+python3 "$PROBE" --repo x --runs-json "$TMP/bare-list.json" --max-age-hour 30 >"$TMP/out" 2>&1 || RC=$?
+if [ "$RC" -ne 2 ]; then echo "FAIL: abbreviated flag should exit 2 (got $RC)" >&2; cat "$TMP/out" >&2; exit 1; fi
+echo "pass: abbreviated flag exits 2"
 RC=0
 python3 "$PROBE" --repo x --runs-json "$TMP/bare-list.json" extra >"$TMP/out" 2>&1 || RC=$?
 if [ "$RC" -ne 2 ]; then echo "FAIL: stray positional should exit 2 (got $RC)" >&2; cat "$TMP/out" >&2; exit 1; fi

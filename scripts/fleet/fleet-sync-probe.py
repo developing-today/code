@@ -77,7 +77,8 @@ def load_runs(path):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Judge one fleet fork's sync-upstream freshness (#12235).")
+        description="Judge one fleet fork's sync-upstream freshness (#12235).",
+        allow_abbrev=False)
     parser.add_argument("--repo", required=True,
                         help="fork under test, e.g. developing-today/fleet")
     parser.add_argument("--runs-json", required=True,
