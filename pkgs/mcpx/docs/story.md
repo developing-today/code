@@ -3128,3 +3128,7 @@ else in this document is detail underneath those four verbs.
   documents this pattern as "programmatic tool calling".
 - [Cloudflare, *Code Mode*](https://blog.cloudflare.com/code-mode/) — where the
   idea was first argued publicly.
+- [The mcpx programme prompt](../../../doc/2026-11-23T12-40-29Z_design_mcpx_program_investigation_prompt/2026-11-23T12-40-29Z_design_mcpx_program_investigation_prompt.md) —
+  the full-investigation prompt for the mcpx programme (tracking issue
+  #13264): design completion and build-out for the gateway, its config
+  system, and its fleet, Atlas and ID integration surface.
