@@ -38,10 +38,10 @@ pub use factory::{
     CurrencyAccounts, Factory, FactoryError, PLATFORM_OWNER_ID, account_spec, derive_account_id,
 };
 pub use grants::{
-    DEFAULT_TIMEOUT_SLACK_SECONDS, GRANT_TRANSFER_CODE, Grant, GrantConfig, GrantError,
-    GrantService, GrantState, GrantStore, GrantStoreError, InMemoryGrantStore, LedgerError,
-    PendingLedger, PendingTransferSpec, RegisterGrant, StubLedger, steam_key_hash,
-    steam_key_hash_u64,
+    CLAWBACK_TRANSFER_CODE, ClawbackTransferSpec, DEFAULT_TIMEOUT_SLACK_SECONDS,
+    GRANT_TRANSFER_CODE, Grant, GrantConfig, GrantError, GrantService, GrantState, GrantStore,
+    GrantStoreError, InMemoryGrantStore, LedgerError, PendingLedger, PendingTransferSpec,
+    RegisterGrant, StubLedger, steam_key_hash, steam_key_hash_u64,
 };
 pub use registry::{
     AccountKind, AccountRecord, CurrencyRecord, CurrencyStatus, IssuerGrant, IssuerRole,
