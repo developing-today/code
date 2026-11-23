@@ -517,6 +517,8 @@ and Ed25519 public keys are identity metadata, never private keys or service
 tokens. Any future pilot needs a separately reviewed change to executable
 configuration and a separate protected activation step. The present
 `bridge-init` and `bridge` configs remain disabled and cannot consume this file.
+Each service-token expiry is explicit and must be no later than the pilot
+window's end; the three kill conditions are fixed in the schema, not optional.
 
 The proposed pilot hostname is `laptop-bridge-pilot.security.cab`; its DNS
 ownership, wildcard interactions, Access application, issuer/audience, and

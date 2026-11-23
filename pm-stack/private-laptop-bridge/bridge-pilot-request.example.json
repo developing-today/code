@@ -24,7 +24,11 @@
   "enabled": false,
   "kill_switch": {
     "enabled_by_default": false,
-    "disable_on": "window_end",
+    "disable_on": [
+      "window_end",
+      "any_identity_or_posture_failure",
+      "owner_request"
+    ],
     "revoke_access_tokens": true,
     "remove_host_association": true
   },
@@ -33,12 +37,14 @@
       "role": "aster-caller",
       "principal_id": "",
       "access_client_id": "",
+      "access_token_expires_at": "",
       "ed25519_public_key": ""
     },
     {
       "role": "amd-device",
       "principal_id": "",
       "access_client_id": "",
+      "access_token_expires_at": "",
       "ed25519_public_key": ""
     }
   ],

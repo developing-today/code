@@ -47,7 +47,7 @@
       "required": ["enabled_by_default", "disable_on", "revoke_access_tokens", "remove_host_association"],
       "properties": {
         "enabled_by_default": { "const": false },
-        "disable_on": { "enum": ["window_end", "any_identity_or_posture_failure", "owner_request"] },
+        "disable_on": { "const": ["window_end", "any_identity_or_posture_failure", "owner_request"] },
         "revoke_access_tokens": { "const": true },
         "remove_host_association": { "const": true }
       }
@@ -56,20 +56,22 @@
       "type": "array", "minItems": 2, "maxItems": 2,
       "prefixItems": [{
         "type": "object", "additionalProperties": false,
-        "required": ["role", "principal_id", "access_client_id", "ed25519_public_key"],
+        "required": ["role", "principal_id", "access_client_id", "access_token_expires_at", "ed25519_public_key"],
         "properties": {
           "role": { "const": "aster-caller" },
           "principal_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,128}$" },
           "access_client_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,128}$" },
+          "access_token_expires_at": { "type": "string", "format": "date-time" },
           "ed25519_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
         }
       }, {
         "type": "object", "additionalProperties": false,
-        "required": ["role", "principal_id", "access_client_id", "ed25519_public_key"],
+        "required": ["role", "principal_id", "access_client_id", "access_token_expires_at", "ed25519_public_key"],
         "properties": {
           "role": { "const": "amd-device" },
           "principal_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,128}$" },
           "access_client_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{8,128}$" },
+          "access_token_expires_at": { "type": "string", "format": "date-time" },
           "ed25519_public_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
         }
       }],
