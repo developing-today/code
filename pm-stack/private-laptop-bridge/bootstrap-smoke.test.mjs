@@ -20,11 +20,16 @@ const safeWorker = () => ({
 const ok = (result, result_info = { total_pages: 1, page: 1, per_page: 50, total_count: Array.isArray(result) ? result.length : 0 }) =>
   new Response(JSON.stringify({ success: true, result, ...(result_info === undefined ? {} : { result_info }) }), { status: 200 });
 const okNoInfo = result => new Response(JSON.stringify({ success: true, result }), { status: 200 });
-const missing = (code = 10007, message = 'Worker not found.') =>
-  new Response(JSON.stringify({ success: false, errors: [{ code, message }] }), { status: 404 });
+const missing = (code = 10007, message = 'Worker not found.', { result = undefined, includeResult = false, status = 404, responseUrl } = {}) => {
+  const body = { success: false, errors: [{ code, message }] };
+  if (includeResult) body.result = result;
+  const response = new Response(JSON.stringify(body), { status });
+  if (responseUrl !== undefined) Object.defineProperty(response, 'url', { value: responseUrl });
+  return response;
+};
 
-function fixture({ worker = null, createdWorker = safeWorker(), route = null, zones = [{ id: zoneId, account: { id: accountId } }], zoneResultInfo, zonePages, versions = [], versionResultInfo, deployments = [], deploymentResultInfo, deploymentNoInfo = false, createResult = null, authFailure = false, writeAuthFailure = false, missingCode = 10007, missingMessage = 'Worker not found.' } = {}) {
-  const state = { worker, createdWorker, route, zones, zoneResultInfo, zonePages, versions, versionResultInfo, deployments, deploymentResultInfo, deploymentNoInfo, createResult, authFailure, writeAuthFailure, missingCode, missingMessage, calls: [] };
+function fixture({ worker = null, createdWorker = safeWorker(), route = null, zones = [{ id: zoneId, account: { id: accountId } }], zoneResultInfo, zonePages, versions = [], versionResultInfo, deployments = [], deploymentResultInfo, deploymentNoInfo = false, createResult = null, authFailure = false, writeAuthFailure = false, missingCode = 10007, missingMessage = 'Worker not found.', missingResult, includeMissingResult = false, missingResponseUrl, zoneFailure = false } = {}) {
+  const state = { worker, createdWorker, route, zones, zoneResultInfo, zonePages, versions, versionResultInfo, deployments, deploymentResultInfo, deploymentNoInfo, createResult, authFailure, writeAuthFailure, missingCode, missingMessage, missingResult, includeMissingResult, missingResponseUrl, zoneFailure, calls: [] };
   const fetchImpl = async (url, init = {}) => {
     const parsed = new URL(url);
     const method = init.method ?? 'GET';
@@ -37,6 +42,7 @@ function fixture({ worker = null, createdWorker = safeWorker(), route = null, zo
       return new Response(JSON.stringify({ success: false, errors: [{ code: 10000, message: 'Authentication error' }] }), { status: 403 });
     }
     if (parsed.pathname === '/client/v4/zones') {
+      if (state.zoneFailure) return missing(10007, 'Not found');
       if (state.zonePages) {
         const page = Number(parsed.searchParams.get('page'));
         const result = state.zonePages[page - 1] ?? [];
@@ -46,7 +52,7 @@ function fixture({ worker = null, createdWorker = safeWorker(), route = null, zo
     }
     if (parsed.pathname.endsWith('/workers/routes')) return ok(state.route ? [state.route] : []);
     if (parsed.pathname.endsWith(`/workers/workers/${WORKER_NAME}`) && method === 'GET') {
-      return state.worker ? ok(state.worker, undefined) : missing(state.missingCode, state.missingMessage);
+      return state.worker ? ok(state.worker, undefined) : missing(state.missingCode, state.missingMessage, { result: state.missingResult, includeResult: state.includeMissingResult, responseUrl: state.missingResponseUrl });
     }
     if (parsed.pathname.endsWith('/workers/workers') && method === 'POST') {
       state.worker = state.createdWorker;
@@ -111,13 +117,33 @@ test('missing credentials fail before any network request', async () => {
 });
 
 test('only the documented Worker-specific 404 means absent', async () => {
-  const generic = fixture({ missingCode: 10000, missingMessage: 'Resource not found' });
-  await assert.rejects(run({ fetchImpl: generic.fetchImpl }), /API request failed/);
-  assert.equal(generic.state.calls.some(call => call.method === 'POST'), false);
+  for (const options of [
+    { missingMessage: 'The worker resource does not exist for this account.' },
+    { missingMessage: 'Not found', includeMissingResult: true, missingResult: null },
+  ]) {
+    const actual = fixture(options);
+    assert.equal(await run({ fetchImpl: actual.fetchImpl }), 'created');
+    assert.equal(actual.state.calls.filter(call => call.method === 'POST').length, 1);
+  }
 
-  const wrongMessage = fixture({ missingCode: 10007, missingMessage: 'Not found' });
-  await assert.rejects(run({ fetchImpl: wrongMessage.fetchImpl }), /API request failed/);
-  assert.equal(wrongMessage.state.calls.some(call => call.method === 'POST'), false);
+  for (const denied of [
+    fixture({ missingCode: 10000, missingMessage: 'Resource not found' }),
+    fixture({ missingCode: '10007', missingMessage: 'Worker not found' }),
+    fixture({ includeMissingResult: true, missingResult: {} }),
+    fixture({ missingMessage: 'Worker not found', missingResponseUrl: 'https://api.cloudflare.com/client/v4/accounts/aaaaaaaaaaaaaaaaaaaaaaaaaaaacbfa/workers/workers/other' }),
+    fixture({ zoneFailure: true }),
+  ]) {
+    await assert.rejects(run({ fetchImpl: denied.fetchImpl }));
+    assert.equal(denied.state.calls.some(call => call.method === 'POST'), false);
+  }
+
+  const html = fixture();
+  const htmlFetch = html.fetchImpl;
+  html.fetchImpl = async (url, init) => new URL(url).pathname.endsWith(`/workers/workers/${WORKER_NAME}`)
+    ? new Response('<html>not found</html>', { status: 404, headers: { 'content-type': 'text/html' } })
+    : htmlFetch(url, init);
+  await assert.rejects(run({ fetchImpl: html.fetchImpl }), /invalid JSON/);
+  assert.equal(html.state.calls.some(call => call.method === 'POST'), false);
 });
 
 test('read and create authorization failures stop without retry', async () => {

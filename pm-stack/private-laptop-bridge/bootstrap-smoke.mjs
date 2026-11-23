@@ -72,8 +72,15 @@ async function requestWithInfo(fetchImpl, url, token, { method = 'GET', body, al
   let payload;
   try { payload = await response.json(); } catch { fail(`Cloudflare returned invalid JSON (HTTP ${response.status})`); }
   if (response.status === 404 && allowWorkerNotFound) {
-    if (payload?.success === false && Array.isArray(payload.errors) && payload.errors.length === 1 &&
-        payload.errors[0]?.code === 10007 && /^worker not found\.?$/i.test(String(payload.errors[0].message))) {
+    let requestedUrl;
+    try { requestedUrl = new URL(url); } catch { fail('Cloudflare Worker lookup URL is invalid'); }
+    const exactEndpoint = requestedUrl.origin === new URL(API).origin &&
+      new RegExp(`^${new URL(API).pathname}/accounts/[a-f0-9]{32}/workers/workers/${WORKER_NAME}$`, 'i').test(requestedUrl.pathname) &&
+      requestedUrl.search === '' && requestedUrl.hash === '';
+    const exactResponseUrl = !response.url || response.url === url;
+    if (method === 'GET' && exactEndpoint && exactResponseUrl && payload?.success === false &&
+        (!Object.hasOwn(payload, 'result') || payload.result === null) && Array.isArray(payload.errors) && payload.errors.length === 1 &&
+        payload.errors[0]?.code === 10007) {
       return { absent: true, resultInfo: payload.result_info };
     }
   }
