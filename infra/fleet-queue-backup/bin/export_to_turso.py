@@ -298,7 +298,11 @@ def _swap(home, schema, counts, record):
     """
     tables = _tables(schema)
     current = home_schema(home)
-    live_tables = [name for name, _sql in _tables(current)]
+    live_tables = [
+        name
+        for name, _sql in _tables(current)
+        if not name.startswith((STAGE_PREFIX, RETIRE_PREFIX))
+    ]
     try:
         _write_meta(home, "swap", record)
         _drop_objects(home, current)
