@@ -122,6 +122,39 @@ Whether the sweep's removal is its permanent retirement or a pause
 is the endgame decision still open on #2138. The Surface 1 header
 count is stale until that recount, as above.
 
+Surface 1 amended 2026-11-22 by Felix (Muse sandbox seat) for issue
+#2313: the `pr-diff-review` and `pr-diff-review-b` charters are
+amended for Stage B of the review loop (design #2025 §8). Decision
+D1 — amend the pr-diff-review charter to permit verdict notes and
+second-pass enqueueing — was approved in principle by Drewry on
+2026-11-11, and Stage B itself was approved by Drewry on 2026-11-22
+(decision note on #2313), on the Stage A record: 34 shadow verdicts
+(accept 73.5% / accept-with-followups 17.6% / second-pass 8.8% /
+reject 0%), no inflation flag, exit report posted 2026-11-14. As
+amended, for pull requests under epic #2055 only, both jobs issue
+live verdicts under the design §3 vocabulary: they post verdict
+notes (lifecycle-protocol §2 verdict footer), apply the `review/*`
+labels, merge on accept under the standing merge criteria, close on
+reject per §3, and enqueue `second_pass` packets — the cap (2),
+gap-shrink, and cap-escalation rules of §7.2 apply from day one.
+Outside epic #2055 both jobs remain file-issues-only; the Stage A
+shadow section is retired (its window closed 2026-11-13).
+Supporting landings: #2310 (`second_pass` kind + §5.2 payload
+validation in fleet-queue), #2311 (`review/*` labels on all four
+repos; the lifecycle-protocol verdict amendment adopted via
+hatch-personal PR #53), #2314 (second-pass brief template), and
+#2312's monitor checks (PR #10676; the fleet-monitor invocation
+wiring is that issue's remaining line, owned by the fleet-monitor
+job's definition). Application remainder: the two job bodies are
+the charter text and live in hatch-personal (the
+keep-the-four-repos-healthy goal's `crons/hourly/pr-diff-review__interval@2h.md`
+and `crons/hourly/pr-diff-review-b__interval@2h.md`); the amended
+text is to be committed there and applied to the live jobs via
+cron.update by the main seat, per the hatch-personal cron workflow.
+Until that application lands, the jobs still run the Stage A text
+and issue no live verdicts. The Surface 1 header count is
+unchanged.
+
 ## Surface 1 — Muse cron (131 jobs at 2026-11-03 full count; +2 rows since — see Verification)
 
 | id                                        | title                                                                                             | cadence                       | state    | owner / scope                                                              | prompt/brief pointer                                                                                                                                                               | budget       | kill criteria | created      | last review |
@@ -220,8 +253,8 @@ count is stale until that recount, as above.
 | `pool-quota-steward`                      | Pool quota & config steward — hourly pool balance, change ledger, impact follow-up                | `interval@1h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pool-quota-steward__interval@1h.md`                                                                          | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `porkbun-account-nudge`                   | Porkbun second account nudge (weekly)                                                             | `weekly@Mon-09:12:00`         | enabled  | goal:second-porkbun-account-file-api-access-for-the-drewrypope-com-group   | `/home/hatch/workspace/goals/second-porkbun-account-file-api-access-for-the-drewrypope-com-group/crons/weekly/porkbun-account-nudge__weekly@Mon-09:12:00.md`                       | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `pr-comment-review`                       | PR comment review → issues for unaddressed validated findings (every 4h)                          | `interval@4h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-comment-review__interval@4h.md`                                                                           | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pr-diff-review`                          | PR commit/diff review → issues from findings (hourly, up to 15 reviewed / 10 filed)               | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-diff-review__interval@2h.md`                                                                              | not recorded | not recorded  | not recorded | 2026-11-03  |
-| `pr-diff-review-b`                        | PR commit/diff review — Lane B (offset rotation, up to 15 reviewed / 10 filed)                    | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-diff-review-b__interval@2h.md`                                                                            | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `pr-diff-review`                          | PR commit/diff review → issues from findings + review-loop Stage B live verdicts on epic #2055 PRs (up to 15 reviewed / 10 filed)               | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-diff-review__interval@2h.md`                                                                              | not recorded | not recorded  | not recorded | 2026-11-22  |
+| `pr-diff-review-b`                        | PR commit/diff review — Lane B (offset rotation, up to 15 reviewed / 10 filed) + review-loop Stage B live verdicts on epic #2055 PRs                    | `interval@2h`                 | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/pr-diff-review-b__interval@2h.md`                                                                            | not recorded | not recorded  | not recorded | 2026-11-22  |
 | `profile-image`                           |                                                                                                   | `interval@168h`               | enabled  | —                                                                          | `/home/hatch/workspace/system-cron.d/hourly/profile-image__interval@168h.md`                                                                                                       | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `program-tending`                         | Program tending — daily roadmaps, epics, projects, stalled PR check-ins                           | `daily@09:12:00`              | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/daily/program-tending__daily@09:12:00.md`                                                                           | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `repo-design-architect`                   | Design architect — non-code repos design pass every 12h (register + design issues)                | `interval@12h`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/repo-design-architect__interval@12h.md`                                                                      | not recorded | not recorded  | not recorded | 2026-11-03  |
