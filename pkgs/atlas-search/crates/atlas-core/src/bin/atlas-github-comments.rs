@@ -51,6 +51,51 @@ struct Args {
     observed_date: Option<String>,
 }
 
+const ESTATE_OWNERS: [&str; 3] = ["developing-today", "developing-today-forks", "dezren39"];
+
+fn validate_repo(repo: &str) -> Result<(), String> {
+    let Some((owner, name)) = repo.split_once('/') else {
+        return Err("--repo needs an owned owner/name pair".into());
+    };
+    let allowed = ESTATE_OWNERS.iter().any(|o| o.eq_ignore_ascii_case(owner));
+    if !allowed
+        || name.is_empty()
+        || matches!(name, "." | "..")
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    {
+        return Err(
+            "repository outside the permitted GitHub comments estate or malformed repository name"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+// GitHub can redirect a renamed or transferred repository. Validate the
+// canonical source named by each response row before exporting any of it.
+fn check_row_repo(row: &Json, field: &str, repo: &str) -> Result<(), String> {
+    let source = row
+        .get(field)
+        .and_then(Json::as_str)
+        .and_then(|u| u.strip_prefix("https://api.github.com/repos/"))
+        .and_then(|r| r.split_once('/'));
+    let (owner, name) = repo.split_once('/').ok_or("invalid repository name")?;
+    if source.is_some_and(|(o, rest)| {
+        o.eq_ignore_ascii_case(owner)
+            && rest
+                .split('/')
+                .next()
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
+    }) {
+        return Ok(());
+    }
+    Err(format!(
+        "missing or unexpected GitHub repository in {field}"
+    ))
+}
+
 fn parse_args() -> Result<Args, String> {
     let mut state: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
@@ -62,7 +107,11 @@ fn parse_args() -> Result<Args, String> {
         match arg.as_str() {
             "--state" => state = Some(PathBuf::from(it.next().ok_or("--state needs a path")?)),
             "--out" => out = Some(PathBuf::from(it.next().ok_or("--out needs a path")?)),
-            "--repo" => repos.push(it.next().ok_or("--repo needs owner/name")?),
+            "--repo" => {
+                let repo = it.next().ok_or("--repo needs owner/name")?;
+                validate_repo(&repo)?;
+                repos.push(repo);
+            }
             "--skip-reviews" => skip_reviews = true,
             "--observed-date" => {
                 observed_date = Some(it.next().ok_or("--observed-date needs YYYY-MM-DD")?)
@@ -137,7 +186,11 @@ fn enumerate_estate() -> Result<Vec<String>, String> {
         let text = gh_api(path, ".[].full_name")?;
         for line in text.lines() {
             let name = line.trim();
-            if !name.is_empty() && !repos.iter().any(|r| r == name) {
+            if name.is_empty() {
+                continue;
+            }
+            validate_repo(name)?;
+            if !repos.iter().any(|r| r == name) {
                 repos.push(name.to_string());
             }
         }
@@ -191,6 +244,7 @@ fn extract_repo(
     let issues = gh_api_objects(&format!("repos/{repo}/issues?state=all&per_page=100"))?;
     let mut threads: BTreeMap<u64, GhThread> = BTreeMap::new();
     for issue in &issues {
+        check_row_repo(issue, "repository_url", repo)?;
         let Some(number) = issue.get("number").and_then(Json::as_u64) else {
             continue;
         };
@@ -235,6 +289,9 @@ fn extract_repo(
     let raw = gh_api_objects(&format!(
         "repos/{repo}/issues/comments?per_page=100{since_q}"
     ))?;
+    for row in &raw {
+        check_row_repo(row, "issue_url", repo)?;
+    }
     let comments: Vec<GhComment> = raw
         .iter()
         .filter_map(|c| {
@@ -265,6 +322,9 @@ fn extract_repo(
     let raw = gh_api_objects(&format!(
         "repos/{repo}/pulls/comments?per_page=100{since_q}"
     ))?;
+    for row in &raw {
+        check_row_repo(row, "pull_request_url", repo)?;
+    }
     let comments: Vec<GhComment> = raw
         .iter()
         .filter_map(|c| {
@@ -302,6 +362,9 @@ fn extract_repo(
             .collect();
         for number in pr_numbers {
             let raw = gh_api_objects(&format!("repos/{repo}/pulls/{number}/reviews?per_page=100"))?;
+            for row in &raw {
+                check_row_repo(row, "pull_request_url", repo)?;
+            }
             let reviews: Vec<GhComment> = raw
                 .iter()
                 .filter_map(|r| {

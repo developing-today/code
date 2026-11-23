@@ -19,17 +19,19 @@ def record(n, key, thread):
             "created_at":stamp(n), "submitted_at":stamp(n), "updated_at":stamp(n),
             key:f"https://api.github.com/repos/developing-today/atlas-fixture/issues/{thread}"}
 if route.endswith("/issues"):
-    rows = [{"number":n, "pull_request":{}, "labels":[]} for n in (1, 2)]
+    owner = "external-fixture" if os.environ.get("FIXTURE_TRANSFER") else "developing-today"
+    rows = [{"number":n, "repository_url":f"https://api.github.com/repos/{owner}/atlas-fixture",
+             "pull_request":{}, "labels":[]} for n in (1, 2)]
 elif route.endswith("/issues/comments"):
     rows = [record(5, "issue_url", 1)]
 elif route.endswith("/pulls/comments"):
     rows = [record(3, "pull_request_url", 2)]
 elif route.endswith("/pulls/1/reviews"):
-    rows = [record(4, "unused", 1)]
+    rows = [record(4, "pull_request_url", 1)]
 elif route.endswith("/pulls/2/reviews"):
     if os.environ.get("FIXTURE_FAILURE"):
         sys.exit(1)
-    rows = [record(2, "unused", 2)]
+    rows = [record(2, "pull_request_url", 2)]
 else:
     raise SystemExit("unexpected fixture route")
 for row in rows:
@@ -52,6 +54,19 @@ def exercise(directory):
 
     def ids():
         return [json.loads(line)["comment_id"] for line in output.read_text().splitlines()]
+
+    # Explicit targets must fail before creating output or using the fake gh.
+    scratch = directory / "forbidden-output"
+    for target in ("outside-fixture/name", "dezren39/../repos", "dezren39/%2e%2e",
+                   "developing-today/name?query=1", "developing-today-forks/.."):
+        invalid = subprocess.run([str(CLI), "--repo", target, "--state", str(state),
+                                  "--out", str(scratch)], env=env, capture_output=True)
+        assert invalid.returncode == 1 and b"permitted" in invalid.stderr
+        assert not scratch.exists()
+    # A transfer reflected in the canonical repository URL must fail closed.
+    transfer = subprocess.run(cmd, env=dict(env, FIXTURE_TRANSFER="1"), capture_output=True)
+    assert transfer.returncode == 1 and b"unexpected GitHub repository" in transfer.stderr
+    assert state.read_text() == initial and ids() == []
 
     # Independent oracle: an unsuccessful last stream leaves the entire prior
     # checkpoint and append unchanged. Successful retry emits every eligible ID.
