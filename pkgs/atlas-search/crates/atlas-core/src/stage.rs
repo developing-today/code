@@ -201,7 +201,11 @@ pub fn user_tables(conn: &Connection) -> Result<BTreeSet<String>> {
 
 /// Assert a database is exactly a v1 staging DB: `_schema_version = 1`
 /// and the exact [`STAGE_V1_TABLES`] table set. This is the invariant
-/// the schema oracle checks.
+/// the schema oracle checks. One deliberate consequence: a promoted
+/// unit's DB no longer satisfies it — promotion stamps a sixth
+/// table (`atlas_manifest`) into the unit DB, which is what closes
+/// it to further `stage_artifact` writes (see
+/// [`crate::aggregate`]'s step 4; #13284).
 pub fn check_stage_schema(conn: &Connection) -> Result<()> {
     let version = schema_version(conn)?;
     if version != STAGE_SCHEMA_VERSION {

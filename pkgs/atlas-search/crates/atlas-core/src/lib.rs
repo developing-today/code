@@ -16,12 +16,17 @@
 //!
 //! Vector strategies all live behind the backend:
 //! [`VectorBackend::Scan`] (exact `vector_distance_cos` over the
-//! allowed set — the current production path and the default),
-//! [`VectorBackend::IndexFill`] (ANN index, depth escalates
-//! until the pool survives the filter), and
+//! allowed set — the monolith backend's own strategy, and its
+//! default), [`VectorBackend::IndexFill`] (ANN index, depth
+//! escalates until the pool survives the filter), and
 //! [`VectorBackend::IndexFixed`] (single fixed-depth fetch).
-//! Which index strategy becomes the default is decided at the
-//! #5356 cutover from A/B evidence, not here.
+//! Which of the index strategies becomes the monolith backend's
+//! default is decided at the #5356 cutover from A/B evidence, not
+//! here. In the service composition the vector branch is already
+//! served from the shard core:
+//! [`ShardedBackend`](crate::shards::ShardedBackend) fans out over
+//! the shards and delegates FTS, details and everything else to
+//! the wrapped monolith backend (#13284).
 //!
 //! Concurrency note for front-ends (steps 3–4): the library is
 //! synchronous; backends are `Send + Sync` behind interior
@@ -80,6 +85,10 @@ pub use c8_fingerprint::{
 pub use c8_profile::{
     C8Link, C8Page, C8Source, LinkEvidence, LinkKind, PageKind, UrlParts, extract_links,
     sanitize_url,
+};
+pub use classification::{
+    ClassificationDisposition, ClassificationProvenance, ClassificationRecord,
+    EffectiveClassification,
 };
 pub use detect::{
     DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, FileStat, LandedState, LandedTable,
