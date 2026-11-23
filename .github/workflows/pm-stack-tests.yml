@@ -322,12 +322,13 @@ jobs:
           fi
           bun test
 
-      # Bun suite for #12825: pm-stack/pm-service/test/
+      # Bun suites for #12825 + #12826: pm-stack/pm-service/test/
       # (tenant-store.test.ts, the component A PM tenant store
-      # schema + migrations conformance suite) must not be a
-      # silently skipped suite either. It needs only bun
-      # (bun:sqlite is built in), no install step.
-      - name: Test pm-service tenant-store suite
+      # schema + migrations conformance suite; collector.test.ts,
+      # the hosted collector acceptance suite) must not be silently
+      # skipped suites either. They need only bun (bun:sqlite is
+      # built in), no install step.
+      - name: Test pm-service suites
         working-directory: pm-stack/pm-service
         run: |
           if [ ! -d test ] || ! ls test/*.test.ts >/dev/null 2>&1; then
