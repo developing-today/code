@@ -1577,34 +1577,36 @@ pub(crate) fn verb_heartbeat(t: &TursoBackend, req: &Value) -> Value {
         &row.get("progress").cloned().unwrap_or(json!({})),
         &req.get("progress").cloned().unwrap_or(json!({})),
     );
-    let lease_until = after_iso(extend);
-    let work = (|| -> Result<Value, TErr> {
-        t.exec(
-            "UPDATE tasks SET lease_until = ?, progress = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(lease_until.clone()),
-                Arg::Text(progress.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
-        )?;
-        t.exec(
-            "INSERT INTO leases (task_id, worker_id, lease_until, heartbeat_at) \
-             VALUES (?, ?, ?, ?) \
-             ON CONFLICT(task_id) DO UPDATE SET lease_until = excluded.lease_until, \
-               heartbeat_at = excluded.heartbeat_at",
-            &[
-                Arg::Int(task_id),
-                Arg::Text(worker.clone()),
-                Arg::Text(lease_until),
-                Arg::Text(now_iso()),
-            ],
-        )?;
-        touch_worker(t, &worker, Some(task_id))?;
-        get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
-    })();
-    match work {
-        Ok(row) => ok(json!({"row": row})),
+    // Compare against the deadline in the row at write time. The trigger
+    // installed with the schema mirrors the effective deadline in this same
+    // statement, including on an early heartbeat that only updates progress.
+    let sql = format!("{} RETURNING {TASK_COLS}", include_str!("heartbeat.sql"));
+    let result = t.query_objs(
+        &sql,
+        &[
+            Arg::Text(after_iso(extend)),
+            Arg::Text(progress.to_string()),
+            Arg::Text(now_iso()),
+            Arg::Int(task_id),
+            Arg::Text(worker.clone()),
+            arg_str(row["claimed_at"].as_str()),
+            arg_str(row["lane_id"].as_str()),
+            Arg::Int(row["attempts"].as_i64().unwrap_or(0)),
+        ],
+        &TASK_JSON_COLS,
+    );
+    let mut rows = match result {
+        Ok(rows) => rows,
+        Err(e) => return terr(e),
+    };
+    let Some(updated) = rows.pop() else {
+        return fail(
+            5,
+            format!("heartbeat_task: claim for task {task_id} changed"),
+        );
+    };
+    match touch_worker(t, &worker, Some(task_id)) {
+        Ok(()) => ok(json!({"row": updated})),
         Err(e) => terr(e),
     }
 }

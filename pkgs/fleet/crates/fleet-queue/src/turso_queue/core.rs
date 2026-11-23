@@ -986,7 +986,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 19] = [
+pub(crate) const SCHEMA: [&str; 20] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1014,6 +1014,7 @@ pub(crate) const SCHEMA: [&str; 19] = [
     "CREATE TABLE IF NOT EXISTS leases (\
         task_id INTEGER PRIMARY KEY, worker_id TEXT NOT NULL, \
         lease_until TEXT NOT NULL, heartbeat_at TEXT NOT NULL)",
+    include_str!("heartbeat_lease_mirror.sql"),
     "CREATE TABLE IF NOT EXISTS lanes (\
         lane_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, \
         queue TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)",
