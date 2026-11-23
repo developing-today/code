@@ -26,8 +26,8 @@
 // path (#12585) made the hosted-transformed `gh` domain available,
 // the query door (#12587) is live over the same domain, the
 // queue door (#12589) made the `queue` domain available, and the
-// ingestion door (#12590) is live; the remaining door (sync) is
-// still a stub, and the document says so.
+// ingestion door (#12590) and the sync door (#12591) are live —
+// every component-C door has landed, and the document says so.
 
 import { SERVICE_NAME, type HostedConfig } from "./config.ts";
 
@@ -84,7 +84,12 @@ export const HOSTED_DOORS: HostedDoor[] = [
     fillingIssue: "#12590",
     state: "live",
   },
-  { id: "sync", routes: ["POST /v1/sync/project", "POST /v1/sync/queue-github"], fillingIssue: "#12591" },
+  {
+    id: "sync",
+    routes: ["POST /v1/sync/project", "POST /v1/sync/queue-github"],
+    fillingIssue: "#12591",
+    state: "live",
+  },
 ];
 
 interface NativeDomain {

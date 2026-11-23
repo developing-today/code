@@ -106,6 +106,14 @@ jobs:
       - name: Test the Android app's release script
         run: bash pm-stack/console/android/release.test.sh
 
+      # The other half (pm-stack/console/android/release-built.sh): on
+      # the machine that holds the key, which of GitHub's builds is
+      # signed (this repository's own, on main, the newest), that
+      # nothing is released or served unless it carries the certificate
+      # the site lists, and that a failure leaves everything as it was.
+      - name: Test the Android app's sign-and-release script
+        run: bash pm-stack/console/android/release-built.test.sh
+
       # Script suite for #5993: pm-stack/scripts/
       # tailnet-bindings.test.sh (the #781 regression pin for the
       # Pad/Grist tailnet bindings) was run by no workflow. The

@@ -38,6 +38,7 @@ import type {
   GitHubBodyEditor,
   GitHubCommentSurface,
   GitHubItemSource,
+  GitHubProjectSurface,
   GitHubWriter,
 } from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
@@ -106,6 +107,11 @@ export interface AuthDeps {
    * writeback "not_attempted"; the store stays the required
    * dependency. */
   githubEditor?: GitHubBodyEditor;
+  /** GitHub project surface (#12591, src/github.ts): the sync
+   * door's project-sync backend — Projects V2 state and writes
+   * over the rotation. Absent → the project-sync route fails
+   * closed with 503, like unconfigured auth. */
+  githubProjects?: GitHubProjectSurface;
 }
 
 export async function sha256Hex(text: string): Promise<string> {

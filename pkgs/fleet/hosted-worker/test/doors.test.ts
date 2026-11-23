@@ -13,7 +13,11 @@
 // unauthenticated probe is answered 401 by the receiver's own
 // signature check — GitHub deliveries hold no fleet credential)
 // and out of STUB_ROUTES; its behaviour is covered by
-// test/ingestion.test.ts.
+// test/ingestion.test.ts. The sync door left the stub table when
+// #12591 landed it — the table is now EMPTY: every component-C
+// door is live. The 501 test below iterates zero routes and
+// stands as the invariant's guard for any future skeleton door;
+// the sync door's behaviour is covered by test/sync.test.ts.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -38,7 +42,9 @@ const STUB_ROUTES = DOOR_ROUTES.filter(
     r.path !== "/v1/stamps" &&
     r.path !== "/v1/query" &&
     r.path !== "/v1/queue/health" &&
-    r.path !== "/v1/ingestion/github",
+    r.path !== "/v1/ingestion/github" &&
+    r.path !== "/v1/sync/project" &&
+    r.path !== "/v1/sync/queue-github",
 );
 
 test("every door route refuses an unauthenticated request", async () => {

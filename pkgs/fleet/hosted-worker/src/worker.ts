@@ -6,9 +6,11 @@
 // src/jwt.ts and src/tenancy.ts. The skeleton (#12583) landed the
 // plumbing with stub doors; the session registry (#12584), the
 // stamping create path (#12585), the Metadata query surface
-// (#12587), the queue front door (#12589), and the ingestion
-// receiver + sweeper (#12590) are real over the same plumbing.
-// The remaining door is filled by its own issue (#12591 sync).
+// (#12587), the queue front door (#12589), the ingestion
+// receiver + sweeper (#12590), and the sync door (#12591) are
+// real over the same plumbing — every component-C door is live.
+// What remains is production wiring, owned elsewhere: #9074's
+// metadata DB behind the store interfaces and #12583's deploy.
 
 import type { AuthDeps } from "./auth.ts";
 import { configFromEnv, type HostedEnv } from "./config.ts";
@@ -61,10 +63,12 @@ function buildDeps(env: HostedEnv): AuthDeps {
     ? new AppRotationGitHubWriter(config.github)
     : new FixtureGitHubWriter();
   // The query door's read path (#12587), the queue door's
-  // fallback-claim surface (#12589) and the ingestion door's
-  // write-back (#12590) are the same object: both writer classes
-  // also implement GitHubItemSource, GitHubCommentSurface and
-  // GitHubBodyEditor over the same rotation / recorded state.
+  // fallback-claim surface (#12589), the ingestion door's
+  // write-back (#12590) and the sync door's project surface
+  // (#12591) are the same object: both writer classes also
+  // implement GitHubItemSource, GitHubCommentSurface,
+  // GitHubBodyEditor and GitHubProjectSurface over the same
+  // rotation / recorded state.
   return {
     config,
     sessions,
@@ -75,6 +79,7 @@ function buildDeps(env: HostedEnv): AuthDeps {
     queueStore,
     githubComments: githubWriter,
     githubEditor: githubWriter,
+    githubProjects: githubWriter,
   };
 }
 
