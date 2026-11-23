@@ -4451,17 +4451,24 @@ dependencies = [
  "anyhow",
  "bacon",
  "color-eyre",
- "futures",
  "irust",
  "js-sys",
  "leptos",
  "leptos_router",
- "rand 0.9.5",
  "serde",
  "sqlx",
  "tracing",
  "wasm-bindgen",
+ "web-gen-core",
  "web-sys",
+]
+
+[[package]]
+name = "web-gen-core"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "rand 0.9.5",
 ]
 
 [[package]]

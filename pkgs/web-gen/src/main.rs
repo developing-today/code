@@ -1,6 +1,4 @@
 use color_eyre::eyre::Result;
-use futures::executor::block_on;
-use futures::future::ready;
 use js_sys::try_iter;
 use leptos::ev::Event;
 use leptos::ev::SubmitEvent;
@@ -8,10 +6,10 @@ use leptos::prelude::*;
 use leptos::*;
 use leptos_router::components::Form;
 use leptos_router::hooks::use_query_map;
-use rand::Rng;
 use std::str::FromStr;
 use tracing::info;
 use wasm_bindgen::JsCast;
+use web_gen_core::{generate_divisible_i_from_n_up_to_m, generate_random_number_and_multiply};
 use web_sys::HtmlInputElement;
 
 // wasm/leptos doesn't run these things right.. need multiple builds?
@@ -130,55 +128,6 @@ fn ProgressBar(
             value=move || value.get()
         />
     }
-}
-
-fn generate_random_number() -> i32 {
-    let mut rng = rand::thread_rng();
-    rng.gen_range(0..101)
-}
-
-// returns array of tuple [(divisor, number_of_times_divisible)]
-fn generate_divisible_i_from_n_up_to_m(i: i32, n: i32, m: i32) -> Vec<(i32, i32)> {
-    let mut result = Vec::new();
-    let mut subject = n;
-    while subject < m {
-        let times_divisible = subject / i;
-
-        result.push((subject, times_divisible));
-        subject += 1;
-    }
-    result
-}
-
-fn generate_random_number_and_multiply(input: i32) -> i32 {
-    generate_random_number() * input
-}
-
-fn parse_input(input: &str) -> Result<i32, std::num::ParseIntError> {
-    i32::from_str(input)
-}
-
-fn generate_random_number_and_multiply_result(
-    input: Result<i32, std::num::ParseIntError>,
-) -> Result<String, std::num::ParseIntError> {
-    match input {
-        Ok(num) => {
-            let result = generate_random_number() * num;
-            Ok(result.to_string())
-        }
-        Err(e) => Err(e),
-    }
-}
-
-fn generate_random_number_and_multiply_str_future(
-    input: String,
-) -> impl std::future::Future<Output = Result<String, String>> {
-    let input_number = parse_input(&input);
-    let result = generate_random_number_and_multiply_result(input_number);
-    ready(match result {
-        Ok(num) => Ok(num),
-        Err(e) => Err(e.to_string()),
-    })
 }
 
 #[component]
