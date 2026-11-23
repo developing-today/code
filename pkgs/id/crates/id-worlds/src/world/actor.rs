@@ -3441,6 +3441,166 @@ mod device_info_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod authority_boundary_tests {
+    use super::*;
+    use crate::world_caps::{
+        CATALOG_ENTRIES, CapError, DeviceManifest, ProviderKind, ProviderSide, Request,
+    };
+
+    struct BoundaryProgram;
+
+    impl WorldProgram for BoundaryProgram {
+        fn snapshot(&mut self) -> Result<Option<String>> {
+            Ok(Some("{}".to_owned()))
+        }
+    }
+
+    fn sample_manifest() -> DeviceManifest {
+        DeviceManifest {
+            display: serde_json::json!({"kind": "pixel", "width": 128, "height": 64, "colors": 1}),
+            input: serde_json::json!({"keys": 8, "encoder": true, "pointer": false, "text_entry": "none"}),
+            sensors: serde_json::json!({"gnss": {"accuracy_m": 5}, "microphone": false, "camera": false}),
+            audio: serde_json::json!({"out": "pcm", "in": null}),
+            network: serde_json::json!({"transport": "mqtt", "rtt_class": "slow"}),
+        }
+    }
+
+    /// An actor with every registered provider granted and inside the
+    /// ceiling, so `execute` reaches its dispatch match for each name
+    /// instead of stopping at the ledger.
+    fn boundary_actor() -> WorldActor {
+        let mut core = WorldCore::new("lobby", WorldLimits::default()).unwrap();
+        let all: BTreeSet<String> = CATALOG_ENTRIES
+            .iter()
+            .map(|entry| entry.name.to_owned())
+            .collect();
+        core.ledger.set_granted(all.clone());
+        core.ledger.set_allowed(all);
+        let mut actor = WorldActor::for_test(core, Box::new(BoundaryProgram), None);
+        // `device.info` reports `unknown_cap` when the host cannot
+        // describe its device; a manifest is supplied so the test
+        // measures the dispatch arm, not the host's self-description.
+        actor.device_manifest = Some(sample_manifest());
+        actor
+    }
+
+    fn request(cap: &str) -> Request {
+        Request {
+            id: "b1".to_owned(),
+            cap: cap.to_owned(),
+            args: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn every_host_request_provider_has_an_execute_arm() {
+        // Oracle: the authority-boundary audit (#12597) — the host
+        // request dispatch must serve every host-side Request-kind
+        // registry entry. A registered provider with no executor is
+        // a fail-closed gap, not a bypass, but the audit pins it
+        // here so registry growth without an executor fails loudly
+        // instead of silently returning `unknown_cap` to a granted
+        // world. The two speech request providers are the
+        // documented exception (audit finding F-1): registered but
+        // with no executor, so a granted request fails closed.
+        let mut actor = boundary_actor();
+        let mut served = 0;
+        for entry in CATALOG_ENTRIES {
+            if entry.kind != ProviderKind::Request || entry.side != ProviderSide::Host {
+                continue;
+            }
+            match actor.execute(&request(entry.name)) {
+                Ok(_) => served += 1,
+                Err(error) if matches!(entry.name, "speech.transcribe" | "speech.synthesize") => {
+                    assert_eq!(
+                        error.code(),
+                        CapError::unknown().code(),
+                        "{} is registered with no executor and must fail closed",
+                        entry.name
+                    );
+                }
+                Err(error) => {
+                    assert_ne!(
+                        error.code(),
+                        CapError::unknown().code(),
+                        "{} must dispatch to an executor, got unknown_cap",
+                        entry.name
+                    );
+                    served += 1;
+                }
+            }
+        }
+        let expected = CATALOG_ENTRIES
+            .iter()
+            .filter(|entry| entry.kind == ProviderKind::Request && entry.side == ProviderSide::Host)
+            .count()
+            - 2;
+        assert_eq!(
+            served, expected,
+            "every host request provider except the two documented speech exceptions must dispatch"
+        );
+    }
+
+    #[test]
+    fn unregistered_names_fail_closed_with_unknown_cap() {
+        // Oracle: the authority-boundary audit (#12597) — a name
+        // outside the registry never reaches an executor: the ledger
+        // denies it before the dispatch match is consulted.
+        let mut actor = boundary_actor();
+        for name in [
+            "not.a.provider",
+            "kv",
+            "http",
+            "client.file.write",
+            "speech",
+            "form.unknown",
+        ] {
+            let error = actor.execute(&request(name)).unwrap_err();
+            assert_eq!(
+                error.code(),
+                CapError::unknown().code(),
+                "{name} must fail closed with unknown_cap"
+            );
+        }
+    }
+
+    #[test]
+    fn client_providers_never_execute_on_the_host() {
+        // Oracle: the authority-boundary audit (#12597) — a
+        // client-side provider is brokered to the originating
+        // session, never executed by the host, even when a caller
+        // reaches `execute` directly instead of the broker route.
+        let mut actor = boundary_actor();
+        let error = actor.execute(&request("client.file.read")).unwrap_err();
+        assert_eq!(error.code(), CapError::failed().code());
+        assert_eq!(
+            error.reason().map(String::as_str),
+            Some("client_provider_async")
+        );
+    }
+
+    #[test]
+    fn event_only_and_subscription_names_do_not_execute() {
+        // Oracle: the authority-boundary audit (#12597) — `execute`
+        // serves host requests only. `form.result` is an event, so
+        // it is refused as event-only; subscriptions are delivered
+        // by arm/fire, so naming one as a request fails closed.
+        let mut actor = boundary_actor();
+        let error = actor.execute(&request("form.result")).unwrap_err();
+        assert_eq!(error.code(), CapError::bad_args().code());
+        for name in ["time.tick", "players", "loc.watch", "speech.capture"] {
+            let error = actor.execute(&request(name)).unwrap_err();
+            assert_eq!(
+                error.code(),
+                CapError::unknown().code(),
+                "{name} is a subscription, not a request"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod form_tests {
     use super::*;
     use crate::world_caps::{CapError, Request};
