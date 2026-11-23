@@ -436,13 +436,13 @@ jobs:
         run: bun test plugin/opencode/mcpx/ plugin/core/
 
       # The opencode plugin v2 suite (#6092). Run by directory so new test
-      # files are covered automatically; the six files registered today are
+      # files are covered automatically; the thirteen files registered today are
       # named and asserted to exist, so a rename cannot silently shrink
       # the suite the registry row counts.
       - name: bun test (opencode plugin v2)
         working-directory: pkgs/mcpx
         run: |
-          for f in permission.test.ts picker.test.ts sampling.test.ts tool-filter.test.ts tools.test.ts v2.test.ts; do
+          for f in permission.test.ts picker.test.ts sampling.test.ts tool-filter.test.ts tools.test.ts v2.test.ts annotate.test.ts backend.test.ts bin-args.test.ts bin.test.ts discovery-retry.test.ts plugin-tools.test.ts remember.test.ts; do
             test -f "plugin/opencode/v2/$f" || { echo "registered v2 test file missing: plugin/opencode/v2/$f"; exit 1; }
           done
           bun test plugin/opencode/v2/

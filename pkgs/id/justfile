@@ -36,7 +36,7 @@ alias check-all := check
 
 # CI-safe checks (read-only, no modifications) [bun]
 [group('check')]
-ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell web-lint test-sandbox test-native-shell test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell web-lint test-sandbox test-native-shell test-hw-shell test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -308,6 +308,11 @@ test-crate-integration:
 [group('test')]
 test-native-shell:
     cargo nextest run -p id-native-shell
+
+# Run the id-hw-shell live-host behavioral tests (#10929): non-default workspace member, so the default-member test recipes never run it.
+[group('test')]
+test-hw-shell:
+    cargo nextest run -p id-hw-shell
 
 # Run the Rust example-guest unit tests (#7904): plaza-sdk (examples/rust-world, 9 tests) and rust-counter (examples/rust-counter, 2 tests) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
 [group('test')]
