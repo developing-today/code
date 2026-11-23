@@ -43,7 +43,12 @@ every 15 minutes, and the reader (`ReadQuotaCurrent`) takes the newest
 `ok` entry for the serviceId under the policy's B5 bound (60 minutes).
 A missing, stale, or failed read is a non-zero exit, never a silent
 unguarded record; an out-of-range monthly percent drops instead of
-clamping. A seating against a pool at or above 97% monthly then refuses
+clamping. An entry the gatherer retained after a failed tick
+(`retainedFromFailedTick`) counts as stale, never as a live read. A
+successful live read also clears any `pool_read_unobtainable` B4
+fallback recorded in the answers file, and explicitly empty
+`--quota-current` / `--pool` values are a usage error, never a silent
+fall back to the hand-supplied inputs. A seating against a pool at or above 97% monthly then refuses
 with the `monthly-guard refusal` line the weekly audit counts
 (`placement-audit --log`), so the refusal is countable from
 dispatcher-log data:

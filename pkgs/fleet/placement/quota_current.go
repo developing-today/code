@@ -22,6 +22,11 @@ import (
 //   - Only an entry whose state is "ok" can supply a number. An error,
 //     lapsed, or stale entry never becomes a percent; a missing or stale
 //     read is an error, not a zero.
+//   - An entry the gatherer retained after a failed tick
+//     (retainedFromFailedTick set) is stale by definition — the
+//     provider's latest run failed, however recent its measuredAt is
+//     (#1268 in the aggregator's entryState). It never supplies a
+//     number and never shadows an older genuine ok read.
 //   - Several entries can share a serviceId (one per credential): the
 //     newest ok entry wins.
 //   - A read stamped more than quotaCurrentFutureSkew in the future is
@@ -62,6 +67,11 @@ func ReadQuotaCurrent(path, pool string, now time.Time, maxAge time.Duration) (f
 			continue
 		}
 		okEntries++
+		if e.RetainedFromFailedTick != "" {
+			// Retained after a failed gatherer tick: stale by
+			// definition (#1268), never a usable read.
+			continue
+		}
 		measuredAt, err := time.Parse(time.RFC3339, e.MeasuredAt)
 		if err != nil {
 			continue
@@ -120,6 +130,11 @@ type quotaCurrentEntry struct {
 	State      string               `json:"state"`
 	MeasuredAt string               `json:"measuredAt"`
 	Windows    []quotaCurrentWindow `json:"windows"`
+	// RetainedFromFailedTick is the gatherer's stamp (an ISO
+	// timestamp) on an entry it carried over after a failed tick
+	// (markRetained in pm-stack/aggregator/src/quota-gather-map.ts);
+	// non-empty means the entry is retained, not freshly read.
+	RetainedFromFailedTick string `json:"retainedFromFailedTick"`
 }
 
 type quotaCurrentWindow struct {

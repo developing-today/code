@@ -17,8 +17,11 @@
 // --pool <serviceId> and the tool fills pool_monthly_pct, pool_read_at,
 // and pool_id from the gatherer's monthly window for that pool (the live
 // read the B5 gate measures against). The live read wins over any
-// hand-supplied guard inputs in the answers file. A missing, stale, or
-// failed read is a non-zero exit, not a silent unguarded record.
+// hand-supplied guard inputs in the answers file, and a successful live
+// read clears any pool_read_unobtainable B4 fallback recorded there:
+// once an authoritative read exists, the fallback no longer applies and
+// the guard judges the fresh read. A missing, stale, or failed read is
+// a non-zero exit, not a silent unguarded record.
 //
 // Exit status is non-zero when no valid record can be emitted (for
 // example a pool-drawn placement without a fresh-enough quota read, per
@@ -49,7 +52,15 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json> [--quota-current <quota-current.json> --pool <serviceId>]")
 		os.Exit(2)
 	}
-	if *policyPath == "" || *answersPath == "" || (*quotaCurrentPath == "") != (*poolID == "") {
+	if *policyPath == "" || *answersPath == "" {
+		fmt.Fprintln(os.Stderr, "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json> [--quota-current <quota-current.json> --pool <serviceId>]")
+		os.Exit(2)
+	}
+	supplied := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { supplied[f.Name] = true })
+	liveRead, err := liveReadSelection(supplied["quota-current"], supplied["pool"], *quotaCurrentPath, *poolID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "placement-record:", err)
 		fmt.Fprintln(os.Stderr, "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json> [--quota-current <quota-current.json> --pool <serviceId>]")
 		os.Exit(2)
 	}
@@ -69,18 +80,13 @@ func main() {
 		os.Exit(1)
 	}
 	now := time.Now()
-	if *quotaCurrentPath != "" {
+	if liveRead {
 		pct, readAt, err := placement.ReadQuotaCurrent(*quotaCurrentPath, *poolID, now, time.Duration(pol.QuotaReadMaxAgeMinutes())*time.Minute)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "placement-record:", err)
 			os.Exit(1)
 		}
-		// The live read is authoritative over hand-supplied guard
-		// inputs: the seating decision is made on the measured
-		// monthly %, never on a stale answers file.
-		answers.PoolMonthlyPct = &pct
-		answers.PoolReadAt = &readAt
-		answers.PoolID = *poolID
+		applyLiveRead(&answers, pct, readAt, *poolID)
 	}
 	rec, err := placement.Evaluate(pol, answers, now)
 	if err != nil {
@@ -93,4 +99,40 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
+}
+
+// liveReadSelection validates the --quota-current/--pool pair and reports
+// whether a live quota read was requested. The two options must be
+// supplied together, and a present-but-valueless option is a usage
+// error, never the default (operator argument contract, #3352): an
+// explicitly empty --quota-current "" --pool "" — the shape a dispatcher
+// produces when its path variables are unset — must not silently
+// degrade to the hand-supplied answers path when the caller asked for
+// live quota enforcement.
+func liveReadSelection(quotaCurrentSupplied, poolSupplied bool, quotaCurrent, pool string) (bool, error) {
+	if quotaCurrentSupplied && quotaCurrent == "" {
+		return false, fmt.Errorf("--quota-current was supplied with an empty value")
+	}
+	if poolSupplied && pool == "" {
+		return false, fmt.Errorf("--pool was supplied with an empty value")
+	}
+	if (quotaCurrent == "") != (pool == "") {
+		return false, fmt.Errorf("--quota-current and --pool must be supplied together")
+	}
+	return quotaCurrent != "", nil
+}
+
+// applyLiveRead records a successful live quota read in the answers. The
+// live read is authoritative over hand-supplied guard inputs: the
+// seating decision is made on the measured monthly %, never on a stale
+// answers file. It also clears any pool_read_unobtainable B4 fallback
+// the answers file recorded — once a fresh read has been obtained, B4
+// reliance no longer applies, and leaving the flag set would make
+// buildRecord return on the fallback before the monthly guard ever
+// judges the fresh read.
+func applyLiveRead(answers *placement.Answers, pct float64, readAt time.Time, poolID string) {
+	answers.PoolMonthlyPct = &pct
+	answers.PoolReadAt = &readAt
+	answers.PoolID = poolID
+	answers.PoolReadUnobtainable = false
 }
