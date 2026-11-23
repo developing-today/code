@@ -34,6 +34,9 @@ fn test_config() -> Config {
         issuer: "http://127.0.0.1:8911".to_string(),
         bind: "127.0.0.1:0".to_string(),
         oidc_cert_path: cert_path(),
+        provider_config_path: None,
+        signing_key_path: None,
+        audit_db_path: None,
     }
 }
 
