@@ -201,7 +201,9 @@ class ParseNote(unittest.TestCase):
                 note = lg.parse_note(body)
                 self.assertEqual(note["state"], "triaged")
                 self.assertEqual(note["verdict"], "still_blocked")
-                self.assertIn(note["resume"], ("dependency_closed:539", "slice_landed:12543"))
+                self.assertIn(
+                    note["resume"], ("dependency_closed:539", "slice_landed:12543")
+                )
 
     def test_canonical_header_with_resume_round_trips(self):
         self.assertEqual(
@@ -223,7 +225,13 @@ class ParseNote(unittest.TestCase):
         )
 
     def test_parse_resume_rejects_dates_people_and_bare_kinds(self):
-        for raw in ("next week", "2027-01-01", "the owner", "slice_landed", "dependency_closed:"):
+        for raw in (
+            "next week",
+            "2027-01-01",
+            "the owner",
+            "slice_landed",
+            "dependency_closed:",
+        ):
             with self.subTest(raw=raw):
                 self.assertIsNone(lg.parse_resume(raw))
         self.assertEqual(lg.parse_resume("slice_landed:12543"), "slice_landed:12543")
@@ -310,9 +318,16 @@ class VerdictNote(unittest.TestCase):
     """#12233 F2a: a triage verdict is posted once per verdict per
     unchanged issue, across task ids."""
 
-    def verdict(self, cs, task="99999", verdict="still_blocked", changes=(), resume=None):
+    def verdict(
+        self, cs, task="99999", verdict="still_blocked", changes=(), resume=None
+    ):
         return lg.note_verdict(
-            cs, task, "triaged", now=NOW, verdict=verdict, changes=changes,
+            cs,
+            task,
+            "triaged",
+            now=NOW,
+            verdict=verdict,
+            changes=changes,
             resume=resume,
         )
 
@@ -383,18 +398,14 @@ class VerdictNote(unittest.TestCase):
         self.assertFalse(v["post"])
 
     def test_recorded_verdict_does_not_match_unrecorded(self):
-        v = lg.note_verdict(
-            [comment(HTML_TRIAGED, 40)], "99999", "triaged", now=NOW
-        )
+        v = lg.note_verdict([comment(HTML_TRIAGED, 40)], "99999", "triaged", now=NOW)
         self.assertTrue(v["post"])
 
     def test_new_resume_condition_posts_despite_duplicate_verdict(self):
         # Thread 4 (P2, #12565): the stored verdict has no resume
         # condition; the same verdict WITH one still posts, so the
         # caller can upgrade it to F2b coverage.
-        v = self.verdict(
-            [comment(HTML_TRIAGED, 40)], resume="dependency_closed:539"
-        )
+        v = self.verdict([comment(HTML_TRIAGED, 40)], resume="dependency_closed:539")
         self.assertTrue(v["post"])
         self.assertIn("resume condition", v["reason"])
 
@@ -427,10 +438,13 @@ class CoverageVerdict(unittest.TestCase):
     verdict with a valid resume condition is covered, and an issue
     with no verdict is still uncovered."""
 
-    def coverage(self, cs, labels=("effort/l",), changes=(), state="open",
-                 resume_fulfilled=None):
+    def coverage(
+        self, cs, labels=("effort/l",), changes=(), state="open", resume_fulfilled=None
+    ):
         return lg.coverage_verdict(
-            issue(list(labels), state=state), cs, changes=changes,
+            issue(list(labels), state=state),
+            cs,
+            changes=changes,
             resume_fulfilled=resume_fulfilled,
         )
 
@@ -537,9 +551,7 @@ class CoverageVerdict(unittest.TestCase):
         def boom(r):
             raise RuntimeError("gh down")
 
-        v = self.coverage(
-            [comment(HTML_TRIAGED_RESUME, 40)], resume_fulfilled=boom
-        )
+        v = self.coverage([comment(HTML_TRIAGED_RESUME, 40)], resume_fulfilled=boom)
         self.assertTrue(v["covered"])
 
 

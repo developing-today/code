@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""deploy — the deployment-architecture CLI (issue #5766, slices 1-3).
+"""deploy — the deployment-architecture CLI (issue #5766, slices 1-3;
+issue #5770, slice 4).
 
 Slice 1 ships the registry foundation:  enumerates the
  registry (name, class, targets) after validating every
@@ -32,6 +33,34 @@ Slice 2 added the command logic that does not itself activate anything:
   machinery pointed at the previous distinct generation. The
   launchd real path still refuses explicitly: it cannot be exercised
   from the Linux fleet and stays a rendering/planning stub.
+
+Slice 4 (issue #5770, migration M3) adds the sandbox class of design
+§4.4 — the first sandbox target is quota-recorder:
+
+- A definition may carry a second optional field beyond the §3
+  set: `timer` ({onCalendar, persistent, randomizedDelaySec}), the
+  only way to name a timer-driven oneshot service. It is optional
+  for every class; a definition without it validates exactly as
+  before.
+- Sandbox activation mirrors §4.1 with the sandbox's twists: the
+  per-service profile lives in the persistent home
+  (~/.local/share/deploy/profiles by default — /etc does not
+  survive a sandbox recycle, home does), the rendered unit(s) are
+  stored inside the generation directory, and the target is
+  recorded in the sandbox manifest (state dir: sandbox-manifest.json),
+  the list of currently-activated sandbox targets.
+- Activation finishes with the restore step: link the current
+  generation's rendered units into the unit dir (/etc/systemd/system),
+  daemon-reload, enable --now the timer (or the service, for a
+  daemon-shaped target), verify it is active (plus the healthCheck
+  URL probe when one is defined). Any failure flips back exactly
+  like the systemd class. Rollback is the same repoint + re-link.
+- `deploy restore` re-runs that restore step for every target in
+  the manifest, with no registry needed: it is the generic unit
+  restorer the sandbox bootstrap invokes after a recycle (design
+  §4.4). pkgs/deploy/restore.py is the same contract as a
+  standalone stdlib script, for boots where no built deploy CLI
+  is at hand yet.
 
 The registry is JSON baked into the package at build time (the Nix
 expression renders the attrset definitions, replacing each
@@ -93,8 +122,11 @@ FIELDS = {
 }
 # Optional fields: absent means the default below. healthTimeoutSeconds is
 # how long activation keeps probing the healthCheck before it calls the
-# deploy failed (#11170).
-OPTIONAL_FIELDS = {"healthTimeoutSeconds"}
+# deploy failed (#11170). timer (slice 4, #5770) names a timer-driven
+# oneshot service — the §3 shape had no way to express one — and when
+# present must carry exactly TIMER_FIELDS.
+OPTIONAL_FIELDS = {"healthTimeoutSeconds", "timer"}
+TIMER_FIELDS = {"onCalendar", "persistent", "randomizedDelaySec"}
 DEFAULT_HEALTH_TIMEOUT_SECONDS = 120
 MAX_HEALTH_TIMEOUT_SECONDS = 3600
 HEALTH_PROBE_INTERVAL_SECONDS = 0.5
@@ -104,7 +136,7 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 # this root (system scope); the rendered unit points at the profile's
 # `current` link.
 DEFAULT_PROFILE_BASE = "/nix/var/nix/profiles/per-service"
-ACTIVATION_CLASSES = {"systemd", "launchd"}
+ACTIVATION_CLASSES = {"systemd", "launchd", "sandbox"}
 
 
 def validate(registry):
@@ -215,6 +247,54 @@ def validate(registry):
                     f"{where}: healthTimeoutSeconds must be an integer in "
                     f"1..{MAX_HEALTH_TIMEOUT_SECONDS}"
                 )
+        if "timer" in defn:
+            # Slice 4 (#5770): the timer is rendered verbatim into a
+            # systemd .timer unit, so its shape is as strict as the
+            # rest of the definition: exactly TIMER_FIELDS, a
+            # single-line calendar spec that cannot smuggle in a
+            # second unit directive, a real bool, a non-negative int.
+            timer = defn["timer"]
+            if not isinstance(timer, dict):
+                errors.append(
+                    f"{where}: timer must be an object with fields "
+                    f"{', '.join(sorted(TIMER_FIELDS))}"
+                )
+            else:
+                tmissing = TIMER_FIELDS - timer.keys()
+                textra = timer.keys() - TIMER_FIELDS
+                if tmissing:
+                    errors.append(
+                        f"{where}: timer missing field(s): "
+                        f"{', '.join(sorted(tmissing))}"
+                    )
+                if textra:
+                    errors.append(
+                        f"{where}: timer unknown field(s): {', '.join(sorted(textra))}"
+                    )
+                if "onCalendar" in timer:
+                    oc = timer["onCalendar"]
+                    if not (
+                        isinstance(oc, str)
+                        and oc
+                        and oc == oc.strip()
+                        and not any(c in oc for c in "\n\r")
+                        and not oc.startswith("-")
+                    ):
+                        errors.append(
+                            f"{where}: timer.onCalendar must be a non-empty "
+                            "single-line systemd calendar spec"
+                        )
+                if "persistent" in timer and not isinstance(timer["persistent"], bool):
+                    errors.append(f"{where}: timer.persistent must be a boolean")
+                if "randomizedDelaySec" in timer:
+                    rds = timer["randomizedDelaySec"]
+                    if not (
+                        isinstance(rds, int) and not isinstance(rds, bool) and rds >= 0
+                    ):
+                        errors.append(
+                            f"{where}: timer.randomizedDelaySec must be a "
+                            "non-negative integer"
+                        )
         if "targets" in defn and not (
             isinstance(defn["targets"], list)
             and defn["targets"]
@@ -357,6 +437,118 @@ def render_plist(name, defn, base=None):
         "    <key>RunAtLoad</key>\n    <true/>\n"
         "</dict>\n</plist>\n"
     )
+
+
+# --- Sandbox rendering (slice 4, issue #5770) ---------------------------
+#
+# Oracle: design §4.4. A sandbox target renders a SET of unit files,
+# stored inside its generation directory: the service, plus a timer
+# when the definition carries one. The service ExecStart points at
+# the profile `current` link exactly like §4.1; the sandbox twists
+# are that the unit orders itself after network-online (a sandbox
+# service's first act is usually a network call, and the incumbent
+# hand-copied units order this way) and that a timer-driven service
+# is a oneshot with no [Install] section of its own — the timer is
+# what gets enabled.
+
+
+def timer_unit_name(name):
+    return f"{name}.timer"
+
+
+def sandbox_profile_base():
+    """Default profile root for sandbox targets: the persistent home
+    (design §4.4 — /etc is ephemeral, home survives a recycle)."""
+    return os.path.expanduser("~/.local/share/deploy/profiles")
+
+
+def render_sandbox_service(name, defn, base=None):
+    """Render the .service for a sandbox definition (design §4.4)."""
+    link = profile_link(name, base)
+    exec_start = os.path.join(link, "current", defn["entryPoint"])
+    argv = " ".join(_systemd_quote(a) for a in [exec_start, *defn["args"]])
+    lines = [
+        "[Unit]",
+        f"Description=deploy target {name} (issue #5770)",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        f"ExecStart={argv}",
+        f"User={defn['user']}",
+    ]
+    if defn.get("timer") is not None:
+        lines.append("Type=oneshot")
+    else:
+        lines.append(f"Restart={defn['restart']}")
+    for key in sorted(defn["environment"]):
+        pair = f"{key}={defn['environment'][key]}"
+        lines.append(f"Environment={_systemd_quote(pair)}")
+    if defn["secrets"]:
+        names = ", ".join(defn["secrets"])
+        lines.append(f"# secrets resolved by name at activation time: {names}")
+    if defn.get("timer") is None:
+        lines += ["", "[Install]", "WantedBy=multi-user.target"]
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_timer_unit(name, defn):
+    """Render the .timer for a timer-driven definition (design §4.4)."""
+    timer = defn["timer"]
+    lines = [
+        "[Unit]",
+        f"Description=deploy target {name} timer (issue #5770)",
+        "",
+        "[Timer]",
+        f"OnCalendar={timer['onCalendar']}",
+        f"Persistent={'true' if timer['persistent'] else 'false'}",
+    ]
+    if timer["randomizedDelaySec"]:
+        lines.append(f"RandomizedDelaySec={timer['randomizedDelaySec']}")
+    lines += [
+        f"Unit={unit_name(name)}",
+        "",
+        "[Install]",
+        "WantedBy=timers.target",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_sandbox_units(name, defn, base=None):
+    """All unit files a sandbox target renders: {filename: content}."""
+    units = {unit_name(name): render_sandbox_service(name, defn, base)}
+    if defn.get("timer") is not None:
+        units[timer_unit_name(name)] = render_timer_unit(name, defn)
+    return units
+
+
+def generation_dir(name, generation, base=None):
+    return os.path.join(profile_base(base), ".generations", name, str(generation))
+
+
+def generation_units_dir(name, generation, base=None):
+    return os.path.join(generation_dir(name, generation, base), "units")
+
+
+def write_sandbox_units(name, defn, generation, base=None):
+    """Render the target's units into its generation directory, where
+    the restorer links them from. Returns the sorted unit filenames."""
+    rendered = render_sandbox_units(name, defn, base)
+    dest = generation_units_dir(name, generation, base)
+    for filename, content in rendered.items():
+        write_text(os.path.join(dest, filename), content)
+    return sorted(rendered)
+
+
+def enable_unit_for(unit_files):
+    """The unit a restore enables: the timer when one was rendered,
+    otherwise the service itself."""
+    for filename in unit_files:
+        if filename.endswith(".timer"):
+            return filename
+    return unit_files[0]
 
 
 # --- Generation log (slice 2) --------------------------------------------
@@ -512,6 +704,21 @@ def plan_deploy(name, defn, entries, base=None):
         )
         steps.append("daemon-reload (systemctl)")
         steps.append(f"restart only {unit_name(name)}")
+    elif defn["class"] == "sandbox":
+        rendered = render_sandbox_units(name, defn, base)
+        enable = enable_unit_for(sorted(rendered))
+        steps.append(
+            f"render the unit(s) {', '.join(sorted(rendered))} into "
+            f"generation {next_id} (ExecStart via {link}/current)"
+        )
+        steps.append(
+            f"record {name} in the sandbox manifest ({sandbox_manifest_path()})"
+        )
+        steps.append(
+            "link the current generation's units into the unit dir "
+            "and daemon-reload (the restore step, design §4.4)"
+        )
+        steps.append(f"enable --now {enable} and verify it is active")
     else:  # launchd stub
         steps.append(
             f"write the launchd plist for {name} pointing at "
@@ -551,6 +758,13 @@ def plan_rollback(name, defn, entries, base=None):
     ]
     if defn["class"] == "systemd":
         steps.append(f"restart only {unit_name(name)}")
+    elif defn["class"] == "sandbox":
+        steps.append(
+            "re-link the rolled-back generation's rendered units into "
+            "the unit dir and daemon-reload (the restore step, §4.4)"
+        )
+        enable = timer_unit_name(name) if defn.get("timer") else unit_name(name)
+        steps.append(f"enable --now {enable} and verify it is active")
     else:
         steps.append(f"launchctl bootout/bootstrap only the {name} agent")
     steps.append(_health_step(defn))
@@ -603,6 +817,136 @@ def format_status(name, defn, entries, health=None):
         verdict = "ok" if ok else "FAILED"
         lines.append(f"health: {defn['healthCheck']} -> {verdict} ({detail})")
     return "\n".join(lines)
+
+
+# --- Sandbox manifest + restore (slice 4, issue #5770) ------------------
+#
+# Oracle: design §4.4. The manifest is the list of currently-activated
+# sandbox targets, a file in the persistent home (the state dir):
+# {name: {"profile": <profile link path>, "units": [<unit file>, ...]}}.
+# The restorer — `deploy restore` here, restore.py standalone at boot —
+# reads it and links each target's current generation's rendered units
+# into the unit dir, daemon-reloads, and enables each target's enable
+# unit. The manifest records the profile LINK (stable across
+# generations), never a generation directory: a rollback repoints the
+# link and the same manifest restores the rolled-back generation.
+
+
+def sandbox_manifest_path(explicit_state=None):
+    return os.path.join(state_dir(explicit_state), "sandbox-manifest.json")
+
+
+def read_sandbox_manifest(explicit_state=None):
+    path = sandbox_manifest_path(explicit_state)
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh, object_pairs_hook=_no_duplicate_keys)
+    if not isinstance(data, dict) or not isinstance(data.get("targets", {}), dict):
+        raise ValueError(f"sandbox manifest {path} is not a targets object")
+    return data.get("targets", {})
+
+
+def record_sandbox_target(name, unit_files, base=None, explicit_state=None):
+    """Add/refresh one target in the manifest (atomic replace)."""
+    targets = read_sandbox_manifest(explicit_state)
+    targets[name] = {
+        "profile": profile_link(name, base),
+        "units": sorted(unit_files),
+    }
+    path = sandbox_manifest_path(explicit_state)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp-{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"targets": targets}, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, path)
+    return targets[name]
+
+
+def _link_generation_units(profile, unit_files, units_dir):
+    """Link one target's current generation's rendered units into the
+    unit dir. Returns the linked filenames. Raises ActivationError
+    when the generation's rendered units are not on disk."""
+    gen_dir = os.path.realpath(profile)
+    src_dir = os.path.join(gen_dir, "units")
+    if not os.path.isdir(src_dir):
+        raise ActivationError(
+            f"rendered units not found at {src_dir} (profile {profile} "
+            "does not resolve to a deployed generation)"
+        )
+    linked = []
+    os.makedirs(units_dir, exist_ok=True)
+    for filename in unit_files:
+        src = os.path.join(src_dir, filename)
+        if not os.path.exists(src):
+            raise ActivationError(f"rendered unit {src} is missing")
+        dest = os.path.join(units_dir, filename)
+        tmp = f"{dest}.tmp-{os.getpid()}"
+        if os.path.islink(tmp) or os.path.exists(tmp):
+            os.unlink(tmp)
+        os.symlink(src, tmp)
+        os.replace(tmp, dest)
+        linked.append(filename)
+    return linked
+
+
+def _restore_target(name, profile, unit_files, defn=None, units_dir=None):
+    """The restore step for one target: link its current generation's
+    units, daemon-reload, enable --now its enable unit, verify the
+    unit is active (and probe the healthCheck URL when a definition
+    is at hand). Sandbox units are system units — there is no user
+    bus — so the scope is always system. Raises ActivationError."""
+    units_dir = units_dir if units_dir is not None else unit_dir(scope="system")
+    linked = _link_generation_units(profile, unit_files, units_dir)
+    _run_step(systemctl_argv("system", "daemon-reload"), "daemon-reload")
+    enable = enable_unit_for(linked)
+    _run_step(
+        systemctl_argv("system", "enable", "--now", enable),
+        f"enable --now of {enable}",
+    )
+    rc, _out, err = run_cmd(systemctl_argv("system", "is-active", "--quiet", enable))
+    if rc != 0:
+        raise ActivationError(
+            f"{enable} is not active after enable --now: {err.strip()}"
+        )
+    if defn is not None and defn["healthCheck"] is not None:
+        ok, detail = wait_health(defn["healthCheck"], health_timeout(defn))
+        if not ok:
+            raise ActivationError(f"health check failed: {detail}")
+    return linked
+
+
+def restore_sandbox(base=None, state=None, units_dir=None):
+    """`deploy restore`: re-run the restore step for every target in
+    the sandbox manifest. Returns (exit_code, lines). An empty
+    manifest is a successful no-op (a sandbox with no sandbox targets
+    deployed yet); a target whose generation is missing fails its
+    own line without stopping the others."""
+    try:
+        targets = read_sandbox_manifest(state)
+    except (OSError, ValueError) as exc:
+        return 1, [f"deploy restore: cannot read the sandbox manifest: {exc}"]
+    if not targets:
+        return 0, ["deploy restore: no sandbox targets recorded; nothing to do"]
+    units_dir = units_dir if units_dir is not None else unit_dir(scope="system")
+    lines = []
+    code = 0
+    for name in sorted(targets):
+        entry = targets[name]
+        try:
+            linked = _restore_target(
+                name, entry["profile"], entry["units"], units_dir=units_dir
+            )
+        except (ActivationError, KeyError) as exc:
+            code = 1
+            lines.append(f"deploy restore: {name}: FAILED: {exc}")
+            continue
+        enable = enable_unit_for(linked)
+        lines.append(
+            f"deploy restore: {name}: linked {', '.join(linked)}; {enable} active"
+        )
+    return code, lines
 
 
 # --- Real activation (slice 3) -------------------------------------------
@@ -927,6 +1271,185 @@ def execute_rollback(
     return 0, lines
 
 
+# --- Sandbox activation (slice 4, issue #5770) ---------------------------
+#
+# Oracle: design §4.4 in plan_deploy's order: install the generation
+# into the (home) profile, render the units into the generation,
+# record the target in the sandbox manifest, then the restore step
+# (link, daemon-reload, enable --now, verify active). Flip-back is
+# the systemd class's discipline with sandbox mechanics: repoint at
+# the previous generation and re-run the restore step on it; with no
+# previous generation, disable the enable unit and unlink the units.
+
+
+def _generation_unit_files(name, defn, generation, base, state):
+    """The unit files a generation rendered: read from its own
+    generation directory when it still exists (the authoritative
+    record of what that generation linked), else the manifest's
+    list for the target, else a fresh render of the definition."""
+    gen_units = generation_units_dir(name, generation, base)
+    if os.path.isdir(gen_units):
+        files = sorted(
+            f for f in os.listdir(gen_units) if f.endswith((".service", ".timer"))
+        )
+        if files:
+            return files
+    manifest = read_sandbox_manifest(state)
+    if name in manifest:
+        return manifest[name]["units"]
+    return sorted(render_sandbox_units(name, defn, base))
+
+
+def _flip_back_sandbox(name, defn, *, previous, base, state, units_dir):
+    """Restore the previous generation after a failed sandbox
+    activation; with no previous generation, disable the target's
+    units and unlink them. Never raises (same contract as _flip_back)."""
+    if previous is None:
+        manifest = read_sandbox_manifest(state)
+        unit_files = manifest.get(name, {}).get("units", [unit_name(name)])
+        run_cmd(
+            systemctl_argv("system", "disable", "--now", enable_unit_for(unit_files))
+        )
+        for filename in unit_files:
+            path = os.path.join(units_dir, filename)
+            if os.path.islink(path) or os.path.exists(path):
+                os.unlink(path)
+        run_cmd(systemctl_argv("system", "daemon-reload"))
+        link = profile_link(name, base)
+        if os.path.islink(link):
+            os.unlink(link)
+        return "units removed (no previous generation)"
+    try:
+        repoint_profile(name, previous["artifact"], previous["generation"], base)
+        unit_files = _generation_unit_files(
+            name, defn, previous["generation"], base, state
+        )
+        _restore_target(
+            name,
+            profile_link(name, base),
+            unit_files,
+            defn,
+            units_dir=units_dir,
+        )
+    except (ActivationError, ValueError) as exc:
+        return f"flip-back to generation {previous['generation']} INCOMPLETE: {exc}"
+    return f"flipped back to generation {previous['generation']}"
+
+
+def execute_deploy_sandbox(
+    name, defn, entries, *, base=None, state=None, units_dir=None, actor=None
+):
+    """Real sandbox deploy, in plan_deploy's order. Returns
+    (exit_code, lines); failure semantics mirror execute_deploy."""
+    actor = actor or getpass.getuser()
+    units_dir = units_dir if units_dir is not None else unit_dir(scope="system")
+    current, _prev = current_previous(entries)
+    generation = next_generation_id(entries)
+    artifact = defn["package"]
+    lines = []
+    try:
+        link = install_generation(name, artifact, generation, base)
+        lines.append(f"installed generation {generation} into the profile {link}")
+        unit_files = write_sandbox_units(name, defn, generation, base)
+        record_sandbox_target(name, unit_files, base=base, explicit_state=state)
+        lines.append(
+            f"rendered {', '.join(unit_files)} into generation "
+            f"{generation} and recorded {name} in the sandbox manifest"
+        )
+        _restore_target(name, link, unit_files, defn, units_dir=units_dir)
+        lines.append(
+            f"linked the units into {units_dir}; {enable_unit_for(unit_files)} active"
+        )
+    except (ActivationError, ValueError) as exc:
+        outcome = _flip_back_sandbox(
+            name, defn, previous=current, base=base, state=state, units_dir=units_dir
+        )
+        record_generation(
+            name,
+            artifact=artifact,
+            source_rev=_source_rev(),
+            actor=actor,
+            action="deploy_failed",
+            generation=generation,
+            result=f"failed: {exc}; {outcome}",
+            explicit_state=state,
+        )
+        lines.append(f"deploy {name}: FAILED: {exc}; {outcome}")
+        return 1, lines
+    entry = record_generation(
+        name,
+        artifact=artifact,
+        source_rev=_source_rev(),
+        actor=actor,
+        action="deploy",
+        generation=generation,
+        result="activated",
+        explicit_state=state,
+    )
+    lines.append(
+        f"deploy {name}: generation {entry['generation']} activated "
+        f"(artifact {artifact})"
+    )
+    return 0, lines
+
+
+def execute_rollback_sandbox(
+    name, defn, entries, *, base=None, state=None, units_dir=None, actor=None
+):
+    """Real sandbox rollback: repoint at the previous distinct
+    generation and re-run the restore step on it (never a rebuild)."""
+    actor = actor or getpass.getuser()
+    units_dir = units_dir if units_dir is not None else unit_dir(scope="system")
+    current, previous = current_previous(entries)
+    if current is None or previous is None:
+        _steps, error = plan_rollback(name, defn, entries, base)
+        return 1, [f"deploy: {error}"]
+    lines = []
+    try:
+        repoint_profile(name, previous["artifact"], previous["generation"], base)
+        unit_files = _generation_unit_files(
+            name, defn, previous["generation"], base, state
+        )
+        _restore_target(
+            name,
+            profile_link(name, base),
+            unit_files,
+            defn,
+            units_dir=units_dir,
+        )
+    except (ActivationError, ValueError) as exc:
+        outcome = _flip_back_sandbox(
+            name, defn, previous=current, base=base, state=state, units_dir=units_dir
+        )
+        record_generation(
+            name,
+            artifact=previous["artifact"],
+            source_rev=_source_rev(),
+            actor=actor,
+            action="rollback_failed",
+            generation=previous["generation"],
+            result=f"failed: {exc}; {outcome}",
+            explicit_state=state,
+        )
+        lines.append(f"deploy {name} rollback: FAILED: {exc}; {outcome}")
+        return 1, lines
+    record_generation(
+        name,
+        artifact=previous["artifact"],
+        source_rev=_source_rev(),
+        actor=actor,
+        action="rollback",
+        generation=previous["generation"],
+        result="rolled-back",
+        explicit_state=state,
+    )
+    lines.append(
+        f"deploy {name}: rolled back to generation "
+        f"{previous['generation']} (artifact {previous['artifact']})"
+    )
+    return 0, lines
+
+
 def _source_rev():
     return os.environ.get("DEPLOY_SOURCE_REV") or "working-tree"
 
@@ -936,8 +1459,8 @@ def _source_rev():
 NOT_IMPLEMENTED = (
     "real activation for this class is not implemented in this slice; "
     "slice 3 implements real systemd activation (profile install + unit "
-    "write + daemon-reload + restart + health-check flip-back) — "
-    "no changes were made"
+    "write + daemon-reload + restart + health-check flip-back) and "
+    "slice 4 real sandbox activation — no changes were made"
 )
 
 
@@ -992,12 +1515,37 @@ def main(argv):
     usage = (
         "usage: deploy [--registry PATH] [--state-dir PATH] "
         "[--profile-base PATH] [--unit-dir PATH] [--scope system|user] "
-        "list | <target> [rollback|status] [--dry-run]"
+        "list | restore | <target> [rollback|status] [--dry-run]"
     )
     if not args:
         print(__doc__.splitlines()[0], file=sys.stderr)
         print(usage, file=sys.stderr)
         return 2
+    if args[0] == "restore":
+        # The generic sandbox restorer (design §4.4): manifest-driven,
+        # so it needs no registry and works before any target's
+        # package is built on a freshly recycled sandbox.
+        if len(args) > 1:
+            print(
+                f"deploy: unexpected argument {args[1]!r} after 'restore'",
+                file=sys.stderr,
+            )
+            return 2
+        if scope != "system":
+            print(
+                "deploy: restore manages system units (sandbox targets "
+                "have no user bus); --scope must be system",
+                file=sys.stderr,
+            )
+            return 2
+        code, lines = restore_sandbox(
+            base=explicit_base,
+            state=explicit_state,
+            units_dir=unit_dir(explicit_units, "system"),
+        )
+        for line in lines:
+            print(line, file=sys.stderr if code else sys.stdout)
+        return code
     if registry_path is None:
         print(
             "deploy: no registry configured (build via the flake package, or pass --registry)",
@@ -1027,6 +1575,19 @@ def main(argv):
         print(f"deploy: unknown target {name!r}", file=sys.stderr)
         return 1
     defn = registry[name]
+    if defn["class"] == "sandbox":
+        # Sandbox targets keep their generations in the persistent
+        # home profile (design §4.4), not the system profile root,
+        # unless a base was named explicitly or by the environment.
+        if explicit_base is None and "DEPLOY_PROFILE_BASE" not in os.environ:
+            explicit_base = sandbox_profile_base()
+        if scope != "system":
+            print(
+                "deploy: sandbox targets manage system units (there is "
+                "no user bus); --scope must be system",
+                file=sys.stderr,
+            )
+            return 2
     action = args[1] if len(args) > 1 else "deploy"
     if len(args) > 2 or action not in ("deploy", "rollback", "status"):
         print(usage, file=sys.stderr)
@@ -1048,23 +1609,33 @@ def main(argv):
             print(
                 f"deploy: activation for class {defn['class']!r} is a different "
                 "slice of the deployment architecture (see issue #5767); this "
-                "slice covers the systemd/launchd classes",
+                "slice covers the systemd/launchd/sandbox classes",
                 file=sys.stderr,
             )
             return 2
         if not dry_run:
-            if defn["class"] != "systemd":
+            if defn["class"] == "sandbox":
+                code, lines = execute_deploy_sandbox(
+                    name,
+                    defn,
+                    entries,
+                    base=explicit_base,
+                    state=explicit_state,
+                    units_dir=unit_dir(explicit_units, "system"),
+                )
+            elif defn["class"] == "systemd":
+                code, lines = execute_deploy(
+                    name,
+                    defn,
+                    entries,
+                    base=explicit_base,
+                    state=explicit_state,
+                    scope=scope,
+                    units=unit_dir(explicit_units, scope),
+                )
+            else:
                 print(f"deploy: {NOT_IMPLEMENTED}", file=sys.stderr)
                 return 2
-            code, lines = execute_deploy(
-                name,
-                defn,
-                entries,
-                base=explicit_base,
-                state=explicit_state,
-                scope=scope,
-                units=unit_dir(explicit_units, scope),
-            )
             for line in lines:
                 print(line, file=sys.stderr if code else sys.stdout)
             return code
@@ -1078,18 +1649,28 @@ def main(argv):
         print(f"deploy: {error}", file=sys.stderr)
         return 1
     if not dry_run:
-        if defn["class"] != "systemd":
+        if defn["class"] == "sandbox":
+            code, lines = execute_rollback_sandbox(
+                name,
+                defn,
+                entries,
+                base=explicit_base,
+                state=explicit_state,
+                units_dir=unit_dir(explicit_units, "system"),
+            )
+        elif defn["class"] == "systemd":
+            code, lines = execute_rollback(
+                name,
+                defn,
+                entries,
+                base=explicit_base,
+                state=explicit_state,
+                scope=scope,
+                units=unit_dir(explicit_units, scope),
+            )
+        else:
             print(f"deploy: {NOT_IMPLEMENTED}", file=sys.stderr)
             return 2
-        code, lines = execute_rollback(
-            name,
-            defn,
-            entries,
-            base=explicit_base,
-            state=explicit_state,
-            scope=scope,
-            units=unit_dir(explicit_units, scope),
-        )
         for line in lines:
             print(line, file=sys.stderr if code else sys.stdout)
         return code

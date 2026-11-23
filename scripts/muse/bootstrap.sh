@@ -599,6 +599,62 @@ PY
     chmod --reference="$INIT" "$INIT.tmp" && mv -f "$INIT.tmp" "$INIT"
     say "persist: hooked ~/tools/muse-boot.sh into ~/tools/init.sh"
   fi
+  # Deploy-target unit restorer (code#5770, design §4.4): sandbox
+  # deploy targets keep their generations and the activated-targets
+  # manifest in the persistent home; /etc/systemd/system does not
+  # survive a recycle. Install the standalone restorer next to the
+  # other tools and hook it into init.sh the same way as
+  # muse-boot.sh, so every boot re-links the activated targets'
+  # rendered units generically — one restorer instead of a bespoke
+  # install block per service family. The bespoke quota-recorder
+  # block in a restored init.sh is retired in the same pass: the
+  # restorer is hooked right after the shebang, ahead of the family
+  # blocks, and quota-recorder is the first migrated target.
+  RESTORE_SRC=""
+  [ -n "$SELF" ] && RESTORE_SRC="$(dirname "$SELF")/../../pkgs/deploy/restore.py"
+  if [ -n "$RESTORE_SRC" ] && [ -f "$RESTORE_SRC" ]; then
+    if ! cmp -s "$RESTORE_SRC" "$HOME/tools/deploy-restore.py" 2>/dev/null; then
+      install -m 755 "$RESTORE_SRC" "$HOME/tools/deploy-restore.py"
+      say "persist: installed ~/tools/deploy-restore.py (deploy-target unit restorer, code#5770)"
+    fi
+    if ! grep -q 'deploy-restore.py' "$INIT"; then
+      python3 - "$INIT" "$HOME/tools/deploy-restore.py" <<'PY'
+import sys
+p, tool = sys.argv[1], sys.argv[2]
+lines = open(p).read().splitlines(keepends=True)
+hook = ('# muse-bootstrap: restore deploy-target units after a recycle (scripts/muse/bootstrap.sh, code#5770)\n'
+        f'[ -x {tool} ] && {{ {tool} || true; }}\n')
+at = 1 if lines and lines[0].startswith("#!") else 0
+lines.insert(at, hook)
+open(p + ".tmp", "w").write("".join(lines))
+PY
+      chmod --reference="$INIT" "$INIT.tmp" && mv -f "$INIT.tmp" "$INIT"
+      say "persist: hooked ~/tools/deploy-restore.py into ~/tools/init.sh"
+    fi
+    # Retire the bespoke quota-recorder block: the generic restorer
+    # replaces it. Anchored on the block's own header comment; when
+    # the markers are absent init.sh is left untouched.
+    if python3 - "$INIT" <<'PY'
+import sys
+p = sys.argv[1]
+lines = open(p).read().splitlines(keepends=True)
+start = next((i for i, l in enumerate(lines)
+              if "Quota recorder: reinstall systemd units if missing" in l), None)
+if start is None:
+    sys.exit(1)
+end = next((i for i in range(start, len(lines)) if lines[i].rstrip() == "fi"), None)
+if end is None:
+    sys.exit(1)
+del lines[start:end + 1]
+open(p + ".tmp", "w").write("".join(lines))
+PY
+    then
+      chmod --reference="$INIT" "$INIT.tmp" && mv -f "$INIT.tmp" "$INIT"
+      say "persist: retired the bespoke quota-recorder block in ~/tools/init.sh (generic restorer replaces it, code#5770)"
+    fi
+  else
+    say "persist: pkgs/deploy/restore.py not found next to this script; deploy-restore install skipped"
+  fi
   say "persist: a restart brings back the tailnet and fleet from ~/tools/muse-bootstrap.sh (log ~/logs/muse-boot.log)"
 fi
 
@@ -664,6 +720,11 @@ except OSError:
   else
     say "check: bridge hello failed"
     rc=1
+  fi
+  # Informational only (never fails the check): the first sandbox
+  # deploy target's state after this rebuild (code#5770).
+  if [ -f "$HOME/.local/state/deploy/sandbox-manifest.json" ]; then
+    if systemctl is-active --quiet quota-recorder.timer 2>/dev/null; then say "check: quota-recorder timer active (deploy target, code#5770)"; else say "check: quota-recorder timer not active yet (the restorer runs from init.sh on boot)"; fi
   fi
   [ "$rc" = 0 ] || die "check: see the lines above"
   say "check: all good"

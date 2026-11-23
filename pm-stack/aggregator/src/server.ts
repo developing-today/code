@@ -2507,7 +2507,8 @@ async function handler(req: Request): Promise<Response> {
     const threadId = url.searchParams.get("threadId") ?? undefined;
     const replyTo = url.searchParams.get("replyTo") ?? undefined;
     const archivedParam = url.searchParams.get("archived");
-    const includeArchived = url.searchParams.get("includeArchived") === "1" || url.searchParams.get("includeArchived") === "true";
+    const includeArchived =
+      url.searchParams.get("includeArchived") === "1" || url.searchParams.get("includeArchived") === "true";
     const archived = archivedParam === "true" ? true : archivedParam === "false" ? false : undefined;
     const filter: Parameters<typeof promptsStore.list>[0] = {
       page,
@@ -2530,15 +2531,30 @@ async function handler(req: Request): Promise<Response> {
     const id = rest;
     const prompt = await promptsStore.get(id);
     if (!prompt) return json({ error: "prompt not found" }, 404);
-    return json({ id: prompt.id, status: prompt.status, answer: prompt.answer, error: prompt.error, threadId: prompt.threadId, archived: prompt.archived, read: prompt.read, replyTo: prompt.replyTo, refs: prompt.refs });
+    return json({
+      id: prompt.id,
+      status: prompt.status,
+      answer: prompt.answer,
+      error: prompt.error,
+      threadId: prompt.threadId,
+      archived: prompt.archived,
+      read: prompt.read,
+      replyTo: prompt.replyTo,
+      refs: prompt.refs,
+    });
   }
   if (req.method === "PATCH" && path.startsWith("/api/prompt/")) {
     const id = decodeURIComponent(path.slice("/api/prompt/".length));
     let body: unknown = null;
-    try { body = await readJsonBody(req); } catch { body = null; }
-    const b = (body && typeof body === "object" && !Array.isArray(body)) ? (body as Record<string, unknown>) : {};
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      body = null;
+    }
+    const b = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
     const patch: Parameters<typeof promptsStore.update>[1] = {};
-    if (typeof b.status === "string" && PROMPT_STATUSES.includes(b.status as PromptStatus)) patch.status = b.status as PromptStatus;
+    if (typeof b.status === "string" && PROMPT_STATUSES.includes(b.status as PromptStatus))
+      patch.status = b.status as PromptStatus;
     if (typeof b.answer === "string") patch.answer = b.answer;
     if (typeof b.error === "string") patch.error = b.error;
     if (typeof b.archived === "boolean") patch.archived = b.archived;

@@ -46,6 +46,7 @@ use crate::validate::{task_from_packet, validate_packet};
 mod admin;
 mod claim;
 mod core;
+mod label_enrich;
 mod lifecycle;
 mod stacks_outbox;
 mod staleness;
@@ -54,6 +55,7 @@ mod work_identity;
 pub use admin::*;
 pub use claim::*;
 pub use core::*;
+pub use label_enrich::*;
 pub use lifecycle::*;
 pub use stacks_outbox::*;
 pub use staleness::*;
@@ -69,6 +71,7 @@ mod tests {
         [
             include_str!("turso_queue/core.rs"),
             include_str!("turso_queue/claim.rs"),
+            include_str!("turso_queue/label_enrich.rs"),
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
@@ -273,6 +276,255 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    /// A one-shot stub of the Turso pipeline endpoint for the
+    /// #12744 tests: captures the first request body it receives
+    /// and answers it with the canned pipeline response. The
+    /// thread is detached — a code path that never queries leaves
+    /// it parked on accept, which is exactly the fail-before shape
+    /// (the assertions on the reply and the capture then fail).
+    fn stub_pipeline(
+        response_body: String,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(sock.try_clone().unwrap());
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = trimmed.split_once(':') {
+                    if name.trim().eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().unwrap_or(0);
+                    }
+                }
+            }
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).unwrap();
+            sink.lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&body).to_string());
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            sock.write_all(resp.as_bytes()).unwrap();
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// A canned pipeline reply carrying one github_mirror_issues
+    /// row whose labels column is `labels_json` (or no rows when
+    /// None).
+    fn mirror_pipeline_reply(labels_json: Option<&str>) -> String {
+        let rows = match labels_json {
+            Some(l) => json!([[{"type": "text", "value": l}]]),
+            None => json!([]),
+        };
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [{"name": "labels"}],
+                "rows": rows,
+                "affected_row_count": 0,
+                "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// A valid repo-task/v1 packet for an issue, in the shape the
+    /// #8973 dry-run test established, with a stated priority and
+    /// NO payload.labels — the production shape #12744 is about.
+    fn packet_12744(issue: i64, stated: i64) -> Value {
+        json!({
+            "title": "probe", "priority": stated,
+            "dedupe_key": format!("repo-health:v1:fix:developing-today/code:issue:{issue}"),
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "p",
+                "priority_reason": "r",
+                "evidence": ["e"],
+                "acceptance": ["a"],
+                "tests": ["t"],
+                "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"] },
+                "risk": {"level": "low", "flags": [] },
+                "timebox_minutes": 45,
+                "issue": {"number": issue },
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test" }
+            }
+        })
+    }
+
+    #[test]
+    fn enqueue_mirror_labels_select_band_12744() {
+        // #12744 acceptance oracle, at the verb: a producer-path
+        // enqueue for an expedite-labelled issue whose packet
+        // carries no labels stores at the ratified band 15 with
+        // the mirror's labels on the payload — no manual update.
+        // The mirror row is the stub's; the band is Drew's.
+        let (url, captured) =
+            stub_pipeline(mirror_pipeline_reply(Some("[\"expedite\",\"kind/bug\"]")));
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(12228, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 15, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["labels"],
+            json!(["expedite", "kind/bug"]),
+            "{out}"
+        );
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(bodies[0].contains("github_mirror_issues"), "{bodies:?}");
+        assert!(bodies[0].contains("developing-today/code"), "{bodies:?}");
+    }
+
+    #[test]
+    fn enqueue_producer_labels_stand_over_mirror_12744() {
+        // A packet that carries its own labels array keeps it —
+        // the mirror is a fill, never an override. The backend is
+        // unreachable, so any lookup attempt would surface as an
+        // enrichment warning on the reply; none may appear.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let mut packet = packet_12744(12228, 90);
+        packet["payload"]["labels"] = json!(["next-up"]);
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 25, "{out}");
+        assert_eq!(
+            out["task"]["payload"]["labels"],
+            json!(["next-up"]),
+            "{out}"
+        );
+        let warnings = out["warnings"].to_string();
+        assert!(!warnings.contains("mirror enrichment"), "{out}");
+    }
+
+    #[test]
+    fn enqueue_mirror_miss_keeps_stated_priority_12744() {
+        // No mirror row for the issue: the packet stands exactly
+        // as producers have always filed it — stated priority, no
+        // labels key written.
+        let (url, _captured) = stub_pipeline(mirror_pipeline_reply(None));
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(424242, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 30, "{out}");
+        assert!(out["task"]["payload"].get("labels").is_none(), "{out}");
+    }
+
+    #[test]
+    fn enqueue_mirror_error_warns_and_proceeds_12744() {
+        // A store without the mirror tables (a fresh or test DB):
+        // the lookup fails, the enqueue warns and proceeds — the
+        // mirror never gates work.
+        let (url, _captured) = stub_pipeline(
+            json!({"results": [
+                {"type": "error", "error": {"message": "no such table: github_mirror_issues"}}
+            ]})
+            .to_string(),
+        );
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet_12744(12228, 30),
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["priority"], 30, "{out}");
+        assert!(
+            out["warnings"]
+                .to_string()
+                .contains("mirror enrichment skipped"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn payload_issue_ref_shapes_12744() {
+        // The identity the enrichment keys on: the payload's own
+        // repo first, the repo-health dedupe key as fallback, and
+        // nothing for shapes that cannot key the mirror.
+        let p = json!({"repo": "developing-today/code", "issue": {"number": 7}});
+        assert_eq!(
+            payload_issue_ref(&p, None),
+            Some(("developing-today/code".to_string(), 7))
+        );
+        let p = json!({"issue": {"number": 7}});
+        assert_eq!(
+            payload_issue_ref(
+                &p,
+                Some("repo-health:v1:triage:developing-today/code:issue:7")
+            ),
+            Some(("developing-today/code".to_string(), 7))
+        );
+        assert_eq!(payload_issue_ref(&p, None), None);
+        assert_eq!(
+            payload_issue_ref(&p, Some("repo-health:v1:pr:developing-today/code:pr:7")),
+            None
+        );
+        let p = json!({"repo": "code", "issue": {"number": 7}});
+        assert_eq!(payload_issue_ref(&p, None), None);
+        let p = json!({"repo": "developing-today/code"});
+        assert_eq!(payload_issue_ref(&p, None), None);
+    }
+
+    #[test]
+    fn follow_on_band_or_inherited_12744() {
+        // The triage follow-on's stored priority: the label band
+        // wins over the inherited row priority (the label is
+        // Drew's signal), the inherited value stands without one.
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["expedite"]}), Some(30)),
+            Some(15)
+        );
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["next-up"]}), Some(30)),
+            Some(25)
+        );
+        assert_eq!(band_or_inherited(&json!({}), Some(30)), Some(30));
+        assert_eq!(band_or_inherited(&json!({}), None), None);
+        assert_eq!(
+            band_or_inherited(&json!({"labels": ["expedite"]}), None),
+            Some(15)
+        );
     }
 
     #[test]
@@ -2494,6 +2746,33 @@ mod tests {
     }
 
     #[test]
+    fn completion_gate_slice_class_requires_evidence() {
+        // #12233 F2c: a feature_slice completion with no artifact is
+        // rejected, exactly like a fix — the gate is the actual
+        // completion path (verb_complete runs gate_completion before
+        // any mutation), not just the class mapping.
+        let slice = CompletionClass::Slice;
+        assert!(gate(&slice, &json!({})).is_err());
+        assert!(gate(&slice, &json!({"note": "did stuff"})).is_err());
+        assert!(gate(&slice, &json!({"evidence": ""})).is_err());
+        assert!(gate(&slice, &json!({"evidence": []})).is_err());
+        // Evidence of the delivered slice completes — and, unlike a
+        // fix, needs no verified disposition: the parent issue stays
+        // open while slices land, so an open parent with no
+        // disposition is not a rejection.
+        let evidence = json!({"pr_url": "https://github.com/developing-today/code/pull/12570"});
+        assert!(gate(&slice, &evidence).is_ok());
+        assert!(
+            gate_with(&slice, Some(1062), false, &[], &evidence).is_ok(),
+            "an open parent issue must not block a slice completion"
+        );
+        assert!(
+            gate(&slice, &json!({"commit": "abc123"})).is_ok(),
+            "a commit is slice evidence too"
+        );
+    }
+
+    #[test]
     fn completion_gate_rejects_disposition_for_another_issue() {
         // #10611: the readback must describe the packet's issue — a
         // stale readback for a sibling issue is not closure evidence.
@@ -3087,6 +3366,10 @@ mod tests {
         assert_eq!(
             completion_class(&json!({"kind": "triage"})),
             CompletionClass::Triage
+        );
+        assert_eq!(
+            completion_class(&json!({"kind": "feature_slice"})),
+            CompletionClass::Slice
         );
         assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
         // Ungated completions never gate, whatever the result.

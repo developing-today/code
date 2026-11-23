@@ -108,9 +108,9 @@ adds, in dependency order after it:
 `migrations/20261122_0001_shared_comments.up.sql` (#1744, Move 1 step 2)
 adds, after those:
 
-| Table                    | Holds                                                                                          |
-| ------------------------ | ---------------------------------------------------------------------------------------------- |
-| `public.shared_comments` | dashboard comments (the DashComment record), the shared cross-service comment table of #1744  |
+| Table                    | Holds                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `public.shared_comments` | dashboard comments (the DashComment record), the shared cross-service comment table of #1744 |
 
 Each paired `.down.sql` refuses to drop a non-empty table; the #6815 down
 migration drops its tables in reverse dependency order. The refusal is
