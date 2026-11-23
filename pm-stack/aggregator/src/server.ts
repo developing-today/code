@@ -6,7 +6,11 @@
 // its result companion) on the same pattern. Everything underneath
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
-import { readFile, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
@@ -226,6 +230,8 @@ import {
 } from "./alerts.ts";
 import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
+import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
+import { createMetadataWebhookHandler } from "./webhook-listener.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
 import type { QueueSnapshot } from "./queue.ts";
@@ -2179,11 +2185,91 @@ async function digestContext(kind: DigestKind): Promise<Digest> {
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
 
+function runMetadataFleet(args: string[], input?: string): Promise<string> {
+  const fleetBin = process.env.FLEET_BIN ?? "fleet";
+  return new Promise((resolve, reject) => {
+    const child = execFile(fleetBin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 60_000 }, (error, stdout) =>
+      error ? reject(new Error(`fleet ${args[0]} failed: ${(error as Error).message}`)) : resolve(stdout),
+    );
+    if (input !== undefined && child.stdin) {
+      child.stdin.write(input);
+      child.stdin.end();
+    }
+  });
+}
+
+async function withMetadataTempFile<T>(prefix: string, content: string, run: (path: string) => Promise<T>): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  const path = join(directory, "payload.json");
+  try {
+    await writeFile(path, content, { mode: 0o600 });
+    return await run(path);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+const metadataDbPath = process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
+const metadataWebhookHandler = createMetadataWebhookHandler({
+  secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
+  db: metadataDb,
+  epicSlugs: async (item: IngestionItem): Promise<EpicSlugMap> => {
+    const output = await runMetadataFleet([
+      "gh",
+      "issue",
+      "list",
+      "--repo",
+      item.repo,
+      "--state",
+      "all",
+      "--limit",
+      "1000",
+      "--json",
+      "number,labels",
+    ]);
+    const rows: unknown = JSON.parse(output);
+    if (!Array.isArray(rows)) throw new Error(`unexpected epic list shape for ${item.repo}`);
+    const slugs: EpicSlugMap = new Map();
+    for (const row of rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[]) {
+      if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
+      const labels = (row.labels ?? []).map((label) => typeof label === "string" ? label : String(label.name ?? ""));
+      if (!labels.includes("kind/epic")) continue;
+      for (const label of labels) {
+        const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
+        if (slug && !slugs.has(slug)) slugs.set(slug, { repo: item.repo, number: row.number as number });
+      }
+    }
+    return slugs;
+  },
+  writeBack: async (item, body) => {
+    await withMetadataTempFile("pm-metadata-webhook-", body, async (path) => {
+      await runMetadataFleet([
+        "gh",
+        item.kind === "issue" ? "issue" : "pr",
+        "edit",
+        String(item.number),
+        "--repo",
+        item.repo,
+        "--body-file",
+        path,
+      ]);
+    });
+  },
+  enqueueTriage: async (packet) => {
+    await withMetadataTempFile("pm-metadata-triage-", JSON.stringify(packet, null, 2), async (path) => {
+      await runMetadataFleet(["queue", "enqueue", path, "--queue", "repo-health-code-pilot"]);
+    });
+  },
+});
+
 async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
+
+  if (path === "/webhooks/github") return metadataWebhookHandler(req);
 
   if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
     try {
