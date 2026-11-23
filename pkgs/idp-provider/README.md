@@ -82,3 +82,13 @@ served as the key's `x5t#S256` field, so relying parties can pin
 either form. `n`/`e` are the base64url RSA modulus/exponent taken
 from the certificate's public key. Tokens are signed with that same
 `kid`.
+
+## Loop proof (step 3)
+
+`examples/test-rp.rs` is a minimal relying party that completes the
+full code + PKCE loop over real HTTP against a running provider —
+discovery, JWKS, authorize through the local door, token exchange,
+ID-token verification against the JWKS key, and userinfo — and
+prints a one-line JSON verdict with the in-process loop latency
+(`RP_MODE=deny` runs the non-allowlisted attempt instead). It is the
+harness behind step 3's proof record on #13409.
