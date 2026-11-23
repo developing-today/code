@@ -53,6 +53,18 @@ def _load(name, filename):
 babysitter = _load("babysitter", "babysitter.py")
 claimant = _load("claimant_for_babysitter", "claimant.py")
 
+# #13344: every fire-log entry carries read_code_source(), which
+# spawns git; tests that call log_fire without exercising that read
+# fake it, so the hermetic suite (run_hermetic_tests.py) attempts no
+# subprocess. read_code_source's real git logic is covered by
+# TestCodeSourceFireLog's subprocess-boundary fake in test_claimant.py.
+FAKE_CODE_SOURCE = {
+    "path": "test",
+    "state": "ok",
+    "branch": "main",
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+}
+
 NOW = 1_700_000_000_000  # fixed round clock (ms)
 MIN = 60 * 1000
 
@@ -402,6 +414,9 @@ class TestFireWiring(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(
+                    claimant, "read_code_source", return_value=FAKE_CODE_SOURCE
+                ),
             ):
                 rc = claimant.main()
             self.assertEqual(rc, 0)

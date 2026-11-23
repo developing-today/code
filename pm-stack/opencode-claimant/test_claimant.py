@@ -59,6 +59,19 @@ claimant = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(claimant)
 
 
+# #13344: every fire-log entry carries read_code_source(), which
+# spawns git; tests that call log_fire without exercising that read
+# fake it, so the hermetic suite (run_hermetic_tests.py) attempts no
+# subprocess. read_code_source's real git logic is covered by
+# TestCodeSourceFireLog's subprocess-boundary fake.
+FAKE_CODE_SOURCE = {
+    "path": "test",
+    "state": "ok",
+    "branch": "main",
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+}
+
+
 class Result:
     """Minimal subprocess.run stand-in."""
 
@@ -916,6 +929,9 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
                 patch.object(claimant, "fire_opencode_working_hook") as hook,
+                patch.object(
+                    claimant, "read_code_source", return_value=FAKE_CODE_SOURCE
+                ),
             ):
                 self.assertEqual(claimant.main(), 1)
             entries = [
@@ -975,6 +991,9 @@ class TestGateExitFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(
+                    claimant, "read_code_source", return_value=FAKE_CODE_SOURCE
+                ),
             ):
                 self.assertEqual(claimant.main(), 0)
             entries = [
