@@ -29,7 +29,9 @@
 // - Fallback targets are separate passes: a tier's regular chain runs
 //   first and completely, and each fallback target is a second pass that
 //   engages only on exhaustion, so the reserve rule is checked within
-//   each pass, not across the flat sequence.
+//   each pass, not across the flat sequence. The split applies
+//   transitively: a fallback target's own declared class fallbacks are
+//   further passes, not a continuation of the fallback's chain.
 // - Funds (metered) and disabled leaves never serve as pool quota and
 //   are excluded from the order, matching inspectRouteRules.
 // - Burn-by-expiry and cheapest-sufficient are NOT checked here: the
@@ -192,33 +194,44 @@ export function inspectPoolOrdering(config) {
       else if (!(pool in openaiBacked)) openaiBacked[pool] = false;
     }
 
-    const tierRoute = isObject(modelRoutes) ? modelRoutes[tier] : null;
-    const tail = fallbackTailLength(tierRoute, tier);
-    const targetCount = Array.isArray(tierRoute?.targets) ? tierRoute.targets.length : 0;
-    const mainCount = Math.max(0, targetCount - tail);
-    // Passes: the main chain, then one pass per fallback target.
-    const passDefs = [{ label: 'main chain', indices: new Set() }];
-    for (let i = 0; i < mainCount; i += 1) passDefs[0].indices.add(i);
-    for (let k = 0; k < tail; k += 1) {
-      const index = mainCount + k;
-      const name = routeTargetName(tierRoute.targets[index]) ?? `targets[${index}]`;
-      passDefs.push({ label: `fallback via ${name}`, indices: new Set([index]) });
-    }
+    // A leaf's pass is the sequence of fallback hops on its trace: each
+    // step into a target that sits in its route's declared
+    // class-fallback tail is a separate pass (that target runs only on
+    // exhaustion of the route's regular chain), and the split applies
+    // transitively — a fallback target's own fallback targets are
+    // further passes, not a continuation of the fallback's chain. Steps
+    // into main-chain targets stay in the current pass, so direct leaves
+    // of a route and leaves via its main-chain nested routes share one
+    // pass. A pass with no leaves is not reported.
+    const fallbackHops = (candidate) => {
+      const hops = [];
+      for (const segment of traceSegments(candidate.trace)) {
+        const route = isObject(modelRoutes) ? modelRoutes[segment.route] : null;
+        const tail = fallbackTailLength(route, segment.route);
+        const targetCount = Array.isArray(route?.targets) ? route.targets.length : 0;
+        if (tail > 0 && segment.index >= Math.max(0, targetCount - tail)) {
+          hops.push(
+            routeTargetName(route.targets[segment.index]) ?? `targets[${segment.index}]`,
+          );
+        }
+      }
+      return hops;
+    };
 
-    // Per-leaf facts, grouped by pass.
-    const leavesByPass = passDefs.map(() => []);
+    // Per-leaf facts, grouped by pass (first appearance = chain order).
+    const leavesByPass = new Map();
     for (const candidate of eligible) {
       const segments = traceSegments(candidate.trace);
       if (segments.length === 0) continue;
-      const topIndex = segments[0].index;
-      const passIndex = topIndex < mainCount ? 0 : 1 + (topIndex - mainCount);
-      if (passIndex < 0 || passIndex >= passDefs.length) continue;
+      const hops = fallbackHops(candidate);
+      const label = hops.length === 0 ? 'main chain' : `fallback via ${hops.join(' -> ')}`;
+      if (!leavesByPass.has(label)) leavesByPass.set(label, []);
       const pool = leafPool(candidate, tier);
       const ancestors = leafAncestors(candidate, tier);
       const unorderedAncestor = [...ancestors]
         .reverse()
         .find((route) => selectionOf(modelRoutes, route) !== 'ordered');
-      leavesByPass[passIndex].push({
+      leavesByPass.get(label).push({
         pool,
         ordered: unorderedAncestor === undefined,
         unorderedAncestor,
@@ -245,8 +258,7 @@ export function inspectPoolOrdering(config) {
 
     const passes = [];
     let tierReserve = 'n/a';
-    for (let p = 0; p < passDefs.length; p += 1) {
-      const passLeaves = leavesByPass[p];
+    for (const [label, passLeaves] of leavesByPass) {
       const pools = [];
       const ordered = {};
       const backed = {};
@@ -266,7 +278,7 @@ export function inspectPoolOrdering(config) {
         if (later) {
           reserve = 'violation';
           issues.push(
-            `${tier} ${passDefs[p].label}: OpenAI-backed pool "${orderedSeq[firstOpenAi]}" ` +
+            `${tier} ${label}: OpenAI-backed pool "${orderedSeq[firstOpenAi]}" ` +
               `is tried before non-OpenAI pool "${later}" ` +
               `(pool order: [${orderedSeq.join(', ')}])`,
           );
@@ -275,7 +287,7 @@ export function inspectPoolOrdering(config) {
       if (reserve === 'violation') tierReserve = 'violation';
       else if (reserve === 'pass' && tierReserve !== 'violation') tierReserve = 'pass';
       passes.push({
-        label: passDefs[p].label,
+        label,
         pools,
         ordered,
         openai_backed: backed,
@@ -293,7 +305,7 @@ export function inspectPoolOrdering(config) {
         );
         if (!mixes) continue;
         addNote(
-          `${tier} ${passDefs[p].label}: ${leaf.pool} shares ${route} ` +
+          `${tier} ${label}: ${leaf.pool} shares ${route} ` +
             `(selection ${selectionOf(modelRoutes, route)}) with non-OpenAI pools ` +
             `at equal/default weight — no reserve encoding is visible; ` +
             `burn-by-expiry and cheapest-sufficient need the #1270 plan store`,

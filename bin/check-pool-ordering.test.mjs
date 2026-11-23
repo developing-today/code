@@ -200,6 +200,80 @@ test('fallback passes are checked separately from the main chain', () => {
   assert.deepEqual(result.tiers.scout.passes[2].pools, ['haiku-plan']);
 });
 
+test('transitive fallback boundaries split nested fallback passes', () => {
+  // scout -> background -> workhorse: background's own chain ends in the
+  // OpenAI-backed luna-plan, and workhorse's chain starts with the
+  // non-OpenAI haiku-plan. Workhorse is background's declared
+  // exhaustion-only fallback, so the two chains are separate passes and
+  // there is no violation — grouping by the tier target alone collapsed
+  // them into one ordered sequence and reported a false violation.
+  const config = configWith({
+    tiers: {
+      scout: {
+        targets: ['opencode-route/background', 'opencode-route/workhorse'],
+        selection: 'ordered',
+      },
+      workhorse: {
+        targets: ['opencode-route/haiku-plan'],
+        selection: 'ordered',
+      },
+    },
+    pools: {
+      background: {
+        targets: ['opencode-route/luna-plan', 'opencode-route/workhorse'],
+        selection: 'ordered',
+      },
+    },
+  });
+  const result = inspectPoolOrdering(config);
+  assert.deepEqual(result.issues, []);
+  assert.equal(result.tiers.scout.passes.length, 2);
+  assert.deepEqual(result.tiers.scout.passes[0], {
+    label: 'fallback via background',
+    pools: ['luna-plan'],
+    ordered: { 'luna-plan': true },
+    openai_backed: { 'luna-plan': true },
+    reserve: 'pass',
+  });
+  assert.deepEqual(result.tiers.scout.passes[1], {
+    label: 'fallback via background -> workhorse',
+    pools: ['haiku-plan'],
+    ordered: { 'haiku-plan': true },
+    openai_backed: { 'haiku-plan': false },
+    reserve: 'n/a',
+  });
+});
+
+test('the same pools in one chain without a nested fallback boundary are a violation (control)', () => {
+  // Background's chain runs luna-plan then haiku-plan with no fallback
+  // edge between them: one ordered pass, so the OpenAI-backed pool
+  // before a non-OpenAI pool is a real violation.
+  const config = configWith({
+    tiers: {
+      scout: {
+        targets: ['opencode-route/background', 'opencode-route/workhorse'],
+        selection: 'ordered',
+      },
+      workhorse: {
+        targets: ['opencode-route/haiku-plan'],
+        selection: 'ordered',
+      },
+    },
+    pools: {
+      background: {
+        targets: ['opencode-route/luna-plan', 'opencode-route/haiku-plan'],
+        selection: 'ordered',
+      },
+    },
+  });
+  const result = inspectPoolOrdering(config);
+  assert.equal(result.issues.length, 1);
+  assert.match(result.issues[0], /scout fallback via background/);
+  assert.match(result.issues[0], /luna-plan/);
+  assert.match(result.issues[0], /haiku-plan/);
+  assert.equal(result.tiers.scout.reserve, 'violation');
+});
+
 test('the same pools without a fallback boundary are a violation (control)', () => {
   const config = configWith({
     tiers: {
