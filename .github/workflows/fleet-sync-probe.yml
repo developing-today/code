@@ -1,0 +1,100 @@
+name: fleet sync probe
+
+# Fleet sync-upstream freshness probe (issue #12235).
+#
+# The Nov 2026 gap: sync-upstream's schedule (04:23 UTC daily) fired in
+# neither fork between 2026-11-06 and 2026-11-21 — no runs at all, no
+# failure, no alert — while upstream dezren39/fleet fired its (no-op)
+# scheduled run every day. The org fork's last scheduled success is
+# still 2026-11-05; only manual dispatches have synced it since. A
+# dropped or failing sync was invisible until someone looked.
+#
+# This probe runs daily at 14:30 UTC — after sync-upstream's observed
+# firing window (its 04:23 UTC slot lands 11:23–13:40 UTC under GitHub
+# load delay) — and judges each fork with scripts/fleet/fleet-sync-probe.py:
+# a scheduled success within the last 30h and no failed latest run.
+# A failure opens (or updates) one alert issue; the next green probe
+# comments the recovery and closes it. Same alert pattern as
+# dispatch-health-probe.yml (#6992).
+
+on:
+  schedule:
+    - cron: "30 14 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fleet-sync-probe
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    name: probe sync-upstream freshness on both forks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe both forks
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          failed=0
+          : > probe-result.txt
+          for repo in developing-today/fleet developing-today-forks/fleet; do
+            slug="${repo//\//-}"
+            if ! gh api "repos/${repo}/actions/workflows/sync-upstream.yml/runs?per_page=10" \
+                --jq '.workflow_runs' > "/tmp/runs-${slug}.json"; then
+              echo "repo=${repo} verdict=fail detail=could not list sync-upstream runs" >> probe-result.txt
+              failed=1
+              continue
+            fi
+            if python3 scripts/fleet/fleet-sync-probe.py --repo "$repo" \
+                --runs-json "/tmp/runs-${slug}.json" --max-age-hours 30 >> probe-result.txt 2>&1; then
+              :
+            else
+              failed=1
+            fi
+          done
+          cat probe-result.txt
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+
+      - name: Alert or recover on the probe issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PROBE_FAILED: ${{ steps.probe.outputs.failed }}
+        run: |
+          set -eu
+          gh label create meta/fleet-sync-probe --force --color B60205 \
+            --description "fleet sync-upstream probe alerts (#12235)" >/dev/null 2>&1 || true
+          open_alert=$(gh issue list --label meta/fleet-sync-probe --state open \
+            --json number --jq '.[0].number // empty')
+          run_url="https://github.com/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}"
+          detail="$(cat probe-result.txt)"
+          if [ "$PROBE_FAILED" != "0" ]; then
+            body="The fleet sync probe found a stale or failing sync-upstream: ${detail}. Expected a successful scheduled sync-upstream run on each fork within the last 30h (the 04:23 UTC slot lands late under load) and no failed latest run. See issue #12235. Probe run: ${run_url} Queue note (AGENTS.md filing rule): this alert is filed by a GitHub Actions workflow, which has no path to the fleet queue backend, so it is deliberately not enqueued at filing time; the standing coverage reconciliation (scripts/fleet/queue-reconcile/) enqueues every open issue into the repo-health-code-pilot queue, and this issue is the tracked item until it closes."
+            if [ -n "$open_alert" ]; then
+              gh issue comment "$open_alert" --body "Still stale or failing: $body"
+            else
+              gh issue create \
+                --title "fleet sync probe: sync-upstream stale or failing" \
+                --label meta/fleet-sync-probe \
+                --body "$body"
+            fi
+            echo "::error::fleet sync probe failed"
+            cat probe-result.txt
+            exit 1
+          fi
+          if [ -n "$open_alert" ]; then
+            gh issue comment "$open_alert" \
+              --body "Recovered: sync-upstream is fresh on both forks (${detail}). Probe run: ${run_url}"
+            gh issue close "$open_alert"
+          fi
+          echo "fleet sync probe green"
+          cat probe-result.txt
