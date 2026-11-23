@@ -321,3 +321,71 @@ pub fn audit_currency<B: LedgerBackend>(
 
     (recon, findings)
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    use proptest::prelude::*;
+
+    // F4 acceptance (#2320, design section 7.3): the supply
+    // audit's aggregation invariant over generated transfer
+    // sets. Oracle: the job sums holder + fee + burn balances
+    // against issuer debits, so a set whose every unit stays
+    // inside the audited accounts must report issued ==
+    // accounted with a zero difference.
+    proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+
+        #[test]
+        fn prop_supply_audit_conserves_generated_transfer_sets(
+            (issued, holder, fee) in (0i128..1_000_000).prop_flat_map(|issued| {
+                (Just(issued), 0i128..=issued).prop_flat_map(|(issued, holder)| {
+                    (Just(issued), Just(holder), 0i128..=(issued - holder))
+                })
+            }),
+        ) {
+            let burn = issued - holder - fee;
+            let audit = SupplyAudit {
+                issued,
+                accounted: holder + fee + burn,
+            };
+            prop_assert!(audit.matches());
+            prop_assert_eq!(audit.difference(), 0);
+        }
+
+        #[test]
+        fn prop_supply_divergence_reports_signed_difference(
+            amounts in proptest::collection::vec(0u64..1_000_000, 1..32),
+            leaked in 1u64..1_000_000,
+        ) {
+            let sum: i128 = amounts.iter().map(|amount| *amount as i128).sum();
+            let audit = SupplyAudit {
+                issued: sum,
+                accounted: sum - leaked as i128,
+            };
+            prop_assert!(!audit.matches());
+            prop_assert_eq!(audit.difference(), leaked as i128);
+        }
+    }
+
+    /// F4 acceptance (#2320): a report with no findings is
+    /// clean, and any finding — including a supply mismatch —
+    /// makes it dirty. Oracle: `is_clean` is exactly
+    /// `findings.is_empty()`.
+    #[test]
+    fn recon_report_clean_iff_no_findings() {
+        assert!(ReconReport::default().is_clean());
+        let dirty = ReconReport {
+            currencies: Vec::new(),
+            findings: vec![ReconFinding::SupplyMismatch {
+                currency_id: String::from("usd"),
+                ledger_id: 1,
+                issued: 100,
+                accounted: 90,
+            }],
+        };
+        assert!(!dirty.is_clean());
+    }
+}
