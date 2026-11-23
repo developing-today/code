@@ -20,11 +20,12 @@
 //! [`Reply::Refused`] with the gate's reason, so a sender learns a
 //! forged or unauthorized message will never succeed on retry.
 //!
-//! What remains after this slice is the frontier backing, not the
-//! wiring: [`MembershipFrontier`](crate::relay_gate::MembershipFrontier)
-//! is still satisfied by local stand-ins until the signed-graph
-//! membership state lands (open design, recorded in
-//! [`crate::relay_gate`]).
+//! The frontier backing has since landed:
+//! [`GraphFrontier`](crate::graph_frontier::GraphFrontier) answers
+//! [`MembershipFrontier`](crate::relay_gate::MembershipFrontier) from
+//! the signed graph's resolved membership state, so a production host
+//! wires the gate with the graph frontier over its shared event
+//! store; the local stand-ins remain for tests.
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
