@@ -110,6 +110,8 @@ mod records;
 pub use records::*;
 mod subscription;
 pub use subscription::*;
+mod discovery;
+pub use discovery::*;
 mod projection;
 pub use projection::*;
 mod render;
