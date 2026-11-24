@@ -6,7 +6,6 @@
 // decision set through the dashboard's own endpoint, an issue and a
 // queue task, a comment, a label.
 import { OpError, type Ops, PRIORITY_SCALE, type Row, type RunResult } from "./ops.ts";
-import { timed } from "./timed.ts";
 
 const P = "CASE WHEN json_valid(payload) THEN payload ELSE '{}' END";
 const G = "CASE WHEN json_valid(progress) THEN progress ELSE '{}' END";
@@ -179,15 +178,13 @@ export class Work {
   private async dash(path: string, body?: unknown): Promise<unknown> {
     const base = this.ops.cfg.dashboardUrl;
     if (base === null) throw new OpError(502, "no dashboard is configured");
-    const { res, data } = await timed(20_000, async (signal) => {
-      const res = await this.ops.fetchImpl(`${base}${path}`, {
-        method: body === undefined ? "GET" : "POST",
-        headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal,
-      });
-      return { res, data: await res.json().catch(() => null) };
+    const res = await this.ops.fetchImpl(`${base}${path}`, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(20_000),
     });
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
       const why = (data as { error?: string } | null)?.error ?? `http ${res.status}`;
       throw new OpError(

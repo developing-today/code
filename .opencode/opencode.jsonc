@@ -2008,30 +2008,15 @@
     // published eligible list (2026-10-20) does not name the 6.2
     // family, so they stay paid-only under the base until OpenAI
     // lists them. The metering wall that retires this alias's legs
-    // when the day's bucket is spent landed as code#13839: the
-    // route proxy counts the day's response usage per group from
-    // the route_attempt ledger and walls this alias's pairs at
-    // bucket minus margin until the 00:00 UTC reset (the
-    // "tokenMetering" declaration below is its config; the route
-    // rules checker validates the declaration's shape and that
-    // every catalog model is mapped to exactly one group). The
-    // large group's margin is 20K of the 1M bucket: a request
-    // that crosses the bucket bills in full, so the wall stops
-    // new requests ahead of the cap rather than at it.
+    // when the day's bucket is spent (response-usage counting in
+    // the route proxy) is filed separately -- until it lands,
+    // post-bucket traffic on these legs bills exactly as the paid
+    // tail does, bounded by the seats' weights.
     "openai-payg-free": {
       "instanceOf": "openai-payg",
       "npm": "@ai-sdk/openai",
       "name": "OpenAI API (data-sharing complimentary tokens, free-first)",
       "wallScope": "account",
-      "tokenMetering": {
-        "groups": {
-          "large": {
-            "dailyTokens": 1000000,
-            "marginTokens": 20000,
-            "models": ["gpt-6-luna", "gpt-6-astra", "gpt-6-sol"]
-          }
-        }
-      },
       "models": {
         "gpt-6-luna": {
           "name": "GPT-6 Luna"

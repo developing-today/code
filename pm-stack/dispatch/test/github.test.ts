@@ -277,13 +277,13 @@ describe("GitHubClient create-issue timeout (#10849)", () => {
     expect((err as Error).message).not.toContain("via gh");
   });
 
-  test("a POST that fails before reaching GitHub still falls back to fleet gh", async () => {
+  test("a POST that fails before reaching GitHub still falls back to gh", async () => {
     const err = await createWithPost(async () => {
       throw new TypeError("fetch failed");
     });
     // The fallback ran (and failed on the unroutable test slug).
     expect(err).toBeInstanceOf(GitHubError);
-    expect((err as Error).message).toContain("via fleet gh");
+    expect((err as Error).message).toContain("via gh");
   });
 });
 

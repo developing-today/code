@@ -651,38 +651,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chained_relay_alpn_refuses_non_member_and_delivers_member_with_graph_frontier() {
-        // Serve acceptance: over the registered chained-relay ALPN,
-        // graph-backed authorization refuses a non-member at ingest
-        // while a current member's message reaches the sink.
-        let (create_op, group) = graph_group();
-        let (_dir, store) = graph_store(std::slice::from_ref(&create_op));
-        let origin = endpoint().await;
-        let relay = endpoint().await;
-        let relay_sink = CollectSink::default();
-        let relay_protocol = graph_protocol(7, store, relay_sink.clone());
-        let _router = Router::builder(relay.clone())
-            .accept(CHAINED_RELAY_ALPN, relay_protocol.clone())
-            .spawn();
-
-        let unauthorized = RelayedMessage::new(graph_envelope(3, &group, 0));
-        assert!(matches!(
-            forward_message(&origin, loopback_addr(&relay), &unauthorized).await,
-            Outcome::Refused(_)
-        ));
-        assert!(relay_sink.received().is_empty());
-        assert_eq!(relay_protocol.forwarded(), 0);
-
-        let member = RelayedMessage::new(graph_envelope(1, &group, 0));
-        assert!(matches!(
-            forward_message(&origin, loopback_addr(&relay), &member).await,
-            Outcome::Delivered
-        ));
-        assert_eq!(relay_sink.received().len(), 1);
-        assert_eq!(relay_protocol.forwarded(), 1);
-    }
-
-    #[tokio::test]
     async fn duplicate_arrival_is_suppressed_at_ingest_with_graph_frontier() {
         // Acceptance, production backing: duplicates are suppressed
         // with the graph frontier in the loop exactly as with the

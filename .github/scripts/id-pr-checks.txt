@@ -35,7 +35,6 @@ prod-lines-check
 test-unit
 test-crate-integration
 test-native-shell
-test-tui-shell
 test-hw-shell
 test-rust-examples
 test-shard-0

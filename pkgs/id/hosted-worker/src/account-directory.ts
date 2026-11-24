@@ -33,42 +33,6 @@ export interface NewHostedAccount {
 }
 
 /**
- * Profile fields a normal update may carry. Only `jurisdiction` is
- * recognised here, and only to guard it: the design
- * (doc/2026-11-01_jurisdiction_aware_user_store_design.md §1–4) says
- * normal profile updates cannot change `jurisdiction`, even before
- * first DO creation — only the migration state machine may change it.
- * Any other profile content lives outside this record.
- */
-export interface HostedAccountProfilePatch {
-  jurisdiction?: string | null;
-}
-
-/**
- * Apply a normal profile update to a hosted account record. Fails
- * closed (throws `FailClosed`) when the patch attempts to change
- * `jurisdiction` to a different value. A patch with the same
- * jurisdiction, no jurisdiction, or a null jurisdiction returns the
- * record with `jurisdiction`, `jurisdictionPending`, `migrationId`,
- * `phase`, and `routingEpoch` unchanged — only the migration state
- * machine may change those. The input record is never mutated.
- */
-export function updateHostedAccountRecord(
-  record: HostedAccountRecord,
-  patch: HostedAccountProfilePatch,
-): HostedAccountRecord {
-  if (patch.jurisdiction !== undefined && patch.jurisdiction !== null && patch.jurisdiction !== record.jurisdiction) {
-    throw new FailClosed(
-      403,
-      "jurisdiction_immutable",
-      "profile updates cannot change hosted jurisdiction; only the migration state machine may change it",
-    );
-  }
-
-  return { ...record };
-}
-
-/**
  * In-memory hosted account directory keyed by the unique pseudonymous
  * subject key (design doc/2026-11-01_jurisdiction_aware_user_store_design.md:
  * "Duplicate signup reads the existing row; it never overwrites it or

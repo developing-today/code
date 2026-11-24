@@ -253,16 +253,14 @@ describe("a roadmap file", () => {
         expect(["doing", "now", "next", "later", "built"]).toContain(row.phase);
       }
     }
-    // A parser that read nothing would pass the loop above, so the files
-    // between them have rows. How many each has is the planners' to
-    // change, and not counted here: for an evening this asked ten of the
-    // id roadmap, which had just been tidied down to eight, and every
-    // run of the tests failed for it.
+    // The two this was written against have rows now: a parser that
+    // read none would pass the loop above.
     const count = (file: string) => parseRoadmap(readFileSync(`${ROOT}/${file}`, "utf8")).length;
-    const files = CAPABILITIES.flatMap((c) => (c.file ? [c.file] : []));
-    // (Fleet and Atlas had no file until 2026-11-23, and their pages showed issues alone.)
-    expect(files).toEqual(expect.arrayContaining(["planning/roadmaps/fleet.md", "planning/roadmaps/atlas.md"]));
-    expect(files.reduce((sum, file) => sum + count(file), 0)).toBeGreaterThan(0);
+    expect(count("planning/roadmaps/id.md")).toBeGreaterThanOrEqual(10);
+    expect(count("planning/roadmaps/pm-stack.md")).toBeGreaterThanOrEqual(4);
+    // Fleet and Atlas had no file until 2026-11-23, and their pages showed issues alone.
+    expect(count("planning/roadmaps/fleet.md")).toBeGreaterThanOrEqual(10);
+    expect(count("planning/roadmaps/atlas.md")).toBeGreaterThanOrEqual(10);
   });
 });
 

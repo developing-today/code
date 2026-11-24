@@ -1565,17 +1565,6 @@ pub(crate) fn store_fork(
     Ok(())
 }
 
-/// The fork proof at `author`'s `seq`, if the author has forked there. A proof above the
-/// lowest point still governs its own sequence number: it keeps the two lowest IDs there.
-pub(super) fn proof_at(
-    forks: &impl ReadableTable<&'static [u8], &'static [u8]>,
-    author: &AuthorKey,
-    seq: SeqNum,
-) -> Result<Option<ForkProof>, StoreError> {
-    let row = forks.get(position_key(author, seq).as_slice())?;
-    row.map(|row| decode_proof(row.value())).transpose()
-}
-
 /// The fork proof at `author`'s lowest fork point, if the author has forked. That point freezes
 /// the chain. The rows are keyed by position, so the first row of the author's range is the lowest.
 pub(super) fn lowest_proof(

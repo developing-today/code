@@ -405,105 +405,6 @@ export function inspectProviderWallRules(config) {
   return issues;
 }
 
-// The model ids in a provider's effective catalog: an explicit
-// models map wins; when absent, follow instanceOf to the base
-// provider (the same walk catalogInfo makes). Null when the chain
-// cannot be resolved from the tracked config.
-function effectiveCatalogModels(config, providerID) {
-  const seen = new Set();
-  let id = providerID;
-  while (typeof id === 'string' && id && !seen.has(id)) {
-    seen.add(id);
-    const block = config.provider?.[id];
-    if (!isObject(block)) return null;
-    if (isObject(block.models)) return Object.keys(block.models);
-    id = block.instanceOf;
-  }
-  return null;
-}
-
-// Complimentary-token metering declarations (code#13839): a
-// provider block's optional "tokenMetering" — named groups of
-// models, each with the daily token bucket the group draws on and
-// a safety margin — is what the route proxy's metering wall
-// consumes. The proxy tolerates a malformed declaration by never
-// engaging (and naming it at load); this guard is the fail-closed
-// half: a malformed declaration must not land in the tracked
-// config at all. Rules:
-// (a) the declaration is an object with a non-empty "groups"
-//     object; each group is an object whose dailyTokens is a
-//     positive integer and whose marginTokens (when present) is
-//     an integer >= 0 and < dailyTokens;
-// (b) each group's models is a non-empty array of model ids, and
-//     no model is mapped to more than one group;
-// (c) when the provider's effective catalog resolves from the
-//     tracked config, every mapped model is in the catalog and
-//     every catalog model is mapped — an unmapped catalog model
-//     could never wall and would bill silently past the bucket.
-export function inspectProviderMeteringRules(config) {
-  const issues = [];
-  const providers = isObject(config?.provider) ? config.provider : {};
-  for (const [providerID, block] of Object.entries(providers)) {
-    if (!isObject(block) || block.tokenMetering === undefined) continue;
-    const prefix = `tokenMetering: provider "${providerID}"`;
-    const metering = block.tokenMetering;
-    if (!isObject(metering) || !isObject(metering.groups) || !Object.keys(metering.groups).length) {
-      issues.push(`${prefix} declares tokenMetering without a non-empty "groups" object`);
-      continue;
-    }
-    const mapped = new Map();
-    for (const [groupName, group] of Object.entries(metering.groups)) {
-      if (!isObject(group)) {
-        issues.push(`${prefix} group "${groupName}" is not an object`);
-        continue;
-      }
-      if (!Number.isInteger(group.dailyTokens) || group.dailyTokens <= 0) {
-        issues.push(
-          `${prefix} group "${groupName}" declares dailyTokens ${JSON.stringify(group.dailyTokens)} (expected a positive integer)`,
-        );
-      }
-      const margin = group.marginTokens ?? 0;
-      if (!Number.isInteger(margin) || margin < 0 || (Number.isInteger(group.dailyTokens) && margin >= group.dailyTokens)) {
-        issues.push(
-          `${prefix} group "${groupName}" declares marginTokens ${JSON.stringify(group.marginTokens)} (expected an integer >= 0 and < dailyTokens)`,
-        );
-      }
-      if (!Array.isArray(group.models) || !group.models.length || !group.models.every((m) => typeof m === 'string' && m)) {
-        issues.push(`${prefix} group "${groupName}" declares models ${JSON.stringify(group.models)} (expected a non-empty array of model ids)`);
-        continue;
-      }
-      for (const model of group.models) {
-        if (mapped.has(model)) {
-          issues.push(
-            `${prefix} maps model "${model}" to both group "${mapped.get(model)}" and group "${groupName}"; a model belongs to exactly one complimentary group`,
-          );
-        } else {
-          mapped.set(model, groupName);
-        }
-      }
-    }
-    const catalog = effectiveCatalogModels(config, providerID);
-    if (catalog) {
-      const catalogSet = new Set(catalog);
-      for (const [model, groupName] of mapped) {
-        if (!catalogSet.has(model)) {
-          issues.push(
-            `${prefix} maps model "${model}" (group "${groupName}") which is not in the provider's catalog; the wall would watch a model the provider does not serve`,
-          );
-        }
-      }
-      for (const model of catalog) {
-        if (!mapped.has(model)) {
-          issues.push(
-            `${prefix} leaves catalog model "${model}" unmapped; every model in a metered provider's catalog must belong to exactly one group, or it can never wall and bills silently past the bucket`,
-          );
-        }
-      }
-    }
-  }
-  return issues;
-}
-
 export function inspectRouteRules(config) {
   const issues = [];
   const issueSet = new Set();
@@ -809,9 +710,6 @@ export function inspectRouteRules(config) {
 
   // Wall-scope declarations + free/paid alias invariants (code#13693).
   for (const issue of inspectProviderWallRules(config)) addIssue(issue);
-
-  // Complimentary-token metering declarations (code#13839).
-  for (const issue of inspectProviderMeteringRules(config)) addIssue(issue);
 
   return { tiers, issues };
 }

@@ -784,8 +784,8 @@ pub(super) fn require_row(resp: &Value, fn_name: &str) -> Value {
     row
 }
 
-pub(super) fn row_or_ledger(resp: &Value, fn_name: &str, verb: &str) {
-    let row = served_row(require_row(resp, fn_name), verb);
+pub(super) fn row_or_ledger(resp: &Value, fn_name: &str) {
+    let row = require_row(resp, fn_name);
     // Broker envelope extras a caller must not lose: the triage
     // completion follow-on (#7016) rides alongside the row.
     let follow_on = resp.get("follow_on_task_id");

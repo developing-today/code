@@ -272,20 +272,13 @@ def hard_stop_reason(repo, ref):
     if not ref:
         return None
     kind, num = ref
-    # The labels/state/title read runs through the fleet gh
-    # sync-view verb (code#10973) over the token rotation, not a
-    # raw gh composition.
-    cmd = [
-        str(claimant.FLEET_CMD),
-        "gh",
-        "sync-view",
-        "--repo",
-        repo,
-        kind,
-        str(num),
-    ]
+    cmd = (
+        ["pr", "view", str(num), "--repo", repo, "--json", "labels,state,title"]
+        if kind == "pr"
+        else ["issue", "view", str(num), "--repo", repo, "--json", "labels,state,title"]
+    )
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        p = subprocess.run(["gh", *cmd], capture_output=True, text=True, timeout=60)
         if p.returncode != 0:
             return f"label-check-failed:{p.stderr.strip()[:160]}"
         d = json.loads(p.stdout)
@@ -397,21 +390,13 @@ def post_agent_note(row, ref, repo, sid):
     claimant.ensure_state_dir()
     with open(path, "w") as f:
         f.write(note_body(row, ref, sid, url))
-    # The note post runs through the fleet gh sync-comment verb
-    # (code#10973) over the token rotation, not a raw gh composition.
-    ncmd = [
-        str(claimant.FLEET_CMD),
-        "gh",
-        "sync-comment",
-        "--repo",
-        repo,
-        ref[0],
-        str(ref[1]),
-        "--body-file",
-        str(path),
-    ]
+    ncmd = (
+        ["pr", "comment", str(ref[1]), "--repo", repo, "--body-file", str(path)]
+        if ref[0] == "pr"
+        else ["issue", "comment", str(ref[1]), "--repo", repo, "--body-file", str(path)]
+    )
     try:
-        p = subprocess.run(ncmd, capture_output=True, text=True, timeout=60)
+        p = subprocess.run(["gh", *ncmd], capture_output=True, text=True, timeout=60)
         return p.returncode == 0, (
             None if p.returncode == 0 else p.stderr.strip()[:300]
         )

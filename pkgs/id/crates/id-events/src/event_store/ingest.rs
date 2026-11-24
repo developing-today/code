@@ -7,11 +7,8 @@
 //!    rules. Anything that fails is refused as [`Refusal::Malformed`].
 //! 2. **Duplicate.** An event whose ID is stored, or is one of its author's fork proof
 //!    headers, changes nothing.
-//! 3. **Fork point.** If the author has a fork proof at the event's own sequence number,
-//!    the proof keeps the two lowest IDs there: an event that joins them replaces the
-//!    proof (step 4), and one that displaces neither header is refused as
-//!    [`Refusal::Frozen`]. An event above the fork point is not refused for sitting
-//!    there: it goes on to the steps below, and is kept as voided evidence when it links.
+//! 3. **Frozen.** An event above its author's fork point is refused as
+//!    [`Refusal::Frozen`].
 //! 4. **Fork.** If the author has another event at the same sequence number, stored or
 //!    held, the two are a fork, whatever their backlinks and dependencies. The proof for that
 //!    sequence number holds the two lowest IDs there, and the proofs at higher points stay. The
@@ -82,16 +79,12 @@
 //! the refused rival is sent again, while the other event is still held. The behaviour is
 //! pinned by `test_a_rival_refused_by_the_cap_is_seen_only_when_sent_again`.
 //!
-//! # Events above a fork point are kept as evidence
+//! # Known limit: a rival refused as frozen
 //!
-//! An event above its author's fork point is decided on its own conflicts, backlink, and
-//! dependencies, like any other event. When it links, it is stored as voided evidence: the
-//! resolution never applies it, but it is present, so an `after` hash that names it is
-//! satisfied in every arrival order — the same state as when it arrived before the fork and
-//! the fork voided it. One whose backlink can never link is parked, and one that waits is
-//! held, as below the fork point. Only an event at a fork proof's own sequence number that
-//! displaces neither of the proof's two headers is refused as frozen: the position holds
-//! one event, and the headers are the events present there.
+//! An event above its author's fork point is refused as frozen when it arrives after the fork.
+//! When it arrives before, it is kept as voided. So an `after` hash that names such an event is
+//! present in some arrival orders and not in others. The batch property names rivals, but it
+//! compares the batch path with per-event ingest in one arrival order, so it holds either way.
 //!
 //! The property tests in `tests/event_store_properties.rs` check the applied state against
 //! this definition, for every arrival order.
@@ -107,7 +100,7 @@ use super::waiting_rows::{Hold, Mirror};
 use super::{
     ACTIONS, APPLIED, CHAINS, COMPACTED, Chain, DEVICE_OPS, EVENTS, EventStore, FORKS, ForkProof,
     HASHES, PROOF_HEADERS, PROOF_IDS, StoreError, corrupt, decode_stored, lowest_proof,
-    position_key, proof_at, store_body, store_chain, store_event, store_fork,
+    position_key, store_body, store_chain, store_event, store_fork,
 };
 use super::{Ingest, Refusal};
 use id_core::membership::AuthId;
@@ -971,21 +964,23 @@ fn decide_in(
     if let Some(stored) = stored_at(txn, &author, seq)? {
         conflicts.push(stored);
     }
-    // A proof at the event's own sequence number governs it, wherever that point sits:
-    // the proof keeps the two lowest IDs there, and an arrival that displaces neither
-    // header is refused as frozen. It cannot be kept as evidence instead: the position
-    // holds one event, and the two headers are the events present there.
-    if let Some(proof) = read_proof_at(txn, &author, seq)? {
-        conflicts.extend([proof.first.clone(), proof.second.clone(), event.clone()]);
-        let (first, second) = two_lowest(conflicts)?;
-        if first.id == proof.first.id && second.id == proof.second.id {
+    if let Some(proof) = read_proof(txn, &author)? {
+        if seq > proof.seq {
             return Ok(Decision::Refuse(Refusal::Frozen));
         }
-        store_fork(txn, &author, seq, &first, &second)?;
-        return Ok(Decision::Fork {
-            seq,
-            proof: [first.id, second.id],
-        });
+        if seq == proof.seq {
+            // Another event at the fork point. The proof keeps the two lowest IDs there.
+            conflicts.extend([proof.first.clone(), proof.second.clone(), event.clone()]);
+            let (first, second) = two_lowest(conflicts)?;
+            if first.id == proof.first.id && second.id == proof.second.id {
+                return Ok(Decision::Refuse(Refusal::Frozen));
+            }
+            store_fork(txn, &author, seq, &first, &second)?;
+            return Ok(Decision::Fork {
+                seq,
+                proof: [first.id, second.id],
+            });
+        }
     }
     // A compacted position keeps its event as residue: present, applied, and
     // never overwritten. A rival there can never be proven a fork — a proof is
@@ -994,13 +989,8 @@ fn decide_in(
     if super::compaction::residue_at(&txn.open_table(COMPACTED)?, &author, seq)?.is_some() {
         return Ok(Decision::Park);
     }
-    // Above the author's fork point the event is not refused for sitting there. It is
-    // decided on its own conflicts, backlink, and dependencies below, and kept as voided
-    // evidence when it links, so an `after` hash that names it is present in every
-    // arrival order — the state it would be in had it arrived before the fork. The
-    // resolution never applies it: it sits at or above the fork point.
     if !conflicts.is_empty() {
-        // The first conflict at this sequence number, at any point of the chain.
+        // The first conflict at this sequence number, or one below the fork point.
         conflicts.push(event.clone());
         let (first, second) = two_lowest(conflicts)?;
         store_fork(txn, &author, seq, &first, &second)?;
@@ -1271,15 +1261,6 @@ pub(super) fn is_proof_header(
 /// The proof at `author`'s lowest fork point, which freezes the chain.
 fn read_proof(txn: &WriteTransaction, author: &AuthorKey) -> Result<Option<ForkProof>, StoreError> {
     lowest_proof(&txn.open_table(FORKS)?, author)
-}
-
-/// The proof at `author`'s `seq`, if the author has forked there.
-fn read_proof_at(
-    txn: &WriteTransaction,
-    author: &AuthorKey,
-    seq: SeqNum,
-) -> Result<Option<ForkProof>, StoreError> {
-    proof_at(&txn.open_table(FORKS)?, author, seq)
 }
 
 /// The stored event at `author`'s `seq`, applied or voided, if there is one.
@@ -1965,7 +1946,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_frozen_chain_keeps_its_later_events_as_voided_evidence() {
+    fn test_a_frozen_chain_refuses_its_later_events_and_changes_nothing() {
         let (_dir, mut store) = open();
         let signer = key(4);
         let who = author(&signer);
@@ -1977,16 +1958,11 @@ mod tests {
             Ingest::Fork { seq: 1, .. }
         ));
         let before = store.chain(&who).unwrap();
-        // The later event arrives after the fork. It is kept as voided evidence: stored,
-        // never applied, and the chain row is unchanged.
         assert_eq!(
             ingest(&mut store, &events[2]),
-            Ingest::Voided {
-                id: events[2].id,
-                released: vec![],
-            }
+            Ingest::Refused(Refusal::Frozen)
         );
-        assert_eq!(store.event(&who, 2).unwrap(), Some(events[2].clone()));
+        assert!(store.event(&who, 2).unwrap().is_none());
         assert_eq!(store.chain(&who).unwrap(), before);
         store.check_invariants().unwrap();
     }
@@ -2354,100 +2330,6 @@ mod tests {
     }
 
     #[test]
-    fn test_a_dependent_on_a_post_fork_event_resolves_in_either_arrival_order() {
-        // The order matrix of #12050: one signed event set — a chain through sequence 2,
-        // a rival at sequence 1, and another author's event whose `after` names sequence
-        // 2 — delivered fork-last and fork-first, per event and as a batch. The dependent
-        // event's disposition and the presence of the event it names must not depend on
-        // the order: the sequence-2 event is present in both orders and applied in
-        // neither final state, and the dependent applies in both.
-        let x = key(51);
-        let y = key(52);
-        let x_events = chain_of(&x, 3);
-        let rival = event(&x, 1, Some(x_events[0].id), Vec::new(), "rival");
-        let dependent = event(&y, 0, None, vec![x_events[2].id], "y");
-
-        let assert_final_state = |store: &EventStore| {
-            assert_eq!(
-                store.event(&author(&x), 2).unwrap(),
-                Some(x_events[2].clone()),
-                "the sequence-2 event is present"
-            );
-            assert_eq!(
-                store.chain(&author(&x)).unwrap(),
-                Some(Chain {
-                    next_seq: 1,
-                    head: Some(x_events[0].id),
-                    frozen: true,
-                })
-            );
-            assert_eq!(store.chain(&author(&y)).unwrap().unwrap().next_seq, 1);
-            store.check_invariants().unwrap();
-        };
-
-        // Fork last, per event: the sequence-2 event applies, then the fork voids it.
-        {
-            let (_dir, mut store) = open();
-            ingest_all(&mut store, &x_events);
-            assert!(matches!(
-                ingest(&mut store, &rival),
-                Ingest::Fork { seq: 1, .. }
-            ));
-            assert_eq!(
-                ingest(&mut store, &dependent),
-                Ingest::Accepted {
-                    id: dependent.id,
-                    released: vec![],
-                }
-            );
-            assert_final_state(&store);
-        }
-        // Fork first, per event: the sequence-2 event arrives above the fork point and
-        // is kept as voided evidence, so the dependent still applies.
-        {
-            let (_dir, mut store) = open();
-            ingest_all(&mut store, &x_events[..2]);
-            assert!(matches!(
-                ingest(&mut store, &rival),
-                Ingest::Fork { seq: 1, .. }
-            ));
-            assert_eq!(
-                ingest(&mut store, &x_events[2]),
-                Ingest::Voided {
-                    id: x_events[2].id,
-                    released: vec![],
-                }
-            );
-            assert_eq!(
-                ingest(&mut store, &dependent),
-                Ingest::Accepted {
-                    id: dependent.id,
-                    released: vec![],
-                }
-            );
-            assert_final_state(&store);
-        }
-        // Both orders again, as one batch each.
-        for order in [
-            vec![&x_events[0], &x_events[1], &x_events[2], &rival, &dependent],
-            vec![&x_events[0], &x_events[1], &rival, &x_events[2], &dependent],
-        ] {
-            let (_dir, mut store) = open();
-            let batch: Vec<Vec<u8>> = order.iter().map(|event| event.bytes.clone()).collect();
-            let outcomes = store.ingest_batch(&batch, 0).unwrap();
-            assert_eq!(
-                outcomes.last(),
-                Some(&Ingest::Accepted {
-                    id: dependent.id,
-                    released: vec![],
-                }),
-                "the dependent applies in the batch order {outcomes:?}"
-            );
-            assert_final_state(&store);
-        }
-    }
-
-    #[test]
     fn test_a_backlink_that_is_not_the_applied_head_is_parked_and_not_stored() {
         let (_dir, mut store) = open();
         let signer = key(13);
@@ -2476,8 +2358,8 @@ mod tests {
         // applied H1 by the first author, so its arrival forks that chain, and H2 becomes a proof
         // header: present, but never stored. R is released by that. It cannot link to H2, so it
         // must park. Holding it to wait for H2 would wait on a dependency that is already present.
-        // The forking author's own event above the fork point reaches this path too: it is
-        // decided on its backlink, not refused for sitting above the point.
+        // R is not the forking author's event: an event above the fork point is refused as frozen
+        // before the backlink is read, so only another author's backlink reaches this path.
         let (_dir, mut store) = open();
         let forker = key(15);
         let other = key(16);
@@ -2523,32 +2405,18 @@ mod tests {
 
     #[test]
     fn test_a_frozen_refusal_gives_the_frozen_reason() {
-        // The frozen refusal is now only for an event at the fork point itself that
-        // displaces neither of the proof's two headers: the position holds one event,
-        // and the headers are the events present there. Three events at sequence 1,
-        // taken in ID order: the first is stored, the second forks the chain and the
-        // proof holds the two of them, and the third displaces neither.
         let (_dir, mut store) = open();
         let signer = key(4);
-        let events = chain_of(&signer, 1);
-        ingest_all(&mut store, &events);
-        let mut at_point: Vec<Event> = ["one", "two", "three"]
-            .into_iter()
-            .map(|kind| event(&signer, 1, Some(events[0].id), Vec::new(), kind))
-            .collect();
-        at_point.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
+        let events = chain_of(&signer, 3);
+        ingest_all(&mut store, &events[..2]);
+        let rival = event(&signer, 1, Some(events[0].id), Vec::new(), "rival");
         assert!(matches!(
-            ingest(&mut store, &at_point[0]),
-            Ingest::Accepted { .. }
-        ));
-        assert!(matches!(
-            ingest(&mut store, &at_point[1]),
+            ingest(&mut store, &rival),
             Ingest::Fork { seq: 1, .. }
         ));
-        let result = ingest(&mut store, &at_point[2]);
+        let result = ingest(&mut store, &events[2]);
         assert_eq!(result, Ingest::Refused(Refusal::Frozen));
         assert_eq!(result.reason(), Some(Reason::Frozen));
-        store.check_invariants().unwrap();
     }
 
     #[test]
@@ -3948,9 +3816,7 @@ mod tests {
             store.is_waiting(&waits.id),
             "the event waits across the restart"
         );
-        // Its dependency arrives, so it is released. Its chain is frozen at 1, so it is
-        // kept as voided evidence rather than refused: its waiting row goes, and the
-        // event itself is stored, unapplied.
+        // Its dependency arrives, so it is released. Its chain is frozen at 1, so it is refused.
         assert_eq!(
             ingest(&mut store, &y0),
             Ingest::Accepted {
@@ -3960,15 +3826,6 @@ mod tests {
         );
         assert!(!store.is_waiting(&waits.id));
         assert!(store.waiting_ids().unwrap().is_empty());
-        assert_eq!(store.event(&author(&x), 2).unwrap(), Some(waits.clone()));
-        assert_eq!(
-            store.chain(&author(&x)).unwrap(),
-            Some(Chain {
-                next_seq: 1,
-                head: Some(x_events[0].id),
-                frozen: true,
-            })
-        );
         store.check_invariants().unwrap();
     }
 

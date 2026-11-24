@@ -85,7 +85,7 @@ book](operations/deploying-this-book.md)).
 | ID book | [developing-today.github.io/code/id/](https://developing-today.github.io/code/id/) | `pkgs/id/book/` | [#13240](https://github.com/developing-today/code/issues/13240) |
 | This book (Code Book) | [developing-today.github.io/code/code/](https://developing-today.github.io/code/code/) | `pkgs/code-book/book/` | [#13905](https://github.com/developing-today/code/issues/13905) |
 | Lab Book | [developing-today.github.io/code/lab/](https://developing-today.github.io/code/lab/) | built under the same programme as this book | [#13905](https://github.com/developing-today/code/issues/13905) |
-| Project Management book | [developing-today.github.io/code/pm/](https://developing-today.github.io/code/pm/) | `pm-stack/book/` | [#13900](https://github.com/developing-today/code/issues/13900) |
+| Project Management book | published subpath not yet final — stated plainly: the PM book's skeleton was reconciled on 2026-11-23 under its tracker, and its place in the combined deploy is not yet settled | `pm-stack/book/` (in preparation) | [#13900](https://github.com/developing-today/code/issues/13900) |
 
 ## Conventions used in this book
 

@@ -220,14 +220,6 @@ pub(crate) enum ClientFrame {
         /// clients that predate the revision.
         #[serde(default)]
         screen_msgpack: bool,
-        /// Opt in to compressed binary screen patches (F12.11 phase 4,
-        /// contract revision 16): when `screen_msgpack` is also set,
-        /// patch frames arrive as compressed version-2 MessagePack
-        /// frames whenever compression makes the complete frame
-        /// smaller, and as version-1 frames otherwise. Omitted by
-        /// clients that predate the revision.
-        #[serde(default)]
-        screen_compress: bool,
         /// Resume token from this client's last applied view. A cursor, not a
         /// credential: the join capability above still authorizes the session,
         /// and an unknown, stale or foreign token simply gets a full view.

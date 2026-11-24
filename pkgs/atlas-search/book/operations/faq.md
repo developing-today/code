@@ -26,7 +26,7 @@ Because the D1 hot cache is not wired into the request path. The flag (only the 
 
 ### Is the corpus current?
 
-The November 23, 2026 read of the canonical laptop file counted **18,325 sessions, 122,115 messages and 107,439 chunks**. The dated October publish-source file still had **18,325 / 122,124 / 107,639** in a separate read that day. The serving generation and source watermark require a consumer-scoped check. See [Backup, restore and the census](backup-and-census.md).
+The corpus you can search is current as of its last publish — and the last **verified census is frozen at 2026-10-31: 18,325 sessions / 122,124 messages / 107,639 chunks** (#3125). The underlying store has since grown to a ~7.3 GB monolith with no verified recount, and ingestion is still manual and script-driven, so no newer count exists to quote and no consumer recounts on your behalf. A fresh census is an early programme deliverable; how one would be taken, and why the October numbers are the ones consumers still see, is in [Backup, restore and the census](backup-and-census.md). Treat any undated Atlas size claim — including one in an older chapter or design — as that October snapshot until a dated replacement exists.
 
 ### Can ID search Atlas today?
 

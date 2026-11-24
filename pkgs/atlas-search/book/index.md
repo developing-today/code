@@ -22,12 +22,15 @@ so re-ingesting the same material adds nothing twice. Each session is
 classified with a kind, topics, and projects, and each chunk carries an
 effective sensitivity (its own, falling back to its session's label).
 
-On **2026-11-23** the canonical laptop database contained **18,325 sessions,
-122,115 messages and 107,439 chunks**. A separate read of the October 31
-publish-source file returned 18,325 sessions, 122,124 messages and 107,639
-chunks. Each count belongs to the selected local file; the live service and
-Worker require separate publication receipts.
-[Backup, restore and the census](operations/backup-and-census.md).
+The last verified census is a frozen snapshot, and this book dates it
+wherever it is quoted: on **2026-10-31** the corpus held **18,325 sessions /
+122,124 messages / 107,639 chunks**. Physically, that census is now a local
+canonical database plus **29 topic shards**: 28 internal shards holding
+107,001 chunks and 1 secret shard holding 638 chunks, with zero public-tier
+shards. Later records describe a monolith of about 7.3 GB without a verified
+recount, so the store has grown since the census; the counts above are the
+last verified ones, not a live count. The full treatment is in
+[The corpus: provenance and content addressing](concepts/corpus-and-provenance.md).
 
 Two properties define the system, and both are enforced before ranking, never
 after:

@@ -133,7 +133,6 @@ use crate::gh_cache;
 use crate::gh_closure;
 use crate::gh_guard;
 use crate::gh_metadata;
-use crate::gh_sync;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
 use std::io::{IsTerminal, Write};
@@ -193,20 +192,7 @@ FLEET_GH_CACHE as a comma list; an address without a port gets port
 `fleet gh cache-status` probes the configured daemons. `--cache-addr`
 overrides every daemon address for one call; `--no-cache` resolves
 in-process. When no daemon answers, the call resolves in-process and
-says so on stderr — never silently.
-
-Sync verbs (code#10973, step 2.2 of #9016): the `sync-*` shadow
-verbs are the typed Queue/GitHub sync surface for scripted flows
-(pm-stack dispatch's fallback, the opencode claimant, job bodies).
-Each declares its whole command line, validates it strictly, and
-rewrites to the canonical gh call before the guard, closure and
-metadata layers run, inheriting the rotation and the retry-safety
-rule. `fleet gh sync-labels --repo OWNER/REPO <issue|pr> <n>` prints
-an item's label names as JSON; `sync-view` prints labels,state,title
-JSON; `sync-comment` posts a comment (`--body` or `--body-file`);
-`sync-issue-create`, `sync-issue-get`, `sync-labels-add`,
-`sync-label-ensure` and `sync-issue-close` (fleet closure reasons)
-cover the issue writes dispatch composes. See gh_sync.rs.";
+says so on stderr — never silently.";
 
 /// The fleet's GitHub Apps, in rotation order. Each carries its
 /// private key (and, except the fleet App whose ID is a public
@@ -1539,24 +1525,6 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     if args.first().is_some_and(|a| a == "closures") {
         return run_closures(&args[1..]);
     }
-    // Sync verbs (#10973, step 2.2 of #9016): strictly-parsed typed
-    // verbs that rewrite to the canonical gh call. The rewrite is
-    // applied here, before the close guard, the closure layer and
-    // the metadata create path parse the arguments, so a sync call
-    // inherits every passthrough control — and the rotation below —
-    // exactly as the hand-written call it replaces would have.
-    let sync_rewrite;
-    let args: &[String] = match gh_sync::parse(args) {
-        Ok(Some(canonical)) => {
-            sync_rewrite = canonical;
-            &sync_rewrite
-        }
-        Ok(None) => args,
-        Err(e) => {
-            eprintln!("{e}");
-            return EXIT_USAGE;
-        }
-    };
     let guard_intent = match gh_guard::parse(args) {
         Ok(intent) => intent,
         Err(e) => {

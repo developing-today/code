@@ -78,7 +78,7 @@ library-only build:
 cargo build --no-default-features
 ```
 
-The source disagrees with the old framing, and this book follows the source.
+The source disagrees with that framing, and this book follows the source.
 Because `default = [sandbox, world]`, `--no-default-features` removes
 `sandbox` and `world` as well as leaving `web` off. The concrete losses
 in a `--no-default-features` build are:
@@ -100,9 +100,9 @@ What a `--no-default-features` build keeps: the file commands, `tag`,
 `gallery`, `key`, `keyset`, `peers`, and the REPL. `id walk` is not
 feature-gated anywhere and works in every build.
 
-The Nix `id-lib` package is the build the old README command intended: it is
+The Nix `id-lib` package is the build the README command intends: it is
 built with default features off and then re-adds exactly the two features
-the old README command left out — `buildNoDefaultFeatures = true` with
+the README command leaves out — `buildNoDefaultFeatures = true` with
 `buildFeatures = [sandbox, world]`. If you want the `id-lib` feature set
 from Cargo directly, the equivalent is:
 

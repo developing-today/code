@@ -522,7 +522,7 @@ pub(super) fn cmd_release(rest: &[String]) -> i32 {
             "reason": reason,
         }),
     ));
-    let row = served_row(require_row(&resp, "release_repo_task"), "release");
+    let row = require_row(&resp, "release_repo_task");
     // #9046: a release closes the binding window on the timeline.
     unbound_append(&opt_worker(&args), &row, "release");
     print_json(&row);
@@ -679,7 +679,7 @@ pub(super) fn cmd_lane(rest: &[String]) -> i32 {
             "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
-    print_json(&served_row(require_row(&resp, "assign_repo_task_lane"), "lane"));
+    print_json(&require_row(&resp, "assign_repo_task_lane"));
     0
 }
 
@@ -753,10 +753,7 @@ pub(super) fn cmd_bind(rest: &[String]) -> i32 {
             }),
         );
     }
-    print_json(&served_row(
-        require_row(&resp, "bind_repo_task_lane_session"),
-        "bind",
-    ));
+    print_json(&require_row(&resp, "bind_repo_task_lane_session"));
     0
 }
 
@@ -926,7 +923,7 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "park");
     }
-    row_or_ledger(&resp, "park_task", "park");
+    row_or_ledger(&resp, "park_task");
     0
 }
 
@@ -942,7 +939,7 @@ pub(super) fn cmd_wake(rest: &[String]) -> i32 {
         "reason": args.get("reason").unwrap_or_default(),
     });
     let resp = unwrap_ok(call("/wake", &body));
-    print_json(&served_row(require_row(&resp, "wake_task"), "wake"));
+    print_json(&require_row(&resp, "wake_task"));
     0
 }
 
@@ -1156,7 +1153,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         body["dep_max_ttl_seconds"] = json!(s);
     }
     let resp = unwrap_ok(call("/block", &body));
-    print_json(&served_row(require_row(&resp, "block_task"), "block"));
+    print_json(&require_row(&resp, "block_task"));
     // #8568: the live raise path — after the block lands, post
     // the needs-drew alert to the PM throat. Emission failure
     // must NOT fail the block (the block already succeeded and
@@ -1292,7 +1289,7 @@ pub(super) fn cmd_unblock(rest: &[String]) -> i32 {
         body["drop_deps"] = json!(drops);
     }
     let resp = unwrap_ok(call("/unblock", &body));
-    print_json(&served_row(require_row(&resp, "unblock_task"), "unblock"));
+    print_json(&require_row(&resp, "unblock_task"));
     0
 }
 
@@ -1311,7 +1308,7 @@ pub(super) fn cmd_dep_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/dep-recheck", &body));
-    print_json(&served_row(require_row(&resp, "dep_recheck"), "dep-recheck"));
+    print_json(&require_row(&resp, "dep_recheck"));
     0
 }
 
@@ -1332,10 +1329,7 @@ pub(super) fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/quarantine-recheck", &body));
-    print_json(&served_row(
-        require_row(&resp, "quarantine_recheck"),
-        "quarantine-recheck",
-    ));
+    print_json(&require_row(&resp, "quarantine_recheck"));
     0
 }
 /// repair (#13191): repair a quarantined / malformed task
@@ -1376,7 +1370,7 @@ pub(super) fn cmd_cancel(rest: &[String]) -> i32 {
             "reason": reason,
         }),
     ));
-    let row = served_row(require_row(&resp, "cancel_repo_task"), "cancel");
+    let row = require_row(&resp, "cancel_repo_task");
     // #9046: a cancel closes the binding window on the timeline.
     unbound_append(&worker, &row, "cancel");
     print_json(&row);
@@ -1403,7 +1397,7 @@ pub(super) fn cmd_revive(rest: &[String]) -> i32 {
         body["not_before"] = json!(nb);
     }
     let resp = unwrap_ok(call("/revive", &body));
-    print_json(&served_row(require_row(&resp, "revive_task"), "revive"));
+    print_json(&require_row(&resp, "revive_task"));
     0
 }
 
@@ -1442,7 +1436,7 @@ pub(super) fn cmd_fail(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "fail");
     }
-    row_or_ledger(&resp, "fail_repo_task", "fail");
+    row_or_ledger(&resp, "fail_repo_task");
     0
 }
 
@@ -1576,7 +1570,7 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
     if let Some(row) = resp.get("row") {
         unbound_append(&opt_worker(&args), row, "complete");
     }
-    row_or_ledger(&resp, "complete_task", "complete");
+    row_or_ledger(&resp, "complete_task");
     0
 }
 

@@ -101,17 +101,3 @@ pub(super) fn attach_mode_line(out: &mut Value, verb: &str, legs: LegAvailabilit
         );
     }
 }
-
-/// Served-path row for a task verb the broker just served (#8581):
-/// the database leg answered and this client holds no replica, so
-/// the GitHub legs are unobserved (up) and `route_for` selects
-/// normal/cloud. Used by every task-row lifecycle verb whose
-/// served path prints the broker's row (release, lane, bind, park,
-/// wake, block, unblock, dep-recheck, quarantine-recheck, cancel,
-/// revive, fail, complete); claim/heartbeat/checkpoint wire their
-/// legs explicitly because they observe the fallback guard.
-pub(super) fn served_row(row: Value, verb: &str) -> Value {
-    let mut out = row;
-    attach_mode_line(&mut out, verb, legs_served(true, true));
-    out
-}

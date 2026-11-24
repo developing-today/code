@@ -3,12 +3,10 @@ package refdoc_test
 import (
 	"flag"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
-	"github.com/developing-today/code/pkgs/mcpx/internal/refdoc"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 )
 
@@ -122,54 +120,4 @@ func TestCommittedRegionsAreCurrent(t *testing.T) {
 				"  go test ./internal/refdoc -run TestCommittedRegionsAreCurrent -update")
 		}
 	}
-
-	// docs/public-client.md: the exported callable surface of
-	// pkg/client, regenerated from the Go source (#13612, slice of
-	// #13264). The chapter keeps its usage explanations around the
-	// region; the signatures and their one-line summaries inside it
-	// are generated, so a new, removed or reshaped exported callable
-	// drifts the check.
-	{
-		doc := readDoc(t, "public-client.md")
-		files, err := clientSources(t)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, err := refdoc.ClientSurface(files)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := replaceRegion(t, doc, "public-client-signatures", body)
-		if *update {
-			writeDoc(t, "public-client.md", want)
-		} else if doc != want {
-			t.Errorf("docs/public-client.md region is stale; regenerate with\n" +
-				"  go test ./internal/refdoc -run TestCommittedRegionsAreCurrent -update")
-		}
-	}
-}
-
-// clientSources loads the non-test Go source of pkg/client keyed by
-// file name, which is the input ClientSurface renders.
-func clientSources(t *testing.T) (map[string][]byte, error) {
-	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(docsDir, "..", "pkg", "client", "*.go"))
-	if err != nil {
-		return nil, err
-	}
-	files := map[string][]byte{}
-	for _, m := range matches {
-		if strings.HasSuffix(m, "_test.go") {
-			continue
-		}
-		b, err := os.ReadFile(m)
-		if err != nil {
-			return nil, err
-		}
-		files[filepath.Base(m)] = b
-	}
-	if len(files) == 0 {
-		t.Fatalf("pkg/client has no non-test Go source")
-	}
-	return files, nil
 }

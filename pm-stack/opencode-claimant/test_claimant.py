@@ -59,6 +59,23 @@ claimant = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(claimant)
 
 
+def _fake_git_run(argv, **kwargs):
+    """Fake git at the subprocess boundary for fire-log tests.
+
+    log_fire() records read_code_source()'s provenance read in every
+    entry; that read spawns git, which the hermetic suite forbids.
+    Fire-log tests whose subject is another entry field fake the read
+    here (the TestCodeSourceFireLog shape, #13254) so the entry still
+    carries a real-shaped code_source and no spawn is attempted.
+    """
+    stdout = (
+        "main\n"
+        if "--abbrev-ref" in argv
+        else "0123456789abcdef0123456789abcdef01234567\n"
+    )
+    return subprocess.CompletedProcess(argv, 0, stdout=stdout)
+
+
 class Result:
     """Minimal subprocess.run stand-in."""
 
@@ -992,6 +1009,7 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", _fake_git_run),
                 patch.object(claimant, "fire_opencode_working_hook") as hook,
             ):
                 self.assertEqual(claimant.main(), 1)
@@ -1052,6 +1070,7 @@ class TestGateExitFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", _fake_git_run),
             ):
                 self.assertEqual(claimant.main(), 0)
             entries = [
@@ -1412,10 +1431,10 @@ class TestClaimant8038(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             argv = [str(part) for part in cmd]
-            if argv[1:3] == ["gh", "sync-labels"]:
+            if argv[0] == "gh" and "view" in argv:
                 # The step-4a2 held-label read: no labels at all.
                 return Result(0, "[]")
-            if argv[1:3] == ["gh", "sync-comment"]:
+            if argv[0] == "gh":
                 notes.append(cmd)
                 return Result(0, "")
             return base_fake(cmd, **kwargs)
@@ -1485,7 +1504,7 @@ def make_handback_run(calls, *, claim_row="candidate", park_rc=0):
         if "repo-queue" in argv[0] and "park" in argv:
             calls["park"].append(argv)
             return Result(park_rc, "{}")
-        if argv[1:3] == ["gh", "sync-comment"]:
+        if argv[0] == "gh":
             calls["gh"].append(argv)
             return Result(0, "")
         calls["other"].append(argv)
@@ -1570,18 +1589,7 @@ class TestHandBackStep(unittest.TestCase):
         # One hand-back note on the candidate's issue.
         self.assertEqual(len(calls["gh"]), 1)
         gh_argv = calls["gh"][0]
-        self.assertEqual(
-            gh_argv[:7],
-            [
-                str(claimant.FLEET_CMD),
-                "gh",
-                "sync-comment",
-                "--repo",
-                "developing-today/code",
-                "issue",
-                "1187",
-            ],
-        )
+        self.assertEqual(gh_argv[:4], ["gh", "issue", "comment", "1187"])
         self.assertEqual(gh_argv[gh_argv.index("--repo") + 1], "developing-today/code")
         body = gh_argv[gh_argv.index("--body") + 1]
         self.assertIn("agent-note:v1", body)
@@ -1824,27 +1832,34 @@ class TestCodeSourceFireLog(unittest.TestCase):
     def tearDown(self):
         claimant._code_source = None
 
-    def _make_clone(self, tmp: str) -> Path:
-        # A static .git layout written with plain file writes (#13135):
-        # the hermetic suite's audit guard forbids subprocess spawns,
-        # so the fixture cannot run `git init` — and read_code_source()
-        # reads .git directly, so no git binary is needed for the read
-        # either. The commit sha is a fixed 40-hex placeholder; the
-        # tests assert shape (branch, 40-char commit), not history.
-        clone = Path(tmp) / "clone"
-        git_dir = clone / ".git"
-        (git_dir / "refs" / "heads").mkdir(parents=True)
-        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
-        (git_dir / "refs" / "heads" / "main").write_text(
-            "0123456789abcdef0123456789abcdef01234567\n"
-        )
-        (clone / "f.txt").write_text("x")
-        return clone
+    # These tests fake git at the subprocess boundary instead of
+    # building a real clone: the hermetic suite (run_hermetic_tests.py)
+    # forbids subprocess outright, so a real `git init` errors there.
+    # read_code_source() treats every git failure uniformly, so the
+    # contracts asserted here (ok read, fail-open on error) are the
+    # same ones a real clone would exercise.
+    def _fake_git(
+        self,
+        branch="main",
+        commit="0123456789abcdef0123456789abcdef01234567",
+        returncode=0,
+    ):
+        def run(argv, **kwargs):
+            stdout = ""
+            if returncode == 0:
+                stdout = (branch if "--abbrev-ref" in argv else commit) + "\n"
+            return subprocess.CompletedProcess(argv, returncode, stdout=stdout)
+
+        return run
 
     def test_reads_branch_and_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
-            clone = self._make_clone(tmp)
-            with patch.object(claimant, "PRIMARY_CLONE", clone):
+            clone = Path(tmp) / "clone"
+            clone.mkdir()
+            with (
+                patch.object(claimant, "PRIMARY_CLONE", clone),
+                patch.object(claimant.subprocess, "run", self._fake_git()),
+            ):
                 source = claimant.read_code_source()
         self.assertEqual(source["state"], "ok")
         self.assertEqual(source["branch"], "main")
@@ -1854,7 +1869,10 @@ class TestCodeSourceFireLog(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             not_a_repo = Path(tmp) / "nope"
             not_a_repo.mkdir()
-            with patch.object(claimant, "PRIMARY_CLONE", not_a_repo):
+            with (
+                patch.object(claimant, "PRIMARY_CLONE", not_a_repo),
+                patch.object(claimant.subprocess, "run", self._fake_git(returncode=1)),
+            ):
                 source = claimant.read_code_source()
         self.assertEqual(source["state"], "unreadable")
         self.assertIsNone(source["branch"])
@@ -1862,13 +1880,15 @@ class TestCodeSourceFireLog(unittest.TestCase):
 
     def test_fire_entry_carries_code_source(self):
         with tempfile.TemporaryDirectory() as tmp:
-            clone = self._make_clone(tmp)
+            clone = Path(tmp) / "clone"
+            clone.mkdir()
             state_dir = Path(tmp) / "state"
             fires = state_dir / "fires.jsonl"
             with (
                 patch.object(claimant, "PRIMARY_CLONE", clone),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", self._fake_git()),
             ):
                 claimant.log_fire("live", [], [], 3, [])
             entries = [

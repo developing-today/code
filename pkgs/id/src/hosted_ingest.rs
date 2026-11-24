@@ -249,10 +249,9 @@ async fn place_blob(blobs: &BlobStore, blob: &ExportBlob) -> EntryOutcome {
 ///
 /// `verified` is the token [`crate::hosted_export::verify_import`]
 /// minted for this export; it must name the export's binding, key,
-/// entry counts, §7 client-side-encryption choice, and its
-/// `unkeyed_export` trust decision must match the manifest's.
-/// `now_ms` is the importing node's clock, handed to the event
-/// store like any other ingest's.
+/// and entry counts, and its `unkeyed_export` trust decision must
+/// match the manifest's. `now_ms` is the importing node's clock,
+/// handed to the event store like any other ingest's.
 ///
 /// # Errors
 ///
@@ -273,7 +272,6 @@ pub async fn ingest_import(
         || verified.object_count != export.objects.len() as u64
         || verified.blob_count != export.blobs.len() as u64
         || verified.unkeyed_export != export.manifest.unkeyed_export
-        || verified.client_side_encryption != export.manifest.client_side_encryption
     {
         return Err(ImportError::VerificationMismatch);
     }
@@ -560,26 +558,6 @@ mod tests {
         // Nothing landed.
         let author = *p2p_key(SEED).verifying_key().as_bytes();
         assert!(target.event(&author, 0).unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn a_token_with_a_different_cse_choice_is_refused_before_any_write() {
-        let (events, content) = source_chain();
-        let export = make_export(&events, Some(&content));
-        let mut wrong = verify_import(&export, false).unwrap();
-        wrong.client_side_encryption = !wrong.client_side_encryption;
-        let (_dir, mut target) = open_store();
-        let blobs = blob_store();
-        let err = ingest_import(&mut target, &blobs, &export, &wrong, 0)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ImportError::VerificationMismatch));
-        // The token is the authority to proceed only with the exact
-        // verified interpretation; reject before any object or blob
-        // is written.
-        let author = *p2p_key(SEED).verifying_key().as_bytes();
-        assert!(target.event(&author, 0).unwrap().is_none());
-        assert!(blobs.get_bytes(BlobHash::new(&content)).await.is_err());
     }
 
     /// Build the keyed and unkeyed shapes of one export from a

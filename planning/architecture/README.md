@@ -258,7 +258,7 @@ feature, phase, fix and research records — run `ls doc/` for those.
 - [Design — the `id://` URI scheme and per-namespace handlers/encodings (#9117)](../../doc/2026-11-17T04-55-00Z_design_id9117_id_uri_scheme.md)
 - [Design (#9141): peer trust classes + signed-data acceptance rule](../../doc/2026-11-17T05-15-00Z_design_id9141_peer_trust_classes.md)
 - [Federated query fan-out — design record (#9144)](../../doc/2026-11-17T15-40-00Z_design_id_federated_query_fanout/2026-11-17T15-40-00Z_design_id_federated_query_fanout.md)
-- [Hosted tenancy architecture — per-tenant Turso databases + a central tenancy DB (component E of #9078)](../../doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture.md)
+- [Hosted tenancy architecture — per-user Turso databases + a central tenancy DB (component E of #9078)](../../doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture.md)
 - [Currency control plane — design: registry, account factory, gateway](../../doc/2026-10-29T12-42-21Z_design_currency_control_plane/2026-10-29T12-42-21Z_design_currency_control_plane.md)
 - [Design: ID app packaging — app manifest, folder layout, TUI/web parity](../../doc/2026-10-29T12-50-36Z_design_id_app_packaging/2026-10-29T12-50-36Z_design_id_app_packaging.md)
 - [One `/id-sync/1` handshake, and why serve's range flights moved to](../../doc/2026-10-29T16-21-00Z_design_id_sync_alpn_split/2026-10-29T16-21-00Z_design_id_sync_alpn_split.md)

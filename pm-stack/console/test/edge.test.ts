@@ -669,7 +669,6 @@ async function setup(options: { direct?: boolean } = {}) {
       setAlarm: async (at) => {
         alarm.at = at;
       },
-      getAlarm: async () => alarm.at || null,
       later: (work) => {
         behind.push(work);
       },
@@ -1088,7 +1087,7 @@ describe("before the host's first report", () => {
       directReady: false,
       refused: [],
       selfCheck: null,
-      github: { answers: 0, unchanged: 0, since: w.now.t, kept: 0, quiet: { core: null, search: null } },
+      github: { answers: 0, unchanged: 0, kept: 0, quiet: { core: null, search: null } },
       hostSeen: null,
       hostVersion: null,
       androidBuild: null,
@@ -1097,8 +1096,6 @@ describe("before the host's first report", () => {
       answered: 0,
       deferred: 0,
       version: "test",
-      woke: w.now.t,
-      clock: { wanted: false, next: null },
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1374,11 +1371,7 @@ describe("the owner, at the edge", () => {
     await w.link.now.once();
     const pieces = [...w.stored.entries()].filter(([k]) => k.startsWith("m:questions:"));
     expect(pieces.length).toBeGreaterThan(2);
-    for (const [, value] of pieces) {
-      const text = typeof value === "string" ? value : (value as { t: string }).t;
-      expect(text.length).toBeLessThanOrEqual(600_000);
-      if (typeof value !== "string") expect(value).toMatchObject({ n: "questions" });
-    }
+    for (const [, value] of pieces) expect((value as string).length).toBeLessThanOrEqual(600_000);
     // A new object with the same storage: nothing in memory.
     w.edge.now = w.makeEdge();
     const res = await w.browse("/console/api/doc/questions");
@@ -1411,40 +1404,6 @@ describe("the owner, at the edge", () => {
     // Nobody reads for a while: not watching.
     w.now.t += 91_000;
     expect((await w.link.now.once())?.watching).toBe(false);
-  });
-
-  test("someone looking survives the object being put away", async () => {
-    const w = await setup();
-    await w.hostReads();
-    await w.link.now.once();
-    await w.core();
-    expect(w.stored.get("docAt")).toBe(w.now.t);
-    // A new object over the same storage, as after being put away idle:
-    // it has seen no document read, but the host is still told someone
-    // is looking.
-    w.edge.now = w.makeEdge();
-    w.now.t += 1_000;
-    expect((await w.link.now.once())?.watching).toBe(true);
-    // And after long enough with no read, it is not.
-    w.now.t += 91_000;
-    w.edge.now = w.makeEdge();
-    expect((await w.link.now.once())?.watching).toBe(false);
-  });
-
-  test("a section kept in pieces that is not one section's is no copy", async () => {
-    const w = await setup();
-    const big = { open: Array.from({ length: 4000 }, (_, i) => ({ qid: `q${i}`, question: "é".repeat(400) })) };
-    w.data.questions = big;
-    await w.hostReads();
-    await w.link.now.once();
-    const meta = w.stored.get("m:questions") as { hash: string; chunks: number };
-    expect(meta.chunks).toBeGreaterThan(2);
-    // A piece from another write under the same index is not taken for
-    // this section's: the copy is asked for again.
-    w.stored.set("m:questions:0", { n: "questions", h: "other", t: "x" });
-    w.edge.now = w.makeEdge();
-    const res = await w.browse("/console/api/doc/questions");
-    expect(res.status).toBe(200);
   });
 });
 
@@ -2043,10 +2002,7 @@ describe("the Android build", () => {
   const questionsAtEdge = (w: Awaited<ReturnType<typeof setup>>) => {
     const pieces = (w.stored.get("m:questions") as { chunks: number } | undefined)?.chunks ?? 0;
     let text = "";
-    for (let i = 0; i < pieces; i++) {
-      const kept = w.stored.get(`m:questions:${i}`) as { t: string } | string | undefined;
-      text += typeof kept === "string" ? kept : (kept?.t ?? "");
-    }
+    for (let i = 0; i < pieces; i++) text += String(w.stored.get(`m:questions:${i}`));
     return text === "" ? null : (JSON.parse(text) as Record<string, any>);
   };
 
@@ -2379,103 +2335,6 @@ describe("the Android build", () => {
     expect(await trouble()).toBeNull();
   });
 
-  test("the object put away between requests, as it is in service: GitHub is still asked for the release now and then, not by every object that starts", async () => {
-    const w = await setup();
-    await w.hostReads();
-    await report(w);
-    /** Another object over the same storage answers, as after every idle spell. */
-    const ask = async () => {
-      w.edge.now = w.makeEdge();
-      return ((await (await w.browse("/console/api/android")).json()) as Record<string, any>).release;
-    };
-    const trouble = async () => {
-      w.edge.now = w.makeEdge();
-      return ((await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>)
-        .androidReleaseTrouble;
-    };
-    // Nothing published. Asked once, however many objects are asked.
-    for (let i = 0; i < 5; i++) expect(await ask()).toBeNull();
-    expect(w.github.asked).toEqual(["version.json"]);
-    // A release goes up, and is seen ten minutes on; then known to every object without asking.
-    w.github.apk = apk(9, 450_000);
-    w.github.version = await described(w.github.apk, "2026.11.23-a3a547e", 21755935);
-    w.now.t += 9 * 60_000;
-    expect(await ask()).toBeNull();
-    w.now.t += 60_000;
-    for (let i = 0; i < 5; i++) expect((await ask())?.name).toBe("2026.11.23-a3a547e");
-    expect(w.github.asked).toEqual(["version.json", "version.json"]);
-    // GitHub out of reach: tried each minute, not by each object, and each says why.
-    w.github.down = true;
-    w.now.t += 10 * 60_000;
-    for (let i = 0; i < 5; i++) expect((await ask())?.name).toBe("2026.11.23-a3a547e");
-    expect(w.github.asked.length).toBe(3);
-    expect(await trouble()).toBe("github: connection reset");
-    expect(w.github.asked.length).toBe(3);
-    w.now.t += 60_000;
-    expect((await ask())?.name).toBe("2026.11.23-a3a547e");
-    expect(w.github.asked.length).toBe(4);
-    // A description found out of step with its file is asked for again by the next object,
-    // not trusted by it for ten minutes.
-    w.github.down = false;
-    w.now.t += 60_000;
-    w.github.version = await described(apk(8, 440_000), "2026.11.22-0000000", 21000000);
-    expect((await ask())?.name).toBe("2026.11.22-0000000");
-    const askedBy = w.github.asked.filter((file) => file === "version.json").length;
-    w.build.bytes = apk(1);
-    w.build.at = w.now.t;
-    await report(w);
-    await report(w);
-    w.edge.now = w.makeEdge();
-    expect((await download(w)).bytes).toEqual(apk(1));
-    expect(w.stored.has("released")).toBe(false);
-    w.github.version = await described(w.github.apk, "2026.11.23-a3a547e", 21755935);
-    expect((await ask())?.name).toBe("2026.11.23-a3a547e");
-    expect(w.github.asked.filter((file) => file === "version.json").length).toBe(askedBy + 1);
-    // What storage holds is held to what could have been put there. A time yet to come would
-    // never fall due, in one object or the next: what it is stored with is asked for again at
-    // once. Something that is not this at all is nothing known.
-    const versionAsks = () => w.github.asked.filter((file) => file === "version.json").length;
-    w.stored.set("released", { at: w.now.t + 400 * 24 * 60 * 60_000, asked: true, found: null, trouble: null });
-    const before = versionAsks();
-    expect((await ask())?.name).toBe("2026.11.23-a3a547e");
-    expect(versionAsks()).toBe(before + 1);
-    // (And what was asked for then is stored with the time it was asked at.)
-    expect((w.stored.get("released") as { at: number }).at).toBe(w.now.t);
-    // With GitHub out of reach, what such a record described still stands while it is asked for.
-    const known = w.stored.get("released") as { found: unknown };
-    w.stored.set("released", { ...known, at: w.now.t + 60_000 });
-    w.github.down = true;
-    expect((await ask())?.name).toBe("2026.11.23-a3a547e");
-    expect(versionAsks()).toBe(before + 2);
-    w.github.down = false;
-    w.now.t += 60_000;
-    for (const odd of [7, "x", { at: "soon", asked: true }, { at: w.now.t, asked: "yes" }, null]) {
-      w.stored.set("released", odd);
-      const asks = versionAsks();
-      expect([odd, (await ask())?.name]).toEqual([odd, "2026.11.23-a3a547e"]);
-      expect([odd, versionAsks()]).toEqual([odd, asks + 1]);
-    }
-    // A description in storage that is not one is no release, whatever else the record says.
-    w.stored.set("released", { at: w.now.t, asked: true, found: { name: "../../etc", code: 1 }, trouble: 7 });
-    expect(await ask()).toBeNull();
-    expect(await trouble()).toBeNull();
-    // Storage that cannot take it: GitHub is asked by each object, and the answer still given.
-    w.stored.delete("released");
-    w.storeFails.add("released");
-    const failing = versionAsks();
-    expect((await ask())?.name).toBe("2026.11.23-a3a547e");
-    expect((await ask())?.name).toBe("2026.11.23-a3a547e");
-    expect(versionAsks()).toBe(failing + 2);
-    // One object asked twice still asks GitHub once: what it knows it has in mind as well.
-    const android = async () =>
-      ((await (await w.browse("/console/api/android")).json()) as Record<string, any>).release;
-    expect([(await android())?.name, (await android())?.name]).toEqual(["2026.11.23-a3a547e", "2026.11.23-a3a547e"]);
-    expect(versionAsks()).toBe(failing + 2);
-    w.edge.now = w.makeEdge();
-    expect([(await android())?.name, (await android())?.name]).toEqual(["2026.11.23-a3a547e", "2026.11.23-a3a547e"]);
-    expect(versionAsks()).toBe(failing + 3);
-  });
-
   test("a copy whose replacement stops half-way is not handed out as either build", async () => {
     const w = await setup();
     await w.hostReads();
@@ -2631,41 +2490,6 @@ describe("the host's report is the host's", () => {
     expect(second.bodyUsed).toBe(false);
   });
 
-  test("the key-fetch gate survives the object being put away", async () => {
-    const w = await setup();
-    const firstPair = await newKeyPair();
-    const body = new TextEncoder().encode(JSON.stringify({ v: 1, at: w.now.t, sections: [], have: {}, acks: [] }));
-    const first = new Request(`https://${HOST}/console/edge/sync`, {
-      method: "POST",
-      body,
-      headers: {
-        "x-pm-key": await keyId(firstPair.publicJwk),
-        "x-pm-signature": await sign(firstPair.privateJwk, body),
-      },
-    });
-    expect((await w.edge.now.fetch(first)).headers.get("x-pm-next")).toBe("key");
-    expect(w.stored.get("keyFetch")).toBe(w.now.t);
-    // A new object over the same storage, still within the thirty
-    // seconds: another stranger is refused without asking the host.
-    w.edge.now = w.makeEdge();
-    w.now.t += 1_000;
-    w.hostSaw.length = 0;
-    const secondPair = await newKeyPair();
-    const secondBody = new TextEncoder().encode(
-      JSON.stringify({ v: 1, at: w.now.t, sections: [], have: {}, acks: [] }),
-    );
-    const second = new Request(`https://${HOST}/console/edge/sync`, {
-      method: "POST",
-      body: secondBody,
-      headers: {
-        "x-pm-key": await keyId(secondPair.publicJwk),
-        "x-pm-signature": await sign(secondPair.privateJwk, secondBody),
-      },
-    });
-    expect((await w.edge.now.fetch(second)).status).toBe(401);
-    expect(w.hostSaw).toEqual([]);
-  });
-
   test("an address whose reports keep failing is refused unread, and nobody else is", async () => {
     const w = await setup();
     await w.hostReads();
@@ -2771,13 +2595,7 @@ describe("the host's report is the host's", () => {
     w.now.t += 1_000;
     expect((await report(w, () => {}, bySomeoneElse, await keyId(stranger.publicJwk))).status).toBe(401);
     expect(w.hostSaw).toEqual(["GET /console/edge/key"]);
-    // The key-fetch gate itself is kept: asking the host once is the
-    // one change, and the second stranger changes nothing further.
-    const afterFetch = JSON.stringify([...w.stored.entries()]);
-    w.now.t += 1_000;
-    expect((await report(w, () => {}, bySomeoneElse, await keyId(stranger.publicJwk))).status).toBe(401);
-    expect(w.hostSaw).toEqual(["GET /console/edge/key"]);
-    expect(JSON.stringify([...w.stored.entries()])).toBe(afterFetch);
+    expect(JSON.stringify([...w.stored.entries()])).toBe(before);
     // The owner is still the owner, and the forged one is nobody.
     expect((await w.browse("/console/api/me")).status).toBe(200);
     expect(
@@ -4441,23 +4259,15 @@ describe("the edge does the core itself", () => {
       ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
     w.stored.set("away", {
       kinds: { "pr.merge": w.now.t + 10 * 60_000, "ask.send": w.now.t - 1, "issue.rank": "soon" },
-      // A year was written down for one, and the longest there can be for another.
-      reads: { prs: w.now.t + 365 * 24 * 3600_000, priorities: w.now.t + 65 * 60_000, board: w.now.t - 1 },
+      reads: { prs: w.now.t + 365 * 24 * 3600_000, board: w.now.t - 1 },
     });
-    // Each time by an object that has just started, as in service. The year is not believed
-    // by any of them: one that cut it down to the longest would cut it down afresh each time,
-    // and it would never come.
-    const fresh = async () => {
-      w.edge.now = w.makeEdge();
-      return health();
-    };
-    expect(await fresh()).toEqual(["pr.merge", "read.priorities"]);
+    w.edge.now = w.makeEdge();
+    expect(await health()).toEqual(["pr.merge", "read.prs"]);
     w.now.t += 11 * 60_000;
-    expect(await fresh()).toEqual(["read.priorities"]);
-    w.now.t += 53 * 60_000;
-    expect(await fresh()).toEqual(["read.priorities"]);
-    w.now.t += 60_000 + 1;
-    expect(await fresh()).toEqual([]);
+    expect(await health()).toEqual(["read.prs"]);
+    // A year was written down; an hour is the longest it can stand.
+    w.now.t += 50 * 60_000;
+    expect(await health()).toEqual([]);
     // Storage that cannot keep it does not stop the hand-over itself.
     w.storeFails.add("away");
     w.ghRefuses.push((method, url) => method === "PUT" && url.includes("/merge"));
@@ -4594,73 +4404,6 @@ describe("the edge does the core itself", () => {
     await settle(plain);
     expect((await opsDoc(plain)).prs).toEqual(a.prs);
     expect(plain.ghTags.unchanged).toBe(0);
-  });
-
-  test("the object put away between two reads of a list, as Cloudflare does with an idle one: the list is still asked for by its tag, and GitHub's wait is still kept to", async () => {
-    const w = await primary();
-    const list = () => w.githubCalls.filter((c) => /\/pulls\?/.test(c.url));
-    const first = await opsDoc(w);
-    await settle(w);
-    expect([list().length, list().filter((c) => c.unchanged).length]).toEqual([1, 0]);
-    const health = async () =>
-      (await (await w.browse("/console/health", { token: null })).json()) as {
-        woke: number;
-        github: { answers: number; unchanged: number; kept: number; since: number; quiet: { core: number | null } };
-      };
-    const before = await health();
-    await settle(w);
-    // (Health's own check of each read, the first time it is asked, read the list once more.)
-    const sofar = [list().length, list().filter((c) => c.unchanged).length];
-    expect(sofar).toEqual([2, 1]);
-    // Put away, and another started in its place a minute and a half later: nothing in
-    // memory, the same storage. (Kept in memory, as this was first built, the answer was gone
-    // by now every time, and every read was a full one.)
-    w.now.t += 91_000;
-    w.edge.now = w.makeEdge();
-    await opsDoc(w);
-    await settle(w);
-    const second = await opsDoc(w);
-    await settle(w);
-    expect([list().length, list().filter((c) => c.unchanged).length]).toEqual([sofar[0] + 1, sofar[1] + 1]);
-    expect(second.prs).toEqual(first.prs);
-    const after = await health();
-    await settle(w);
-    // Another object (it says when it started), going on with the same count.
-    expect([after.woke, after.woke > before.woke, after.github.since]).toEqual([w.now.t, true, before.github.since]);
-    expect(after.github.answers).toBeGreaterThan(before.github.answers);
-    expect(after.github.unchanged).toBeGreaterThan(before.github.unchanged);
-    expect(after.github.kept).toBeGreaterThanOrEqual(before.github.kept);
-    // Turned away with the hour used up, and put away again during the wait: the next object
-    // asks GitHub for nothing counted by the hour either.
-    w.net.hostUp = false;
-    w.net.edgeUp = false;
-    w.now.t += 181_000;
-    const back = Math.floor((w.now.t + 40 * 60_000) / 1000) * 1000;
-    w.ghLimits.push((_method, url) => !url.includes("/search/"));
-    w.ghLimitSays.headers = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
-    await opsDoc(w);
-    await w.core();
-    await settle(w);
-    const hourly = () => w.githubCalls.filter((c) => !c.url.includes("/search/")).length;
-    const asked = hourly();
-    w.ghLimits.length = 0;
-    for (let minute = 0; minute < 36; minute += 6) {
-      w.now.t += 6 * 60_000;
-      w.edge.now = w.makeEdge();
-      await opsDoc(w);
-      await w.core();
-      await settle(w);
-      expect([minute, (await health()).github.quiet.core, hourly()]).toEqual([minute, back, asked]);
-      await settle(w);
-    }
-    // The time comes: an object started after it asks again.
-    w.now.t = back + 181_000;
-    w.edge.now = w.makeEdge();
-    await opsDoc(w);
-    await w.core();
-    await settle(w);
-    expect(hourly()).toBeGreaterThan(asked);
-    expect((await health()).github.quiet.core).toBeNull();
   });
 
   test("the hour's allowance used up: GitHub's own time is kept to, nothing that draws on it is asked until then, and the last good copy says why and when", async () => {
@@ -5199,7 +4942,9 @@ describe("the edge does the core itself", () => {
     expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
     // Nothing was done here: the laptop did the older, the newer waits.
     // The only call this side made was the older one's refused try.
-    expect(w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body)).toEqual(['{"body":"older"}']);
+    expect(
+      w.githubCalls.filter((c) => comment(c.method, c.url)).map((c) => c.body),
+    ).toEqual(['{"body":"older"}']);
     expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
   });
 
@@ -5227,9 +4972,9 @@ describe("the edge does the core itself", () => {
     const done = (await second.json()) as { ok?: boolean; held?: boolean };
     expect(done).toMatchObject({ ok: true });
     expect(done.held).toBeUndefined();
-    expect(
-      (w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue),
-    ).toEqual([7]);
+    expect((w.stored.get("held") as { kind: string; args: Record<string, unknown> }[]).map((h) => h.args.issue)).toEqual([
+      7,
+    ]);
     const posted = w.githubCalls
       .filter((c) => comment(c.method, c.url))
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
@@ -5266,11 +5011,6 @@ describe("telling the owner, with no machine", () => {
     const { w, phone } = await subscribed();
     // Subscribing asked for a wake: there is someone to tell.
     expect(w.alarm.at).toBe(START + 1_000);
-    // Health says so to anyone: the clock is wanted, and when it next wakes. It is how the
-    // path notifications depend on is seen to be alive from outside.
-    const clock = async () =>
-      ((await (await w.browse("/console/health", { token: null })).json()) as { clock: unknown }).clock;
-    expect(await clock()).toEqual({ wanted: true, next: START + 1_000 });
     // The laptop goes away for good. Nobody opens the app.
     w.net.hostUp = false;
     w.net.edgeUp = false;
@@ -5278,9 +5018,6 @@ describe("telling the owner, with no machine", () => {
     await w.edge.now.alarm();
     expect(w.pushes).toHaveLength(0);
     expect(w.alarm.at).toBe(w.now.t + 60_000);
-    // (Said by an object that has just started, too: the time is the platform's to hold.)
-    w.edge.now = w.makeEdge();
-    expect(await clock()).toEqual({ wanted: true, next: w.now.t + 60_000 });
     // The fleet answers on GitHub.
     w.now.t += 30_000;
     reply(w, 202, "Checked: the queue is moving.");

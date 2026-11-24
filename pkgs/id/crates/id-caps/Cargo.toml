@@ -29,7 +29,6 @@ serde_json = "1"
 toml = "1"
 url = "2"
 [dev-dependencies]
-# Property coverage for the quota-ledger invariants (account_quota.rs, #1067).
 proptest = "1.12"
 
 [lints.rust]

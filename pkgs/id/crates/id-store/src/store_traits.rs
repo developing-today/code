@@ -178,6 +178,7 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
         }
     }
 
+
     /// Verifies and applies one received event, with its body. `body` is the bytes the header
     /// commits to, or `None` when the event arrived without one. The action of a group operation
     /// comes from the body. See [`EventStore::ingest_with_body`].
@@ -300,23 +301,6 @@ impl<S: EventStoreBackend> SharedEventStore<S> {
             .read()
             .map_err(|_err| TraitStoreError::Poisoned)?;
         op(&store)
-    }
-
-    /// Runs `op` under the write lock. It answers the writes the traits do not cover.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TraitStoreError::Poisoned`] if another thread panicked while it held the lock, or
-    /// whatever `op` returns.
-    pub fn write<T>(
-        &self,
-        op: impl FnOnce(&mut S) -> Result<T, TraitStoreError>,
-    ) -> Result<T, TraitStoreError> {
-        let mut store = self
-            .inner
-            .write()
-            .map_err(|_err| TraitStoreError::Poisoned)?;
-        op(&mut store)
     }
 
     /// The newest applied entry of `author`.

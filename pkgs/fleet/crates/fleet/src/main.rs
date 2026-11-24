@@ -70,8 +70,6 @@ mod gh_closure;
 mod gh_guard;
 #[cfg(feature = "gh")]
 mod gh_metadata;
-#[cfg(feature = "gh")]
-mod gh_sync;
 #[cfg(feature = "http")]
 mod http;
 mod invocation_ledger;

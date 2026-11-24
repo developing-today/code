@@ -73,13 +73,6 @@ session state from GETs to the laptop OpenCode server. The claimant treats a nul
 launch room: an unreadable session list or active set must never
 become a launch decision.
 
-The reads themselves are independent, so main() runs them
-concurrently (#13135): the session list, the active set and every
-queue's row reads overlap, and the ledger read starts the moment
-the queue reads land. Each read is bounded at its transport (the
-*_READ_TIMEOUT_S constants) and a read slower than SLOW_READ_MS
-leaves a recorded slow-read note (see _timed_read).
-
 The pure classification functions (is_candidate, is_active_root,
 count_active_roots, count_active_claimant_roots, is_scheduled_session,
 summarize_cap, parse_lease_ms, is_stuck_bound) are the contract
@@ -101,7 +94,6 @@ import time
 import urllib.request
 import urllib.error
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -189,20 +181,6 @@ BROKER_TOKEN_FILE = HOME_DIR / ".config" / "queue-broker" / "token"
 # client.rs). A queue's claimed set is far smaller; and a short page
 # could only ever under-report candidates, never invent one.
 LIST_LIMIT = 500
-
-# Per-read timeouts (#13135): every external read below is bounded at
-# its transport, so one slow backend degrades the poll — fail-closed
-# None/[] plus the recorded notes — instead of silently eating the
-# claimant's gate budget. The values are the historical ones; the
-# broker's 30s is pinned by test_poll_transport.py.
-SERVER_READ_TIMEOUT_S = 15  # one OpenCode server GET (one session page)
-BROKER_READ_TIMEOUT_S = 30  # one queue-broker /list POST
-LEDGER_READ_TIMEOUT_S = 60  # the turso-exec ledger SELECT subprocess
-# A read slower than this earns a recorded slow-read note (stderr +
-# slow_reads()) even when it succeeds: the degradation signal must be
-# visible in the claimant fire log before a read gets anywhere near
-# its timeout, not only after it fails.
-SLOW_READ_MS = 5000
 
 # Read-only lane-ledger read for the #5508 stale-binding check: the
 # turso-exec helper (the same credential-free read path pr-diff-review
@@ -329,7 +307,7 @@ def fetch_ledger_bindings(task_ids):
                 [sys.executable, str(TURSO_EXEC), LEDGER_DB, sql_path],
                 capture_output=True,
                 text=True,
-                timeout=_poll_timeout(LEDGER_READ_TIMEOUT_S),
+                timeout=_poll_timeout(60),
             )
         finally:
             os.unlink(sql_path)
@@ -610,7 +588,7 @@ def _server_get(path, *, include_envelope=False, raise_http_errors=False):
     token = base64.b64encode(f"opencode:{credential}".encode()).decode()
     req.add_header("Authorization", f"Basic {token}")
     try:
-        with urllib.request.urlopen(req, timeout=_poll_timeout(SERVER_READ_TIMEOUT_S)) as res:
+        with urllib.request.urlopen(req, timeout=_poll_timeout(15)) as res:
             data = json.loads(res.read() or "null")
     except urllib.error.HTTPError:
         if raise_http_errors:
@@ -706,7 +684,7 @@ def _broker_post(path, body):
     if url.startswith("unix://"):
         # Same HTTP API/auth as TCP, but the URL suffix is a literal socket
         # path, not an HTTP base URL. Never append /list to that filename.
-        conn = _UnixHTTPConnection(url[len("unix://") :], timeout=_poll_timeout(BROKER_READ_TIMEOUT_S))
+        conn = _UnixHTTPConnection(url[len("unix://") :], timeout=_poll_timeout(30))
         try:
             conn.request("POST", path, body=payload, headers=headers)
             with conn.getresponse() as res:
@@ -729,45 +707,11 @@ def _broker_post(path, body):
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=_poll_timeout(BROKER_READ_TIMEOUT_S)) as res:
+        with urllib.request.urlopen(req, timeout=_poll_timeout(30)) as res:
             data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
         raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
     return data
-
-
-# Slow-read notes from the most recent poll cycle (#13135): one
-# {"read", "elapsed_ms"} dict per external read that took at least
-# SLOW_READ_MS, in completion order. A slow read still returns its
-# normal result — the note is the recorded degradation signal (also
-# printed to stderr, where the claimant fire log shows it), so a
-# backend drifting toward its timeout is visible polls before it
-# starts failing closed.
-_SLOW_READS = []
-
-
-def slow_reads():
-    """Slow-read notes recorded by the latest poll cycle; empty when
-    every read finished inside SLOW_READ_MS."""
-    return list(_SLOW_READS)
-
-
-def _timed_read(name, fn, *args):
-    """Run one external read, recording a slow-read note when it takes
-    at least SLOW_READ_MS. The result — and any exception — is exactly
-    fn's own: timing never changes a read's fail-closed semantics."""
-    start = time.monotonic()
-    try:
-        return fn(*args)
-    finally:
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        if elapsed_ms >= SLOW_READ_MS:
-            _SLOW_READS.append({"read": name, "elapsed_ms": elapsed_ms})
-            print(
-                f"Note: slow read {name} took {elapsed_ms}ms "
-                f"(slow-read threshold {SLOW_READ_MS}ms)",
-                file=sys.stderr,
-            )
 
 
 # Read failures from the most recent poll cycle, keyed (queue, status)
@@ -1037,74 +981,35 @@ def main():
     )
     _poll_phase("session_census")
     now_ms = int(time.time() * 1000)
-    _READ_ERRORS.clear()
-    _SLOW_READS.clear()
-    # #13135: the poll's external reads are independent — the session
-    # list, the server's active set, and every queue's claimed and
-    # handed_off rows — so they run concurrently instead of strictly
-    # sequentially; the poll's wall time becomes the slowest single
-    # read (each bounded at its transport by _poll_timeout, which
-    # caps the named *_READ_TIMEOUT_S at the remaining poll budget)
-    # rather than the sum of all of them. The lane-ledger read still
-    # waits: it needs the candidate-shaped task ids from every queue.
-    # It runs the moment the queue reads land, overlapping any session
-    # read still in flight. Results are consumed in the original
-    # QUEUES order, so the printed JSON is unchanged in shape and
-    # ordering. The _poll_phase markers fire in consumption order in
-    # this parallel flow (broker reads, then ledger, then the session
-    # census), not submission order.
-    with ThreadPoolExecutor(max_workers=2 + 2 * len(QUEUES)) as pool:
-        sessions_f = pool.submit(_timed_read, "session list", fetch_sessions)
-        active_f = pool.submit(
-            _timed_read, "active session ids", fetch_active_ids
-        )
-        row_futures = {
-            q: (
-                pool.submit(
-                    _timed_read, f"queue {q} claimed rows", fetch_claimed_rows, q
-                ),
-                pool.submit(
-                    _timed_read,
-                    f"queue {q} handed_off rows",
-                    fetch_handed_off_rows,
-                    q,
-                ),
-            )
-            for q in QUEUES
-        }
-        # Fetch every queue's rows first so the lane ledger is read
-        # ONCE for the whole poll (#5508): candidate-shaped rows from
-        # claimed and handed_off rows alike are decided against the
-        # same ledger snapshot.
-        _poll_phase("broker_reads")
-        per_queue = {}
-        shaped_ids = []
-        for q in QUEUES:
-            rows = row_futures[q][0].result()
-            handed_off_rows = row_futures[q][1].result()
-            shaped = get_candidates(rows) + get_handed_off_candidates(
-                handed_off_rows
-            )
-            per_queue[q] = (rows, handed_off_rows, shaped)
-            shaped_ids.extend(r.get("id") for r in shaped)
-        _poll_phase("ledger_read")
-        bindings = _timed_read(
-            "ledger bindings", fetch_ledger_bindings, shaped_ids
-        )
-        _poll_phase("snapshot")
-        sessions = sessions_f.result()
-        _poll_phase("active_sessions")
-        # The active set is only meaningful alongside the session
-        # list; when the list is unreadable the original code never
-        # fetched it, and the cap fails closed either way.
-        active_ids = active_f.result() if sessions is not None else None
+    # Sessions first: stuck-bound classification (#4758) needs the
+    # session list and the server's active set, and the cap summary
+    # below reuses the same two reads.
+    sessions = fetch_sessions()
+    _poll_phase("active_sessions")
+    active_ids = fetch_active_ids() if sessions is not None else None
     session_by_id = {}
     if sessions:
         for s in sessions:
             if isinstance(s, dict) and s.get("id"):
                 session_by_id[s["id"]] = s
+    _READ_ERRORS.clear()
     out = {"queues": {}, "candidates": [], "stuck_bound": [], "stale_binding": []}
-
+    # Fetch every queue's rows first so the lane ledger is read ONCE
+    # for the whole poll (#5508): candidate-shaped rows from claimed
+    # and handed_off rows alike are decided against the same ledger
+    # snapshot.
+    _poll_phase("broker_reads")
+    per_queue = {}
+    shaped_ids = []
+    for q in QUEUES:
+        rows = fetch_claimed_rows(q)
+        handed_off_rows = fetch_handed_off_rows(q)
+        shaped = get_candidates(rows) + get_handed_off_candidates(handed_off_rows)
+        per_queue[q] = (rows, handed_off_rows, shaped)
+        shaped_ids.extend(r.get("id") for r in shaped)
+    _poll_phase("ledger_read")
+    bindings = fetch_ledger_bindings(shaped_ids)
+    _poll_phase("snapshot")
     out["ledger_readable"] = bindings is not None
     for q in QUEUES:
         rows, handed_off_rows, shaped = per_queue[q]

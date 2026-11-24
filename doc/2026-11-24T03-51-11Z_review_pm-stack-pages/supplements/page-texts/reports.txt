@@ -1,5 +1,0 @@
-Report conflict review
-
-0 report versions available. Existing wording is never replaced automatically: compare both versions, choose a resolution, then submit it as a new append-only report version.
-
-No comparable report-block conflicts found. Conflicts are shown when two retained versions share a period, template, and block ID but contain different prose.

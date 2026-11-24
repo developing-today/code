@@ -4464,13 +4464,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   }
 
   // --- Alert throat (#3676): subscription API -------------------------
-  // #13979: method gating precedes the store check so a removed GET
-  // stays a 405 even when the alerts store is unavailable (fixtures /
-  // store outage would otherwise mask it as a 503).
   if (path === "/api/push/subscriptions") {
-    if (req.method !== "POST" && req.method !== "DELETE") {
-      return json({ error: "method not allowed" }, 405);
-    }
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     if (req.method === "POST") {

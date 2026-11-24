@@ -249,11 +249,10 @@ describe("renderPredictionRange — the shared §4 formatter (#13408)", () => {
     ).toBe("between 2.5 and 6 hours from now");
   });
 
-  test("a multi-day future range renders in day form (shared §4 ordering, #13357)", () => {
-    // 2.5d → 5.7d out is 76.8h wide: the day form fires before the
-    // calendar check. This still pins the shared formatter's exact
-    // string so the kinds cannot drift apart silently.
-    expect(renderPredictionRange(iso(T0 + 2.5 * DAY), iso(T0 + 5.7 * DAY), iso(T0))).toBe("2.5 to 5.7 days");
+  test("a multi-day range crossing Chicago day boundaries renders in calendar form", () => {
+    expect(renderPredictionRange(iso(T0 + 2.5 * DAY), iso(T0 + 5.7 * DAY), iso(T0))).toBe(
+      "between Saturday morning and Tuesday morning",
+    );
   });
 
   test("a sub-48h range crossing a Chicago day boundary renders in calendar form", () => {
