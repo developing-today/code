@@ -1764,3 +1764,79 @@ machine, listed `fleet-queue-backup-export.service` as failed: last
 night's export of the queue store did not run, because its unit points
 into a lane's worktree that has been removed (#14302). A service on the
 laptop running out of a directory someone works in is what #13833 was.
+
+## 2026-11-24T13:34:00Z Feature: the app's look is the owner's to choose
+
+**Asked for.** "Implement a wide variety of themes", "multiple full
+black OLED themes to choose from, high contrast, and settings to change
+the font, along with a dozen or more fonts", "to change the spacing
+around elements", and that "consistent UI elements are used throughout"
+and it is "straightforward to implement new pages".
+
+**What was built.** A screen, More → Appearance, with three parts:
+colours (33 themes: Slate and Paper as before, eight true black, three
+high contrast, thirteen dark, seven light), typeface (22: three of the
+device's own and nineteen the app carries, each under the SIL Open Font
+License), and size and spacing (seven text sizes, five amounts of room,
+four kinds of corner, movement on, off or as the device asks). The app
+follows the system between a theme for light and a theme for dark, each
+chosen, or wears one always.
+
+**How.** Each choice is one attribute on the root element. `look.js`
+(a plain script in the page's head, after the style sheets) reads the
+choices from the device and sets the attributes before anything is
+drawn; `themes.css` has a block of thirteen colours per theme, and
+`look.css` a rule per typeface and per step. Nothing writes a style, so
+the content policy is untouched. A theme block put on any element
+colours just that element, which is how the chooser shows every theme
+at once without a second copy of any colour.
+
+The style sheet was already drawn from thirteen colour variables. What
+it lacked was the same for everything else, so every padding, margin
+and gap now goes by `--space`, every corner by `--round`, every hairline
+by `--edge`, the text size by `--scale` and the typeface by `--font`;
+the one rule with colours of its own (the badge on a tab) takes the
+theme's. With every setting at its default the page is pixel for pixel
+what it was. Tests refuse a rule that writes its own colour, a bare
+pixel padding or a bare radius, which is what keeps one element looking
+like the next as screens are added.
+
+**Decisions.**
+
+- _Kept on the device, not with the account._ A phone with an OLED
+  screen and a monitor want different things, and the choice has to be
+  there before the first read of anything.
+- _Contrast is a rule, not a hope._ Every theme is held, by the WCAG
+  formula, to 7 to 1 for text and 4.5 to 1 for small print, the status
+  colours and the ink on each; the high-contrast ones to 15, 10 and 7,
+  with edges at 3 to 1. The well-known palettes are their makers'
+  colours with any that missed a rule moved toward white or black until
+  it met it. Paper's own edge colour measures 1.29 to 1 on the page; the
+  rule for an edge was set at 1.25 so that the look the app shipped with
+  is not changed by this.
+- _True black means `#000000`._ The page and the panels of a true-black
+  theme are exactly that; a card is told from the page by its edge.
+- _Typefaces are carried, and fetched only when used._ They are the
+  Latin files Fontsource publishes (npm), 19 families in 22 files, 870
+  kB in all, with each licence beside them. A browser fetches a file
+  only when something is set in it; the service worker keeps what was
+  fetched. Opening the typeface chooser shows each as itself, which
+  fetches them all once.
+- _One list of the app's files._ Adding the style sheets and typefaces
+  would have meant editing four lists (the laptop's service, the Worker,
+  its build, the service worker) that a test held together.
+  `public/files.json` is now the only one, read by all four; the service
+  worker reads it when installed and keeps what it marks as needed to
+  open. A new file for the app is one line.
+
+**Checked.** 594 tests. Thirty-four faults were planted one at a time
+(a faint colour, a near-black called black, day and night swapped, a
+choice not kept, a typeface missing from the list, the build shipping
+less, a bare padding, and so on) and each was caught. In the real
+Worker runtime the smoke run fetches all 31 files as the signed-in
+owner and compares each with the file on disk (56 checks pass). On the
+laptop, a copy of the branch was opened in Chromium at a phone's width
+and driven: the default look is unchanged; choosing Black with Inter
+gives a page whose background the browser reports as `rgb(0, 0, 0)`
+and a bar colour of `#000000`; all 22 typeface files load; pressing a
+theme, then "One theme", then another keeps and shows each.

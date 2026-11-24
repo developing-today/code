@@ -225,6 +225,60 @@ drawn from the repository's own list
 with the latest run of each deploy workflow, so the edge answers it
 with no machine and the list changes with a merge.
 
+### Appearance
+
+**More → Appearance** is where the app is made to look the way its owner
+wants, on the device in hand:
+
+- **Colours.** 33 themes: the two the app always had (Slate and Paper),
+  eight **true black** ones whose page and panels are `#000000` (an OLED
+  screen leaves those pixels off), three **high contrast** ones (text at
+  15 to 1 or more, heavier edges), and dark and light palettes many
+  people know from their editors. The app either follows the system
+  between a theme for light and a theme for dark, each of the owner's
+  choosing, or wears one theme always.
+- **Typeface.** 22: the device's own sans, serif and fixed-width, and 19
+  the app carries (`public/fonts/`, each under the SIL Open Font License,
+  its licence beside it in `public/fonts/licences/`). Among them are four
+  made to be easy to read (Atkinson Hyperlegible, Lexend, OpenDyslexic,
+  Comic Neue). A typeface is fetched when first shown and kept for when
+  there is no connection; the ones not chosen cost nothing.
+- **Size and spacing.** Seven sizes of text, five amounts of room around
+  things, four kinds of corner, and whether anything moves.
+
+The choices are kept on the device (`localStorage`, key `pm.look`), not
+with the account: a phone and a desk can each look their own way. They
+are put on the page before it is first drawn.
+
+How it is made, for adding to it:
+
+- Each choice is **one attribute on the root element** (`data-theme`,
+  `data-font`, `data-size`, `data-space`, `data-corners`, `data-motion`),
+  put there by `public/look.js`. Nothing writes a style, so the page's
+  content policy stays `default-src 'self'`.
+- **A new theme** is a block of thirteen colours in `public/themes.css`
+  and a line in `THEMES` in `public/look.js`. The tests hold every theme
+  to the contrast rules written at the top of `themes.css`, so one that
+  cannot be read does not merge.
+- **A new typeface** is its file in `public/fonts/` with its licence, an
+  `@font-face` and a `[data-font]` rule in `public/look.css`, a line in
+  `FONTS`, and a line in `public/files.json`.
+- The style sheet (`public/app.css`) is drawn entirely from those
+  settings: colours only through the theme's variables, padding, margins
+  and gaps through `--space`, corners through `--round`, edges through
+  `--edge`. A rule that writes its own colour or a bare pixel padding
+  fails a test.
+
+### The app's files
+
+`public/files.json` is the one list of the files the app is made of. The
+laptop's service, the Worker, the Worker's build and the service worker
+all go by it: **a new file for the app is one line there** (its path,
+what it is served as, and when the service worker keeps a copy:
+`installed` for what the page needs to open, `used` for what is fetched
+on demand, such as a typeface). A file in `public/` that the list does
+not name is not served.
+
 ### With no connection
 
 The app opens and can be used with no connection, in a browser and in

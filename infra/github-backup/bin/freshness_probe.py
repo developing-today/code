@@ -20,9 +20,11 @@ What "verified" means per copy (a copy is stamped only on proof):
 - r2_bundles: for each fleet repo, the newest content-addressed bundle
   object in R2 names the local backup mirror's HEAD. Stamped with the
   probe time, same reasoning as the mirror.
-- cloudflare_rehost: no rehost surface exists yet (see
-  docs/CLOUDFLARE-REHOST-EVALUATION.md), so this copy is never stamped
-  and the readout keeps reporting it STALE until one does.
+- cloudflare_rehost: for each fleet repo, the HEAD oid in the
+  rehost Worker's smart-HTTP advertisement (git.security.cab, the
+  Workers + R2 surface Drew picked 2026-11-24) equals the local
+  backup mirror's HEAD. Stamped with the probe time, same reasoning
+  as the mirror.
 
 A copy whose check fails or cannot run keeps its previous
 last_success from the status doc, so it ages out against its target
@@ -30,9 +32,9 @@ instead of being silently refreshed or silently dropped. Checker
 errors are printed, never swallowed.
 
 Command line: [--status-json PATH] [--root PATH] [--bucket NAME]
-[--now ISO] [--format human|json] [--file-issues]. Arguments are
-parsed strictly before any file or network access; anything
-unaccounted for is a usage error (exit 2, #3352).
+[--now ISO] [--format human|json] [--rehost-base URL] [--file-issues].
+Arguments are parsed strictly before any file or network access;
+anything unaccounted for is a usage error (exit 2, #3352).
 
 Exit codes: 0 every copy fresh, 1 any copy stale/invalid, 2 usage
 error. Credentials arrive via the environment only (the systemd
@@ -45,6 +47,8 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -71,6 +75,10 @@ ALERT_MARKER = "backup-freshness-probe:v1"
 DEFAULT_R2_BUCKET = "supabase-backups"
 R2_PREFIX = "github-backup/cold-bundles"
 SUBPROCESS_TIMEOUT_SECONDS = 300
+# The rehost Worker (infra/github-backup/rehost), Drew's 2026-11-24
+# surface pick. --rehost-base overrides it (tests, future moves).
+DEFAULT_REHOST_BASE = "https://git.security.cab"
+REHOST_FETCH_TIMEOUT_SECONDS = 60
 
 
 def iso(when):
@@ -108,12 +116,42 @@ def judge_head_pairs(pairs):
     return outcome(True, f"all {len(pairs)} repos verified in sync")
 
 
-def judge_rehost():
-    return outcome(
-        False,
-        "no Cloudflare rehost surface exists yet "
-        "(docs/CLOUDFLARE-REHOST-EVALUATION.md); awaiting Drew's surface decision",
-    )
+def parse_advertised_head(body):
+    """HEAD oid from a smart-HTTP info/refs advertisement, or None.
+
+    The advertisement is pkt-lines: the `# service=git-upload-pack`
+    line, a flush, then `<oid> HEAD` as the first ref line. Anything
+    else — an error page, a truncated body, a non-hex oid — is not
+    proof of a copy and parses to None."""
+    if not isinstance(body, (bytes, bytearray)):
+        return None
+    lines = []
+    i = 0
+    while i + 4 <= len(body):
+        try:
+            length = int(body[i : i + 4], 16)
+        except ValueError:
+            return None
+        if length == 0:
+            lines.append(None)
+            i += 4
+            continue
+        if length < 4 or i + length > len(body):
+            return None
+        lines.append(bytes(body[i + 4 : i + length]))
+        i += length
+    if not lines or lines[0] != b"# service=git-upload-pack\n":
+        return None
+    for line in lines[1:]:
+        if line is None:
+            continue
+        fields = line.rstrip(b"\n").split(b" ", 1)
+        if len(fields) == 2 and fields[1].split(b"\0")[0] == b"HEAD":
+            oid = fields[0].decode("ascii", "replace")
+            if len(oid) == 40 and all(c in "0123456789abcdef" for c in oid):
+                return oid
+            return None
+    return None
 
 
 def parse_bundle_head(name):
@@ -225,7 +263,37 @@ def fetch_r2_pairs(root, bucket):
     return pairs
 
 
-def collect_outcomes(root, bucket, now):
+def _fetch_advertisement(url):
+    request = urllib.request.Request(
+        url, headers={"user-agent": "fleet-freshness-probe"}
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=REHOST_FETCH_TIMEOUT_SECONDS
+        ) as response:
+            return response.read()
+    except Exception as exc:
+        # Transport failures surface as URLError (an OSError), but a
+        # truncated body is http.client.IncompleteRead — a bare
+        # HTTPException, not an OSError. Normalize both to RuntimeError
+        # so collect_outcomes records an unverified copy instead of
+        # the probe crashing on a network-shaped error.
+        raise RuntimeError(f"GET {url} failed: {exc}") from exc
+
+
+def fetch_rehost_pairs(root, base):
+    """(repo, local mirror HEAD, rehost-advertised HEAD) per fleet repo."""
+    pairs = []
+    for repo in FLEET_REPOS:
+        local = _git_head(mirror_path(root, repo))
+        body = _fetch_advertisement(
+            f"{base}/{repo}/info/refs?service=git-upload-pack"
+        )
+        pairs.append((repo, local, parse_advertised_head(body)))
+    return pairs
+
+
+def collect_outcomes(root, bucket, now, rehost_base=DEFAULT_REHOST_BASE):
     """Run every checker; a fetcher failure is an unverified copy, not
     a crashed probe — the copy ages out on its previous stamp."""
     outcomes = {}
@@ -248,7 +316,16 @@ def collect_outcomes(root, bucket, now):
             outcomes["r2_bundles"]["verified_at"] = now
     except (OSError, RuntimeError, ValueError) as exc:
         outcomes["r2_bundles"] = outcome(False, f"R2 check failed: {exc}")
-    outcomes["cloudflare_rehost"] = judge_rehost()
+    try:
+        outcomes["cloudflare_rehost"] = judge_head_pairs(
+            fetch_rehost_pairs(root, rehost_base)
+        )
+        if outcomes["cloudflare_rehost"]["ok"]:
+            outcomes["cloudflare_rehost"]["verified_at"] = now
+    except (OSError, RuntimeError, ValueError) as exc:
+        outcomes["cloudflare_rehost"] = outcome(
+            False, f"rehost check failed: {exc}"
+        )
     return outcomes
 
 
@@ -379,6 +456,11 @@ def _parser():
     )
     parser.add_argument("--now", help="pin the clock (ISO 8601, tests only)")
     parser.add_argument(
+        "--rehost-base",
+        default=DEFAULT_REHOST_BASE,
+        help="base URL of the Cloudflare rehost Worker",
+    )
+    parser.add_argument(
         "--format", choices=("human", "json"), default="human", help="output format"
     )
     parser.add_argument(
@@ -403,7 +485,7 @@ def main(argv=None):
     )
     status_path = args.status_json or os.path.join(root, "freshness-status.json")
 
-    outcomes = collect_outcomes(root, args.bucket, now)
+    outcomes = collect_outcomes(root, args.bucket, now, args.rehost_base)
     for name, result in outcomes.items():
         if not result["ok"]:
             print(f"freshness_probe: {name}: {result['detail']}", file=sys.stderr)

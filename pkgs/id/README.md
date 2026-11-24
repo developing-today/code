@@ -306,6 +306,7 @@ it is — a valid world capability, minted by the host's admin with
 | `peers`        |                                | Discover and list known peers                           |
 | `world`        |                                | Mint invites for, and join, multiplayer worlds          |
 | `gallery`      |                                | Administer a program gallery directory                  |
+| `petname`      |                                | List the petnames one owner gave, read-only             |
 | `match-audit`  |                                | Export and verify signed match-audit v0 logs            |
 | `walk`         |                                | The #9106 walking skeleton, driven by hand              |
 | `group`        |                                | Groups: create, policy, add, remove, roles, join        |

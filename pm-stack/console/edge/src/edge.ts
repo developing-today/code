@@ -85,6 +85,7 @@ import { contact, Push } from "../../src/push.ts";
 import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
 import type { Store } from "../../src/store.ts";
 import { timed, unread } from "../../src/timed.ts";
+import appFiles from "../../public/files.json";
 
 /** A rank set twice ends at the last one: an older held rank never
  * runs when a newer rank for the same issue is done. Anything else
@@ -201,13 +202,9 @@ const SELF_CHECK_EVERY_MS = 60 * 60_000;
  * usually passed, and a failure should not stand for an hour. */
 const SELF_CHECK_AGAIN_MS = 5 * 60_000;
 const KEY_FETCH_EVERY_MS = 30_000;
-const STATIC: Record<string, string> = {
-  "app.js": "text/javascript; charset=utf-8",
-  "outbox.js": "text/javascript; charset=utf-8",
-  "app.css": "text/css; charset=utf-8",
-  "icon.svg": "image/svg+xml",
-  "sw.js": "text/javascript; charset=utf-8",
-};
+/** The app's files and what each is served as: public/files.json is the
+ * one list of them, and this Worker's build ships exactly those. */
+const STATIC: Record<string, string> = Object.fromEntries(appFiles.files.map((f) => [f.path, f.type]));
 const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** How many actions done here under a name are remembered, for how
  * long, and how much of each answer is kept with it. A device offline

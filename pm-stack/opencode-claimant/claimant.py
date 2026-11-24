@@ -1289,10 +1289,20 @@ def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int,
         row = data if isinstance(data, dict) else None
         claimed_id = row.get("id") if isinstance(row, dict) else None
         if claimed_id is None:
-            if result.returncode != 0:
-                outcome = "cli_nonzero"
-            elif row is not None and "task" in row and row["task"] is None:
+            if (
+                row is not None
+                and "task" in row
+                and row["task"] is None
+                and result.returncode in (0, 5)
+            ):
+                # cmd_claim's "nothing claimable" answer: a well-formed
+                # {"task": null} body with exit 5 (or 0). That is the
+                # ordinary empty result, not a CLI failure, so classify it
+                # before the non-zero-exit fallback. Any other exit code is
+                # a broker error and stays cli_nonzero.
                 outcome = "no_match"
+            elif result.returncode != 0:
+                outcome = "cli_nonzero"
             else:
                 outcome = "missing_claim_row"
             break

@@ -15,17 +15,27 @@
 //! exact-vs-inferred edge labels, missing-data warnings — never
 //! an automated causation claim).
 //!
-//! The final test is this slice's share of the design's
+//! The model test is this slice's share of the design's
 //! investigation model test (verification contract): a fixture
 //! with first vs earliest-retained-observation distinction
 //! inputs, exact-vs-inferred edge labels, and missing-link gaps
-//! preserved as gaps. The fixture's unauthorized-target and
-//! unpushed-final-commit elements belong to the later live-
-//! interface slices and are out of scope here.
+//! preserved as gaps. The fixture's unauthorized-target element
+//! belongs to the later live-interface slices.
+//!
+//! The findings-assembly tests are the second slice's share
+//! (design §5 steps 4–6): candidate changes with exact-vs-
+//! inferred association labels, rejected candidates with
+//! reasons, the step-5 unpushed-final-commit check recorded
+//! exactly as an authoritative source reported it (a check not
+//! performed is a gap, never a negative result), and the next
+//! action — the investigation's own, or one derived
+//! deterministically from the bundle's gaps and candidates.
 
 use atlas_core::c8_fingerprint::{
-    EdgeLabel, ErrorFingerprint, ErrorOccurrence, FirstObservationKind, InvestigationEdge,
-    build_bundle, first_observation, group_occurrences, normalize_error_string,
+    CandidateChange, EdgeLabel, ErrorFingerprint, ErrorOccurrence, FirstObservationKind,
+    InvestigationEdge, InvestigationFindings, RejectedCandidate, UnpushedCommitCheck,
+    UnpushedCommitStatus, build_bundle, build_bundle_with_findings, first_observation,
+    group_occurrences, normalize_error_string,
 };
 use proptest::prelude::*;
 
@@ -271,6 +281,288 @@ fn c8e_investigation_model_test_fixture_graph() {
     let serialized = serde_json::to_string(&bundle).expect("bundle serializes");
     assert!(!serialized.contains("caused"));
     assert!(!serialized.contains("causation"));
+}
+
+#[test]
+fn c8e_full_bundle_assembles_findings() {
+    // Fixture: one exact occurrence after the retention floor,
+    // an exact commit → PR edge and an inferred PR → issue edge,
+    // and gathered findings — one exact and one inferred
+    // candidate change, one rejected candidate, an
+    // unpushed-final-commit check an authoritative source
+    // reported as none-found, and the investigation's own next
+    // action.
+    let occurrences = vec![ErrorOccurrence::new(
+        "disk full",
+        "log:1",
+        "2026-11-05T00:00:00Z",
+    )];
+    let edges = vec![
+        InvestigationEdge::exact("commit_to_pull_request", "commit:abc123", "pr:12959"),
+        InvestigationEdge::inferred(
+            "pull_request_to_issue",
+            "pr:12959",
+            "issue:9576",
+            0.8,
+            "pr-body-reference",
+        ),
+    ];
+    let findings = InvestigationFindings {
+        candidate_changes: vec![
+            CandidateChange::exact("commit:abc123", "raise the pool ceiling"),
+            CandidateChange::inferred(
+                "commit:def456",
+                "touch the same config property",
+                0.6,
+                "same-file search",
+            ),
+        ],
+        rejected_candidates: vec![RejectedCandidate {
+            candidate_id: "commit:999999".to_string(),
+            reason: "merged after the first observed occurrence".to_string(),
+        }],
+        unpushed_commit_check: UnpushedCommitCheck::reported(
+            UnpushedCommitStatus::NoneFound,
+            "2026-11-23T00:00:00Z",
+            "session-state registry",
+            None,
+        ),
+        next_action: Some("review commit:abc123 first".to_string()),
+    };
+
+    let bundle = build_bundle_with_findings(
+        "disk full",
+        &occurrences,
+        &edges,
+        Some("2026-11-01T00:00:00Z"),
+        &findings,
+    );
+
+    // Candidates keep their association labels: exact carries no
+    // confidence, inferred always carries confidence and
+    // provenance — the edge discipline of design §3.
+    assert_eq!(bundle.candidate_changes.len(), 2);
+    assert_eq!(bundle.candidate_changes[0].label, EdgeLabel::Exact);
+    assert_eq!(bundle.candidate_changes[0].confidence, None);
+    assert_eq!(bundle.candidate_changes[1].label, EdgeLabel::Inferred);
+    assert_eq!(bundle.candidate_changes[1].confidence, Some(0.6));
+    assert_eq!(
+        bundle.candidate_changes[1].source.as_deref(),
+        Some("same-file search")
+    );
+
+    // The rejected candidate stays in the record with its
+    // reason, but it is not evidence: its ID never joins the
+    // evidence IDs, while both candidates' commits do.
+    assert_eq!(bundle.rejected_candidates.len(), 1);
+    assert_eq!(
+        bundle.rejected_candidates[0].reason,
+        "merged after the first observed occurrence"
+    );
+    assert!(bundle.evidence_ids.iter().any(|id| id == "commit:abc123"));
+    assert!(bundle.evidence_ids.iter().any(|id| id == "commit:def456"));
+    assert!(
+        !bundle.evidence_ids.iter().any(|id| id == "commit:999999"),
+        "rejected candidates are not evidence: {:?}",
+        bundle.evidence_ids
+    );
+
+    // The check is recorded exactly as reported, and the
+    // investigation's own next action wins over any derivation.
+    let check = bundle
+        .unpushed_commit_check
+        .as_ref()
+        .expect("findings were assembled");
+    assert_eq!(check.status, UnpushedCommitStatus::NoneFound);
+    assert_eq!(check.checked_at.as_deref(), Some("2026-11-23T00:00:00Z"));
+    assert_eq!(check.source.as_deref(), Some("session-state registry"));
+    assert_eq!(
+        bundle.next_action.as_deref(),
+        Some("review commit:abc123 first")
+    );
+
+    // Nothing is missing in this record: no unpushed-check gap,
+    // no no-candidates gap.
+    assert!(
+        !bundle.gaps.iter().any(|g| g.contains("unpushed")),
+        "gaps: {:?}",
+        bundle.gaps
+    );
+    assert!(
+        !bundle.gaps.iter().any(|g| g.contains("candidate")),
+        "gaps: {:?}",
+        bundle.gaps
+    );
+}
+
+#[test]
+fn c8e_unpushed_check_states_are_recorded_not_inferred() {
+    let occurrences = vec![ErrorOccurrence::new(
+        "disk full",
+        "log:1",
+        "2026-11-05T00:00:00Z",
+    )];
+    let edges: Vec<InvestigationEdge> = Vec::new();
+    let floor = Some("2026-11-01T00:00:00Z");
+
+    // Not performed: the status is recorded as not-checked and
+    // named as a gap — never converted into "no unpushed
+    // commit" (design §5 step 5, §6).
+    let findings = InvestigationFindings {
+        candidate_changes: vec![CandidateChange::exact("commit:abc123", "a change")],
+        ..Default::default()
+    };
+    let bundle = build_bundle_with_findings("disk full", &occurrences, &edges, floor, &findings);
+    let check = bundle
+        .unpushed_commit_check
+        .as_ref()
+        .expect("findings were assembled");
+    assert_eq!(check.status, UnpushedCommitStatus::NotChecked);
+    assert_eq!(check.checked_at, None);
+    assert!(
+        bundle
+            .gaps
+            .iter()
+            .any(|g| g.contains("unpushed-final-commit check not performed")),
+        "gaps: {:?}",
+        bundle.gaps
+    );
+
+    // Reported as found: the unpushed commit joins the evidence
+    // IDs and no gap is named for the check.
+    let findings = InvestigationFindings {
+        candidate_changes: vec![CandidateChange::exact("commit:abc123", "a change")],
+        unpushed_commit_check: UnpushedCommitCheck::reported(
+            UnpushedCommitStatus::UnpushedFound,
+            "2026-11-23T00:00:00Z",
+            "worktree state source",
+            Some("commit:unpushed1".to_string()),
+        ),
+        ..Default::default()
+    };
+    let bundle = build_bundle_with_findings("disk full", &occurrences, &edges, floor, &findings);
+    let check = bundle
+        .unpushed_commit_check
+        .as_ref()
+        .expect("findings were assembled");
+    assert_eq!(check.status, UnpushedCommitStatus::UnpushedFound);
+    assert_eq!(check.commit_id.as_deref(), Some("commit:unpushed1"));
+    assert!(
+        bundle
+            .evidence_ids
+            .iter()
+            .any(|id| id == "commit:unpushed1")
+    );
+    assert!(!bundle.gaps.iter().any(|g| g.contains("unpushed")));
+
+    // Core-only bundle: the check field is absent entirely —
+    // absence, not a fabricated status.
+    let core = build_bundle("disk full", &occurrences, &edges, floor);
+    assert_eq!(core.unpushed_commit_check, None);
+    assert_eq!(core.next_action, None);
+    let serialized = serde_json::to_string(&core).expect("core bundle serializes");
+    assert!(!serialized.contains("unpushed_commit_check"));
+    assert!(!serialized.contains("candidate_changes"));
+}
+
+#[test]
+fn c8e_full_bundle_derives_next_action_and_names_missing_candidates() {
+    let occurrences = vec![ErrorOccurrence::new(
+        "disk full",
+        "log:1",
+        "2026-11-05T00:00:00Z",
+    )];
+    let edges: Vec<InvestigationEdge> = Vec::new();
+    let floor = Some("2026-11-01T00:00:00Z");
+
+    // Empty findings: no candidates and no check are named as
+    // gaps, and the derived next action is to resolve them.
+    let bundle = build_bundle_with_findings(
+        "disk full",
+        &occurrences,
+        &edges,
+        floor,
+        &InvestigationFindings::default(),
+    );
+    assert!(
+        bundle
+            .gaps
+            .iter()
+            .any(|g| g.contains("no candidate changes recorded")),
+        "gaps: {:?}",
+        bundle.gaps
+    );
+    assert_eq!(
+        bundle.next_action.as_deref(),
+        Some("resolve the named missing-data gaps, then re-run the investigation")
+    );
+
+    // Clean findings: candidates present, check reported, no
+    // gap edges, first observation is first-observed — the
+    // derived next action is human review, and gaps are empty.
+    let findings = InvestigationFindings {
+        candidate_changes: vec![CandidateChange::exact("commit:abc123", "a change")],
+        unpushed_commit_check: UnpushedCommitCheck::reported(
+            UnpushedCommitStatus::NoneFound,
+            "2026-11-23T00:00:00Z",
+            "session-state registry",
+            None,
+        ),
+        ..Default::default()
+    };
+    let bundle = build_bundle_with_findings("disk full", &occurrences, &edges, floor, &findings);
+    assert!(bundle.gaps.is_empty(), "gaps: {:?}", bundle.gaps);
+    assert_eq!(
+        bundle.next_action.as_deref(),
+        Some("human review of the candidate changes; the bundle records evidence only")
+    );
+}
+
+#[test]
+fn c8e_bundle_shape_is_additive_and_round_trips() {
+    // A full bundle survives a serde round trip unchanged.
+    let occurrences = vec![ErrorOccurrence::new(
+        "disk full",
+        "log:1",
+        "2026-11-05T00:00:00Z",
+    )];
+    let findings = InvestigationFindings {
+        candidate_changes: vec![CandidateChange::inferred(
+            "commit:def456",
+            "touch the same config property",
+            0.6,
+            "same-file search",
+        )],
+        rejected_candidates: vec![RejectedCandidate {
+            candidate_id: "commit:999999".to_string(),
+            reason: "outside the time range".to_string(),
+        }],
+        ..Default::default()
+    };
+    let full = build_bundle_with_findings(
+        "disk full",
+        &occurrences,
+        &[],
+        Some("2026-11-01T00:00:00Z"),
+        &findings,
+    );
+    let serialized = serde_json::to_string(&full).expect("full bundle serializes");
+    let back: atlas_core::c8_fingerprint::EvidenceBundle =
+        serde_json::from_str(&serialized).expect("full bundle deserializes");
+    assert_eq!(back, full);
+
+    // A core bundle serialized before findings existed — the
+    // same string the core builder produces today, with the
+    // findings fields absent — still deserializes, with the
+    // findings fields at their empty defaults (design §2:
+    // additive-only changes, old versions remain readable).
+    let core = build_bundle("disk full", &occurrences, &[], Some("2026-11-01T00:00:00Z"));
+    let core_serialized = serde_json::to_string(&core).expect("core bundle serializes");
+    let core_back: atlas_core::c8_fingerprint::EvidenceBundle =
+        serde_json::from_str(&core_serialized).expect("core bundle deserializes");
+    assert_eq!(core_back, core);
+    assert!(core_back.candidate_changes.is_empty());
+    assert!(core_back.rejected_candidates.is_empty());
 }
 
 proptest! {
