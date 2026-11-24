@@ -72,6 +72,13 @@ mdBook, with two gates inside the build:
   (#1947). The deploy job asserts the twins are present in the
   staged site as well.
 
+Chapter links in the agent twins point to the target's rendered
+`.html.md` file. Each twin resolves relative links from its own
+directory. In the combined `llms-full.txt`, chapter links resolve
+from the site root. A directory chapter authored as `README.md`
+is published as `index.html` and `index.html.md`; the HTML and
+agent link writers use those names.
+
 `book.toml` sets `create-missing = false`: every chapter in
 `SUMMARY.md` must exist on disk, and a summary entry without a
 file fails the build instead of publishing a stub.

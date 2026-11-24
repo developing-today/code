@@ -22,6 +22,13 @@ doctrine edge cases those shapes must survive.
   (`pkgs/fleet/crates/fleet/src/gh_metadata.rs`,
   `pm_metadata_version_conformance_fixtures`), which runs every case
   through `parse_metadata_block` and the stamp assembly round-trip.
+  Because the fleet Nix source closure is rooted at `pkgs/` and does
+  not contain this `doc/` tree, the test reads a byte-identical
+  vendored copy at
+  `pkgs/fleet/crates/fleet/tests/fixtures/pm-metadata-v1.json`
+  (issue #13617), and asserts the two copies are equal whenever this
+  design copy is present in the checkout. Edit the design copy here,
+  then re-copy it to the vendored path in the same change.
 - **`atlas-metadata-v1.json`** — Atlas corpus metadata cases. Cases
   marked `executable: true` carry a `stage_row` and are asserted by
   the atlas-core conformance test

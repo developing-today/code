@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { decodeViewPatch } from "./screen-codec";
+import { Packr } from "msgpackr";
+import { decodeViewPatch, decodeViewPatchAsync } from "./screen-codec";
 
 /**
  * Golden-vector parity with the Rust codec (id-core screen_codec,
@@ -89,5 +90,78 @@ describe("decodeViewPatch", () => {
       (c) => c.charCodeAt(0),
     );
     expect(decodeViewPatch(patchOnly)).toBeNull();
+  });
+});
+
+describe("decodeViewPatchAsync", () => {
+  const packr = new Packr({ useRecords: false });
+
+  /** Raw-DEFLATE (RFC 1951) via the platform compressor. */
+  async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
+    const stream = new Blob([bytes as BlobPart])
+      .stream()
+      .pipeThrough(new CompressionStream("deflate-raw"));
+    const out = new Uint8Array(await new Response(stream).arrayBuffer());
+    return out;
+  }
+
+  /** One version-2 envelope around a payload, as the Rust encoder emits it. */
+  function compressedEnvelope(compression: number, payload: Uint8Array): Uint8Array {
+    return packr.pack({ version: 2, compression, payload });
+  }
+
+  const GOLDEN_FRAME = {
+    sequence: 7,
+    view_revision: 3,
+    base_view_revision: 2,
+    resume_token: null,
+    patch: { version: 1, width: 2, height: 1, runs: [] },
+  };
+
+  it("decodes a deflated version-2 frame to the golden frame", async () => {
+    const envelope = compressedEnvelope(1, await deflate(GOLDEN_VIEW_PATCH));
+    expect(await decodeViewPatchAsync(envelope)).toEqual(GOLDEN_FRAME);
+  });
+
+  it("decodes a Rust-flate2 raw-DEFLATE fixture (RFC 1951, not zlib)", async () => {
+    // Payload produced by the Rust encoder (flate2 DeflateEncoder =
+    // raw RFC 1951, no zlib wrapper). A decoder using
+    // DecompressionStream("deflate") rejects these bytes; only
+    // "deflate-raw" accepts them, matching the shell-contract pin.
+    const RUST_RAW_DEFLATE_B64 =
+      "a1pellpUnJmfx7g0rSgxN7V1RXFqYWlqXnIq+9qyzNTy+KLUskyQPPOmpMTi1HgUMaY1RanFpbmp8SX52al5B5YWJJYkZ7QgTCzPTCnJYFqWkZqZnlHCuKSoNK94AgA=";
+    const payload = Uint8Array.from(atob(RUST_RAW_DEFLATE_B64), (c) => c.charCodeAt(0));
+    expect(await decodeViewPatchAsync(compressedEnvelope(1, payload))).toEqual(GOLDEN_FRAME);
+  });
+
+  it("decodes a version-2 frame with compression 0 (payload as-is)", async () => {
+    const envelope = compressedEnvelope(0, GOLDEN_VIEW_PATCH);
+    expect(await decodeViewPatchAsync(envelope)).toEqual(GOLDEN_FRAME);
+  });
+
+  it("decodes plain version-1 frames through the async entry", async () => {
+    expect(await decodeViewPatchAsync(GOLDEN_VIEW_PATCH)).toEqual(GOLDEN_FRAME);
+  });
+
+  it("rejects an unknown compression id", async () => {
+    const envelope = compressedEnvelope(9, await deflate(GOLDEN_VIEW_PATCH));
+    expect(await decodeViewPatchAsync(envelope)).toBeNull();
+  });
+
+  it("rejects a truncated DEFLATE stream", async () => {
+    const deflated = await deflate(GOLDEN_VIEW_PATCH);
+    const envelope = compressedEnvelope(1, deflated.slice(0, Math.floor(deflated.length / 2)));
+    expect(await decodeViewPatchAsync(envelope)).toBeNull();
+  });
+
+  it("rejects a payload that inflates past the frame limit", async () => {
+    const big = new Uint8Array(1024 * 1024 + 1);
+    const envelope = compressedEnvelope(1, await deflate(big));
+    expect(await decodeViewPatchAsync(envelope)).toBeNull();
+  });
+
+  it("sync decode returns null for a version-2 envelope", async () => {
+    const envelope = compressedEnvelope(1, await deflate(GOLDEN_VIEW_PATCH));
+    expect(decodeViewPatch(envelope)).toBeNull();
   });
 });

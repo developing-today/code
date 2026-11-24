@@ -203,9 +203,98 @@ it (the laptop's, the sign-in issuer's).
   queue is not a write; changing it is.
 - **Calling too often is not a refusal.** GitHub turns a caller away
   for that with the same 403 (and says so in its answer), or a 429.
-  It is handed on in the same way, but for five minutes, not an hour:
-  it passes by itself. The token is the fleet's too, and search is
-  what runs out first.
+  It is handed on in the same way, but not for the hour: it passes by
+  itself. GitHub says when, and that time is kept to: until it comes
+  the edge asks GitHub nothing that draws on what ran out, not a read,
+  not a write and not its own check, because asking on while turned
+  away is what GitHub warns callers off and every such call would get
+  the same answer. It says it one of two ways. `retry-after`, in
+  seconds, means the caller is going too fast whatever it asks, and
+  everything waits. `x-ratelimit-reset`, with nothing left
+  (`x-ratelimit-remaining: 0`), means one allowance is used up, and
+  GitHub counts two apart: searches, a few dozen to the minute, and
+  everything else, by the hour. Only what draws on the one that ran
+  out waits, so ranked issues (a search) are still read while the
+  hour's allowance is spent, and a minute's searches running out does
+  not stop the lists. Where GitHub gives no time it is five minutes
+  for what was being done, and nothing else waits. No time is kept to
+  for more than sixty-five minutes, since the longer allowance is
+  counted by the hour and a time further off is a header that cannot
+  be right. Why a read failed starts with the time ("GitHub says to ask
+  again at ...") and carries GitHub's own words, which is how the app
+  says when it answers again and which of the two it was. Health has
+  the times as `github.quiet.core` and `github.quiet.search`. "Try
+  again now" lifts both.
+- **A list that has not changed costs nothing.** The token is the
+  fleet's too: the agents draw on the same hourly allowance, which is
+  the account's, and twice on 2026-11-23 they used the hour up. So the
+  edge keeps each answer to a read under its address with the
+  tag GitHub gave it (`etag`) and asks again by that tag
+  (`if-none-match`). GitHub answers "not modified" for one that has not
+  changed, and a call answered so
+  [does not count against the allowance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests-if-appropriate).
+  A screen left open asks for the same lists every minute or two, so
+  most of what the edge asks is now free. Nothing is served from the
+  kept answers without asking: GitHub decides each time whether the
+  answer still stands, so what is shown is never older than it was
+  before. The answers are kept in the object's storage, not its
+  memory (see the next point: as first built, on 2026-11-23, they were
+  in memory, and in service every read was a full one). An answer is
+  stored in pieces of 600,000 characters, since a stored value holds
+  about two million bytes and a list of open pull requests is more
+  than that. Each piece is marked with the address and the tag it
+  belongs to, and the index that names them is written last: an answer
+  half stored when the object was put away reads as nothing kept,
+  never as an answer. At most 240 answers and thirty million
+  characters, the one longest unasked-for going first. The time GitHub
+  said to ask again is stored the same way, so an object that starts
+  during a wait keeps to it. A store that cannot be read is a memory
+  that forgot, and is not written over. A tag belongs to the token it
+  was given to, so after a new token the old tags only get full
+  answers. An answer whose body was cut off part-way is not kept:
+  under GitHub's tag it would have been the answer every time GitHub
+  said "not modified" after. Health counts GitHub's answers and how
+  many were "not modified" (`github.answers`, `github.unchanged`,
+  counted since `github.since` whichever object answered) and says how
+  many answers are kept (`github.kept`). GitHub gives its search
+  answers no tag, so ranked issues (a search) are a full answer every
+  time; they draw on the search allowance, not the hour's. This does
+  not give the edge an allowance of its own: when the agents use the hour up, the edge
+  is turned away with them until it turns (#13489 has what would
+  change that).
+- **The object is put away whenever it is idle.** Cloudflare takes an
+  idle object out of memory within seconds and starts another, with
+  nothing in mind, on the next request; `woke` in health is when the
+  one answering started. So nothing the edge needs later is kept only
+  in memory, and nothing it starts is left running behind a request.
+  A deadline on an outgoing request is made with `timed`
+  (`src/timed.ts`), which clears its timer when the request is over
+  (and an answer whose body will not be read is let go of with
+  `unread`):
+  `AbortSignal.timeout` leaves its timer running for the whole of the
+  deadline, and an object with a timer running is not put away. In
+  the local runtime an object that had asked GitHub one thing, with
+  twenty seconds allowed, was still in memory 26 seconds after its
+  last request; one that had left no timer was gone within 14. In
+  service, over three minutes of health reads twenty seconds apart,
+  eight of nine were answered by an object started since the read
+  before: under twenty seconds idle. A test
+  follows the Worker's imports and fails if anything it runs uses
+  `AbortSignal.timeout`. The real-runtime check (`scripts/edge-smoke.ts`)
+  leaves the Worker alone until health says another object answers,
+  and only then asks whether a list is still asked for by its tag and
+  GitHub's wait still kept to. What is known of the released Android
+  build is stored for the same reason (GitHub is asked for it every
+  ten minutes, not by every object that starts), and the queue store
+  has twenty seconds to answer like everything else the edge asks.
+  What is read back from storage is held to what could have been put
+  there: a time further off than could have been set is not kept to
+  at all, since cut down to the longest it would be cut down afresh
+  by every object that started and never end. Health's `clock` says
+  whether the object wakes itself each minute (it does while it does
+  the core itself and a device takes notifications) and when it has
+  next asked to be woken: the time is the platform's to hold, so any
+  object can say it.
 - **The same for what it reads.** A section the edge is refused for is
   the laptop's to read for the hour, exactly as it was before the edge
   read anything: the edge stops naming it under `owns`, the laptop's

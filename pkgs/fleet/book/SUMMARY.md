@@ -15,9 +15,17 @@
 - [The bridge: fleet messaging](concepts/bridge.md)
 - [Agents: enrolment, doctor and the intake ladder](concepts/agents.md)
 - [Proxy, sessions and recovery](concepts/proxy.md)
+- [The Commander door: Desktop Commander over MCP](concepts/commander.md)
 - [Search: the Atlas corpus](concepts/search.md)
 - [The gh passthrough](concepts/gh.md)
 - [Dispatch and dispatch-test](concepts/dispatch.md)
+
+- [The hosted edition: fleet-hosted](concepts/fleet-hosted.md)
+- [The queue watchdog: queue-transport-alert](concepts/queue-transport-alert.md)
+- [The dispatch-test jobs store: fleet-dispatch-jobs](concepts/dispatch-jobs-store.md)
+- [Temporary builds and custom connections](concepts/temporary-builds.md)
+- [The central compile coordinator](concepts/compile-coordinator.md)
+- [Cross-links: automation, Cloudflare pipes and DNS](concepts/lab-cross-links.md)
 
 - [Built-in commands](reference/builtins.md)
 - [fleet queue: core verbs](reference/queue-core.md)
@@ -59,6 +67,13 @@
 - [Register a domain or capability](development/register-a-domain.md)
 - [Release and rollout](development/release-and-rollout.md)
 - [Keeping this book current](development/keeping-this-book-current.md)
+
+- [Fleet research and implementation roadmap](development/program-roadmap.md)
+- [High-level roadmap](development/high-level-roadmap.md)
+- [Queue, placement and seat contracts](development/queue-placement-seats.md)
+- [Brokers, remote builds and the release train](development/brokers-builds-releases.md)
+- [Quota, operator visibility and integration contracts](development/quota-status-integrations.md)
+- [Open Fleet issues and prerequisites](operations/program-issue-map.md)
 
 - [Running the brokers as services](operations/services.md)
 - [Health checks and the heal stack](operations/health-and-healing.md)

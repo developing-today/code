@@ -50,7 +50,7 @@ use id_events::event_store::{BlockList, BlockLookup};
 /// sync-gating vocabulary owned by the events layer since step 2b of
 /// the crate split (#4405); it is re-exported here at its historical
 /// path. The implementation over the folded worlds (`FoldedWorlds`)
-/// stays in the facade with `groups::worlds` until step 5.
+/// is implemented in `id-worlds` and re-exported at the facade path.
 pub use id_events::world_access::WorldAccess;
 
 /// The server's blob policy.

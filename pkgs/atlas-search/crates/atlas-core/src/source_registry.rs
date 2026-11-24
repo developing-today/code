@@ -81,6 +81,18 @@ pub struct LocatorRegistration {
     pub created: bool,
 }
 
+/// Where a registered source locator hangs (#3125 slice 5): the
+/// root it was registered under, that root's base locator, and the
+/// locator itself. Resolution is exact-match and read-only — it
+/// answers "which root holds this locator" for occurrence
+/// attribution, never creating or altering rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceResolution {
+    pub root_id: String,
+    pub base_locator: String,
+    pub locator: String,
+}
+
 /// Create the registry tables in `conn`'s database when absent.
 /// Idempotent and additive: existing tables and rows are untouched.
 pub fn ensure_source_registry(conn: &Connection) -> Result<()> {
@@ -221,4 +233,32 @@ pub fn locators_for_root(conn: &Connection, root_id: &str) -> Result<Vec<String>
         );
     }
     Ok(locators)
+}
+
+/// Resolve a source locator to the root it was registered under.
+///
+/// Exact-match and read-only: a registered locator yields its
+/// `(root_id, base_locator, locator)` triple; an unregistered
+/// locator yields `None`, never an error. When the same locator
+/// string is registered under several roots the lowest `root_id`
+/// wins, keeping the answer deterministic. The lookup creates the
+/// registry tables when absent (like every other read here) but
+/// never inserts, updates, or deletes any row.
+pub fn resolve_source(conn: &Connection, locator: &str) -> Result<Option<SourceResolution>> {
+    ensure_source_registry(conn)?;
+    conn.query_row(
+        "SELECT l.root_id, r.base_locator, l.locator FROM source_locators l \
+         JOIN source_roots r ON r.root_id = l.root_id \
+         WHERE l.locator = ?1 ORDER BY l.root_id LIMIT 1",
+        params![locator],
+        |r| {
+            Ok(SourceResolution {
+                root_id: r.get(0)?,
+                base_locator: r.get(1)?,
+                locator: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| Error::backend(format!("source registry: resolving {locator:?}: {e}")))
 }

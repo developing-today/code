@@ -170,8 +170,8 @@ client chapter, and decision record 0007. All are listed now.
 
 Every summary title equals its chapter's sole `# ` heading
 (the one exception is `index.md`, the styled home page, whose
-title is its HTML `<h1>` by design), and every relative link
-in the book resolves: links that escape `docs/` are rewritten
+title is its HTML `<h1>` by design), and the audit checked the relative links
+in the source tree: links that escape `docs/` are rewritten
 to repository URLs by the build, and the two genuinely dead
 links the audit found — a release-runbook link to a
 `tty.md` that does not exist, and a story-chapter link that

@@ -948,6 +948,38 @@ impl TursoBackend {
                 &[],
             )?;
         }
+        // #13774 (ACTIONS-EXEC-3): the tiered-extension columns
+        // (ext_count / ext_total_s / ext_tier / ext_decide_after /
+        // ext_reason) and the session context land the same
+        // additive way for actions_exec_sessions tables created
+        // before them. No backfill: existing rows read the column
+        // default / NULL, which the verbs read as "no extensions
+        // yet, no context recorded".
+        let aecols = self.query_objs(
+            "SELECT name FROM pragma_table_info('actions_exec_sessions')",
+            &[],
+            &[],
+        )?;
+        if !aecols.is_empty() {
+            for (col, ty) in [
+                ("ext_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("ext_total_s", "INTEGER NOT NULL DEFAULT 0"),
+                ("ext_tier", "INTEGER"),
+                ("ext_decide_after", "TEXT"),
+                ("ext_reason", "TEXT"),
+                ("context", "TEXT"),
+            ] {
+                let has = aecols
+                    .iter()
+                    .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
+                if !has {
+                    self.exec(
+                        &format!("ALTER TABLE actions_exec_sessions ADD COLUMN {col} {ty}"),
+                        &[],
+                    )?;
+                }
+            }
+        }
         // #8210: the ledger's platform-limitation columns (a
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
@@ -983,7 +1015,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 24] = [
+pub(crate) const SCHEMA: [&str; 25] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1011,6 +1043,7 @@ pub(crate) const SCHEMA: [&str; 24] = [
     "CREATE TABLE IF NOT EXISTS leases (\
         task_id INTEGER PRIMARY KEY, worker_id TEXT NOT NULL, \
         lease_until TEXT NOT NULL, heartbeat_at TEXT NOT NULL)",
+    include_str!("heartbeat_lease_mirror.sql"),
     "CREATE TABLE IF NOT EXISTS lanes (\
         lane_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, \
         queue TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)",

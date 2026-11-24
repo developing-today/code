@@ -506,6 +506,9 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             "--remaining-budget-minutes",
             "--filter",
             "--queue",
+            "--model-provider",
+            "--model-id",
+            "--model-variant",
         ],
     )?;
     a.no_positional("next")?;
@@ -610,6 +613,9 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             "--remaining-budget-minutes",
             "--filter",
             "--queue",
+            "--model-provider",
+            "--model-id",
+            "--model-variant",
         ] {
             if let Some(v) = a.last(flag) {
                 claim.push(flag.to_string());

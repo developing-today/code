@@ -53,6 +53,7 @@ pub(crate) mod testing {
                 author: founder,
                 after: Vec::new(),
                 group: None,
+                at: None,
                 body: Body::Create(Create {
                     template: Template::Custom,
                     policy: Policy::default(),
@@ -65,6 +66,7 @@ pub(crate) mod testing {
                 author: founder,
                 after: vec![create],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member,
                     role: Role::Read,
@@ -77,6 +79,7 @@ pub(crate) mod testing {
                 author: founder,
                 after: vec![add],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Remove {
                     member,
                     mode: crate::groups::RemoveMode::Revoke,

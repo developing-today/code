@@ -210,53 +210,189 @@ pub fn post_plain_alert_to(url: &str, token: &str, body: &Value) -> Result<(), S
     post_json(url, token, body).map(|_| ())
 }
 
+/// The full detail set for a fleet actions exec extension push
+/// (#13774, tiered policy — design amendment on the issue). The
+/// broker verb assembles it; queue_broker maps the verb response
+/// into this shape and posts the built body. Every tier's push
+/// carries the same detail; only the framing differs
+/// (notification vs deny-window vs manual ask).
+pub struct ExtensionAlert {
+    /// Alert key, ordinal-scoped by the verb:
+    /// `actions-exec-ext:<handle>:<n>`.
+    pub key: String,
+    pub handle: String,
+    /// Seat-supplied session context (task/issue link) recorded
+    /// at open; None when the seat named none.
+    pub context: Option<String>,
+    pub host_repo: String,
+    pub workflow: String,
+    pub seat: String,
+    pub run_id: Option<i64>,
+    pub run_attempt: Option<i64>,
+    pub created_at: String,
+    /// Granted lifespan at open (max_until - created_at), seconds.
+    pub granted_s: i64,
+    /// Session age at request time, seconds.
+    pub elapsed_s: i64,
+    pub lease_until: String,
+    pub max_until: String,
+    pub extend_s: i64,
+    pub tier: i64,
+    /// Extensions granted before this request, and their total
+    /// seconds; this request's own grant is the +1 / +extend_s.
+    pub ext_count_before: i64,
+    pub ext_total_s_before: i64,
+    /// Tier 2 only: when silence approves.
+    pub decide_after: Option<String>,
+    /// The session's hard deadline under the pending request.
+    pub grace_until: String,
+    pub reason: String,
+}
+
+fn minutes_ceil(s: i64) -> i64 {
+    (s + 59) / 60
+}
+
 /// Build the alerts-intake body for a fleet actions exec
-/// emergency-extension request (#13774). The PM stack renders the
-/// needsDrew block as Drew's approve/deny choice; the answer comes
-/// back as a seat-run `/actions-exec-extend-decide` (the phone ->
-/// broker write-back is the PM stack's next phase). Deduped by the
-/// throat on (source, key), one live request per session handle.
-pub fn build_extension_alert_body(
-    handle: &str,
-    host_repo: &str,
-    run_id: Option<i64>,
-    extend_s: i64,
-    grace_until: &str,
-    reason: &str,
-) -> Value {
-    let minutes = (extend_s + 59) / 60;
-    let question =
-        format!("Extend actions exec session {handle} past its max lifespan by {minutes} min?");
-    let mut context = format!(
-        "Session {handle} on {host_repo} reached its max lifespan cap.          Approving adds {extend_s}s to the max and the lease; denying lets          the session expire (decision grace runs to {grace_until})."
-    );
-    if !reason.is_empty() {
-        context.push_str(&format!(" Reason given: {reason}"));
-    }
-    let mut links = vec!["https://github.com/developing-today/code/issues/13774".to_string()];
-    if let Some(id) = run_id {
-        links.insert(
-            0,
-            format!("https://github.com/{host_repo}/actions/runs/{id}"),
-        );
-    }
-    json!({
-        "source": "fleet-actions-exec",
-        "key": format!("actions-exec-ext:{handle}"),
-        "severity": "warning",
-        "title": question,
-        "body": context,
-        "needsDrew": {
-            "ledgerId": format!("actions-exec-ext:{handle}"),
-            "question": question,
-            "context": context,
-            "options": [
-                {"id": "approve", "label": format!("Approve +{minutes} min")},
-                {"id": "deny", "label": "Deny — let it expire"},
-            ],
-            "links": links,
+/// extension request (#13774). Tier 1 is a plain notification
+/// (no needsDrew block — the #9177 shape); tier 2's needsDrew
+/// offers deny / approve-now and states that silence approves
+/// at the window end; tier 3 is the v1 manual approve/deny ask.
+/// The PM stack renders the needsDrew block as Drew's approve/
+/// deny choice; the answer comes back as a seat-run
+/// `/actions-exec-extend-decide` (the phone -> broker write-back
+/// is the PM stack's next phase). Deduped by the throat on
+/// (source, key); the key carries the extension ordinal, so
+/// successive extensions on one session do not suppress each
+/// other's pushes.
+pub fn build_extension_alert_body(info: &ExtensionAlert) -> Value {
+    let minutes = minutes_ceil(info.extend_s);
+    let after_count = info.ext_count_before + 1;
+    let after_total_min = minutes_ceil(info.ext_total_s_before + info.extend_s);
+    let before_total_min = minutes_ceil(info.ext_total_s_before);
+    let mut detail = format!(
+        "Session {handle} (seat {seat}) on {repo}, workflow {workflow} run {run} attempt {attempt}. \
+         Opened {created}; granted lifespan {granted} min, elapsed {elapsed} min; lease_until {lease}, max_until {max}. \
+         Ask: +{minutes} min. Reason given: {reason} \
+         Cumulative extensions: {bc} totalling {bt} min before this one; {ac} totalling {at} min counting it.",
+        handle = info.handle,
+        seat = info.seat,
+        repo = info.host_repo,
+        workflow = info.workflow,
+        run = info
+            .run_id
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        attempt = info
+            .run_attempt
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        created = info.created_at,
+        granted = minutes_ceil(info.granted_s),
+        elapsed = minutes_ceil(info.elapsed_s),
+        lease = info.lease_until,
+        max = info.max_until,
+        reason = if info.reason.is_empty() {
+            "-"
+        } else {
+            info.reason.as_str()
         },
-    })
+        bc = info.ext_count_before,
+        bt = before_total_min,
+        ac = after_count,
+        at = after_total_min,
+    );
+    if let Some(ctx) = &info.context {
+        detail.push_str(&format!(" Session context: {ctx}"));
+    }
+    let mut links: Vec<String> = Vec::new();
+    if let Some(id) = info.run_id {
+        let mut u = format!("https://github.com/{}/actions/runs/{id}", info.host_repo);
+        if let Some(a) = info.run_attempt {
+            u.push_str(&format!("/attempts/{a}"));
+        }
+        links.push(u);
+    }
+    if let Some(ctx) = &info.context {
+        if ctx.starts_with("http") {
+            links.push(ctx.clone());
+        }
+    }
+    links.push("https://github.com/developing-today/code/issues/13774".to_string());
+    match info.tier {
+        1 => json!({
+            "source": "fleet-actions-exec",
+            "key": info.key,
+            "severity": "info",
+            "title": format!(
+                "Actions exec {}: +{} min extension auto-approved (tier 1)",
+                info.handle, minutes
+            ),
+            "body": format!(
+                "{detail} Tier 1: the first extension within the auto caps is granted automatically; no action needed."
+            ),
+        }),
+        2 => {
+            let decide_after = info.decide_after.as_deref().unwrap_or("");
+            let question = format!(
+                "Actions exec session {} (+{} min, tier 2) approves itself at {} unless you deny — let it?",
+                info.handle, minutes, decide_after
+            );
+            let context = format!(
+                "{detail} Tier 2 deny window: silence approves automatically at {decide_after}; \
+                 deny ends the session at its current cap (hard deadline {grace}); approve-now applies it immediately. \
+                 Answers land via a seat running: fleet actions exec decide {handle} --deny|--approve.",
+                grace = info.grace_until,
+                handle = info.handle,
+            );
+            json!({
+                "source": "fleet-actions-exec",
+                "key": info.key,
+                "severity": "warning",
+                "title": question,
+                "body": context,
+                "needsDrew": {
+                    "ledgerId": info.key,
+                    "question": question,
+                    "context": context,
+                    "options": [
+                        {"id": "deny", "label": "Deny — end at current cap"},
+                        {"id": "approve", "label": format!("Approve now (+{minutes} min)")},
+                    ],
+                    "links": links,
+                },
+            })
+        }
+        _ => {
+            let question = format!(
+                "Extend actions exec session {} past its max lifespan by {} min (tier 3 — manual approval)?",
+                info.handle, minutes
+            );
+            let context = format!(
+                "{detail} Tier 3: manual approval only. Approving adds {extend_s}s to the max and the lease; \
+                 denying — or no answer before the decision grace ends at {grace} — lets the session expire.",
+                extend_s = info.extend_s,
+                grace = info.grace_until,
+            );
+            json!({
+                "source": "fleet-actions-exec",
+                "key": info.key,
+                "severity": "warning",
+                "title": question,
+                "body": context,
+                "needsDrew": {
+                    "ledgerId": info.key,
+                    "question": question,
+                    "context": context,
+                    "options": [
+                        {"id": "approve", "label": format!("Approve +{minutes} min")},
+                        {"id": "deny", "label": "Deny — let it expire"},
+                    ],
+                    "links": links,
+                },
+            })
+        }
+    }
 }
 
 /// Parse the snake_case `needs_drew` object the /block body
@@ -440,6 +576,81 @@ mod tests {
         let req = json!({"needs_drew": {"ledger_id": 123, "question": "Q?"}});
         let nd = from_block_request(&req, "b").unwrap();
         assert_eq!(nd.ledger_id, "123");
+    }
+
+    fn sample_alert(tier: i64) -> ExtensionAlert {
+        ExtensionAlert {
+            key: "actions-exec-ext:fx-sample:2".to_string(),
+            handle: "fx-sample".to_string(),
+            context: Some("https://github.com/developing-today/code/issues/13774".to_string()),
+            host_repo: "dezren39/fleet".to_string(),
+            workflow: "fleet-exec.yml".to_string(),
+            seat: "archer".to_string(),
+            run_id: Some(123_456_789_012),
+            run_attempt: Some(2),
+            created_at: "2026-11-23T22:00:00Z".to_string(),
+            granted_s: 1800,
+            elapsed_s: 1500,
+            lease_until: "2026-11-23T22:30:00Z".to_string(),
+            max_until: "2026-11-23T22:30:00Z".to_string(),
+            extend_s: 1800,
+            tier,
+            ext_count_before: 1,
+            ext_total_s_before: 1800,
+            decide_after: Some("2026-11-23T22:40:00Z".to_string()),
+            grace_until: "2026-11-23T22:45:00Z".to_string(),
+            reason: "install step still running".to_string(),
+        }
+    }
+
+    #[test]
+    fn extension_alert_tier1_is_a_plain_notification() {
+        // Oracle: tier 1 notifies only — no needsDrew choice
+        // block — and still carries the full detail set.
+        let body = build_extension_alert_body(&sample_alert(1));
+        assert_eq!(body["source"], json!("fleet-actions-exec"));
+        assert_eq!(body["key"], json!("actions-exec-ext:fx-sample:2"));
+        assert_eq!(body["severity"], json!("info"));
+        assert!(body.get("needsDrew").is_none(), "{body}");
+        let text = body["body"].as_str().unwrap();
+        assert!(text.contains("fx-sample"), "{text}");
+        assert!(text.contains("archer"), "{text}");
+        assert!(text.contains("install step still running"), "{text}");
+        assert!(text.contains("auto caps"), "{text}");
+    }
+
+    #[test]
+    fn extension_alert_tier2_offers_deny_first_and_states_silence_approves() {
+        // Oracle: tier 2's push must say it approves itself at
+        // the window end, offer deny as the active choice, and
+        // deep-link the exact run attempt.
+        let body = build_extension_alert_body(&sample_alert(2));
+        let nd = &body["needsDrew"];
+        assert_eq!(nd["options"][0]["id"], json!("deny"), "{body}");
+        assert_eq!(nd["options"][1]["id"], json!("approve"), "{body}");
+        let q = nd["question"].as_str().unwrap();
+        assert!(q.contains("approves itself at 2026-11-23T22:40:00Z"), "{q}");
+        let links = nd["links"].as_array().unwrap();
+        assert_eq!(
+            links[0],
+            json!("https://github.com/dezren39/fleet/actions/runs/123456789012/attempts/2")
+        );
+        assert_eq!(nd["ledgerId"], json!("actions-exec-ext:fx-sample:2"));
+        let ctx = nd["context"].as_str().unwrap();
+        assert!(ctx.contains("current cap"), "{ctx}");
+    }
+
+    #[test]
+    fn extension_alert_tier3_is_the_manual_ask() {
+        // Oracle: tier 3 keeps the v1 approve/deny shape, with
+        // the decision-grace consequence stated.
+        let body = build_extension_alert_body(&sample_alert(3));
+        let nd = &body["needsDrew"];
+        assert_eq!(nd["options"][0]["id"], json!("approve"), "{body}");
+        assert_eq!(nd["options"][1]["id"], json!("deny"), "{body}");
+        let ctx = nd["context"].as_str().unwrap();
+        assert!(ctx.contains("manual approval only"), "{ctx}");
+        assert!(ctx.contains("2026-11-23T22:45:00Z"), "{ctx}");
     }
 
     #[test]

@@ -26,6 +26,18 @@
 // fallback is explicitly marked in the record and never presented as fresh.
 // If no last-known monthly measurement exists, the tool exits non-zero.
 //
+// Steward hard-stop file (#2732 proposal step 2): pass
+// --hard-stops <hard-stops.json> and the tool checks the steward-written
+// stop registry for the seating's pool (answers pool_id, or --pool with
+// a live read) before evaluating. A stop for that pool sets
+// pool_hard_stop, refusing the seating with the hard-stop refusal line
+// the weekly audit counts; a pool with no entry seats unaffected. The
+// file never clears a hand-supplied pool_hard_stop — a stop is sticky.
+// A missing or malformed file fails the dispatch loudly (exit non-zero),
+// never seats unguarded; a present-but-empty --hard-stops value is a
+// usage error. The steward writer that maintains the file is follow-up;
+// this slice defines the contract the seating path checks.
+//
 // Exit status is non-zero when no valid record can be emitted (for
 // example a pool-drawn placement without a fresh-enough quota read, per
 // burn rule B5) — a dispatch that cannot produce a record does not
@@ -47,24 +59,31 @@ func main() {
 	answersPath := flag.String("answers", "", "path to the answers JSON file (required)")
 	quotaCurrentPath := flag.String("quota-current", "", "path to the quota gatherer's quota-current.json; with --pool, fills the monthly guard inputs from its live read (#2732)")
 	poolID := flag.String("pool", "", "pool serviceId whose monthly window --quota-current reads (required with --quota-current)")
+	hardStopsPath := flag.String("hard-stops", "", "path to the steward-written hard-stops.json; the seating's pool is checked for a hard-stop before evaluation (#2732 step 2)")
 	flag.Parse()
 	// Argument contract (#3352): every argument is accounted for before
 	// any work; a stray positional is a usage error, not ignored.
+	usage := "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json> [--quota-current <quota-current.json> --pool <serviceId>] [--hard-stops <hard-stops.json>]"
 	if flag.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "placement-record: unexpected argument %q\n", flag.Arg(0))
-		fmt.Fprintln(os.Stderr, "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json> [--quota-current <quota-current.json> --pool <serviceId>]")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	if *policyPath == "" || *answersPath == "" {
-		fmt.Fprintln(os.Stderr, "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json> [--quota-current <quota-current.json> --pool <serviceId>]")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	supplied := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { supplied[f.Name] = true })
+	if supplied["hard-stops"] && *hardStopsPath == "" {
+		fmt.Fprintln(os.Stderr, "placement-record: --hard-stops was supplied with an empty value")
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
 	liveRead, err := liveReadSelection(supplied["quota-current"], supplied["pool"], *quotaCurrentPath, *poolID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "placement-record:", err)
-		fmt.Fprintln(os.Stderr, "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json> [--quota-current <quota-current.json> --pool <serviceId>]")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	pol, err := placement.Load(*policyPath)
@@ -99,6 +118,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "placement-record: B4 last-known quota relied on for pool %q (monthly %.1f%% measured %s); retry fresh quota before the next dispatch\n", *poolID, pct, readAt.UTC().Format(time.RFC3339))
 		} else {
 			applyLiveRead(&answers, pct, readAt, *poolID)
+		}
+	}
+	if supplied["hard-stops"] {
+		if err := applyHardStop(&answers, *hardStopsPath); err != nil {
+			fmt.Fprintln(os.Stderr, "placement-record:", err)
+			os.Exit(1)
 		}
 	}
 	rec, err := placement.Evaluate(pol, answers, now)
@@ -177,4 +202,27 @@ func applyB4Fallback(answers *placement.Answers, pct float64, readAt time.Time, 
 	answers.PoolReadAt = &readAt
 	answers.PoolID = poolID
 	answers.PoolReadUnobtainable = true
+}
+
+// applyHardStop checks the steward hard-stop registry for the seating's
+// pool and records a stop in the answers. The stop is sticky: a hard-stop
+// entry sets pool_hard_stop, and neither an absent entry nor
+// stopped:false clears a hand-supplied true — once a stop is recorded
+// anywhere, the seating refuses. A pool identity is required: without
+// answers pool_id (from the answers file or a --pool live read) there is
+// no pool to check, and the dispatch fails instead of seating
+// unguarded. A B4 reliance still bypasses the guard at evaluation, the
+// same as the monthly inputs: the fallback is marked in the record.
+func applyHardStop(answers *placement.Answers, path string) error {
+	if answers.PoolID == "" {
+		return fmt.Errorf("--hard-stops %s names no pool to check (answers carry no pool_id and no --pool live read supplied one)", path)
+	}
+	stopped, err := placement.ReadHardStops(path, answers.PoolID)
+	if err != nil {
+		return err
+	}
+	if stopped {
+		answers.PoolHardStop = true
+	}
+	return nil
 }

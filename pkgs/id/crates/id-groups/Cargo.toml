@@ -12,7 +12,7 @@ license = "MIT OR Apache-2.0"
 # does not move again). Contents: the groups remainder (`groups`:
 # actions, the group log, local warnings), the blob gate's enforcement
 # logic (`blob_gate`; the `FoldedWorlds` adapter over `groups::worlds`
-# stays in the facade with worlds.rs until step 5 extracts id-worlds),
+# is implemented by id-worlds and re-exported by the facade),
 # and the DataScheme group encryption (`encryption`). Dependencies per
 # the design map: id-core, id-store, id-events.
 

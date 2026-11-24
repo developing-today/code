@@ -306,17 +306,38 @@ function routeSeatReferences(config) {
       route.targets.forEach((target, index) => {
         const reference = typeof target === 'string' ? target : isObject(target) ? target.model : null;
         const parsed = typeof reference === 'string' ? splitModelReference(reference) : null;
-        if (parsed) seats.push({ ...parsed, where: `model route "${routeName}" targets[${index}]` });
+        if (parsed) seats.push({ ...parsed, route: routeName, where: `model route "${routeName}" targets[${index}]` });
       });
     }
     if (isObject(route.weights)) {
       for (const key of Object.keys(route.weights)) {
         const parsed = splitModelReference(key);
-        if (parsed) seats.push({ ...parsed, where: `model route "${routeName}" weights` });
+        if (parsed) seats.push({ ...parsed, route: routeName, where: `model route "${routeName}" weights` });
       }
     }
   }
   return seats;
+}
+
+// Explicit per-route seat weights, keyed "route|provider/model".
+// Weights keys name the leaf exactly as targets do (see
+// routeSeatReferences); the paid-tail exemption in rule (c) compares
+// the free alias seat's weight against the base seat's weight within
+// one route, so it needs the numbers, not just the references.
+function routeSeatWeights(config) {
+  const weights = new Map();
+  const modelRoutes = activeMap(config, 'model_routes');
+  if (!isObject(modelRoutes)) return weights;
+  for (const [routeName, route] of Object.entries(modelRoutes)) {
+    if (!isObject(route) || !isObject(route.weights)) continue;
+    for (const [key, value] of Object.entries(route.weights)) {
+      const parsed = splitModelReference(key);
+      if (parsed && typeof value === 'number') {
+        weights.set(`${routeName}|${parsed.provider}/${parsed.model}`, value);
+      }
+    }
+  }
+  return weights;
 }
 
 // Wall-scope declarations and the free/paid alias split invariants:
@@ -328,6 +349,15 @@ function routeSeatReferences(config) {
 // (c) a model in a -free alias's catalog must not also be seated under
 //     the paid base id anywhere in the routes -- that seat would let a
 //     wall on the base bench the free model the split exists to free.
+//     Paid-tail exemption (code#13677, 2026-11-23): when free and paid
+//     are billing states of the SAME model on the SAME account (the
+//     OpenAI data-sharing shape -- complimentary tokens first, paid
+//     after), the base seat is the designed late fallback, not a
+//     split violation, provided the same route also seats the model
+//     via the -free alias at a STRICTLY GREATER explicit weight. The
+//     exemption is fail-closed: either seat missing a weight, or the
+//     base seat weighing as much as or more than the free seat, keeps
+//     the failure.
 export function inspectProviderWallRules(config) {
   const issues = [];
   const providers = isObject(config?.provider) ? config.provider : {};
@@ -358,13 +388,115 @@ export function inspectProviderWallRules(config) {
     }
 
     if (isObject(block.models) && isObject(base)) {
+      const weights = routeSeatWeights(config);
       for (const model of Object.keys(block.models)) {
         for (const seat of seats) {
-          if (seat.provider === baseID && seat.model === model) {
-            issues.push(
-              `wallScope: model "${model}" is in free alias "${providerID}"'s catalog but is also seated under its paid base "${baseID}" at ${seat.where}; seat it via the alias so a wall on the base cannot bench it`,
-            );
-          }
+          if (seat.provider !== baseID || seat.model !== model) continue;
+          const freeWeight = weights.get(`${seat.route}|${providerID}/${model}`);
+          const baseWeight = weights.get(`${seat.route}|${baseID}/${model}`);
+          if (freeWeight !== undefined && baseWeight !== undefined && baseWeight < freeWeight) continue;
+          issues.push(
+            `wallScope: model "${model}" is in free alias "${providerID}"'s catalog but is also seated under its paid base "${baseID}" at ${seat.where}; seat it via the alias so a wall on the base cannot bench it -- or, for a same-model paid tail, seat it via the alias in the same route at a strictly greater weight (the free-first / paid-tail shape, code#13677)`,
+          );
+        }
+      }
+    }
+  }
+  return issues;
+}
+
+// The model ids in a provider's effective catalog: an explicit
+// models map wins; when absent, follow instanceOf to the base
+// provider (the same walk catalogInfo makes). Null when the chain
+// cannot be resolved from the tracked config.
+function effectiveCatalogModels(config, providerID) {
+  const seen = new Set();
+  let id = providerID;
+  while (typeof id === 'string' && id && !seen.has(id)) {
+    seen.add(id);
+    const block = config.provider?.[id];
+    if (!isObject(block)) return null;
+    if (isObject(block.models)) return Object.keys(block.models);
+    id = block.instanceOf;
+  }
+  return null;
+}
+
+// Complimentary-token metering declarations (code#13839): a
+// provider block's optional "tokenMetering" — named groups of
+// models, each with the daily token bucket the group draws on and
+// a safety margin — is what the route proxy's metering wall
+// consumes. The proxy tolerates a malformed declaration by never
+// engaging (and naming it at load); this guard is the fail-closed
+// half: a malformed declaration must not land in the tracked
+// config at all. Rules:
+// (a) the declaration is an object with a non-empty "groups"
+//     object; each group is an object whose dailyTokens is a
+//     positive integer and whose marginTokens (when present) is
+//     an integer >= 0 and < dailyTokens;
+// (b) each group's models is a non-empty array of model ids, and
+//     no model is mapped to more than one group;
+// (c) when the provider's effective catalog resolves from the
+//     tracked config, every mapped model is in the catalog and
+//     every catalog model is mapped — an unmapped catalog model
+//     could never wall and would bill silently past the bucket.
+export function inspectProviderMeteringRules(config) {
+  const issues = [];
+  const providers = isObject(config?.provider) ? config.provider : {};
+  for (const [providerID, block] of Object.entries(providers)) {
+    if (!isObject(block) || block.tokenMetering === undefined) continue;
+    const prefix = `tokenMetering: provider "${providerID}"`;
+    const metering = block.tokenMetering;
+    if (!isObject(metering) || !isObject(metering.groups) || !Object.keys(metering.groups).length) {
+      issues.push(`${prefix} declares tokenMetering without a non-empty "groups" object`);
+      continue;
+    }
+    const mapped = new Map();
+    for (const [groupName, group] of Object.entries(metering.groups)) {
+      if (!isObject(group)) {
+        issues.push(`${prefix} group "${groupName}" is not an object`);
+        continue;
+      }
+      if (!Number.isInteger(group.dailyTokens) || group.dailyTokens <= 0) {
+        issues.push(
+          `${prefix} group "${groupName}" declares dailyTokens ${JSON.stringify(group.dailyTokens)} (expected a positive integer)`,
+        );
+      }
+      const margin = group.marginTokens ?? 0;
+      if (!Number.isInteger(margin) || margin < 0 || (Number.isInteger(group.dailyTokens) && margin >= group.dailyTokens)) {
+        issues.push(
+          `${prefix} group "${groupName}" declares marginTokens ${JSON.stringify(group.marginTokens)} (expected an integer >= 0 and < dailyTokens)`,
+        );
+      }
+      if (!Array.isArray(group.models) || !group.models.length || !group.models.every((m) => typeof m === 'string' && m)) {
+        issues.push(`${prefix} group "${groupName}" declares models ${JSON.stringify(group.models)} (expected a non-empty array of model ids)`);
+        continue;
+      }
+      for (const model of group.models) {
+        if (mapped.has(model)) {
+          issues.push(
+            `${prefix} maps model "${model}" to both group "${mapped.get(model)}" and group "${groupName}"; a model belongs to exactly one complimentary group`,
+          );
+        } else {
+          mapped.set(model, groupName);
+        }
+      }
+    }
+    const catalog = effectiveCatalogModels(config, providerID);
+    if (catalog) {
+      const catalogSet = new Set(catalog);
+      for (const [model, groupName] of mapped) {
+        if (!catalogSet.has(model)) {
+          issues.push(
+            `${prefix} maps model "${model}" (group "${groupName}") which is not in the provider's catalog; the wall would watch a model the provider does not serve`,
+          );
+        }
+      }
+      for (const model of catalog) {
+        if (!mapped.has(model)) {
+          issues.push(
+            `${prefix} leaves catalog model "${model}" unmapped; every model in a metered provider's catalog must belong to exactly one group, or it can never wall and bills silently past the bucket`,
+          );
         }
       }
     }
@@ -677,6 +809,9 @@ export function inspectRouteRules(config) {
 
   // Wall-scope declarations + free/paid alias invariants (code#13693).
   for (const issue of inspectProviderWallRules(config)) addIssue(issue);
+
+  // Complimentary-token metering declarations (code#13839).
+  for (const issue of inspectProviderMeteringRules(config)) addIssue(issue);
 
   return { tiers, issues };
 }

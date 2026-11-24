@@ -12,6 +12,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
+import { startPmCoreJobs } from "./pm-core-jobs.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
@@ -4463,7 +4464,13 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   }
 
   // --- Alert throat (#3676): subscription API -------------------------
+  // #13979: method gating precedes the store check so a removed GET
+  // stays a 405 even when the alerts store is unavailable (fixtures /
+  // store outage would otherwise mask it as a 503).
   if (path === "/api/push/subscriptions") {
+    if (req.method !== "POST" && req.method !== "DELETE") {
+      return json({ error: "method not allowed" }, 405);
+    }
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     if (req.method === "POST") {
@@ -5202,8 +5209,19 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     // #1147 extends the shape in place (services/feed/pages/jobs
     // added from the same assembly /health renders; the existing
     // status/source/sections keys are unchanged).
-    const view = await healthContext();
+    const [view, hostHealth] = await Promise.all([
+      healthContext(),
+      // #3989 criterion 6: expose the collector's active host and the
+      // newest verified backup generation (date / finish time / hash /
+      // destinations) on the existing machine health surface. A failed
+      // or unreadable generation remains explicit; never synthesize a
+      // healthy restore point from missing data.
+      readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
+    ]);
     const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
+    body.hostHealth = hostHealth
+      ? { host: hostHealth.host, backup: hostHealth.backup }
+      : { host: null, backup: null, state: "unavailable" };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
     body.services = view.services.map((s) => ({
@@ -5500,6 +5518,17 @@ const freshnessIpcServer = Bun.serve({
   fetch: createFreshnessIpcHandler(freshnessStore),
 });
 console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
+
+// #8570: in live mode the aggregator process owns the quota gatherer and
+// fleet-feed collector schedules. Their output files remain audit/debug
+// products; request freshness is held by the in-process stores/caches.
+if (cfg.source === "live") {
+  void startPmCoreJobs({
+    warn: (message) => console.log(`[pm-core] ${message}`),
+  }).catch((error) => {
+    console.error(`[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
 
 // #3976: start the anti-entropy loop in live mode — one pass now,
 // then the 5-minute cadence. Fixtures mode has no journal to reconcile.

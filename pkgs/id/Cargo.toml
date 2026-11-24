@@ -3,7 +3,7 @@ name = "id"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "A peer-to-peer file sharing CLI built with Iroh"
+description = "Peer-to-peer platform and Rust facade built with Iroh"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/developing-today/code"
 keywords = ["p2p", "file-sharing", "iroh", "cli"]
@@ -33,6 +33,7 @@ members = [
   "crates/id-hw-shell",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-client",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
@@ -56,6 +57,7 @@ default-members = [
   "crates/id-render",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-client",
 ]
 
 # =============================================================================
@@ -74,7 +76,7 @@ sandbox = [
 world = ["id-core/world", "id-cli/world", "dep:num-bigint"]
 ssh = ["world", "id-worlds/ssh", "id-cli/ssh"]
 web = ["world", "dep:id-web", "id-core/web", "id-cli/web"]
-# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; src/dht.rs decides per server.
+# Mainline DHT address lookup (P7.3, decision 15). Off in the default build; the implementation is in id-sync and the command wiring is in id-cli.
 dht = ["id-sync/dht", "id-cli/dht"]
 # Live-cluster binding for the currency PoC (#2289): the official TigerBeetle
 # Rust client, pinned to the harness server version (harness.rs). Off by

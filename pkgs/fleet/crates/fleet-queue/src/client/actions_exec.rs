@@ -18,6 +18,8 @@ fn ae_call(path: &str, body: Value) -> Result<Value, (i32, String)> {
 
 /// Open a session row. `lease_s` is the caller's --timeout (required
 /// by the verb; there is no default), `max_s` the hard lifespan cap.
+/// `context` is the seat's optional task/issue link for the session,
+/// carried into extension pushes.
 pub fn ae_open(
     host_repo: &str,
     workflow: &str,
@@ -25,18 +27,20 @@ pub fn ae_open(
     lease_s: i64,
     max_s: i64,
     hide_logs: bool,
+    context: Option<&str>,
 ) -> Result<Value, (i32, String)> {
-    ae_call(
-        "/actions-exec-open",
-        json!({
-            "host_repo": host_repo,
-            "workflow": workflow,
-            "seat": seat,
-            "lease_s": lease_s,
-            "max_s": max_s,
-            "hide_logs": hide_logs,
-        }),
-    )
+    let mut body = json!({
+        "host_repo": host_repo,
+        "workflow": workflow,
+        "seat": seat,
+        "lease_s": lease_s,
+        "max_s": max_s,
+        "hide_logs": hide_logs,
+    });
+    if let Some(c) = context {
+        body["context"] = json!(c);
+    }
+    ae_call("/actions-exec-open", body)
 }
 
 /// Bind the dispatched workflow run to the session (the handoff).
@@ -77,8 +81,11 @@ pub fn ae_renew(handle: &str, lease_s: i64) -> Result<Value, (i32, String)> {
     )
 }
 
-/// Request an emergency extension past the max lifespan. The
-/// broker records the request and raises the needs-drew alert.
+/// Request an extension past the max lifespan. The broker
+/// evaluates the tiered policy (#13774): the reply's `tier` /
+/// `outcome` say whether it was auto-approved (tier 1), pends
+/// under a deny window (tier 2), or awaits Drew's manual answer
+/// (tier 3); every tier raises its PM push.
 pub fn ae_extend_request(
     handle: &str,
     extend_s: i64,

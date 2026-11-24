@@ -30,11 +30,15 @@ Progress is reported on stdout as it goes: an opening `estate: &lt;n&gt; repos` 
 
 ### Idempotency and dedupe shape
 
-Re-running the tool is the normal case, and it is safe by construction:
+Each repository starts from its last completed checkpoint. Issue comments and review comments both compare against the **same starting cutoff**. The per-PR submitted-review walk has its own cutoff and compares every PR to the start of that walk. A new issue comment therefore cannot hide an older eligible review. With `--skip-reviews`, submitted reviews retain their previous position.
 
-- Extraction is **incremental per repository** via the watermark: the state file stores each repo's `updated_at` watermark, and a run only extracts what is newer than the stored mark. Already-extracted comments are not emitted again.
-- Watermarks are **persisted after every repository**, not at the end of the run. An interrupted run therefore resumes where it stopped: rerun the same command and the repos already done are skipped by their watermarks, with their records already in `--out`.
-- A `gh` failure stops the run, but with state saved: the error carries the suffix `(state saved; rerun resumes)`, and the rerun picks up from the last persisted watermark rather than starting over.
+The state file keeps the original `repos` map for comment streams and a `reviews` map for submitted reviews. On the first run with an older state file, the tool uses its saved cutoff for both. Upgrading preserves resume position. Historical omissions below a pre-upgrade cutoff require a separate reconciliation against source records, using a fresh state and separate output.
+
+A completed repository's output is synced before its state is replaced. On a handled failure, the feed removes that repository's partial append and preserves its previous checkpoint. The process holds an advisory lock on the output and on a sibling `.lock` file next to the state. A hard crash between the append and checkpoint can leave replayed output; downstream promotion must deduplicate by source occurrence and revision. The feed's checkpoint only establishes extraction progress. Classification, promotion, publication, and retrieval need their own receipts.
+
+### First-party source scope
+
+An explicit `--repo` must name a single repository owned by `developing-today`, `developing-today-forks`, or `dezren39`. Comparison of owner names is case-insensitive. A malformed path or external owner fails argument parsing before output is opened. For both default discovery and explicit selection, the feed verifies the canonical API repository URL on returned issue, comment, and review rows. If GitHub follows a transfer or rename to a different repository, that pass fails closed; select the current eligible name explicitly after review. This checks exported provenance and cannot suppress redirects internal to the GitHub CLI.
 
 ### The HTTP 451 exception
 
@@ -47,9 +51,9 @@ See [Ingest today: staging, classification, promotion](../concepts/ingest.md) fo
 Extracting one toy repository into a fresh state and records file:
 
 ```
-$ atlas-github-comments --state /tmp/toy-watermarks.json --out /tmp/toy-records.jsonl --repo toy-owner/toy-repo
+$ atlas-github-comments --state /tmp/toy-watermarks.json --out /tmp/toy-records.jsonl --repo developing-today/example-fixture
 estate: 1 repos
-toy-owner/toy-repo: issue_comments=2 review_comments=1 reviews=1 documents=4
+developing-today/example-fixture: issue_comments=2 review_comments=1 reviews=1 documents=4
 totals: …
 ```
 
