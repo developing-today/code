@@ -56,33 +56,31 @@ machines:
       # validator requires the earned checks record below).
       source: watchdog
       last_seen: '2026-11-24T10:55:17Z'
-      status: degraded
+      status: unreachable
       checks:
-        reported_at: '2026-11-24T10:55:17Z'
+        reported_at: '2026-11-24T11:23:59Z'
         reachable:
-          state: ok
+          state: failed
           ssh: true
-          opencode_server_http: 200
+          opencode_server_http: null
         load_headroom:
           state: ok
-          load15: 10.75
+          load15: 0.75
           cpu_cores: 16
-          load15_per_core: 0.672
+          load15_per_core: 0.047
         disk_headroom:
-          state: failed
-          volume: worktree (home)
-          total_gb: 3371
-          free_gb: 50
-          free_pct: 1.5
-        sessions:
           state: ok
-          listed: 50
-          active_within_cadence: 50
-          max_sessions: 12
+          volume: worktree (home)
+          total_gb: 250
+          free_gb: 179
+          free_pct: 71.4
+        sessions:
+          state: unknown
+          reason: attach API HTTP None
           source: openchamber attach api
         last_queue_job:
           state: ok
-          task_id: '22443'
-          queue: repo-health-code-pilot
-          worker: repo-worker-code
-          completed_at: '2026-11-24T10:55:21Z'
+          task_id: '22589'
+          queue: repo-health-opencode-pilot
+          worker: repo-worker-openchamber
+          completed_at: '2026-11-24T11:23:55Z'
