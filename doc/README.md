@@ -40,6 +40,7 @@ When migrating or filing material, ask which kind it is before choosing a home: 
 ## Research packages
 
 - `2026-11-24T00-24-54Z_audit_design-gaps/` — AUDIT-7 Lane 6 DESIGN-GAPS audit: designs missing, demanded, or insufficient across the four repos, with the prioritised packet list (tracking #13873).
+- `2026-11-24T00-58-48Z_research_code-book-census-lab/` — Census C for the Lab Book (tracking #13905): the Osseo site as the record supports it, the Talos/Cozystack/LINSTOR/DRBD cluster programme with the proven TALM per-node disk flow, the switches research folded in (21 devices; DX010 resolution; the #13920 inventory gap), the hardware inventory and its gaps, ESP32 verification (ESP32-S3 reference, ESP32-P4 named) and the Tanmatsu resolution — with the full supplements, issue census and grep outputs in the folder.
 - `2026-11-24T00-51-33Z_report_audit-7-lane-2-closed-issues-review/` — AUDIT-7 Lane 2 CLOSED-ISSUES review: all 8,161 issues closed 2026-10-23..2026-11-23 across the four repos triaged, high-risk union deep-read, per-issue ledger + all raw census data as supplements (tracking #13878).
 -  — AUDIT-7 Lane 7 STRAY-WORK audit: census of 18,594 items across the four repos, 10 evidence-backed trends in work not tied to a design or roadmap item, 34 orphaned issues linked into maintenance/scheduled-tasks/design-register parents with labels, 3 new labels in all four repos, and the repeatable stray-work procedure (tracking #13874).
 
