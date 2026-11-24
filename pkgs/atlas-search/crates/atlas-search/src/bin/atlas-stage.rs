@@ -32,6 +32,9 @@
 //!   memory, carrying the design's provenance set. The export's
 //!   vectors are ignored; promotion re-embeds with the mandated
 //!   model.
+//! * `atlas-stage ingest-memory-lancedb --db <path> --unit <id>
+//!   --store <memories.lance>` — natively read OpenClaw's LanceDB
+//!   dataset and idempotently sync changed rows into Atlas staging.
 //! * `atlas-stage items --db <path> [--unit <id>]` — list the
 //!   items staged in a unit's DB, with chunk counts.
 //!
@@ -158,6 +161,18 @@ enum Command {
         /// The read-only JSON export of the memory-lancedb store.
         #[arg(long)]
         export: PathBuf,
+    },
+    /// Natively read and idempotently sync an OpenClaw LanceDB store.
+    IngestMemoryLancedb {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the entries belong to.
+        #[arg(long)]
+        unit: String,
+        /// The native memory-lancedb dataset path (typically memories.lance).
+        #[arg(long)]
+        store: PathBuf,
     },
     /// List the items staged in a unit's staging DB.
     Items {
@@ -389,6 +404,20 @@ fn run(cli: Cli) -> Result<(), String> {
                 json_str(&unit),
                 item_ids.len(),
                 serde_json::to_string(&item_ids).unwrap_or_else(|_| "[]".to_string()),
+            );
+            Ok(())
+        }
+        Command::IngestMemoryLancedb { db, unit, store } => {
+            let report = atlas_core::memory::sync_lancedb_store_in_db(
+                &store,
+                &db,
+                &unit,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"added\":{},\"restaged\":{},\"unchanged\":{}}}",
+                json_str(&unit), report.added, report.restaged, report.unchanged,
             );
             Ok(())
         }
