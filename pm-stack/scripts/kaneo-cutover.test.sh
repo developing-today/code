@@ -126,7 +126,7 @@ promote=(--backup-record-file "$TMP/backup.json")
 set_counts '45 90139' '45 0'
 reset_log
 if out="$(run --mode presync --dump-file "$TMP/k.dump" --receipt "$TMP/r1.md" "${common[@]}")"; then
-  if [ "$(cat "$TMP/fx/log" | tr '\n' ' ')" = "pg_dump:source pg_restore:target " ]; then
+  if [ "$(cat "$TMP/fx/log" | tr '\n' ' ')" = "pg_dump:source pg_restore:target psql psql " ]; then
     pass 'presync dumps the source then restores into the target'
   else
     fail "presync dumps the source then restores into the target (log: $(cat "$TMP/fx/log" | tr '\n' ' '))"
@@ -258,7 +258,7 @@ fi
 set_counts '45 90500' '45 90500'
 reset_log
 if out="$(run --mode rollback --dump-file "$TMP/k9.dump" --receipt "$TMP/r9.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" "${common[@]}")"; then
-  if [ "$(cat "$TMP/fx/log" | tr '\n' ' ')" = "pg_dump:target pg_restore:source " ]; then
+  if [ "$(cat "$TMP/fx/log" | tr '\n' ' ')" = "pg_dump:target pg_restore:source psql psql " ]; then
     pass 'rollback dumps the target then replays into the source'
   else
     fail "rollback dumps the target then replays into the source (log: $(cat "$TMP/fx/log" | tr '\n' ' '))"
