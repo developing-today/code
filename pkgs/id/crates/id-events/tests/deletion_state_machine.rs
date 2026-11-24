@@ -103,6 +103,150 @@ fn state_machine_keeps_request_queue_hide_and_true_delete_distinct() {
 }
 
 #[test]
+fn reasoned_request_delivers_and_grant_produces_a_policy_delete() {
+    let signer = key(5);
+    let mut machine = DeletionStateMachine::new(OBJECT);
+    let authorities = vec![
+        "tag-author".to_owned(),
+        "group-admin".to_owned(),
+        "server-owner".to_owned(),
+    ];
+
+    assert_eq!(
+        machine
+            .apply(
+                "alice",
+                DeletionAction::RequestReasoned {
+                    request_id: 11,
+                    reason: "spam tag on my photo".to_owned(),
+                    delivered_to: authorities.clone(),
+                },
+                &signer,
+            )
+            .unwrap(),
+        TransitionOutcome::Applied
+    );
+    // Delivery record: reason + authority holders retained.
+    assert_eq!(machine.deliveries().len(), 1);
+    assert_eq!(machine.deliveries()[0].request_id, 11);
+    assert_eq!(machine.deliveries()[0].reason, "spam tag on my photo");
+    assert_eq!(machine.deliveries()[0].delivered_to, authorities);
+    assert_eq!(machine.evidence()[0].action, "delete_requested");
+    assert_eq!(machine.evidence()[0].rationale, "spam tag on my photo");
+
+    machine
+        .apply(
+            "moderator",
+            DeletionAction::Queue {
+                request_id: 11,
+                ticket_id: 50,
+            },
+            &signer,
+        )
+        .unwrap();
+    // A grant for a different request is refused.
+    assert!(machine
+        .apply(
+            "group-admin",
+            DeletionAction::Grant {
+                request_id: 12,
+                policy_id: "spam-v1".to_owned(),
+            },
+            &signer,
+        )
+        .is_err());
+
+    assert_eq!(
+        machine
+            .apply(
+                "group-admin",
+                DeletionAction::Grant {
+                    request_id: 11,
+                    policy_id: "spam-v1".to_owned(),
+                },
+                &signer,
+            )
+            .unwrap(),
+        TransitionOutcome::Applied
+    );
+    assert!(matches!(
+        machine.state(),
+        DeletionState::TrueDeletedOnThisServer { .. }
+    ));
+    let grant = machine
+        .evidence()
+        .iter()
+        .find(|e| e.action == "delete_granted")
+        .expect("grant evidence recorded");
+    assert!(grant.rationale.contains("policy=spam-v1"));
+    for evidence in machine.evidence() {
+        evidence.verify().unwrap();
+    }
+}
+
+#[test]
+fn decline_is_recorded_with_no_delete_and_a_new_request_may_follow() {
+    let signer = key(6);
+    let mut machine = DeletionStateMachine::new(OBJECT);
+    machine
+        .apply(
+            "bob",
+            DeletionAction::RequestReasoned {
+                request_id: 21,
+                reason: "please remove".to_owned(),
+                delivered_to: vec!["server-owner".to_owned()],
+            },
+            &signer,
+        )
+        .unwrap();
+
+    assert_eq!(
+        machine
+            .apply(
+                "server-owner",
+                DeletionAction::Decline {
+                    request_id: 21,
+                    reason: "evidence is the audit trail".to_owned(),
+                },
+                &signer,
+            )
+            .unwrap(),
+        TransitionOutcome::Applied
+    );
+    assert!(matches!(
+        machine.state(),
+        DeletionState::DeleteDeclined { request_id: 21 }
+    ));
+    let decline = machine
+        .evidence()
+        .iter()
+        .find(|e| e.action == "delete_declined")
+        .expect("decline evidence recorded");
+    assert_eq!(decline.rationale, "evidence is the audit trail");
+    decline.verify().unwrap();
+
+    // No delete happened: a fresh request is still possible.
+    assert_eq!(
+        machine
+            .apply(
+                "bob",
+                DeletionAction::RequestReasoned {
+                    request_id: 22,
+                    reason: "second look, new evidence".to_owned(),
+                    delivered_to: vec!["server-owner".to_owned()],
+                },
+                &signer,
+            )
+            .unwrap(),
+        TransitionOutcome::Applied
+    );
+    assert!(matches!(
+        machine.state(),
+        DeletionState::DeleteRequested { request_id: 22 }
+    ));
+}
+
+#[test]
 fn ordinary_gc_defers_referenced_objects_until_the_horizon_is_clear() {
     let signer = key(4);
     let mut machine = DeletionStateMachine::new(OBJECT);
