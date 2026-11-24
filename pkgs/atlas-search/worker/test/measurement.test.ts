@@ -173,9 +173,7 @@ describe("report renders from live counters (§7 acceptance)", () => {
     const r = renderMeasurementReport(m.snapshot(), {
       quotaBytesByTenant: { "tenant-1": 1_000 },
     });
-    expect(r.storage).toEqual([
-      { tenantId: "tenant-1", storedBytes: 1_536, quotaBytes: 1_000, overQuota: true },
-    ]);
+    expect(r.storage).toEqual([{ tenantId: "tenant-1", storedBytes: 1_536, quotaBytes: 1_000, overQuota: true }]);
     const ok = renderMeasurementReport(m.snapshot(), {
       quotaBytesByTenant: { "tenant-1": 2_000 },
     });
@@ -185,9 +183,7 @@ describe("report renders from live counters (§7 acceptance)", () => {
   it("a tenant with no supplied quota reports a null quota, never over-quota", () => {
     const m = filled();
     const r = renderMeasurementReport(m.snapshot());
-    expect(r.storage).toEqual([
-      { tenantId: "tenant-1", storedBytes: 1_536, quotaBytes: null, overQuota: false },
-    ]);
+    expect(r.storage).toEqual([{ tenantId: "tenant-1", storedBytes: 1_536, quotaBytes: null, overQuota: false }]);
   });
 
   it("echoes the active config so the tuning round has its before-values", () => {

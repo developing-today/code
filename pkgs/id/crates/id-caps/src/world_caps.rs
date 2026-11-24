@@ -1002,12 +1002,8 @@ const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
 
 mod client;
 pub use client::{
-    CLIENT_CATALOG_ENTRIES,
-    CLIENT_FILE_READ_MANIFEST,
-    CLIENT_FILE_READ_NAME,
-    CLIENT_NOTIFY_MANIFEST,
-    CLIENT_NOTIFY_NAME,
-    MAX_CLIENT_FILE_READ_BYTES,
+    CLIENT_CATALOG_ENTRIES, CLIENT_FILE_READ_MANIFEST, CLIENT_FILE_READ_NAME,
+    CLIENT_NOTIFY_MANIFEST, CLIENT_NOTIFY_NAME, MAX_CLIENT_FILE_READ_BYTES,
     MAX_CLIENT_NOTIFY_RESPONSE_BYTES,
 };
 
@@ -3042,7 +3038,7 @@ mod tests {
             records.push(entry.clone());
             used += entry_bytes;
         }
-        assert!(!records.is_empty());
+        assert_ne!(records, [] as [serde_json::Value; 0]);
         // 256 raw key bytes (128 backslash+quote pairs), the longest a
         // record key may be, and the worst case for JSON escaping.
         let next_after: String = (0..128)

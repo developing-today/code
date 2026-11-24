@@ -36,7 +36,7 @@ alias check-all := check
 
 # CI-safe checks (read-only, no modifications) [bun]
 [group('check')]
-ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell web-lint test-sandbox test-native-shell test-hw-shell test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
+ci: cargo-fmt-check web-fmt-check cargo-check clippy-lint clippy-native-shell web-lint test-sandbox test-native-shell test-tui-shell test-hw-shell test-rust-examples test-web-unit test-web-typecheck roc-test doc build release
     @echo "✓ CI checks passed!"
 
 # Auto-fix formatting and lint issues
@@ -309,16 +309,22 @@ test-crate-integration:
 test-native-shell:
     cargo nextest run -p id-native-shell
 
+# Run the id-tui-shell capability-statement tests (#12818): non-default workspace member, so the default-member test recipes never run it.
+[group('test')]
+test-tui-shell:
+    cargo nextest run -p id-tui-shell
+
 # Run the id-hw-shell live-host behavioral tests (#10929): non-default workspace member, so the default-member test recipes never run it.
 [group('test')]
 test-hw-shell:
     cargo nextest run -p id-hw-shell
 
-# Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
+# Run the Rust example-guest unit tests (#7904, #13656): plaza-sdk (examples/rust-world, 9 tests), rust-counter (examples/rust-counter, 2 tests), rust-cells (examples/rust-cells) and rust-sketch (examples/rust-sketch; the literal-vector guest slice of #13608) are standalone crates outside the pkgs/id workspace, so the workspace test recipes never run them.
 [group('test')]
 test-rust-examples:
     cargo test --manifest-path examples/rust-world/Cargo.toml
     cargo test --manifest-path examples/rust-counter/Cargo.toml
+    cargo test --manifest-path examples/rust-cells/Cargo.toml --locked
     cargo test --manifest-path examples/rust-sketch/Cargo.toml
 
 # Run the Sketch host load/play fixture (#13656): the regular ID host loads the checked-in examples/rust-sketch/sketch.wasm, plays the six-step #13608 vector, and asserts snapshot/restore plus next-operation equivalence.
@@ -387,11 +393,11 @@ test-web-typecheck:
 roc-test:
     bash scripts/roc-test.sh
 
-# Run nix flake check (27 sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
+# Run nix flake check (all sandboxed checks: lint, test, E2E, NixOS VM tests, VM Playwright)
 [group('test')]
 test-nix:
     nix flake check
-    @echo "✓ nix flake check passed (27 checks — runs everything)"
+    @echo "✓ nix flake check passed (all checks — runs everything)"
 alias check-nix := test-nix
 alias nix-check := test-nix
 

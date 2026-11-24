@@ -8,7 +8,7 @@
 //
 // CHATGPT_TOKEN is a second Worker secret, also from Bitwarden, held by
 // the ChatGPT connector's private Site. It opens /mcp/<token> only, on
-// the ChatGPT channel: it can't read Claude's messages, the page or the
+// the ChatGPT channel: it can't read Claude's messages, the owner link or the
 // JSON API. A wrong or missing token gets the same plain 404 as an
 // unknown path, so the routes don't advertise themselves, and an MCP
 // client given a token URL is never pushed into OAuth discovery by a

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { matchTokenPath, safeEqual } from "../src/auth.js";
 import { MemoryStore } from "../src/messages.js";
-import { renderPage } from "../src/page.js";
-import { route } from "../src/routes.js";
+import { OWNER_COOKIE } from "../src/oauth.js";
+import { DEFAULT_CONSOLE_URL, route } from "../src/routes.js";
 
 const TOKEN = "t".repeat(20) + "0123456789abcdefXYZ_-";
 const env = { ACCESS_TOKEN: TOKEN };
@@ -114,24 +114,20 @@ test("MCP initialize, tools/list, notifications, unknown method", async () => {
   assert.equal((await bad.json()).error.code, -32700);
 });
 
-test("send, receive, mark read and ack through MCP; page and API share the store", async () => {
+test("send, receive, mark read and ack through MCP; the API shares the store", async () => {
   const { tool, call, store } = harness();
   const sent = await tool("send_message", { body: "hello from claude", sender: "claude" });
   assert.equal(sent.isError, undefined);
   assert.equal(sent.structuredContent.message.direction, "outbound");
   assert.equal(sent.structuredContent.message.source, "mcp");
 
-  // Page form post -> inbound, 303 back to the page.
-  const form = await call(`/p/${TOKEN}`, {
+  // JSON API posts -> inbound via api.
+  const first = await call(`/api/${TOKEN}/messages`, {
     method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ body: "hi claude <b>", sender: "Drew" }).toString(),
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ body: "hi claude <b>", sender: "Drew" }),
   });
-  assert.equal(form.status, 303);
-  assert.equal(form.headers.get("location"), `/p/${TOKEN}`);
-  assert.equal(form.headers.get("referrer-policy"), "no-referrer");
-
-  // JSON API post -> inbound via api.
+  assert.equal(first.status, 201);
   const api = await call(`/api/${TOKEN}/messages`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -144,7 +140,7 @@ test("send, receive, mark read and ack through MCP; page and API share the store
   assert.deepEqual(
     unread.structuredContent.messages.map((m) => [m.body, m.source]),
     [
-      ["hi claude <b>", "page"],
+      ["hi claude <b>", "api"],
       ["from a script", "api"],
     ],
   );
@@ -175,17 +171,34 @@ test("send, receive, mark read and ack through MCP; page and API share the store
   );
   assert.equal(hist.stats.total, 3);
 
-  // Page renders every message, escaped, with the private headers.
-  const page = await call(`/p/${TOKEN}`);
-  assert.equal(page.status, 200);
-  assert.match(page.headers.get("content-security-policy"), /frame-ancestors 'none'/);
-  assert.equal(page.headers.get("cache-control"), "no-store");
-  const html = await page.text();
-  assert.ok(html.includes("hi claude &lt;b&gt;"));
-  assert.ok(!html.includes("hi claude <b>"));
-  assert.ok(html.includes("hello from claude"));
-  assert.ok(html.includes("from a script"));
   assert.equal(store.rows.length, 3);
+});
+
+test("the owner link sets the cookie and redirects to the console (#14378)", async () => {
+  const { call } = harness();
+  // The retired page's address is now a pointer: no messaging UI, just
+  // the owner cookie and a redirect to the console's Messages surface.
+  const link = await call(`/p/${TOKEN}`);
+  assert.equal(link.status, 303);
+  assert.equal(link.headers.get("location"), DEFAULT_CONSOLE_URL);
+  assert.match(link.headers.get("set-cookie"), new RegExp(`^${OWNER_COOKIE}=[^;]+; Path=/; .*Secure; HttpOnly; SameSite=Lax`));
+  assert.equal(link.headers.get("cache-control"), "no-store");
+  assert.equal(link.headers.get("referrer-policy"), "no-referrer");
+  assert.ok(!(await link.text()).includes(TOKEN), "the redirect carries no token");
+  // Query strings from the old page (paging) change nothing.
+  assert.equal((await call(`/p/${TOKEN}?before_id=6`)).headers.get("location"), DEFAULT_CONSOLE_URL);
+  // Form posts went with the page.
+  for (const method of ["POST", "PUT", "DELETE"]) {
+    assert.equal((await call(`/p/${TOKEN}`, { method, body: "body=x" })).status, 405, method);
+  }
+  // The console address is the CONSOLE_URL var when one is set.
+  const store = new MemoryStore();
+  const custom = await route(
+    new Request(`${BASE}/p/${TOKEN}`),
+    { ...env, CONSOLE_URL: "https://console.example/console/#more/messages" },
+    () => store,
+  );
+  assert.equal(custom.headers.get("location"), "https://console.example/console/#more/messages");
 });
 
 test("bad input is a tool error or a 400, never stored", async () => {
@@ -210,28 +223,11 @@ test("bad input is a tool error or a 400, never stored", async () => {
   assert.equal(store.rows.length, 0);
 });
 
-test("page script cannot be broken out of by the api path", () => {
-  const html = renderPage({
-    messages: [],
-    stats: { total: 0, inbound: 0, outbound: 0, unread_inbound: 0 },
-    basePath: "/p/x",
-    apiPath: "/api/</script><script>alert(1)",
-  });
-  assert.ok(!html.includes("</script><script>alert(1)"));
-});
-
-test("history pages back past the newest page with before_id", async () => {
+test("history reads back past the newest page with before_id", async () => {
   const { call, store } = harness();
   for (let i = 1; i <= 205; i++) {
-    await store.add({ body: `m${i}`, direction: i % 2 ? "inbound" : "outbound", source: i % 2 ? "page" : "mcp" });
+    await store.add({ body: `m${i}`, direction: i % 2 ? "inbound" : "outbound", source: i % 2 ? "api" : "mcp" });
   }
-  const page = await (await call(`/p/${TOKEN}`)).text();
-  assert.ok(page.includes(`href="/p/${TOKEN}?before_id=6"`), "older link points below the oldest shown");
-  assert.ok(!/id="older"[^>]*hidden/.test(page), "older link visible when the page is full");
-  const older = await (await call(`/p/${TOKEN}?before_id=6`)).text();
-  assert.ok(older.includes(">m5<") && older.includes(">m1<") && !older.includes(">m6<"));
-  assert.ok(older.includes("Back to newest"));
-  assert.ok(/id="older"[^>]*hidden/.test(older), "no older link past the start");
   const api = await (await call(`/api/${TOKEN}/messages?order=desc&limit=3&before_id=100`)).json();
   assert.deepEqual(
     api.messages.map((m) => m.id),
@@ -452,6 +448,7 @@ test("cloudflare.config.ts matches wrangler.jsonc", async () => {
   assert.equal(pick(/compatibilityDate: "([^"]+)"/, cfg), pick(/"compatibility_date": "([^"]+)"/, wr));
   assert.equal(pick(/PUBLIC_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"PUBLIC_URL": "([^"]+)"/, wr));
   assert.equal(pick(/WORKERS_DEV_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"WORKERS_DEV_URL": "([^"]+)"/, wr));
+  assert.equal(pick(/CONSOLE_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"CONSOLE_URL": "([^"]+)"/, wr));
   assert.ok(cfg.includes('MESSAGES: bindings.durableObject({ worker: "message-bridge", exportName: "MessageStore" })'));
   assert.ok(wr.includes('"name": "MESSAGES", "class_name": "MessageStore"'));
 });
@@ -531,14 +528,14 @@ test("the ChatGPT token opens only its own MCP channel", async () => {
   assert.ok((await disc.json()).result.supportedVersions.includes("2026-07-28"));
 });
 
-test("page sends to one or both; each assistant sees and acks only its own", async () => {
+test("the API sends to one or both; each assistant sees and acks only its own", async () => {
   const { call, tool } = twoChannels();
-  const both = await call(`/p/${TOKEN}`, {
+  const both = await call(`/api/${TOKEN}/messages`, {
     method: "POST",
-    body: "body=to+both&to=claude&to=chatgpt",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ body: "to both", to: ["claude", "chatgpt"] }),
   });
-  assert.equal(both.status, 303);
+  assert.equal(both.status, 201);
   const onlyGpt = await call(`/api/${TOKEN}/messages`, {
     method: "POST",
     body: JSON.stringify({ body: "gpt only", to: ["chatgpt"], source: "page" }),
@@ -575,23 +572,6 @@ test("page sends to one or both; each assistant sees and acks only its own", asy
   assert.equal(all.stats.total, 5);
   const gptOnly = await (await call(`/api/${TOKEN}/messages?channel=chatgpt`)).json();
   assert.equal(gptOnly.messages.length, 3);
-
-  const page = await (await call(`/p/${TOKEN}`)).text();
-  assert.match(page, /ChatGPT → you/);
-  assert.match(page, /You → ChatGPT/);
-  assert.match(page, /name="to" value="chatgpt"/);
-  assert.doesNotMatch(page, /isn't set up yet/);
-});
-
-test("page notes when the ChatGPT connector has no token yet", () => {
-  const html = renderPage({
-    messages: [],
-    stats: { total: 0, inbound: 0, outbound: 0, unread_inbound: 0, last_id: 0 },
-    basePath: "/p/x",
-    apiPath: "/api/x",
-    chatgptReady: false,
-  });
-  assert.match(html, /isn.t set up yet/);
 });
 
 test("instructions target one or more agents, and agents never see their sender", async () => {
@@ -606,12 +586,12 @@ test("instructions target one or more agents, and agents never see their sender"
     ["claude", "instruction", "Muse"],
     ["chatgpt", "instruction", "Muse"],
   ]);
-  const form = await call(`/p/${TOKEN}`, {
+  const form = await call(`/api/${TOKEN}/messages`, {
     method: "POST",
-    body: "body=from+the+form&sender=Aster&to=chatgpt&kind=instruction",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: JSON.stringify({ body: "from the api", sender: "Aster", to: ["chatgpt"], kind: "instruction" }),
+    headers: { "content-type": "application/json" },
   });
-  assert.equal(form.status, 303);
+  assert.equal(form.status, 201);
   await call(`/api/${TOKEN}/messages`, {
     method: "POST",
     body: JSON.stringify({ body: "plain note", sender: "Drew", to: "chatgpt" }),
@@ -635,9 +615,6 @@ test("instructions target one or more agents, and agents never see their sender"
   // Drew's own views keep the sender.
   const api = await (await call(`/api/${TOKEN}/messages?kind=instruction`)).json();
   assert.deepEqual(api.messages.map((m) => m.sender), ["Muse", "Muse", "Aster"]);
-  const page = await (await call(`/p/${TOKEN}`)).text();
-  assert.match(page, /Instruction → ChatGPT<\/b> · from Aster/);
-  assert.match(page, /name="kind" value="instruction"/);
 
   // Agents can't send instructions, and the kind must be known.
   const tryOut = await tool(TOKEN, "send_message", { body: "x", kind: "instruction" });
@@ -679,11 +656,11 @@ test("the deploy reads the uploaded version id from cf's output", async () => {
   assert.match(line, /c is not listed/);
 });
 
-test("the owner page shows a connector address that works with no sign-in", async () => {
+test("the connector address works with no sign-in", async () => {
   const { call } = harness();
-  const html = await (await call(`/p/${TOKEN}`)).text();
-  const addr = html.match(/id="connector" readonly value="([^"]+)"/)[1].replace(/&amp;/g, "&");
-  assert.equal(addr, `${BASE}/mcp/${TOKEN}`);
+  // The address the retired page used to show (#14378); --print-urls
+  // and the README carry it now.
+  const addr = `${BASE}/mcp/${TOKEN}`;
   const res = await call(new URL(addr).pathname, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },

@@ -222,7 +222,7 @@ a new one; it needs that entry updated.
 cd pkgs/mcpx
 gofmt -l .
 go vet ./...
-go test ./... -count=1
+go test ./... -count=1 -timeout 25m
 MCPX=./bin/mcpx scripts/stress.sh      # concurrency, leaks, orphans
 MCPX=./bin/mcpx scripts/bench.sh       # latency, against lootbox
 (cd ../.. && nix build .#mcpx)         # unit suites in the sandbox

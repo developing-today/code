@@ -77,6 +77,37 @@ impl MlDsa44Signer {
             .to_vec();
         Ok(MlDsa44Signer { key, public_key })
     }
+
+    pub fn public_key(&self) -> &[u8] {
+        &self.public_key
+    }
+}
+
+/// Parse a PKCS#8 key using the explicitly named algorithm and return
+/// only its public key bytes. Private material is never part of the
+/// result, which is the metadata boundary used by `key inspect`.
+pub fn inspect_key(algo: AlgorithmId, pkcs8: &[u8]) -> Result<Vec<u8>> {
+    match algo {
+        AlgorithmId::MlDsa44 => Ok(MlDsa44Signer::from_pkcs8(pkcs8)?.public_key().to_vec()),
+        AlgorithmId::Ed25519 => Ok(KeyPair::from_pkcs8_der_and_sign_algo(
+            &rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.to_vec()),
+            &PKCS_ED25519,
+        )?
+        .public_key_raw()
+        .to_vec()),
+        AlgorithmId::P256 => Ok(KeyPair::from_pkcs8_der_and_sign_algo(
+            &rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.to_vec()),
+            &PKCS_ECDSA_P256_SHA256,
+        )?
+        .public_key_raw()
+        .to_vec()),
+        AlgorithmId::Rsa4096 | AlgorithmId::Rsa2048 => Ok(KeyPair::from_pkcs8_der_and_sign_algo(
+            &rustls_pki_types::PrivatePkcs8KeyDer::from(pkcs8.to_vec()),
+            &PKCS_RSA_SHA256,
+        )?
+        .public_key_raw()
+        .to_vec()),
+    }
 }
 
 impl rcgen::PublicKeyData for MlDsa44Signer {
@@ -951,6 +982,17 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
     params.not_after = na.0;
     params.serial_number = Some(random_serial());
     params.use_authority_key_identifier_extension = true;
+    if profile.ocsp_no_check {
+        // RFC 6960 §3.2: a delegated OCSP signing certificate
+        // carries id-pkix-ocsp-nocheck (extnValue = DER NULL) so
+        // verifiers do not revocation-check the responder itself.
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 5, 5, 7, 48, 1, 5],
+                vec![0x05, 0x00],
+            ));
+    }
     let cert = issuer.sign(&params, &key)?;
     let der = cert.der().to_vec();
 

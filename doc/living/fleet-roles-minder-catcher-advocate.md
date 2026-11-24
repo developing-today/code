@@ -72,12 +72,13 @@ Drew's rulings as recorded:
 
 ## Open follow-ups
 
-- OpenChamber-side recreations were still RUNNING at the 18:30 flush
-  (2026-11-08):
-  - Handled by Lane A.
-  - The OpenChamber builder's advocate text was delivered to Lane A,
-    pending its handoff.
-  - No completion for the OpenChamber side is recorded in this entry.
+- OpenChamber-side Builder's Advocate: DONE (2026-11-24).
+  - Implemented as the project loop `.agents/loops/builders-advocate.md` in
+    developing-today-forks/openchamber, merged as PR #2606 (merge commit
+    193600cbd78e), every 4h, off by default, advocacy-only scope.
+  - Evidence and task record: developing-today/code#8826 comment 7133100008.
+  - The OpenChamber minder and dropped-thread catcher were not recreated; the
+    ruling covered only the advocate.
 
 ## Future ideas not yet specced
 

@@ -68,6 +68,45 @@ describe("auth helpers", () => {
   });
 });
 
+describe("health", () => {
+  test("reports the exact build version supplied by the deployment", async () => {
+    const deployedCommit = "0123456789abcdef0123456789abcdef01234567";
+    const env = {
+      VERSION: deployedCommit,
+      WEBHOOK_SECRET: "s3cr3t",
+      DB: {} as D1Database,
+      SET_EVENTS: {} as DurableObjectNamespace,
+    } as unknown as Env;
+
+    const response = await worker.fetch(new Request("https://worker/health"), env);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      service: "decision-events",
+      webhookConfigured: true,
+      version: deployedCommit,
+    });
+  });
+
+  test("does not claim a commit when the deployment has not supplied one", async () => {
+    const env = {
+      WEBHOOK_SECRET: "s3cr3t",
+      DB: {} as D1Database,
+      SET_EVENTS: {} as DurableObjectNamespace,
+    } satisfies Env;
+
+    const response = await worker.fetch(new Request("https://worker/health"), env);
+
+    expect(await response.json()).toEqual({
+      ok: true,
+      service: "decision-events",
+      webhookConfigured: true,
+      version: "unknown",
+    });
+  });
+});
+
 describe("groupBySet", () => {
   test("groups preserving order", () => {
     const parsed = parseEventBatch([ev("e1"), ev("e2", "set-2"), ev("e3")]);

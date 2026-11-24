@@ -10,7 +10,7 @@ import { OpError } from "./errors.ts";
 import type { Ops } from "./ops.ts";
 import { laterPacket, Plan } from "./plan.ts";
 import type { Push } from "./push.ts";
-import { promptPacket, type Work } from "./work.ts";
+import { ASK_INTENTS, type AskIntent, promptPacket, type Work } from "./work.ts";
 
 type Args = Record<string, unknown>;
 export interface Action {
@@ -107,7 +107,7 @@ export function actions(
       touch: ["board"],
       audit: ids("issue", "rank"),
     },
-    "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: () => ({}) },
+    "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: ids("intent") },
     "ask.reply": { run: (a) => work.askReply(a), touch: ["asks", "board"], audit: ids("issue") },
     "ask.close": { run: (a) => work.askClose(a), touch: ["asks"], audit: ids("issue") },
     // The second half of a prompt the edge filed while the laptop was
@@ -123,11 +123,18 @@ export function actions(
         if (typeof a.text !== "string" || a.text.trim() === "" || a.text.length > 8000)
           throw new OpError(400, "text: required, at most 8000 characters");
         if (typeof a.at !== "string" || a.at === "") throw new OpError(400, "at: required");
+        // What kind of prompt it was, where the edge says (one that does
+        // not say is something to do, as all were before there were kinds).
+        if (a.intent !== undefined && !ASK_INTENTS.includes(a.intent as AskIntent)) {
+          throw new OpError(400, `intent: one of ${ASK_INTENTS.join(", ")}`);
+        }
         // A failed enqueue is thrown, not answered as "not queued": this
         // runs late, so nobody is listening for the answer, and a
         // `queued: false` would be recorded done and the held prompt
         // acknowledged as sent with no queue task behind it.
-        const queued = await ops.enqueue(promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at));
+        const queued = await ops.enqueue(
+          promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at, (a.intent as AskIntent | undefined) ?? "task"),
+        );
         if (queued.code !== 0) {
           throw new OpError(
             502,
@@ -154,7 +161,8 @@ export function actions(
       touch: ["questions", "questionCount"],
       audit: ids("set"),
     },
-    "hands.done": { run: (a) => work.handsDone(a), touch: [], audit: ids("ref") },
+    // The item leaves what needs the owner: that list is read again.
+    "hands.done": { run: (a) => work.handsDone(a), touch: ["census"], audit: ids("ref") },
     "need.comment": { run: (a) => work.needComment(a), touch: [], audit: ids("ref") },
     "task.move": { run: (a) => work.moveTask(a), touch: ["board"], audit: ids("task", "to") },
     "task.unblock": {
@@ -199,9 +207,65 @@ export function actions(
     // machine, where the tokens are, and never held.
     "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
     "message.send": {
-      run: (a) => ops.send(a.to, a.text, a.command),
+      run: (a) => ops.send(a.to, a.text, a.command, a.limit),
       touch: [],
-      audit: (a) => ({ to: a.to, command: a.command === true }),
+      audit: (a) => ({ to: a.to, command: a.command === true, limit: a.limit ?? null }),
+    },
+    // Broaden and offer are the composer's other two acts (#14375):
+    // broaden delivers a pattern send's remainder on its own batch;
+    // offer posts the text as a claim offer. Neither audit carries
+    // the text, like message.send.
+    "message.broaden": {
+      run: (a) => ops.broaden(a.batch, a.limit),
+      touch: [],
+      audit: (a) => ({ batch: a.batch, limit: a.limit ?? null }),
+    },
+    "message.offer": {
+      run: (a) => ops.offer(a.to, a.text, a.command, a.slots),
+      touch: [],
+      audit: (a) => ({ to: a.to, command: a.command === true, slots: a.slots }),
+    },
+    // Revoke an agent's bridge credentials from the Agents screen
+    // (#14374): the per-agent kill switch. It changes no document
+    // section — the Agents screen reads the directory fresh — and it
+    // is held for a machine when asked at the edge: revoking is the
+    // owner's act through the owner token, never the edge's
+    // read-scope credential (edge-proto.ts).
+    "agent.revoke": {
+      run: (a) => ops.revokeCredential(a.surface, a.name),
+      touch: [],
+      audit: ids("surface", "name"),
+    },
+    // Provisioning (#14376, design §4.9). The two mints are never
+    // held anywhere to be done late (edge-proto.ts): a mint's answer
+    // IS the secret, shown once on the screen that asked — a mint
+    // done late would hand its value to nobody, and lose it. Like
+    // sso.google, their audit records nothing of the value: the mint
+    // keeps only the binding it was made under. The enroll revoke is
+    // the opposite shape — no value in it at all, and done late it is
+    // still the right act — so it is held for a machine like
+    // agent.revoke.
+    "agent.mint-enroll": {
+      run: (a) =>
+        ops.mintEnrollToken({
+          agent: a.agent,
+          kind: a.kind,
+          groups: a.groups,
+          notesIdentity: a.notesIdentity,
+          ttlSeconds: a.ttlSeconds,
+        }),
+      touch: [],
+      audit: ids("agent", "kind", "groups", "notesIdentity", "ttlSeconds"),
+    },
+    "agent.mint-credential": {
+      run: (a) => ops.mintCredential({ agent: a.agent, scopes: a.scopes, addr: a.addr }),
+      touch: [],
+      audit: ids("agent", "scopes", "addr"),
+    },
+    "agent.revoke-enroll": {
+      run: (a) => ops.revokeEnrollTokens(a.agent),
+      touch: [],
+      audit: ids("agent"),
     },
   };
 }

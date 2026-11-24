@@ -151,12 +151,26 @@ describe("class + quiet merges (design §1/§2)", () => {
   test("non-boolean class values are ignored", () => {
     expect(mergeClasses({ "quota-wall": "yes", a: 1, b: null })).toEqual({ ...DEFAULT_CLASSES });
   });
-  test("classEnabled preserves old rows while new rows get defaults", () => {
+  test("classEnabled backfills reviewed defaults for pre-class rows (#13940)", () => {
+    // A pre-class row: created before the #8568 classes existed, so its
+    // stored map carries only the classes of its day. Classes added
+    // after creation take their reviewed defaults — the row ends with
+    // needs-drew + quota-wall + stack-health ON without re-subscribing.
+    const preClass = { classes: { incident: true } };
+    expect(classEnabled(preClass, "needs-drew")).toBe(true);
+    expect(classEnabled(preClass, "quota-wall")).toBe(true);
+    expect(classEnabled(preClass, "stack-health")).toBe(true);
+    expect(classEnabled(preClass, "incident")).toBe(true);
     expect(classEnabled({ classes: {} }, "incident")).toBe(true);
+    expect(classEnabled({ classes: {} }, "needs-drew")).toBe(true);
+    // Stored choices always win, including explicit opt-outs.
     expect(classEnabled({ classes: { incident: false } }, "incident")).toBe(false);
     expect(classEnabled({ classes: { incident: true } }, "incident")).toBe(true);
-    expect(classEnabled({ classes: {} }, "needs-drew")).toBe(false);
+    expect(classEnabled({ classes: { "needs-drew": false } }, "needs-drew")).toBe(false);
+    // New rows still receive the reviewed defaults via mergeClasses.
     expect(classEnabled({ classes: mergeClasses(undefined) }, "needs-drew")).toBe(true);
+    // A class with no reviewed default stays off.
+    expect(classEnabled({ classes: {} }, "no-such-class")).toBe(false);
   });
   test("quiet defaults 23:00–07:00 America/Chicago; partial overrides merge", () => {
     expect(mergeQuiet(undefined)).toEqual({ start: "23:00", end: "07:00", tz: "America/Chicago", enabled: true });

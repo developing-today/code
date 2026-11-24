@@ -1,12 +1,12 @@
 # Iroh ecosystem — research record
 
-*Compiled 2026-11-23 for the capability-auth + p2p-transport investigation
+_Compiled 2026-11-23 for the capability-auth + p2p-transport investigation
 ([#13779](https://github.com/developing-today/code/issues/13779)) and the
 fleet transport design
 ([#13752](https://github.com/developing-today/code/issues/13752)). Sources:
 n0-computer repos and blog, crates.io, project repos, the public GitHub
 Discussions board, conference archives. Community material is paraphrased,
-never quoted.*
+never quoted._
 
 ## The short version
 
@@ -40,7 +40,7 @@ APIs, not a maintained release line.
   consumer.
 - [Real projects](04-real-projects.md) — who actually runs iroh in
   production and how: Delta Chat in depth (device setup, webxdc realtime
-  channels, and why its calls are deliberately *not* iroh), OpenArchive
+  channels, and why its calls are deliberately _not_ iroh), OpenArchive
   Save's Veilid+iroh composition, n0's own sendme/dumbpipe, and the rest
   of the shipped field with honest scale labels.
 - [Community and where discussion lives](05-community-and-where-discussion-lives.md)

@@ -8,21 +8,23 @@ A guest app is a Roc program compiled to an import-free WebAssembly module and r
 
 Worked examples live in `pkgs/id/examples/`. Each app is a directory holding its Roc source, a `README.md`, a build script, and — for most apps — a checked-in `.wasm` build of the guest, so the host conformance suites run without a Roc toolchain installed.
 
-| Directory | What it demonstrates |
-|---|---|
-| `examples/roc-counter/` | The smallest complete world: guests send `inc`, all participants see the count, and `records` mirrors the count to the host. |
-| `examples/roc-text-counter/` | The same counter on the legacy plain-text presentation, importing no platform modules. |
-| `examples/roc-chat/` | Chat over the capability protocol: `chat.say` and `chat.history` through `RocCap`. |
-| `examples/roc-grid/` | The `RocGrid` library: a 4×3 byte grid with bounds-checked reads. |
-| `examples/roc-mind-map/` | Stable IDs with duplicate labels, a typed cross-link, refused cycles, preserved positions. |
-| `examples/roc-screen/` | The `Screen` and `Key` libraries: a structured screen document instead of text. |
-| `examples/lounge/` | The capability system end to end: subscriptions, arrival greetings through `chat.say`, and refusal counting. |
-| `examples/territory/` | A complete multiplayer game: at most 8 seated players on a 16×8 grid, adjacency-only claiming, seats that persist across leave, rejoin and restart. |
-| `examples/roc-cap-demo/` | A capability-dependent Roc library plus its app, with two compile-must-fail negative tests for the library import gate. |
-| `examples/roc-import-policy/` | Not an app: the compile-fixture matrix for the import gate, executed by the `id-caps` integration test `roc_import_policy`. |
-| `examples/rust-world/`, `examples/rust-counter/` | Not Roc: the Rust twin SDK (`plaza_sdk`) and its counter example, emitting the same Plaza exports. |
-| `examples/rust-sketch/` | Not Roc: the `sketch/redo-as-new-stroke` guest (#13608) on `plaza_sdk` — draft vertices stay transient, confirmed strokes are immutable, undo leaves a tombstone, and copy assigns a fresh ID with provenance. Its host load/play fixture is `tests/sketch_host_play.rs` (#13656); `just test-sketch` runs both. |
-| `apps/tic-tac-toe/` | The one packaged app, outside `examples/`: an `app.toml` plus `program/main.roc`. Packaging is an `app.toml` declaring `[program] kind = "roc-world"` and the `[interfaces.web]` binding where the app takes a web surface. |
+| Directory                                        | What it demonstrates                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `examples/roc-counter/`                          | The smallest complete world: guests send `inc`, all participants see the count, and `records` mirrors the count to the host.                                                                                                                                                                                     |
+| `examples/roc-text-counter/`                     | The same counter on the legacy plain-text presentation, importing no platform modules.                                                                                                                                                                                                                           |
+| `examples/roc-chat/`                             | Chat over the capability protocol: `chat.say` and `chat.history` through `RocCap`.                                                                                                                                                                                                                               |
+| `examples/roc-grid/`                             | The `RocGrid` library: a 4×3 byte grid with bounds-checked reads.                                                                                                                                                                                                                                                |
+| `examples/roc-mind-map/`                         | Stable IDs with duplicate labels, a typed cross-link, refused cycles, preserved positions.                                                                                                                                                                                                                       |
+| `examples/roc-burrow/`                           | An excavation game on a semantic text grid: dig/walk commands, a clear quota gating the exit, literal-vector host replay.                                                                                                                                                                                        |
+| `examples/roc-screen/`                           | The `Screen` and `Key` libraries: a structured screen document instead of text.                                                                                                                                                                                                                                  |
+| `examples/lounge/`                               | The capability system end to end: subscriptions, arrival greetings through `chat.say`, and refusal counting.                                                                                                                                                                                                     |
+| `examples/territory/`                            | A complete multiplayer game: at most 8 seated players on a 16×8 grid, adjacency-only claiming, seats that persist across leave, rejoin and restart.                                                                                                                                                              |
+| `examples/roc-cap-demo/`                         | A capability-dependent Roc library plus its app, with two compile-must-fail negative tests for the library import gate.                                                                                                                                                                                          |
+| `examples/roc-import-policy/`                    | Not an app: the compile-fixture matrix for the import gate, executed by the `id-caps` integration test `roc_import_policy`.                                                                                                                                                                                      |
+| `examples/rust-world/`, `examples/rust-counter/` | Not Roc: the Rust twin SDK (`plaza_sdk`) and its counter example, emitting the same Plaza exports.                                                                                                                                                                                                               |
+| `examples/rust-cells/`                           | A second Rust Plaza guest. Step a bounded 5×5 glider with `step`, edit its initial board with `toggle X Y`, or restart it with `reset`. Its Wasm oracle checks each generation, screen output and resume into a fresh instance. Build this standalone example from source.                                       |
+| `examples/rust-sketch/`                          | Not Roc: the `sketch/redo-as-new-stroke` guest (#13608) on `plaza_sdk` — draft vertices stay transient, confirmed strokes are immutable, undo leaves a tombstone, and copy assigns a fresh ID with provenance. Its host load/play fixture is `tests/sketch_host_play.rs` (#13656); `just test-sketch` runs both. |
+| `apps/tic-tac-toe/`                              | The one packaged app, outside `examples/`: an `app.toml` plus `program/main.roc`. Packaging is an `app.toml` declaring `[program] kind = "roc-world"` and the `[interfaces.web]` binding where the app takes a web surface.                                                                                      |
 
 ## Scaffold a new app
 
@@ -51,16 +53,16 @@ Every Roc guest builds against the one shared platform package in `examples/roc-
 
 A guest program provides all eight entry points the platform requires. Some may be stubs, but all eight must exist:
 
-| Entry point | Signature, in words | Contract |
-|---|---|---|
-| `init` | seed → model | The seed is the `U64` the host starts the world with. |
-| `update` | model, participant id, event text → model | Participant id `0` is reserved for host events, including capability results. |
-| `view` | model → text | Legacy text, or a portable screen document. |
-| `layout` | model, width, height → text | Viewport-sized rendering. |
-| `records` | model → text | A JSON object projection; the host mirrors it and serves it to readers. |
-| `wants` | model → text | Subscriptions and one-shot capability requests, as JSON. |
-| `snapshot` | model → text | The whole state as text, for journal checkpoints. |
-| `restore` | text → model | The inverse of `snapshot`. |
+| Entry point | Signature, in words                       | Contract                                                                      |
+| ----------- | ----------------------------------------- | ----------------------------------------------------------------------------- |
+| `init`      | seed → model                              | The seed is the `U64` the host starts the world with.                         |
+| `update`    | model, participant id, event text → model | Participant id `0` is reserved for host events, including capability results. |
+| `view`      | model → text                              | Legacy text, or a portable screen document.                                   |
+| `layout`    | model, width, height → text               | Viewport-sized rendering.                                                     |
+| `records`   | model → text                              | A JSON object projection; the host mirrors it and serves it to readers.       |
+| `wants`     | model → text                              | Subscriptions and one-shot capability requests, as JSON.                      |
+| `snapshot`  | model → text                              | The whole state as text, for journal checkpoints.                             |
+| `restore`   | text → model                              | The inverse of `snapshot`.                                                    |
 
 `update` and `view` are pure. The platform requires no `Task`, and the guest has no host functions to call: all effects go through the capability protocol below.
 
@@ -80,12 +82,12 @@ In Roc, do not build these documents by hand. `RocCap` is the client library: it
 
 Four commands check a guest without a network, a running serve or a second participant. All four are gated on the `sandbox` feature: in a build without it, the subcommands do not exist. See [Building and testing](building.md) for the feature definitions.
 
-| Command | What it does |
-|---|---|
-| `id world dev <DIR>` | Runs the fully offline scratch-world loop over a directory: compile, instantiate, feed inputs and fixtures, and print one JSON report. Its flags include `--platform <DIR>`, `--roc <BIN>`, `--seed <N>` (default `1`), repeatable `--input <TEXT>` and `--fixture <FILE>`, `--fuzz <FILE>` with `--fuzz-seed <N>` (default `42`) and `--fuzz-cases <N>` (default `32`), and a `--watch` mode bounded by `--watch-max-cycles <N>` (default `1000`) and `--watch-debounce-ms <N>` (default `150`). |
-| `id world doctor` | Checks the authoring environment — the Roc compiler, the platform, a journal, a capability ceiling and an execution profile — and exits non-zero only when a check fails; warnings do not fail it. `--json` prints the report as JSON. |
-| `id world replay --module <FILE> --fixture <FILE> --seed <N>` | Replays a recorded fixture against a compiled module. All three flags are required. The verdict line prints first; a record mismatch exits non-zero. `--allow-partial` accepts a partial fixture. |
-| `id world verify --module <FILE> --fixture <FILE> --seed <N>` | The double-replay determinism check over the same three required flags: the module is replayed twice and the first divergence exits non-zero. |
+| Command                                                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id world dev <DIR>`                                          | Runs the fully offline scratch-world loop over a directory: compile, instantiate, feed inputs and fixtures, and print one JSON report. Its flags include `--platform <DIR>`, `--roc <BIN>`, `--seed <N>` (default `1`), repeatable `--input <TEXT>` and `--fixture <FILE>`, `--fuzz <FILE>` with `--fuzz-seed <N>` (default `42`) and `--fuzz-cases <N>` (default `32`), and a `--watch` mode bounded by `--watch-max-cycles <N>` (default `1000`) and `--watch-debounce-ms <N>` (default `150`). |
+| `id world doctor`                                             | Checks the authoring environment — the Roc compiler, the platform, a journal, a capability ceiling and an execution profile — and exits non-zero only when a check fails; warnings do not fail it. `--json` prints the report as JSON.                                                                                                                                                                                                                                                            |
+| `id world replay --module <FILE> --fixture <FILE> --seed <N>` | Replays a recorded fixture against a compiled module. All three flags are required. The verdict line prints first; a record mismatch exits non-zero. `--allow-partial` accepts a partial fixture.                                                                                                                                                                                                                                                                                                 |
+| `id world verify --module <FILE> --fixture <FILE> --seed <N>` | The double-replay determinism check over the same three required flags: the module is replayed twice and the first divergence exits non-zero.                                                                                                                                                                                                                                                                                                                                                     |
 
 `id world measure --module <FILE>` also runs offline, under the same `sandbox` gate: it measures a compiled module's fuel use and prints one JSON object.
 

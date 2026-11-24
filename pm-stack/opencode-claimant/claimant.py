@@ -71,6 +71,11 @@ QUEUES = [
 # ~/fleet-brokers/bin tree was retired by the code#5362 cutover
 # (task 12731).
 REPO_QUEUE_CMD = HOME_DIR / ".local" / "bin" / "repo-queue"
+# The same packaged fleet binary under its own name: this module's
+# GitHub reads and agent notes run through its `gh` sync verbs
+# (code#10973, step 2.2 of #9016) over the fleet token rotation,
+# instead of composing raw `gh` argument lists at each call site.
+FLEET_CMD = HOME_DIR / ".local" / "bin" / "fleet"
 PRIMARY_CLONE = HOME_DIR / "git" / "code"
 
 # OpenCode server coordinates: the standing server requires HTTP
@@ -284,13 +289,43 @@ def read_mode() -> str:
 _code_source: "Dict[str, Any] | None" = None
 
 
+def _read_git_ref(git_dir: "Path", ref: str) -> "str | None":
+    """Resolve a git ref to its commit sha by reading .git directly.
+
+    Loose ref first, then packed-refs. Returns None when the ref is
+    not recorded anywhere. Pure file reads: no git binary is spawned,
+    so this stays usable under the hermetic suite's no-subprocess
+    guard (#13135).
+    """
+    try:
+        sha = (git_dir.joinpath(*ref.split("/"))).read_text().strip()
+    except OSError:
+        sha = ""
+    if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha):
+        return sha
+    try:
+        packed = (git_dir / "packed-refs").read_text().splitlines()
+    except OSError:
+        return None
+    for line in packed:
+        if line.startswith("#") or line.startswith("^"):
+            continue
+        parts = line.split(" ", 1)
+        if len(parts) == 2 and parts[1].strip() == ref and len(parts[0]) == 40:
+            return parts[0]
+    return None
+
+
 def read_code_source() -> "Dict[str, Any]":
     """Read the primary clone's checked-out branch and commit.
 
-    Fail-open by design: this is provenance for the fire log, never
-    a gate. Any git failure (no git binary, not a checkout, timeout)
-    yields state "unreadable" with branch/commit None rather than
-    raising - a fire must never abort because its own provenance
+    Reads .git directly (HEAD plus loose/packed refs) instead of
+    spawning `git rev-parse`: the fire path never forks for its own
+    provenance, and the read stays usable under the hermetic suite's
+    no-subprocess guard (#13135). Fail-open by design: this is
+    provenance for the fire log, never a gate. Any unreadable .git
+    layout yields state "unreadable" with branch/commit None rather
+    than raising - a fire must never abort because its own provenance
     read failed. The result is cached per process: one fire is one
     process, and the checkout does not change under a running fire.
     """
@@ -305,25 +340,28 @@ def read_code_source() -> "Dict[str, Any]":
     }
     _code_source = source
     try:
-        branch = subprocess.run(
-            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        commit = subprocess.run(
-            ["git", "-C", str(PRIMARY_CLONE), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if branch.returncode != 0 or commit.returncode != 0:
-            source["state"] = "unreadable"
-            return source
-        source["branch"] = branch.stdout.strip() or None
-        source["commit"] = commit.stdout.strip() or None
-        if source["branch"] is None or source["commit"] is None:
-            source["state"] = "unreadable"
+        git_dir = PRIMARY_CLONE / ".git"
+        if git_dir.is_file():
+            # Worktree / linked checkout: .git holds "gitdir: <path>".
+            target = git_dir.read_text().strip()
+            if not target.startswith("gitdir:"):
+                raise ValueError("unexpected .git file")
+            git_dir = Path(target[len("gitdir:") :].strip())
+            if not git_dir.is_absolute():
+                git_dir = PRIMARY_CLONE / git_dir
+        head = (git_dir / "HEAD").read_text().strip()
+        if head.startswith("ref:"):
+            ref = head[len("ref:") :].strip()
+            branch = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+            commit = _read_git_ref(git_dir, ref)
+        elif len(head) == 40 and all(c in "0123456789abcdef" for c in head):
+            branch, commit = "HEAD", head  # detached HEAD, as rev-parse reports it
+        else:
+            raise ValueError("unparsable HEAD")
+        if not branch or commit is None:
+            raise ValueError("ref unresolvable")
+        source["branch"] = branch
+        source["commit"] = commit
     except Exception:
         source["state"] = "unreadable"
     return source
@@ -1251,10 +1289,20 @@ def _collect_handed_offs(queue: str, want: int, *, diagnostic=None) -> Dict[int,
         row = data if isinstance(data, dict) else None
         claimed_id = row.get("id") if isinstance(row, dict) else None
         if claimed_id is None:
-            if result.returncode != 0:
-                outcome = "cli_nonzero"
-            elif row is not None and "task" in row and row["task"] is None:
+            if (
+                row is not None
+                and "task" in row
+                and row["task"] is None
+                and result.returncode in (0, 5)
+            ):
+                # cmd_claim's "nothing claimable" answer: a well-formed
+                # {"task": null} body with exit 5 (or 0). That is the
+                # ordinary empty result, not a CLI failure, so classify it
+                # before the non-zero-exit fallback. Any other exit code is
+                # a broker error and stays cli_nonzero.
                 outcome = "no_match"
+            elif result.returncode != 0:
+                outcome = "cli_nonzero"
             else:
                 outcome = "missing_claim_row"
             break
@@ -1281,31 +1329,59 @@ _CREDENTIAL_KEY_PARTS = (
 
 
 def _github_issue_labels(repo: str, issue_number: int) -> set:
-    """Live label names on an issue, read through the gh CLI.
+    """Live label names on an issue, read through the fleet gh
+    sync-labels verb (code#10973) over the token rotation.
     Raises on any failure so the caller can fail closed (#7670)."""
     result = subprocess.run(
         [
+            str(FLEET_CMD),
             "gh",
-            "issue",
-            "view",
-            str(issue_number),
+            "sync-labels",
             "--repo",
             repo,
-            "--json",
-            "labels",
-            "--jq",
-            "[.labels[].name]",
+            "issue",
+            str(issue_number),
         ],
         capture_output=True,
         text=True,
         timeout=15,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"gh issue view failed: {result.stderr.strip()[:200]}")
+        raise RuntimeError(
+            f"fleet gh sync-labels failed: {result.stderr.strip()[:200]}"
+        )
     names = json.loads(result.stdout)
     if not isinstance(names, list):
-        raise RuntimeError("gh issue view returned a non-list label set")
+        raise RuntimeError("fleet gh sync-labels returned a non-list label set")
     return {str(n) for n in names}
+
+
+def _post_issue_agent_note(repo, issue_number, note) -> bool:
+    """Post one agent note on an issue through the fleet gh
+    sync-comment verb (code#10973). True iff the verb's exit code
+    confirms the post; any failure (including the verb failing to
+    run at all) is False - a failed note never undoes the queue
+    action it records, per the note posters' shared contract."""
+    try:
+        result = subprocess.run(
+            [
+                str(FLEET_CMD),
+                "gh",
+                "sync-comment",
+                "--repo",
+                str(repo),
+                "issue",
+                str(int(str(issue_number).lstrip("#"))),
+                "--body",
+                note,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
 
 
 def _prompt_safe_packet(packet):
@@ -1334,7 +1410,7 @@ def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
     ids - no packet content enters it. A failed note never unbinds
     or fails the launch (the binding stands; supervision owns the
     session) - the caller flags the launch entry instead. Returns
-    True iff the post is confirmed by the gh CLI's exit code."""
+    True iff the post is confirmed by the sync verb's exit code."""
     _packet = packet if isinstance(packet, dict) else {}
     repo = _packet.get("repo") or ""
     issue_no = candidate.get("issue_number")
@@ -1354,25 +1430,7 @@ def _post_launch_agent_note(task_id, session_id, candidate, packet) -> bool:
         f"(step 4e). The session works the task under its bound "
         f"claim; terminal state is recorded by the worker session."
     )
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "comment",
-                str(int(str(issue_no).lstrip("#"))),
-                "--repo",
-                str(repo),
-                "--body",
-                note,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0
+    return _post_issue_agent_note(repo, issue_no, note)
 
 
 HANDBACK_REASON_CLASS = "executor-saturated"
@@ -1445,7 +1503,7 @@ def _post_handback_agent_note(task_id, candidate) -> bool:
     local fire log). Mirrors _post_launch_agent_note's repo/issue
     resolution and failure contract: a failed note never undoes
     the park - the caller records it in the hand-back record.
-    Returns True iff the post is confirmed by the gh CLI's exit
+    Returns True iff the post is confirmed by the sync verb's exit
     code."""
     packet = (
         candidate.get("packet") if isinstance(candidate.get("packet"), dict) else {}
@@ -1473,25 +1531,7 @@ def _post_handback_agent_note(task_id, candidate) -> bool:
         "not a failure: a Claude lane can still claim the task if "
         "urgent."
     )
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "comment",
-                str(int(str(issue_no).lstrip("#"))),
-                "--repo",
-                str(repo),
-                "--body",
-                note,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0
+    return _post_issue_agent_note(repo, issue_no, note)
 
 
 def _post_stuck_holder_agent_note(
@@ -1504,7 +1544,7 @@ def _post_stuck_holder_agent_note(
     _post_handback_agent_note's failure contract: a failed note
     does not mark the episode escalated, so nudges.py retries the
     escalation next round. Returns True iff the post is confirmed
-    by the gh CLI's exit code."""
+    by the sync verb's exit code."""
     if not repo or not issue_number:
         return False
     note = (
@@ -1520,25 +1560,7 @@ def _post_stuck_holder_agent_note(
         "release it. The babysitter sends no further nudges for "
         "this stall episode."
     )
-    try:
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "comment",
-                str(int(str(issue_number).lstrip("#"))),
-                "--repo",
-                str(repo),
-                "--body",
-                note,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception:
-        return False
-    return result.returncode == 0
+    return _post_issue_agent_note(repo, issue_number, note)
 
 
 def hand_back_step(

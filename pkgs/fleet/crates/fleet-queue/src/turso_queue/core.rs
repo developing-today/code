@@ -84,6 +84,7 @@ pub(crate) fn after_iso(secs: i64) -> String {
 pub(crate) enum Arg {
     Text(String),
     Int(i64),
+    Float(f64),
     Null,
 }
 
@@ -92,6 +93,9 @@ impl Arg {
         match self {
             Arg::Text(v) => json!({"type": "text", "value": v}),
             Arg::Int(v) => json!({"type": "integer", "value": v.to_string()}),
+            // hrana carries floats as JSON numbers (integers go as
+            // strings); both shapes are accepted on read.
+            Arg::Float(v) => json!({"type": "float", "value": v}),
             Arg::Null => json!({"type": "null"}),
         }
     }
@@ -129,9 +133,11 @@ pub(crate) fn cell_to_json(cell: &Value) -> Value {
             .and_then(|s| s.parse::<i64>().ok())
             .map(|n| json!(n))
             .unwrap_or(Value::Null),
+        // The pipeline may carry a float as a JSON number
+        // (hrana) or as a string (mirrors that stringify args);
+        // accept both so REAL columns read back either way.
         "float" => raw
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<f64>().ok())
+            .and_then(|v| v.as_f64().or_else(|| v.as_str()?.parse::<f64>().ok()))
             .and_then(serde_json::Number::from_f64)
             .map(Value::Number)
             .unwrap_or(Value::Null),
@@ -1010,12 +1016,13 @@ impl Clone for Arg {
         match self {
             Arg::Text(s) => Arg::Text(s.clone()),
             Arg::Int(n) => Arg::Int(*n),
+            Arg::Float(f) => Arg::Float(*f),
             Arg::Null => Arg::Null,
         }
     }
 }
 
-pub(crate) const SCHEMA: [&str; 24] = [
+pub(crate) const SCHEMA: [&str; 31] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1043,6 +1050,7 @@ pub(crate) const SCHEMA: [&str; 24] = [
     "CREATE TABLE IF NOT EXISTS leases (\
         task_id INTEGER PRIMARY KEY, worker_id TEXT NOT NULL, \
         lease_until TEXT NOT NULL, heartbeat_at TEXT NOT NULL)",
+    include_str!("heartbeat_lease_mirror.sql"),
     "CREATE TABLE IF NOT EXISTS lanes (\
         lane_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, \
         queue TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)",
@@ -1086,6 +1094,17 @@ pub(crate) const SCHEMA: [&str; 24] = [
         id INTEGER PRIMARY KEY CHECK (id = 1), \
         consecutive_rate_limits INTEGER NOT NULL DEFAULT 0, \
         open_until TEXT, last_error_class TEXT, updated_at TEXT NOT NULL)",
+    // #14100: durable retry for priority-category synchronization.
+    // This is intentionally separate from creation_outbox: reprioritize
+    // edits an existing issue and is not an issue-creation intent.
+    "CREATE TABLE IF NOT EXISTS reprioritize_sync_outbox (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
+        repo TEXT NOT NULL, issue INTEGER NOT NULL, category TEXT NOT NULL, \
+        label TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', \
+        attempts INTEGER NOT NULL DEFAULT 0, available_at TEXT NOT NULL, \
+        last_error_class TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS reprioritize_sync_due \
+        ON reprioritize_sync_outbox(state, available_at)",
     // #8582 increment 2: the merge-intent table, DDL of record in
     // the pure core module.
     crate::merge_intent::MERGE_INTENT_DDL,
@@ -1108,6 +1127,13 @@ pub(crate) const SCHEMA: [&str; 24] = [
     crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS_IDX,
     crate::turso_queue::ACTIONS_EXEC_DDL_IO,
     crate::turso_queue::ACTIONS_EXEC_DDL_IO_IDX,
+    // #13765: central placement coordinator — slot claims, the
+    // cross-seat load view, the fleet-wide Blacksmith budget, and
+    // the waitlist. DDL of record in the placement_coord module.
+    crate::turso_queue::PLACEMENT_COORD_DDL_OWNER,
+    crate::turso_queue::PLACEMENT_COORD_DDL_CLAIMS,
+    crate::turso_queue::PLACEMENT_COORD_DDL_BUDGETS,
+    crate::turso_queue::PLACEMENT_COORD_DDL_CLAIMS_IDX,
 ];
 
 // ---------------------------------------------------------------------------

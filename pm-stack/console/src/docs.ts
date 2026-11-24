@@ -15,8 +15,8 @@
 // them depends on this process.
 import { createHash } from "node:crypto";
 
-export type DocName = "core" | "questions" | "ops";
-export const DOC_NAMES: DocName[] = ["core", "questions", "ops"];
+export type DocName = "core" | "questions" | "ops" | "done";
+export const DOC_NAMES: DocName[] = ["core", "questions", "ops", "done"];
 
 interface Section {
   /** Refresh when older than this while someone is looking. */
@@ -67,6 +67,7 @@ const DOCS: Record<DocName, string[]> = {
   core: ["board", "sessions", "census", "asks", "questionCount"],
   questions: ["questions"],
   ops: ["prs", "priorities", "agents", "services", "more"],
+  done: ["done"],
 };
 /** Stop refreshing when nobody has asked for this long. */
 const WATCH_MS = 10 * 60_000;
@@ -80,6 +81,16 @@ export class Docs {
   /** Small values that travel in the core document beside its sections. */
   private extras: Record<string, unknown> = {};
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** For each section, a fingerprint of what the documents say of it:
+   * its content and its health, and not when it was read. */
+  private marks = new Map<string, string>();
+  /** Told the documents whose content has just changed: a section read
+   * with other content or another health, a value beside the sections
+   * set to something else, what the owner did. It is what a holder
+   * with someone connected passes on, so the app reads again at once
+   * and not at its next look. Never told of a read that changed
+   * nothing, which is most of them. */
+  onChange: ((docs: DocName[]) => void) | null = null;
 
   constructor(
     loaders: Record<string, { ttlMs: number; load: () => Promise<unknown> }>,
@@ -119,9 +130,20 @@ export class Docs {
         // A kept copy its loader can replace is as stale as it is old.
         s.at = kept ? s.goodAt : this.now();
         s.loading = null;
+        this.marked(name, s);
       }
     })();
     return s.loading;
+  }
+
+  /** Note what the documents now say of a section, and tell whoever
+   * listens if that is not what they said before. */
+  private marked(name: string, s: Section): void {
+    const mark = fingerprint([s.data, s.ok, s.error]);
+    if (this.marks.get(name) === mark) return;
+    this.marks.set(name, mark);
+    const docs = (Object.keys(DOCS) as DocName[]).filter((doc) => DOCS[doc].includes(name));
+    if (docs.length > 0) this.onChange?.(docs);
   }
 
   /** Resolves when no read of these sections is under way: what a
@@ -229,7 +251,13 @@ export class Docs {
   }
 
   logAct(act: Act): void {
-    this.acts = [act, ...this.acts.filter((a) => a.id !== act.id)].slice(0, ACTS_KEPT);
+    this.setActs([act, ...this.acts.filter((a) => a.id !== act.id)].slice(0, ACTS_KEPT));
+  }
+
+  private setActs(acts: Act[]): void {
+    const changed = this.onChange !== null && JSON.stringify(acts) !== JSON.stringify(this.acts);
+    this.acts = acts;
+    if (changed) this.onChange?.(["core"]);
   }
 
   /** What the owner did lately, newest first; and a way to put it back
@@ -239,13 +267,15 @@ export class Docs {
   }
 
   restoreActs(acts: Act[]): void {
-    this.acts = acts.slice(0, ACTS_KEPT);
+    this.setActs(acts.slice(0, ACTS_KEPT));
   }
 
   /** Set, or with undefined remove, a value carried in the core document. */
   extra(name: string, value: unknown): void {
+    const changed = this.onChange !== null && JSON.stringify(this.extras[name]) !== JSON.stringify(value);
     if (value === undefined) delete this.extras[name];
     else this.extras[name] = value;
+    if (changed) this.onChange?.(["core"]);
   }
 
   /** Someone is looking, though not through this process: keep reading. */

@@ -55,7 +55,10 @@ use crate::relay_gate::MembershipFrontier;
 /// Group authorization backed by the signed graph: wraps the node's
 /// shared event store and answers [`MembershipFrontier`] from its
 /// resolved group rosters. Clones share the store, so a gate built on
-/// a clone sees membership changes as they are ingested.
+/// a clone sees membership changes as they are ingested. The store
+/// memoizes each group's resolved roster until the next committed
+/// ingest (#13043), so a gate decision costs a roster lookup rather
+/// than a whole-store fold per message.
 #[derive(Clone, Debug)]
 pub struct GraphFrontier {
     store: SharedEventStore<EventStore>,
@@ -240,6 +243,55 @@ mod tests {
         assert!(
             !frontier.is_authorized(&pkey_id(&bob), &group_text),
             "a removed member is not on the resolved roster"
+        );
+    }
+
+    #[test]
+    fn removal_ingested_after_the_frontier_opens_takes_effect() {
+        // The store's roster memo (#13043) must not freeze membership
+        // at first read: events ingested through the shared store
+        // after the frontier is built move the store generation, so
+        // the next gate question re-resolves.
+        let (alice, bob, carol) = (pkey(81), pkey(82), pkey(83));
+        let (_dir, store, group) = store_with_group(&alice, &bob);
+        // Carol's unrelated group, ingested later through the handle.
+        let carol_create = GroupAction::Create {
+            initial_members: vec![(individual(&carol), Access::manage())],
+        };
+        let (carol_event, carol_body) = group_op(&carol, 0, None, vec![], None, &carol_create);
+
+        let shared = SharedEventStore::new(store);
+        let frontier = GraphFrontier::new(shared.clone());
+        let group_text = group.to_string();
+        assert!(frontier.is_authorized(&pkey_id(&bob), &group_text));
+
+        // Unrelated ingest through the shared handle: the existing
+        // members' answers are unchanged.
+        shared
+            .ingest(&carol_event.bytes, Some(&carol_body), 0)
+            .unwrap();
+        assert!(frontier.is_authorized(&pkey_id(&alice), &group_text));
+        assert!(frontier.is_authorized(&pkey_id(&bob), &group_text));
+
+        // The removal, ingested the same way, refuses Bob at once.
+        let remove_bob = GroupAction::Remove {
+            member: individual(&bob),
+        };
+        let (remove_event, remove_body) = group_op(
+            &alice,
+            1,
+            Some(group),
+            vec![group],
+            Some(group),
+            &remove_bob,
+        );
+        shared
+            .ingest(&remove_event.bytes, Some(&remove_body), 0)
+            .unwrap();
+        assert!(frontier.is_authorized(&pkey_id(&alice), &group_text));
+        assert!(
+            !frontier.is_authorized(&pkey_id(&bob), &group_text),
+            "a removal ingested after the frontier opened must take effect"
         );
     }
 

@@ -238,8 +238,11 @@ pub trait GrantStore {
     /// [`GrantStoreError::DuplicateGrantId`] if the id is taken;
     /// [`GrantStoreError::DuplicateKeyHash`] if a live grant
     /// already holds the key hash. A *voided* grant's hash may be
-    /// re-inserted only by its own correction (a reissue whose
-    /// `correction_of` names the voided grant).
+    /// re-inserted only by its own correction chain: a reissue
+    /// whose `correction_of` names the voided tip, with every
+    /// other prior for the hash voided on that tip's ancestry
+    /// (so A->B->C chains are accepted but forks and fresh
+    /// registrations over voided grants are rejected).
     fn insert_grant(&mut self, grant: &Grant) -> Result<(), GrantStoreError>;
 
     /// Replace an existing grant row (the service's
@@ -288,14 +291,43 @@ impl GrantStore for InMemoryGrantStore {
             return Err(GrantStoreError::DuplicateGrantId(grant.id));
         }
         if let Some(ids) = self.by_hash.get(&grant.steam_key_hash) {
-            for id in ids {
-                if let Some(existing) = self.by_id.get(id) {
-                    let is_own_correction = existing.state == GrantState::Voided
-                        && grant.correction_of == Some(existing.id);
-                    if existing.state != GrantState::Voided || !is_own_correction {
-                        return Err(GrantStoreError::DuplicateKeyHash);
-                    }
+            // The incoming grant's correction ancestry: the voided
+            // tip it corrects plus every grant that tip
+            // transitively corrects. A chained reissue (A->B->C) is
+            // a reissue of the voided tip B whose own ancestry
+            // covers A; a fork off a non-tip, or a fresh
+            // registration over a voided grant, names no such chain
+            // and is still rejected.
+            let mut ancestors: Vec<u128> = Vec::new();
+            let mut cursor = grant.correction_of;
+            while let Some(id) = cursor {
+                if ancestors.contains(&id) {
+                    break;
                 }
+                ancestors.push(id);
+                cursor = self.by_id.get(&id).and_then(|g| g.correction_of);
+            }
+            for id in ids {
+                match self.by_id.get(id) {
+                    Some(existing)
+                        if existing.state == GrantState::Voided
+                            && ancestors.contains(&existing.id) => {}
+                    _ => return Err(GrantStoreError::DuplicateKeyHash),
+                }
+            }
+            // The correction must name a real voided tip holding
+            // this same hash — a `correction_of` pointing nowhere,
+            // at a live grant, or at another hash's row is not a
+            // reissue of this chain.
+            match grant.correction_of {
+                Some(parent)
+                    if ancestors.first() == Some(&parent)
+                        && matches!(
+                            self.by_id.get(&parent),
+                            Some(p) if p.state == GrantState::Voided
+                                && p.steam_key_hash == grant.steam_key_hash
+                        ) => {}
+                _ => return Err(GrantStoreError::DuplicateKeyHash),
             }
         }
         self.by_id.insert(grant.id, grant.clone());

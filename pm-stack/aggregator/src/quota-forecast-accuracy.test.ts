@@ -8,11 +8,15 @@ import {
   FORECAST_POOLS,
   SERVICE_ID_RENAME_ALIASES,
   buildForecastAccuracyLedger,
+  deriveRealizedDowntimeWindows,
   errorDistribution,
   forecastAccuracySeriesKey,
   indexPercentRecords,
   pointsForWindow,
+  scoreDowntimePair,
+  scoreDowntimeWindows,
   segmentPeriods,
+  summarizeDowntimeScoring,
   type ForecastAccuracyLedger,
 } from "./quota-forecast-accuracy.ts";
 import type { SnapshotRecord } from "./model.ts";
@@ -245,5 +249,121 @@ describe("error distribution (oracle: the quantile definitions)", () => {
   });
   test("empty is null, not zero", () => {
     expect(errorDistribution([])).toBeNull();
+  });
+});
+
+describe("downtime_window scoring (oracle: C4 design §3 over fixture prediction/realized pairs)", () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const pred = (id: string, earliestMs: number, latestMs: number, state = "predicted") => ({
+    id,
+    state,
+    prediction: { earliest: iso(earliestMs), latest: iso(latestMs) },
+  });
+  const honesty = (id: string, state = "insufficient_history") => ({ id, state, prediction: null });
+
+  test("hit: exact window scores zero start/end error and overlap 1", () => {
+    const scoring = scoreDowntimeWindows({
+      predictions: [pred("p1", T0 + 4 * H, T0 + 8 * H)],
+      realized: [{ start: iso(T0 + 4 * H), end: iso(T0 + 8 * H) }],
+    });
+    expect(scoring.hits).toBe(1);
+    expect(scoring.falseWindows).toBe(0);
+    expect(scoring.misses).toBe(0);
+    const fact = scoring.facts[0];
+    expect(fact?.outcome).toBe("hit");
+    expect(fact?.startErrorMin).toBe(0);
+    expect(fact?.endErrorMin).toBe(0);
+    expect(fact?.overlapIoU).toBe(1);
+    const baseline = summarizeDowntimeScoring(scoring);
+    expect(baseline.precision).toBe(1);
+    expect(baseline.recall).toBe(1);
+    expect(baseline.meanOverlapIoU).toBe(1);
+  });
+
+  test("partial overlap: signed start/end errors and intersection-over-union", () => {
+    // Predicted [T0+2h, T0+6h], realized [T0+4h, T0+8h]:
+    // start error −120m, end error −120m, intersection 2h over union 6h.
+    const pair = scoreDowntimePair({
+      predictedEarliest: iso(T0 + 2 * H),
+      predictedLatest: iso(T0 + 6 * H),
+      realizedStart: iso(T0 + 4 * H),
+      realizedEnd: iso(T0 + 8 * H),
+    });
+    expect(pair.startErrorMin).toBe(-120);
+    expect(pair.endErrorMin).toBe(-120);
+    expect(pair.overlapIoU).toBeCloseTo(2 / 6, 3);
+    const scoring = scoreDowntimeWindows({
+      predictions: [pred("p1", T0 + 2 * H, T0 + 6 * H)],
+      realized: [{ start: iso(T0 + 4 * H), end: iso(T0 + 8 * H) }],
+    });
+    expect(scoring.hits).toBe(1);
+    expect(scoring.facts[0]?.overlapIoU).toBeCloseTo(2 / 6, 3);
+  });
+
+  test("false window: a predicted window that never occurs", () => {
+    const scoring = scoreDowntimeWindows({
+      predictions: [pred("p1", T0 + 4 * H, T0 + 8 * H)],
+      realized: [],
+    });
+    expect(scoring.hits).toBe(0);
+    expect(scoring.falseWindows).toBe(1);
+    expect(scoring.misses).toBe(0);
+    expect(scoring.facts[0]?.outcome).toBe("false_window");
+    expect(scoring.facts[0]?.realizedStart).toBeNull();
+    const baseline = summarizeDowntimeScoring(scoring);
+    expect(baseline.precision).toBe(0);
+    expect(baseline.recall).toBeNull();
+  });
+
+  test("miss: a realized complete-downtime with no prediction", () => {
+    const scoring = scoreDowntimeWindows({
+      predictions: [],
+      realized: [{ start: iso(T0 + 4 * H), end: iso(T0 + 8 * H) }],
+    });
+    expect(scoring.hits).toBe(0);
+    expect(scoring.falseWindows).toBe(0);
+    expect(scoring.misses).toBe(1);
+    expect(scoring.facts[0]?.outcome).toBe("miss");
+    expect(scoring.facts[0]?.predictedEarliest).toBeNull();
+    const baseline = summarizeDowntimeScoring(scoring);
+    expect(baseline.precision).toBeNull();
+    expect(baseline.recall).toBe(0);
+  });
+
+  test("honesty states are published, never scored (oracle: design §3 no_basis precedent)", () => {
+    const scoring = scoreDowntimeWindows({
+      predictions: [honesty("h1"), honesty("h2", "no_basis")],
+      realized: [],
+    });
+    expect(scoring.predictionsScored).toBe(0);
+    expect(scoring.predictionsUnscored).toBe(2);
+    expect(scoring.facts).toHaveLength(0);
+    const baseline = summarizeDowntimeScoring(scoring);
+    expect(baseline.scoreable).toBe(false);
+    expect(baseline.unscoreableReasons.join(" ")).toContain("honesty state");
+  });
+
+  test("realized join: maximal intervals where every provider is down (oracle: §7 intersection)", () => {
+    // Provider A down [0h,10h]; provider B down [2h,4h] and [6h,8h]:
+    // realized complete-downtime is [2h,4h] and [6h,8h].
+    const windows = deriveRealizedDowntimeWindows([
+      [{ start: T0, end: T0 + 10 * H }],
+      [
+        { start: T0 + 2 * H, end: T0 + 4 * H },
+        { start: T0 + 6 * H, end: T0 + 8 * H },
+      ],
+    ]);
+    expect(windows).toEqual([
+      { start: T0 + 2 * H, end: T0 + 4 * H },
+      { start: T0 + 6 * H, end: T0 + 8 * H },
+    ]);
+  });
+
+  test("realized join: no common overlap, or any provider never down, yields no windows", () => {
+    expect(
+      deriveRealizedDowntimeWindows([[{ start: T0, end: T0 + 2 * H }], [{ start: T0 + 4 * H, end: T0 + 6 * H }]]),
+    ).toEqual([]);
+    expect(deriveRealizedDowntimeWindows([[{ start: T0, end: T0 + 2 * H }], []])).toEqual([]);
+    expect(deriveRealizedDowntimeWindows([])).toEqual([]);
   });
 });

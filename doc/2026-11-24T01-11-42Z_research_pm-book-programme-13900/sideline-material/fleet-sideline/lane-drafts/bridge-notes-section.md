@@ -1,4 +1,3 @@
-
 ## Notes and the public wake signal — the next bridge surface (in flight)
 
 Everything above this section is the bridge as built and shipped: the
