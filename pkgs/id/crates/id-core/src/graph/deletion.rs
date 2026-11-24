@@ -236,7 +236,7 @@ impl DeletionStateMachine {
                     DeletionState::DeleteRequested {
                         request_id: current,
                         reason: current_reason,
-                    } if current == request_id && current_reason == &reason => {
+                    } if current == request_id && current_reason == reason => {
                         Ok(TransitionOutcome::Idempotent)
                     }
                     DeletionState::TrueDeletedOnThisServer { .. } => {
@@ -549,7 +549,7 @@ impl DeletionStateMachine {
 
 fn action_ticket(action: &DeletionAction) -> u64 {
     match action {
-        DeletionAction::Request { request_id }
+        DeletionAction::Request { request_id, .. }
         | DeletionAction::Deliver { request_id, .. }
         | DeletionAction::Grant { request_id, .. }
         | DeletionAction::Decline { request_id, .. } => *request_id,
