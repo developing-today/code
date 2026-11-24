@@ -295,7 +295,7 @@ export class Ops {
   // ---- queue -----------------------------------------------------------
 
   /** One request to the queue store carrying `statements` in order. */
-  private async pipeline(statements: { sql: string; args: (string | number)[] }[]) {
+  private async pipeline(statements: { sql: string; args: (string | number | null)[] }[]) {
     const body = {
       requests: [
         ...statements.map((st) => ({
@@ -303,7 +303,11 @@ export class Ops {
           stmt: {
             sql: st.sql,
             args: st.args.map((a) =>
-              typeof a === "number" ? { type: "integer", value: String(a) } : { type: "text", value: a },
+              a === null
+                ? { type: "null" }
+                : typeof a === "number"
+                  ? { type: "integer", value: String(a) }
+                  : { type: "text", value: a },
             ),
           },
         })),
@@ -365,6 +369,23 @@ export class Ops {
     });
   }
 
+  /**
+   * Writes to the queue store, in order, in one round trip: filing a
+   * task (src/filing.ts) and moving one along the scale are the only
+   * ones. Each statement stands alone (the store commits each as it
+   * goes), so what must be all-or-nothing is written as one statement.
+   * Answers what each statement returned.
+   */
+  async writes(statements: { sql: string; args: (string | number | null)[] }[]): Promise<Row[][]> {
+    for (const st of statements) {
+      if (!/^\s*(insert|update)\b/i.test(st.sql))
+        throw new Error("the console writes to the queue store only by insert and update");
+    }
+    return (await this.pipeline(statements)).map((result) =>
+      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, fromStore(row[i])]))),
+    );
+  }
+
   /** Several reads in one round trip. Reads only: anything else throws. */
   async reads(statements: { sql: string; args: (string | number)[] }[]): Promise<Row[][]> {
     for (const st of statements) {
@@ -380,9 +401,9 @@ export class Ops {
   }
 
   /**
-   * Move a queued task along the priority scale. The one write this
-   * service makes to the queue store, because the queue has no verb for
-   * it: one column, on one row, and only while the task is still queued.
+   * Move a queued task along the priority scale (the queue has no verb
+   * for it): one column, on one row, and only while the task is still
+   * queued. Filing a task (src/filing.ts) is the other write.
    */
   async setTaskPriority(task: unknown, priority: unknown) {
     const t = id(task, "task");
@@ -886,7 +907,10 @@ export class Ops {
     if (n !== null) argv.push("--limit", String(n));
     // The text goes on stdin, so nothing in it is read as an option.
     argv.push("-");
-    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as Record<string, unknown> | null;
+    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as Record<
+      string,
+      unknown
+    > | null;
     return matchReport(out, targets, command === true);
   }
 
@@ -914,7 +938,15 @@ export class Ops {
    * thread onto that batch. The answer is the bridge's offer row. */
   async offer(to: unknown, body: unknown, command: unknown, slots: unknown, ttlSeconds?: unknown) {
     const targets = bridgeTargets(to);
-    const argv = [this.cfg.fleetBin, "bridge", "offer", "--to", targets.join(","), "--slots", String(id(slots, "slots"))];
+    const argv = [
+      this.cfg.fleetBin,
+      "bridge",
+      "offer",
+      "--to",
+      targets.join(","),
+      "--slots",
+      String(id(slots, "slots")),
+    ];
     if (command === true) argv.push("--command");
     const ttl = optionalCount(ttlSeconds, "ttl", 7 * 24 * 3600);
     if (ttl !== null) argv.push("--ttl", String(ttl));

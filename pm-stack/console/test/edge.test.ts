@@ -41,6 +41,7 @@ import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
 import { TASKS_BY_DAY_SQL } from "../src/trends.ts";
 import { DONE_COUNT_SQL, DONE_KINDS_SQL, DONE_TASKS_SQL } from "../src/work.ts";
+import { brokerDb, isFiling, storeAnswer } from "./broker-store.ts";
 import { asThePlatformFetch, browser, signer } from "./support.ts";
 
 const HOST = "pm.example";
@@ -226,6 +227,9 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   const ghTags = { on: true, unchanged: 0 };
   /** The queue store taking this side's token for reading only. */
   const queueReadOnly = { on: false };
+  /** The queue store not answering what filing a task asks of it (the
+   * rest of what is read here still answers). */
+  const queueFilingDown = { on: false };
   /** Calls GitHub gives no answer to at all, and calls it is slow to
    * answer: held until the test lets them go. */
   const ghDrops: ((method: string, url: string) => boolean)[] = [];
@@ -336,6 +340,8 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   ];
   const taskRow = (t: (typeof queueTasks)[number]) =>
     TASK_COLS.map((c) => ({ value: (t as Record<string, string | number | null>)[c] ?? null }));
+  /** Where the edge files tasks: the broker's own tables. */
+  const queueDb = brokerDb();
   const queueAnswer = (sql: string, args: (string | number)[]) => {
     const cols = (names: string[]) => names.map((name) => ({ name }));
     const rows = (rs: { value: string | number | null }[][]) => rs;
@@ -774,7 +780,15 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
       return {
         ok: true,
         status: 201,
-        json: async () => ({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 }),
+        json: async () => ({
+          batch: "b1",
+          messages: [],
+          unregistered: [],
+          matched: 1,
+          delivered: 1,
+          recipients: ["lane-1"],
+          remaining: 0,
+        }),
       };
     }
     if (method === "GET" && u.endsWith("/agents")) {
@@ -859,8 +873,11 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
         return { ok: false, status: 403, json: async () => ({ error: "read only" }) };
       }
       const parsed = JSON.parse(init?.body ?? "{}") as {
-        requests?: { stmt?: { sql: string; args: { value: string }[] } }[];
+        requests?: { stmt?: { sql: string; args: { type?: string; value: string }[] } }[];
       };
+      if (queueFilingDown.on && (parsed.requests ?? []).some((r) => r.stmt && isFiling(r.stmt.sql))) {
+        return { ok: false, status: 503, json: async () => ({ error: "unavailable" }) };
+      }
       const results: unknown[] = [];
       for (const req of parsed.requests ?? []) {
         if (!req.stmt) {
@@ -869,6 +886,11 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
         }
         const args = (req.stmt.args ?? []).map((a) => a.value);
         queueCalls.push({ sql: req.stmt.sql, args });
+        // Filing a task goes to a store with the broker's own tables.
+        if (isFiling(req.stmt.sql)) {
+          results.push(storeAnswer(queueDb, req.stmt.sql, req.stmt.args as { type: string; value?: string }[]));
+          continue;
+        }
         results.push({ type: "ok", response: { result: queueAnswer(req.stmt.sql, args) } });
       }
       return { ok: true, status: 200, json: async () => ({ results }) };
@@ -1347,6 +1369,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     ghHolds,
     storeSlow,
     queueReadOnly,
+    queueFilingDown,
     ghBreaks,
     queueRefuses,
     queueRefused,
@@ -1363,6 +1386,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     bridgeRefuses,
     githubCalls,
     queueCalls,
+    queueDb,
     strays,
     live,
     ghIssues,
@@ -3915,7 +3939,16 @@ describe("the edge does the core itself", () => {
     const sent = await w.act("message.send", { to: ["lane-1"], text: "from the edge" });
     expect(await sent.json()).toEqual({
       ok: true,
-      result: { to: ["lane-1"], command: false, batch: "b1", matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0, unregistered: [] },
+      result: {
+        to: ["lane-1"],
+        command: false,
+        batch: "b1",
+        matched: 1,
+        delivered: 1,
+        recipients: ["lane-1"],
+        remaining: 0,
+        unregistered: [],
+      },
     });
     // The bridge was asked once, over its binding, as the PM stack.
     expect(w.bridgeCalls).toHaveLength(1);
@@ -4311,7 +4344,7 @@ describe("the edge does the core itself", () => {
   test("what the owner does is done here at once, laptop in reach or not, and never sent to the laptop", async () => {
     const w = await primary();
     const reply = await w.act("ask.reply", { issue: 201, text: "Thanks — noted." });
-    expect(await reply.json()).toEqual({ ok: true, result: { issue: 201, queued: true } });
+    expect(await reply.json()).toEqual({ ok: true, result: { issue: 201, queued: true, task: 1, status: "queued" } });
     const comments = () => w.githubCalls.filter((c) => c.method === "POST" && c.url.includes("/issues/201/comments"));
     expect(comments()).toHaveLength(1);
     expect(JSON.parse(comments()[0].body ?? "{}").body).toContain("Thanks — noted.");
@@ -4355,8 +4388,13 @@ describe("the edge does the core itself", () => {
     // The laptop was in reach the whole time, and was asked to do none of it.
     expect(w.ran).toEqual([]);
     expect(onlyPokes(w)).toBe(true);
-    // Only the reply's queue task waits for a machine.
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    // The reply's queue task is filed here too, straight into the
+    // queue's store, and nothing waits for a machine. A reply files a
+    // task even where the work it answers is done: it says so.
+    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect(
+      w.queueDb.query("SELECT id, status, json_extract(payload, '$.dedupe_override') AS said FROM tasks").all(),
+    ).toEqual([{ id: 1, status: "queued", said: "the owner replied at 2026-11-22T12:00:00.000Z" }]);
     // Each is on this side's record of what was done, without what was typed.
     const audit = w.stored.get("audit") as { action: string; phase: string; ok?: boolean; args: unknown }[];
     expect(audit.filter((a) => a.phase === "done" && a.ok).map((a) => a.action)).toEqual([
@@ -4377,16 +4415,18 @@ describe("the edge does the core itself", () => {
     const id = "0b000000-0000-4000-8000-000000000001";
     const comments = () =>
       w.githubCalls.filter((c) => c.method === "POST" && c.url.includes("/issues/201/comments")).length;
+    const once = { issue: 201, queued: true, task: 1, status: "queued" };
     const first = await w.act("ask.reply", { issue: 201, text: "Only once." }, id);
-    expect(await first.json()).toEqual({ ok: true, result: { issue: 201, queued: true } });
+    expect(await first.json()).toEqual({ ok: true, result: once });
     const second = await w.act("ask.reply", { issue: 201, text: "Only once." }, id);
-    expect(await second.json()).toEqual({ ok: true, result: { issue: 201, queued: true }, again: true });
+    expect(await second.json()).toEqual({ ok: true, result: once, again: true });
     w.edge.now = w.makeEdge();
     const third = await w.act("ask.reply", { issue: 201, text: "Only once." }, id);
-    expect(await third.json()).toEqual({ ok: true, result: { issue: 201, queued: true }, again: true });
+    expect(await third.json()).toEqual({ ok: true, result: once, again: true });
     expect(comments()).toBe(1);
-    // Its queue task is waiting for a machine once, too.
-    expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["prompt.enqueue"]);
+    // Its queue task is filed once, too, and nothing waits for a machine.
+    expect(w.queueDb.query("SELECT id FROM tasks").all()).toEqual([{ id: 1 }]);
+    expect(w.stored.get("held") ?? []).toEqual([]);
     // On this side's record of what was done, under the device's name for it.
     expect(
       (await w.core()).doc.acts.filter((a: { id: string }) => a.id === id).map((a: { status: string }) => a.status),
@@ -5012,19 +5052,108 @@ describe("the edge does the core itself", () => {
     ]);
   });
 
-  test("a new prompt is filed here and only its queue task waits for a machine, which files it once", async () => {
+  // Filing a task needs no machine: the edge files it straight into the
+  // queue's store, as the fleet's broker would (src/filing.ts, held
+  // against the broker's own rows in test/filing.test.ts). The oracle
+  // is a store with the broker's own tables.
+  test("a new prompt and its queue task are both filed here, with no machine in reach, at the top of the queue unless he says otherwise", async () => {
     const w = await primary();
     w.net.hostUp = false;
     w.net.edgeUp = false;
     const res = await w.act("ask.send", { text: "File this from the edge" });
     expect(await res.json()).toEqual({
       ok: true,
-      result: { issue: 500, url: "https://github.com/developing-today/code/issues/500", queued: true },
+      result: {
+        issue: 500,
+        url: "https://github.com/developing-today/code/issues/500",
+        priority: 10,
+        queued: true,
+        task: 1,
+        status: "queued",
+      },
+    });
+    expect(w.ghLabels[500]).toEqual(["owner/prompt", "priority/critical"]);
+    // A question, with his choices: today, normal importance, wanted by
+    // a day, waiting on an issue and a pull request, with a note and a
+    // name of his own.
+    const asked = await w.act("ask.send", {
+      text: "Why did the join slice stall?",
+      intent: "question",
+      urgency: "today",
+      importance: "normal",
+      due: "2026-11-30",
+      blockers: ["#301", "PR #55"],
+      note: "after the docs",
+      metadata: { area: "join" },
+    });
+    expect(((await asked.json()) as { result: unknown }).result).toEqual({
+      issue: 501,
+      url: "https://github.com/developing-today/code/issues/501",
+      priority: 40,
+      queued: true,
+      task: 2,
+      status: "blocked",
+    });
+    expect(w.ghLabels[501]).toEqual(["owner/prompt", "priority/normal"]);
+    expect(w.ghIssues[501].body).toContain("**Wanted by:** 2026-11-30");
+    const rows = w.queueDb
+      .query(
+        "SELECT id, title, status, priority, json_extract(payload, '$.owner') AS owner, blocked_deps FROM tasks ORDER BY id",
+      )
+      .all() as { id: number; title: string; status: string; priority: number; owner: string; blocked_deps: string }[];
+    expect(rows.map((r) => [r.id, r.title, r.status, r.priority])).toEqual([
+      [1, "Owner prompt developing-today/code#500: File this from the edge", "queued", 10],
+      [2, "Owner question developing-today/code#501: Why did the join slice stall?", "blocked", 40],
+    ]);
+    expect(JSON.parse(rows[1].owner)).toMatchObject({
+      urgency: "today",
+      importance: "normal",
+      due: "2026-11-30",
+      note: "after the docs",
+      metadata: { area: "join" },
+    });
+    expect(
+      (JSON.parse(rows[1].blocked_deps) as { kind: string; number: number }[]).map((d) => [d.kind, d.number]),
+    ).toEqual([
+      ["issue", 301],
+      ["pr", 55],
+    ]);
+    // Nothing waits for a machine, and when one is back it is handed nothing.
+    expect(w.stored.get("held") ?? []).toEqual([]);
+    expect((await w.core()).doc.edge).toEqual({ held: 0, primary: true });
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 60_000;
+    expect((await w.link.now.once())?.commands).toEqual([]);
+    expect(w.ran).toEqual([]);
+    // What is not his to choose is refused, and nothing is filed for it.
+    const before = w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues")).length;
+    for (const odd of [{ urgency: "yesterday" }, { due: "soon" }, { metadata: { "a b": "c" } }]) {
+      expect((await w.act("ask.send", { text: "x", ...odd })).status).toBe(400);
+    }
+    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues")).length).toBe(before);
+  });
+
+  test("with the queue's store not answering, the prompt is still filed and only its task waits for a machine, which files it once as he chose", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.queueFilingDown.on = true;
+    const res = await w.act("ask.send", { text: "File this from the edge", importance: "high" });
+    expect(await res.json()).toEqual({
+      ok: true,
+      result: {
+        issue: 500,
+        url: "https://github.com/developing-today/code/issues/500",
+        priority: 20,
+        queued: false,
+        note: "filed, not queued: it goes in the queue when a machine is back (the queue's store did not answer)",
+      },
     });
     expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
     const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
-    expect(held.map((h) => [h.kind, h.args.issue, h.args.text])).toEqual([
-      ["prompt.enqueue", 500, "File this from the edge"],
+    expect(held.map((h) => [h.kind, h.args.issue, h.args.text, h.args.importance])).toEqual([
+      ["prompt.enqueue", 500, "File this from the edge", "high"],
     ]);
     // The app says one thing is waiting.
     expect((await w.core()).doc.edge).toEqual({ held: 1, primary: true });
@@ -5049,6 +5178,8 @@ describe("the edge does the core itself", () => {
     const w = await primary();
     w.net.hostUp = false;
     w.net.edgeUp = false;
+    // The queue's store does not answer, so their tasks are a machine's to file.
+    w.queueFilingDown.on = true;
     const asked = await w.act("ask.send", { text: "Why did the join slice stall?", intent: "question" });
     expect(((await asked.json()) as { result: { issue: number } }).result.issue).toBe(500);
     await w.act("ask.send", { text: "No merges on a red check.", intent: "directive" });
@@ -5109,6 +5240,8 @@ describe("the edge does the core itself", () => {
 
   test("a task the laptop files late is on the board here as soon as the laptop says it is done", async () => {
     const w = await primary();
+    // The queue's store does not answer this side's filing: the laptop files it.
+    w.queueFilingDown.on = true;
     await w.core();
     await settle(w);
     w.table["prompt.enqueue"].run = async (a) => {
@@ -5151,10 +5284,66 @@ describe("the edge does the core itself", () => {
     expect(w.queueCalls.length).toBe(quiet);
   });
 
-  test("a bug, a note and a session are filed here with his words first; their tasks are a machine's to file", async () => {
+  test("a bug, a note and a session have their tasks filed here, straight into the queue, and no machine is handed anything", async () => {
     const w = await primary();
     w.net.hostUp = false;
     w.net.edgeUp = false;
+    const bug = await w.act("intake.send", { kind: "bug", area: "pm-stack", text: "the badge is off by one" });
+    expect(((await bug.json()) as { result: unknown }).result).toEqual({
+      issue: 500,
+      url: "https://github.com/developing-today/code/issues/500",
+      commented: false,
+      queued: true,
+    });
+    const note = await w.act("intake.send", {
+      kind: "note",
+      text: "do this first",
+      about: { issue: 301 },
+      rank: "expedite",
+    });
+    expect(((await note.json()) as { result: Record<string, unknown> }).result).toMatchObject({
+      issue: 301,
+      queued: true,
+    });
+    const session = await w.act("intake.send", {
+      kind: "note",
+      area: "fleet",
+      text: "pick these up first",
+      mode: "session",
+    });
+    expect(((await session.json()) as { result: Record<string, unknown> }).result).toMatchObject({
+      issue: 501,
+      queued: true,
+    });
+    const rows = w.queueDb.query("SELECT id, dedupe_key, status, priority FROM tasks ORDER BY id").all() as {
+      id: number;
+      dedupe_key: string;
+      status: string;
+      priority: number;
+    }[];
+    expect(rows.map((r) => [r.id, r.status])).toEqual([
+      [1, "queued"],
+      [2, "queued"],
+      [3, "queued"],
+    ]);
+    expect(rows[0].dedupe_key).toContain(":issue:500");
+    expect(rows[1].dedupe_key).toContain(":issue:301");
+    expect(rows[2].dedupe_key).toContain("501");
+    // The session is the owner's prompt: the top of the queue.
+    expect(rows[2].priority).toBe(10);
+    expect(w.stored.get("held") ?? []).toEqual([]);
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 60_000;
+    expect((await w.link.now.once())?.commands).toEqual([]);
+    expect(w.ran).toEqual([]);
+  });
+
+  test("a bug, a note and a session are filed here with his words first; with the queue's store not answering, their tasks are a machine's to file", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.queueFilingDown.on = true;
     const WORDS = "the badge count is one too many\non the Needs tab";
     const bug = await w.act("intake.send", { id: "d1", kind: "bug", area: "pm-stack", text: WORDS });
     expect(await bug.json()).toEqual({
@@ -5163,7 +5352,8 @@ describe("the edge does the core itself", () => {
         issue: 500,
         url: "https://github.com/developing-today/code/issues/500",
         commented: false,
-        queued: true,
+        queued: false,
+        note: "filed, not queued: it goes in the queue when a machine is back (the queue's store did not answer)",
       },
     });
     const filed = w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"));
@@ -5181,7 +5371,7 @@ describe("the edge does the core itself", () => {
     expect(((await note.json()) as { result: Record<string, unknown> }).result).toMatchObject({
       issue: 301,
       commented: true,
-      queued: true,
+      queued: false,
     });
     expect((w.ghComments[301] ?? []).some((c) => c.body.startsWith("do this first\n\n---\n"))).toBe(true);
     expect(w.ghLabels[301]).toEqual(["owner/intake", "expedite"]);
@@ -5195,9 +5385,9 @@ describe("the edge does the core itself", () => {
     expect(((await session.json()) as { result: Record<string, unknown> }).result).toMatchObject({
       issue: 501,
       commented: false,
-      queued: true,
+      queued: false,
     });
-    expect(w.ghLabels[501]).toEqual(["owner/prompt", "expedite", "source/human", "owner/intake", "app/fleet"]);
+    expect(w.ghLabels[501]).toEqual(["owner/prompt", "priority/critical", "source/human", "owner/intake", "app/fleet"]);
     // Three tasks wait for a machine, each as the action that builds it there.
     const at = new Date(w.now.t).toISOString();
     expect(
@@ -5303,6 +5493,7 @@ describe("the edge does the core itself", () => {
       })),
     );
     w.edge.now = w.makeEdge();
+    w.queueFilingDown.on = true;
     const res = await w.act("intake.send", { kind: "bug", text: "one more" });
     const { result } = (await res.json()) as { result: { issue: number; queued: boolean; note: string } };
     expect(result).toMatchObject({ issue: 500, queued: false });

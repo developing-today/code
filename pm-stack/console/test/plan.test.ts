@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { actions } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
+import { DEFAULT_OPTIONS } from "../src/filing.ts";
 import { HOLDABLE } from "../src/edge-proto.ts";
 import { Docs } from "../src/docs.ts";
 import { OpError, Ops, type Run, triagePacket } from "../src/ops.ts";
@@ -673,12 +674,15 @@ describe("intake: what the owner says, routed", () => {
     const prompt = "make lanes pick up owner notes first\n\nAbout #12236. (note, Fleet; from the PM app)";
     expect(made.title).toBe("Owner: make lanes pick up owner notes first");
     expect(made.body.startsWith(prompt)).toBe(true);
-    expect(made.labels).toEqual(["owner/prompt", "expedite"]);
+    expect(made.labels).toEqual(["owner/prompt", "priority/critical"]);
     expect(w.calls.find((c) => c.path === `repos/${REPO}/issues/13003/labels`)?.body).toEqual({
       labels: ["source/human", "owner/intake", "app/fleet"],
     });
     // The task is the prompt's: top band, and it starts a session on that issue.
-    const packet = promptPacket(REPO, CFG.queue, 13003, prompt, NOW);
+    const packet = promptPacket(REPO, CFG.queue, 13003, prompt, NOW, "task", DEFAULT_OPTIONS, [
+      "owner/prompt",
+      "priority/critical",
+    ]);
     expect(w.packets).toEqual([packet]);
     queueWouldTake(packet);
     expect(laters).toEqual([{ kind: "prompt.enqueue", args: { issue: 13003, text: prompt, at: NOW } }]);

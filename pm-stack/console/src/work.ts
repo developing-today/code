@@ -6,7 +6,20 @@
 // decision set through the dashboard's own endpoint, an issue and a
 // queue task, a comment, a label.
 import { type Census, censusOf, type NeedsItem, readCensus } from "./needs.ts";
-import { OpError, type Ops, PRIORITY_SCALE, type Row, type RunResult } from "./ops.ts";
+import {
+  category,
+  claimPriority,
+  DEFAULT_OPTIONS,
+  fileTask,
+  type FilingOptions,
+  filingOptions,
+  IMPORTANCES,
+  NeedsBroker,
+  ownerBlock,
+  ownerLines,
+  URGENCIES,
+} from "./filing.ts";
+import { OpError, type Ops, PRIORITY_SCALE, type Row } from "./ops.ts";
 import { timed } from "./timed.ts";
 
 const P = "CASE WHEN json_valid(payload) THEN payload ELSE '{}' END";
@@ -239,6 +252,23 @@ const ASK_TASK: Record<
  * prompt whose task is still live joins it, and one whose task has
  * finished gets a new one. What kind of prompt it is changes what the
  * task asks for, not where it stands in the queue. */
+/** What is said of a filing: a note on one that is in, and on one that
+ * is not, why. */
+function noteOf(q: Queued): { note?: string } {
+  if (q.queued) return q.note ? { note: q.note } : {};
+  return { note: `filed, not queued: ${q.note || "the queue did not take it"}` };
+}
+
+/** How a prompt's task went: in the queue (and which task), or not yet;
+ * `note` says what else there is to know, or why it is not in. */
+export interface Queued {
+  queued: boolean;
+  task?: number;
+  status?: string;
+  priority?: number | null;
+  note?: string | null;
+}
+
 export function promptPacket(
   repo: string,
   queue: string,
@@ -246,14 +276,24 @@ export function promptPacket(
   text: string,
   at: string,
   intent: AskIntent = "task",
+  options: FilingOptions = DEFAULT_OPTIONS,
+  /** The labels the issue was given, carried so the queue need not
+   * look them up (and so the priority is the one chosen). */
+  labels: string[] | null = null,
+  /** A reply on a prompt whose task may be done: it is filed again,
+   * on purpose, rather than taken as the same work. */
+  reply = false,
 ) {
   const url = `https://github.com/${repo}/issues/${number}`;
   const first = text.split("\n")[0].trim();
   const as = ASK_TASK[intent];
+  const priority = claimPriority(options.urgency, options.importance);
+  const u = URGENCIES.find((x) => x[0] === options.urgency)?.[1];
+  const i = IMPORTANCES.find((x) => x[0] === options.importance)?.[1];
   return {
     title: `Owner ${as.named} ${repo}#${number}: ${first}`.slice(0, 180),
     body: `Instruction from the owner, sent from the PM console: ${url}`,
-    priority: 10,
+    priority,
     dedupe_key: `repo-health:v1:triage:${repo}:issue:${number}`,
     payload: {
       schema: "repo-task/v1",
@@ -261,6 +301,9 @@ export function promptPacket(
       repo,
       queue,
       issue: { number, url, title: `${ASK_TITLE[intent]}${first}`.slice(0, 120), state_checked_at: at },
+      ...(labels ? { labels } : {}),
+      owner: ownerBlock(options, priority),
+      ...(reply ? { dedupe_override: `the owner replied at ${at}` } : {}),
       problem: as.problem,
       evidence: [`Sent from the PM console at ${at}`, url],
       acceptance: as.acceptance,
@@ -270,7 +313,7 @@ export function promptPacket(
         exclude: as.exclude,
       },
       risk: { level: "low", flags: ["owner-prompt"] },
-      priority_reason: "Owner prompt from the console: top band (10).",
+      priority_reason: `Owner prompt from the console: urgency ${u}, importance ${i} (${priority}).`,
       timebox_minutes: as.minutes,
       max_attempts: 1000,
       context_refs: [url],
@@ -773,43 +816,102 @@ export class Work {
    * `enqueue` is a stand-in point: the edge files the issue itself and
    * holds the enqueue for the laptop's return instead of running the
    * fleet binary, which is not there. */
+  /**
+   * File a prompt's task where this side can: straight into the queue's
+   * store (src/filing.ts), and through the fleet binary where only the
+   * broker can say what filing it means, or the store did not answer.
+   * The binary files no blockers; that is said.
+   */
+  async file(packet: unknown, options: FilingOptions): Promise<Queued> {
+    try {
+      const filed = await fileTask(this.ops, packet as Record<string, unknown>, this.clock(), options.blockers);
+      return {
+        queued: true,
+        task: filed.task,
+        status: filed.status,
+        priority: filed.priority,
+        note: filed.filed ? null : filed.said,
+      };
+    } catch (error) {
+      if (error instanceof OpError && error.status === 400) throw error;
+      const via = await this.ops.enqueue(packet);
+      if (via.code !== 0)
+        return { queued: false, note: (via.stderr || via.stdout).trim().split("\n").pop()?.slice(0, 200) ?? "" };
+      const why = error instanceof NeedsBroker ? error.message : "the queue's store did not answer";
+      return {
+        queued: true,
+        note: options.blockers.length ? `queued by the broker (${why}), not waiting for what you named` : null,
+      };
+    }
+  }
+
+  /**
+   * The owner sends a prompt: something to do, a question, or a standing
+   * instruction, with how soon and how much it matters (now and critical
+   * unless he says otherwise), when it is wanted by, what it waits for,
+   * a note and anything else as names and values. It is filed as an
+   * issue and its task put in the queue. `enqueue` is a stand-in point:
+   * Cloudflare files the task itself and hands it to a machine only
+   * when it must.
+   */
   async ask(
     args: Record<string, unknown>,
-    enqueue: (packet: unknown, intent: AskIntent) => Promise<RunResult> = (p) => this.ops.enqueue(p),
+    enqueue: (packet: unknown, intent: AskIntent, options: FilingOptions) => Promise<Queued> = (p, _i, o) =>
+      this.file(p, o),
   ) {
     const text = words(args.text, "text", 8000);
     const intent = askIntent(args.intent);
+    const options = filingOptions(args, this.repo);
     await this.ensureLabel();
     const first = text.split("\n")[0].trim();
+    const priority = claimPriority(options.urgency, options.importance);
+    // The queue's own label for the chosen priority: whatever ranks
+    // issues by their labels reads it the same way as the task.
+    const labels = [this.ops.cfg.promptLabel, `priority/${category(priority)}`];
+    const lines = ownerLines(options, this.repo);
     const made = (await this.ops.gh(["-X", "POST", `repos/${this.repo}/issues`], {
       title: `${ASK_TITLE[intent]}${first}`.slice(0, 120),
-      body: `${text}\n\n---\n${ASK_NOTE[intent]}\n${OWNER_PROMPT_MARK}`,
-      labels: [this.ops.cfg.promptLabel, "expedite"],
+      body: `${text}\n\n---\n${lines.length ? `${lines.join("\n")}\n\n` : ""}${ASK_NOTE[intent]}\n${OWNER_PROMPT_MARK}`,
+      labels,
     })) as { number: number; html_url: string };
     const queued = await enqueue(
-      promptPacket(this.repo, this.ops.cfg.queue, made.number, text, this.clock().toISOString(), intent),
+      promptPacket(
+        this.repo,
+        this.ops.cfg.queue,
+        made.number,
+        text,
+        this.clock().toISOString(),
+        intent,
+        options,
+        labels,
+      ),
       intent,
+      options,
     );
     return {
       issue: made.number,
       url: made.html_url,
-      queued: queued.code === 0,
-      ...(queued.code === 0
-        ? {}
-        : { note: `filed, not queued: ${(queued.stderr || queued.stdout).trim().split("\n").pop()?.slice(0, 200)}` }),
+      priority,
+      queued: queued.queued,
+      ...(queued.task ? { task: queued.task, status: queued.status } : {}),
+      ...noteOf(queued),
     };
   }
 
-  /** The owner answers back on one of his prompts; the fleet is woken for it.
-   * `enqueue` is a stand-in point, as in ask(): the edge posts the reply
-   * itself and holds the enqueue for the laptop's return. */
+  /** The owner answers back on one of his prompts; the fleet is woken for
+   * it. Its task is filed again even when the last one is done: an answer
+   * after the work is finished is more work (a done task would otherwise
+   * be taken as the same work, and nothing filed). `enqueue` is a
+   * stand-in point, as in ask(). */
   async askReply(
     args: Record<string, unknown>,
-    enqueue: (packet: unknown, intent: AskIntent) => Promise<RunResult> = (p) => this.ops.enqueue(p),
+    enqueue: (packet: unknown, intent: AskIntent, options: FilingOptions) => Promise<Queued> = (p, _i, o) =>
+      this.file(p, o),
   ) {
     const issue = Number(args.issue);
     if (!Number.isSafeInteger(issue) || issue <= 0) throw new OpError(400, "issue: a positive whole number");
     const text = words(args.text, "text", 8000);
+    const options = filingOptions(args, this.repo);
     const current = (await this.ops.gh([`repos/${this.repo}/issues/${issue}`])) as {
       title?: string;
       state: string;
@@ -826,11 +928,28 @@ export class Work {
     if (current.state === "closed") {
       await this.ops.gh(["-X", "PATCH", `repos/${this.repo}/issues/${issue}`], { state: "open" });
     }
+    const labels = current.labels.map((l) => l.name);
     const queued = await enqueue(
-      promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString(), intent),
+      promptPacket(
+        this.repo,
+        this.ops.cfg.queue,
+        issue,
+        text,
+        this.clock().toISOString(),
+        intent,
+        options,
+        labels,
+        true,
+      ),
       intent,
+      options,
     );
-    return { issue, queued: queued.code === 0 };
+    return {
+      issue,
+      queued: queued.queued,
+      ...(queued.task ? { task: queued.task, status: queued.status } : {}),
+      ...noteOf(queued),
+    };
   }
 
   /** Nothing is left on a prompt: close it. */

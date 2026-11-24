@@ -28,8 +28,18 @@ import {
 } from "../src/auth.ts";
 import { type Config, ConfigError, type Issuer, readConfig } from "../src/config.ts";
 import { HOLDABLE, subjectOf } from "../src/edge-proto.ts";
-import { manageable, OpError, Ops, parseUnitFiles, parseUnits, type Run, triagePacket } from "../src/ops.ts";
+import {
+  type Fetch,
+  manageable,
+  OpError,
+  Ops,
+  parseUnitFiles,
+  parseUnits,
+  type Run,
+  triagePacket,
+} from "../src/ops.ts";
 import { assetLinks, type Deps, handle, releaseSaid } from "../src/server.ts";
+import { Work } from "../src/work.ts";
 
 const NOW = 1_800_000_000_000;
 const ACCESS: Issuer = {
@@ -409,6 +419,9 @@ const CFG: Config = readConfig({
   PM_CONSOLE_ANDROID_SHA256: Array(32).fill("AB").join(":"),
 });
 
+/** A queue store that does not answer: what is filed goes through the fleet binary. */
+const storeDown: Fetch = async () => ({ ok: false, status: 503, json: async () => ({}) });
+
 describe("operations", () => {
   test("deploys and builds are read from GitHub's own record, and started again from main", async () => {
     // Oracle: the two answers are GitHub's own shape for a workflow's
@@ -546,15 +559,17 @@ describe("operations", () => {
     // a nonzero enqueue must throw, so the held action is reported
     // failed and the edge does not acknowledge a queue task that was
     // never filed.
+    // (The queue's store is out of reach here, so the fleet binary files it.)
     const r = recorder(() => ({ code: 1, stderr: "queue is down" }));
-    const ops = new Ops(CFG, r.run);
-    const table = actions(ops, {} as never);
+    const ops = new Ops(CFG, r.run, storeDown);
+    const table = actions(ops, new Work(ops));
     await expect(
       table["prompt.enqueue"].run({ issue: 201, text: "Do the docs", at: "2026-11-22T12:00:00Z" }),
     ).rejects.toThrow(/queue is down/);
     // And the good path still answers queued.
     const ok = recorder(() => ({ code: 0, stderr: "" }));
-    const good = actions(new Ops(CFG, ok.run), {} as never);
+    const okOps = new Ops(CFG, ok.run, storeDown);
+    const good = actions(okOps, new Work(okOps));
     await expect(
       good["prompt.enqueue"].run({ issue: 201, text: "Do the docs", at: "2026-11-22T12:00:00Z" }),
     ).resolves.toEqual({ issue: 201, queued: true });
@@ -571,7 +586,8 @@ describe("operations", () => {
       if (argv[1] === "queue" && argv[2] === "enqueue") packets.push(JSON.parse(readFileSync(argv[3], "utf8")));
       return { code: 0, stdout: "", stderr: "" };
     };
-    const table = actions(new Ops(CFG, run), {} as never);
+    const heldOps = new Ops(CFG, run, storeDown);
+    const table = actions(heldOps, new Work(heldOps));
     const queuedAs = async (intent?: unknown) => {
       await table["prompt.enqueue"].run({
         issue: 201,
@@ -770,24 +786,53 @@ describe("operations", () => {
     const r = recorder((argv) => {
       if (argv[2] === "send" && argv.includes("--broaden")) {
         return JSON.stringify({
-          batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0,
+          batch: "b9",
+          messages: [],
+          unregistered: [],
+          matched: 2,
+          delivered: 1,
+          recipients: ["felix-2"],
+          remaining: 0,
         });
       }
       if (argv[2] === "send") {
         return JSON.stringify({
-          batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1,
+          batch: "b9",
+          messages: [],
+          unregistered: [],
+          matched: 2,
+          delivered: 1,
+          recipients: ["felix-1"],
+          remaining: 1,
         });
       }
       if (argv[2] === "offer") {
         return JSON.stringify({
-          offer: { id: 7, batch: "b10", body: "take the next task", kind: "command", slots: 2, state: "open", claimed: 0, remaining: 2, claims: [] },
+          offer: {
+            id: 7,
+            batch: "b10",
+            body: "take the next task",
+            kind: "command",
+            slots: 2,
+            state: "open",
+            claimed: 0,
+            remaining: 2,
+            claims: [],
+          },
         });
       }
       if (argv[2] === "offers") {
         return JSON.stringify({
           offers: [
             {
-              id: 7, batch: "b10", body: "take the next task", kind: "command", slots: 2, state: "open", claimed: 1, remaining: 1,
+              id: 7,
+              batch: "b10",
+              body: "take the next task",
+              kind: "command",
+              slots: 2,
+              state: "open",
+              claimed: 1,
+              remaining: 1,
               claims: [{ agent: "felix-1", claimed_at: "2026-11-24T02:00:00Z", message_id: 42 }],
             },
           ],
@@ -800,7 +845,12 @@ describe("operations", () => {
 
     // Acceptance 1: agent:f* with limit 1 against two matching agents
     // shows matched 2 / delivered 1 and names the recipient.
-    const report = (await table["message.send"].run({ to: ["agent:f*"], text: "do the thing", command: true, limit: 1 })) as {
+    const report = (await table["message.send"].run({
+      to: ["agent:f*"],
+      text: "do the thing",
+      command: true,
+      limit: 1,
+    })) as {
       batch: string | null;
       matched: number;
       delivered: number;
@@ -836,14 +886,31 @@ describe("operations", () => {
 
     // Acceptance 3 (console half): an offer posted from the composer,
     // and the offers list showing its claim with the claimant named.
-    const offer = (await table["message.offer"].run({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 })) as {
+    const offer = (await table["message.offer"].run({
+      to: ["agent:f*"],
+      text: "take the next task",
+      command: true,
+      slots: 2,
+    })) as {
       id: number;
       state: string;
     };
-    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "offer", "--to", "agent:f*", "--slots", "2", "--command", "-"]);
+    expect(r.calls.at(-1)?.argv).toEqual([
+      "fleet",
+      "bridge",
+      "offer",
+      "--to",
+      "agent:f*",
+      "--slots",
+      "2",
+      "--command",
+      "-",
+    ]);
     expect(r.calls.at(-1)?.stdin).toBe("take the next task");
     expect(offer).toMatchObject({ id: 7, state: "open" });
-    expect(table["message.offer"].audit({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 })).toEqual({
+    expect(
+      table["message.offer"].audit({ to: ["agent:f*"], text: "take the next task", command: true, slots: 2 }),
+    ).toEqual({
       to: ["agent:f*"],
       command: true,
       slots: 2,
@@ -2176,7 +2243,15 @@ describe("HTTP surface", () => {
         ? JSON.stringify({ number: 1, html_url: "u", merged: true, sha: "s", labels: [] })
         : argv[1] === "bridge" && argv[2] === "send"
           ? // A send's answer is its match report (#14375).
-            JSON.stringify({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 })
+            JSON.stringify({
+              batch: "b1",
+              messages: [],
+              unregistered: [],
+              matched: 1,
+              delivered: 1,
+              recipients: ["lane-1"],
+              remaining: 0,
+            })
           : "",
     );
     const d = deps("owner", r);

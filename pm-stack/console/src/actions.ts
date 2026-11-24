@@ -7,6 +7,7 @@
 import type { Devices } from "./devices.ts";
 import type { Docs } from "./docs.ts";
 import { OpError } from "./errors.ts";
+import { category, claimPriority, DEFAULT_OPTIONS, filingOptions } from "./filing.ts";
 import type { Ops } from "./ops.ts";
 import { laterPacket, Plan } from "./plan.ts";
 import type { Push } from "./push.ts";
@@ -78,7 +79,8 @@ export function actions(
     // not written to the record of what was done.
     "intake.send": {
       run: (a) => plan.intake(a),
-      touch: [],
+      // Its task is in the queue as it answers, so the board has it.
+      touch: ["board"],
       audit: (a) => ({
         kind: a.kind,
         area: a.area ?? null,
@@ -95,14 +97,13 @@ export function actions(
         const packet = laterPacket(ops.cfg.repo, ops.cfg.queue, a);
         // Thrown, not answered as "not queued": this runs late, and a
         // quiet failure would be recorded as done with no task behind it.
-        const queued = await ops.enqueue(packet);
-        if (queued.code !== 0) {
+        const queued = await work.file(packet, DEFAULT_OPTIONS);
+        if (!queued.queued)
           throw new OpError(
             502,
-            `the queue task could not be filed: ${(queued.stderr || queued.stdout || "the queue did not answer").trim().slice(0, 200)}`,
+            `the queue task could not be filed: ${(queued.note ?? "the queue did not answer").slice(0, 200)}`,
           );
-        }
-        return { issue: Number(a.issue), queued: true };
+        return { issue: Number(a.issue), queued: true, ...(queued.task ? { task: queued.task } : {}) };
       },
       touch: ["board"],
       audit: ids("issue", "rank"),
@@ -128,20 +129,38 @@ export function actions(
         if (a.intent !== undefined && !ASK_INTENTS.includes(a.intent as AskIntent)) {
           throw new OpError(400, `intent: one of ${ASK_INTENTS.join(", ")}`);
         }
-        // A failed enqueue is thrown, not answered as "not queued": this
+        if (a.reply !== undefined && typeof a.reply !== "boolean") throw new OpError(400, "reply: true or false");
+        // The owner's choices, as he made them (left out: now and critical).
+        const options = filingOptions(a, ops.cfg.repo);
+        // The labels an ask's issue was given go with it; a reply's issue
+        // is the mirror's to say.
+        const labels = a.reply
+          ? null
+          : [ops.cfg.promptLabel, `priority/${category(claimPriority(options.urgency, options.importance))}`];
+        // A failed filing is thrown, not answered as "not queued": this
         // runs late, so nobody is listening for the answer, and a
         // `queued: false` would be recorded done and the held prompt
         // acknowledged as sent with no queue task behind it.
-        const queued = await ops.enqueue(
-          promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at, (a.intent as AskIntent | undefined) ?? "task"),
+        const queued = await work.file(
+          promptPacket(
+            ops.cfg.repo,
+            ops.cfg.queue,
+            issue,
+            a.text,
+            a.at,
+            (a.intent as AskIntent | undefined) ?? "task",
+            options,
+            labels,
+            a.reply === true,
+          ),
+          options,
         );
-        if (queued.code !== 0) {
+        if (!queued.queued)
           throw new OpError(
             502,
-            `the queue task could not be filed: ${(queued.stderr || queued.stdout || "the queue did not answer").trim().slice(0, 200)}`,
+            `the queue task could not be filed: ${(queued.note ?? "the queue did not answer").slice(0, 200)}`,
           );
-        }
-        return { issue, queued: true };
+        return { issue, queued: true, ...(queued.task ? { task: queued.task } : {}) };
       },
       touch: ["board"],
       audit: ids("issue"),

@@ -1,0 +1,987 @@
+{
+  "about": "Packets this app makes, and the row the fleet binary made of each: `fleet queue enqueue <packet> --queue <queue> --dry-run` (task_from_packet after validation and label enrichment). Recorded on amd from fleet 0.1.0-dev.17548+g7b54ce5 on 2026-11-24. test/filing.test.ts holds src/filing.ts taskRow to these, and the packet builders to these packets: a change to either means recording again.",
+  "queue": "repo-health-code-pilot",
+  "cases": {
+    "ask-default": {
+      "packet": {
+        "title": "Owner prompt developing-today/code#99001: Make the queue say who filed each task",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99001",
+        "priority": 10,
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99001",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99001,
+            "url": "https://github.com/developing-today/code/issues/99001",
+            "title": "Owner: Make the queue say who filed each task",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/critical"
+          ],
+          "owner": {
+            "urgency": "now",
+            "importance": "critical",
+            "priority": 10
+          },
+          "problem": "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99001"
+          ],
+          "acceptance": [
+            "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+            "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+            "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue"
+          ],
+          "tests": [
+            "The issue carries the report comment and is closed, or carries the reason it is still open"
+          ],
+          "scope": {
+            "include": [
+              "Carry out the owner's instruction on developing-today/code#99001"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Now, importance Critical (10).",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99001"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        }
+      },
+      "native": {
+        "queue": "repo-health-code-pilot",
+        "title": "Owner prompt developing-today/code#99001: Make the queue say who filed each task",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99001",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99001,
+            "url": "https://github.com/developing-today/code/issues/99001",
+            "title": "Owner: Make the queue say who filed each task",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/critical"
+          ],
+          "owner": {
+            "urgency": "now",
+            "importance": "critical",
+            "priority": 10
+          },
+          "problem": "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99001"
+          ],
+          "acceptance": [
+            "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+            "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+            "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue"
+          ],
+          "tests": [
+            "The issue carries the report comment and is closed, or carries the reason it is still open"
+          ],
+          "scope": {
+            "include": [
+              "Carry out the owner's instruction on developing-today/code#99001"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Now, importance Critical (10).",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99001"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        },
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99001",
+        "priority": 10,
+        "not_before": null,
+        "max_attempts": 1000,
+        "required_budget_minutes": null,
+        "platform": null
+      }
+    },
+    "ask-question": {
+      "packet": {
+        "title": "Owner question developing-today/code#99002: Why are 13 pools walled?",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99002",
+        "priority": 10,
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99002",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99002,
+            "url": "https://github.com/developing-today/code/issues/99002",
+            "title": "Owner asks: Why are 13 pools walled?",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/critical"
+          ],
+          "owner": {
+            "urgency": "now",
+            "importance": "critical",
+            "priority": 10
+          },
+          "problem": "The owner asked this question in his own words from the PM console. He wants an answer, not a change: nothing is to be done about it but to answer it.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99002"
+          ],
+          "acceptance": [
+            "The question is answered in a comment on the issue, in plain words, with what the answer rests on: links, numbers, the commit or run that was read",
+            "Nothing was changed to answer it: no code, no configuration, no other issue opened or closed",
+            "The issue is left open for the owner to read; he closes it"
+          ],
+          "tests": [
+            "The issue carries the answer, with what it rests on, and is still open"
+          ],
+          "scope": {
+            "include": [
+              "Answer the owner's question on developing-today/code#99002"
+            ],
+            "exclude": [
+              "Changing code, configuration or other issues",
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Now, importance Critical (10).",
+          "timebox_minutes": 30,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99002"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        }
+      },
+      "native": {
+        "queue": "repo-health-code-pilot",
+        "title": "Owner question developing-today/code#99002: Why are 13 pools walled?",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99002",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99002,
+            "url": "https://github.com/developing-today/code/issues/99002",
+            "title": "Owner asks: Why are 13 pools walled?",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/critical"
+          ],
+          "owner": {
+            "urgency": "now",
+            "importance": "critical",
+            "priority": 10
+          },
+          "problem": "The owner asked this question in his own words from the PM console. He wants an answer, not a change: nothing is to be done about it but to answer it.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99002"
+          ],
+          "acceptance": [
+            "The question is answered in a comment on the issue, in plain words, with what the answer rests on: links, numbers, the commit or run that was read",
+            "Nothing was changed to answer it: no code, no configuration, no other issue opened or closed",
+            "The issue is left open for the owner to read; he closes it"
+          ],
+          "tests": [
+            "The issue carries the answer, with what it rests on, and is still open"
+          ],
+          "scope": {
+            "include": [
+              "Answer the owner's question on developing-today/code#99002"
+            ],
+            "exclude": [
+              "Changing code, configuration or other issues",
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Now, importance Critical (10).",
+          "timebox_minutes": 30,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99002"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        },
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99002",
+        "priority": 10,
+        "not_before": null,
+        "max_attempts": 1000,
+        "required_budget_minutes": null,
+        "platform": null
+      }
+    },
+    "ask-directive": {
+      "packet": {
+        "title": "Owner directive developing-today/code#99003: From now on, merge docs PRs without review",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99003",
+        "priority": 10,
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99003",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99003,
+            "url": "https://github.com/developing-today/code/issues/99003",
+            "title": "Owner directs: From now on, merge docs PRs without review",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/critical"
+          ],
+          "owner": {
+            "urgency": "now",
+            "importance": "critical",
+            "priority": 10
+          },
+          "problem": "The owner gave this standing instruction in his own words from the PM console. It is not one piece of work: it is how he wants work done from now on.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99003"
+          ],
+          "acceptance": [
+            "The instruction is recorded where every agent reads it (AGENTS.md, or the document it points to for the area), by a pull request that is merged",
+            "Work already queued or in flight that it bears on is brought in line with it: re-ranked, commented on or parked, with links",
+            "A comment on the issue says where the instruction now stands and what was changed because of it; the issue is closed when that is done"
+          ],
+          "tests": [
+            "The instruction is in the document agents read, on main, and the issue links to where"
+          ],
+          "scope": {
+            "include": [
+              "Record and apply the owner's standing instruction on developing-today/code#99003"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Now, importance Critical (10).",
+          "timebox_minutes": 60,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99003"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        }
+      },
+      "native": {
+        "queue": "repo-health-code-pilot",
+        "title": "Owner directive developing-today/code#99003: From now on, merge docs PRs without review",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99003",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99003,
+            "url": "https://github.com/developing-today/code/issues/99003",
+            "title": "Owner directs: From now on, merge docs PRs without review",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/critical"
+          ],
+          "owner": {
+            "urgency": "now",
+            "importance": "critical",
+            "priority": 10
+          },
+          "problem": "The owner gave this standing instruction in his own words from the PM console. It is not one piece of work: it is how he wants work done from now on.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99003"
+          ],
+          "acceptance": [
+            "The instruction is recorded where every agent reads it (AGENTS.md, or the document it points to for the area), by a pull request that is merged",
+            "Work already queued or in flight that it bears on is brought in line with it: re-ranked, commented on or parked, with links",
+            "A comment on the issue says where the instruction now stands and what was changed because of it; the issue is closed when that is done"
+          ],
+          "tests": [
+            "The instruction is in the document agents read, on main, and the issue links to where"
+          ],
+          "scope": {
+            "include": [
+              "Record and apply the owner's standing instruction on developing-today/code#99003"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Now, importance Critical (10).",
+          "timebox_minutes": 60,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99003"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        },
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99003",
+        "priority": 10,
+        "not_before": null,
+        "max_attempts": 1000,
+        "required_budget_minutes": null,
+        "platform": null
+      }
+    },
+    "ask-today-high": {
+      "packet": {
+        "title": "Owner prompt developing-today/code#99004: Look at the seating guard",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99004",
+        "priority": 30,
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99004",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99004,
+            "url": "https://github.com/developing-today/code/issues/99004",
+            "title": "Owner: Look at the seating guard",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/high"
+          ],
+          "owner": {
+            "urgency": "today",
+            "importance": "high",
+            "priority": 30
+          },
+          "problem": "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99004"
+          ],
+          "acceptance": [
+            "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+            "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+            "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue"
+          ],
+          "tests": [
+            "The issue carries the report comment and is closed, or carries the reason it is still open"
+          ],
+          "scope": {
+            "include": [
+              "Carry out the owner's instruction on developing-today/code#99004"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Today, importance High (30).",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99004"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        }
+      },
+      "native": {
+        "queue": "repo-health-code-pilot",
+        "title": "Owner prompt developing-today/code#99004: Look at the seating guard",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99004",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99004,
+            "url": "https://github.com/developing-today/code/issues/99004",
+            "title": "Owner: Look at the seating guard",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/high"
+          ],
+          "owner": {
+            "urgency": "today",
+            "importance": "high",
+            "priority": 30
+          },
+          "problem": "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99004"
+          ],
+          "acceptance": [
+            "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+            "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+            "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue"
+          ],
+          "tests": [
+            "The issue carries the report comment and is closed, or carries the reason it is still open"
+          ],
+          "scope": {
+            "include": [
+              "Carry out the owner's instruction on developing-today/code#99004"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Today, importance High (30).",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99004"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        },
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99004",
+        "priority": 30,
+        "not_before": null,
+        "max_attempts": 1000,
+        "required_budget_minutes": null,
+        "platform": null
+      }
+    },
+    "ask-everything": {
+      "packet": {
+        "title": "Owner prompt developing-today/code#99005: File it all",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99005",
+        "priority": 70,
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99005",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99005,
+            "url": "https://github.com/developing-today/code/issues/99005",
+            "title": "Owner: File it all",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/low"
+          ],
+          "owner": {
+            "urgency": "week",
+            "importance": "low",
+            "priority": 70,
+            "due": "2026-12-01",
+            "blockers": [
+              {
+                "kind": "issue",
+                "repo": "developing-today/code",
+                "number": 14432
+              },
+              {
+                "kind": "pr",
+                "repo": "developing-today/code",
+                "number": 14422
+              },
+              {
+                "kind": "task",
+                "task_id": 23198
+              },
+              {
+                "kind": "issue",
+                "repo": "developing-today/opencode",
+                "number": 12
+              }
+            ],
+            "note": "Use the fleet's own words.",
+            "metadata": {
+              "area": "pm-stack",
+              "source": "phone"
+            }
+          },
+          "problem": "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99005"
+          ],
+          "acceptance": [
+            "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+            "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+            "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue"
+          ],
+          "tests": [
+            "The issue carries the report comment and is closed, or carries the reason it is still open"
+          ],
+          "scope": {
+            "include": [
+              "Carry out the owner's instruction on developing-today/code#99005"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency This week, importance Low (70).",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99005"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        }
+      },
+      "native": {
+        "queue": "repo-health-code-pilot",
+        "title": "Owner prompt developing-today/code#99005: File it all",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99005",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99005,
+            "url": "https://github.com/developing-today/code/issues/99005",
+            "title": "Owner: File it all",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner/prompt",
+            "priority/low"
+          ],
+          "owner": {
+            "urgency": "week",
+            "importance": "low",
+            "priority": 70,
+            "due": "2026-12-01",
+            "blockers": [
+              {
+                "kind": "issue",
+                "repo": "developing-today/code",
+                "number": 14432
+              },
+              {
+                "kind": "pr",
+                "repo": "developing-today/code",
+                "number": 14422
+              },
+              {
+                "kind": "task",
+                "task_id": 23198
+              },
+              {
+                "kind": "issue",
+                "repo": "developing-today/opencode",
+                "number": 12
+              }
+            ],
+            "note": "Use the fleet's own words.",
+            "metadata": {
+              "area": "pm-stack",
+              "source": "phone"
+            }
+          },
+          "problem": "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99005"
+          ],
+          "acceptance": [
+            "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+            "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+            "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue"
+          ],
+          "tests": [
+            "The issue carries the report comment and is closed, or carries the reason it is still open"
+          ],
+          "scope": {
+            "include": [
+              "Carry out the owner's instruction on developing-today/code#99005"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency This week, importance Low (70).",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99005"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        },
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99005",
+        "priority": 70,
+        "not_before": null,
+        "max_attempts": 1000,
+        "required_budget_minutes": null,
+        "platform": null
+      }
+    },
+    "reply": {
+      "packet": {
+        "title": "Owner prompt developing-today/code#99006: And also the pools",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99006",
+        "priority": 10,
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99006",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99006,
+            "url": "https://github.com/developing-today/code/issues/99006",
+            "title": "Owner: And also the pools",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner-prompt",
+            "expedite"
+          ],
+          "owner": {
+            "urgency": "now",
+            "importance": "critical",
+            "priority": 10
+          },
+          "dedupe_override": "the owner replied at 2026-11-24T19:30:00.000Z",
+          "problem": "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99006"
+          ],
+          "acceptance": [
+            "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+            "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+            "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue"
+          ],
+          "tests": [
+            "The issue carries the report comment and is closed, or carries the reason it is still open"
+          ],
+          "scope": {
+            "include": [
+              "Carry out the owner's instruction on developing-today/code#99006"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Now, importance Critical (10).",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99006"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        }
+      },
+      "native": {
+        "queue": "repo-health-code-pilot",
+        "title": "Owner prompt developing-today/code#99006: And also the pools",
+        "body": "Instruction from the owner, sent from the PM console: https://github.com/developing-today/code/issues/99006",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99006,
+            "url": "https://github.com/developing-today/code/issues/99006",
+            "title": "Owner: And also the pools",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "labels": [
+            "owner-prompt",
+            "expedite"
+          ],
+          "owner": {
+            "urgency": "now",
+            "importance": "critical",
+            "priority": 10
+          },
+          "dedupe_override": "the owner replied at 2026-11-24T19:30:00.000Z",
+          "problem": "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+          "evidence": [
+            "Sent from the PM console at 2026-11-24T19:30:00.000Z",
+            "https://github.com/developing-today/code/issues/99006"
+          ],
+          "acceptance": [
+            "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+            "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+            "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue"
+          ],
+          "tests": [
+            "The issue carries the report comment and is closed, or carries the reason it is still open"
+          ],
+          "scope": {
+            "include": [
+              "Carry out the owner's instruction on developing-today/code#99006"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-prompt"
+            ]
+          },
+          "priority_reason": "Owner prompt from the console: urgency Now, importance Critical (10).",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99006"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "Created with its issue, or with the owner's reply, in the same pass."
+          }
+        },
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99006",
+        "priority": 15,
+        "not_before": null,
+        "max_attempts": 1000,
+        "required_budget_minutes": null,
+        "platform": null
+      }
+    },
+    "intake-triage": {
+      "packet": {
+        "title": "Triage developing-today/code#99007: Bug: the chart is cut off",
+        "body": "Filed by the owner from the PM console: https://github.com/developing-today/code/issues/99007",
+        "priority": 20,
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99007",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99007,
+            "url": "https://github.com/developing-today/code/issues/99007",
+            "title": "Bug: the chart is cut off",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "problem": "The owner filed this from the PM console. It is new work with no task yet: triage it and either do it or return it to the queue sized for real work.",
+          "evidence": [
+            "Filed from the PM console at 2026-11-24T19:30:00.000Z, rank now",
+            "https://github.com/developing-today/code/issues/99007"
+          ],
+          "acceptance": [
+            "Issue triaged per the standing triage doctrine: annotate, validate, and either fix it in a small edit (merge with a closing keyword) or return it to the queue for real work"
+          ],
+          "tests": [
+            "Triage verdict recorded on the issue; if a small fix, the merged PR carries a closing keyword"
+          ],
+          "scope": {
+            "include": [
+              "Triage of developing-today/code#99007"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-filed"
+            ]
+          },
+          "priority_reason": "Owner-filed from the console with rank now: priority 20.",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99007"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "The issue was created in the same pass as this task, so no other task can hold it."
+          }
+        }
+      },
+      "native": {
+        "queue": "repo-health-code-pilot",
+        "title": "Triage developing-today/code#99007: Bug: the chart is cut off",
+        "body": "Filed by the owner from the PM console: https://github.com/developing-today/code/issues/99007",
+        "payload": {
+          "schema": "repo-task/v1",
+          "kind": "triage",
+          "repo": "developing-today/code",
+          "queue": "repo-health-code-pilot",
+          "issue": {
+            "number": 99007,
+            "url": "https://github.com/developing-today/code/issues/99007",
+            "title": "Bug: the chart is cut off",
+            "state_checked_at": "2026-11-24T19:30:00.000Z"
+          },
+          "problem": "The owner filed this from the PM console. It is new work with no task yet: triage it and either do it or return it to the queue sized for real work.",
+          "evidence": [
+            "Filed from the PM console at 2026-11-24T19:30:00.000Z, rank now",
+            "https://github.com/developing-today/code/issues/99007"
+          ],
+          "acceptance": [
+            "Issue triaged per the standing triage doctrine: annotate, validate, and either fix it in a small edit (merge with a closing keyword) or return it to the queue for real work"
+          ],
+          "tests": [
+            "Triage verdict recorded on the issue; if a small fix, the merged PR carries a closing keyword"
+          ],
+          "scope": {
+            "include": [
+              "Triage of developing-today/code#99007"
+            ],
+            "exclude": [
+              "Secrets, credentials or purchases"
+            ]
+          },
+          "risk": {
+            "level": "low",
+            "flags": [
+              "owner-filed"
+            ]
+          },
+          "priority_reason": "Owner-filed from the console with rank now: priority 20.",
+          "timebox_minutes": 45,
+          "max_attempts": 1000,
+          "context_refs": [
+            "https://github.com/developing-today/code/issues/99007"
+          ],
+          "dedupe": {
+            "checked_at": "2026-11-24T19:30:00.000Z",
+            "basis": "The issue was created in the same pass as this task, so no other task can hold it."
+          }
+        },
+        "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:99007",
+        "priority": 20,
+        "not_before": null,
+        "max_attempts": 1000,
+        "required_budget_minutes": null,
+        "platform": null
+      }
+    }
+  }
+}

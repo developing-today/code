@@ -17,7 +17,8 @@
 import { OpError } from "./errors.ts";
 import { openRoadmapChangePr } from "./roadmap-change.ts";
 import { type Ops, RANK_PRIORITY, RANKS, type Rank, type RunResult, triagePacket } from "./ops.ts";
-import type { Work } from "./work.ts";
+import { DEFAULT_OPTIONS } from "./filing.ts";
+import type { Queued, Work } from "./work.ts";
 
 export const KINDS = ["note", "bug", "change"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -337,6 +338,13 @@ export interface Later {
 }
 export type Enqueue = (packet: unknown, later: Later) => Promise<RunResult>;
 
+/** How a filing went, as the enqueue callback answers it. */
+export function asRun(q: Queued): RunResult {
+  return q.queued
+    ? { code: 0, stdout: q.note ?? "", stderr: "" }
+    : { code: 1, stdout: "", stderr: q.note ?? "not queued" };
+}
+
 export interface IntakeResult {
   issue: number;
   url: string;
@@ -533,7 +541,7 @@ export class Plan {
    */
   async intake(
     args: Record<string, unknown>,
-    enqueue: Enqueue = (packet) => this.ops.enqueue(packet),
+    enqueue: Enqueue = (packet) => this.work.file(packet, DEFAULT_OPTIONS).then(asRun),
   ): Promise<IntakeResult> {
     const kind = one(args.kind, KINDS, "kind");
     const words = text(args.text, "text", 8000);
@@ -654,9 +662,15 @@ export class Plan {
         .filter((l) => l !== null)
         .join(" ");
       const prompt = `${words}\n\n${context}`;
-      const made = await this.work.ask({ text: prompt }, (packet) => {
+      const made = await this.work.ask({ text: prompt }, async (packet) => {
         const issue = Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number);
-        return enqueue(packet, { kind: "prompt.enqueue", args: { issue, text: prompt, at } });
+        const run = await enqueue(packet, { kind: "prompt.enqueue", args: { issue, text: prompt, at } });
+        return run.code === 0
+          ? { queued: true, note: run.stdout.trim() || null }
+          : {
+              queued: false,
+              note: (run.stderr || run.stdout).trim().split("\n").pop()?.slice(0, 200),
+            };
       });
       await this.ops.gh(["-X", "POST", `repos/${this.repo}/issues/${made.issue}/labels`], { labels }).catch(() => {});
       return {

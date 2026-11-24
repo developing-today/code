@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { actions, perform } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
+import { DEFAULT_OPTIONS } from "../src/filing.ts";
 import { Docs, Stamped } from "../src/docs.ts";
 import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
@@ -1114,6 +1115,7 @@ describe("what the owner asks for in his own words", () => {
     expect(await work.ask({ text: "Make the join slice the top priority\nand tell me what is in its way." })).toEqual({
       issue: 12501,
       url: "https://x/12501",
+      priority: 10,
       queued: true,
     });
     expect(w.gh()).toEqual([
@@ -1122,10 +1124,14 @@ describe("what the owner asks for in his own words", () => {
     ]);
     const issue = JSON.parse(w.calls[1].stdin ?? "");
     expect(issue.title).toBe("Owner: Make the join slice the top priority");
-    expect(issue.labels).toEqual(["owner/prompt", "expedite"]);
+    // Now and critical, unless he says otherwise: the queue's own label for the top.
+    expect(issue.labels).toEqual(["owner/prompt", "priority/critical"]);
     expect(issue.body.startsWith("Make the join slice the top priority\nand tell me")).toBe(true);
     expect(issue.body).toContain("<!-- owner-prompt:v1 -->");
-    const enqueue = w.calls[2];
+    // This store takes nothing (it answers every question with nothing), so
+    // the task goes to the fleet binary, which files it as the broker.
+    expect(w.sqls.flat().some((st) => st.sql.startsWith("INSERT INTO tasks"))).toBe(true);
+    const enqueue = w.calls.find((c) => c.argv[1] === "queue") as (typeof w.calls)[number];
     expect(enqueue.argv.slice(0, 3)).toEqual(["fleet", "queue", "enqueue"]);
     expect(enqueue.argv.slice(4)).toEqual(["--queue", "repo-health-code-pilot"]);
     expect(enqueue.packet).toEqual(
@@ -1135,6 +1141,9 @@ describe("what the owner asks for in his own words", () => {
         12501,
         "Make the join slice the top priority\nand tell me what is in its way.",
         "2026-11-22T06:00:00.000Z",
+        "task",
+        DEFAULT_OPTIONS,
+        ["owner/prompt", "priority/critical"],
       ),
     );
     expect(enqueue.packet).toMatchObject({
@@ -1168,6 +1177,7 @@ describe("what the owner asks for in his own words", () => {
     expect(await new Work(stuck.ops).ask({ text: "x" })).toEqual({
       issue: 2,
       url: "u",
+      priority: 10,
       queued: false,
       note: "filed, not queued: repo-queue: broker unreachable",
     });
@@ -1193,9 +1203,11 @@ describe("what the owner asks for in his own words", () => {
       ["-X", "PATCH", `repos/${REPO}/issues/12501`, "--input", "-"], // it was closed: reopened
     ]);
     expect(JSON.parse(w.calls[1].stdin ?? "").body).toBe("also do the docs\n\n<!-- owner-reply:v1 -->");
-    expect(w.calls[3].packet).toMatchObject({
+    // Filed again, on purpose: a reply after the work is done is more work.
+    expect(w.calls.find((c) => c.argv[1] === "queue")?.packet).toMatchObject({
       priority: 10,
       dedupe_key: `repo-health:v1:triage:${REPO}:issue:12501`,
+      payload: { dedupe_override: "the owner replied at 2026-11-22T06:00:00.000Z" },
     });
     const other = world({ commands: () => issue("open", ["bug"]) });
     await expect(new Work(other.ops).askReply({ issue: 5, text: "x" })).rejects.toThrow(
@@ -1215,17 +1227,29 @@ describe("what the owner asks for in his own words", () => {
     const held: unknown[] = [];
     const hook = async (packet: unknown) => {
       held.push(packet);
-      return { code: 0, stdout: "", stderr: "" };
+      return { queued: true, task: 77, status: "queued" };
     };
     // A new prompt: the issue is filed at once, the task goes to the hook.
     expect(await work.ask({ text: "Do the docs" }, hook)).toEqual({
       issue: 12501,
       url: "https://x/12501",
+      priority: 10,
       queued: true,
+      task: 77,
+      status: "queued",
     });
     expect(held).toHaveLength(1);
     expect(held[0]).toEqual(
-      promptPacket(REPO, "repo-health-code-pilot", 12501, "Do the docs", "2026-11-22T06:00:00.000Z"),
+      promptPacket(
+        REPO,
+        "repo-health-code-pilot",
+        12501,
+        "Do the docs",
+        "2026-11-22T06:00:00.000Z",
+        "task",
+        DEFAULT_OPTIONS,
+        ["owner/prompt", "priority/critical"],
+      ),
     );
     expect(w.calls.some((c) => c.argv[1] === "queue")).toBe(false);
     // A reply: the comment is posted at once, the task goes to the hook.
@@ -1239,6 +1263,8 @@ describe("what the owner asks for in his own words", () => {
     expect(await replyWork.askReply({ issue: 12501, text: "also do the docs" }, hook)).toEqual({
       issue: 12501,
       queued: true,
+      task: 77,
+      status: "queued",
     });
     expect(held).toHaveLength(2);
     expect(held[1]).toMatchObject({
@@ -1261,7 +1287,7 @@ describe("what the owner asks for in his own words", () => {
       });
       const result = await new Work(w.ops, undefined, () => new Date("2026-11-22T06:00:00Z")).ask(args);
       const issue = JSON.parse(w.calls[1].stdin ?? "") as { title: string; body: string; labels: string[] };
-      const packet = w.calls[2].packet as {
+      const packet = w.calls.find((c) => c.argv[1] === "queue")?.packet as {
         title: string;
         priority: number;
         dedupe_key: string;
@@ -1277,9 +1303,9 @@ describe("what the owner asks for in his own words", () => {
       return { result, issue, packet };
     };
     const question = await filed({ text: "Why did the join slice stall?", intent: "question" });
-    expect(question.result).toEqual({ issue: 12501, url: "https://x/12501", queued: true });
+    expect(question.result).toEqual({ issue: 12501, url: "https://x/12501", priority: 10, queued: true });
     expect(question.issue.title).toBe("Owner asks: Why did the join slice stall?");
-    expect(question.issue.labels).toEqual(["owner/prompt", "expedite"]);
+    expect(question.issue.labels).toEqual(["owner/prompt", "priority/critical"]);
     expect(
       question.issue.body.startsWith("Why did the join slice stall?\n\n---\nThis is a question from the owner"),
     ).toBe(true);
@@ -1324,7 +1350,16 @@ describe("what the owner asks for in his own words", () => {
     expect(task.packet).toEqual(plain.packet);
     expect(plain.issue.title).toBe("Owner: Do the docs");
     expect(plain.packet).toEqual(
-      promptPacket(REPO, "repo-health-code-pilot", 12501, "Do the docs", "2026-11-22T06:00:00.000Z") as never,
+      promptPacket(
+        REPO,
+        "repo-health-code-pilot",
+        12501,
+        "Do the docs",
+        "2026-11-22T06:00:00.000Z",
+        "task",
+        DEFAULT_OPTIONS,
+        ["owner/prompt", "priority/critical"],
+      ) as never,
     );
     expect(plain.packet.payload.timebox_minutes).toBe(45);
     // Something that is none of the three is refused before anything is filed.
@@ -1340,10 +1375,10 @@ describe("what the owner asks for in his own words", () => {
   test("a reply on a question is queued as a question, and whoever takes the task in the queue's place is told which it is", async () => {
     const seen: (string | undefined)[] = [];
     const packets: { title: string }[] = [];
-    const hook = async (packet: unknown, intent?: string) => {
+    const hook = async (packet: unknown, intent: string) => {
       packets.push(packet as { title: string });
       seen.push(intent);
-      return { code: 0, stdout: "", stderr: "" };
+      return { queued: true };
     };
     const issue = (title: string) => JSON.stringify({ title, state: "open", labels: [{ name: "owner/prompt" }] });
     for (const [title, intent, packetTitle] of [

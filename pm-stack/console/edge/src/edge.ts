@@ -78,7 +78,9 @@ import {
   sameSiteWrite,
 } from "../../src/http.ts";
 import { plain } from "../../src/plain.ts";
-import type { Later } from "../../src/plan.ts";
+import { DEFAULT_OPTIONS, fileTask, type FilingOptions, NeedsBroker, optionArgs } from "../../src/filing.ts";
+import { asRun, type Later } from "../../src/plan.ts";
+import type { Queued } from "../../src/work.ts";
 import { platformRead } from "../../src/reads.ts";
 import { Notifier, WATCHED as NOTIFIED } from "../../src/notify.ts";
 import { contact, Push } from "../../src/push.ts";
@@ -1813,30 +1815,72 @@ export class Edge {
     // On the record under the name it was sent with, so the device that
     // sent it can find how it came out.
     const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
+    /** A task is filed here, straight into the queue's store, the way the
+     * fleet's broker files it (src/filing.ts). Only what the broker alone
+     * can decide, or a store that did not answer, is held for a machine,
+     * which files it when it is back; the owner is told which. */
+    const fileHere = async (packet: unknown, later: Later, options: FilingOptions): Promise<Queued> => {
+      // A task is always for an issue; one whose issue cannot be read
+      // (GitHub answered without its number) is filed nowhere.
+      const issue = Number(later.args.issue);
+      if (!Number.isSafeInteger(issue) || issue <= 0) {
+        return { queued: false, note: "the issue could not be read from its task" };
+      }
+      try {
+        const filed = await fileTask(
+          direct.ops,
+          packet as Record<string, unknown>,
+          new Date(this.now()),
+          options.blockers,
+        );
+        return {
+          queued: true,
+          task: filed.task,
+          status: filed.status,
+          priority: filed.priority,
+          note: filed.filed ? null : filed.said,
+        };
+      } catch (error) {
+        if (error instanceof OpError && error.status === 400) throw error;
+        const why = error instanceof NeedsBroker ? error.message : "the queue's store did not answer";
+        const held = await this.holdLater(later, by);
+        return held.code === 0
+          ? { queued: false, note: `it goes in the queue when a machine is back (${why})` }
+          : { queued: false, note: held.stderr };
+      }
+    };
     /** The task of a prompt: the packet carries the issue's number, and
-     * the text is the owner's own. */
-    const prompt = (packet: unknown, intent?: string) =>
-      this.holdLater(
-        {
-          kind: "prompt.enqueue",
-          args: {
-            issue: Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number),
-            text: String(args.text ?? ""),
-            at: new Date(this.now()).toISOString(),
-            // What kind of prompt it is, where it is not simply something
-            // to do: the machine files the task for that kind.
-            ...(intent !== undefined && intent !== "task" ? { intent } : {}),
+     * the text is the owner's own. Held for a machine, it carries the
+     * owner's choices, so it is filed as he asked. */
+    const prompt =
+      (reply: boolean) =>
+      (packet: unknown, intent: string, options: FilingOptions): Promise<Queued> =>
+        fileHere(
+          packet,
+          {
+            kind: "prompt.enqueue",
+            args: {
+              issue: Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number),
+              text: String(args.text ?? ""),
+              at: new Date(this.now()).toISOString(),
+              // What kind of prompt it is, where it is not simply something
+              // to do: the machine files the task for that kind.
+              ...(intent !== "task" ? { intent } : {}),
+              ...optionArgs(options, direct.ops.cfg.repo),
+              ...(reply ? { reply: true } : {}),
+            },
           },
-        },
-        by,
-      );
+          options,
+        );
     const from = this.outwardN;
     try {
       let result: unknown;
-      if (kind === "ask.send") result = await direct.work.ask(args, prompt);
-      else if (kind === "ask.reply") result = await direct.work.askReply(args, prompt);
+      if (kind === "ask.send") result = await direct.work.ask(args, prompt(false));
+      else if (kind === "ask.reply") result = await direct.work.askReply(args, prompt(true));
       else if (kind === "intake.send")
-        result = await direct.plan.intake(args, (_packet, later) => this.holdLater(later, by));
+        result = await direct.plan.intake(args, (packet, later) =>
+          fileHere(packet, later, DEFAULT_OPTIONS).then(asRun),
+        );
       else result = await action.run(args);
       await this.audit({ ...base, phase: "done", ok: true });
       await this.logAct({ ...entry, status: "done" });
@@ -2519,7 +2563,10 @@ export class Edge {
         const mine = this.mine(cfg);
         const bridgeRead =
           seg.length === 1 &&
-          (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory" || seg[0] === "offers" ||
+          (seg[0] === "messages" ||
+            seg[0] === "pipeline" ||
+            seg[0] === "directory" ||
+            seg[0] === "offers" ||
             seg[0] === "enroll-tokens");
         if (mine && !(bridgeRead && !this.bridgeReady())) {
           const from = this.outwardN;
