@@ -1457,7 +1457,7 @@ comment, each with the Worker's token and once, no machine asked, and
 the item gone from the next look. Nine faults planted one at a time
 under bun, each caught.
 
-## 2026-11-24T08:50Z Correction: the dashboard's census was not failing in service (#14103)
+## 2026-11-24T08:25Z Correction: the dashboard's census was not failing in service (#14103)
 
 The section of 06:55Z says the dashboard's census "asked GitHub's
 search for `repo:<repo> state:open label:"<label>"`, which GitHub
@@ -1482,7 +1482,7 @@ the code that said "every query failed" are corrected.
 made from outside the service. The machine can be asked now (below),
 and a claim of that kind is made from its answer.
 
-## 2026-11-24T08:50Z Update: the live pages, looked at on the machine
+## 2026-11-24T08:30Z Update: the live pages, looked at on the machine
 
 The console at main, started on the machine beside the one in service
 (its own port, its own empty state, no report to the edge), read by a

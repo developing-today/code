@@ -1018,7 +1018,7 @@ test("why tasks are blocked is said by the kind of reason, and adds up to all of
 // already recommended an answer to. The number that is his alone leads.
 test("what only the owner can do leads: the count on the first screen, the badge, and the list the Needs screen opens on", () => {
   const counts = { questions: 347, hands: 29, reviews: 19, other: 9 };
-  expect(needsLead(counts)).toEqual({ badge: 48, tile: 29, tileLabel: "only you can do", opens: "hands" });
+  expect(needsLead(counts)).toEqual({ badge: 48, tile: 29, tileLabel: "only you", opens: "hands" });
   // Nothing for his hands: reviews asked of him, then questions.
   expect(needsLead({ ...counts, hands: 0 })).toMatchObject({ badge: 19, tile: 0, opens: "reviews" });
   expect(needsLead({ questions: 5, hands: 0, reviews: 0, other: 2 })).toMatchObject({

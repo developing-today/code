@@ -804,7 +804,7 @@ export function needsLead(counts) {
   return {
     badge: hands + reviews,
     tile: hands,
-    tileLabel: "only you can do",
+    tileLabel: "only you",
     opens: hands ? "hands" : reviews ? "reviews" : questions ? "questions" : "hands",
   };
 }
