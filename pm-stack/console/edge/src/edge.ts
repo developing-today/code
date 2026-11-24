@@ -112,6 +112,7 @@ const SECTIONS: Record<string, number> = {
   priorities: 180_000,
   done: 120_000,
   agents: 75_000,
+  pipeline: 75_000,
   services: 45_000,
   more: 2 * 60 * 60_000,
 };
@@ -1549,7 +1550,9 @@ export class Edge {
         // The agents list is the bridge's: read here only while this
         // side holds the PM bridge credential (#14373). Without it a
         // machine goes on reporting the list, as it did before.
-        (name !== "agents" || this.bridgeReady()),
+        (name !== "agents" || this.bridgeReady()) &&
+        // The pipeline count is the bridge's the same way (#14377).
+        (name !== "pipeline" || this.bridgeReady()),
     );
   }
 
@@ -1749,11 +1752,12 @@ export class Edge {
     for (const name of DIRECT_READ_SECTIONS) {
       // The agents section is the bridge's: with no PM bridge
       // credential held there is no path here to prove, and the
-      // section is a machine's, as it was before (#14373). Every
+      // section is a machine's, as it was before (#14373). The
+      // pipeline count is the bridge's the same way (#14377). Every
       // other section is checked even while it is a machine's for
       // being refused: the check is how this side finds it can read
       // the section itself again.
-      if (name === "agents" && !this.bridgeReady()) continue;
+      if ((name === "agents" || name === "pipeline") && !this.bridgeReady()) continue;
       try {
         await directRead(name, direct.ops, direct.work);
         kinds[name] = { ok: true };

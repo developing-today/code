@@ -776,6 +776,22 @@ describe("operations", () => {
     expect(r.calls.length).toBe(1);
   });
 
+  test("the widget's count is the pipeline's unread instructions and nothing else (#14377)", async () => {
+    // The feed's unread page, as the bridge projects it: instructions
+    // and commands count; plain messages and notes do not.
+    const rows = [
+      { surface: "connector", kind: "instruction", body: "do it" },
+      { surface: "fleet", kind: "command", body: "and this" },
+      { surface: "fleet", kind: "command", body: "and this too" },
+      { surface: "fleet", kind: "message", body: "just word" },
+      { surface: "notes", kind: "note", body: "a note" },
+    ];
+    const r = recorder(() => JSON.stringify({ messages: rows }));
+    const ops = new Ops(CFG, r.run);
+    expect(await ops.unreadInstructions()).toEqual({ unreadInstructions: 3 });
+    expect(r.calls[0].argv).toEqual(["fleet", "bridge", "pipeline", "--order", "desc", "--unread", "--limit", "200"]);
+  });
+
   test("the directory merges credential state in, and a revocation shows on the next read", async () => {
     // The bridge's answers, as they stand: felix's credential live.
     // The row shape mirrors what the bridge returns: revoked_at starts

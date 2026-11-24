@@ -39,8 +39,9 @@ import { memoryShelf, type Shelf, Trends } from "../../src/trends.ts";
 /** Sections the edge reads itself. `agents` is read through the
  * bridge, so it is only the edge's while it holds the PM bridge
  * credential (edge.ts `owned` says which of these are its, case by
- * case); the rest are GitHub's and the queue store's. */
-export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done", "agents"] as const;
+ * case); the pipeline's unread-instruction count is the bridge's
+ * the same way (#14377); the rest are GitHub's and the queue store's. */
+export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done", "agents", "pipeline"] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
@@ -84,6 +85,7 @@ export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["t
   census: ["github"],
   done: ["queue", "github"],
   agents: ["bridge"],
+  pipeline: ["bridge"],
 };
 
 export interface DirectSecrets {
@@ -1023,6 +1025,8 @@ export async function directRead(section: string, ops: Ops, work: Work): Promise
       return work.done();
     case "agents":
       return ops.agents();
+    case "pipeline":
+      return ops.unreadInstructions();
     default:
       throw new Error(`not a section the edge reads itself: ${section}`);
   }

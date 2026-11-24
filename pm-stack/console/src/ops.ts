@@ -567,6 +567,27 @@ export class Ops {
     return Array.isArray(rows) ? rows : [];
   }
 
+  /**
+   * The one count the phone's widget adds to its summary (#14377,
+   * design §4.10): how many instructions in the owner's pipeline are
+   * unread — connector instructions and fleet commands under the
+   * pipeline's own unread rule (inbound, not yet read), counted from
+   * the same feed the Messages screen shows, so the widget's number
+   * is the screen's. The feed is read at its own largest page: a
+   * backlog past the page counts as the page, as it does on the
+   * screen. This is the `pipeline` document section's whole data;
+   * the phone's token stays read-only and summary-scoped — it is
+   * handed this count by the summary, never the feed.
+   */
+  async unreadInstructions() {
+    const rows = await this.pipelineFeed(new URLSearchParams({ unread: "1", limit: "200" }));
+    const instructions = rows.filter((r) => {
+      const kind = (r as { kind?: unknown } | null)?.kind;
+      return kind === "instruction" || kind === "command";
+    }).length;
+    return { unreadInstructions: instructions };
+  }
+
   /** Per-agent credential state on the bridge (#14374): active or
    * revoked, the scopes the live credentials carry. State only — the
    * bridge never returns a hash, and neither does this. */

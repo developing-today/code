@@ -31,6 +31,7 @@ import {
   deviceLabel,
   deviceState,
   endpointMark,
+  enrollCommand,
   everyRead,
   flushSaid,
   freshSaid,
@@ -1220,6 +1221,37 @@ test("each kind of prompt has its own words, and the platform takes every kind t
     "Filed as #7. filed, not queued: the queue is down",
   );
   expect(askSent("task", { issue: 7, queued: false })).toBe("Filed as #7.");
+});
+
+// An enroll command shared to the phone is read back for the
+// provisioning form (#14377): the binding the mint put in it. The
+// oracle is the command the form itself shows at a mint (name, kind,
+// groups, the bootstrap token); the token is opaque, so a command is
+// known by its flags, and text without one is not a command.
+test("a shared enroll command gives its binding back, and other text does not", () => {
+  expect(
+    enrollCommand("fleet agent enroll --name scout-1 --kind muse --groups muse,fleet --bootstrap tok-abc123"),
+  ).toEqual({ token: "tok-abc123", name: "scout-1", kind: "muse", groups: ["muse", "fleet"], notesIdentity: undefined });
+  expect(enrollCommand("fleet agent enroll --name solo --bootstrap tok-xyz")).toEqual({
+    token: "tok-xyz",
+    name: "solo",
+    kind: undefined,
+    groups: [],
+    notesIdentity: undefined,
+  });
+  expect(enrollCommand("fleet agent enroll --name n --kind codex --notes-identity muse/n --bootstrap t")).toEqual({
+    token: "t",
+    name: "n",
+    kind: "codex",
+    groups: [],
+    notesIdentity: "muse/n",
+  });
+  // No bootstrap token, no enroll step, or not text at all: not a command.
+  expect(enrollCommand("fleet agent enroll --name scout-1 --kind muse")).toBeNull();
+  expect(enrollCommand("please enroll the new laptop when it arrives")).toBeNull();
+  expect(enrollCommand("run --bootstrap the servers")).toBeNull();
+  expect(enrollCommand(null)).toBeNull();
+  expect(enrollCommand(42)).toBeNull();
 });
 
 // A goal most of a list shares is said once, not on every card. Seen
