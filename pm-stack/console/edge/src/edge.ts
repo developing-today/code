@@ -176,7 +176,7 @@ const OWN_CLOCK_MS = 60_000;
  * reads its history on: this many pages each minute until it has been
  * read to its end, then what changed, this often. */
 const TRENDS_EVERY_MS = 30 * 60_000;
-const TRENDS_PAGES_A_WAKE = 2;
+const TRENDS_PAGES_A_WAKE = 6;
 /** It does that for this long after the screen was last asked for. */
 const TRENDS_WATCHED_MS = 24 * 60 * 60_000;
 /** While the app is connected, how often this side wakes to read again

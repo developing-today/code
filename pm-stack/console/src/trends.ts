@@ -6,13 +6,21 @@
 //
 // GitHub has no "how many merged each day" to ask for, so the history
 // is read once and kept. GitHub's list of issues takes a time and
-// answers with everything changed at or after it, oldest change first:
-// read from ninety days back, a page at a time, each page's last change
-// is where the next page starts. That is every issue and pull request
-// touched since, each seen at least once in its present state, however
-// they change while being read. Once the list has been read to its end
-// it is kept up by asking from the same place again: only what changed
-// since comes back. What is kept is small: per day, the numbers of what
+// answers with everything changed at or after it, oldest change first,
+// each issue and pull request once, at its last change. Asked from a
+// time, a page at a time, each page's last change is where the next
+// page starts: that is everything touched since, each seen at least
+// once in its present state, however they change while being read.
+//
+// It is read newest first, because the last days are what is looked
+// at: first everything changed in the last day, to the end of the
+// list, and that reading is then kept up for good by asking from where
+// it stopped (only what changed since comes back). Behind it the older
+// stretches are read one at a time, each from its start up to where
+// the one after it began: three days back, a week, two weeks, a month,
+// two months, ninety days. A day's counts are whole once everything
+// changed since that day has been read, so the screen says how far
+// back that is. What is kept is small: per day, the numbers of what
 // was opened and closed, and for a merged pull request what its title
 // says it is.
 //
@@ -40,6 +48,9 @@ export function memoryShelf(): Shelf & { keys: () => string[] } {
 
 /** How far back the history goes. */
 export const HISTORY_DAYS = 90;
+/** Where each stretch of it starts, in days back from the first read:
+ * the newest stretch first. The last is the whole of it. */
+export const STRETCHES = [1, 3, 7, 14, 30, 60, HISTORY_DAYS] as const;
 /** GitHub's largest page. */
 const PAGE = 100;
 /** How many pages one read of the screen waits for. The rest is read
@@ -138,14 +149,29 @@ export interface Day {
 }
 const emptyDay = (): Day => ({ io: [], ic: [], bo: [], bc: [], po: [], px: [], pm: {} });
 
-interface Meta {
+/** Where a reading has got to: everything changed before `cursor` is
+ * read, and `page` pages of what changed in that very second. */
+interface Place {
+  cursor: string;
+  page: number;
+}
+
+interface Meta extends Place {
   /** The first day the history covers. */
   from: string;
-  /** Everything changed before this has been read. */
-  cursor: string;
-  /** The list has been read to its end at least once. */
+  /** The newest stretch, kept up for good, started here: everything
+   * changed from this up to `cursor` has been read. */
+  liveFrom: string;
+  /** That reading has reached the end of the list at least once. */
+  live: boolean;
+  /** The older stretch being read now: from `from`, as far as `cursor`
+   * so far, up to `until` (where the stretch after it began). */
+  back: (Place & { from: string; until: string }) | null;
+  /** Where the stretches still to read start, newest first. */
+  edges: string[];
+  /** Every stretch has been read: nothing is missing. */
   whole: boolean;
-  /** When it was last read to its end. */
+  /** When the newest stretch last reached the end of the list. */
   readAt: string | null;
 }
 
@@ -234,7 +260,10 @@ export interface TrendsDoc {
   window: number;
   days: string[];
   today: string;
-  history: { from: string; whole: boolean; readTo: string; readAt: string | null };
+  /** `covered`: everything changed since then has been read, so the
+   * days from then on are whole (null until the newest stretch has
+   * been read to its end). */
+  history: { from: string; whole: boolean; covered: string | null; readTo: string; readAt: string | null };
   projects: { id: string; title: string }[];
   merged: {
     all: number[];
@@ -274,15 +303,52 @@ export class Trends {
     if (text) {
       try {
         const m = JSON.parse(text) as Meta;
-        if (typeof m.from === "string" && typeof m.cursor === "string") {
-          return { from: m.from, cursor: m.cursor, whole: m.whole === true, readAt: m.readAt ?? null };
+        if (
+          typeof m.from === "string" &&
+          typeof m.cursor === "string" &&
+          typeof m.liveFrom === "string" &&
+          Array.isArray(m.edges)
+        ) {
+          const page = (n: unknown) => (Number.isInteger(n) && (n as number) > 0 ? (n as number) : 1);
+          const back = m.back;
+          return {
+            from: m.from,
+            cursor: m.cursor,
+            page: page(m.page),
+            liveFrom: m.liveFrom,
+            live: m.live === true,
+            back:
+              back && typeof back.cursor === "string" && typeof back.until === "string" && typeof back.from === "string"
+                ? { from: back.from, cursor: back.cursor, page: page(back.page), until: back.until }
+                : null,
+            edges: m.edges.filter((e) => typeof e === "string"),
+            whole: m.whole === true,
+            readAt: m.readAt ?? null,
+          };
         }
       } catch {
         // Not what was written: start again.
       }
     }
-    const from = new Date(this.clock().getTime() - HISTORY_DAYS * 86_400_000).toISOString().slice(0, 10);
-    return { from, cursor: `${from}T00:00:00Z`, whole: false, readAt: null };
+    const now = this.clock().getTime();
+    const from = new Date(now - HISTORY_DAYS * 86_400_000).toISOString().slice(0, 10);
+    // Each stretch starts on the second, as GitHub's own times do; the
+    // oldest starts with the first day of the history.
+    const back = (days: number) =>
+      new Date(Math.floor((now - days * 86_400_000) / 1000) * 1000).toISOString().replace(".000Z", "Z");
+    const [first, ...older] = STRETCHES;
+    const edges = older.map((days) => (days === HISTORY_DAYS ? `${from}T00:00:00Z` : back(days)));
+    return {
+      from,
+      cursor: back(first),
+      page: 1,
+      liveFrom: back(first),
+      live: false,
+      back: null,
+      edges,
+      whole: false,
+      readAt: null,
+    };
   }
 
   private async day(date: string): Promise<Day> {
@@ -321,6 +387,30 @@ export class Trends {
     return this.reading;
   }
 
+  /** One page of what changed at or after `at.cursor`, put into its
+   * days. Answers with how many came and the time of the last. Only
+   * what changed before `until` is counted (the rest is another
+   * stretch's). */
+  private async page(at: Place, until: string | null, meta: Meta, open: Map<string, Day>, touched: Set<string>) {
+    const path =
+      `repos/${this.repo}/issues?state=all&sort=updated&direction=asc&since=${at.cursor}&per_page=${PAGE}` +
+      (at.page > 1 ? `&page=${at.page}` : "");
+    const items = (await this.ops.gh([path])) as Item[] | null;
+    if (!Array.isArray(items)) throw new OpError(502, "GitHub's list of issues was not a list");
+    const mine = until === null ? items : items.filter((item) => (item.updated_at ?? "") < until);
+    // The days this page writes on, read first.
+    const dates = new Set<string>();
+    for (const item of mine) fold(item, meta.from, (date) => (dates.add(date), emptyDay()));
+    for (const date of dates) if (!open.has(date)) open.set(date, await this.day(date));
+    for (const item of mine) {
+      fold(item, meta.from, (date) => {
+        touched.add(date);
+        return open.get(date) as Day;
+      });
+    }
+    return { count: items.length, last: items.length > 0 ? (items[items.length - 1].updated_at ?? "") : "" };
+  }
+
   private async readOn(pages: number): Promise<Meta> {
     const meta = await this.meta();
     const open = new Map<string, Day>();
@@ -330,35 +420,49 @@ export class Trends {
       touched.clear();
       await this.shelf.put("meta", JSON.stringify(meta));
     };
+    // Where the next page starts: at the last change of this one. A
+    // whole page that ends in the second it began in (a hundred things
+    // changed at once) is followed by the next page of that second.
+    const on = (at: Place, last: string) => {
+      if (last > at.cursor) {
+        at.cursor = last;
+        at.page = 1;
+      } else at.page++;
+    };
     try {
-      for (let page = 0; page < pages; page++) {
-        const path = `repos/${this.repo}/issues?state=all&sort=updated&direction=asc&since=${meta.cursor}&per_page=${PAGE}`;
-        const items = (await this.ops.gh([path])) as Item[] | null;
-        if (!Array.isArray(items)) throw new OpError(502, "GitHub's list of issues was not a list");
-        // The days this page writes on, read first.
-        const dates = new Set<string>();
-        for (const item of items) fold(item, meta.from, (date) => (dates.add(date), emptyDay()));
-        for (const date of dates) if (!open.has(date)) open.set(date, await this.day(date));
-        for (const item of items) {
-          fold(item, meta.from, (date) => {
-            touched.add(date);
-            return open.get(date) as Day;
-          });
-        }
-        const last = items.length > 0 ? (items[items.length - 1].updated_at ?? "") : "";
-        if (items.length < PAGE) {
-          // The end of the list: everything changed up to now is read.
-          if (last > meta.cursor) meta.cursor = last;
-          meta.whole = true;
+      let left = pages;
+      // The newest stretch: to the end of the list. Once it has been
+      // there, this is one look at what has changed since.
+      for (let end = false; left > 0 && !end; ) {
+        left--;
+        const got = await this.page(meta, null, meta, open, touched);
+        if (got.count < PAGE) {
+          end = true;
+          if (got.last > meta.cursor) meta.cursor = got.last;
+          meta.page = 1;
+          if (!meta.live) {
+            meta.live = true;
+            // The stretch before it starts where the next edge says and stops where this one began.
+            const from = meta.edges.shift();
+            meta.back = from === undefined ? null : { from, cursor: from, page: 1, until: meta.liveFrom };
+          }
           meta.readAt = this.clock().toISOString();
-          break;
-        }
-        // A whole page that ends where it began (a hundred things
-        // changed in one second) would be read for ever: step past it.
-        meta.cursor =
-          last > meta.cursor ? last : new Date(Date.parse(meta.cursor) + 1000).toISOString().replace(".000Z", "Z");
+        } else on(meta, got.last);
         await save();
       }
+      // Then the older stretches, the newest of them first.
+      while (left > 0 && meta.live && meta.back) {
+        left--;
+        const back = meta.back;
+        const got = await this.page(back, back.until, meta, open, touched);
+        if (got.count < PAGE || got.last >= back.until) {
+          // This stretch is read: on to the one before it.
+          const from = meta.edges.shift();
+          meta.back = from === undefined ? null : { from, cursor: from, page: 1, until: back.from };
+        } else on(back, got.last);
+        await save();
+      }
+      meta.whole = meta.live && meta.back === null;
     } finally {
       // What was read before a failure is kept.
       await save();
@@ -451,7 +555,13 @@ export class Trends {
       window,
       days,
       today,
-      history: { from: meta.from, whole: meta.whole, readTo: meta.cursor, readAt: meta.readAt },
+      history: {
+        from: meta.from,
+        whole: meta.whole,
+        covered: !meta.live ? null : meta.back ? meta.back.until : `${meta.from}T00:00:00Z`,
+        readTo: meta.cursor,
+        readAt: meta.readAt,
+      },
       projects: PROJECTS.map(({ id, title }) => ({ id, title })),
       merged: { all: kept.map((day) => Object.keys(day.pm).length), kinds, projects, minutes },
       features: { projects: featured, latest },

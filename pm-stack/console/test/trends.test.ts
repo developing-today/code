@@ -121,10 +121,11 @@ function world(items: Item[], db?: Database) {
     expect([q.get("state"), q.get("sort"), q.get("direction")]).toEqual(["all", "updated", "asc"]);
     const since = q.get("since") ?? "";
     const per = Math.min(100, Number(q.get("per_page") ?? 30));
+    const at = Number(q.get("page") ?? 1);
     const page = items
       .filter((i) => i.updated_at >= since)
       .sort((a, b) => (a.updated_at < b.updated_at ? -1 : a.updated_at > b.updated_at ? 1 : a.number - b.number))
-      .slice(0, per);
+      .slice((at - 1) * per, at * per);
     return { code: 0, stdout: JSON.stringify(page), stderr: "" };
   };
   const fetchImpl: Fetch = async (_url, init) => {
@@ -160,6 +161,11 @@ function world(items: Item[], db?: Database) {
     JSON.parse((await shelf.get("meta")) ?? "null") as {
       from: string;
       cursor: string;
+      page: number;
+      liveFrom: string;
+      live: boolean;
+      back: { from: string; cursor: string; page: number; until: string } | null;
+      edges: string[];
       whole: boolean;
       readAt: string | null;
     };
@@ -349,38 +355,67 @@ describe("an issue or pull request put into the days it belongs to", () => {
   });
 });
 
-describe("the history is read from GitHub a page at a time and kept", () => {
-  /** 250 pull requests, one merged every ten minutes from the 20th. */
+describe("the history is read from GitHub newest first, a page at a time, and kept", () => {
+  /** 250 pull requests, one merged every ten minutes from the 20th: the last at 17:30 on the 21st. */
   const many = () =>
     Array.from({ length: 250 }, (_, i) => {
       const at = new Date(Date.parse("2026-11-20T00:00:00Z") + i * 600_000).toISOString().replace(".000Z", "Z");
       return pull(1000 + i, `feat(id): thing ${i}`, at, at);
     });
+  const since = (asked: string[]) =>
+    asked.map((path) => /since=([^&]+)(?:&per_page=100)(&page=\d+)?/.exec(path)?.slice(1).join("") ?? path);
+  /** Every merged pull request kept, whatever day it is under. */
+  const kept = async (w: ReturnType<typeof world>) => {
+    const numbers = new Set<string>();
+    for (const key of w.shelf.keys()) {
+      if (key.startsWith("day:")) for (const n of Object.keys(((await w.day(key.slice(4))) as Day).pm)) numbers.add(n);
+    }
+    return numbers;
+  };
 
-  test("three pages are read over two reads, each from where the last stopped, and then it is whole", async () => {
+  test("the last day first, to the end of the list; then each older stretch up to where the one after it began", async () => {
+    // It is noon on the 24th. The stretches start 1, 3, 7, 14, 30 and 60 days back, and with the history itself.
     const w = world(many());
     const first = await w.trends.advance(2);
-    expect(first.whole).toBe(false);
-    // From ninety days back; the second page starts at the first's last change.
-    const from = new Date(NOW.getTime() - HISTORY_DAYS * 86_400_000).toISOString().slice(0, 10);
-    expect(from).toBe("2026-08-26");
-    expect(w.asked).toEqual([
-      `repos/${CFG.repo}/issues?state=all&sort=updated&direction=asc&since=2026-08-26T00:00:00Z&per_page=100`,
-      `repos/${CFG.repo}/issues?state=all&sort=updated&direction=asc&since=2026-11-20T16:30:00Z&per_page=100`,
-    ]);
-    // Page two began with the item page one ended on, so 199 are read so far.
-    const read = async () => {
-      let n = 0;
-      for (const key of w.shelf.keys())
-        if (key.startsWith("day:")) n += Object.keys(((await w.day(key.slice(4))) as Day).pm).length;
-      return n;
-    };
-    expect(await read()).toBe(199);
+    expect(HISTORY_DAYS).toBe(90);
+    // Asked for exactly this: everything, by when it changed, oldest change first, from a day back.
+    expect(w.asked[0]).toBe(
+      `repos/${CFG.repo}/issues?state=all&sort=updated&direction=asc&since=2026-11-23T12:00:00Z&per_page=100`,
+    );
+    // Nothing changed in the last day, so that stretch is read at once; the next goes back to noon on the 21st.
+    expect(since(w.asked)).toEqual(["2026-11-23T12:00:00Z", "2026-11-21T12:00:00Z"]);
+    // From noon on the 21st there are 34 (12:00 to 17:30, one every ten minutes): fewer than a page, so that stretch is read too.
+    expect((await kept(w)).size).toBe(34);
+    expect([first.live, first.whole]).toEqual([true, false]);
+    expect(await w.meta()).toEqual({
+      from: "2026-08-26",
+      cursor: "2026-11-23T12:00:00Z",
+      page: 1,
+      liveFrom: "2026-11-23T12:00:00Z",
+      live: true,
+      // The stretch being read now: a week back, up to where the last one began.
+      back: { from: "2026-11-17T12:00:00Z", cursor: "2026-11-17T12:00:00Z", page: 1, until: "2026-11-21T12:00:00Z" },
+      edges: ["2026-11-10T12:00:00Z", "2026-10-25T12:00:00Z", "2026-09-25T12:00:00Z", "2026-08-26T00:00:00Z"],
+      whole: false,
+      readAt: NOW.toISOString(),
+    });
     expect(await w.trends.due()).toBe(true);
-    const second = await w.trends.advance(2);
-    expect([second.whole, second.readAt]).toEqual([true, NOW.toISOString()]);
-    expect(w.asked.length).toBe(3);
-    expect(await read()).toBe(250);
+    // Read on: one look at what is new (nothing), then the stretch from a week back takes three pages
+    // (100, 100, and the rest up to where the next stretch began), and the four older stretches a page each,
+    // each ending at once: its first page already reaches past where it stops.
+    const second = await w.trends.advance(20);
+    expect(since(w.asked).slice(2)).toEqual([
+      "2026-11-23T12:00:00Z",
+      "2026-11-17T12:00:00Z",
+      "2026-11-20T16:30:00Z",
+      "2026-11-21T09:00:00Z",
+      "2026-11-10T12:00:00Z",
+      "2026-10-25T12:00:00Z",
+      "2026-09-25T12:00:00Z",
+      "2026-08-26T00:00:00Z",
+    ]);
+    expect([second.whole, second.back, second.edges]).toEqual([true, null, []]);
+    expect((await kept(w)).size).toBe(250);
     // The 20th has the first 144 (one every ten minutes for a day), the 21st the rest.
     expect(Object.keys(((await w.day("2026-11-20")) as Day).pm).length).toBe(144);
     expect(Object.keys(((await w.day("2026-11-21")) as Day).pm).length).toBe(106);
@@ -389,20 +424,20 @@ describe("the history is read from GitHub a page at a time and kept", () => {
 
   test("kept up afterwards by asking what changed since: one page, and only what is new is added", async () => {
     const w = world(many());
-    await w.trends.advance(5);
+    await w.trends.advance(20);
     expect((await w.meta()).whole).toBe(true);
     const before = w.asked.length;
     // Nothing changed: one question, the same days.
-    const kept = JSON.stringify(await w.day("2026-11-21"));
-    await w.trends.advance(5);
+    const was = JSON.stringify(await w.day("2026-11-21"));
+    await w.trends.advance(20);
     expect(w.asked.length).toBe(before + 1);
-    expect(JSON.stringify(await w.day("2026-11-21"))).toBe(kept);
+    expect(JSON.stringify(await w.day("2026-11-21"))).toBe(was);
     // A pull request opened long ago merges now, and an issue is filed.
     w.items.push(pull(77, "feat(fleet): late", "2026-11-10T00:00:00Z", "2026-11-24T11:00:00Z"));
     w.items.push(issue(78, "2026-11-24T11:30:00Z", { labels: [{ name: "kind/bug" }] }));
-    await w.trends.advance(5);
+    await w.trends.advance(20);
     expect(w.asked.length).toBe(before + 2);
-    expect(w.asked[w.asked.length - 1]).toContain("since=2026-11-21T17:30:00Z");
+    expect(since(w.asked.slice(-1))).toEqual(["2026-11-23T12:00:00Z"]);
     expect(await w.day("2026-11-24")).toEqual({
       io: [78],
       ic: [],
@@ -410,78 +445,125 @@ describe("the history is read from GitHub a page at a time and kept", () => {
       bc: [],
       po: [],
       px: [],
+      // Opened at midnight on the 10th, merged at 11:00 on the 24th: 14 days and 11 hours, 20,820 minutes.
       pm: { "77": ["feat", "fleet", 20820, "11:00", "late"] },
     });
+    // The next look starts from the last change seen.
+    await w.trends.advance(20);
+    expect(since(w.asked.slice(-1))).toEqual(["2026-11-24T11:30:00Z"]);
     // It is due again only after a while.
     expect(await w.trends.due()).toBe(false);
     w.clock.now = new Date(NOW.getTime() + 5 * 60_000);
     expect(await w.trends.due()).toBe(true);
     expect(await w.trends.due(30 * 60_000)).toBe(false);
+    expect(await w.trends.dueAt(30 * 60_000)).toBe(NOW.getTime() + 30 * 60_000);
+  });
+
+  test("a busy last day takes several pages, and nothing older is read until it has been read to its end", async () => {
+    // 230 changed in the last day, one a minute from 13:00 on the 23rd.
+    const busy = Array.from({ length: 230 }, (_, i) => {
+      const at = new Date(Date.parse("2026-11-23T13:00:00Z") + i * 60_000).toISOString().replace(".000Z", "Z");
+      return pull(5000 + i, "fix(id): busy", at, at);
+    });
+    const w = world([...many(), ...busy]);
+    const first = await w.trends.advance(2);
+    // Two pages of the last day, each from the last change of the one before: not at its end yet.
+    expect(since(w.asked)).toEqual(["2026-11-23T12:00:00Z", "2026-11-23T14:39:00Z"]);
+    expect([first.live, first.back, first.readAt]).toEqual([false, null, null]);
+    // Until then the screen cannot say any day is whole (GitHub is out of reach for this one look,
+    // so the screen shows what is kept and reads nothing on).
+    w.state.fail = () => "GitHub could not be reached: timed out";
+    const early = await w.trends.read("7");
+    expect([early.history.covered, early.history.whole, early.partial]).toEqual([null, false, true]);
+    w.state.fail = null;
+    const done = await w.trends.advance(1);
+    expect(since(w.asked).slice(-1)).toEqual(["2026-11-23T16:18:00Z"]);
+    expect(done.live).toBe(true);
+    // Now the last day is whole, and the screen says how far back that goes.
+    expect((await w.meta()).back?.until).toBe("2026-11-23T12:00:00Z");
+    expect((await kept(w)).size).toBe(230);
   });
 
   test("something that changes while the history is being read is still counted once", async () => {
     const items = many();
     const w = world(items);
-    await w.trends.advance(1);
-    // One already read is changed (a comment on it): it moves to the end of the list.
-    const touched = items[10];
-    touched.updated_at = "2026-11-23T00:00:00Z";
-    // One not yet read is changed too.
-    items[240].updated_at = "2026-11-23T00:00:01Z";
-    await w.trends.advance(5);
-    let n = 0;
-    for (const key of w.shelf.keys())
-      if (key.startsWith("day:")) n += Object.keys(((await w.day(key.slice(4))) as Day).pm).length;
-    expect(n).toBe(250);
-    expect((await w.meta()).cursor).toBe("2026-11-23T00:00:01Z");
+    // The last day (nothing), the stretch from noon on the 21st (34), and the first page of the one before it.
+    await w.trends.advance(3);
+    expect((await kept(w)).size).toBe(134);
+    // One already read is changed now (a comment on it): it moves to the end of the list.
+    items[10].updated_at = "2026-11-24T12:00:05Z";
+    // One not yet read is changed too: it leaves the stretch it was in.
+    items[150].updated_at = "2026-11-24T12:00:06Z";
+    await w.trends.advance(20);
+    expect((await kept(w)).size).toBe(250);
+    const meta = await w.meta();
+    expect([meta.whole, meta.cursor]).toEqual([true, "2026-11-24T12:00:06Z"]);
   });
 
-  test("a hundred and more changed in the same second do not stop it", async () => {
+  test("a hundred and more changed in the same second are read a page of that second at a time", async () => {
+    // 130 swept in one second on the 22nd, and one an hour after.
     const same = Array.from({ length: 130 }, (_, i) =>
       pull(2000 + i, "fix(id): swept", "2026-11-22T00:00:00Z", "2026-11-22T00:00:00Z"),
     );
     const after = pull(3000, "feat(id): after the sweep", "2026-11-22T01:00:00Z", "2026-11-22T01:00:00Z");
     const w = world([...same, after]);
-    const meta = await w.trends.advance(6);
+    await w.trends.advance(3);
+    // The last day; then the stretch from noon on the 21st: its first page is all one second, and so is the page asked from that second.
+    expect(since(w.asked)).toEqual(["2026-11-23T12:00:00Z", "2026-11-21T12:00:00Z", "2026-11-22T00:00:00Z"]);
+    expect((await w.meta()).back).toEqual({
+      from: "2026-11-21T12:00:00Z",
+      cursor: "2026-11-22T00:00:00Z",
+      page: 2,
+      until: "2026-11-23T12:00:00Z",
+    });
+    // Stopped there and started again, it goes on with the second page of that second: nothing is skipped.
+    const meta = await w.trends.advance(20);
+    expect(since(w.asked)[4]).toBe("2026-11-22T00:00:00Z&page=2");
     expect(meta.whole).toBe(true);
-    // It stepped past the second rather than asking for it for ever, and reached what came after.
-    expect(w.asked.length).toBe(3);
-    expect(w.asked[1]).toContain("since=2026-11-22T00:00:00Z");
-    expect(w.asked[2]).toContain("since=2026-11-22T00:00:01Z");
-    expect(Object.keys(((await w.day("2026-11-22")) as Day).pm)).toContain("3000");
+    const day = (await w.day("2026-11-22")) as Day;
+    expect(Object.keys(day.pm).length).toBe(131);
+    expect(Object.keys(day.pm)).toContain("3000");
   });
 
   test("a page that cannot be read stops it there with what came before kept, and the next read goes on", async () => {
     const w = world(many());
-    w.state.fail = (_path, n) => (n === 2 ? "GitHub could not be reached: timed out" : null);
-    await expect(w.trends.advance(3)).rejects.toThrow("GitHub could not be reached");
+    w.state.fail = (_path, n) => (n === 4 ? "GitHub could not be reached: timed out" : null);
+    await expect(w.trends.advance(20)).rejects.toThrow("GitHub could not be reached");
     const meta = await w.meta();
-    expect([meta.whole, meta.cursor]).toEqual([false, "2026-11-20T16:30:00Z"]);
-    expect(Object.keys(((await w.day("2026-11-20")) as Day).pm).length).toBe(100);
+    // The last day, the stretch from the 21st and one page of the stretch before it were read; the fourth ask failed.
+    expect([meta.whole, meta.live, meta.back?.cursor]).toEqual([false, true, "2026-11-20T16:30:00Z"]);
+    expect((await kept(w)).size).toBe(134);
     w.state.fail = null;
-    expect((await w.trends.advance(3)).whole).toBe(true);
-    expect(w.asked[2]).toContain("since=2026-11-20T16:30:00Z");
+    expect((await w.trends.advance(20)).whole).toBe(true);
+    // One look at what is new, then on from where it stopped.
+    expect(since(w.asked).slice(4, 6)).toEqual(["2026-11-23T12:00:00Z", "2026-11-20T16:30:00Z"]);
+    expect((await kept(w)).size).toBe(250);
     // An answer that is not a list is no answer.
     const odd = world([]);
-    odd.state.fail = () => null;
     (odd.ops as unknown as { gh: () => Promise<unknown> }).gh = async () => ({ message: "Bad credentials" });
     await expect(odd.trends.advance(1)).rejects.toThrow("was not a list");
   });
 
   test("two readers at once are one reading", async () => {
     const w = world(many());
-    const [a, b] = await Promise.all([w.trends.advance(5), w.trends.advance(5)]);
+    const [a, b] = await Promise.all([w.trends.advance(20), w.trends.advance(20)]);
     expect(a).toBe(b);
-    expect(w.asked.length).toBe(3);
+    expect(w.asked.length).toBe(9);
   });
 
   test("what is kept that is not what was written is read again from the start, not trusted", async () => {
     const w = world(many());
     await w.shelf.put("meta", "{not json");
     await w.shelf.put("day:2026-11-20", "also not json");
-    expect((await w.trends.advance(5)).whole).toBe(true);
-    expect(w.asked[0]).toContain("since=2026-08-26T00:00:00Z");
+    expect((await w.trends.advance(20)).whole).toBe(true);
+    expect(since(w.asked)[0]).toBe("2026-11-23T12:00:00Z");
     expect(Object.keys(((await w.day("2026-11-20")) as Day).pm).length).toBe(144);
+    // The same for a note of where it had got to that is JSON but not the note.
+    const other = world(many());
+    await other.shelf.put("meta", JSON.stringify({ from: "2026-08-26", cursor: "2026-11-01T00:00:00Z", whole: true }));
+    expect((await other.trends.advance(20)).whole).toBe(true);
+    expect(since(other.asked)[0]).toBe("2026-11-23T12:00:00Z");
+    expect((await kept(other)).size).toBe(250);
   });
 });
 
@@ -554,6 +636,8 @@ describe("the document the Trends screen draws", () => {
     q.task(3, "feature slice");
     q.event(3, "completed", "2026-11-12T10:00:00Z");
     const w = world(items(), q.db);
+    // The history is read to its end first, as the background does.
+    await w.trends.advance(20);
     const doc = await w.trends.read("7");
     expect(doc.window).toBe(7);
     expect(doc.today).toBe("2026-11-24");
@@ -588,9 +672,11 @@ describe("the document the Trends screen draws", () => {
     expect(last(doc.prs.opened)).toEqual([0, 1, 4]);
     expect(last(doc.prs.closed)).toEqual([0, 0, 1]);
     expect(doc.projects.map((p) => p.id)).toEqual(["id", "fleet", "atlas", "pm-stack", "mcpx", "other"]);
+    // Read to its end in one go (there is little of it): every day is whole, back to the start.
     expect(doc.history).toEqual({
       from: "2026-08-26",
       whole: true,
+      covered: "2026-08-26T00:00:00Z",
       readTo: "2026-11-24T10:00:00Z",
       readAt: NOW.toISOString(),
     });
@@ -608,6 +694,7 @@ describe("the document the Trends screen draws", () => {
 
   test("the windows on offer, and anything else is thirty days", async () => {
     const w = world(items(), queueDb().db);
+    await w.trends.advance(20);
     expect((await w.trends.read("90")).days.length).toBe(90);
     expect((await w.trends.read("30")).days.length).toBe(60);
     for (const odd of [null, "", "0", "8", "abc", "-7", "1e2"])
@@ -622,6 +709,7 @@ describe("the document the Trends screen draws", () => {
       return pull(100 + i, `feat(mcpx): number ${i}`, at, at);
     });
     const w = world(lots, queueDb().db);
+    await w.trends.advance(20);
     const doc = await w.trends.read("7");
     expect(doc.features.latest.mcpx.length).toBe(12);
     expect(doc.features.latest.mcpx[0].title).toBe("number 14");
@@ -629,8 +717,27 @@ describe("the document the Trends screen draws", () => {
     expect(doc.features.projects.mcpx[doc.days.length - 1]).toBe(15);
   });
 
+  test("opened before the history is whole, the screen reads three pages on each time and says how far back it is whole", async () => {
+    const w = world(items(), queueDb().db);
+    const first = await w.trends.read("7");
+    // The last day (to its end), and two older stretches.
+    expect(w.asked.length).toBe(3);
+    expect([first.history.whole, first.history.covered]).toEqual([false, "2026-11-17T12:00:00Z"]);
+    // What changed in the last week is all there already: the three merged on the 24th.
+    expect(first.merged.all.slice(-1)).toEqual([3]);
+    // Not yet the one from the 12th, which is older than a week.
+    expect(first.merged.all[1]).toBe(0);
+    const second = await w.trends.read("7");
+    expect(w.asked.length).toBe(6);
+    expect([second.history.whole, second.history.covered]).toEqual([false, "2026-10-25T12:00:00Z"]);
+    expect(second.merged.all[1]).toBe(1);
+    const third = await w.trends.read("7");
+    expect([third.history.whole, third.history.covered, w.asked.length]).toEqual([true, "2026-08-26T00:00:00Z", 9]);
+  });
+
   test("read again within five minutes GitHub is not asked; pressed to refresh, it is", async () => {
     const w = world(items(), queueDb().db);
+    await w.trends.advance(20);
     await w.trends.read("7");
     const asked = w.asked.length;
     await w.trends.read("7");
@@ -642,6 +749,7 @@ describe("the document the Trends screen draws", () => {
 
   test("with GitHub out of reach it shows what was kept and says so; with the queue out of reach, the rest", async () => {
     const w = world(items(), queueDb().db);
+    await w.trends.advance(20);
     await w.trends.read("7");
     w.state.fail = () => "GitHub could not be reached: timed out";
     const stale = await w.trends.read("7", true);

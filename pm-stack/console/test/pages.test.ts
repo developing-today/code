@@ -12,7 +12,7 @@ import { join } from "node:path";
 import "../public/look.js";
 import { routesKnown } from "../public/app.js";
 import { PAGES } from "../public/pages/index.js";
-import trends, { notes, shape } from "../public/pages/trends.js";
+import trends, { notes, shape, wholeFrom } from "../public/pages/trends.js";
 
 const PUBLIC = join(import.meta.dir, "../public");
 
@@ -77,6 +77,7 @@ function doc(window: number, count: number) {
     history: {
       from: "2026-08-26",
       whole: true,
+      covered: "2026-08-26T00:00:00Z" as string | null,
       readTo: "2026-11-24T10:00:00Z",
       readAt: "2026-11-24T10:00:00Z" as string | null,
     },
@@ -231,11 +232,21 @@ test("the queue out of reach leaves the tasks out, and what cannot be seen yet i
   ]);
   expect(notes(d)).toEqual([]);
   d.history.whole = false;
-  d.history.readTo = "2026-11-02T08:15:00Z";
+  d.history.covered = null;
   d.partial = true;
   d.why = "GitHub's history could not be read on: timed out";
   expect(notes(d)).toEqual([
-    "The history is still being read from GitHub. It has reached Mon 2 Nov: counts after that are not all in yet. It reads on by itself; ↻ reads on now.",
+    "The history is being read from GitHub for the first time, newest first. No day is whole yet. It reads on by itself; ↻ reads on now.",
     "GitHub's history could not be read on: timed out",
   ]);
+  // Everything changed since noon on the 17th has been read: the 18th is the first whole day.
+  d.history.covered = "2026-11-17T12:00:00Z";
+  d.partial = undefined;
+  expect(notes(d)).toEqual([
+    "The history is being read from GitHub, newest first. Days from Wed 18 Nov on are whole; earlier ones are still coming in. It reads on by itself; ↻ reads on now.",
+  ]);
+  expect(wholeFrom("2026-11-17T12:00:00Z")).toBe("2026-11-18");
+  // Read from the very start of a day, that day is whole; and across a month's end.
+  expect(wholeFrom("2026-08-26T00:00:00Z")).toBe("2026-08-26");
+  expect(wholeFrom("2026-10-31T23:59:59Z")).toBe("2026-11-01");
 });

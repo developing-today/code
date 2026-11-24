@@ -1168,29 +1168,32 @@ describe("HTTP surface", () => {
 
   test("a machine answers Trends too, with the same reader, through the fleet binary; and it remembers what it read between asks", async () => {
     // GitHub's list of issues as the fleet binary gives it: one pull request merged and one issue filed.
+    const items = [
+      {
+        number: 41,
+        title: "feat(fleet): a lane",
+        created_at: "2026-11-20T10:00:00Z",
+        updated_at: "2026-11-20T11:00:00Z",
+        closed_at: "2026-11-20T11:00:00Z",
+        state: "closed",
+        labels: [],
+        pull_request: { merged_at: "2026-11-20T11:00:00Z" },
+      },
+      {
+        number: 42,
+        title: "A bug",
+        created_at: "2026-11-21T10:00:00Z",
+        updated_at: "2026-11-21T10:00:00Z",
+        closed_at: null,
+        state: "open",
+        labels: [{ name: "kind/bug" }],
+      },
+    ];
     const r = recorder((argv) => {
       if (argv[1] === "gh" && argv[3].includes("/issues?state=all&sort=updated&direction=asc&since=")) {
-        return JSON.stringify([
-          {
-            number: 41,
-            title: "feat(fleet): a lane",
-            created_at: "2026-11-20T10:00:00Z",
-            updated_at: "2026-11-20T11:00:00Z",
-            closed_at: "2026-11-20T11:00:00Z",
-            state: "closed",
-            labels: [],
-            pull_request: { merged_at: "2026-11-20T11:00:00Z" },
-          },
-          {
-            number: 42,
-            title: "A bug",
-            created_at: "2026-11-21T10:00:00Z",
-            updated_at: "2026-11-21T10:00:00Z",
-            closed_at: null,
-            state: "open",
-            labels: [{ name: "kind/bug" }],
-          },
-        ]);
+        // As GitHub answers: what changed at or after the time asked.
+        const since = new URL(`https://api.github.com/${argv[3]}`).searchParams.get("since") ?? "";
+        return JSON.stringify(items.filter((item) => item.updated_at >= since));
       }
       return argv[1] === "secrets" ? "token\n" : "{}";
     });
@@ -1205,19 +1208,26 @@ describe("HTTP surface", () => {
       bugs: { opened: number[] };
       features: { latest: Record<string, { number: number }[]> };
     };
-    expect([doc.window, doc.history.whole]).toEqual([90, true]);
-    const at = (day: string) => doc.days.indexOf(day);
+    expect(doc.window).toBe(90);
+    const asked = () => r.calls.filter((c) => c.argv[1] === "gh" && c.argv[3].includes("since=")).length;
+    // One ask of the screen reads three pages; asked until the history is whole (the last day, six older
+    // stretches, and a look at what is new before each further go), the same reader goes on from where it was.
+    expect(asked()).toBe(3);
+    let last = doc;
+    for (let i = 0; i < 4 && !last.history.whole; i++) {
+      last = (await (await handle(get("/console/api/trends?days=90"), d)).json()) as typeof doc;
+    }
+    expect([last.history.whole, asked()]).toEqual([true, 9]);
+    const at = (day: string) => last.days.indexOf(day);
     // (The days end today, so these two are shown only while they are within ninety days of it.)
     if (at("2026-11-20") >= 0) {
-      expect([doc.merged.all[at("2026-11-20")], doc.merged.projects.fleet[at("2026-11-20")]]).toEqual([1, 1]);
-      expect(doc.bugs.opened[at("2026-11-21")]).toBe(1);
-      expect(doc.features.latest.fleet.map((f) => f.number)).toEqual([41]);
+      expect([last.merged.all[at("2026-11-20")], last.merged.projects.fleet[at("2026-11-20")]]).toEqual([1, 1]);
+      expect(last.bugs.opened[at("2026-11-21")]).toBe(1);
+      expect(last.features.latest.fleet.map((f) => f.number)).toEqual([41]);
     }
-    const asked = () => r.calls.filter((c) => c.argv[1] === "gh" && c.argv[3].includes("since=")).length;
-    expect(asked()).toBe(1);
-    // Asked again at once, GitHub is not: the same reader is kept, with what it read.
+    // Whole, and asked again at once: GitHub is not asked.
     expect((await handle(get("/console/api/trends?days=7"), d)).status).toBe(200);
-    expect(asked()).toBe(1);
+    expect(asked()).toBe(9);
     // Not the owner: no trends.
     expect((await handle(get("/console/api/trends"), deps(403, r))).status).toBe(403);
   });

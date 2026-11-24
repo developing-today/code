@@ -5302,17 +5302,19 @@ describe("the edge does the core itself", () => {
       const doc = (await res.json()) as {
         window: number;
         days: string[];
-        history: { whole: boolean; from: string };
+        history: { whole: boolean; from: string; covered: string | null };
         merged: { all: number[]; kinds: Record<string, number[]>; projects: Record<string, number[]> };
         features: { latest: Record<string, { number: number; title: string }[]> };
         issues: { closed: number[] };
         tasks: { all: number[] };
         partial?: boolean;
       };
-      expect([doc.window, doc.days[doc.days.length - 1], doc.history.whole, doc.partial]).toEqual([
+      // The last day and two older stretches are read by this first ask; the rest is still to come.
+      expect([doc.window, doc.days[doc.days.length - 1], doc.history.whole, doc.history.covered, doc.partial]).toEqual([
         7,
         "2026-11-22",
-        true,
+        false,
+        "2026-11-15T12:00:00Z",
         undefined,
       ]);
       const last = (list: number[]) => list[list.length - 1];
@@ -5330,23 +5332,44 @@ describe("the edge does the core itself", () => {
       expect(last(doc.issues.closed)).toBe(1);
       expect(last(doc.tasks.all)).toBe(1);
       expect(w.hostSaw.length).toBe(saw);
-      // GitHub was asked for everything changed since ninety days back, and that answer was not kept
-      // among the lists it asks for again.
-      const asked = w.githubCalls.filter((c) => c.url.includes("since="));
-      expect(asked.map((c) => new URL(c.url).searchParams.get("since"))).toEqual(["2026-08-24T00:00:00Z"]);
+      // GitHub was asked for everything changed in the last day, then for two older stretches, each
+      // up to where the one after it began.
+      const history = () =>
+        w.githubCalls.filter((c) => c.url.includes("since=")).map((c) => new URL(c.url).searchParams.get("since"));
+      expect(history()).toEqual(["2026-11-21T12:00:00Z", "2026-11-19T12:00:00Z", "2026-11-15T12:00:00Z"]);
       // What it read is in the object's own storage: where it has read to, and a day.
       const kept = [...w.stored.keys()].filter((k) => k.startsWith("trend:")).sort();
       expect(kept).toEqual(["trend:day:2026-11-22", "trend:meta"]);
-      expect(JSON.parse(w.stored.get("trend:meta") as string)).toEqual({
-        from: "2026-08-24",
-        cursor: "2026-11-22T11:05:00Z",
-        whole: true,
-        readAt: new Date(w.now.t).toISOString(),
-      });
-      // Read again a minute later: GitHub is not asked (it was read to its end five minutes ago at most).
+      const meta = () => JSON.parse(w.stored.get("trend:meta") as string) as Record<string, unknown>;
+      expect([meta().from, meta().cursor, meta().live, meta().whole]).toEqual([
+        "2026-08-24",
+        "2026-11-22T11:05:00Z",
+        true,
+        false,
+      ]);
+      // The screen was asked for, so the object's own clock reads the rest on, starting at once: a
+      // look at what is new and five pages of older stretches, which is all of them.
+      expect(w.alarm.at).toBe(w.now.t + 1000);
+      w.now.t += 1000;
+      await w.edge.now.alarm();
+      expect(history().slice(3)).toEqual([
+        "2026-11-22T11:05:00Z",
+        "2026-11-08T12:00:00Z",
+        "2026-10-23T12:00:00Z",
+        "2026-09-23T12:00:00Z",
+        "2026-08-24T00:00:00Z",
+      ]);
+      expect([meta().whole, meta().back, meta().readAt]).toEqual([true, null, new Date(w.now.t).toISOString()]);
+      // Whole, it wakes for it again within half an hour (sooner if something else is due, as the
+      // laptop going quiet is here); a wake before then asks GitHub nothing of it, and neither does
+      // the screen asked for again.
+      expect(w.alarm.at).toBeLessThanOrEqual(w.now.t + 30 * 60_000);
       w.now.t += 60_000;
-      await w.browse("/console/api/trends?days=7");
-      expect(w.githubCalls.filter((c) => c.url.includes("since=")).length).toBe(1);
+      await w.edge.now.alarm();
+      expect(history().length).toBe(8);
+      const whole = (await (await w.browse("/console/api/trends?days=7")).json()) as typeof doc;
+      expect([whole.history.whole, whole.history.covered]).toEqual([true, "2026-08-24T00:00:00Z"]);
+      expect(history().length).toBe(8);
       // Something merges. Nobody opens the screen; half an hour on, the object's own clock reads on
       // from where it stopped, and the screen has it when it is next opened.
       w.ghClosed.push({
@@ -5360,9 +5383,8 @@ describe("the edge does the core itself", () => {
       });
       w.now.t += 31 * 60_000;
       await w.edge.now.alarm();
-      const again = w.githubCalls.filter((c) => c.url.includes("since="));
-      expect(again.length).toBe(2);
-      expect(new URL(again[1].url).searchParams.get("since")).toBe("2026-11-22T11:05:00Z");
+      expect(history().length).toBe(9);
+      expect(history()[8]).toBe("2026-11-22T11:05:00Z");
       const day = JSON.parse(w.stored.get("trend:day:2026-11-22") as string) as { pm: Record<string, unknown[]> };
       expect(Object.keys(day.pm).sort()).toEqual(["77", "78", "79"]);
       expect(day.pm["79"]).toEqual(["feat", "id", 10, "12:20", "later"]);
@@ -5371,10 +5393,10 @@ describe("the edge does the core itself", () => {
       w.now.t += 25 * 60 * 60_000;
       await w.edge.now.alarm();
       await w.edge.now.alarm();
-      expect(w.githubCalls.filter((c) => c.url.includes("since=")).length).toBe(2);
+      expect(history().length).toBe(9);
       // Opened again, it is read on at once (and by the clock again after).
       await w.browse("/console/api/trends?days=7");
-      expect(w.githubCalls.filter((c) => c.url.includes("since=")).length).toBe(3);
+      expect(history().length).toBe(10);
     });
 
     test("it comes from the queue store and GitHub, laptop or no laptop", async () => {

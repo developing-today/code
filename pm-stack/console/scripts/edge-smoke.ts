@@ -562,18 +562,19 @@ try {
     const trends = (await trendsRes.json()) as {
       window?: number;
       days?: string[];
-      history?: { whole: boolean };
+      history?: { whole: boolean; covered: string | null };
       merged?: { all: number[]; kinds: { feat: number[] } };
       features?: { latest: Record<string, { number: number; title: string }[]> };
       tasks?: { all?: number[] };
     };
     const sumOf = (list: number[] | undefined) => (list ?? []).reduce((total, n) => total + n, 0);
     check(
-      "Trends is read by the Worker itself: GitHub's history a page at a time, the queue's finished tasks, by day",
+      "Trends is read by the Worker itself: GitHub's history newest first, the queue's finished tasks, by day",
       trendsRes.status === 200 &&
         trends.window === 7 &&
         trends.days?.length === 14 &&
-        trends.history?.whole === true &&
+        // The last day is read to its end by the first ask (and older stretches follow).
+        typeof trends.history?.covered === "string" &&
         sumOf(trends.merged?.all) === 1 &&
         sumOf(trends.merged?.kinds.feat) === 1 &&
         trends.features?.latest["pm-stack"]?.[0]?.number === 43 &&
@@ -581,16 +582,24 @@ try {
         Array.isArray(trends.tasks?.all),
       JSON.stringify(trends).slice(0, 300),
     );
-    const askedOnce = historyAsked.n;
+    // Asked again it reads the older stretches on, until the whole of
+    // the history is in; after that it answers from what it kept.
+    let whole = false;
+    for (let i = 0; i < 6 && !whole; i++) {
+      const more = (await (await asOwner("/console/api/trends?days=7")).json()) as typeof trends;
+      whole = more.history?.whole === true;
+    }
+    const askedWhole = historyAsked.n;
     const trendsAgain = await asOwner("/console/api/trends?days=30");
     const again30 = (await trendsAgain.json()) as { window?: number; merged?: { all: number[] } };
     check(
-      "asked again at once it answers from what it kept: GitHub is not asked a second time",
-      trendsAgain.status === 200 &&
+      "read to its end, it answers from what it kept in its own storage: GitHub is not asked again",
+      whole &&
+        trendsAgain.status === 200 &&
         again30.window === 30 &&
         sumOf(again30.merged?.all) === 1 &&
-        historyAsked.n === askedOnce,
-      `asked GitHub ${historyAsked.n} time(s)`,
+        historyAsked.n === askedWhole,
+      `whole ${whole}; asked GitHub ${askedWhole} time(s), then ${historyAsked.n}`,
     );
     const onceId = "11111111-1111-4111-8111-111111111111";
     const didFirst = (await (await actAsOwner("push.class", { class: "trouble", on: false }, onceId)).json()) as {

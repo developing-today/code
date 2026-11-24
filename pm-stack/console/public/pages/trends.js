@@ -90,12 +90,25 @@ export function shape(doc) {
   };
 }
 
-/** What has to be said before the charts: history still being read,
- * something that could not be read, and whose days these are. */
+/** The first day whose counts are whole, given the time everything
+ * since has been read from: that day if it is the day's very start,
+ * otherwise the day after. */
+export function wholeFrom(covered) {
+  const date = covered.slice(0, 10);
+  if (covered.slice(11, 19) === "00:00:00") return date;
+  return new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+}
+
+/** What has to be said before the charts: how much of the history has
+ * been read so far, and anything that could not be read. */
 export function notes(doc) {
   const out = [];
   if (!doc.history.whole) {
-    out.push(`The history is still being read from GitHub. It has reached ${dayLong(doc.history.readTo.slice(0, 10))}: counts after that are not all in yet. It reads on by itself; ↻ reads on now.`);
+    out.push(
+      doc.history.covered === null
+        ? "The history is being read from GitHub for the first time, newest first. No day is whole yet. It reads on by itself; ↻ reads on now."
+        : `The history is being read from GitHub, newest first. Days from ${dayLong(wholeFrom(doc.history.covered))} on are whole; earlier ones are still coming in. It reads on by itself; ↻ reads on now.`,
+    );
   }
   if (doc.partial && doc.why) out.push(doc.why);
   return out;
