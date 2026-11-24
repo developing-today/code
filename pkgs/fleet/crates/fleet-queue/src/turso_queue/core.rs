@@ -1235,7 +1235,7 @@ pub(crate) fn history_transition(kind: &str) -> Option<(Option<&'static str>, Op
         "claimed" => (Some("queued"), Some("claimed")),
         "parked" => (Some("claimed"), Some("parked")),
         "released" => (Some("claimed"), Some("queued")),
-        "woken" => (Some("parked"), Some("claimed")),
+        "woken" => (Some("parked"), Some("queued")),
         "blocked" => (None, Some("blocked")),
         "unblocked" | "dep_unblocked" => (Some("blocked"), Some("queued")),
         "completed" => (Some("claimed"), Some("done")),

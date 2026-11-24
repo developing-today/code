@@ -2830,12 +2830,12 @@ mod task_history_tests {
 
         let w = verb_wake(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "ready"}));
         assert_eq!(w["ok"], true, "{w}");
-        assert_eq!(last_to(&t), status_of(&t), "woken to_status must equal the actual status");
+        assert_eq!(last_to(&t), "queued", "wake returns the task to the queue");
+        assert_eq!(last_to(&t), status_of(&t));
 
-        if status_of(&t) != "claimed" {
-            let c2 = claim(&t);
-            assert_eq!(c2["ok"], true, "{c2}");
-        }
+        let c2 = claim(&t);
+        assert_eq!(c2["ok"], true, "{c2}");
+        assert_eq!(last_to(&t), "claimed");
         let b = verb_block(&t, &json!({"task_id": id, "worker": "oracle-w", "reason_class": "external", "blocker": "oracle"}));
         assert_eq!(b["ok"], true, "{b}");
         assert_eq!(last_to(&t), "blocked");
