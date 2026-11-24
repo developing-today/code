@@ -62,6 +62,7 @@
 - [Keeping this book current](development/keeping-this-book-current.md)
 
 - [Fleet research and implementation roadmap](development/program-roadmap.md)
+- [High-level roadmap](development/high-level-roadmap.md)
 - [Queue, placement and seat contracts](development/queue-placement-seats.md)
 - [Brokers, remote builds and the release train](development/brokers-builds-releases.md)
 - [Quota, operator visibility and integration contracts](development/quota-status-integrations.md)
