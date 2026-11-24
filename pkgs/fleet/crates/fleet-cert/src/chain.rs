@@ -173,6 +173,16 @@ pub fn parse_cert(der: &[u8]) -> Result<CertInfo> {
     })
 }
 
+/// Trust-bundle helpers on a parsed certificate.
+impl CertInfo {
+    /// The subject-key SPKI algorithm OID (dotted string), for error
+    /// detail when a certificate cannot be classified into a trust
+    /// bundle. The classified form is [`CertInfo::subject_algorithm`].
+    pub fn spki_oid(&self) -> &str {
+        &self.spki_oid
+    }
+}
+
 /// Verify `subject`'s signature using `issuer`'s public key.
 /// Returns false for any mismatch or unsupported pairing — never
 /// panics on untrusted input.

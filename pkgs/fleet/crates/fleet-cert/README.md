@@ -22,12 +22,17 @@ Implements the fleet architecture spec v0.3
 - `fleet cert chain build|test` — signature-verified path building
   (shortest path, path-length pruned) and validation under
   all/classical/PQ trust selections.
-- `fleet cert bundle inspect`, `profile list|show`,
-  `algorithms list|describe`, `explain`, `doctor`.
+- `fleet cert bundle inspect`, `trust export|inspect|pin|verify|install-plan`,
+  `profile list|show`, `algorithms list|describe`, `explain`, `doctor`.
+  Trust assembly admits only signature-proven self-signed roots;
+  consumer exports carry PEM plus an install/verify/remove manifest,
+  pinsets detect anchor rotation, and store checks detect missing and
+  extra anchors. Export and install-plan never mutate trust stores;
+  `ssh` is refused because OpenSSH CA trust is not X.509.
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
-`ocsp`, `publish`, `dns`, `trust`, `key`, `format`, profile
+`ocsp`, `publish`, `dns`, `key`, `format`, profile
 validate/scaffold, algorithm benchmark/doctor, `batch`,
 `inventory`, renew/rotate verbs, bundle pack/unpack/diff/migrate.
 
@@ -72,10 +77,11 @@ validate/scaffold, algorithm benchmark/doctor, `batch`,
 
 `cargo test -p fleet-cert` — 19 unit tests (registry, time
 grammar, naming, graph arithmetic, profiles, bundle round-trip)
-and 7 integration tests in `tests/hierarchy.rs`, each naming its
+and 9 integration tests in `tests/hierarchy.rs`, each naming its
 oracle: spec inventory arithmetic (§§3.2/24.2), the crate
 validator, the system `openssl` as an independent implementation
-(classical, PQ, and cross-signed paths), the §24.1/§24.3 policy
-gates, §5.4 clamping, and §7.1 tamper rejection. A PQ-policy
+(classical, PQ, and cross-signed paths), trust-bundle membership,
+pin and store drift, export hash/PEM round-trip, the §24.1/§24.3
+policy gates, §5.4 clamping, and §7.1 tamper rejection. A PQ-policy
 negative test proves a classical leaf is rejected under PQ-only
 trust while an all-ML-DSA path validates.

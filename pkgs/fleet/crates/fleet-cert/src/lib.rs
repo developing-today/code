@@ -21,6 +21,8 @@
 //!   validation over rcgen + aws-lc-rs;
 //! - [`bundle`] — bundle directories: manifest load/save, artifact
 //!   index, checksum verification.
+//! - [`trust`] — trust-bundle assembly, pinning, consumer-targeted
+//!   export, and store drift checks (§§3.5, 6.1, 13 phase D, 44).
 //!
 //! Safety rails baked into the API, not just the CLI:
 //! - Root/issuer signing always requires an explicitly passed signer
@@ -42,6 +44,7 @@ pub mod model;
 pub mod naming;
 pub mod profile;
 pub mod timeparse;
+pub mod trust;
 
 pub use error::{CertError, Result};
 

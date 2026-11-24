@@ -531,3 +531,98 @@ fn tampered_bundle_is_rejected() {
     let err = load_bundle(&root_dir).err().expect("tamper must be caught");
     assert!(format!("{err}").contains("checksum"), "got: {err}");
 }
+
+#[test]
+fn trust_bundle_pin_export_and_store_drift() {
+    // Oracle: trust selection membership and certificate fingerprints
+    // are recomputed from parsed, signature-verified root records; the
+    // export manifest hash is checked against the written bundle PEM.
+    use fleet_cert::trust::{
+        TrustBundleKind, assemble, check_pins, check_store, consumer_target, create_pins,
+        parse_pem_certs, read_store_certs, write_export,
+    };
+    let tmp = TempDir::new("trust-export");
+    let (root_dir, _) = build_hierarchy(&tmp, vec![AlgorithmId::Ed25519, AlgorithmId::MlDsa44]);
+    let bundle = load_bundle(&root_dir).unwrap();
+    let all = assemble(&bundle, TrustBundleKind::All).unwrap();
+    let classical = assemble(&bundle, TrustBundleKind::Classical).unwrap();
+    let pq = assemble(&bundle, TrustBundleKind::Pq).unwrap();
+    assert_eq!(all.certificates.len(), 2);
+    assert_eq!(classical.certificates.len(), 1);
+    assert_eq!(pq.certificates.len(), 1);
+    assert_eq!(
+        pq.certificates[0].subject_algorithm,
+        Some(AlgorithmId::MlDsa44)
+    );
+
+    let pins = create_pins(&bundle, TrustBundleKind::All).unwrap();
+    assert!(
+        check_pins(&bundle, TrustBundleKind::All, &pins)
+            .iter()
+            .all(|c| c.ok)
+    );
+    let mut extra = pins.clone();
+    extra.pins.pop();
+    assert!(
+        check_pins(&bundle, TrustBundleKind::All, &extra)
+            .iter()
+            .any(|c| !c.ok)
+    );
+
+    let target = consumer_target("debian").unwrap();
+    let out = tmp.path().join("debian-export");
+    let manifest = write_export(&out, &bundle, target.name, target, &all).unwrap();
+    assert_eq!(manifest.certificates.len(), 2);
+    let exported = std::fs::read_to_string(out.join(&manifest.bundle_file)).unwrap();
+    assert_eq!(
+        fleet_cert::bundle::sha256_hex(exported.as_bytes()),
+        manifest.bundle_sha256
+    );
+    assert_eq!(parse_pem_certs(&exported).unwrap().len(), 2);
+    // Independent parser oracle: OpenSSL must parse every exported
+    // per-root certificate (not just our own PEM decoder).
+    if std::process::Command::new("openssl")
+        .arg("version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        for cert in &manifest.certificates {
+            let output = std::process::Command::new("openssl")
+                .args(["x509", "-in"])
+                .arg(out.join(&cert.file))
+                .args(["-noout", "-subject"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "OpenSSL rejected {}: {}",
+                cert.file,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    // The exact bundle is a matching store; dropping an anchor is
+    // missing drift, while adding a different valid certificate is extra drift.
+    let store_path = tmp.path().join("store.pem");
+    std::fs::write(&store_path, &all.pem).unwrap();
+    let store = read_store_certs(&store_path).unwrap();
+    assert!(check_store(&all, &store).iter().all(|c| c.ok));
+    assert!(
+        check_store(&all, &store[..1])
+            .iter()
+            .any(|c| c.name.starts_with("store-missing"))
+    );
+    assert!(
+        check_store(&classical, &store)
+            .iter()
+            .any(|c| c.name.starts_with("store-extra"))
+    );
+}
+
+#[test]
+fn trust_rejects_ssh_as_non_x509() {
+    // Oracle: policy refusal is explicit; OpenSSH CA keys are not X.509.
+    let error = fleet_cert::trust::refuse_ssh();
+    assert!(error.to_string().contains("not X.509"));
+}
