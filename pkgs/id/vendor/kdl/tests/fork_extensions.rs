@@ -95,8 +95,12 @@ fn limit_kdl_shapes() {
     );
     let node = &doc.nodes()[0];
     assert_eq!(annotation_values(node), vec!["subject"]);
+    // The child line is one statement node: its name carries the
+    // (predicate) annotation, its arguments carry (object).
     let child = &node.children().unwrap().nodes()[0];
-    assert_eq!(entry_annotation_values(&child.entries()[0]), vec!["predicate"]);
+    assert_eq!(child.name().value(), "writesBooks");
+    assert_eq!(annotation_values(child), vec!["predicate"]);
+    assert_eq!(entry_annotation_values(&child.entries()[0]), vec!["object"]);
     assert_eq!(entry_annotation_values(&child.entries()[1]), vec!["object"]);
 
     let doc = parse("(\"predicate#NotVeryWell\")\"writesBooks\" (\"object#book#author:BrianGriffin\")\"Wish It, Want It, Do It\"\n");
