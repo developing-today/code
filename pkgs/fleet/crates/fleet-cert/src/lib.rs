@@ -45,6 +45,7 @@ pub mod model;
 pub mod naming;
 pub mod ocsp;
 pub mod profile;
+pub mod publish;
 pub mod timeparse;
 
 pub use error::{CertError, Result};
