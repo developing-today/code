@@ -713,7 +713,7 @@ impl Broker {
         if client {
             self.last_used.store(now_secs(), Ordering::Relaxed);
         }
-        let port = req.port.unwrap_or(fleet_config::PORT_LAPTOP_AGENT);
+        let port = dial_port(req.port);
         let token_path = match &req.token_file {
             Some(p) => std::path::PathBuf::from(p),
             None => self.config.default_token_file(),
@@ -832,6 +832,27 @@ impl Broker {
 /// The Python broker's set — the connection is dropped and the
 /// plan falls to the next leg.
 const CF_EDGE_STATUSES: [u16; 3] = [502, 503, 530];
+
+/// The port `do_request` dials for one parsed request
+/// (#13464): the client-declared port verbatim, or the
+/// laptop-agent default when the frame named none. There is
+/// deliberately NO `services_map` membership check here. The
+/// advertised table (`Config::services`, the hello map) is a
+/// host-local, configurable advertisement — discovery for the
+/// hello and the shims — not an access-control list, and the
+/// in-tree consumer `fleet proxy connect --request …`
+/// `--service-port N` deliberately addresses operator-chosen
+/// ports outside it (client.rs pins `--service-port 8080`):
+/// refusing unadvertised ports would break that consumer
+/// (#6583 disposition (a)). The #6582 contract still holds: the
+/// port is validated where it is read — type and range at the
+/// frame boundary (`parse_port`, #6516) — and the dial itself
+/// stays token-gated. Residual risk, recorded: an unadvertised
+/// port receiving an arbitrary body is only as constrained as
+/// the service behind it (#6583 (b)).
+fn dial_port(requested: Option<u16>) -> u16 {
+    requested.unwrap_or(fleet_config::PORT_LAPTOP_AGENT)
+}
 
 /// The attempt plan for one request, the Python broker's plan
 /// exactly (code#10356). The Cloudflare leg is in play only for
@@ -1073,7 +1094,18 @@ fn parse_port(frame: &serde_json::Value) -> Result<Option<u16>, String> {
     Ok(Some(n as u16))
 }
 
-fn serve_session(broker: &Broker, mut stream: UnixStream) {
+fn serve_session(broker: &Broker, stream: UnixStream) {
+    serve_session_with_read_timeout(broker, stream, crate::tunnel::TUNNEL_READ_TIMEOUT);
+}
+
+fn serve_session_with_read_timeout(
+    broker: &Broker,
+    mut stream: UnixStream,
+    read_timeout: Duration,
+) {
+    if stream.set_read_timeout(Some(read_timeout)).is_err() {
+        return;
+    }
     let mut client_supports_raw_splice = false;
     let first = match read_frame(&mut stream) {
         Ok(f) => f,
@@ -1175,6 +1207,12 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
                             )
                             .is_err()
                             {
+                                return;
+                            }
+                            // Session framing is bounded, but the raw
+                            // relay carries long-lived connections that
+                            // may legitimately remain idle for hours.
+                            if stream.set_read_timeout(None).is_err() {
                                 return;
                             }
                             // A raw relay can be the broker's only
@@ -1497,6 +1535,33 @@ mod tests {
         assert!(!conn.reusable());
         server.join().unwrap();
         conn
+    }
+
+    #[test]
+    fn stalled_accepted_session_is_dropped_within_read_timeout() {
+        let broker = Arc::new(Broker {
+            config: Config::default(),
+            egress: None,
+            cf_egress: None,
+            pool: TunnelPool::new(0),
+            recovery: RecoveryGate::new(),
+            last_used: AtomicU64::new(now_secs()),
+        });
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let timeout = Duration::from_millis(200);
+        let started = Instant::now();
+
+        std::thread::spawn(move || {
+            serve_session_with_read_timeout(&broker, stream, timeout);
+            let _ = done_tx.send(());
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stalled accepted stream should time out and return");
+        assert!(started.elapsed() >= timeout);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     const PORT: u16 = 4799;
@@ -2176,6 +2241,25 @@ mod tests {
         assert_eq!(req.port, Some(4801));
         let req = parse_request(&frame_with_port(serde_json::json!(65535))).unwrap();
         assert_eq!(req.port, Some(65535));
+    }
+
+    #[test]
+    fn dial_port_passes_any_frame_valid_port_through() {
+        // The #13464 decision, pinned at the dial site: no
+        // services_map membership filtering. Absent means the
+        // laptop-agent default; a table port passes through
+        // unchanged; a non-table port -- the --service-port case,
+        // e.g. 8080, which client.rs pins as parseable -- passes
+        // through verbatim, up to the top of the u16 range the
+        // frame boundary validated (#6516). A future membership
+        // refusal must change this test, not slip past it.
+        assert_eq!(dial_port(None), fleet_config::PORT_LAPTOP_AGENT);
+        assert_eq!(
+            dial_port(Some(fleet_config::PORT_LAPTOP_AGENT)),
+            fleet_config::PORT_LAPTOP_AGENT
+        );
+        assert_eq!(dial_port(Some(8080)), 8080);
+        assert_eq!(dial_port(Some(65535)), 65535);
     }
 
     #[test]

@@ -142,7 +142,7 @@ async function inflateRaw(bytes: Uint8Array): Promise<Uint8Array | null> {
   try {
     stream = new Blob([bytes as BlobPart])
       .stream()
-      .pipeThrough(new DecompressionStream("deflate"));
+      .pipeThrough(new DecompressionStream("deflate-raw"));
   } catch {
     return null;
   }

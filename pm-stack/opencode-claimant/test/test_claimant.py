@@ -50,6 +50,23 @@ class Result:
         self.stderr = stderr
 
 
+def _fake_git_run(argv, **kwargs):
+    """Fake git at the subprocess boundary for fire-log tests.
+
+    log_fire() records read_code_source()'s provenance read in every
+    entry; that read spawns git, which the hermetic suite forbids.
+    Fire-log tests whose subject is another entry field fake the read
+    here (the TestCodeSourceFireLog shape, #13254) so the entry still
+    carries a real-shaped code_source and no spawn is attempted.
+    """
+    stdout = (
+        "main\n"
+        if "--abbrev-ref" in argv
+        else "0123456789abcdef0123456789abcdef01234567\n"
+    )
+    return Result(0, stdout)
+
+
 def make_fake_run(events, *, create_rc=0, messages="[]"):
     """subprocess.run stub dispatching on argv shape, recording an
     ordered event log: ("create",) / ("bind", argv) / ("prompt", argv)
@@ -327,6 +344,7 @@ class ReadModeLoudDefaultTests(unittest.TestCase):
             with (
                 patch.object(claimant, "STATE_DIR", tmp),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", _fake_git_run),
             ):
                 claimant.log_fire("shadow", [], [], None, [{"reason": "no_candidates"}])
             entry = json.loads(fires.read_text().splitlines()[-1])

@@ -278,7 +278,9 @@ mod tests {
             "values": {"name": "Ada"},
         }))
         .await;
-        let stale = peer.next().await.unwrap();
+        // View frames interleave freely with replies in a joined
+        // session (#13200): read to the reply, not the next frame.
+        let stale = next_reply(&mut peer).await;
         assert_eq!(stale["type"], "form_result_status");
         assert_eq!(stale["ok"], false);
         assert_eq!(stale["error"], "bad_args");
@@ -293,7 +295,7 @@ mod tests {
             "values": {"name": "Ada"},
         }))
         .await;
-        let ack = peer.next().await.unwrap();
+        let ack = next_reply(&mut peer).await;
         assert_eq!(ack["type"], "form_result_status");
         assert_eq!(ack["ok"], true);
         assert_eq!(results.lock().unwrap()[0]["values"]["name"], "Ada");
@@ -340,7 +342,7 @@ mod tests {
             "values": {},
         }))
         .await;
-        let ack = peer.next().await.unwrap();
+        let ack = next_reply(&mut peer).await;
         assert_eq!(ack["type"], "form_result_status");
         assert_eq!(ack["ok"], true);
         assert_eq!(results.lock().unwrap()[0]["action"], "cancel");
@@ -2402,10 +2404,12 @@ mod tests {
     /// itself never appears in a record.
     #[tokio::test]
     async fn admin_frames_emit_exactly_one_audit_line_each() {
+        crate::test_tracing::register_audit_callsite();
         use tracing_subscriber::prelude::*;
         let records = Arc::new(std::sync::Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(FrameAuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let (hub, _) = memory_hub(crate::world_hub::HubLimits::default());
 

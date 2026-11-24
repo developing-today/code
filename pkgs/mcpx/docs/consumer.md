@@ -259,8 +259,9 @@ mcpx sits under still owns the loop, the tools and the session.
 Provider credentials remain opt-in: `model.apiKeyEnv` names the variable for
 the singular provider, while `model.providers` can map provider names to their
 own `baseURL` and `apiKeyEnv`. mcpx never scans the environment for key names.
-`model.profiles` names ordered lists of `provider/model` ids, so a failure or
-unconfigured entry falls through to the next configured provider. A profile
+`model.profiles` names ordered lists of `provider/model` ids. An upstream
+HTTP 402 ends this generation immediately. Other provider failures or
+unconfigured entries fall through to the next configured provider. A profile
 can set its own token budget and per-attempt timeout. `model.default` and an
 operation's model override may each name either a profile or a provider/model
 id; when every profile entry is unavailable, generation stays on its

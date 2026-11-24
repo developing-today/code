@@ -130,7 +130,8 @@ impl EventStore {
             let proof_headers = txn.open_table(PROOF_HEADERS)?;
             resolve::load(&events, &actions, &device_ops, &forks, &proof_headers)?
         };
-        let resolved = resolve::resolve(&stored, &forks, &headers)?;
+        let residue = super::compaction::load_residue_read(&txn)?;
+        let resolved = resolve::resolve(&stored, &forks, &headers, &residue)?;
         let marks = removal_marks(&stored, &resolved.applied, resolved.projection.as_ref())?;
 
         let mut records = Vec::new();

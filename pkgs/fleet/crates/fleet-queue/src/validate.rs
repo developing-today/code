@@ -77,6 +77,13 @@ pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
 /// read back at 15/25. task_from_packet performs the selection.
 pub const EXPEDITE_PRIORITY: i64 = 15;
 pub const NEXT_UP_PRIORITY: i64 = 25;
+/// The dedupe-stamp defect (#5444): the one validate_packet error
+/// the repair verb can fix, by re-performing the dedupe check the
+/// stamp attests to (#13191). Named so validator and repair can
+/// never drift on the string.
+pub const DEDUPE_STAMP_ERROR: &str =
+    "payload.dedupe: must have checked_at and basis as non-empty strings";
+
 pub const KINDS: [&str; 6] = [
     "pr_shepherd",
     "triage",
@@ -264,9 +271,7 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         if matches!(d.get("checked_at"), Some(Value::String(s)) if !s.is_empty())
             && matches!(d.get("basis"), Some(Value::String(s)) if !s.is_empty()));
     if !ded_ok {
-        errs.push(
-            "payload.dedupe: must have checked_at and basis as non-empty strings".to_string(),
-        );
+        errs.push(DEDUPE_STAMP_ERROR.to_string());
     }
     // Identity numbers are GitHub numbers: positive integers only. A
     // non-positive issue number names no issue, whatever the dedupe key
@@ -1365,6 +1370,43 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    /// #13177: the published packet schema (pkgs/fleet/repo-task-v1.schema.json)
+    /// and this validator must agree on the kind and repo enums. The
+    /// validator is canonical: KINDS carries second_pass/feature_slice
+    /// (dedicated payload rules below) and FLEET_REPOS grandfathers the
+    /// pre-rename dezren39/nix name for in-flight dedupe keys.
+    #[test]
+    fn schema_enums_match_validator() {
+        let schema_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../repo-task-v1.schema.json"
+        );
+        let raw = std::fs::read_to_string(schema_path)
+            .expect("repo-task-v1.schema.json must exist beside pkgs/fleet");
+        let schema: Value = serde_json::from_str(&raw).expect("schema must parse");
+        let enum_of = |field: &str| -> Vec<String> {
+            schema["properties"][field]["enum"]
+                .as_array()
+                .unwrap_or_else(|| panic!("schema properties.{field}.enum must be an array"))
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .unwrap_or_else(|| panic!("schema {field} enum entries must be strings"))
+                        .to_string()
+                })
+                .collect()
+        };
+        assert_eq!(
+            enum_of("kind"),
+            KINDS,
+            "schema kind enum drifted from KINDS"
+        );
+        assert_eq!(
+            enum_of("repo"),
+            FLEET_REPOS,
+            "schema repo enum drifted from FLEET_REPOS"
+        );
+    }
     use super::*;
     use proptest::prelude::*;
 

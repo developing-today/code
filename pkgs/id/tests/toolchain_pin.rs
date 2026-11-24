@@ -10,11 +10,12 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-const ROC_EXAMPLE_BUILDS: [&str; 8] = [
+const ROC_EXAMPLE_BUILDS: [&str; 9] = [
     "examples/lounge/build.sh",
     "examples/roc-chat/build.sh",
     "examples/roc-counter/build.sh",
     "examples/roc-grid/build.sh",
+    "examples/roc-mind-map/build.sh",
     "examples/roc-screen/build.sh",
     "examples/roc-text-counter/build.sh",
     "examples/territory/build.sh",

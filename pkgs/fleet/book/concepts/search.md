@@ -94,6 +94,12 @@ fallback note first.
 
 ## Sensitivity clamping
 
+Terminology: the ladder's canonical names are
+`public < internal < private < sensitive`. The flag values and identity
+caps in this chapter are spelled as the service spells them today
+(`shareable` / `personal` / `local-only` / `secret-bearing`) until the
+identifier rename (#13506) lands.
+
 The via-service client presents a per-seat bearer token — env
 `ATLAS_SEARCH_TOKEN`, else the JSON file at
 **`~/.config/atlas-search/client.json`** (a JSON object with one token

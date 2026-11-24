@@ -11,7 +11,9 @@ use crate::types::BranchHit;
 /// The Python's `fts_match_expr` (the eval3.py hybrid-branch
 /// construction): content words OR-joined as quoted phrases. Words
 /// >3 chars, plus short tokens containing a digit (r2, s3, b2) which
-/// > the >3 rule would otherwise silently drop.
+/// > the >3 rule would otherwise silently drop. Retaining those
+/// digit-bearing tokens diverges from the Python hybrid
+/// construction, which keeps only words >3 chars (#13280).
 pub fn fts_match_expr(query: &str) -> Option<String> {
     let lower = query.to_lowercase();
     let mut words: Vec<String> = Vec::new();

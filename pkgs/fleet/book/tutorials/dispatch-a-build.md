@@ -69,9 +69,11 @@ repo-queue remains its system of record)".
 For machine-readable output, add `--json`. A dry run's object carries
 `job`, `decision`, `reasoning` and `"mode": "dry-run (no session written;
 pass --dispatch to submit)"`, plus a `note` when a testing override was
-used and `load_read_errors` when an owner's load could not be read (load
-failures are soft: that owner's load counts as 0 and the error is
-reported, not hidden).
+used, `load_read_errors` when any load read failed, and
+`owner_load_coverage` — per owner: whether its load was measured,
+partial, unknown, or simulated, the known subtotal, the cap, and which
+reads are missing. Load failures are soft, but an owner whose load could
+not be read is reported as unknown capacity, never as an idle zero.
 
 What can go wrong, and the fix:
 
@@ -105,12 +107,14 @@ has the form `fp_` followed by 32 lowercase hex characters, for example:
 fp_d0a842c9bd33aa2999f5a12393397ab9
 ```
 
-Keep it. The handle is how you poll (Step 3), how a follow-up finds this
-run (Step 5), and how the session is recorded in the local store at
-`~/.local/state/fleet-place/sessions.json` (override the store directory
-with `$FLEET_PLACE_STATE`). That store is a labelled stopgap with the
-reference implementation's record shape, kept so records migrate when
-the designed backend table lands.
+Keep the handle. Use it to poll (Step 3) and to submit a follow-up (Step 5).
+Dispatch records it in `~/.local/state/fleet-place/sessions.json` (override
+the directory with `FLEET_PLACE_STATE`) and mirrors it to the queue broker.
+On a second seat with access to that broker, inspect the same handle:
+
+```bash
+fleet queue session status <handle> --json
+```
 
 How dispatch actually happens, so the output makes sense: for the chosen
 surface's host repo, the client snapshots existing workflow runs, POSTs
@@ -172,21 +176,19 @@ fleet queue session list
 fleet queue session list --mine
 ```
 
-`list` prints every record in the local store, newest first — from the
-stored state, **without** refreshing. `--mine` keeps only records whose
+`list` merges the local store with up to 200 broker records and shows their
+stored state, newest first. `--mine` keeps only records whose
 `submitted_by` is the current user on this host.
 
 What can go wrong, and the fix:
 
 - `repo-queue: no session with handle <h> in <store path>`, exit `2`:
-  the handle is not in this seat's local store. Handles are local —
-  another seat's store does not have your record. Use the portable
-  reference instead (Step 4), which resolves live without the store.
-- Do not pass `--help` to `session status` or `session result`: those
-  subcommands do not special-case it, so the token after the subcommand
-  is taken as the handle and you get exactly the "no session with handle
-  --help" error above. Only a bare `fleet queue session --help` prints
-  the usage.
+  neither the local store nor the broker supplied the session. Check broker
+  access on both seats. Once the run ID is known, use the portable reference
+  (Step 4) to read the run directly from GitHub.
+- Passing `--help` to `session status` or `session result` is safe:
+  a help flag after the subcommand prints the session usage and exits 0
+  — it is never taken as a handle.
 
 ## Step 4: Refer to a run portably
 

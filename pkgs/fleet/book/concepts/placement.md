@@ -101,7 +101,13 @@ macOS-specific load measurement anywhere.
 surface_id)`: least-loaded owner first; among equals, the
    least-recently-used owner (an owner never used sorts before all used
    owners); then registry priority; then per-surface last dispatch; then the
-   surface id alphabetically. The rotation is owner-first.
+   surface id alphabetically. The rotation is owner-first. Surfaces whose
+   owner load is not fully observed carry no numeric estimate; if no
+   eligible surface has measured headroom, one unknown-capacity surface may
+   still be picked — deterministically, by the same rotation order minus
+   load — under the unknown-capacity rule, which the pick's reasoning line
+   names. A surface whose known subtotal already reaches its cap is proven
+   saturated and is never picked this way.
 3. **Tier 2 — Blacksmith.** `blacksmith` surfaces in registry order; the
    first eligible one with `remaining_total_minutes > 0` wins.
 4. **Tier 3 — Codespaces.** `codespace` surfaces in registry order; the
@@ -125,9 +131,20 @@ that surface's token, placement reads only `total_count` from
 `GET /repos/{host}/actions/runs?status=in_progress&per_page=1` and the same
 with `status=queued` — the run lists themselves are never enumerated. Tier-1
 load per owner is `running + queued`, summed across its host repos. Failures
-are soft: no token, a non-200, or a transport error contributes 0 for that
-repo/status and adds a `load_read_errors` entry, which is surfaced in the
-dispatch output when non-empty. Owner and surface last-dispatch times come
+are soft but never silent: no token, a non-200, a transport error, or a
+200 whose body lacks a valid `total_count` makes that repo/status read
+_missing_ rather than zero, adds a `load_read_errors` entry (surfaced in
+the dispatch output when non-empty), and is recorded in the owner's load
+coverage. Coverage is one of `measured` (every required read returned a
+count), `partial` (some did), `unknown` (none did), or `simulated` (an
+`--assume-owner-load` override supplied the figure). The decision output
+carries `owner_load_coverage` per owner — status, known running/queued
+subtotal, configured cap, read time, source, and the missing reads — and
+session records store the same fragment. The known subtotal is exact for
+measured/simulated coverage and a lower bound for partial coverage; only
+measured or simulated coverage (or proven saturation) yields a numeric
+free-slot estimate — any other owner reports unknown capacity instead of
+a dressed-up zero. Owner and surface last-dispatch times come
 from the local session store, not the API. Two testing overrides exist
 (`--assume-owner-load owner=N,…` and `--assume-blacksmith-used MINUTES`);
 they are simulation, are labelled as such in the output, and do not appear
@@ -236,10 +253,10 @@ handle, despite the workflow describing it as one.
 
 A dispatched job gets a session handle: `fp_` plus 16 random bytes from
 `/dev/urandom`, hex-encoded — `fp_` plus 32 lowercase hex characters, 128
-bits. Records live in the local store at `$FLEET_PLACE_STATE/sessions.json`,
-default `~/.local/state/fleet-place/sessions.json` — a labelled stopgap with
-the reference implementation's path and record shape, so records migrate
-when the designed queue-backend table lands. The store is guarded by a lock
+bits. The local store at `$FLEET_PLACE_STATE/sessions.json` defaults to
+`~/.local/state/fleet-place/sessions.json`. Dispatch commits locally and then
+mirrors the record to the queue broker’s `placement_sessions` table. The
+placement decision uses the local session history. The store is guarded by a lock
 directory (waiters poll every 50 ms up to 15 s; a lock older than 120 s is
 stale and is broken) and written by rename of a temp file, with keys
 recursively sorted.
@@ -253,11 +270,13 @@ recorded-field caveat, stated as the source behaves: `actor` is hardcoded
 to `developing-today[bot] (GitHub App dispatch)` even for surfaces that
 dispatch as the user.
 
-`fleet queue session status|result|list` reads the store: `status` refreshes
+An `fp_` lookup for status, result or follow-up selects the newer copy by
+`updated_at` across the local store and the broker mirror. Status and result
+can seed the local store from that record. The session verbs then work as follows: `status` refreshes
 the record from GitHub and prints its state, surface, and run URL; `result`
 adds `terminal` (true exactly for `succeeded|failed|cancelled`) and, when
 not terminal, the note "not terminal yet — reconnect with the same handle";
-`list` prints stored records newest first without refreshing (`--mine`
+`list` combines local records with up to 200 from the mirror, then prints them newest first without refreshing GitHub (`--mine`
 filters to the current `USER@hostname`). Anywhere a handle is accepted, the
 portable `OWNER/REPO#RUN_ID` is accepted too and is resolved **directly
 against GitHub without the local store** — the repo must be a registered
@@ -265,5 +284,5 @@ Actions/Blacksmith surface's host repo. Session state mapping from GitHub:
 `queued|waiting|pending|requested` → `queued`; `in_progress` → `running`;
 completed with conclusion `success|skipped|neutral` → `succeeded`,
 `cancelled` → `cancelled`, anything else → `failed`. Note that
-`session status --help` does not print help — `--help` is taken as the
-handle and errors; only bare `session --help` prints the usage.
+a help flag after the subcommand prints the session usage —
+`session status --help` is a help request, never a handle lookup.

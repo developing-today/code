@@ -27,7 +27,7 @@ import type { BridgeStore } from "./bridge-store.ts";
 export const NONCE_TTL_MS = 5 * 60 * 1000;
 export const RESUME_TOKEN_TTL_MS = 24 * 3600 * 1000;
 
-export type AuthContext = "push" | "pull" | "heads" | "ws";
+export type AuthContext = "push" | "pull" | "heads" | "ws" | "export";
 
 export function authTranscript(
   bindingId: string,

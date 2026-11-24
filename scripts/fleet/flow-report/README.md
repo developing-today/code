@@ -21,7 +21,7 @@ python3 -I scripts/fleet/flow-report/flow_report.py report \
   --git-dir /tmp/hist.git --rev main
 ```
 
-Add `--format json` for the same numbers as data, `--since <date>` to narrow the git window, and `--now <ISO time>` to stamp the report with the time the data was fetched. Without `--git-dir` the mainline section prints "Not measured" and no figure for it.
+Add `--format json` for the same numbers as data, `--since <date>` to narrow the git window, and `--now <ISO time>` to set the reference time for age calculations. A fresh issue fetch stamps all pages with the UTC time the paginated read began. The JSON field `inputs.issues_fetch_started_at` is null and Markdown says `unknown` when the source rows lack a shared acquisition timestamp. Re-running a report from disk preserves its original collection time. Without `--git-dir` the mainline section prints "Not measured" and no figure for it.
 
 Exit codes: `0` completed, `2` usage error, `3` a `gh` or `git` call failed or the input was empty. A failed run prints no scoreboard.
 

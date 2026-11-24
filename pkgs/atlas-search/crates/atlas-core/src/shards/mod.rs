@@ -396,6 +396,12 @@ impl ShardConnector for StdConnector {
 /// shard in the manifest's `embedding_model` key and checked before
 /// fan-out, so vectors embedded by different models are never merged
 /// as if they were comparable.
+///
+/// This is the bare lowercase spelling of the one model; the query
+/// path names the same model by its HuggingFace org/name spelling
+/// ([`crate::types::DEFAULT_MODEL`]). The two strings never
+/// string-equal and are compared only within their own subsystems;
+/// no code converts between them (#13284).
 pub const EMBEDDING_MODEL_ID: &str = "snowflake-arctic-embed-m-v2.0";
 
 /// A shard's `atlas_manifest` (key/value self-description).

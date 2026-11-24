@@ -22,7 +22,7 @@ pub const SCREEN_CODEC_VERSION_COMPRESSED: u8 = 2;
 /// No compression: the version-2 payload is the version-1 frame as-is.
 pub const COMPRESSION_NONE: u8 = 0;
 /// Raw DEFLATE (RFC 1951) of the version-1 frame. Raw DEFLATE is what the
-/// browser's `DecompressionStream("deflate")` decodes, so the same bytes
+/// browser's `DecompressionStream("deflate-raw")` decodes, so the same bytes
 /// serve the Rust transports and the browser with no extra dependency.
 pub const COMPRESSION_DEFLATE: u8 = 1;
 /// Maximum complete logical frame size, matching the session frame limit.

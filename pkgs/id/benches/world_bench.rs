@@ -69,6 +69,45 @@
 //!   hash. Tier, seed, output root, and per-axis sizes are
 //!   overridable via `ID_BENCH_STRESS_TIER`, `ID_BENCH_STRESS_SEED`,
 //!   `ID_BENCH_STRESS_OUT`, and the `ID_BENCH_STRESS_*` axis knobs.
+//!   Generation materializes into a marker-verified staging sibling
+//!   of the output root and publishes by rename, so an interrupted
+//!   run is recoverable on retry and the output root only ever holds
+//!   a complete generation (#13181).
+//! - `frame_cost` — the scale program's frame-cost slice (#13085):
+//!   view (and layout) fuel and wall time for the Territory-class
+//!   guest at the stress tiers' hot-world event counts (10k / 100k /
+//!   1M applied events), measured at full state through
+//!   `WorldInstance::metrics`. Prints one `profile frame_cost ...`
+//!   line per size; `ID_BENCH_FRAME_EVENTS` selects a single size.
+//! - `stress_mem` — the #6304 program's memory profile (#13086): RSS
+//!   per resident world at the selected tier (the tier's idle,
+//!   active, and hot worlds restored through `WorldCore::restore`
+//!   and held, with RSS sampled between phases), and the peak
+//!   additional RSS while compacting a journal of 2,000 and of
+//!   100,000 entries (bulk-written fixture, recovered through
+//!   `FileJournal::open`, restored, then replaced with the
+//!   compaction bench's checkpoint-sized set). Tier and seed follow
+//!   the `stress_gen` knobs; `ID_BENCH_STRESS_MEM_PART` selects
+//!   `all` (default), `compact`, or `resident`, so each measurement
+//!   can run in a fresh process when attribution matters.
+//! - `stress_join` — the #6304 program's join-time profile (#13084):
+//!   cold join (open the world store, load the latest checkpoint,
+//!   replay the journal tail, produce the first view frame) and
+//!   warm join (a joiner's catch-up snapshot projected from the
+//!   resident world, plus the live program's first frame), reported
+//!   as p50/p95/p99 per tier. Each is measured twice over, per the
+//!   design: with the journal at a checkpoint boundary and at the
+//!   mid-interval worst case (the largest tail the session
+//!   checkpoint cadence — 256 frames or 2,000 ms — allows behind
+//!   the latest checkpoint). Worlds come from the `stress_gen`
+//!   fixture, generated on demand for the selected tier/seed;
+//!   every join verifies against the manifest-verified reference
+//!   state, so a fast-but-wrong join fails the run instead of
+//!   recording a number. Tier and seed follow the `stress_gen`
+//!   knobs. The bench program is an in-process counting guest (see
+//!   `guest_replay` for why), and its fixture checkpoints use the
+//!   journal's legacy admin-history form — the current form's type
+//!   is not constructible outside `id-worlds`.
 //! - `bot_battle` (design only, not runnable yet) — a deterministic, mixed-
 //!   strategy territory workload for N=2/4/8 users is specified in
 //!   `../../../doc/2026-11-06T00-50-21Z_design_dynamic_world_tick_cost/`; its current-
@@ -100,10 +139,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use id::guest_burn::GuestBurnBudget;
-use id::sandbox::{Sandbox, SandboxLimits};
+use id::sandbox::{GuestCall, Sandbox, SandboxLimits};
 use id::world::{
-    CapabilityBounds, JoinCapability, JournalEntry, WorldCore, WorldEvent, WorldEventKind,
-    WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
+    CapabilityBounds, JoinCapability, JournalEntry, Participant, RestoredWorld, WorldCore,
+    WorldEvent, WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram, WorldScopes,
 };
 use id::world_hub::{HubLimits, OpenFuture, WorldHub, WorldOpener};
 use id::world_limits::RuntimeLimits;
@@ -121,12 +160,22 @@ use id::world_store::{FileJournal, open_world};
 #[path = "../tests/common/loadgen.rs"]
 mod loadgen;
 
+// The stress generator's output lifecycle (#13181): staging,
+// identity verification, recovery, and atomic publication.
+#[path = "../tests/common/stress_output.rs"]
+mod stress_output;
+
+// Scale-program stress workloads (split from this file, #13057).
+#[path = "world_bench/stress.rs"]
+mod stress;
+
 /// The fixed seed of every bench run on the core: a bench run must
 /// be replayable from its spec (#5891, determinism before realism).
 const BENCH_SEED: u64 = 0x5891;
 
 const MANY_WORLDS_ADMIN: &str = "f11-many-worlds-benchmark";
 const COUNTER_WASM: &[u8] = include_bytes!("../examples/roc-counter/counter.wasm");
+const TERRITORY_WASM: &[u8] = include_bytes!("../examples/territory/territory.wasm");
 
 struct DurableBenchOpener {
     root: PathBuf,
@@ -1752,521 +1801,6 @@ fn bench_fanout(clients: usize, rounds: u64, reps: usize) -> Result<Vec<f64>> {
     Ok(samples)
 }
 
-/// The codified document shape the stress mix's document edits are
-/// stated against: 64 KiB per document, 512 list items (design
-/// limits inventory, #6281 findings). An edit event names a document
-/// and a list item inside those bounds; it does not embed a whole
-/// document snapshot.
-const STRESS_DOC_BYTES: u64 = 65_536;
-const STRESS_DOC_LIST_ITEMS: u64 = 512;
-/// The codified compile-input cap the mix's program installs are
-/// stated against: 8 files / 256 KiB total per install.
-const STRESS_INSTALL_FILES: u64 = 8;
-const STRESS_INSTALL_BYTES: u64 = 262_144;
-
-/// The stress event mix, as counts per 1,000 events in the same
-/// discipline as the loadgen core's mix tables: the shape at stream
-/// position `i` is a pure function of `i % 1000`, never sampled, so
-/// the same (seed, tier) always produces the same stream.
-const STRESS_MIX_CHAT: u64 = 700;
-const STRESS_MIX_DOC_EDIT: u64 = 200;
-const STRESS_MIX_PROGRAM_INSTALL: u64 = 100;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StressShape {
-    Chat,
-    DocEdit,
-    ProgramInstall,
-}
-
-impl StressShape {
-    fn name(self) -> &'static str {
-        match self {
-            StressShape::Chat => "chat",
-            StressShape::DocEdit => "doc_edit",
-            StressShape::ProgramInstall => "program_install",
-        }
-    }
-}
-
-fn stress_shape_at(index: u64) -> StressShape {
-    let at = index % 1_000;
-    if at < STRESS_MIX_CHAT {
-        StressShape::Chat
-    } else if at < STRESS_MIX_CHAT + STRESS_MIX_DOC_EDIT {
-        StressShape::DocEdit
-    } else {
-        StressShape::ProgramInstall
-    }
-}
-
-/// One `ID_BENCH_STRESS_*` axis override, falling back to the tier's
-/// committed value when the variable is unset or unparseable (the
-/// `ManyWorldsConfig` profiling-override pattern).
-fn stress_env(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(default)
-}
-
-/// A scale tier of the #6304 stress program: the design's tier table
-/// (idle worlds / active worlds / single-world history / members on
-/// the hot world), plus the per-active-world history the generator
-/// gives every active world. A tier is a measurement target, not a
-/// promise: a tier whose set cannot be generated or held is a
-/// measured limit, recorded as such by the run that hits it. The
-/// members axis meets such a wall today: the design targets 320
-/// members at 10x, but a world refuses more participants than the
-/// codified `WorldLimits::default().participants` (256), so the
-/// generator caps the hot world there and records the wall in the
-/// manifest rather than emitting a world the store rejects.
-#[derive(Clone, Copy)]
-struct StressTier {
-    name: &'static str,
-    idle_worlds: usize,
-    active_worlds: usize,
-    hot_events: u64,
-    active_events: u64,
-    hot_members: usize,
-}
-
-impl StressTier {
-    fn with_env_overrides(mut self) -> Self {
-        self.idle_worlds = stress_env("ID_BENCH_STRESS_IDLE_WORLDS", self.idle_worlds);
-        self.active_worlds = stress_env("ID_BENCH_STRESS_ACTIVE_WORLDS", self.active_worlds);
-        self.hot_events = stress_env("ID_BENCH_STRESS_HOT_EVENTS", self.hot_events as usize) as u64;
-        self.active_events =
-            stress_env("ID_BENCH_STRESS_ACTIVE_EVENTS", self.active_events as usize) as u64;
-        self.hot_members = stress_env("ID_BENCH_STRESS_HOT_MEMBERS", self.hot_members);
-        self
-    }
-
-    fn quick() -> Self {
-        Self {
-            name: "quick",
-            idle_worlds: 10,
-            active_worlds: 4,
-            hot_events: 200,
-            active_events: 20,
-            hot_members: 4,
-        }
-        .with_env_overrides()
-    }
-
-    fn tier_1x() -> Self {
-        Self {
-            name: "1x",
-            idle_worlds: 1_000,
-            active_worlds: 100,
-            hot_events: 10_000,
-            active_events: 100,
-            hot_members: 32,
-        }
-        .with_env_overrides()
-    }
-
-    fn tier_10x() -> Self {
-        Self {
-            name: "10x",
-            idle_worlds: 10_000,
-            active_worlds: 1_000,
-            hot_events: 100_000,
-            active_events: 100,
-            hot_members: 320,
-        }
-        .with_env_overrides()
-    }
-
-    fn tier_100x() -> Self {
-        Self {
-            name: "100x",
-            idle_worlds: 100_000,
-            active_worlds: 10_000,
-            hot_events: 1_000_000,
-            active_events: 100,
-            hot_members: 3_200,
-        }
-        .with_env_overrides()
-    }
-
-    fn named(name: &str) -> Result<Self> {
-        match name {
-            "quick" => Ok(Self::quick()),
-            "1x" => Ok(Self::tier_1x()),
-            "10x" => Ok(Self::tier_10x()),
-            "100x" => Ok(Self::tier_100x()),
-            other => anyhow::bail!(
-                "unknown stress tier '{other}' in ID_BENCH_STRESS_TIER (valid: quick, 1x, 10x, 100x)"
-            ),
-        }
-    }
-}
-
-/// FNV-1a (64-bit) over a byte stream: the manifest's expected state
-/// hash. A change-detection hash, not a cryptographic one — its job
-/// is to make two runs of the same (seed, tier) comparable and a
-/// fast-but-wrong replay visible, cheaply and with no dependency.
-struct Fnv1a(u64);
-
-impl Fnv1a {
-    fn new() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 ^= u64::from(byte);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-
-    fn finish(&self) -> String {
-        format!("{:016x}", self.0)
-    }
-}
-
-/// One generated measured world, as recorded in the manifest.
-struct StressWorldRecord {
-    name: String,
-    role: &'static str,
-    members: usize,
-    events: u64,
-    chat: u64,
-    doc_edits: u64,
-    program_installs: u64,
-    expected_state_hash: String,
-}
-
-/// The deterministic event for one stream position of one generated
-/// world. Every choice derives from the run seed through the loadgen
-/// corpus / SplitMix64, so the event stream is a pure function of
-/// (seed, world, position).
-fn stress_event(
-    seed: u64,
-    world_index: u32,
-    sequence: u64,
-    participant_id: u64,
-) -> (WorldEvent, StressShape) {
-    let shape = stress_shape_at(sequence - 1);
-    let corpus = loadgen::Corpus::new(seed);
-    let kind = match shape {
-        StressShape::Chat => WorldEventKind::Chat(corpus.text(world_index, sequence, 48)),
-        StressShape::DocEdit => {
-            let mut rng = loadgen::SplitMix64::new(
-                seed ^ (u64::from(world_index) << 32)
-                    ^ sequence.wrapping_mul(0x9E37_79B9_7F4A_7C15),
-            );
-            let doc = rng.next_u64() % 64;
-            let item = rng.next_u64() % STRESS_DOC_LIST_ITEMS;
-            WorldEventKind::Input(
-                format!(
-                    "doc-edit doc={doc} item={item} doc_bytes={STRESS_DOC_BYTES} \
-                     list_items={STRESS_DOC_LIST_ITEMS} fill={}",
-                    corpus.text(world_index, sequence, 96)
-                )
-                .into_bytes(),
-            )
-        }
-        StressShape::ProgramInstall => {
-            let mut rng = loadgen::SplitMix64::new(
-                seed ^ (u64::from(world_index) << 32)
-                    ^ sequence.wrapping_mul(0xBF58_476D_1CE4_E5B9),
-            );
-            let files = 1 + rng.next_u64() % STRESS_INSTALL_FILES;
-            let total_bytes = files * 4_096 + rng.next_u64() % (STRESS_INSTALL_BYTES / 4);
-            WorldEventKind::Input(
-                format!(
-                    "program-install files={files} total_bytes={total_bytes} bundle={}",
-                    corpus.text(world_index, sequence, 96)
-                )
-                .into_bytes(),
-            )
-        }
-    };
-    (
-        WorldEvent {
-            sequence,
-            participant_id,
-            kind,
-        },
-        shape,
-    )
-}
-
-/// Generate one measured world directory (`<out>/<name>/journal.jsonl`)
-/// and verify it by restoring the written journal through the real
-/// restore path. The expected state hash is FNV-1a over the journal
-/// file's exact bytes followed by the restored core's current
-/// sequence (u64 little-endian): the journal determines the state,
-/// and the restore proves the journal is one the store accepts, at
-/// the sequence the manifest claims.
-fn generate_stress_world(
-    out: &Path,
-    name: &str,
-    role: &'static str,
-    seed: u64,
-    world_index: u32,
-    events: u64,
-    members: usize,
-) -> Result<StressWorldRecord> {
-    ensure!(
-        members >= 1,
-        "stress world {name} needs at least one member"
-    );
-    let mut entries: Vec<JournalEntry> = Vec::with_capacity((events + members as u64 + 1) as usize);
-    entries.push(JournalEntry::Created {
-        world_id: name.to_owned(),
-        version: 1,
-    });
-    for member in 0..members {
-        entries.push(JournalEntry::Issued {
-            participant: id::world::Participant {
-                id: member as u64 + 1,
-                display_name: format!("stress-{member}"),
-            },
-            digest: "0".repeat(64),
-            scopes: WorldScopes::GUEST.bits(),
-            parent: None,
-            expires_at: None,
-            uses: None,
-            used: 0,
-            subject: None,
-            issued_at: None,
-        });
-    }
-    let (mut chat, mut doc_edits, mut program_installs) = (0_u64, 0_u64, 0_u64);
-    for sequence in 1..=events {
-        let participant_id = (sequence - 1) % members as u64 + 1;
-        let (event, shape) = stress_event(seed, world_index, sequence, participant_id);
-        match shape {
-            StressShape::Chat => chat += 1,
-            StressShape::DocEdit => doc_edits += 1,
-            StressShape::ProgramInstall => program_installs += 1,
-        }
-        entries.push(JournalEntry::Committed { event });
-    }
-
-    let dir = out.join(name);
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("journal.jsonl");
-    let mut bytes: Vec<u8> = Vec::new();
-    for entry in &entries {
-        serde_json::to_writer(&mut bytes, entry).context("serialize stress journal entry")?;
-        bytes.push(b'\n');
-    }
-    std::fs::write(&path, &bytes).with_context(|| format!("write stress journal {path:?}"))?;
-
-    // Verify before recording: read the journal back in the store's
-    // own line format and restore it. A generator that emits worlds
-    // the store cannot open is worse than no generator.
-    let text = std::fs::read_to_string(&path)?;
-    let read_back: Vec<JournalEntry> = text
-        .lines()
-        .map(serde_json::from_str)
-        .collect::<std::result::Result<_, _>>()
-        .context("re-parse generated stress journal")?;
-    ensure!(
-        read_back.len() == entries.len(),
-        "{name}: read back {} entries, wrote {}",
-        read_back.len(),
-        entries.len()
-    );
-    let restored = WorldCore::restore(name, WorldLimits::default(), read_back)
-        .map_err(|e| anyhow::anyhow!("restore generated stress world {name}: {e:#}"))?;
-    ensure!(
-        restored.core.current_sequence() == events,
-        "{name}: restored at sequence {}, generated {events} events",
-        restored.core.current_sequence()
-    );
-    ensure!(
-        restored.replay.len() as u64 == doc_edits + program_installs,
-        "{name}: restored replay holds {} inputs, generated {}",
-        restored.replay.len(),
-        doc_edits + program_installs
-    );
-
-    let mut hash = Fnv1a::new();
-    hash.write(&bytes);
-    hash.write(&restored.core.current_sequence().to_le_bytes());
-    Ok(StressWorldRecord {
-        name: name.to_owned(),
-        role,
-        members,
-        events,
-        chat,
-        doc_edits,
-        program_installs,
-        expected_state_hash: hash.finish(),
-    })
-}
-
-/// The `stress_gen` profile (#13083): materialize the tier's world
-/// directory set plus its manifest under the output root. The output
-/// root is a pure function of (seed, tier): if it already holds a
-/// stress manifest it is regenerated in place; if it holds anything
-/// else the run refuses rather than deleting foreign content.
-fn bench_stress_gen(quick: bool) -> Result<()> {
-    let tier = if quick {
-        StressTier::quick()
-    } else {
-        match std::env::var("ID_BENCH_STRESS_TIER") {
-            Ok(name) => StressTier::named(&name)?,
-            Err(_) => StressTier::tier_1x(),
-        }
-    };
-    let seed = std::env::var("ID_BENCH_STRESS_SEED")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(BENCH_SEED);
-    let out = std::env::var("ID_BENCH_STRESS_OUT").map_or_else(
-        |_| std::env::temp_dir().join(format!("id-stress-{}-{}", tier.name, seed)),
-        PathBuf::from,
-    );
-    if out.exists() {
-        ensure!(
-            out.join("manifest.json").exists(),
-            "stress output root {out:?} exists and holds no stress manifest; refusing to overwrite it"
-        );
-        std::fs::remove_dir_all(&out)?;
-    }
-    std::fs::create_dir_all(&out)?;
-    let started = Instant::now();
-
-    // Idle worlds: durable headers only — a Created entry and nothing
-    // else, matching what the many-worlds workload leaves on disk for
-    // a world that was opened and evicted without a guest.
-    for index in 0..tier.idle_worlds {
-        let name = format!("idle-{index:05}");
-        let dir = out.join(&name);
-        std::fs::create_dir_all(&dir)?;
-        let entry = JournalEntry::Created {
-            world_id: name,
-            version: 1,
-        };
-        let mut line = serde_json::to_vec(&entry).context("serialize idle world header")?;
-        line.push(b'\n');
-        std::fs::write(dir.join("journal.jsonl"), line)?;
-    }
-
-    let mut records: Vec<StressWorldRecord> = Vec::with_capacity(tier.active_worlds + 1);
-    for index in 0..tier.active_worlds {
-        let name = format!("active-{index:04}");
-        records.push(generate_stress_world(
-            &out,
-            &name,
-            "active",
-            seed,
-            index as u32,
-            tier.active_events,
-            1,
-        )?);
-    }
-    // The members wall (see StressTier): generate at the codified
-    // participant cap when the tier targets more, and record the
-    // wall in the manifest — a wall is a result, per the design's
-    // run protocol, not a silent clamp.
-    let participant_cap = WorldLimits::default().participants;
-    let hot_members = tier.hot_members.min(participant_cap);
-    let mut walls: Vec<serde_json::Value> = Vec::new();
-    if hot_members < tier.hot_members {
-        walls.push(serde_json::json!({
-            "axis": "hot_members",
-            "tier_target": tier.hot_members,
-            "generated": hot_members,
-            "limit": "codified: WorldLimits::default().participants",
-            "limit_value": participant_cap,
-        }));
-    }
-    let hot = generate_stress_world(
-        &out,
-        "hot-000",
-        "hot",
-        seed,
-        u32::MAX,
-        tier.hot_events,
-        hot_members,
-    )?;
-    let hot_hash = hot.expected_state_hash.clone();
-    records.push(hot);
-
-    let wall_count = walls.len();
-    let total_events: u64 = records.iter().map(|record| record.events).sum();
-    let worlds_json: Vec<serde_json::Value> = records
-        .iter()
-        .map(|record| {
-            serde_json::json!({
-                "name": record.name,
-                "role": record.role,
-                "members": record.members,
-                "events": record.events,
-                "counts": {
-                    "chat": record.chat,
-                    "doc_edit": record.doc_edits,
-                    "program_install": record.program_installs,
-                },
-                "expected_state_hash": record.expected_state_hash,
-            })
-        })
-        .collect();
-    let mut mix = serde_json::Map::new();
-    mix.insert(StressShape::Chat.name().to_owned(), STRESS_MIX_CHAT.into());
-    mix.insert(
-        StressShape::DocEdit.name().to_owned(),
-        STRESS_MIX_DOC_EDIT.into(),
-    );
-    mix.insert(
-        StressShape::ProgramInstall.name().to_owned(),
-        STRESS_MIX_PROGRAM_INSTALL.into(),
-    );
-    let manifest = serde_json::json!({
-        "type": "stress-manifest",
-        "schema_version": 1,
-        "generator_version": loadgen::GENERATOR_VERSION,
-        "seed": seed,
-        "tier": tier.name,
-        "mix_per_1000": serde_json::Value::Object(mix),
-        "shapes": {
-            "doc_bytes": STRESS_DOC_BYTES,
-            "doc_list_items": STRESS_DOC_LIST_ITEMS,
-            "install_files_max": STRESS_INSTALL_FILES,
-            "install_bytes_max": STRESS_INSTALL_BYTES,
-        },
-        "hash": {
-            "algorithm": "fnv1a64",
-            "input": "journal.jsonl bytes in order, then the restored current_sequence as u64 little-endian",
-            "format": "16 lowercase hex digits",
-        },
-        "idle_worlds": {"count": tier.idle_worlds, "events_per_world": 0},
-        "walls": walls,
-        "worlds": worlds_json,
-        "totals": {
-            "worlds": tier.idle_worlds + tier.active_worlds + 1,
-            "measured_worlds": records.len(),
-            "events": total_events,
-        },
-    });
-    let manifest_path = out.join("manifest.json");
-    std::fs::write(
-        &manifest_path,
-        format!("{}\n", serde_json::to_string_pretty(&manifest)?),
-    )?;
-
-    println!(
-        "profile stress_gen tier={} seed={} worlds={} measured_worlds={} events={} hot_state_hash={} walls={} elapsed_secs={:.3} out={} manifest={}",
-        tier.name,
-        seed,
-        tier.idle_worlds + tier.active_worlds + 1,
-        records.len(),
-        total_events,
-        hot_hash,
-        wall_count,
-        started.elapsed().as_secs_f64(),
-        out.display(),
-        manifest_path.display(),
-    );
-    Ok(())
-}
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -2286,7 +1820,7 @@ fn main() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("id-bench-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
 
-    const BENCHMARKS: [&str; 7] = [
+    const BENCHMARKS: [&str; 10] = [
         "journal_append_fsync",
         "checkpoint_compaction",
         "guest_replay",
@@ -2294,6 +1828,9 @@ fn main() -> Result<()> {
         "many_worlds",
         "fuel_spin_isolation",
         "stress_gen",
+        "stress_mem",
+        "stress_join",
+        "frame_cost",
     ];
     if let Some(name) = only
         && !BENCHMARKS.contains(&name)
@@ -2361,7 +1898,19 @@ fn main() -> Result<()> {
     }
 
     if run("stress_gen") {
-        bench_stress_gen(quick)?;
+        stress::bench_stress_gen(quick)?;
+    }
+
+    if run("stress_mem") {
+        stress::bench_stress_mem(quick)?;
+    }
+
+    if run("stress_join") {
+        stress::bench_stress_join(quick)?;
+    }
+
+    if run("frame_cost") {
+        stress::bench_frame_cost(quick)?;
     }
 
     if !cells.is_empty() {

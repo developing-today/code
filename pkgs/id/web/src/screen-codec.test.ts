@@ -100,7 +100,7 @@ describe("decodeViewPatchAsync", () => {
   async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
     const stream = new Blob([bytes as BlobPart])
       .stream()
-      .pipeThrough(new CompressionStream("deflate"));
+      .pipeThrough(new CompressionStream("deflate-raw"));
     const out = new Uint8Array(await new Response(stream).arrayBuffer());
     return out;
   }
@@ -121,6 +121,17 @@ describe("decodeViewPatchAsync", () => {
   it("decodes a deflated version-2 frame to the golden frame", async () => {
     const envelope = compressedEnvelope(1, await deflate(GOLDEN_VIEW_PATCH));
     expect(await decodeViewPatchAsync(envelope)).toEqual(GOLDEN_FRAME);
+  });
+
+  it("decodes a Rust-flate2 raw-DEFLATE fixture (RFC 1951, not zlib)", async () => {
+    // Payload produced by the Rust encoder (flate2 DeflateEncoder =
+    // raw RFC 1951, no zlib wrapper). A decoder using
+    // DecompressionStream("deflate") rejects these bytes; only
+    // "deflate-raw" accepts them, matching the shell-contract pin.
+    const RUST_RAW_DEFLATE_B64 =
+      "a1pellpUnJmfx7g0rSgxN7V1RXFqYWlqXnIq+9qyzNTy+KLUskyQPPOmpMTi1HgUMaY1RanFpbmp8SX52al5B5YWJJYkZ7QgTCzPTCnJYFqWkZqZnlHCuKSoNK94AgA=";
+    const payload = Uint8Array.from(atob(RUST_RAW_DEFLATE_B64), (c) => c.charCodeAt(0));
+    expect(await decodeViewPatchAsync(compressedEnvelope(1, payload))).toEqual(GOLDEN_FRAME);
   });
 
   it("decodes a version-2 frame with compression 0 (payload as-is)", async () => {
