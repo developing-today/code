@@ -17,7 +17,11 @@ that is proven.
   no longer an open evaluation.** It was researched in depth
   before the decision (CNCF Sandbox; LINSTOR on ZFS/DRBD for
   storage; Kube-OVN, Cilium and MetalLB for networking; SeaweedFS
-  buckets; KubeVirt; CNPG Postgres). Install epic:
+  buckets; KubeVirt; CNPG Postgres). Storage preference, settled
+  by Drew 2026-11-23: LINSTOR-first, and Ceph avoided where
+  possible — see
+  [Storage: LINSTOR and DRBD](storage-linstor-and-drbd.md).
+  Install epic:
   [#1087](https://github.com/developing-today/code/issues/1087),
   "proposed/Later" in the roadmap. The CNCF census adds the caveat
   that Cozystack "decides storage/tenancy/GitOps for you"
@@ -27,8 +31,9 @@ that is proven.
 - **Data services** as decided in the research brief:
   CloudNativePG managed Postgres (do not deploy a second
   operator), and S3 object storage — the RustFS-versus-SeaweedFS
-  question is now with a dedicated comparison lane, with Drew's
-  current lean to SeaweedFS because Cozystack ships it; see
+  verdict landed 2026-11-24 (record
+  `doc/2026-11-24T01-33-33Z_research_rustfs-vs-seaweedfs/`, PR
+  #13990): SeaweedFS stays as Cozystack's S3 layer; see
   [Object storage: RustFS and SeaweedFS](../platform/object-storage.md).
   Epic [#1088](https://github.com/developing-today/code/issues/1088)
   remains the programme home.

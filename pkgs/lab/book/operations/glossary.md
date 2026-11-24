@@ -10,6 +10,10 @@ Platform Management Interface: the enterprise remote management
 (KVM, power, sensors) built into the core machines. Versions and
 settings are still to be audited (epic #1081).
 
+**Ceph** — A distributed storage system avoided where possible
+in this estate (Drew, settled 2026-11-23); LINSTOR-first is the
+direction.
+
 **Cozystack** — The Kubernetes platform planned for the cluster:
 it decides storage, tenancy and GitOps, and provides LINSTOR
 storage, CNPG Postgres and SeaweedFS buckets. Planned, not
@@ -18,6 +22,8 @@ installed.
 **CNPG** — CloudNativePG, the managed Postgres operator the
 programme uses via Cozystack. The research brief's decision: use
 Cozystack's CNPG-based Postgres; do not deploy a second operator.
+Runs as a primary with streaming replicas; see
+[Storage: LINSTOR and DRBD](../cluster/storage-linstor-and-drbd.md).
 
 **DRBD** — Distributed Replicated Block Device: block-level
 replication between machines, managed by LINSTOR in the cluster
@@ -27,6 +33,11 @@ loss needs the same failure on two at once.
 **DX010** — Celestica DX010: the 100GbE fabric switch of the
 research inventory (32× QSFP28, SONiC). The dictated "DXO10" and
 the issue-title spelling "Celestia DX010" are the same device.
+
+**Falco** — A runtime-detection tool (eBPF/syscall behaviour
+watching); the design's tripwire layer — detection, not
+prevention. Not deployed. See
+[Security: Falco runtime detection](../platform/security-and-falco.md).
 
 **LINSTOR** — The storage management layer in Cozystack that
 provisions DRBD-replicated volumes on ZFS. Design only in this
@@ -42,9 +53,10 @@ machine.
 
 **RustFS** — An S3-compatible object store, one of the two
 candidates for CNPG backups and buckets on the HDD pools. The
-RustFS-versus-SeaweedFS verdict is deferred to the comparison
-lane's dated record; Drew's current lean (2026-11-23) is
-SeaweedFS, because Cozystack ships it. See
+RustFS-versus-SeaweedFS verdict landed 2026-11-24: SeaweedFS
+stays as Cozystack's S3 layer, and RustFS is pilot-only for
+standalone large-object workloads outside Cozystack,
+re-evaluated after a year of GA exposure. See
 [Object storage: RustFS and SeaweedFS](../platform/object-storage.md).
 
 **TALM** — `cozystack/talm`: the tool that templates and applies
