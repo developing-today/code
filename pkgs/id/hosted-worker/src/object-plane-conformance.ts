@@ -387,6 +387,10 @@ export function objectPlaneConformanceCases(factory: AdapterFactory): Conformanc
         // Expired.
         const expired = await mintReadCapability(key, { contentId: receipt.contentId, partition: US_PRIVATE, expiresAt: PAST });
         await expectFailClosed(adapter.read(receipt.contentId, expired, { now: NOW }), "capability_expired");
+        // Invalid caller time must fail closed for both expired and
+        // otherwise-valid capabilities; NaN must never bypass expiry.
+        await expectFailClosed(adapter.read(receipt.contentId, expired, { now: "garbage" }), "capability_bad_now");
+        await expectFailClosed(adapter.read(receipt.contentId, good, { now: "garbage" }), "capability_bad_now");
         // Foreign partition.
         const foreign = await mintReadCapability(key, { contentId: receipt.contentId, partition: EU_PRIVATE, expiresAt: FUTURE });
         await expectFailClosed(adapter.read(receipt.contentId, foreign, { now: NOW }), "capability_wrong_partition");
