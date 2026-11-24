@@ -701,7 +701,7 @@ impl IdentityDb {
             .open(&temp)
             .with_context(|| format!("failed to create identity store {}", temp.display()))?;
         let db = Database::builder()
-            .create_file(file)
+            .create_with_backend(redb::backends::FileBackend::new(file))
             .map_err(|e| store_error(&temp, e))?;
         let created = Self::load(db, key)?;
         std::fs::rename(&temp, path).with_context(|| {

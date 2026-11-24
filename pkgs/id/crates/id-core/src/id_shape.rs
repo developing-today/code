@@ -888,7 +888,7 @@ fn hex_decode(text: &str, what: &str) -> Result<Vec<u8>, IdShapeError> {
     }
     let mut out = Vec::with_capacity(text.len() / 2);
     let bytes = text.as_bytes();
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let hi = hex_value(pair[0], what)?;
         let lo = hex_value(pair[1], what)?;
         out.push((hi << 4) | lo);

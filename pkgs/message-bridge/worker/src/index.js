@@ -1,25 +1,31 @@
 // Message bridge Worker: a remote MCP server Claude can add as a custom
 // connector, the same MCP server for the ChatGPT connector (reached
-// through its private Site with a token of its own), plus a page where
-// Drew sends a message to either or both and sees the history. Every
+// through its private Site with a token of its own). Drew sends and
+// reads through the PM Stack console; this Worker is transport only
+// (its standalone page was retired, #14378). Every
 // message sent or received is stored in one SQLite-backed Durable
 // Object, so writes never race; each row names its channel.
 //
 // Routes and auth: see routes.js and auth.js. The access token is the
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
-import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
+import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery, noteForInbox, workTransitionError } from "./messages.js";
 import {
   enrollTokenClaimSql,
   enrollTokenGetSql,
+  enrollTokenListSql,
   enrollTokenMintSql,
+  enrollTokenRevokeAgentSql,
   enrollTokenRevokeSql,
   fleetCall,
   fleetCredentialAuthSql,
   fleetCredentialPutSql,
   fleetCredentialRevokeSql,
+  fleetCredentialStateSql,
   fleetOp,
   fleetSchema,
+  getDistribution,
+  recordDistribution,
 } from "./fleet.js";
 import { route } from "./routes.js";
 
@@ -109,9 +115,34 @@ export class MessageStore extends DurableObject {
       recipient TEXT NOT NULL,
       sender TEXT NOT NULL,
       body TEXT NOT NULL,
-      ack_at TEXT
+      ack_at TEXT,
+      kind TEXT NOT NULL DEFAULT 'note',
+      reply_to INTEGER,
+      batch TEXT
     )`);
+    // Rows from before notes had kinds and threading (#14370, design
+    // §4.4) and before sends carried their distribution batch (design
+    // §4.1): the same ALTER-on-start migration fleet_message uses.
+    const noteCols = this.sql.exec("PRAGMA table_info(note_message)").toArray();
+    if (!noteCols.some((c) => c.name === "kind")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'");
+    }
+    if (!noteCols.some((c) => c.name === "reply_to")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN reply_to INTEGER");
+    }
+    if (!noteCols.some((c) => c.name === "batch")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN batch TEXT");
+    }
     this.sql.exec("CREATE INDEX IF NOT EXISTS note_message_inbox ON note_message (recipient, ack_at, id)");
+    // The instruction work-item lifecycle (#14372, design §4.6): null
+    // until the receiving identity marks the note; null reads as
+    // "received".
+    if (!noteCols.some((c) => c.name === "work_state")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN work_state TEXT");
+    }
+    if (!noteCols.some((c) => c.name === "work_task_id")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN work_task_id INTEGER");
+    }
   }
 
   /** One fleet mailbox operation over arguments fleetCall validated. */
@@ -134,6 +165,10 @@ export class MessageStore extends DurableObject {
     return fleetCredentialRevokeSql(this.sql, agent, new Date().toISOString());
   }
 
+  fleetCredentialState() {
+    return fleetCredentialStateSql(this.sql);
+  }
+
   enrollTokenMint(row) {
     return enrollTokenMintSql(this.sql, row);
   }
@@ -148,6 +183,14 @@ export class MessageStore extends DurableObject {
 
   enrollTokenRevoke(token_hash) {
     return enrollTokenRevokeSql(this.sql, token_hash, new Date().toISOString());
+  }
+
+  enrollTokenRevokeAgent(agent) {
+    return enrollTokenRevokeAgentSql(this.sql, agent, new Date().toISOString());
+  }
+
+  enrollTokenList() {
+    return enrollTokenListSql(this.sql);
   }
 
   /** Deletes an identity's notes token(s); returns how many were revoked. */
@@ -257,7 +300,7 @@ export class MessageStore extends DurableObject {
     return this.sql.exec("SELECT identity FROM note_identity ORDER BY identity").toArray().map((r) => r.identity);
   }
 
-  noteDeliver({ from, recipients, note }) {
+  noteDeliver({ from, recipients, note, kind = "note", reply_to = null, batch = null, pattern = null, limit_n = null, matched = null }) {
     const ts = new Date().toISOString();
     const notes = [];
     for (const recipient of recipients) {
@@ -265,27 +308,137 @@ export class MessageStore extends DurableObject {
       if (!known) continue;
       const row = this.sql
         .exec(
-          "INSERT INTO note_message (ts, recipient, sender, body) VALUES (?, ?, ?, ?) RETURNING id, ts, recipient, sender, body",
+          "INSERT INTO note_message (ts, recipient, sender, body, kind, reply_to, batch) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id, ts, recipient, sender, body, kind, reply_to, batch",
           ts,
           recipient,
           from,
           note,
+          kind,
+          reply_to,
+          batch,
         )
         .one();
       this.sql.exec("UPDATE note_identity SET signal_counter = signal_counter + 1 WHERE identity = ?", recipient);
-      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts });
+      notes.push({
+        id: row.id,
+        recipient: row.recipient,
+        from: row.sender,
+        note: row.body,
+        ts: row.ts,
+        kind: row.kind,
+        reply_to: row.reply_to,
+        batch: row.batch,
+      });
+    }
+    if (batch) {
+      recordDistribution(this.sql, {
+        batch,
+        sender_addr: from,
+        pattern,
+        limit_n,
+        matched: matched ?? notes.map((n) => n.recipient),
+        delivered: notes.map((n) => n.recipient),
+        ts,
+      });
     }
     return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
+  }
+
+  /**
+   * The sender of a note in `identity`'s inbox, or null. Reply routing
+   * (design §4.4) reads it store-side: a reply answers the real sender
+   * without the replier ever seeing who it was.
+   */
+  noteOrigin(identity, id) {
+    const row = this.sql
+      .exec("SELECT sender FROM note_message WHERE id = ? AND recipient = ?", id, identity)
+      .toArray()[0];
+    return row ? row.sender : null;
+  }
+
+  /**
+   * Broadening a notes distribution: only the original sender, only
+   * the matched-but-undelivered remainder (widened by extra_matched,
+   * which the caller resolved from the call's new address). State
+   * refusals come back as { error }, like fleet ops.
+   */
+  noteBroaden({ from, batch, extra_matched = [], pattern = null, limit = null }) {
+    const dist = getDistribution(this.sql, batch);
+    if (!dist) return { error: `no distribution recorded for batch ${batch}` };
+    if (dist.sender_addr !== from) return { error: "only the original sender can broaden this distribution" };
+    const sample = this.sql
+      .exec("SELECT sender, body FROM note_message WHERE batch = ? ORDER BY id ASC LIMIT 1", batch)
+      .toArray()[0];
+    if (!sample) return { error: `batch ${batch} has no notes to broaden` };
+    const matched = [...new Set([...dist.matched, ...extra_matched])].sort();
+    const deliveredSet = new Set(dist.delivered);
+    const pending = matched.filter((n) => !deliveredSet.has(n));
+    const recipients = limit ? pending.slice(0, limit) : pending;
+    const ts = new Date().toISOString();
+    const notes = [];
+    for (const recipient of recipients) {
+      const known = this.sql.exec("SELECT 1 FROM note_identity WHERE identity = ?", recipient).toArray().length > 0;
+      if (!known) continue;
+      const row = this.sql
+        .exec(
+          "INSERT INTO note_message (ts, recipient, sender, body, batch) VALUES (?, ?, ?, ?, ?) RETURNING id, ts, recipient, sender, body, batch",
+          ts,
+          recipient,
+          sample.sender,
+          sample.body,
+          batch,
+        )
+        .one();
+      this.sql.exec("UPDATE note_identity SET signal_counter = signal_counter + 1 WHERE identity = ?", recipient);
+      deliveredSet.add(recipient);
+      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts, batch: row.batch });
+    }
+    const delivered = [...deliveredSet].sort();
+    recordDistribution(this.sql, {
+      batch,
+      sender_addr: dist.sender_addr,
+      pattern: pattern ?? dist.pattern,
+      limit_n: limit ?? dist.limit_n,
+      matched,
+      delivered,
+      ts,
+    });
+    return {
+      batch,
+      matched: matched.length,
+      delivered: notes.length,
+      recipients: notes.map((n) => n.recipient),
+      remaining: matched.length - delivered.length,
+      notes,
+    };
   }
 
   noteInbox(identity) {
     return this.sql
       .exec(
-        "SELECT id, sender AS \"from\", body AS note, ts FROM note_message WHERE recipient = ? AND ack_at IS NULL ORDER BY id ASC",
+        "SELECT id, sender, body AS note, ts, kind, reply_to, work_state, work_task_id FROM note_message WHERE recipient = ? AND ack_at IS NULL ORDER BY id ASC",
         identity,
       )
       .toArray()
-      .map((r) => ({ ...r }));
+      .map((r) => noteForInbox(r));
+  }
+
+  /**
+   * Work-item lifecycle (design §4.6): the receiving identity moves
+   * its own note forward; another identity's note is simply not
+   * found. State-dependent refusals come back as { error }, like the
+   * fleet ops (an InputError doesn't survive the RPC hop).
+   */
+  noteWork(identity, { id, state, task_id }) {
+    const row = this.sql
+      .exec("SELECT id, work_state, work_task_id FROM note_message WHERE id = ? AND recipient = ?", id, identity)
+      .toArray()[0];
+    if (!row) return { error: `note ${id} is not in ${identity}'s inbox` };
+    const err = workTransitionError(row.work_state, state);
+    if (err) return { error: err };
+    const taskId = task_id ?? row.work_task_id ?? null;
+    this.sql.exec("UPDATE note_message SET work_state = ?, work_task_id = ? WHERE id = ?", state, taskId, id);
+    return { id, work_state: state, work_task_id: taskId };
   }
 
   noteAck(identity, { ids, up_to_id }) {
@@ -341,7 +494,7 @@ export class MessageStore extends DurableObject {
     const order = q.order === "desc" ? "DESC" : "ASC";
     return this.sql
       .exec(
-        `SELECT id, ts, recipient, sender, body, ack_at FROM note_message WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT ?`,
+        `SELECT id, ts, recipient, sender, body, ack_at, work_state, work_task_id FROM note_message WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT ?`,
         ...args,
         q.limit ?? 50,
       )
@@ -550,8 +703,11 @@ function storeFor(env) {
     noteAuth: (token_hash) => stub.noteAuth(token_hash),
     noteIdentities: () => stub.noteIdentities(),
     noteDeliver: (delivery) => stub.noteDeliver(delivery),
+    noteBroaden: (broaden) => stub.noteBroaden(broaden),
+    noteOrigin: (identity, id) => stub.noteOrigin(identity, id),
     noteInbox: (identity) => stub.noteInbox(identity),
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
+    noteWork: (identity, mark) => stub.noteWork(identity, mark),
     noteSignal: (identity) => stub.noteSignal(identity),
     // Owner reads (pipeline.js): the query is validated in the Worker
     // by normalizePipelineQuery before these are called, like fleet.
@@ -561,10 +717,13 @@ function storeFor(env) {
     fleetCredentialAuth: (token_hash) => stub.fleetCredentialAuth(token_hash),
     fleetCredentialPut: (rec) => stub.fleetCredentialPut(rec),
     fleetCredentialRevoke: (agent) => stub.fleetCredentialRevoke(agent),
+    fleetCredentialState: () => stub.fleetCredentialState(),
     enrollTokenMint: (row) => stub.enrollTokenMint(row),
     enrollTokenGet: (token_hash) => stub.enrollTokenGet(token_hash),
     enrollTokenClaim: (token_hash, agent, now) => stub.enrollTokenClaim(token_hash, agent, now),
     enrollTokenRevoke: (token_hash) => stub.enrollTokenRevoke(token_hash),
+    enrollTokenRevokeAgent: (agent) => stub.enrollTokenRevokeAgent(agent),
+    enrollTokenList: () => stub.enrollTokenList(),
   };
 }
 

@@ -21,7 +21,7 @@ smoothed over (§4).
 - The **bridge Worker stays as backend transport plumbing only** — or folds
   into the PM stack. §3 evaluates both and recommends: keep the Worker as
   API/transport, retire its page. The regretted thing was the separate
-  *website*, not the separate Worker.
+  _website_, not the separate Worker.
 - The **Android app** is the PM console's app (`pm-stack/console/android`,
   a Trusted Web Activity whose screens are the console site itself).
   App-side work is scoped against that codebase: the console screens carry
@@ -157,7 +157,7 @@ One Cloudflare Worker (`pkgs/message-bridge/worker`, live at
   a declaration, not yet a send path the console uses at the edge.
 - The PM stack's work system is the **fleet queue**: tasks are
   repo-task/v1 packets, claimed and completed through the queue. Bridge
-  commands are *not* queue tasks today; nothing turns a received
+  commands are _not_ queue tasks today; nothing turns a received
   instruction into a queued work item except the receiving agent's own
   judgement in-session.
 
@@ -175,22 +175,22 @@ One Cloudflare Worker (`pkgs/message-bridge/worker`, live at
   fresh machine has no path from "one token + one command" to enrolled:
   there is no bootstrap credential, no mint endpoint, and no console
   surface for any of it. Seat bootstrap scripts exist
-  (`scripts/muse/bootstrap.sh`) but restore a *known* seat from backups;
+  (`scripts/muse/bootstrap.sh`) but restore a _known_ seat from backups;
   they are not a general provisioning flow.
 
 ### 2.6 Spec-to-state summary
 
-| Spec | State today |
-| --- | --- |
-| 1 PM direct access | **Gap** — console sends relay through the laptop fleet binary; held when it's away (#13502) |
-| 2 Pattern addressing | **Partial** — groups + `all` (fleet), segment wildcards (notes); no name-glob for fleet mailboxes, no unification |
-| 3 Pipeline console | **Gap** — provenance-complete views exist only on the retiring bridge page; console has no unified pipeline surface; notes have no owner read at all |
-| 4 Token + init | **Gap** — owner-only register API with caller-supplied token values; no mint, no bootstrap token, no console surface, enroll assumes vault access already works |
-| 5 Agents send; work items | **Partial** — any-to-any send exists on all surfaces; work-item semantics (task-it-or-queue-it, lifecycle) do not |
-| 6 Anonymity / provenance | **Mostly exists** — instructions/commands stripped recipient-side on connector + fleet surfaces, provenance kept owner-side; **notes do not strip**, and notes instructions don't exist as a kind |
-| 7 Agents list; agents instruct | **Mostly exists** — owner agents endpoint + console read; notes identities are a separate registry not in the list; agent-issued instructions work via relay |
-| 8 Pattern+limit; claim distribution | **Gap** — no limit, no match report, no broaden, no offer/claim pool (sends are fan-out only, cap `MAX_RECIPIENTS = 200`) |
-| 9 Agent message shapes | **Mostly exists** — general/direct/reply-without-sender all work on connector + fleet surfaces; notes lack reply threading |
+| Spec                                | State today                                                                                                                                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 PM direct access                  | **Gap** — console sends relay through the laptop fleet binary; held when it's away (#13502)                                                                                                       |
+| 2 Pattern addressing                | **Partial** — groups + `all` (fleet), segment wildcards (notes); no name-glob for fleet mailboxes, no unification                                                                                 |
+| 3 Pipeline console                  | **Gap** — provenance-complete views exist only on the retiring bridge page; console has no unified pipeline surface; notes have no owner read at all                                              |
+| 4 Token + init                      | **Gap** — owner-only register API with caller-supplied token values; no mint, no bootstrap token, no console surface, enroll assumes vault access already works                                   |
+| 5 Agents send; work items           | **Partial** — any-to-any send exists on all surfaces; work-item semantics (task-it-or-queue-it, lifecycle) do not                                                                                 |
+| 6 Anonymity / provenance            | **Mostly exists** — instructions/commands stripped recipient-side on connector + fleet surfaces, provenance kept owner-side; **notes do not strip**, and notes instructions don't exist as a kind |
+| 7 Agents list; agents instruct      | **Mostly exists** — owner agents endpoint + console read; notes identities are a separate registry not in the list; agent-issued instructions work via relay                                      |
+| 8 Pattern+limit; claim distribution | **Gap** — no limit, no match report, no broaden, no offer/claim pool (sends are fan-out only, cap `MAX_RECIPIENTS = 200`)                                                                         |
+| 9 Agent message shapes              | **Mostly exists** — general/direct/reply-without-sender all work on connector + fleet surfaces; notes lack reply threading                                                                        |
 
 ## 3. Where the bridge lives: keep the Worker, retire the website
 
@@ -205,7 +205,7 @@ Options for the bridge's home, per the owner's correction:
   means migrating the Durable Object store and every live client (two
   MCP connectors + OAuth, the fleet CLI, the notes helper, two running
   hooks, ChatGPT's event subscriptions) into a Worker whose job is the
-  console, to satisfy a complaint that was about a *website*. The risk
+  console, to satisfy a complaint that was about a _website_. The risk
   lands on the transport that currently works; the gain is organisational
   only.
 
@@ -260,8 +260,8 @@ pick them up". Add an **offer pool**:
 - An owner (or any sender, §4.5) posts an instruction as an offer:
   `{body, kind: instruction, slots: N, to: <pattern|group|all>}`. It is
   stored once, in a new table `fleet_offer (id, batch, body, kind,
-  pattern, slots, sender_addr, ts, state)` plus `fleet_offer_claim
-  (offer_id, agent, claimed_at, message_id)` — not fanned out.
+pattern, slots, sender_addr, ts, state)` plus `fleet_offer_claim
+(offer_id, agent, claimed_at, message_id)` — not fanned out.
 - Eligible agents (matching the pattern/group at claim time) see open
   offers in a new inbox section; claiming is one atomic store op: if
   slots remain, a normal mailbox row is delivered to the claimer
@@ -282,7 +282,7 @@ spec names. Add to the Worker (owner token only):
 - `GET /api/<token>/pipeline` — one feed over connector messages, fleet
   messages and notes, normalized to
   `{surface, id, batch, ts, kind, sender_addr, sender_label, receiver,
-  direction, read_at, reply_to}` with filters `kind`, `sender`,
+direction, read_at, reply_to}` with filters `kind`, `sender`,
   `receiver`, `surface`, `batch`, `unread_only`, `since_id`/`before_id`,
   `limit`, `order`. This is a read projection over existing tables plus
   the notes owner read (below); no row is copied.
@@ -305,7 +305,7 @@ instruction. Owner surfaces (pipeline, agents, console) always show the
 real sender.
 
 **Resolution flagged — notes and sender visibility:** the live hooks
-(Archer, Felix) currently weigh *plain notes* by sender, under the
+(Archer, Felix) currently weigh _plain notes_ by sender, under the
 owner's recorded rule. This design therefore applies anonymity to
 instructions on the notes surface too (§4.4 adds the kind), and leaves
 plain-note sender visibility exactly as it is. Stripping plain-note
@@ -338,15 +338,15 @@ per-identity tokens, SHA-256 hashes only in the store, scopes on the
 token. Extend that shape to the fleet surface:
 
 - New table `fleet_credential (token_hash TEXT PRIMARY KEY, agent TEXT,
-  scopes TEXT, created TEXT, revoked_at TEXT)` — scopes drawn from
+scopes TEXT, created TEXT, revoked_at TEXT)` — scopes drawn from
   `inbox` (hello/inbox/ack) and `send`. A request to `/fleet/...` with
   an agent credential may act **only as that agent**: hello/inbox/ack
   for its own name, send with `from_addr` fixed to `agent:<its name>`.
   The shared fleet token keeps working (central + legacy lanes) during
   migration; it is not removed by this build-out.
 - **Bootstrap tokens.** New table `enroll_token (token_hash TEXT
-  PRIMARY KEY, agent TEXT, kind TEXT, groups TEXT, expires_at TEXT,
-  used_at TEXT, created TEXT)`. The console mints one (owner token
+PRIMARY KEY, agent TEXT, kind TEXT, groups TEXT, expires_at TEXT,
+used_at TEXT, created TEXT)`. The console mints one (owner token
   route: `POST /api/<token>/enroll-tokens`) **bound to the agent name,
   kind and groups the owner picks at generation time** — the token is
   not a blank cheque for any name (see §5). The value is shown once, in
@@ -368,7 +368,7 @@ token. Extend that shape to the fleet surface:
 
 ### 4.6 Instructions as full work items (spec 5)
 
-The bridge carries the instruction; the *work* contract lives where
+The bridge carries the instruction; the _work_ contract lives where
 work already lives — the fleet queue and the receiving agent's harness:
 
 - A received instruction (any surface) is handled by the receiving
@@ -384,7 +384,7 @@ work already lives — the fleet queue and the receiving agent's harness:
   `work_task_id INTEGER` and `work_state TEXT`
   (`received` → `acted` | `queued` → `done`), set by the receiving
   agent through one new verb (`POST /fleet/<cred>/work {id, state,
-  task_id?}`; CLI: `fleet bridge work`). Notes instructions reuse the
+task_id?}`; CLI: `fleet bridge work`). Notes instructions reuse the
   same fields on `note_message`. The pipeline (§4.3) shows the state,
   so an instruction's path from send to task to done is one filter
   away. Connector-channel instructions already have read state; they
@@ -413,7 +413,7 @@ fleet agent enroll --name <name> --kind <kind> --groups <g,...> --bootstrap <tok
    Archer and Felix are, not merely registered.
 
 The console shows the owner the exact command line (with the token
-inline, shown once) to hand to the agent — that hand-off *is* the
+inline, shown once) to hand to the agent — that hand-off _is_ the
 provisioning flow the spec asks for.
 
 ### 4.8 PM stack direct access (spec 1)
@@ -428,7 +428,7 @@ provisioning flow the spec asks for.
 - `message.send` and the console's agents/messages reads move to that
   binding; the laptop fleet-binary path remains for the laptop-local
   services (pm-dispatch and friends keep their existing dispatch
-  route — this build-out changes the *console's* send path, which is
+  route — this build-out changes the _console's_ send path, which is
   the one that waits for a machine). This is #13502's acceptance,
   adopted as slice S7.
 - The hosted-worker's declared `bridge` capability is wired to the
@@ -508,7 +508,7 @@ places. Each is named here; none is silently redesigned.
    fleet `hello` is effectively open to any fleet-token holder (any
    name can be registered, including someone else's). Bootstrap
    exchange (§4.5) makes fleet registration require a credential the
-   owner minted *for that name* — name-squatting by a bootstrap holder
+   owner minted _for that name_ — name-squatting by a bootstrap holder
    is impossible because the name is bound at mint time. **Flagged
    change:** after this build-out, the shared fleet token can still
    register names (legacy path); tightening that is the same
@@ -519,7 +519,7 @@ places. Each is named here; none is silently redesigned.
    every enrolled agent. The current system already has this property
    through the shared token (documented in `fleet.js`), so the
    build-out does not create it — but per-agent credentials make it
-   *attributable*: provenance (§4.3) records the real sender of every
+   _attributable_: provenance (§4.3) records the real sender of every
    instruction, and revocation (§4.5) gives the owner a per-agent off
    switch that does not exist today. The design keeps the property
    because the spec orders it, and says plainly that this is the
@@ -560,20 +560,20 @@ traceable to the spec numbers above. The index is also posted on
 standing bridge record); S4 coordinates with #13907 rather than
 duplicating its verbs, and S7 adopts #13502.
 
-| Slice | Issue | What | Depends on |
-| --- | --- | --- | --- |
-| S1 | #14367 | Worker: pattern + limit addressing, match report, distributions | — |
-| S2 | #14369 | Worker: unified pipeline + notes owner read + unified agents list | — |
-| S3 | #14368 | Worker: per-agent fleet credentials + bootstrap enroll tokens | — |
-| S4 | #14370 | Fleet CLI: `enroll --bootstrap` exchange, credential storage, hook setup; notes kind/reply_to client support | S3 |
-| S5 | #14371 | Worker: offer pool + claim distribution | S1 |
-| S6 | #14372 | Work-item lifecycle: work_state/work_task_id, `fleet bridge work`, harness instruction text | S2 |
-| S7 | #14373 | PM stack direct bridge access at the edge (adopts #13502) | S3 |
-| S8 | #14374 | PM console: Messages pipeline surface + Agents list | S2, S7 |
-| S9 | #14375 | PM console: composer — pattern+limit, match report, broaden, offers | S1, S5, S8 |
-| S10 | #14376 | PM console: provisioning screen (mint, hand-off, revoke) | S3, S8 |
-| S11 | #14377 | Android app: Messages/provisioning in the TWA shell | S8, S10 |
-| S12 | #14378 | Retire the standalone bridge page; OAuth approval preserved | S8 |
+| Slice | Issue  | What                                                                                                         | Depends on |
+| ----- | ------ | ------------------------------------------------------------------------------------------------------------ | ---------- |
+| S1    | #14367 | Worker: pattern + limit addressing, match report, distributions                                              | —          |
+| S2    | #14369 | Worker: unified pipeline + notes owner read + unified agents list                                            | —          |
+| S3    | #14368 | Worker: per-agent fleet credentials + bootstrap enroll tokens                                                | —          |
+| S4    | #14370 | Fleet CLI: `enroll --bootstrap` exchange, credential storage, hook setup; notes kind/reply_to client support | S3         |
+| S5    | #14371 | Worker: offer pool + claim distribution                                                                      | S1         |
+| S6    | #14372 | Work-item lifecycle: work_state/work_task_id, `fleet bridge work`, harness instruction text                  | S2         |
+| S7    | #14373 | PM stack direct bridge access at the edge (adopts #13502)                                                    | S3         |
+| S8    | #14374 | PM console: Messages pipeline surface + Agents list                                                          | S2, S7     |
+| S9    | #14375 | PM console: composer — pattern+limit, match report, broaden, offers                                          | S1, S5, S8 |
+| S10   | #14376 | PM console: provisioning screen (mint, hand-off, revoke)                                                     | S3, S8     |
+| S11   | #14377 | Android app: Messages/provisioning in the TWA shell                                                          | S8, S10    |
+| S12   | #14378 | Retire the standalone bridge page; OAuth approval preserved                                                  | S8         |
 
 Enqueue note: these issues are filed by a design lane; per the repo's
 filing rule they are not enqueued in this pass — Felix dispatches lanes

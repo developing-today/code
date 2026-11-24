@@ -67,7 +67,7 @@ use std::time::Instant;
 
 use id_core::tuple::{TupleEncoder, TupleValue, decode as decode_tuple};
 use id_shape::{ContentId, HashProfile};
-use redb::{Database, ReadableDatabase, TableDefinition};
+use redb::{CompactionMode, Database, ReadableDatabase, ReadableTable, TableDefinition};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
@@ -546,7 +546,7 @@ impl RedbTuple {
         let txn = self.db.begin_read().unwrap();
         let table = txn.open_table(table).unwrap();
         let mut out = Vec::new();
-        for entry in table.range::<&[u8]>(prefix..).unwrap() {
+        for entry in table.range(prefix..).unwrap() {
             let (key, _) = entry.unwrap();
             let key = key.value();
             if !key.starts_with(prefix) {
@@ -588,11 +588,7 @@ impl Engine for RedbTuple {
         let lower = after.map_or(Bound::Unbounded, Bound::Excluded);
         let mut out = Vec::new();
         let mut last = None;
-        for entry in table
-            .range::<&[u8]>((lower, Bound::Unbounded))
-            .unwrap()
-            .take(limit)
-        {
+        for entry in table.range((lower, Bound::Unbounded)).unwrap().take(limit) {
             let (key, _) = entry.unwrap();
             let [s, p, o] = untuple3(key.value());
             out.push(Triple::new(s, p, o));
@@ -615,14 +611,14 @@ impl Engine for RedbTuple {
     }
 
     fn compact(&mut self) -> u64 {
-        while self.db.compact().unwrap() {}
+        while self.db.compact(CompactionMode::Balanced).unwrap() {}
         self.file_bytes()
     }
 
     fn metadata(&self) -> Json {
         json!({
             "engine": "redb",
-            "engine_version": "4.6.0",
+            "engine_version": "5.0.0",
             "schema": "tables spo and pos: TableDefinition<&[u8], ()>; key = id_core::tuple bytes(s).bytes(p).bytes(o) (pos: p, o, s) over canonical term bytes",
             "indexes": ["spo tuple-key table", "pos tuple-key table"],
             "query_plans": {

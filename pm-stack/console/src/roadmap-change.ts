@@ -43,11 +43,7 @@ export function roadmapChangeRefusal(change: RoadmapChange): string | null {
     case "add-under":
       return "a sub-item has no row of its own in the roadmap file's tables";
     case "move":
-      return !change.row
-        ? "a move needs the row it moves"
-        : !change.to
-          ? "a move needs where it goes"
-          : null;
+      return !change.row ? "a move needs the row it moves" : !change.to ? "a move needs where it goes" : null;
     case "built":
       return change.row ? null : "marking built needs the row it is about";
     case "drop":
@@ -294,9 +290,11 @@ export async function openRoadmapChangePr(
     throw new OpError(502, "the roadmap file could not be read");
   const after = applyRoadmapChange(decode64(got.content), change);
   const base = (await ops.gh([`repos/${repo}/git/ref/heads/main`])) as { object?: { sha?: string } } | null;
-  if (typeof base?.object?.sha !== "string")
-    throw new OpError(502, "the repository's main branch could not be read");
-  const stamp = opts.now.toISOString().replace(/[^0-9]/g, "").slice(0, 14);
+  if (typeof base?.object?.sha !== "string") throw new OpError(502, "the repository's main branch could not be read");
+  const stamp = opts.now
+    .toISOString()
+    .replace(/[^0-9]/g, "")
+    .slice(0, 14);
   const branch = `roadmap/${cap.id}-${stamp}`;
   await ops.gh(["-X", "POST", `repos/${repo}/git/refs`], { ref: `refs/heads/${branch}`, sha: base.object.sha });
   await ops.gh(["-X", "PUT", `repos/${repo}/contents/${file}`], {
