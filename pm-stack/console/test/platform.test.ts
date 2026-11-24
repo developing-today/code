@@ -135,9 +135,9 @@ test("read through the fleet binary: the repository's list, with the last deploy
   };
   const ops = new Ops(readConfig({ HOME: "/h" }), run);
   const p = await ops.platform();
-  expect([p.checked, p.malformed, p.workers.length]).toEqual(["2026-11-23", 0, 18]);
+  expect([p.checked, p.malformed, p.workers.length]).toEqual(["2026-11-23", 0, 20]);
   // One read of the list, and one of each deploy workflow: not one per Worker.
-  expect(asked).toHaveLength(3);
+  expect(asked).toHaveLength(4);
   const byName = new Map(p.workers.map((w) => [w.name, w]));
   expect(byName.get("pm-console-edge")?.run).toEqual({
     commit: "2a96e875037d",
@@ -153,7 +153,7 @@ test("read through the fleet binary: the repository's list, with the last deploy
   // Its runs cannot be read: that Worker says so, and the rest still show.
   fails.add("repos/developing-today/code/actions/workflows/pm-console-edge-deploy.yml/runs?branch=main&per_page=1");
   const partial = await ops.platform();
-  expect(partial.workers).toHaveLength(18);
+  expect(partial.workers).toHaveLength(20);
   expect(partial.workers.find((w) => w.name === "pm-console-edge")?.run).toEqual({
     error: expect.stringContaining("404"),
   });
