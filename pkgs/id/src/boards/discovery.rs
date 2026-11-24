@@ -346,7 +346,7 @@ mod discovery_tests {
         // excerpt, no thumbnail. The board entry itself remains.
         let viewer = viewer();
         let store = SubscriptionStore::new();
-        let (board, post) = (hash('a'), hash('p'));
+        let (board, post) = (hash('a'), hash('f'));
         let mut board_facts = facts(board.clone(), Discoverability::NotPublic, Some(100), None);
         board_facts.latest_post = Some(DiscoveryPostPreview {
             post: post.clone(),
@@ -373,7 +373,7 @@ mod discovery_tests {
         // posts; a readable latest post renders its preview.
         let viewer = viewer();
         let store = SubscriptionStore::new();
-        let (board, post) = (hash('a'), hash('p'));
+        let (board, post) = (hash('a'), hash('f'));
         let mut board_facts = facts(board.clone(), Discoverability::Public, Some(100), None);
         board_facts.latest_post = Some(DiscoveryPostPreview {
             post: post.clone(),
