@@ -122,3 +122,71 @@ Filed as granular issues under #9079:
 - _Granular implementation issues filed under this issue_ — §8, filed as sub-issues of #9079.
 
 Open for ratification, deliberately not decided here: the §1 one-Worker recommendation and the §5 lease mechanism (mill/Drew); the timing of the first writer flip (operational, after slice 6 lands); multi-tenant PM beyond the operator's own tenancy (the data model is already per-tenant via E; serving other tenants' boards is a later program step, not a V1 slice).
+
+## 10. Sufficient-design standard conformance (supplement, lane code-j, 2026-11-24)
+
+This section maps the design above onto the nine-point sufficient-design
+standard so a reader can verify conformance without re-deriving it. It adds
+no new technical decisions; all substance is in §§1–9.
+
+**Goals.** (a) A workable hosted equivalent of the PM service —
+aggregator, dashboard, and project-reconcile as one TypeScript service on
+Cloudflare Workers — with Tier-1 parity (Drew amendment, 2026-11-12, on
+#9079). (b) The hosted and laptop editions read the same world: the #9060
+board registry, hierarchy edges, primary-parent rule, and Metadata model,
+one store family (tenant Turso). (c) Exactly one writer of record per board
+at a time across both editions (§5).
+
+**Non-goals.** Kaneo, Pad, Grist (separate products); the pm-dispatch
+intake app and pm-console gate ports (H's sign-in is consumed directly);
+push notifications and AA-explorer extras (laptop accretions, separate
+slices if ever); tenancy, content-plane, and identity design (inputs from
+components E, F, H — §"Context and constraints"); serving other tenants'
+boards in V1. Deferrals are §4's list, unchanged.
+
+**Alternatives considered (including do-nothing).** (i) Several Workers
+behind one hostname — rejected in §1: it multiplies deploy/config surfaces
+and turns today's function calls into service bindings, buying isolation
+the PM service does not need. (ii) D1 for board data — rejected in §3: a
+second SQL plane whose only job is mirroring the tenant DB, after the
+laptop edition standardized on Turso (#6815). (iii) Do-nothing (PM service
+stays laptop-only) — rejected: the hosted-editions program (#9078)
+requires a hosted PM surface, and the laptop tick's systemd timer plus
+Helium-dependent session keepers do not transfer to hosted tenancy; the
+cost of doing nothing is the program stalling at intake.
+
+**Build slices (dependency-ordered, with acceptance).** §8's eight slices,
+filed as sub-issues of #9079 (blocked-by sequencing 2←1, 3←1, 4←3, 5←1,
+6←1, 8←3):
+
+| Slice | Issue | Acceptance |
+| ----- | ----- | ---------- |
+| 1. Tenant store schema + migrations | #12825 (CLOSED) | Registry/pool/link/Metadata/roadmap/release/lease rows exist in the tenant Turso DB behind migrations |
+| 2. Hosted collector (Cron + `IngestDO`) | #12826 | Registry-driven multi-board ingest lands snapshots in the tenant DB, fail-soft per board, tokens minted per run and never stored |
+| 3. Read API parity | #12828 | `projects.json` / item ancestors+release / roadmap / releases match the #9060 §6 shapes |
+| 4. Dashboard surfaces | #12829 | V1 parity list (§4) server-rendered on Workers |
+| 5. `BoardDO` live + presence | #12830 | Snapshot-change fan-out + ephemeral board presence, state rebuildable from the DB |
+| 6. `ReconcileDO` + lease + flip runbook | #12831 | Hosted reconcile port, lease/epoch fencing, laptop lease guard, first flip on one satellite board (the one slice gated on ratification, per its body) |
+| 7. Identity wiring | #12832 | H/#9077 session → `binding_id`, E role checks on every route, fail-closed tests |
+| 8. Dual-edition conformance suite | #12833 | Shared fixtures: same snapshot in → same API JSON out, laptop vs hosted; Metadata shape pinned vs #9074 |
+
+**Rollout + rollback.** §5's flip procedure, per board: quiesce → epoch
+increment + writer set → verify-only first run → writes resume. Rollback is
+the same procedure in reverse. Boards move independently; the transition
+proves itself on one satellite board before the main board moves.
+
+**Verification plan.** (a) Slice 8's conformance suite (same snapshot in →
+same API JSON out, laptop vs hosted; Metadata-shape pinning vs #9074).
+(b) Every first flip runs verify-only against the last snapshot before
+writes resume (§5). (c) Ongoing: the reconcile findings report names any
+write from a non-record writer, detected via Metadata provenance (§5
+limitation note).
+
+**Open questions, each with a named decider.**
+
+| Question | Decider |
+| -------- | ------- |
+| §1 one-Worker recommendation (proposed) | Design mill or Drew (ratification) |
+| §5 lease mechanism (proposed) | Design mill or Drew (ratification) |
+| Timing of the first writer flip | Operator, after slice 6 lands |
+| Multi-tenant PM beyond the operator's tenancy | Program, post-V1 |
