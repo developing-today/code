@@ -20,6 +20,46 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+mod saml_registration_tests {
+    use super::*;
+
+    fn load_sps(sps: serde_json::Value) -> Result<ProviderConfig, String> {
+        let config = serde_json::json!({
+            "account": {"account_id": "owner", "roles": []},
+            "saml_sps": sps
+        });
+        let path = std::env::temp_dir().join(format!("idp-saml-{}.json", random_b64url(16)));
+        std::fs::write(&path, config.to_string()).unwrap();
+        let result = ProviderConfig::load(&path);
+        std::fs::remove_file(path).unwrap();
+        result
+    }
+
+    fn sp(entity_id: &str, acs: &str) -> serde_json::Value {
+        serde_json::json!({"entity_id": entity_id, "acs_urls": [acs]})
+    }
+
+    #[test]
+    fn saml_registry_oracle_rejects_invalid_trust_configuration() {
+        // Oracle: static registration contract, design §5 + HTTPS/loopback policy.
+        for bad in [
+            sp("", "https://sp.example/acs"),
+            sp("  ", "https://sp.example/acs"),
+            serde_json::json!({"entity_id": "urn:test:sp", "acs_urls": []}),
+            sp("urn:test:sp", "/acs"),
+            sp("urn:test:sp", "http://sp.example/acs"),
+            sp("urn:test:sp", "ftp://sp.example/acs"),
+            sp("urn:test:sp", "https://user:password@sp.example/acs"),
+            sp("urn:test:sp", "https://sp.example/acs#fragment"),
+        ] {
+            assert!(load_sps(serde_json::json!([bad])).is_err(), "accepted {bad}");
+        }
+        let entry = sp("urn:test:sp", "https://sp.example/acs");
+        assert!(load_sps(serde_json::json!([entry, entry])).is_err());
+    }
+}
+
 /// The stand-up door for this slice: the design's *devtoday local*
 /// identity (§3 of the settled design). The federated doors
 /// (GitHub/Google/Microsoft) land as their own slices and link into
