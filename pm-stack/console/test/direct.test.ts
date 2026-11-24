@@ -454,7 +454,17 @@ describe("the edge's run: the bridge through its binding", () => {
     await expect(ops.revokeCredential("fleet", "felix-1")).rejects.toThrow(/needs a machine/);
     // The enroll tokens' state is read through the bridge the same
     // way (#14376), and taking tokens back is a machine's too.
-    const enrollTokens = (await ops.enrollTokens()) as { agent: string; state: string }[];
+    const enrollTokens = (await ops.enrollTokens()) as {
+      agent: string;
+      kind: string;
+      groups: string[];
+      notes_identity: string | null;
+      created: string;
+      expires_at: string;
+      used_at: string | null;
+      revoked_at: string | null;
+      state: string;
+    }[];
     expect(enrollTokens).toEqual([
       {
         agent: "new-1",
