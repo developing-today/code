@@ -20,3 +20,13 @@ https://github.com/anomalyco/opencode/pull/8721
 curl -s -H "Authorization: Bearer $(cat ~/.config/github-copilot/apps.json \
 | jq '.[].oauth_token' \
 | sed 's/^"\(.*\)"$/\1/')" https://api.github.com/copilot_internal/user
+
+setup mcfly
+setup rmtrash
+setup aliases
+
+setup ulimit in rebuild to max ulimit
+
+ca derivations by default
+https://discourse.nixos.org/t/content-addressed-nix-call-for-testers/12881
+level 3 raider of unknown
