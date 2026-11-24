@@ -82,6 +82,7 @@ import type { Later } from "../../src/plan.ts";
 import { platformRead } from "../../src/reads.ts";
 import { Notifier, WATCHED as NOTIFIED } from "../../src/notify.ts";
 import { contact, Push } from "../../src/push.ts";
+import { settingsThatDiffer } from "../../src/settings.ts";
 import type { Store } from "../../src/store.ts";
 import { timed, unread } from "../../src/timed.ts";
 
@@ -2186,6 +2187,12 @@ export class Edge {
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
+        // In which of the platform's own settings (the repository's:
+        // src/settings.ts) the machine said it runs with others, by
+        // name and never by value; null while no machine has said any.
+        // A machine on other code than this, or with an environment of
+        // its own, shows here.
+        machineSettingsDiffer: cfg === null ? null : settingsThatDiffer(cfg),
         // The copy of the Android build kept here: when it was built,
         // and whether it is the host's newest. Null if there is none.
         androidBuild: await this.apkState(),

@@ -1285,3 +1285,71 @@ the last machine to connect was running (#14163).
 
 **Not seen.** The laptop's dashboard itself: it gets this when its
 checkout follows main again (#13833).
+
+## 2026-11-24T07:45Z Plan: the platform's settings are its own (#14163)
+
+**What is so.** The Worker holds no settings of its own. Every report
+from the laptop carries the laptop console's whole configuration, and
+the Worker stores what it is sent and acts by it: who may sign in, which
+repository and queue, where the queue's store answers (which is where
+the queue's token is sent), which repositories are looked in for what
+needs the owner. So the platform runs by the environment and the
+defaults of whatever the laptop's console was started from.
+
+That is `~/git/code` on the laptop, which agents use as a working tree
+(the lanes that looked report in #13833 that it had edits nobody had
+committed on 2026-11-23, and was on a lane's branch the day after; the
+console has run `f86b52989c31`, hours of commits behind main, since).
+Two things follow. A correction to a setting that is
+merged and deployed to Cloudflare changes nothing in service until the
+laptop runs it: today's correction of the repositories' names
+(#14165) is the case in hand. And a default changed on a branch nobody
+merged is told to the Worker as readily as main's: for where the
+queue's token is sent, that is a wider door than main.
+
+**Whose each setting is.**
+
+- _The repository's_: the repository and the queue, where the queue's
+  store answers and what its token is called, the Android app's
+  package, the label that marks an instruction, and the repositories
+  looked in for what needs the owner. Nothing on the laptop sets any of
+  them; they are defaults in the console's code.
+- _The deployment's_: who may sign in (the owners, the sign-in issuers,
+  the certificate names) and the fingerprints of the Android signing
+  certificate. The script that sets the hostname up writes them into
+  the laptop console's environment, and the laptop tells them.
+- _A machine's own_: its name, whether it has a signed build to hand
+  out, what it can do. These are facts it reports, not settings.
+
+**The plan, in order.**
+
+1. _One definition, and see first._ The repository's settings are
+   written once (`pm-stack/console/src/settings.ts`), and both the
+   console and the Worker carry them. The Worker says in its health
+   answer in which of them the machine told it otherwise, by name and
+   never by value (`machineSettingsDiffer`). It still acts by what it
+   was told. What that shows in service decides step 3: the console
+   that tells them is behind main, and whether any of them was set by
+   hand on the laptop cannot be known from here any other way.
+2. _The last action about these repositories that only a machine does._
+   "Done" on something that needed the owner's hands is a comment and a
+   label taken off, and is sent to the machine, which takes it only for
+   a repository on its own list. Once the Worker goes by its own list a
+   machine on another would refuse an item the app shows. The Worker
+   does it itself, as it does a reply.
+3. _The switch._ The Worker acts by the repository's settings, as its
+   own deploy carries them. What a machine tells for them is compared
+   and shown (Machines, with both values, to the owner signed in) and
+   is not taken. Where the queue's token is sent is then decided by
+   main alone.
+4. _With #13495._ The deployment's settings are applied from Actions,
+   and a machine's report stops changing who may sign in. Not before:
+   the script on the laptop is the only thing that sets sign-in up
+   today, and a Worker that stopped listening to it would keep the old
+   sign-in the next time it is set up again, and lock the owner out.
+5. _Settings changed from the app._ Which repositories are looked in is
+   the first: kept at the edge, told to machines. After 3.
+
+**Kept true on the way.** Sign-in never opens wider: steps 1 to 3 do
+not touch who may sign in or how it is checked. No value of any
+setting is said to anyone not signed in.

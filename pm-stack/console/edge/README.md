@@ -225,6 +225,17 @@ it (the laptop's, the sign-in issuer's).
   says when it answers again and which of the two it was. Health has
   the times as `github.quiet.core` and `github.quiet.search`. "Try
   again now" lifts both.
+- **The repository's settings are written once, and both sides carry
+  them.** Which repository and queue, where the queue's store answers,
+  the label that marks an instruction, and the repositories looked in
+  for what needs the owner are in `src/settings.ts`: the console on a
+  machine uses them where its environment says nothing else, and the
+  Worker's bundle has them. The Worker still acts by what the machine
+  tells it (#14163 is to end that), and says in its health answer in
+  which of them the machine told it otherwise (`machineSettingsDiffer`):
+  names only, never a value, and `null` while no machine has said
+  anything. A machine on other code than main, or with an environment
+  of its own, shows there.
 - **What is labelled as needing the owner is read from each
   repository's own list.** Two labels say that something waits on him,
   `user/review` and `user/escalated`. The edge asks each repository
