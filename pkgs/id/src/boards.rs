@@ -2642,6 +2642,7 @@ mod tests {
                 board_id: "retro-games".to_owned(),
                 forked_from: None,
                 theme_ref: None,
+                foreign_theme_mode: None,
             }),
         )
         .unwrap()
@@ -2667,6 +2668,7 @@ mod tests {
                 note_ref: None,
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap()
@@ -2693,6 +2695,7 @@ mod tests {
                 note_ref: None,
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap()
@@ -2719,6 +2722,7 @@ mod tests {
                 note_ref: Some(note_ref),
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap()
@@ -2760,6 +2764,7 @@ mod tests {
                 note_ref,
                 note_anchor,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap()
@@ -2862,6 +2867,7 @@ mod tests {
                 board_id: "themed-board".to_owned(),
                 forked_from: None,
                 theme_ref: Some(theme_ref),
+                foreign_theme_mode: None,
             }),
         )
         .unwrap()
@@ -3312,6 +3318,7 @@ mod tests {
                 note_ref: None,
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap();
@@ -3331,6 +3338,7 @@ mod tests {
                 note_ref: None,
                 note_anchor: None,
                 note_view: None,
+                theme_ref: None,
             }),
         )
         .unwrap();
@@ -4332,6 +4340,7 @@ mod tests {
                 board_id: "forked-board".to_owned(),
                 forked_from: Some(ancestor.clone()),
                 theme_ref: None,
+                foreign_theme_mode: None,
             }),
         )
         .unwrap();
@@ -4372,6 +4381,7 @@ mod tests {
                         board_id: "forked-board".to_owned(),
                         forked_from: Some(ancestor.clone()),
                         theme_ref: None,
+                        foreign_theme_mode: None,
                     }),
                 )
                 .unwrap(),
@@ -4427,6 +4437,7 @@ mod tests {
                 board_id: "forked-board".to_owned(),
                 forked_from: Some(ancestor.clone()),
                 theme_ref: None,
+                foreign_theme_mode: None,
             }),
         )
         .unwrap();
@@ -4557,6 +4568,7 @@ mod tests {
                         board_id: "forked-board".to_owned(),
                         forked_from: Some(root.clone()),
                         theme_ref: None,
+                        foreign_theme_mode: None,
                     }),
                 )
                 .unwrap(),
@@ -6690,6 +6702,7 @@ mod tests {
                         board_id: "fork-of-game".to_owned(),
                         forked_from: Some(root_hash.clone()),
                         theme_ref: None,
+                        foreign_theme_mode: None,
                     }),
                 )
                 .unwrap(),
@@ -7562,6 +7575,7 @@ mod tests {
                     note_ref: Some(bad_sharer),
                     note_anchor: None,
                     note_view: None,
+                    theme_ref: None,
                 }),
             )
             .is_err()
@@ -7584,6 +7598,7 @@ mod tests {
                     note_ref: Some(no_home),
                     note_anchor: None,
                     note_view: None,
+                    theme_ref: None,
                 }),
             )
             .is_err()
@@ -7613,6 +7628,7 @@ mod tests {
                     }),
                 }),
                 note_view: None,
+                theme_ref: None,
             })
         };
 
@@ -7636,6 +7652,7 @@ mod tests {
             note_ref: None,
             note_anchor: None,
             note_view: None,
+            theme_ref: None,
         });
         let value = serde_json::to_value(&object).unwrap();
         assert!(value["data"].get("note_ref").is_none());
