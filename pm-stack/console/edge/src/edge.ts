@@ -1110,7 +1110,7 @@ export class Edge {
       this.kept = {
         ...made,
         cfg,
-        table: actions(made.ops, made.work, this.push, this.phones.devices, made.plan),
+        table: actions(made.ops, made.work, this.push, this.phones.devices, made.plan, made.queueEnqueue),
         recalled: false,
       };
     }
@@ -1329,21 +1329,31 @@ export class Edge {
     const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     /** The task of a prompt: the packet carries the issue's number, and
      * the text is the owner's own. */
-    const prompt = (packet: unknown, intent?: string) =>
-      this.holdLater(
+    const prompt = async (packet: unknown, intent?: string) => {
+      let queued: { code: number; stdout: string; stderr: string };
+      try {
+        queued = await direct.queueEnqueue(packet);
+      } catch {
+        // A store that cannot be reached is the same as one that refused:
+        // the issue is filed, and its task goes to the machine instead.
+        queued = { code: 1, stdout: "", stderr: "queue store unreachable" };
+      }
+      if (queued.code === 0) return queued;
+      // Keep the established machine fallback if the direct store is
+      // unavailable; a filed issue must never be left without its task.
+      return this.holdLater(
         {
           kind: "prompt.enqueue",
           args: {
             issue: Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number),
             text: String(args.text ?? ""),
             at: new Date(this.now()).toISOString(),
-            // What kind of prompt it is, where it is not simply something
-            // to do: the machine files the task for that kind.
             ...(intent !== undefined && intent !== "task" ? { intent } : {}),
           },
         },
         by,
       );
+    };
     const from = this.outwardN;
     try {
       let result: unknown;
