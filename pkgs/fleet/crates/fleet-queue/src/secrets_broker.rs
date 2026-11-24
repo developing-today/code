@@ -615,9 +615,9 @@ fn handle_request(
 pub const DEFAULT_TTL_S: u64 = 900;
 
 /// Smallest accepted SECRETS_BROKER_TTL_S. One interval costs a full
-/// vault refresh (one `bws secret list` plus one `bws secret get` per
-/// secret); below this floor the loop spends its life inside bws — at 0
-/// it never sleeps at all (#5860 measured ~110 full refreshes/sec).
+/// vault refresh (one `bws secret list`, #13948 S1); below this floor
+/// the loop spends its life inside bws — at 0 it never sleeps at all
+/// (#5860 measured ~110 full refreshes/sec).
 /// Startup refuses smaller values rather than clamping: a broker
 /// silently running at a different rate than configured is its own
 /// surprise on the credential path.
