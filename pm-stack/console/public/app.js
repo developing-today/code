@@ -477,7 +477,7 @@ async function act(kind, args, done, button) {
 // ---- now ---------------------------------------------------------------
 
 function taskCard(t, extra) {
-  const who = [t.worker, t.lane, t.model].filter(Boolean).join(" · ");
+  const who = [t.worker, laneSaid(t.lane), t.model].filter(Boolean).join(" · ");
   const when = t.claimed ? `claimed ${ago(t.claimed)}` : `queued ${ago(t.created)}`;
   return card(
     h(
@@ -638,7 +638,7 @@ function viewNow() {
       stat(b.counts.queued ?? 0, "queued", "next"),
       stat(lead.tile, lead.tileLabel, "needs"),
       stat(b.counts.blocked ?? 0, "blocked", "more/queue"),
-      stat(finished ? finished.tiles[0].n : "–", "done in a day", "now/done"),
+      stat(finished ? finished.tiles[0].n : "–", "done in 24h", "now/done"),
     ),
     ...notices(c),
     h("h2", {}, "In progress"),
@@ -753,7 +753,7 @@ export function doneTaskSaid(task, now = Date.now()) {
   return {
     chips,
     links,
-    meta: [`task ${task.id}`, task.lane, task.model, when ? `finished ${when}` : ""].filter(Boolean).join(" · "),
+    meta: [`task ${task.id}`, laneSaid(task.lane), task.model, when ? `finished ${when}` : ""].filter(Boolean).join(" · "),
   };
 }
 
@@ -780,11 +780,12 @@ function viewDone(sub) {
   const older = (list) => (list.length ? [h("p", { class: "meta" }, `The latest ${list.length} of the last week, newest first.`)] : []);
   if (which === "merged") {
     const list = done.merged.latest || [];
+    const byWhom = mergedBySaid(list);
     out.push(
       h("h2", {}, "Pull requests merged"),
       ...older(list),
       ...(list.length
-        ? list.map((p) => card(h("h3", {}, p.title), h("p", { class: "meta" }, ext(p.url, `#${p.number}`), ` · ${[p.by, `merged ${ago(p.at)}`].filter(Boolean).join(" · ")}`)))
+        ? list.map((p) => card(h("h3", {}, p.title), h("p", { class: "meta" }, ext(p.url, `#${p.number}`), ` · ${[byWhom ? p.by : "", `merged ${ago(p.at)}`].filter(Boolean).join(" · ")}`)))
         : [empty("No pull request was merged in the last week.")]),
     );
   } else if (which === "tasks") {
@@ -981,6 +982,25 @@ export function unitStateSaid(unit) {
   return active === sub || sub === "" ? active : `${active} · ${sub}`;
 }
 
+/** A lane the pool made up for itself ("any-" and a long run of
+ * letters) is nobody's name. */
+const POOLED_LANE = /^any-[a-z]{20,}$/;
+
+/** A lane as it is said on a card: a named one by its name, one the
+ * pool made up as what it is.
+ * @param {string | null | undefined} lane */
+export function laneSaid(lane) {
+  if (typeof lane !== "string" || lane === "") return "";
+  return POOLED_LANE.test(lane) ? "a pooled lane" : lane;
+}
+
+/** Whether to say who each pull request in a list is by: only when
+ * they are not all by the same one, since then it tells nothing.
+ * @param {any} list */
+export function mergedBySaid(list) {
+  return new Set((Array.isArray(list) ? list : []).map((p) => p?.by)).size > 1;
+}
+
 /** Who a task's agent is, to send it a message: its lane where that is
  * a registered agent's name, else its worker where that is. `names` is
  * the registered agents' names where the app has them; without them
@@ -993,7 +1013,7 @@ export function taskAgent(task, names = null) {
   const lane = typeof task?.lane === "string" ? task.lane : "";
   const worker = typeof task?.worker === "string" ? task.worker : "";
   if (names) return names.has(lane) ? lane : names.has(worker) ? worker : null;
-  if (lane && !/^any-[a-z]{20,}$/.test(lane)) return lane;
+  if (lane && !POOLED_LANE.test(lane)) return lane;
   return worker || null;
 }
 

@@ -14,6 +14,8 @@ import {
   doneKindsSaid,
   doneSaid,
   doneTaskSaid,
+  laneSaid,
+  mergedBySaid,
   acceptAllSaid,
   awayState,
   blockedSaid,
@@ -1086,6 +1088,31 @@ test("the day's finished tasks are said by kind, the most first", () => {
   expect(doneKindsSaid([{ kind: "triage", n: 0 }, { kind: "x", n: "many" }, null])).toBe("");
 });
 
+// A lane the pool made up for itself is a long run of letters that is
+// nobody's name (seen live: "any-occodecpanaakhknhcenhhbmkcflkicffigpl"
+// across two lines of a card). It is said as what it is.
+test("a lane the pool made up is said as a pooled lane; a named one by its name", () => {
+  expect(laneSaid("any-occodecpanaakhknhcenhhbmkcflkicffigpl")).toBe("a pooled lane");
+  expect(laneSaid("any-o")).toBe("any-o");
+  expect(laneSaid("code-i")).toBe("code-i");
+  expect(laneSaid("oc-code-06")).toBe("oc-code-06");
+  expect(laneSaid(null)).toBe("");
+  expect(laneSaid(undefined)).toBe("");
+});
+
+// Who merged is said only where it tells something. Seen live: every
+// one of forty pull requests said the same name, the owner's, because
+// his agents work under it.
+test("who a pull request is by is said only when they are not all by the same one", () => {
+  const prs = (...by: (string | null)[]) => by.map((who, i) => ({ number: i + 1, by: who }));
+  expect(mergedBySaid(prs("dezren39", "dezren39", "dezren39"))).toBe(false);
+  expect(mergedBySaid(prs("dezren39", "dependabot[bot]", "dezren39"))).toBe(true);
+  // One alone, or none: there is nothing to tell apart.
+  expect(mergedBySaid(prs("dezren39"))).toBe(false);
+  expect(mergedBySaid([])).toBe(false);
+  expect(mergedBySaid(undefined)).toBe(false);
+});
+
 // A finished task says what came of it. The oracle is the queue's own
 // list of verdicts (fleet-queue's disposition.rs: VERDICTS), each given
 // words here; one this app has no words for is said as it is named.
@@ -1126,6 +1153,10 @@ test("a finished task says what came of it, where it goes, and who did it", () =
   ]);
   expect(said("something_new")).toEqual(["something new"]);
   expect(said(null)).toEqual([]);
+  // Done in a lane the pool made up: said as that, not by its run of letters.
+  expect(doneTaskSaid({ ...task, lane: "any-occodecpanaakhknhcenhhbmkcflkicffigpl" }, now).meta).toBe(
+    "task 21001 · a pooled lane · m-1 · finished 2 h ago",
+  );
   // With nothing known but that it was finished.
   expect(
     doneTaskSaid(
