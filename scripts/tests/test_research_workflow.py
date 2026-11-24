@@ -257,7 +257,9 @@ class ResearchWorkflowTests(unittest.TestCase):
     def test_unscoped_check_rejects_standalone_lookalikes_with_managed_artifacts(self):
         """Oracle: every reserved workflow artifact preserves strict package validation."""
         package = self.standalone()
-        for artifact in ("main.md", "transcript.txt", "design.md", "changes.md", "concepts", "notes"):
+        for artifact in (
+            "main.md", "transcript.txt", "design.md", "changes.md", "concepts", "notes"
+        ):
             with self.subTest(artifact=artifact):
                 path = package / artifact
                 if artifact in ("concepts", "notes"):
@@ -269,6 +271,14 @@ class ResearchWorkflowTests(unittest.TestCase):
                     path.rmdir()
                 else:
                     path.unlink()
+
+    def test_unscoped_check_does_not_skip_record_with_workflow_state(self):
+        """Oracle: workflow state in the record disqualifies the standalone exemption."""
+        package = self.standalone()
+        (package / f"{package.name}.md").write_text(
+            f"# Research\n{STATE_START}\n{{}}\n{STATE_END}\n", encoding="utf-8"
+        )
+        self.cli("check", "--repo-root", self.root, ok=False)
 
     def create_note(self, package):
         body = self.scratch / "cross-agent-note.txt"
