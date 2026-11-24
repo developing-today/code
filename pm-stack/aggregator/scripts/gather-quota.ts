@@ -184,6 +184,7 @@ import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { projectPoolState } from "../src/pool-state.ts";
 import { buildForecastLedgerRows, buildQuotaForecast, type QuotaForecastFile } from "../src/quota-forecast.ts";
 import { buildDowntimeLedgerRows, deriveDowntimeWindowRecords } from "../src/quota-downtime.ts";
+import { buildDayTypeShadowRecords, dayTypeShadowSubjectKey } from "../src/quota-daytype-adjustment.ts";
 import { buildShadowPlacement } from "../src/quota-shadow-placement.ts";
 import {
   anomalyIncidentInput,
@@ -237,6 +238,12 @@ const shadowPlacementPath =
   process.env.QUOTA_SHADOW_PLACEMENT_PATH ?? join(dirname(currentPath), "quota-shadow-placement.json");
 const shadowPlacementHistoryPath =
   process.env.QUOTA_SHADOW_PLACEMENT_HISTORY_PATH ?? join(dirname(currentPath), "quota-shadow-placement-history.jsonl");
+// #13259: the C4.3 day-type shadow records (design §5 earn-in),
+// beside quota-current.json like the other shadow products —
+// append-only JSONL, deliberately NOT the C4 prediction log:
+// shadow records are not the published forecast.
+const daytypeShadowPath =
+  process.env.QUOTA_DAYTYPE_SHADOW_PATH ?? join(dirname(currentPath), "quota-daytype-shadow.jsonl");
 // #12699: the Stage-3 anomaly detectors' state + history, beside
 // quota-current.json in the quota-watchdog shape (design D6).
 const anomalyStatePath = process.env.QUOTA_ANOMALY_STATE_PATH ?? join(dirname(currentPath), "quota-anomaly-state.json");
@@ -1351,6 +1358,62 @@ export async function main(): Promise<number> {
     console.error(
       `quota-gatherer: shadow placement failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
     );
+  }
+
+  // C4.3 (#13259 criterion 2, component of #9572; C4 design §5):
+  // the day-type + spike-day SHADOW records — this tick's v1
+  // forecast adjusted by the admitted day-type cells' measured
+  // ratios, plus the explicit spike-day verdict — appended to
+  // quota-daytype-shadow.jsonl beside the forecast product.
+  // SHADOW ONLY (design §5 earn-in): no live path reads them and
+  // the published forecast is never modified; they accumulate
+  // for the criterion-3 S2-harness comparison. Fail-soft like
+  // the shadow placement write; a null forecast (the forecast
+  // block above failed) derives nothing. The supersedes chain
+  // reads the file's tail for the last shadow record per
+  // subject; a missing or torn file just starts the chain over.
+  if (forecast) {
+    try {
+      const stored = await new SnapshotStore(snapshotsDir).readAll().catch((): SnapshotRecord[] => []);
+      const previous = new Map<string, string>();
+      const existing = await readFile(daytypeShadowPath, "utf8").catch(() => "");
+      for (const line of existing.split("\n").slice(-2000)) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as {
+            kind?: string;
+            id?: string;
+            subject?: { pool?: string; serviceId?: string; window?: string };
+          };
+          if (
+            parsed.kind === "daytype_shadow" &&
+            parsed.id &&
+            parsed.subject?.pool &&
+            parsed.subject?.serviceId &&
+            parsed.subject?.window
+          ) {
+            previous.set(
+              dayTypeShadowSubjectKey(parsed.subject.pool, parsed.subject.serviceId, parsed.subject.window),
+              parsed.id,
+            );
+          }
+        } catch {
+          // A torn last line is not fatal.
+        }
+      }
+      const records = buildDayTypeShadowRecords(forecast, [...stored, ...fresh], previous, new Date(tickAt));
+      if (records.length) {
+        await mkdir(dirname(daytypeShadowPath), { recursive: true });
+        await appendFile(daytypeShadowPath, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+      }
+      console.log(
+        `quota-gatherer: daytype shadow ${records.filter((r) => r.state === "shadow").length} adjusted / ${records.filter((r) => r.state === "adjustment_unavailable").length} adjustment_unavailable -> ${daytypeShadowPath}`,
+      );
+    } catch (err) {
+      console.error(
+        `quota-gatherer: daytype shadow failed-soft: ${safeProviderReason(err instanceof Error ? err.message : String(err))}`,
+      );
+    }
   }
 
   // Stage-3 S5 (#12699, design D6): the anomaly detectors beside
