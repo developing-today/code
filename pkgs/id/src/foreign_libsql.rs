@@ -450,6 +450,65 @@ fn is_identifier(text: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Scan a fragment for write keywords with SQL context: quoted spans
+/// (string literals and quoted identifiers) are skipped, and a keyword
+/// immediately followed by `(` is a function call — e.g. the SQLite
+/// `replace(X, Y, Z)` string function — not a write statement. A write
+/// statement keyword is never directly followed by `(` in SQLite
+/// grammar (`REPLACE INTO`, `INSERT INTO`, `CREATE TABLE`, ...), so
+/// the function-call exemption cannot mask a write shape.
+fn contains_write_keyword(fragment: &str) -> bool {
+    let bytes = fragment.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == quote {
+                        // A doubled quote is an escaped quote, not the end.
+                        if bytes.get(i + 1) == Some(&quote) {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'[' => {
+                while i < bytes.len() && bytes[i] != b']' {
+                    i += 1;
+                }
+                i = (i + 1).min(bytes.len());
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let word = &fragment[start..i];
+                if WRITE_KEYWORDS.contains(&word.to_ascii_uppercase().as_str()) {
+                    // Function call: keyword directly followed by `(`.
+                    let mut j = i;
+                    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if bytes.get(j) != Some(&b'(') {
+                        return true;
+                    }
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    false
+}
+
 /// A predicate fragment must be a single boolean expression: no statement
 /// separators, no comment openers, no write keywords, and exactly as many
 /// `?` placeholders as supplied arguments.
@@ -459,10 +518,8 @@ fn validate_fragment(fragment: &str, arg_count: usize) -> Result<(), AdapterErro
             "predicate fragment is not a single expression".to_owned(),
         ));
     }
-    for word in fragment.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
-        if WRITE_KEYWORDS.contains(&word.to_ascii_uppercase().as_str()) {
-            return Err(AdapterError::WriteRefused);
-        }
+    if contains_write_keyword(fragment) {
+        return Err(AdapterError::WriteRefused);
     }
     if fragment.matches('?').count() != arg_count {
         return Err(AdapterError::QueryRefused(
@@ -1719,6 +1776,41 @@ mod tests {
             query.build_statement(MAX_BLOB_BYTES),
             Err(AdapterError::QueryRefused(_))
         ));
+    }
+
+    /// Oracle: #13896 — the SQLite `replace(X, Y, Z)` string function
+    /// shares its name with the REPLACE write statement; a predicate
+    /// using the function is a read-only expression and must be
+    /// accepted, with its argument still bound as a parameter. The
+    /// write statement form stays refused, and a keyword inside a
+    /// string literal is data, not a statement.
+    #[test]
+    fn test_replace_function_in_filter_is_accepted() {
+        let mut query = sample_query();
+        query.filter_sql = Some("replace(label, '-', '') = ?".to_owned());
+        query.filter_args = vec![IdValue::Text("report".to_owned())];
+        let (sql, args) = query.build_statement(MAX_BLOB_BYTES).unwrap();
+        assert!(sql.contains("(replace(label, '-', '') = ?)"), "sql: {sql}");
+        assert_eq!(
+            args,
+            vec![
+                WireValue::Text("alice".to_owned()),
+                WireValue::Text("report".to_owned()),
+            ]
+        );
+
+        let mut query = sample_query();
+        query.filter_sql = Some("REPLACE INTO objects VALUES (?)".to_owned());
+        query.filter_args = vec![IdValue::Text("report".to_owned())];
+        assert!(matches!(
+            query.build_statement(MAX_BLOB_BYTES),
+            Err(AdapterError::WriteRefused)
+        ));
+
+        let mut query = sample_query();
+        query.filter_sql = Some("label = 'delete'".to_owned());
+        query.filter_args = vec![];
+        assert!(query.build_statement(MAX_BLOB_BYTES).is_ok());
     }
 
     /// Oracle: record item 8 — the grant predicate is pushed into the
