@@ -1,4 +1,4 @@
-// Message model shared by the MCP tools, the page and the JSON API.
+// Message model shared by the MCP tools, the console and the JSON API.
 //
 // channel says which assistant the message is with: "claude" (the
 // Claude custom connector) or "chatgpt" (the ChatGPT connector, which
@@ -8,8 +8,9 @@
 //
 // direction is from that assistant's point of view:
 //   outbound  sent by the assistant through its connector (send_message)
-//   inbound   sent to the assistant, from the page or the JSON API
-// source says which door it came through: "mcp", "page" or "api".
+//   inbound   sent to the assistant, from the console or the JSON API
+// source says which door it came through: "mcp", "page" (the retired
+// page's sends, kept on old rows and still accepted by the API) or "api".
 // Inbound messages start unread; read_messages(mark_read) or
 // ack_messages marks them read, so the assistant can tell what is new.
 //
