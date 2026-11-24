@@ -1747,11 +1747,11 @@ function viewLook(sub) {
     draw();
   };
   const tab = (name, label) => h("button", { "aria-pressed": String(which === name), onclick: () => go(`more/look/${name}`) }, label);
-  const out = [h("div", { class: "seg", role: "group", "aria-label": "What to change" }, tab("colours", "Colours"), tab("type", "Typeface"), tab("layout", "Size and spacing"))];
+  const out = [h("div", { class: "seg wrap", role: "group", "aria-label": "What to change" }, tab("colours", "Colours"), tab("type", "Typeface"), tab("layout", "Size and spacing"))];
   const steps = (label, list, name) =>
     h(
       "div",
-      { class: "seg", role: "group", "aria-label": label },
+      { class: "seg wrap", role: "group", "aria-label": label },
       ...list.map(([id, said]) => h("button", { "aria-pressed": String(s[name] === id), onclick: () => set({ [name]: id }) }, said)),
     );
   // Something of everything, to see a choice on: text, small print, the
@@ -1759,7 +1759,7 @@ function viewLook(sub) {
   const sample = () =>
     h(
       "div",
-      { class: "card" },
+      { class: "card sample" },
       h("h3", {}, "What it looks like"),
       h("p", {}, "The quick brown fox jumps over the lazy dog. 0123456789 Il1 O0 rn m."),
       h("p", { class: "meta" }, "Small print, as under every card: #14286 merged 12 min ago by a pooled lane."),
@@ -1774,7 +1774,7 @@ function viewLook(sub) {
     out.push(
       h(
         "div",
-        { class: "seg", role: "group", "aria-label": "Which theme is shown" },
+        { class: "seg wrap", role: "group", "aria-label": "Which theme is shown" },
         h("button", { "aria-pressed": pressed(s.follow), onclick: () => set({ follow: true }) }, "Follow the system"),
         h("button", { "aria-pressed": pressed(!s.follow), onclick: () => set({ follow: false, theme: Look.themeFor(s, dark) }) }, "One theme"),
       ),
@@ -1794,7 +1794,7 @@ function viewLook(sub) {
           label,
         );
       out.push(
-        h("div", { class: "seg", role: "group", "aria-label": "Which of the two to choose" }, slotButton("day", `When light: ${themeName(s.day)}`), slotButton("night", `When dark: ${themeName(s.night)}`)),
+        h("div", { class: "seg wrap", role: "group", "aria-label": "Which of the two to choose" }, slotButton("day", `When light: ${themeName(s.day)}`), slotButton("night", `When dark: ${themeName(s.night)}`)),
       );
     }
     for (const [group, title, note] of Look.THEME_GROUPS) {

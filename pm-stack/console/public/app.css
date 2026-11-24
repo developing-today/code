@@ -293,7 +293,7 @@ p {
 .chip {
   display: inline-block;
   padding: 1px calc(8px * var(--space));
-  border-radius: 999px;
+  border-radius: calc(999px * var(--round));
   background: var(--panel-2);
   border: var(--edge) solid var(--line);
   font-size: 0.74rem;
@@ -460,7 +460,7 @@ textarea {
   flex: 0 0 auto;
   min-height: 36px;
   padding: calc(4px * var(--space)) calc(12px * var(--space));
-  border-radius: 999px;
+  border-radius: calc(999px * var(--round));
   background: var(--panel);
   border-color: var(--line);
   color: var(--text);
@@ -471,6 +471,12 @@ textarea {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-ink);
+}
+/* A row of choices that are all to be seen at once (the steps of a
+   setting): it wraps instead of scrolling off the side. */
+.seg.wrap {
+  flex-wrap: wrap;
+  overflow-x: visible;
 }
 
 /* ---- questions ------------------------------------------------------ */
@@ -823,4 +829,9 @@ input[type="radio"] {
   font-size: 0.85rem;
   font-weight: 400;
   color: var(--quiet);
+}
+/* The sample the choices are seen on: its rows keep apart. */
+.sample .row {
+  margin-top: calc(10px * var(--space));
+  flex-wrap: wrap;
 }
