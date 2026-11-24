@@ -6674,8 +6674,18 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     view.mode === "fixtures"
       ? `<div class="banner">Fixtures mode — no live probes are made in this deployment; every service reports “fixtures”.</div>`
       : "";
+  const bootMs = Date.parse(view.bootAt);
+  const uptimeMs = Number.isFinite(bootMs) ? Math.max(0, nowMs - bootMs) : NaN;
+  // #14059(b): surface the deployed commit + its age from the same
+  // HealthView.version / bootAt that /api/health serves — the page and
+  // the API cannot disagree because both read this view.
+  const buildLine =
+    view.version === "unknown"
+      ? `<div class="card">Build <strong>unknown</strong> — this process was not deployed with PM_AGG_BUILD_VERSION, so the deployed commit cannot be shown (boot ${esc(view.bootAt)}).</div>`
+      : `<div class="card">Build <code title="${esc(view.version)}">${esc(view.version.slice(0, 8))}</code> <span class="muted">(<code>${esc(view.version)}</code> · boot ${esc(view.bootAt)} · up ${esc(ageMsText(uptimeMs))})</span> — same commit <a href="/api/health">/api/health</a> serves as version.</div>`;
   const body = `<h1>Health</h1>
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
+${buildLine}
 ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
