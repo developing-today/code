@@ -43,6 +43,20 @@ content, no keys and no token values (design §2.3, "never central");
 `test/tenancy-schema.test.ts` fails if a content/key/token column
 ever appears. See `tenancy/README.md`.
 
+- `src/tenant-ops.ts` — `TenantOpsDO` (E2 of #9083, #12797): one
+  object per tenant, named by `binding_id`, implementing the design
+  §4 provisioning state machine over the `tenant_db` row —
+  `requested → db_creating → db_ready → active`, suspension,
+  export-only, and two-phase deletion (credential revocation,
+  cooling-off window, drop, tombstone). Creation is intent-first
+  under a deterministic request id, so concurrent sign-ups create
+  exactly one database; every step checks the actor §4 names for
+  it. Bound as `TENANT_OPS` in `wrangler.toml` but not routed by
+  the front door — the tenancy Worker drives it. The Turso
+  management API sits behind a provider seam; unconfigured, it
+  fails closed. `test/tenant-ops.test.ts` exercises the machine
+  against the real tenancy migrations.
+
 ## Local reality check (verified 2026-11-03, wrangler dev / workerd)
 
 Local workerd does **not** implement jurisdiction restrictions:

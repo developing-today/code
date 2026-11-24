@@ -150,7 +150,7 @@ impl Quota {
         }
     }
 
-    const fn add(&mut self, charge: Self) {
+    pub(crate) const fn add(&mut self, charge: Self) {
         self.frames += charge.frames;
         self.tool_calls += charge.tool_calls;
         self.program_invocations += charge.program_invocations;
@@ -158,7 +158,11 @@ impl Quota {
 
     /// The first axis on which `spend + charge` would exceed
     /// `budget`, if any.
-    const fn exceeded_axis(budget: Self, spend: Self, charge: Self) -> Option<&'static str> {
+    pub(crate) const fn exceeded_axis(
+        budget: Self,
+        spend: Self,
+        charge: Self,
+    ) -> Option<&'static str> {
         if spend.frames + charge.frames > budget.frames {
             Some("frames")
         } else if spend.tool_calls + charge.tool_calls > budget.tool_calls {

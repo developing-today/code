@@ -27,13 +27,21 @@
     "html_handling": "none",
     "not_found_handling": "none"
   },
+  // The message bridge, called by service binding (#14373): the edge
+  // sends the owner's messages through it with the PM stack's own
+  // bridge credential, and reads the agents list and the message log
+  // from it, instead of waiting for a machine's fleet binary.
+  "services": [{ "binding": "BRIDGE", "service": "message-bridge" }],
   // One object holds the state: the copy of what the host last
   // reported, what is held for it, notification subscriptions and keys,
   // linked phones. Three secrets are optional, put there by
   // scripts/expose.py --edge-direct (off by default): GITHUB_TOKEN and
   // QUEUE_TOKEN, which let the Worker read and write GitHub and the
   // queue store itself while the laptop is away, and EDGE_DIRECT, the
-  // explicit opt-in that must read `on` for either to be used.
+  // explicit opt-in that must read `on` for either to be used. A fourth,
+  // BRIDGE_TOKEN, is the PM bridge credential the binding above is
+  // called with; expose.py uploads it in the same pass when the vault
+  // holds it, and without it the bridge verbs stay a machine's.
   "durable_objects": { "bindings": [{ "name": "PM", "class_name": "PmEdge" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PmEdge"] }]
 }

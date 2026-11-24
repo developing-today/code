@@ -44,6 +44,7 @@ pub mod c8_fingerprint;
 pub mod c8_profile;
 pub mod classification;
 pub mod classify;
+pub mod cold;
 pub mod detect;
 pub mod disclosure;
 pub mod embed;
@@ -56,6 +57,7 @@ pub mod filters;
 pub mod fusion;
 pub mod gate;
 pub mod github_comments;
+pub mod id_projection;
 pub mod join;
 pub mod local;
 pub mod manifest;
@@ -81,9 +83,11 @@ pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 pub use aggregate::{PromoteReport, embed_unit_into_shard, tier_sensitivity_name};
 pub use backend::SearchBackend;
 pub use c8_fingerprint::{
-    C8_FINGERPRINT_SCHEMA_VERSION, EdgeLabel, ErrorFingerprint, ErrorOccurrence, EvidenceBundle,
-    FINGERPRINT_ALGORITHM, FingerprintGroup, FirstObservation, FirstObservationKind,
-    InvestigationEdge, build_bundle, first_observation, group_occurrences, normalize_error_string,
+    C8_FINGERPRINT_SCHEMA_VERSION, CandidateChange, EdgeLabel, ErrorFingerprint, ErrorOccurrence,
+    EvidenceBundle, FINGERPRINT_ALGORITHM, FingerprintGroup, FirstObservation,
+    FirstObservationKind, InvestigationEdge, InvestigationFindings, RejectedCandidate,
+    UnpushedCommitCheck, UnpushedCommitStatus, build_bundle, build_bundle_with_findings,
+    first_observation, group_occurrences, normalize_error_string,
 };
 pub use c8_profile::{
     C8Link, C8Page, C8Source, LinkEvidence, LinkKind, PageKind, UrlParts, extract_links,

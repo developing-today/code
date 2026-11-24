@@ -4342,6 +4342,85 @@ mod tests {
     }
 
     #[test]
+    fn bundle_cap_refusal_boundary_11333() {
+        // #11333 oracle: the broker's own claim count for a
+        // (lane, session) launch. Below the cap there is no
+        // refusal; at the cap the next ordinary claim is refused
+        // with a message naming the cap, the launch and the
+        // count — enforcement lives in this decision, not in any
+        // lane prompt.
+        assert_eq!(BUNDLE_CLAIM_CAP, 10);
+        for n in [0, 1, 9] {
+            assert_eq!(bundle_cap_refusal(n, "any-n", "ses_x"), None, "count {n}");
+        }
+        for n in [10, 11, 25] {
+            let msg = bundle_cap_refusal(n, "any-n", "ses_x").expect("refusal at cap");
+            assert!(msg.contains("bundle cap"), "{msg}");
+            assert!(msg.contains("10"), "{msg}");
+            assert!(msg.contains("any-n") && msg.contains("ses_x"), "{msg}");
+            assert!(msg.contains(&n.to_string()), "{msg}");
+            assert!(msg.starts_with("claim_repo_task:"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn bundle_cap_count_sql_counts_only_ordinary_picks_11333() {
+        // The counting oracle counts 'claimed' events carrying
+        // the ordinary-pick mark for exactly this (lane,
+        // session): handoff picks (pick="handed_off") and by-id
+        // / transfer claims (no pick mark) can never enter the
+        // count. The behavioural run of this SQL against
+        // fabricated events lives in tests/bundle_cap_sql.py.
+        let sql = BUNDLE_CLAIM_COUNT_SQL;
+        assert!(sql.contains("kind = 'claimed'"), "{sql}");
+        assert!(
+            sql.contains("json_extract(detail, '$.pick') = 'default'"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("json_extract(detail, '$.lane_id') = ?"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("json_extract(detail, '$.session_id') = ?"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn bundle_cap_gate_sits_in_pick_and_batch_paths_11333() {
+        let src = &test_source();
+        // The gate runs inside the pick path, before the pick
+        // loop, and handoff picks skip it.
+        let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
+        let gate = pick.find("bundle_cap_gate").expect("gate in pick path");
+        let loop_start = pick.find("let mut row: Value;").expect("pick loop");
+        assert!(gate < loop_start, "gate precedes the pick loop");
+        assert!(pick.contains("if !handoff_pick"), "handoff picks exempt");
+        // The batch loop clamps to the launch's remaining
+        // allowance so a batch stops at exactly the cap.
+        let batch = seg8217(src, "fn verb_claim_batch(", "\nfn verb_claim(");
+        assert!(
+            batch.contains("bundle_claim_count"),
+            "batch consults the count"
+        );
+        assert!(
+            batch.contains("bundle_cap_refusal"),
+            "batch refuses at the cap"
+        );
+        assert!(
+            batch.contains("count.min(BUNDLE_CLAIM_CAP - claimed)"),
+            "batch clamps to the allowance"
+        );
+        // Exempt by construction: by-id and transfer claims
+        // never call the gate.
+        let by_id = seg8217(src, "fn claim_by_id(", "\n/// The pick path's claim UPDATE");
+        assert!(!by_id.contains("bundle_cap"), "by-id exempt");
+        let transfer = seg8217(src, "fn claim_transfer(", "\n/// By-id claim:");
+        assert!(!transfer.contains("bundle_cap"), "transfer exempt");
+    }
+
+    #[test]
     fn batch_count_parsing_and_cap_8217() {
         // The cap is a named constant with the reasoning on #8217:
         // one batch = one lane touch = one supervisor.

@@ -5,12 +5,11 @@
 //! on the database note, scoped by `data_source_id` so two sources' claims
 //! are never merged — even where property names (or property ids) collide.
 //!
-//! This slice covers database-note identity and schema claims only.
-//! Row notes, relations as typed references, rollups/formulas, and system
-//! properties are follow-up slices on the same issue; they build on the
-//! identities assigned here. Resolving `child_database` references to
-//! their database note ids (left as `None` by slice 2's [`crate::content`])
-//! is the next slice after this one.
+//! This module covers database-note identity and schema claims. Row
+//! notes, relations as typed references, rollups/formulas, and system
+//! properties live in [`crate::rows`], building on the identities
+//! assigned here; `child_database` references resolve from the same
+//! identity map in [`crate::content`].
 
 use std::collections::BTreeSet;
 

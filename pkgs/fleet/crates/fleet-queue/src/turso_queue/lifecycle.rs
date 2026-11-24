@@ -436,6 +436,16 @@ pub(crate) fn claim_pick_once(
     // when a ~460-packet defective intake wave made every claim
     // call spend its whole budget quarantining and return "no
     // claimable task" while claimable rows sat behind the wave.
+    // #11333: the bundle cap. An ordinary pick by a launch
+    // that has already claimed BUNDLE_CLAIM_CAP tasks is
+    // refused before any pick work — the cap lives here, in
+    // the broker, not in the claiming lane's prompt. Handoff
+    // picks are the claimant's sink collection and are exempt
+    // (their claimed events also stay out of the count:
+    // pick="handed_off").
+    if !handoff_pick {
+        bundle_cap_gate(t, lane, &claim_session)?;
+    }
     let mut row: Value;
     let mut id: i64;
     let mut skipped = 0usize;
@@ -657,6 +667,7 @@ pub const MAX_CLAIM_QUARANTINES_PER_CALL: usize = 512;
 /// the broker enforces here; re-exported so this module's parse
 /// path and the `turso_queue::BATCH_CLAIM_MAX` path keep working.
 pub use crate::BATCH_CLAIM_MAX;
+pub use crate::BUNDLE_CLAIM_CAP;
 
 /// Parse a claim request's batch count (#8217): absent means the
 /// single claim (1); anything outside 1..=BATCH_CLAIM_MAX is a
@@ -669,6 +680,83 @@ pub(crate) fn parse_batch_count(req: &Value) -> Result<i64, String> {
             "count {n} is out of range: a batch claim takes              1..={BATCH_CLAIM_MAX} items (#8217)"
         )),
     }
+}
+
+/// The bundle cap's counting query (#11333): how many ordinary
+/// claims one launch — a (lane, session) pair — has already
+/// made. The oracle is the events table: the pick path writes
+/// exactly one 'claimed' event per successful pick, stamped
+/// with the claim's lane and session marks and pick="default".
+/// The pick mark is what keeps the exempt paths out of the
+/// count: handoff picks (the claimant's sink collection) write
+/// pick="handed_off", and by-id / transfer claims write no pick
+/// mark at all (by_id=true; transfers via
+/// claim_repo_task_transfer), so none of them can inflate a
+/// launch's bundle. Events are retained 30 days
+/// (prune_events), far beyond any launch's lifetime, so the
+/// count is complete for every live launch.
+pub(crate) const BUNDLE_CLAIM_COUNT_SQL: &str = "SELECT COUNT(*) AS n FROM events WHERE kind = 'claimed' \
+     AND json_extract(detail, '$.pick') = 'default' \
+     AND json_extract(detail, '$.lane_id') = ? \
+     AND json_extract(detail, '$.session_id') = ?";
+
+/// Ordinary claims already made by this (lane, session) launch
+/// (#11333). This is the broker's claim count for the launch —
+/// the number bundle_cap_refusal judges.
+pub(crate) fn bundle_claim_count(t: &TursoBackend, lane: &str, session: &str) -> Result<i64, TErr> {
+    let rows = t.query_objs(
+        BUNDLE_CLAIM_COUNT_SQL,
+        &[Arg::Text(lane.to_string()), Arg::Text(session.to_string())],
+        &[],
+    )?;
+    Ok(rows
+        .first()
+        .and_then(|r| r.get("n"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0))
+}
+
+/// The bundle-cap decision (#11333), pure so the boundary is
+/// unit-testable: at or past BUNDLE_CLAIM_CAP the next ordinary
+/// claim is refused with a message naming the cap, the launch
+/// and the count; below it there is no refusal. Reset
+/// semantics: the count is keyed by session, so a new session
+/// (a new launch) starts a fresh bundle — nothing else resets
+/// it, and completing or releasing a task does not refund a
+/// claim: the cap budgets a launch's claims, not its
+/// concurrent holdings.
+pub(crate) fn bundle_cap_refusal(claimed: i64, lane: &str, session: &str) -> Option<String> {
+    if claimed >= BUNDLE_CLAIM_CAP {
+        Some(format!(
+            "claim_repo_task: bundle cap reached: lane {lane} session {session} \
+             has already claimed {claimed} tasks in this launch; the bundle \
+             cap is {BUNDLE_CLAIM_CAP} (#11333) — start a new session to \
+             claim a new bundle"
+        ))
+    } else {
+        None
+    }
+}
+
+/// The bundle-cap gate for one ordinary pick (#11333). Only a
+/// claim carrying BOTH a lane and a session names a launch, so
+/// only it is capped: a sessionless claim (an interactive or
+/// agent-next claim) has no bundle to budget. Exempt paths
+/// never reach this gate — by-id and transfer claims do not
+/// pass through the pick path at all, and the caller skips
+/// handoff picks.
+pub(crate) fn bundle_cap_gate(
+    t: &TursoBackend,
+    lane: &Option<String>,
+    claim_session: &Option<String>,
+) -> Result<(), TErr> {
+    if let (Some(lane_id), Some(sid)) = (lane.as_deref(), claim_session.as_deref()) {
+        let claimed = bundle_claim_count(t, lane_id, sid)?;
+        if let Some(msg) = bundle_cap_refusal(claimed, lane_id, sid) {
+            return Err(msg);
+        }
+    }
+    Ok(())
 }
 
 /// Batch claim (#8217): the claim preamble once, then the
@@ -694,8 +782,25 @@ pub(crate) fn verb_claim_batch(
 ) -> Value {
     let work = (|| -> Result<Vec<Value>, TErr> {
         claim_preamble(t, queue, worker, lane)?;
+        // #11333: a batch may not carry a launch past its
+        // bundle cap either — clamp the loop to the launch's
+        // remaining allowance (a launch already at the cap is
+        // refused, not silently handed an empty batch). The
+        // pick path re-checks the gate per pick, so a clamped
+        // loop never trips it mid-batch and strands claimed
+        // rows behind an error envelope.
+        let take = match (lane, claim_session) {
+            (Some(lane_id), Some(sid)) => {
+                let claimed = bundle_claim_count(t, lane_id, sid)?;
+                if let Some(msg) = bundle_cap_refusal(claimed, lane_id, sid) {
+                    return Err(msg);
+                }
+                count.min(BUNDLE_CLAIM_CAP - claimed)
+            }
+            _ => count,
+        };
         let mut rows = Vec::new();
-        for _ in 0..count {
+        for _ in 0..take {
             let Some(row) = claim_pick_once(
                 t,
                 scope,

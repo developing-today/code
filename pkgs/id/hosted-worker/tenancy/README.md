@@ -2,15 +2,23 @@
 
 The central tenancy database: one Turso/SQLite database holding the
 account registry, binding pointers, the tenant/database registry,
-role grants, peer policy, publish records and credential metadata —
-and nothing else. Design record:
+role grants, peer policy, publish records, credential metadata and
+the SSO identity links — and nothing else. Design record:
 `doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture`
-(component E of epic #9078, issue #9083).
+(component E of epic #9078, issue #9083); the identity-link tables
+are H2 of #9086 (issue #14260), designed in
+`doc/2026-11-24T04-50-00Z_design_sso-relying-party-9086` §4.3.
 
 This directory is the schema home for that database. The tenant
 **data** plane (per-user databases and the `UserDO` that serves them)
 is `../src/`; this is the control plane above it, queried by tenancy
-Workers and the `TenancyOpsDO` of later E slices.
+Workers and driven, per tenant, by the `TenantOpsDO` in
+`../src/tenant-ops.ts` (E2, #12797): the §4 provisioning state
+machine over the `tenant_db` row — intent-first idempotent creation,
+retry, compensation, and the two-phase deletion. E2 needed no schema
+change: the baseline row already carries every field the machine
+writes, and the machine's own journal lives in the object's storage,
+not in this database.
 
 ## The invariant (design §2.3, "never central")
 
@@ -22,8 +30,8 @@ dump must not yield content or database access.
 
 `../test/tenancy-schema.test.ts` enforces this: it applies the
 migrations and fails if any content/key/token column appears, if the
-schema drifts from the §2.1 baseline, or if a participant kind gets
-special-cased.
+schema drifts from the schema of record (the §2.1 baseline plus the
+H2 link tables), or if a participant kind gets special-cased.
 
 ## Peer principle
 
@@ -37,10 +45,15 @@ tables and the sync/publish protocols never branch on "hosted".
 
 Numbered, append-only SQL files in `migrations/`, applied in order.
 `0001_tenancy_baseline.sql` is the §2.1 baseline (E1, #12796); later
-E slices (E2 provisioning, E4 credentials, E5 publish) add migrations
-here rather than editing landed ones. `meta.schema_version` records
-the applied baseline, mirroring the `UserDO` bootstrap pattern in
-`../src/user-do.ts`.
+E slices add migrations here rather than editing landed ones when
+they need schema the baseline lacks (E2 provisioning needed none;
+E4 credentials and E5 publish are the expected next authors).
+`0002_identity_link.sql` (H2 of #9086, #14260) adds the
+`identity_link` table — which login doors open which account — and
+its append-only audit table `identity_link_event`; the link/unlink
+API over them is `../src/identity-link.ts`. `meta.schema_version`
+records the applied schema version, mirroring the `UserDO`
+bootstrap pattern in `../src/user-do.ts`.
 
 Two deliberate statements of the design's rules over its sketch DDL
 are documented in the baseline's header: the active-binding rule is

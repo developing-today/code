@@ -108,9 +108,10 @@ describe("notifyPromptCompletion (#10035 S6)", () => {
         sub("https://push.example/gone", { prompt: true }),
         sub("https://push.example/err", { prompt: true }),
         sub("https://push.example/off", { prompt: false }),
-        // A pre-class subscription: only "incident" defaults on for
-        // old rows, so this one is not eligible until it opts in.
-        sub("https://push.example/legacy", { incident: true }),
+        // An opted-out subscription: the stored explicit false wins.
+        // (A pre-class row with no stored prompt choice would take the
+        // reviewed default under the #13940 backfill and be eligible.)
+        sub("https://push.example/legacy", { incident: true, prompt: false }),
       ],
       logSend: async (entry: { class: string; objectRef: string; outcome: string }) => {
         sends.push(entry);

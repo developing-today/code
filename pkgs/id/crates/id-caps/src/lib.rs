@@ -13,6 +13,7 @@
 
 pub mod account_quota;
 pub mod agent_delegation;
+pub mod agent_quota_ledger;
 pub mod cap_baseline;
 pub mod cap_class;
 pub mod cap_diff;

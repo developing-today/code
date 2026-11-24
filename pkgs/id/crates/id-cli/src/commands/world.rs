@@ -1875,6 +1875,7 @@ fn render_view_frame(
         id_worlds::world_presentation::WorldSurface::Scene(_) => None,
         id_worlds::world_presentation::WorldSurface::Audio(_) => None,
         id_worlds::world_presentation::WorldSurface::Widget(_) => None,
+        id_worlds::world_presentation::WorldSurface::Media(_) => None,
     }
 }
 
@@ -2587,7 +2588,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "6 frames conform to shell contract v1.15"
+            "6 frames conform to shell contract v1.16"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
