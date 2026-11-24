@@ -40,7 +40,7 @@ func adoptSystemdTCP(address string) (net.Listener, error) {
 	// original even if conversion or address validation later fails.
 	unix.CloseOnExec(fd)
 	f := os.NewFile(fd, "systemd listener")
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	ln, err := net.FileListener(f)
 	if err != nil {
 		return nil, fmt.Errorf("systemd TCP activation: adopt fd 3: %w", err)

@@ -62,6 +62,7 @@ No GitHub connector, no sandbox gh. States are as returned at gather time.
 ```
 
 ## Search: `esp32 repo:developing-today/code` (scoped; an unscoped
+
 ## `esp32` search returned only unrelated third-party repos and was discarded)
 
 ```
@@ -99,6 +100,7 @@ No GitHub connector, no sandbox gh. States are as returned at gather time.
 ```
 60 [closed] fork-migration-plan: archive org resolved; pure-clone archive move executed [PR]
 ```
+
 (Only hit — no lab/cluster programme material lives in dezren39/fleet issues.
 No developing-today-forks/* issue hits for the lab terms were returned by the
 searches run; the lab programme's issue home is developing-today/code.)
@@ -155,6 +157,7 @@ searches run; the lab programme's issue home is developing-today/code.)
 507 [closed] OCI always-free maximization: account setup + automation
 508 [closed] EPIC: Basement Talos/Cozystack cluster program
 ```
+
 Relocated/successor mapping of record: nix#503 → code#1812 (relocated
 2026-10-28, "filed in the wrong repo"); nix#501 → code#1810; nix#502 →
 code#1811; nix#504 → code#1813; nix#507 → code#1091/#4904 line.

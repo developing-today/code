@@ -324,7 +324,9 @@ fn explicit_append_modes_are_distinct_states() {
         .zip(&payloads)
     {
         assert_eq!(
-            AttributeDefinition::from_payload(payload).unwrap().append_mode,
+            AttributeDefinition::from_payload(payload)
+                .unwrap()
+                .append_mode,
             *mode
         );
     }
@@ -345,8 +347,16 @@ fn malformed_scope_and_policy_reject() {
             "name {bad_name:?}"
         );
     }
-    for bad_tenant in ["", "0123456789abcdef", "0123456789ABCDEF0123456789abcdef", "zz3456789abcdef0123456789abcdef"] {
-        assert!(TenantId::parse(bad_tenant).is_err(), "tenant {bad_tenant:?}");
+    for bad_tenant in [
+        "",
+        "0123456789abcdef",
+        "0123456789ABCDEF0123456789abcdef",
+        "zz3456789abcdef0123456789abcdef",
+    ] {
+        assert!(
+            TenantId::parse(bad_tenant).is_err(),
+            "tenant {bad_tenant:?}"
+        );
     }
 
     // Malformed payloads, one field at a time; the module and the
@@ -355,10 +365,20 @@ fn malformed_scope_and_policy_reject() {
         ("name", Some(Value::Text(String::new()))),
         ("name", Some(Value::Text("a/b".to_owned()))),
         ("name", Some(Value::Text("n".repeat(129)))),
-        ("tenant", Some(Value::Text("0123456789ABCDEF0123456789abcdef".to_owned()))),
+        (
+            "tenant",
+            Some(Value::Text("0123456789ABCDEF0123456789abcdef".to_owned())),
+        ),
         ("tenant", Some(Value::Text("short".to_owned()))),
         ("owner_space", Some(Value::Bytes(vec![1, 2, 3]))),
-        ("target", Some(Term::typed(7, b"not a reference".to_vec()).to_value().unwrap())),
+        (
+            "target",
+            Some(
+                Term::typed(7, b"not a reference".to_vec())
+                    .to_value()
+                    .unwrap(),
+            ),
+        ),
         ("kind", Some(Value::Text(String::new()))),
         ("audience", Some(Value::Text("everyone".to_owned()))),
         ("append_mode", Some(Value::Text("ajar".to_owned()))),
@@ -468,9 +488,7 @@ fn cross_tenant_references_reject() {
     // A reference homed in the definition's own tenant is fine, and
     // so is the target when the fixture homes it locally.
     let mut local = FixtureAuthority::new(&owner, &admin);
-    local
-        .homes
-        .push((candidate.scope.target, tenant_a()));
+    local.homes.push((candidate.scope.target, tenant_a()));
     let local_opened = definition(&owner, AppendMode::Open)
         .sign("owner", &owner, None)
         .unwrap();
@@ -508,10 +526,7 @@ fn envelope_tenant_binding_and_domain_reject() {
         payload_length: payload.len() as u64,
     };
     let mismatched = Envelope::sign(
-        body_for(
-            attribute::ATTRIBUTE_DEFINITION_DOMAIN,
-            tenant_b().as_str(),
-        ),
+        body_for(attribute::ATTRIBUTE_DEFINITION_DOMAIN, tenant_b().as_str()),
         payload.clone(),
         &owner,
     )

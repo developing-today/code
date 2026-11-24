@@ -1015,7 +1015,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 25] = [
+pub(crate) const SCHEMA: [&str; 27] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1087,6 +1087,17 @@ pub(crate) const SCHEMA: [&str; 25] = [
         id INTEGER PRIMARY KEY CHECK (id = 1), \
         consecutive_rate_limits INTEGER NOT NULL DEFAULT 0, \
         open_until TEXT, last_error_class TEXT, updated_at TEXT NOT NULL)",
+    // #14100: durable retry for priority-category synchronization.
+    // This is intentionally separate from creation_outbox: reprioritize
+    // edits an existing issue and is not an issue-creation intent.
+    "CREATE TABLE IF NOT EXISTS reprioritize_sync_outbox (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
+        repo TEXT NOT NULL, issue INTEGER NOT NULL, category TEXT NOT NULL, \
+        label TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', \
+        attempts INTEGER NOT NULL DEFAULT 0, available_at TEXT NOT NULL, \
+        last_error_class TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS reprioritize_sync_due \
+        ON reprioritize_sync_outbox(state, available_at)",
     // #8582 increment 2: the merge-intent table, DDL of record in
     // the pure core module.
     crate::merge_intent::MERGE_INTENT_DDL,

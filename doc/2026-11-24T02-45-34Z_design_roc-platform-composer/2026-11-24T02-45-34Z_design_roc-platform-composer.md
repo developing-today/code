@@ -20,9 +20,9 @@ The amendment follows, verbatim as appended to the design note.
 
 # Part 3 — Amendment (2026-11-23, later): the platform composer
 
-**Drew's amendment, in substance:** *"we also would combine multiple platform
+**Drew's amendment, in substance:** _"we also would combine multiple platform
 capabilities into a single platform, compile it, and then offer that. Some
-way to dynamically do that."*
+way to dynamically do that."_
 
 §2.1 fixed composition at platform-construction time and left the mechanism
 at "the platform binary is built (or configured) per deployment profile."
@@ -47,17 +47,17 @@ replace it. Where the two differ in emphasis, the difference is stated in
   app targets it in its header exactly like basic-cli or any other
   platform.
 - **The union property:** the composed platform's effect surface is
-  *exactly* the union of the selected caps' surfaces. Nothing else is
+  _exactly_ the union of the selected caps' surfaces. Nothing else is
   exposed, because nothing else is in the generated interface — §2.1's
   omission gate, applied at construction time. An app on this platform
   cannot name a capability the manifest didn't select.
 - **Composability is a catalogue property, not a composer feature.** The
   union property holds only for caps whose host implementations are
-  *closed under the contract* — no ambient authority, no escape hatches.
+  _closed under the contract_ — no ambient authority, no escape hatches.
   The Cloudflare platform's raw `Js` escape program (§1.6) is the
   counterexample: a cap carrying one cannot be certified composable.
   Catalogue entries therefore gain a **sixth contract field** (§2.2):
-  *composable: yes/no*, with the reason when no. The composer refuses
+  _composable: yes/no_, with the reason when no. The composer refuses
   non-composable caps rather than silently weakening the union property.
 
 ## 3.2 The dynamic part: composition as a cached function of the manifest
@@ -66,7 +66,7 @@ replace it. Where the two differ in emphasis, the difference is stated in
   canonical manifest: target class, the sorted list of cap name@versions,
   the catalogue version, each selected cap's host-implementation version
   for that target, and the pinned Roc nightly. Two manifests that hash
-  equal *are* the same platform — the composer is a pure function with a
+  equal _are_ the same platform — the composer is a pure function with a
   cache. The first request builds and publishes; every later identical
   request is a cache hit and costs nothing. This is the content-addressing
   discipline the estate already uses elsewhere; here, the hash is the
@@ -75,20 +75,20 @@ replace it. Where the two differ in emphasis, the difference is stated in
   would make every app its own platform (§3.6 names the cost). The
   registry therefore has two tiers:
   - **Named profiles** — operator-curated manifests published under a name
-    + version (`id-server/storefront@2`, `id-android/field-reader@1`), per
-    target class / app family. Profiles are the public identities apps are
-    written against. A profile is what §2.1's "one id platform per target
-    class" becomes in practice: a small, stable set of named points in
-    composition space, not one point.
+    - version (`id-server/storefront@2`, `id-android/field-reader@1`), per
+      target class / app family. Profiles are the public identities apps are
+      written against. A profile is what §2.1's "one id platform per target
+      class" becomes in practice: a small, stable set of named points in
+      composition space, not one point.
   - **Arbitrary compositions** — any manifest a permitted composer
     submits, published content-addressed (by hash) and unlisted by
-    default. An arbitrary composition *graduates* to a named profile when
+    default. An arbitrary composition _graduates_ to a named profile when
     a second app wants it or an operator promotes it; until then it is a
     build artefact, not a product surface.
 - **Proliferation control.** Three brakes: (1) the cache makes duplicates
   free, so a variant's cost is paid once; (2) graduation is the only path
   to a name, and names are what humans must support — the nightly-bump
-  chore (§2.5) is priced per *profile*, while arbitrary compositions
+  chore (§2.5) is priced per _profile_, while arbitrary compositions
   re-derive from the catalogue on a bump rather than being maintained;
   (3) the registry records which apps pin which composition, so unused
   compositions are garbage-collectable and heavily used arbitrary ones
@@ -100,7 +100,7 @@ Composition and grant are different verbs at different times, and the
 amendment keeps them so:
 
 1. **Composition (platform production time)** decides what the platform
-   *can* do — the ceiling of the ceiling. Enforced by omission: unselected
+   _can_ do — the ceiling of the ceiling. Enforced by omission: unselected
    caps are unnameable.
 2. **Declaration (app build time)** — the app declares the subset of the
    platform's surface it uses (RocRay-style, §2.2). Declaration ⊆
@@ -120,13 +120,13 @@ deployment.
 
 ## 3.4 The static-binding tension, stated plainly
 
-Roc binds an app to its platform when the *app* compiles. Nothing in this
+Roc binds an app to its platform when the _app_ compiles. Nothing in this
 amendment changes that, and the word "dynamic" must not be allowed to
 imply otherwise:
 
 - The dynamism lives entirely in **platform production** — a new
   composition can be produced on demand, in one build, and published
-  immediately — which happens *before* any app builds against it.
+  immediately — which happens _before_ any app builds against it.
 - An app that wants a different capability set is re-pointed at a
   different platform artefact and **rebuilt**. There is no runtime
   re-composition of a running app, no hot-swapping a platform under a live
@@ -134,7 +134,7 @@ imply otherwise:
   hand-written one. That last point is the design's strength: composition
   is a factory property, not a language feature, so it needs no upstream
   Roc support and leaves upstream's "platforms do not compose" policy
-  untouched — the policy governs what an *app* binds to (one platform),
+  untouched — the policy governs what an _app_ binds to (one platform),
   and a composed platform is one platform.
 - **Adjacent substrate:** Boswell's multi-entrypoint host work (§1.8) is
   what makes one host binary practical here — the interpreter-shim adapter
@@ -168,10 +168,10 @@ imply otherwise:
   safe under the grant model in the narrow sense: an author-composed
   platform cannot give an app anything the operator hasn't granted, and
   the provisioner still creates the resources. Two real differences
-  remain. (1) *Surface accountability* — an operator-composed profile is a
+  remain. (1) _Surface accountability_ — an operator-composed profile is a
   reviewed artefact; an author-composed platform is unreviewed, so its
   registry record is marked as such, and it can never become a profile
-  without operator review. (2) *Resource pressure* — arbitrary composition
+  without operator review. (2) _Resource pressure_ — arbitrary composition
   lets authors mint platform variants at will, a build/registry load
   problem, answered by the cache and GC above plus rate-limiting
   composition requests per author. **Default posture: operators compose
@@ -189,31 +189,31 @@ imply otherwise:
    per target class embedding every cap implementation, where composition
    generates only the interface package and a host config. Shape (b) is
    what makes on-demand composition cheap and fast, and omission still
-   holds at the Roc interface level — but the unselected code is *present
-   in the binary*, so the guarantee rests on the interface boundary and
+   holds at the Roc interface level — but the unselected code is _present
+   in the binary_, so the guarantee rests on the interface boundary and
    host correctness, not on absence. Shape (a) is the stronger artefact
    and the slower factory. **Recommendation:** (b) for arbitrary/on-demand
    compositions; (a) at profile publication time — a profile, once named,
    is compiled bespoke, so the platforms apps actually run in production
    carry the stronger property, and the dynamic path is the
    requesting/prototyping path. Drew's sketch says "compile it, and then
-   offer that": under this recommendation the *offered* (profile) artefact
+   offer that": under this recommendation the _offered_ (profile) artefact
    is compiled per composition, while the on-demand cache artefact is
    interface-composed. If (a) is wanted everywhere, the cost is a real
    build per composition (minutes, cacheable) rather than a generation
    step (seconds) — a capacity decision, not a design blocker.
 2. **§2.1's "one id platform per target class" becomes "a profile family
    per target class."** The portability promise — "only the platform line
-   in its header changes" — now holds *within a profile's cap set*: an app
+   in its header changes" — now holds _within a profile's cap set_: an app
    using `cap.render2d` cannot re-point at a profile that omits it. That
    was already true of per-deployment subsets; profiles make it explicit
    and enumerable instead of deployment-local. The catalogue remains the
    portable artefact; profiles are named, comparable points in its space.
 3. **The nightly-bump chore grows a dimension.** §2.5 priced the bump
-   chore per platform. Under composition it is priced per *catalogue*:
+   chore per platform. Under composition it is priced per _catalogue_:
    caps are re-validated per nightly, profiles recompile, arbitrary
    compositions re-derive or expire. That is cheaper than per-platform
-   maintenance *if* the catalogue is the unit — but only if cap
+   maintenance _if_ the catalogue is the unit — but only if cap
    implementations are genuinely independent. A cap that reaches into
    another cap's host internals breaks re-derivation, and must be marked
    non-composable until fixed.
@@ -245,8 +245,8 @@ differ**:
 1. **Own a variant of each of the five surveyed platforms** — RocRay,
    roc-gui, Joy, roc-native-android, and roc-cloudflare-workers. The plan
    is to use and own our own fork/variant of each, not merely to stay
-   API-compatible with upstream. §2.5's recommended default — *re-host*
-   (our host, upstream-compatible API) for the storage caps, *consume* for
+   API-compatible with upstream. §2.5's recommended default — _re-host_
+   (our host, upstream-compatible API) for the storage caps, _consume_ for
    RocRay-shaped and Cloudflare-shaped surfaces — is superseded by this
    direction: for these five, the answer is **own the variant**, with the
    catalogue contract (§2.2) still the family's portable artefact and the
@@ -266,24 +266,24 @@ differ**:
    never five independent drifts. This interacts with §3.2 directly: the
    pinned nightly is a component of every capability-set hash, so a pin
    bump honestly produces new composition identities — a platform under
-   nightly N+1 *is* a different artefact from the same manifest under N,
+   nightly N+1 _is_ a different artefact from the same manifest under N,
    and the registry should say so rather than pretending continuity.
 
 **What this means for the composer:** the catalogue's host implementations
-*are* our variants' capability implementations. A cap's
+_are_ our variants' capability implementations. A cap's
 host-implementation version in the §3.2 hash is our variant's version, and
 a composed platform is assembled from our variants' capabilities — the
 composer is, in effect, the factory that turns the five owned platforms
 into one composable family. Owning the variants is also what makes the
 §3.1 union property achievable in practice: caps whose upstream
-implementations carry escape hatches or ambient authority can be *fixed in
-our variant* until they are closed under the contract, instead of being
+implementations carry escape hatches or ambient authority can be _fixed in
+our variant_ until they are closed under the contract, instead of being
 marked non-composable forever.
 
 **The accepted cost, named honestly:** §2.5 flagged the price of forking —
 the nightly-bump chore, the host bugs, the divergence, forever — and the
 ecosystem's ~5-person bus factor. This direction takes that price on for
-*five* platforms at once, in an RC1-era ecosystem whose APIs are explicitly
+_five_ platforms at once, in an RC1-era ecosystem whose APIs are explicitly
 unstable. The maintenance the earlier note hoped to rent from upstream is
 now ours, concentrated. That is an accepted cost of the direction, not an
 oversight in it: ownership is what buys the enforcement points (§§2.3–2.4)

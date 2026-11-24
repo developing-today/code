@@ -8,18 +8,18 @@ load-bearing lines, never retyped from memory.
 ## S1. Workflows (`ls .github/workflows/`, `grep -h runs-on:`, `grep -h uses:`)
 
 - 92 workflow files (full list in the census working notes; families:
-  agent-backup-tests, agents, atlas-*, auto-format, bin-tests,
-  branch-cleanup, bws-freshness, cargo-target-*, cf-container-hello,
-  cold-store-reaper, container-images, daily-*, deploy-flake-checks,
-  desktop-commander-worker-*, dispatch-health-probe, flake-inputs-update,
-  fleet-*, github-*, go-modules-build, goreleaser, id-*, identity-build,
-  lab-ops-hub, main-broken, map-build, mcpx-*, message-bridge-deploy,
+  agent-backup-tests, agents, atlas-_, auto-format, bin-tests,
+  branch-cleanup, bws-freshness, cargo-target-_, cf-container-hello,
+  cold-store-reaper, container-images, daily-_, deploy-flake-checks,
+  desktop-commander-worker-_, dispatch-health-probe, flake-inputs-update,
+  fleet-_, github-_, go-modules-build, goreleaser, id-_, identity-build,
+  lab-ops-hub, main-broken, map-build, mcpx-_, message-bridge-deploy,
   mod-tidy, nix-ci, note-submission-pr, openai-cred-watchdog-tests,
-  opencode-config-*, org-run, pkarr-worker-*, pm-*, private-laptop-bridge-*,
+  opencode-config-_, org-run, pkarr-worker-_, pm-_, private-laptop-bridge-_,
   production-line-guard, program-tending, proxy-port-fallbacks,
   queue-transport-alert-deploy, ready-for-agent-tests, repo-universe-tests,
-  research-workflow, scripts-test, stale-run-sweeper, voice-line-worker-*,
-  workflow-lint, worktree-*).
+  research-workflow, scripts-test, stale-run-sweeper, voice-line-worker-_,
+  workflow-lint, worktree-_).
 - runs-on counts: 131 `ubuntu-latest`, 14 `ubuntu-24.04`,
   2 `ubuntu-24.04-arm`, 1 `${{ matrix.os }}`, 2 conditional Blacksmith
   expressions (org-run.yml).
@@ -178,7 +178,7 @@ nixConfig (flake.nix ~L419-475):
   retention/LRU GC → nix-cache#7; benchmark BENCHMARK.md in
   developing-today/nix-cache — figures not reproduced per scope rule).
 - magic-nix-cache in workflows: 24 uses, `use-flakehub: false,
-  use-gha-cache: true` (container-images.yml instance).
+use-gha-cache: true` (container-images.yml instance).
 
 ## S9. pkgs/ + cf
 
@@ -208,7 +208,7 @@ nixConfig (flake.nix ~L419-475):
 - #13905 open — "Code Book + Lab Book programme: whole-project book,
   per-book roadmap sections, lab book, Code Space".
 - #5772 open — "VMs: declarative guest definitions (nixvirt / microvm.nix)
-  + mutable carve-out list".
+  - mutable carve-out list".
 - #6076 closed — "impl(lab): generic containers for ID and fleet purposes
   (Nix-built)".
 - #13774 open — "fleet actions exec: live short-lived exec sessions inside

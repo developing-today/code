@@ -643,6 +643,41 @@ impl PolicySession {
         &self.grant
     }
 
+    /// Owner-side ceiling refresh (v2 agents-as-citizens step 1,
+    /// #8299 §2.1): replace the ceiling in force for this live
+    /// session. A lowered ceiling takes effect at the next
+    /// [`Self::act`] frame check — not the next join — so a
+    /// citizen's rights track the current role configuration; the
+    /// role edit itself is audited by the role registry that issued
+    /// the change. Nothing here widens: it is the same owner-side
+    /// act as an out-of-band ceiling edit in v1, now reachable
+    /// through world configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`RefusalKind::Ceiling`] refusal if the new ceiling
+    /// does not cover the session's world: a session never runs
+    /// under a ceiling that does not name its world.
+    //
+    // PolicyRefusal carries the full park event for the driver; a
+    // ceiling refresh runs at owner-operation cadence, so the large
+    // Err payload never sits in a hot path.
+    #[allow(clippy::result_large_err)]
+    pub fn refresh_ceiling(&mut self, ceiling: CapabilityCeiling) -> Result<(), PolicyRefusal> {
+        if !ceiling.worlds.contains(&self.grant.world) {
+            return Err(PolicyRefusal {
+                kind: RefusalKind::Ceiling,
+                detail: format!(
+                    "world {} is outside the refreshed capability ceiling",
+                    self.grant.world
+                ),
+                park_event: None,
+            });
+        }
+        self.grant.ceiling = ceiling;
+        Ok(())
+    }
+
     /// The wrapped bridge session, read-only.
     #[must_use]
     pub const fn bridge(&self) -> &BridgeSession {

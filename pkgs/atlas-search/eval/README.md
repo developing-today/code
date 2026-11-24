@@ -46,6 +46,13 @@ corpus-specific retrieval runner beside the Rust tooling:
   Its header records the source corpus size and fingerprint used to build
   the set; the source corpus itself is not checked in here.
 
+As of 2026-11-24 the copies in this repo are the canonical ones: the
+migration was verified against the outside sources (SHA-256 provenance
+match, AST identity for both Python files, JSON identity for the golden
+set) and the outside copies in hatch-personal are retired. Record:
+`doc/2026-11-24T06-23-32Z_report_id5670_phase1_atlas_python_migration/`
+(#5670 phase-1 close-out).
+
 From this directory, run the corpus-specific FTS baseline with the laptop
 corpus (the runner checks its frozen fingerprint before scoring):
 

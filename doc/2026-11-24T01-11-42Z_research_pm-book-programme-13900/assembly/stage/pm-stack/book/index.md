@@ -24,15 +24,15 @@ Work in this estate is spread across four repositories in the core set — `deve
 
 The survey counted 36 components under `pm-stack/` and its Nix packages. Grouped, they are:
 
-| Group | What it contains |
-|---|---|
-| Core services | The aggregator (port 4870), the console (port 4872), the projector (port 7801), and pm-dispatch (port 4879) |
-| External apps, integrated | Kaneo (execution board, port 5173), Grist (roadmap tables, port 8484), Pad (planning layer, port 7777), ready-for-agent (dispatch UI, port 6056) |
-| Edge Workers | The console edge Worker, the decision-events Worker, the voice-line Worker, and the notify relay — the relay is recorded as not deployed in `pm-stack/platform/workers.json` (D5) |
-| Execution | pm-dispatch, the OpenCode claimant, scheduled jobs, and the dispatch UI layer |
-| Guards and safety nets | The Kaneo sync guard, the closure watchdog, the invariant sweeper, lane-guard, and the health hooks |
-| Quota and usage | The quota gatherers and exporters, provider-usage, quota-check, and the usage surfaces behind the quota page |
-| Shared contracts | The shared schema and the orchestration writer that writes orchestration state to the Turso `fleet-platform` store. See [The shared schema](concepts/shared-schema.md) |
+| Group                     | What it contains                                                                                                                                                                  |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core services             | The aggregator (port 4870), the console (port 4872), the projector (port 7801), and pm-dispatch (port 4879)                                                                       |
+| External apps, integrated | Kaneo (execution board, port 5173), Grist (roadmap tables, port 8484), Pad (planning layer, port 7777), ready-for-agent (dispatch UI, port 6056)                                  |
+| Edge Workers              | The console edge Worker, the decision-events Worker, the voice-line Worker, and the notify relay — the relay is recorded as not deployed in `pm-stack/platform/workers.json` (D5) |
+| Execution                 | pm-dispatch, the OpenCode claimant, scheduled jobs, and the dispatch UI layer                                                                                                     |
+| Guards and safety nets    | The Kaneo sync guard, the closure watchdog, the invariant sweeper, lane-guard, and the health hooks                                                                               |
+| Quota and usage           | The quota gatherers and exporters, provider-usage, quota-check, and the usage surfaces behind the quota page                                                                      |
+| Shared contracts          | The shared schema and the orchestration writer that writes orchestration state to the Turso `fleet-platform` store. See [The shared schema](concepts/shared-schema.md)            |
 
 The component-by-component account is [Architecture](concepts/architecture.md).
 

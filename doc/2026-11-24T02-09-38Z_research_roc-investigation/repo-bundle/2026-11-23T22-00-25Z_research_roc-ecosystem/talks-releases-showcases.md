@@ -12,8 +12,7 @@ marked. Compiled 2026-11-23.
   2026). Feldman traces the ground-up rewrite of Roc's ~300K-line compiler
   from Rust to Zig, and how it coincided with the year AI coding assistants
   went from test-porting grunt work to genuine architectural collaborators.
-  Also states on the record that "Roc v1" (0.1) is due before the end of
-  2026. **This is the single best watch-first item for the new compiler.**
+  Also states on the record that "Roc v1" (0.1) is due before the end of 2026. **This is the single best watch-first item for the new compiler.**
   https://www.youtube.com/watch?v=XSXGf3oN2yU&list=PLEx5khR4g7PIyc7AhQEUm06yslH_hWM2i
 - **A Preview of Roc 0.1.0** — Richard Feldman (2026-08-13). The talk preview
   of the first numbered release. https://hallway.video
@@ -30,8 +29,7 @@ marked. Compiled 2026-11-23.
 
 ## Landmark Feldman talks
 
-- **Outperforming Imperative with Pure Functional Languages** — Strange Loop
-  2021. *The* landmark Roc talk (~98K views): how a pure functional language
+- **Outperforming Imperative with Pure Functional Languages** — Strange Loop 2021. _The_ landmark Roc talk (~98K views): how a pure functional language
   can match or beat imperative performance via opportunistic in-place
   mutation, static reference counting, and unboxed values. Still the
   clearest introduction to why Roc exists.
@@ -49,7 +47,7 @@ marked. Compiled 2026-11-23.
   calling across languages in-process; directly relevant to how Roc
   platforms (written in Rust/Zig/etc.) host Roc applications.
   https://www.hallway.video/watch/ZOvxa9aKCCg
-- **Rust & Zig Combined** — GOTO 2023. How the *original* Roc compiler
+- **Rust & Zig Combined** — GOTO 2023. How the _original_ Roc compiler
   combined a Rust codebase with Zig (for its surgical linker and LLVM
   bitcode work) — the prequel that makes the later full Zig rewrite much
   less surprising. Listed in GOTO's Functional Programming playlist (item 30).
@@ -86,7 +84,7 @@ marked. Compiled 2026-11-23.
   whole project. https://changelog.com/podcast/645
 - **Roc — A Functional Language Looking for Those Software Sweetspots** —
   Richard Feldman on Developer Voices (Kris Jenkins), June 2025. Focuses on
-  what a language makes *harder* as a design tool, and where Roc is hunting
+  what a language makes _harder_ as a design tool, and where Roc is hunting
   for its niche. https://www.developervoices.com/episodes/
 - **The Roc Programming Language with Richard Feldman, Parts 1–3** — ADSP:
   Algorithms + Data Structures = Programs, Episodes 157–159 (Nov–Dec 2023).
@@ -140,8 +138,7 @@ marked. Compiled 2026-11-23.
   followed, latest alpha4 in August 2025), replacing the use-a-nightly
   free-for-all with pinned, permanently available builds.
   https://communick.news/post/2449578/4355026
-- **Roc's New Compiler for Advent of Code 2025** — Richard Feldman, December
-  2025. The hastily-assembled guide that first put the new compiler in the
+- **Roc's New Compiler for Advent of Code 2025** — Richard Feldman, December 2025. The hastily-assembled guide that first put the new compiler in the
   public's hands: nightly builds, the revised language design, and what
   hadn't been ported yet (e.g. exhaustiveness checking). A primary-source
   snapshot of the new compiler's state at the end of 2025.
@@ -196,6 +193,6 @@ marked. Compiled 2026-11-23.
 
 ---
 
-*Further pointer, unverified recording link: Feldman also gave a keynote,
+_Further pointer, unverified recording link: Feldman also gave a keynote,
 "The Essence of Functional Programming," at Functional Conf (India,
-presented remotely), discussed in ADSP Episode 157.*
+presented remotely), discussed in ADSP Episode 157._

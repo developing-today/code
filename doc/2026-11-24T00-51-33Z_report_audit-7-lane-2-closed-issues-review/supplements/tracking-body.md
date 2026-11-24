@@ -3,6 +3,7 @@
 Programme: AUDIT-7 (Drew's directive, 2026-11-23 ~17:56 CST). Umbrella: https://github.com/developing-today/code/issues/13871
 
 Scope: every issue closed since 2026-10-23 across:
+
 - developing-today/code
 - developing-today-forks/opencode
 - developing-today-forks/openchamber
@@ -15,4 +16,5 @@ Coordination: Lane 7 owns stray-work labelling generally — label additions ins
 Deliverables: per-issue ledger in the dated report in doc/ (code repo), findings filed as issues/PRs/labels as I go, final summary comment here.
 
 ## Progress log
+
 - Slice 0: lane stood up; census of closed issues in progress.

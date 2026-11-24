@@ -12,16 +12,16 @@ Fleet gives each enrolled seat a common way to find work, claim it, run it on an
 
 ## Authority and evidence
 
-| Question | Authority | Evidence to retain |
-|---|---|---|
-| Who can mutate this task? | Queue writer and lease record | Task, holder, lease deadline, disposition and timeline. The proposed fencing epoch requires compatibility work. |
-| Where did the command actually run? | Placement record and provider job | Decision, target repo and SHA, runner repo, run, attempt, job and terminal receipt |
-| Which seat received the handoff? | Authenticated enrolment, bridge receipt and queue transfer | Seat, installation, scope, checkpoint digest, redemption and transfer time |
-| Which service is serving? | Deployment registry and authenticated runtime probe | Source and executable digest, generation, activation, observation time and recovery target |
-| Which credentials can this seat use? | Scoped service and provider authorization | Principal class, audience, expiry and successful scoped probe. Publish metadata only. |
-| Which pool can accept work? | pm-stack admission projection and plan policy | Billing owner, binding window, genuine measurement time, read quality and independent wall evidence |
-| Which data did search return? | Atlas index and the consumer's authorized scope | Index version, freshness, query contract and scope |
-| What shipped to readers? | Release, bootstrap, Pages deployment and delivered artifact | Immutable identities for each stage and an observation of the rendered chapter |
+| Question                             | Authority                                                   | Evidence to retain                                                                                              |
+| ------------------------------------ | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Who can mutate this task?            | Queue writer and lease record                               | Task, holder, lease deadline, disposition and timeline. The proposed fencing epoch requires compatibility work. |
+| Where did the command actually run?  | Placement record and provider job                           | Decision, target repo and SHA, runner repo, run, attempt, job and terminal receipt                              |
+| Which seat received the handoff?     | Authenticated enrolment, bridge receipt and queue transfer  | Seat, installation, scope, checkpoint digest, redemption and transfer time                                      |
+| Which service is serving?            | Deployment registry and authenticated runtime probe         | Source and executable digest, generation, activation, observation time and recovery target                      |
+| Which credentials can this seat use? | Scoped service and provider authorization                   | Principal class, audience, expiry and successful scoped probe. Publish metadata only.                           |
+| Which pool can accept work?          | pm-stack admission projection and plan policy               | Billing owner, binding window, genuine measurement time, read quality and independent wall evidence             |
+| Which data did search return?        | Atlas index and the consumer's authorized scope             | Index version, freshness, query contract and scope                                                              |
+| What shipped to readers?             | Release, bootstrap, Pages deployment and delivered artifact | Immutable identities for each stage and an observation of the rendered chapter                                  |
 
 ## Decision boundaries
 

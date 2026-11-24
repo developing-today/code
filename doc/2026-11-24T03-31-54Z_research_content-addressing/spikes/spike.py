@@ -164,7 +164,7 @@ class Tree:
         nodes = set(cover)
         while changed:
             changed = False
-            for (lvl, i) in list(nodes):
+            for lvl, i in list(nodes):
                 if i % 2 == 0 and (lvl, i + 1) in nodes:
                     nodes.discard((lvl, i))
                     nodes.discard((lvl, i + 1))
@@ -172,7 +172,7 @@ class Tree:
                     changed = True
         # proof = siblings of cover nodes up to the root
         proof = set()
-        for (lvl, i) in nodes:
+        for lvl, i in nodes:
             l, j = lvl, i
             while l < len(self.levels) - 1:
                 sib = j ^ 1
@@ -217,8 +217,13 @@ def cdc_chunks(data: bytes, min_s=4096, avg=16384, max_s=65536):
 
 # -------------------------------------------------------------- strategies --
 
-results = {"corpus": {"blob_bytes": len(BLOB), "instances": len(SPANS),
-                      "distinct_items": len(ITEMS)}}
+results = {
+    "corpus": {
+        "blob_bytes": len(BLOB),
+        "instances": len(SPANS),
+        "distinct_items": len(ITEMS),
+    }
+}
 
 bao_chunks = fixed_chunks(BLOB, CHUNK)
 bab_labels = [H(c) for c in bao_chunks]
@@ -271,9 +276,10 @@ results["aligned_repeat_dedup"] = {
     "chunks_total": len(pad_labels),
     "bab_duplicate_chunks_when_aligned": len(pad_labels) - len(set(pad_labels)),
     "duplicate_item_instances": len(INSTANCES) - len(set(INSTANCES)),
-    "per_item_duplicate_bytes": sum(inst_bytes) - sum(
-        len(b"%%ITEM%%\n" + ITEMS[i]) for i in set(INSTANCES)
-    ) + 3 * len(ATTACH) - len(ATTACH),  # attachment stored once, not 3x
+    "per_item_duplicate_bytes": sum(inst_bytes)
+    - sum(len(b"%%ITEM%%\n" + ITEMS[i]) for i in set(INSTANCES))
+    + 3 * len(ATTACH)
+    - len(ATTACH),  # attachment stored once, not 3x
 }
 
 # ------------------------------------------------------------- scenario B --
@@ -333,8 +339,7 @@ for s in SPANS:
         seen_idx.add(s[2])
     if len(embedded) == 12:
         break
-resC = {"items": len(embedded),
-        "item_bytes_total": sum(e - s for s, e, _ in embedded)}
+resC = {"items": len(embedded), "item_bytes_total": sum(e - s for s, e, _ in embedded)}
 tot = 2048  # the page itself
 tb = 0
 for s, e, _ in embedded:
@@ -359,10 +364,10 @@ results["scenario_C_transclusion_fetch"] = resC
 depth = (n - 1).bit_length()
 results["scenario_D_length_proof_bytes"] = {
     "bao": 8 + 64 * depth + CHUNK,  # header + right-edge parents + final chunk
-    "bab": 72,                      # two child labels + length; constant
+    "bab": 72,  # two child labels + length; constant
     "note": "bao length is only validated once the final chunk is "
-            "validated (Bao spec, final chunk requirement); bab root "
-            "labels commit to total length via hash_inner length input",
+    "validated (Bao spec, final chunk requirement); bab root "
+    "labels commit to total length via hash_inner length input",
 }
 
 # ------------------------------------------- analytic proof-size table ----

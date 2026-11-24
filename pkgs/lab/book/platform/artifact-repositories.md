@@ -41,7 +41,7 @@ LAN-local clusters, egress at scale, sovereignty, and
 pull-through caching.
 
 - **Zot** (CNCF Sandbox; a single Go binary, OCI-native, no
-  database — the storage directory *is* the registry) is the
+  database — the storage directory _is_ the registry) is the
   named **first self-host step**: the registry to stand up the
   day GHCR friction appears, including as a LAN pull-through
   mirror.

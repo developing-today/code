@@ -1,6 +1,6 @@
 # Research notes — sources and evidence trail
 
-*Gathered 2026-11-24 for the SECRETS-STACK-ANALYSIS record. Facts below were used in the main analysis; each is tied to its source.*
+_Gathered 2026-11-24 for the SECRETS-STACK-ANALYSIS record. Facts below were used in the main analysis; each is tied to its source._
 
 ## Primary internal source
 
@@ -17,10 +17,10 @@
 
 - SOPS encrypts values, leaves keys/structure readable; per-file random data key (AES-256-GCM + file MAC) wrapped per recipient (age / PGP / cloud KMS); adding a recipient re-wraps the data key without re-encrypting values; `.sops.yaml` creation rules select recipients by path. (getsops README and multiple practitioner write-ups, e.g. https://www.bugsntea.dev/articles/managing-secrets-with-sops/ and https://dev.to/systhoughts/sops-age-store-secrets-safely-in-git-for-gitops-4g6i, both retrieved 2026-11-24.)
 - GitOps: Flux decrypts SOPS natively; Argo CD via plugins — consistent across sources.
-- Public-repo case study (https://git.ymrtech.com/ymrtech/ymrtech — a fleet operator's published post-mortem, retrieved 2026-11-24): a SOPS store lived in a **public** repository until 2026-09-23; the operator's own verdict is that the ciphertext part "is sound either way" — the actual defect was one catch-all creation rule wrapping six recipient identities' secrets to all six keys (a mail host's key could open portal tokens and VPN private keys). Fix: split to one file per recipient set, filename stating the set, and move to a private repo; per-host age keys generated on the host (`/var/lib/sops-nix/keys.txt`, root-only). The same post-mortem notes the leak that actually occurred in that fleet was plaintext in a *running system's log transcript*, not the repository — a useful calibration of where SOPS risk does and doesn't live.
+- Public-repo case study (https://git.ymrtech.com/ymrtech/ymrtech — a fleet operator's published post-mortem, retrieved 2026-11-24): a SOPS store lived in a **public** repository until 2026-09-23; the operator's own verdict is that the ciphertext part "is sound either way" — the actual defect was one catch-all creation rule wrapping six recipient identities' secrets to all six keys (a mail host's key could open portal tokens and VPN private keys). Fix: split to one file per recipient set, filename stating the set, and move to a private repo; per-host age keys generated on the host (`/var/lib/sops-nix/keys.txt`, root-only). The same post-mortem notes the leak that actually occurred in that fleet was plaintext in a _running system's log transcript_, not the repository — a useful calibration of where SOPS risk does and doesn't live.
 - Rotation nuance (multiple sources): `sops rotate` / recipient removal re-wraps data keys for current files; it does not change the underlying secret values, and historical versions remain openable by previously-authorised keys — the basis for §2.2's revocation analysis.
 
 ## Notes on claims deliberately hedged in the main text
 
-- "SPIRE's Vault UpstreamAuthority against OpenBao" is stated in the main analysis only as a *pattern* (API compatibility is OpenBao's design goal), not as a verified integration for our estate — it would need a spike before being relied on.
+- "SPIRE's Vault UpstreamAuthority against OpenBao" is stated in the main analysis only as a _pattern_ (API compatibility is OpenBao's design goal), not as a verified integration for our estate — it would need a spike before being relied on.
 - No secret values were inspected at any point in this research; internal premises were read from issue bodies (titles, designs, counts, field names) only.
