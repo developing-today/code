@@ -2,8 +2,9 @@
 //!
 //! Projects immutable rows to `document.put` and version/batch claims, with a
 //! separate complete-head-history replay that adds `note.create`/`note.revise`
-//! descriptors. References remain symbolic until signing. Runtime publication,
-//! non-head/backfill selection, lineage, tombstones, and correction clears
+//! descriptors and explicit selection that leaves non-head backfills document-only.
+//! References remain symbolic until signing. Runtime publication,
+//! lineage, tombstones, and correction clears
 //! remain later slices of the #6062 follow-on.
 
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
@@ -103,6 +104,82 @@ pub struct ProjectedHeadVersion {
     pub event_ref: ProjectedNoteEventRef,
     pub document: ProjectedVersion,
     pub note: ProjectedNote,
+}
+
+/// Immutable Atlas version identity, independent of content and path.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct AtlasVersionKey {
+    pub file_id: String,
+    pub version_seq: u64,
+}
+
+/// One immutable version, with a note operation only if explicitly selected
+/// as a historical head transition.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectedSelectedVersion {
+    pub key: AtlasVersionKey,
+    pub document: ProjectedVersion,
+    pub note: Option<ProjectedNote>,
+}
+
+/// Replay immutable rows with an explicit complete set of historical head
+/// transitions, not merely the current heads. Sequence is ingestion order:
+/// neither a larger sequence nor later ingestion makes a backfill a head.
+///
+/// Every row produces document/claims; only selected keys produce note events.
+/// Empty selection is document-only. Selected keys must exist and be unique.
+/// As with `project_head_versions`, selected rows must include each file's first
+/// published head and every subsequent transition; completeness is the caller's
+/// obligation. This does not accept incremental suffixes or resolve lineage.
+pub fn project_selected_versions(
+    rows: &[AtlasVersionRow],
+    head_transitions: &[AtlasVersionKey],
+) -> Result<Vec<ProjectedSelectedVersion>> {
+    // Validate all immutable rows, including backfills, before selecting heads.
+    let documents = project_versions(rows)?;
+    let key = |row: &AtlasVersionRow| AtlasVersionKey {
+        file_id: row.file_id.clone(),
+        version_seq: row.version_seq,
+    };
+    let ordered: BTreeMap<_, _> = rows.iter().map(|row| (key(row), row)).collect();
+    let mut selected = BTreeSet::new();
+    for transition in head_transitions {
+        if !ordered.contains_key(transition) {
+            return Err(refuse(format!(
+                "unknown head-transition key {transition:?}"
+            )));
+        }
+        if !selected.insert(transition.clone()) {
+            return Err(refuse(format!(
+                "duplicate head-transition key {transition:?}"
+            )));
+        }
+    }
+    let heads: Vec<_> = selected.iter().map(|key| ordered[key].clone()).collect();
+    let mut notes: BTreeMap<_, _> = project_head_versions(&heads)?
+        .into_iter()
+        .map(|head| {
+            (
+                AtlasVersionKey {
+                    file_id: head.event_ref.file_id,
+                    version_seq: head.event_ref.version_seq,
+                },
+                head.note,
+            )
+        })
+        .collect();
+    Ok(ordered
+        .into_keys()
+        .zip(documents)
+        .map(|(key, document)| {
+            let note = notes.remove(&key);
+            ProjectedSelectedVersion {
+                key,
+                document,
+                note,
+            }
+        })
+        .collect())
 }
 
 fn refuse(message: impl std::fmt::Display) -> Error {
@@ -251,6 +328,121 @@ mod tests {
 
     fn fixture_rows() -> Vec<AtlasVersionRow> {
         serde_json::from_str(include_str!("../../../fixtures/id_projection_rows.json")).unwrap()
+    }
+
+    fn fixture_head_keys() -> Vec<AtlasVersionKey> {
+        // Oracle input: explicit historical transition facts, not max(sequence).
+        #[derive(Deserialize)]
+        struct Selection {
+            file_id: String,
+            version_seq: u64,
+            head_transition: bool,
+        }
+        let rows: Vec<Selection> =
+            serde_json::from_str(include_str!("../../../fixtures/id_projection_rows.json"))
+                .unwrap();
+        rows.into_iter()
+            .filter(|row| row.head_transition)
+            .map(|row| AtlasVersionKey {
+                file_id: row.file_id,
+                version_seq: row.version_seq,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fixture_explicit_selection_recomputes_heads_without_backfill_revisions() {
+        let rows = fixture_rows();
+        let keys = fixture_head_keys();
+        let heads: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                keys.contains(&AtlasVersionKey {
+                    file_id: row.file_id.clone(),
+                    version_seq: row.version_seq,
+                })
+            })
+            .cloned()
+            .collect();
+        let output = project_selected_versions(&rows, &keys).unwrap();
+        assert_eq!(output.len(), rows.len());
+        assert!(
+            heads.len() < rows.len(),
+            "fixture must include non-head backfills"
+        );
+        for projected in &output {
+            let row = rows
+                .iter()
+                .find(|row| {
+                    row.file_id == projected.key.file_id
+                        && row.version_seq == projected.key.version_seq
+                })
+                .unwrap();
+            assert_recomputes(row, &projected.document);
+            if keys.contains(&projected.key) {
+                assert_head_recomputes(
+                    &heads,
+                    &ProjectedHeadVersion {
+                        event_ref: ProjectedNoteEventRef {
+                            file_id: row.file_id.clone(),
+                            version_seq: row.version_seq,
+                        },
+                        document: projected.document.clone(),
+                        note: projected.note.clone().unwrap(),
+                    },
+                );
+            } else {
+                assert_eq!(
+                    projected.note, None,
+                    "non-head backfills never revise a note"
+                );
+            }
+        }
+        let mut reversed_rows = rows.clone();
+        reversed_rows.reverse();
+        let mut reversed_keys = keys.clone();
+        reversed_keys.reverse();
+        assert_eq!(
+            serde_json::to_vec(&output).unwrap(),
+            serde_json::to_vec(&project_selected_versions(&reversed_rows, &reversed_keys).unwrap())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn explicit_selection_refuses_unknown_duplicate_and_invalid_rows() {
+        // Oracle: a selection is a set of valid immutable keys, with no dangling
+        // references or order-dependent overwrites, even for document-only rows.
+        let rows = fixture_rows();
+        let mut keys = fixture_head_keys();
+        keys.push(keys[0].clone());
+        assert!(project_selected_versions(&rows, &keys).is_err());
+        let absent = AtlasVersionKey {
+            file_id: "missing".into(),
+            version_seq: 1,
+        };
+        assert!(project_selected_versions(&rows, &[absent]).is_err());
+        let wrong_seq = AtlasVersionKey {
+            file_id: rows[0].file_id.clone(),
+            version_seq: u64::MAX,
+        };
+        assert!(project_selected_versions(&rows, &[wrong_seq]).is_err());
+        let mut duplicates = rows.clone();
+        duplicates.push(rows[0].clone());
+        assert!(project_selected_versions(&duplicates, &[]).is_err());
+        let mut invalid = rows.clone();
+        invalid.last_mut().unwrap().version_seq = 0;
+        assert!(project_selected_versions(&invalid, &[]).is_err());
+        let documents_only = project_selected_versions(&rows, &[]).unwrap();
+        assert!(documents_only.iter().all(|version| version.note.is_none()));
+        assert_eq!(
+            documents_only
+                .into_iter()
+                .map(|version| version.document)
+                .collect::<Vec<_>>(),
+            project_versions(&rows).unwrap()
+        );
+        assert!(project_selected_versions(&[], &[]).unwrap().is_empty());
     }
 
     /// Oracle: every publication field is recomputed from the fixture Atlas
@@ -413,6 +605,49 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn selected_histories_match_fixture_row_model_and_replay(
+            inputs in prop::collection::btree_map((0u8..4, 1u64..100), any::<bool>(), 0..40),
+        ) {
+            // Oracle: recompute every document from its row and note parents
+            // from only the explicitly selected row subset, separately per file.
+            let rows: Vec<_> = inputs.keys().map(|(file, version_seq)| {
+                let mut row = fixture_rows()[0].clone();
+                row.file_id = format!("file-{file}");
+                row.version_seq = *version_seq;
+                row.path = format!("renamed-{file}-{version_seq}.md");
+                row
+            }).collect();
+            let heads: Vec<_> = rows.iter().filter(|row| {
+                let file = row.file_id.trim_start_matches("file-").parse::<u8>().unwrap();
+                inputs[&(file, row.version_seq)]
+            }).cloned().collect();
+            let keys: Vec<_> = heads.iter().map(|row| AtlasVersionKey {
+                file_id: row.file_id.clone(), version_seq: row.version_seq,
+            }).collect();
+            let output = project_selected_versions(&rows, &keys).unwrap();
+            prop_assert_eq!(output.len(), rows.len());
+            prop_assert_eq!(output.iter().filter(|version| version.note.is_some()).count(), keys.len());
+            for (row, version) in rows.iter().zip(&output) {
+                assert_eq!(version.key.file_id, row.file_id);
+                assert_eq!(version.key.version_seq, row.version_seq);
+                assert_recomputes(row, &version.document);
+                if keys.contains(&version.key) {
+                    assert_head_recomputes(&heads, &ProjectedHeadVersion {
+                        event_ref: ProjectedNoteEventRef { file_id: row.file_id.clone(), version_seq: row.version_seq },
+                        document: version.document.clone(), note: version.note.clone().unwrap(),
+                    });
+                } else {
+                    prop_assert_eq!(&version.note, &None);
+                }
+            }
+            let mut reversed_rows = rows;
+            reversed_rows.reverse();
+            let mut reversed_keys = keys;
+            reversed_keys.reverse();
+            prop_assert_eq!(project_selected_versions(&reversed_rows, &reversed_keys).unwrap(), output);
+        }
+
         #[test]
         fn head_histories_match_row_model_despite_gaps_and_shared_content(
             keys in prop::collection::vec((0u8..4, 1u64..100), 0..32),
