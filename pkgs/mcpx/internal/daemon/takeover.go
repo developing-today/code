@@ -809,7 +809,7 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 	// the predecessor's commit has detached it from their supervisors
 	// (#9962).
 	if detachAcknowledged {
-		s.reg.AdoptSupervised(context.Background())
+		s.reg.AdoptSupervisedAfterTakeover(context.Background())
 	}
 	// Keep the adoption so an orderly exit can wait for the background
 	// orphan terminations Attach just started (#298). Only the committed
