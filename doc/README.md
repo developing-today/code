@@ -238,6 +238,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [Design record (Part of #7843): consolidated 9-point elicitation-identity record](2026-11-24T06-05-00Z_design_7843_elicitation_identity/2026-11-24T06-05-00Z_design_7843_elicitation_identity.md) — design record, PR #14110 (2026-11-24).
 - [docs(9147): amendment — alternatives, rollback, named deciders](2026-11-24T04-50-00Z_design_9147-reputation-gaps/amendment.md) — design record, PR #14088 (2026-11-24).
 - [docs(13096): board view builder tree-projection design](2026-11-24T06-00-00Z_design_id13096_board_view_builder.md) — design record, PR #14108 (2026-11-24).
+- [Design record (Part of #12921): consolidated 9-point capability-change-notices record](2026-11-24T06-15-00Z_design_12921_capability_notices/2026-11-24T06-15-00Z_design_12921_capability_notices.md) — design record, PR #14114 (2026-11-24).
 
 ## Legacy places
 
