@@ -58,6 +58,7 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 ## Dated records
 
 - [Free models & free tokens census](2026-11-24T01-21-58Z_research_free-census/2026-11-24T01-21-58Z_research_free-census.md) — dated record of the 2026-11-23 free-provider and free-token census; the evidence base for the free-first route order (tracking #13877).
+- [Luna-as-decision experiment](2026-11-24T02-09-38Z_research_decision-eval/2026-11-24T02-09-38Z_research_decision-eval.md) — dated record of the decision-API model experiment (code#13675 Part 3b): Luna low + harness judged against the pre-posted bar — 36/36 schema-faithful, 35/36 correct (97.2%), verdict PASS, seatable in systemone after the free legs (tracking #13877).
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference`, `research` and `report`. A `report` record is the usual home for lane work product — a report or one-off with all of its gathered material in the folder; [`DOCUMENTATION_PROTOCOL.md`](DOCUMENTATION_PROTOCOL.md) gives the landing rules. Run `ls doc/` to list them all. Some starting points:
 
@@ -204,6 +205,8 @@ Two names break the pattern. They stay as they are because other documents link 
 - [p2panda investigation research corpus](2026-11-24T00-53-05Z_research_p2panda-investigation/2026-11-24T00-53-05Z_research_p2panda-investigation.md) — the p2panda/P2P research set (26 Markdown files) behind the `research_p2p-auth-transport` bundle, plus two worm-blossom mirror notes; the HTML mirror is not included.
 - [Code Book census — retrospective](2026-11-24T00-56-13Z_research_code-book-census-retrospective/2026-11-24T00-56-13Z_research_code-book-census-retrospective.md) — the retrospective census for the Code Book programme (#13905), compiled 2026-11-23: the honestly covered period assessed source by source, week-by-week rollups (biggest builds, hardest challenges, where the time went, capabilities unlocked) for W12–W48 with thin weeks stated plainly, month rollups, quarter/year honesty notes, and the capabilities timeline — with all raw supplements (source inventory, GitHub merged-PR counts and title samples, doc/ census, memory completion extracts, cycle-log inventory) inside the folder.
 - [PM book programme — research record](2026-11-24T01-11-42Z_research_pm-book-programme-13900/2026-11-24T01-11-42Z_research_pm-book-programme-13900.md) — The Project Management book programme's gathered material: coverage ledger, Turso estate list, surveys, LLM evidence pack, sideline deposits, Space content pack (#13900).
+- [OpenCode research — usage surfaces and the event system](2026-11-24T02-09-40Z_research_opencode-research/2026-11-24T02-09-40Z_research_opencode-research.md) — the 2026-10-20 OpenCode research notes: OpenAI usage-surface interactions (Codex, Chat, Work, API, Dots, Astra, Ultrafast) and the OpenCode event system (tracking #13877).
+- [Iroh investigation research corpus](2026-11-24T02-11-50Z_research_iroh-investigation/2026-11-24T02-11-50Z_research_iroh-investigation.md) — the 2026-11-23 iroh source set (protocol census, real-projects and community review, blog-chunk working files); the blog catalogue and talks files are living documents in `doc/living/iroh/` (tracking #13877).
 
 ## Legacy places
 

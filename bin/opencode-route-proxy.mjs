@@ -12,7 +12,8 @@
 // OpenCode server uses (.opencode/opencode.jsonc: model_routes +
 // provider blocks), picks the actual pool member (ordered / round-robin
 // / weighted selection, variant remaps, disabled providers skipped,
-// quota demotion from the route_attempt ledger, plus the known-exhausted seating gate #5295), expands provider
+// quota demotion from the route_attempt ledger, plus the known-exhausted seating gate #5295 and the
+// complimentary-token metering wall #13839), expands provider
 // routes (experimental.provider_routes, #3256) into their member
 // providers, and makes ONE plain
 // chat-completions call to that member's endpoint with the member's
@@ -226,6 +227,7 @@ const loadConfig = () => {
   const windows =
     raw.experimental?.model_route_windows || raw.model_route_windows || {};
   warnInvalidWindows(windows);
+  warnInvalidTokenMetering(raw.provider || {});
   cfgCache = {
     path,
     mtimeMs: st.mtimeMs,
@@ -673,21 +675,183 @@ const authBenchedPairs = (now) => {
   }
 };
 
-// Exclude known-exhausted, auth-benched and inferred-walled
-// candidates (#5295, #12228, #13693), following the credential-less
-// exclusion pattern (#3228) — but fail-safe: if the gate would
-// empty the candidate list, the demoted order is kept as it was,
-// because a benched leg as last resort beats no route at all (the
-// one exception is the reset-carrying pacing answer, RC-4 below).
-// Gate decisions are recorded on stderr, the proxy's diagnostics
-// stream.
+// ------------------------------------------------------- metering wall
+//
+// The complimentary-token metering wall (#13839): the one wall in
+// this file that is not failure-driven. A provider block may carry
+// a "tokenMetering" declaration (config next to the alias it
+// belongs to): named groups of models, each with the daily token
+// bucket the group draws on and a safety margin. The declaration
+// landed for openai-payg-free (code#13677): OpenAI's data-sharing
+// complimentary buckets — large group 1M tokens/day, small group
+// 10M/day, reset 00:00 UTC — whose exhaustion is SILENT (no error;
+// eligible traffic simply starts billing), so no failure-driven
+// wall can ever fire for the alias.
+//
+// Counting is the route_attempt ledger itself: the day's counted
+// usage for a group is the sum of tokens_input + tokens_output
+// over the provider's attempts started that UTC day. In the
+// OpenAI usage shape those two fields are prompt_tokens and
+// completion_tokens — the response's total, with reasoning tokens
+// (a completion_tokens subset) and cached tokens (a prompt_tokens
+// subset) already inside, counted exactly once; adding the subset
+// columns on top would double-count. Attempts that reported no
+// usage contribute zero: what was not reported cannot be counted.
+// Because the counter is the ledger, it survives a proxy/server
+// restart by construction — the same persistence the other walls
+// derive their state from — and it counts session traffic on the
+// alias too (same provider id, same org bucket), whoever wrote
+// the row.
+//
+// At bucket minus margin the group's pairs wall until the next
+// 00:00 UTC. The margin exists because a request that crosses the
+// bucket bills in full: the wall stops NEW requests once counted
+// usage reaches the cap; it does not try to predict the size of
+// the next request.
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Why a "tokenMetering" declaration cannot be used, or null when
+// it is well formed. Malformed declarations are named at config
+// load (warnInvalidTokenMetering) and never engage the wall; the
+// config checker (bin/check-opencode-route-rules.mjs) is the
+// fail-closed guard that keeps a malformed declaration out of the
+// tracked config in the first place.
+const tokenMeteringProblems = (metering) => {
+  if (!isPlainObj(metering)) return ["the declaration is not an object"];
+  const groups = metering.groups;
+  if (!isPlainObj(groups) || !Object.keys(groups).length)
+    return ['"groups" is missing or empty'];
+  const problems = [];
+  const seenModels = new Map();
+  for (const [name, g] of Object.entries(groups)) {
+    if (!isPlainObj(g)) {
+      problems.push(`group "${name}" is not an object`);
+      continue;
+    }
+    if (!Number.isInteger(g.dailyTokens) || g.dailyTokens <= 0)
+      problems.push(
+        `group "${name}": dailyTokens=${JSON.stringify(g.dailyTokens)} (expected a positive integer)`,
+      );
+    const margin = g.marginTokens ?? 0;
+    if (
+      !Number.isInteger(margin) ||
+      margin < 0 ||
+      (Number.isInteger(g.dailyTokens) && margin >= g.dailyTokens)
+    )
+      problems.push(
+        `group "${name}": marginTokens=${JSON.stringify(g.marginTokens)} (expected an integer >= 0 and < dailyTokens)`,
+      );
+    if (
+      !Array.isArray(g.models) ||
+      !g.models.length ||
+      !g.models.every((m) => typeof m === "string" && m)
+    )
+      problems.push(
+        `group "${name}": models must be a non-empty array of model ids`,
+      );
+    else
+      for (const m of g.models) {
+        if (seenModels.has(m))
+          problems.push(
+            `model "${m}" is mapped to both group "${seenModels.get(m)}" and group "${name}"`,
+          );
+        else seenModels.set(m, name);
+      }
+  }
+  return problems.length ? problems : null;
+};
+
+// At config load, name every malformed tokenMetering declaration,
+// with the offending values, instead of silently never walling.
+const warnInvalidTokenMetering = (providers) => {
+  if (!providers || typeof providers !== "object") return;
+  for (const [id, block] of Object.entries(providers)) {
+    if (!isPlainObj(block) || block.tokenMetering === undefined) continue;
+    const problems = tokenMeteringProblems(block.tokenMetering);
+    if (problems)
+      console.error(
+        `opencode-route-proxy: invalid tokenMetering on provider "${id}": ` +
+          `${problems.join("; ")}; the metering wall will not engage for it`,
+      );
+  }
+};
+
+// The validated metering groups a provider's effective definition
+// declares (instanceOf chains included, so an alias inherits a
+// metered base's declaration), or null when it declares none — or
+// a malformed one, which never engages (see above).
+const validMeteringGroups = (cfg, providerId) => {
+  const metering = providerDef(cfg, providerId)?.tokenMetering;
+  if (metering === undefined) return null;
+  if (tokenMeteringProblems(metering)) return null;
+  return metering.groups;
+};
+
+// (provider,model) pairs whose complimentary group has reached
+// its counted cap for the current UTC day: pair key ->
+// { until, group, used, cap }, where until is the next 00:00 UTC
+// (the bucket's own reset, so the wall lifts with the bucket and
+// the following day's count starts from an empty window).
+const meteringWalledPairs = (cfg, now) => {
+  const out = new Map();
+  const dayStart = Math.floor(now / DAY_MS) * DAY_MS;
+  const until = dayStart + DAY_MS;
+  let db = null;
+  try {
+    for (const providerId of Object.keys(cfg.providers)) {
+      const groups = validMeteringGroups(cfg, providerId);
+      if (!groups) continue;
+      if (!db) db = openDb();
+      const rows = db
+        .prepare(
+          `SELECT model_id,
+                  SUM(COALESCE(tokens_input, 0) + COALESCE(tokens_output, 0)) AS used
+           FROM route_attempt
+           WHERE provider_id = ? AND time_started >= ? AND time_started < ?
+           GROUP BY model_id`,
+        )
+        .all(providerId, dayStart, until);
+      const usedByModel = new Map(rows.map((r) => [r.model_id, r.used]));
+      for (const [groupName, g] of Object.entries(groups)) {
+        const cap = g.dailyTokens - (g.marginTokens ?? 0);
+        let used = 0;
+        for (const m of g.models) used += usedByModel.get(m) || 0;
+        if (used < cap) continue;
+        for (const m of g.models)
+          out.set(`${providerId}/${m}`, { until, group: groupName, used, cap });
+      }
+    }
+  } catch {
+    return new Map();
+  } finally {
+    try {
+      db?.close();
+    } catch {}
+  }
+  return out;
+};
+
+// Exclude known-exhausted, auth-benched, inferred-walled and
+// metering-walled candidates (#5295, #12228, #13693, #13839),
+// following the credential-less exclusion pattern (#3228) — but
+// fail-safe: if the gate would empty the candidate list, the
+// demoted order is kept as it was, because a benched leg as last
+// resort beats no route at all (the one exception is the
+// reset-carrying pacing answer, RC-4 below). The metering wall is
+// the deliberate exception to that fail-safe: it exists to keep
+// the free legs from BILLING, so the bypass never resurrects a
+// metered pair — if nothing else survives, the route answers
+// no-available-members rather than spending the paid balance the
+// wall was built to protect. Gate decisions are recorded on
+// stderr, the proxy's diagnostics stream.
 const applyKnownExhaustedGate = (cfg, candidates) => {
   if (!candidates.length) return candidates;
   const now = nowMs();
   const exhausted = knownExhaustedPairs(now);
   const authBenched = authBenchedPairs(now);
   const inferred = inferredWalledPairs(now);
-  if (!exhausted.size && !authBenched.size && !inferred.size)
+  const metered = meteringWalledPairs(cfg, now);
+  if (!exhausted.size && !authBenched.size && !inferred.size && !metered.size)
     return candidates;
   const key = (c) => `${c.providerId}/${c.modelKey}`;
   // The inferred wall never stacks on a reset-carrying gate: a pair
@@ -696,7 +860,10 @@ const applyKnownExhaustedGate = (cfg, candidates) => {
     inferred.has(key(c)) && !exhausted.has(key(c));
   const kept = candidates.filter(
     (c) =>
-      !exhausted.has(key(c)) && !authBenched.has(key(c)) && !inferredFor(c),
+      !exhausted.has(key(c)) &&
+      !authBenched.has(key(c)) &&
+      !inferredFor(c) &&
+      !metered.has(key(c)),
   );
   // The fail-safe is evaluated against CREDENTIALED survivors: the
   // credential-less filter (#3228) runs after this gate, so a kept
@@ -744,7 +911,19 @@ const applyKnownExhaustedGate = (cfg, candidates) => {
       `opencode-route-proxy: ${reasons} gate bypassed — no credentialed ` +
         "candidate survives it; keeping the demoted order (#5295, #12228)",
     );
-    return candidates;
+    // The metering wall is not bypassed (#13839): a metered pair
+    // kept by this fail-safe would bill the balance the wall
+    // exists to protect, so metered pairs stay excluded even here
+    // — possibly emptying the list, which prepareCandidates
+    // answers as no-available-members (fail closed).
+    const survivors = candidates.filter((c) => !metered.has(key(c)));
+    if (survivors.length !== candidates.length)
+      console.error(
+        `opencode-route-proxy: metering wall still applies inside the ` +
+          `gate bypass — ${candidates.length - survivors.length} metered ` +
+          `candidate(s) stay excluded (#13839)`,
+      );
+    return survivors;
   }
   for (const c of candidates) {
     if (exhausted.has(key(c)))
@@ -752,7 +931,15 @@ const applyKnownExhaustedGate = (cfg, candidates) => {
         `opencode-route-proxy: known-exhausted gate excluded ${key(c)} ` +
           `until ${new Date(exhausted.get(key(c))).toISOString()} (#5295)`,
       );
-    else if (inferredFor(c))
+    else if (metered.has(key(c))) {
+      const m = metered.get(key(c));
+      console.error(
+        `opencode-route-proxy: metering wall excluded ${key(c)} ` +
+          `until ${new Date(m.until).toISOString()} — complimentary ` +
+          `group "${m.group}" at ${m.used} of ${m.cap} counted tokens ` +
+          `today (#13839)`,
+      );
+    } else if (inferredFor(c))
       console.error(
         `opencode-route-proxy: inferred wall excluded ${key(c)} ` +
           `until ${new Date(inferred.get(key(c))).toISOString()} (#13693)`,
