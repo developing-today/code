@@ -247,6 +247,8 @@ interface RelayMarker {
   kind: string;
   args: Record<string, unknown>;
   who: string;
+  /** Original order, used if an unanswered asking expires into held. */
+  at: string;
   until: number;
 }
 const ICONS = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
@@ -406,6 +408,7 @@ export class Edge {
   /** For each thing a taken action is about, the doing of it: a newer
    * action about the same thing waits for it to end. */
   private busy = new Map<string, Promise<void>>();
+  private busyIds = new Map<string, string | null>();
   /** Serialize the marker's read/modify/write cycle for each subject. */
   private relayWrites = new Map<string, Promise<void>>();
   /** A pass over what is held is under way in this object. */
@@ -1109,41 +1112,53 @@ export class Edge {
    * machine's (see withMachine), which may be doing it. */
   private async takeHeld(id: string): Promise<{ item: Held; ended: () => void } | null> {
     await this.ready();
-    const held = await this.heldList();
-    const handed = await this.handedList();
-    // From here until the lists are changed nothing is waited for: a
-    // report answered meanwhile sees the list with it or without it,
-    // and a newer action about the same thing finds this one being done.
-    const at = held.findIndex((h) => h.id === id);
-    if (at < 0 || this.withMachine(held[at], handed)) return null;
-    const [item] = held.splice(at, 1);
-    const taken = (this.taken ??= []);
-    taken.push(item);
-    const about = this.heldAbout(item);
-    let over: () => void = () => {};
-    const doing = new Promise<void>((resolve) => {
-      over = resolve;
+    const initial = await this.heldList();
+    const found = initial.find((h) => h.id === id);
+    if (!found) return null;
+    const about = this.heldAbout(found);
+    return this.withRelayWrite(about, async () => {
+      const relaying = await this.readOutstandingRelays(about);
+      if (relaying.some((mark) => mark.id !== found.id)) return null;
+      const held = await this.heldList();
+      const handed = await this.handedList();
+      // From here until the lists are changed nothing is waited for: a
+      // report answered meanwhile sees the list with it or without it,
+      // and a newer action about the same thing finds this one being done.
+      const at = held.findIndex((h) => h.id === id);
+      if (at < 0 || this.withMachine(held[at], handed)) return null;
+      const [item] = held.splice(at, 1);
+      const taken = (this.taken ??= []);
+      taken.push(item);
+      const takingAbout = this.heldAbout(item);
+      let over: () => void = () => {};
+      const doing = new Promise<void>((resolve) => {
+        over = resolve;
+      });
+      this.busy.set(takingAbout, doing);
+      this.busyIds.set(takingAbout, item.id);
+      const ended = () => {
+        if (this.busy.get(takingAbout) === doing) {
+          this.busy.delete(takingAbout);
+          this.busyIds.delete(takingAbout);
+        }
+        over();
+      };
+      try {
+        // Written down as taken before it leaves the held list: an object
+        // put away between the two finds it in both, and it was not begun.
+        await this.kv.put("taken", taken);
+        await this.saveHeld();
+      } catch (error) {
+        // It could not be written down: it was not taken, and waits as
+        // it did (nothing was handed out meanwhile that is about the
+        // same thing, since it was this side's for as long as this took).
+        this.taken = (this.taken ?? []).filter((t) => t.id !== item.id);
+        if (!held.some((h) => h.id === item.id)) this.insertHeld(held, item);
+        ended();
+        throw error;
+      }
+      return { item, ended };
     });
-    this.busy.set(about, doing);
-    const ended = () => {
-      if (this.busy.get(about) === doing) this.busy.delete(about);
-      over();
-    };
-    try {
-      // Written down as taken before it leaves the held list: an object
-      // put away between the two finds it in both, and it was not begun.
-      await this.kv.put("taken", taken);
-      await this.saveHeld();
-    } catch (error) {
-      // It could not be written down: it was not taken, and waits as
-      // it did (nothing was handed out meanwhile that is about the
-      // same thing, since it was this side's for as long as this took).
-      this.taken = (this.taken ?? []).filter((t) => t.id !== item.id);
-      if (!held.some((h) => h.id === item.id)) this.insertHeld(held, item);
-      ended();
-      throw error;
-    }
-    return { item, ended };
   }
 
   /** Do here a held action that never reached a machine. "done": it
@@ -2117,6 +2132,9 @@ export class Edge {
     const mine = new Set(
       (this.taken ?? []).map((t) => subjectOf(t.kind, t.args)).filter((about): about is string => about !== null),
     );
+    for (const about of new Set(held.map((h) => subjectOf(h.kind, h.args)).filter((s): s is string => s !== null))) {
+      if ((await this.outstandingRelays(about)).length > 0) mine.add(about);
+    }
     const commands = held.filter((h) => {
       const about = subjectOf(h.kind, h.args);
       return about === null || !mine.has(about);
@@ -2606,6 +2624,7 @@ export class Edge {
             // it; then it looks again, since either may have changed
             // what is waiting. (There cannot be more turns than this.)
             let clear = false;
+            let releaseSubject: (() => void) | null = null;
             for (let turn = 0; turn < 4 * HELD_MAX; turn++) {
               const held = await this.heldList();
               const handed = await this.handedList();
@@ -2616,6 +2635,9 @@ export class Edge {
               // in the order the owner did them.
               const doing = this.busy.get(about);
               if (doing) {
+                if (this.busyIds.get(about) === id) {
+                  return json({ error: "This is still being done.", running: true }, 409);
+                }
                 await doing;
                 continue;
               }
@@ -2626,6 +2648,37 @@ export class Edge {
               if (relaying.some((mark) => mark.id !== id)) return this.keep(newer);
               const older = held.filter((h) => h.id !== id && subjectOf(h.kind, h.args) === about);
               if (older.length === 0) {
+                // Admission and beginRelay share this lock: no older
+                // asking can appear between the final check and the
+                // direct action's storage awaits and commit.
+                const admission = await this.withRelayWrite(about, async () => {
+                  const doingNow = this.busy.get(about);
+                  if (doingNow) return { doing: doingNow, sameName: this.busyIds.get(about) === id };
+                  const active = await this.readOutstandingRelays(about);
+                  if (active.some((mark) => mark.id !== id)) return { blocked: true as const };
+                  let over!: () => void;
+                  const doing = new Promise<void>((resolve) => {
+                    over = resolve;
+                  });
+                  this.busy.set(about, doing);
+                  this.busyIds.set(about, id);
+                  return {
+                    release: () => {
+                      if (this.busy.get(about) === doing) {
+                        this.busy.delete(about);
+                        this.busyIds.delete(about);
+                      }
+                      over();
+                    },
+                  };
+                });
+                if ("doing" in admission) {
+                  if (admission.sameName) return json({ error: "This is still being done.", running: true }, 409);
+                  await admission.doing;
+                  continue;
+                }
+                if ("blocked" in admission) return this.keep(newer);
+                releaseSubject = admission.release;
                 clear = true;
                 break;
               }
@@ -2649,14 +2702,24 @@ export class Edge {
               if ((await this.doHeld(old)) === "back") return this.keep(newer);
             }
             if (!clear) return this.keep(newer);
-          }
-          try {
-            return await this.once(id, kind, () =>
-              this.directAct(kind, args as Record<string, unknown>, by, who.via, id),
-            );
-          } catch (error) {
-            // Refused here before anything was done: a machine's, below.
-            if (!(error instanceof HandOver)) throw error;
+            try {
+              return await this.once(id, kind, () =>
+                this.directAct(kind, args as Record<string, unknown>, by, who.via, id),
+              );
+            } catch (error) {
+              // Refused here before anything was done: a machine's, below.
+              if (!(error instanceof HandOver)) throw error;
+            } finally {
+              releaseSubject?.();
+            }
+          } else {
+            try {
+              return await this.once(id, kind, () =>
+                this.directAct(kind, args as Record<string, unknown>, by, who.via, id),
+              );
+            } catch (error) {
+              if (!(error instanceof HandOver)) throw error;
+            }
           }
         }
         // Written down as a machine's before it goes anywhere.
@@ -2716,14 +2779,18 @@ export class Edge {
         const relayId = id ?? crypto.randomUUID();
         const relayToken = crypto.randomUUID();
         if (about !== null) {
-          const began = await this.beginRelay({
-            token: relayToken,
-            id: relayId,
-            kind,
-            args: args as Record<string, unknown>,
-            who: by,
-            until: this.now() + ACT_MS,
-          }, about);
+          const began = await this.beginRelay(
+            {
+              token: relayToken,
+              id: relayId,
+              kind,
+              args: args as Record<string, unknown>,
+              who: by,
+              at: new Date(this.now()).toISOString(),
+              until: this.now() + ACT_MS,
+            },
+            about,
+          );
           if (!began) return this.keep({ id: relayId, kind, args, who: by }, "unknown");
         }
         // The host's to do. The stateless part relays it, and if the
@@ -2869,7 +2936,21 @@ export class Edge {
         continue;
       }
       changed = true;
-      const held = await this.keep(mark, "unknown");
+      if (!HOLDABLE.has(mark.kind)) {
+        // It cannot safely be replayed late. Treat it as still owned by
+        // the host and make the unknown outcome explicit, but do not let
+        // an expired marker block newer work forever.
+        await this.logAct({
+          id: mark.id,
+          kind: mark.kind,
+          at: mark.at ?? new Date(mark.until - ACT_MS).toISOString(),
+          by: mark.who,
+          status: "failed",
+          note: "No answer before the host action deadline; not retried because this action cannot be held safely. Check whether it happened before trying again.",
+        });
+        continue;
+      }
+      const held = await this.keep(mark, "unknown", mark.at ?? new Date(mark.until - ACT_MS).toISOString());
       // If the held queue was full, fail closed: retain the expired mark
       // so this subject cannot pass it on a later request either.
       if (!held.ok) active.push(mark);
@@ -2883,6 +2964,9 @@ export class Edge {
 
   private async beginRelay(mark: RelayMarker, about: string): Promise<boolean> {
     return this.withRelayWrite(about, async () => {
+      // An edge action already admitted for this subject owns the turn
+      // through its commit. Write the marker only after it ends.
+      while (this.busy.get(about)) await this.busy.get(about);
       const active = await this.readOutstandingRelays(about);
       if (active.some((existing) => existing.id !== mark.id)) return false;
       await this.kv.put(this.relayKey(about), [...active, mark]);
@@ -2957,8 +3041,11 @@ export class Edge {
       named?: unknown;
       relayToken?: unknown;
     } | null;
-    await this.finishRelay(body?.kind, body?.args, body?.relayToken);
-    if (body?.unreached !== true) return this.keep(body, "unknown");
+    if (body?.unreached !== true) {
+      const kept = await this.keep(body, "unknown");
+      if (kept.ok) await this.finishRelay(body?.kind, body?.args, body?.relayToken);
+      return kept;
+    }
     // Word that this asking never arrived says the action reached no
     // machine only if it set off this once: another asking under the
     // same name (the device offered it again meanwhile) may be at the
@@ -2968,7 +3055,9 @@ export class Edge {
         ? null
         : (((await this.kv.get(`a:${body.id}`)) as Acted | undefined) ?? null);
     const once = body.named === false || (record?.state === "given" && record.relays === 1);
-    return this.keep(body, once ? "unreached" : "unknown");
+    const kept = await this.keep(body, once ? "unreached" : "unknown");
+    if (kept.ok) await this.finishRelay(body?.kind, body?.args, body?.relayToken);
+    return kept;
   }
 
   /** Keep an action for later, at the back of what already waits.
@@ -2979,6 +3068,7 @@ export class Edge {
   private async keep(
     body: { id?: unknown; kind?: unknown; args?: unknown; who?: unknown } | null,
     went: "nowhere" | "unreached" | "unknown" = "nowhere",
+    at?: string,
   ): Promise<Response> {
     const kind = typeof body?.kind === "string" ? body.kind : "";
     const args = body?.args;
@@ -3014,10 +3104,10 @@ export class Edge {
       kind,
       args: args as Record<string, unknown>,
       who: String(body?.who ?? "owner"),
-      at: new Date(this.now()).toISOString(),
+      at: at ?? new Date(this.now()).toISOString(),
       ...(went === "unknown" ? {} : { unsent: true as const }),
     };
-    held.push(item);
+    this.insertHeld(held, item);
     await this.saveHeld();
     const waits = (await this.heldWaits(cfg)).get(item.id) ?? "machine";
     await this.audit({
