@@ -55,6 +55,10 @@ export interface Config {
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
   promptsFile: string;
+  /** Prompt attachment blobs (#10036 S7, design #9539 §6): the storage
+   *  decision of record puts them in the pm-stack host data dir, next to
+   *  the prompts file by default (PM_AGG_PROMPT_ATTACHMENTS_DIR). */
+  promptAttachmentsDir: string;
   /** Sync-mode answer wait for prompt submissions (#10033 S3, design
    *  #9539 §3.5): a sync-block request blocks at most this long, and a
    *  sync-ws channel closes with a typed timeout outcome after it.
@@ -81,6 +85,10 @@ export interface Config {
   /** Break-glass owner token store (#9608) — written only by the local
    * owner CLI (scripts/issue-break-glass-token.ts); hashes only. */
   breakGlassFile: string;
+  /** Outage-queued action writes (#9608, design #1253 section 6):
+   * writes queued unverified during an Access/IdP outage, held out
+   * of the actions store until a fresh login confirms the claim. */
+  outageQueueFile: string;
   /** Source freshness invalidation journal, separate from #1739/#3321. */
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
@@ -204,6 +212,18 @@ export interface Config {
     ackWindowMin: number;
     tickMs: number;
   };
+  /** Notify relay (#8569 Phase 2 step 1): the Cloudflare edge
+   * dead-man's switch the aggregator heartbeats to and mirrors
+   * its push subscriptions into. `url` is null until the relay is
+   * deployed and PM_AGG_NOTIFY_RELAY_URL is set — the client is a
+   * no-op while unset, so this config is safe to ship ahead of
+   * the deploy. `stateFile` persists the subscription snapshot
+   * seq (the edge keeps only the highest; a lost counter would
+   * regress loudly, and the client re-adopts from /status). */
+  notifyRelay: {
+    url: string | null;
+    stateFile: string;
+  };
 }
 
 function parseAggregatorSource(env: Record<string, string | undefined>): "fixtures" | "live" {
@@ -223,6 +243,7 @@ function parseAggregatorSource(env: Record<string, string | undefined>): "fixtur
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+  const promptsFile = s(env.PM_AGG_PROMPTS_FILE, join(process.cwd(), "prompts.json"));
   return {
     storeBackend: parseStoreBackend(env),
     source: parseAggregatorSource(env),
@@ -230,7 +251,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
-    promptsFile: s(env.PM_AGG_PROMPTS_FILE, join(process.cwd(), "prompts.json")),
+    promptsFile,
+    promptAttachmentsDir: s(env.PM_AGG_PROMPT_ATTACHMENTS_DIR, join(dirname(promptsFile), "prompt-attachments")),
     promptSyncTimeoutMs: parseAggregatorCount(
       env.PM_AGG_PROMPT_SYNC_TIMEOUT_MS,
       "PM_AGG_PROMPT_SYNC_TIMEOUT_MS",
@@ -250,6 +272,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     breakGlassFile: s(
       env.PM_AGG_BREAK_GLASS_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "break-glass-tokens.json"),
+    ),
+    outageQueueFile: s(
+      env.PM_AGG_OUTAGE_QUEUE_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "outage-queue.json"),
     ),
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
@@ -384,6 +410,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     alerts: {
       ackWindowMin: parseAggregatorCount(env.ALERT_ACK_WINDOW_MIN, "ALERT_ACK_WINDOW_MIN", "15"),
       tickMs: 60_000,
+    },
+    notifyRelay: {
+      url: env.PM_AGG_NOTIFY_RELAY_URL?.trim() ? env.PM_AGG_NOTIFY_RELAY_URL.trim().replace(/\/+$/, "") : null,
+      stateFile: s(
+        env.PM_AGG_NOTIFY_RELAY_STATE_FILE,
+        join(homedir(), ".local", "state", "pm-aggregator", "notify-relay.json"),
+      ),
     },
   };
 }

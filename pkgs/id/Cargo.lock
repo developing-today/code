@@ -4867,6 +4867,7 @@ dependencies = [
  "iroh-tickets",
  "libc",
  "n0-mainline",
+ "num-bigint 0.4.8",
  "p2panda-auth",
  "p2panda-core",
  "p2panda-store",
@@ -4965,6 +4966,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
 ]
 
@@ -5111,6 +5113,7 @@ name = "id-import-notion"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "serde",
  "serde_json",
  "tempfile",

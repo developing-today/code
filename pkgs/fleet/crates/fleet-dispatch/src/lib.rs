@@ -198,8 +198,7 @@ fn open_stream(config: &Config, transport: &Transport) -> Result<TcpStream> {
                 TcpStream::connect_timeout(&addr, Duration::from_secs(10)).map_err(|e| {
                     transport_err(format!("cannot connect to pm-dispatch at {authority}: {e}"))
                 })?;
-            stream.set_read_timeout(Some(Duration::from_secs(300))).ok();
-            stream.set_write_timeout(Some(Duration::from_secs(60))).ok();
+            apply_timeouts(&stream, Duration::from_secs(300), Duration::from_secs(60))?;
             Ok(stream)
         }
         Transport::Tunnel { target_host, port } => {
@@ -212,6 +211,21 @@ fn open_stream(config: &Config, transport: &Transport) -> Result<TcpStream> {
             })
         }
     }
+}
+
+/// Set the direct stream's read/write deadlines. A failed set is a
+/// transport error, never swallowed: without the deadline the reads
+/// below run unbounded against a stalled peer (#13466). Split out of
+/// `open_stream` so the failure is testable — a zero duration is
+/// refused by the OS layer and must surface here.
+fn apply_timeouts(stream: &TcpStream, read: Duration, write: Duration) -> Result<()> {
+    stream
+        .set_read_timeout(Some(read))
+        .map_err(|e| transport_err(format!("cannot set dispatch read timeout: {e}")))?;
+    stream
+        .set_write_timeout(Some(write))
+        .map_err(|e| transport_err(format!("cannot set dispatch write timeout: {e}")))?;
+    Ok(())
 }
 
 /// How a response body is delimited. Exactly one shape is chosen
@@ -247,6 +261,23 @@ fn read_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>)> {
         if raw.len() > 1024 * 1024 {
             return Err(transport_err("pm-dispatch response headers exceed 1 MiB"));
         }
+        // Repetition is bounded as well as bytes (#13466): a peer
+        // sending endless tiny header lines stays under the byte cap
+        // for a long while, so count complete lines as they arrive
+        // and refuse past the fleet-proxy http.rs contract
+        // (MAX_HEADER_LINES header lines, plus the status line).
+        let lines = count_crlf(&raw);
+        // Header lines are the lines after the status line, not
+        // counting the blank line that ends the head when it has
+        // already arrived.
+        let head_complete = find_subslice(&raw, b"\r\n\r\n").is_some();
+        let header_lines = lines.saturating_sub(if head_complete { 2 } else { 1 });
+        if header_lines > fleet_proxy::http::MAX_HEADER_LINES {
+            return Err(transport_err(format!(
+                "pm-dispatch response head exceeds {} header lines",
+                fleet_proxy::http::MAX_HEADER_LINES
+            )));
+        }
     };
     let head = String::from_utf8_lossy(&raw[..header_end]).into_owned();
     let status: u16 = head
@@ -258,7 +289,9 @@ fn read_response(stream: &mut TcpStream) -> Result<(u16, Vec<u8>)> {
     // present-but-invalid Content-Length or Transfer-Encoding is
     // refused, never silently treated as absent — a partial body
     // can be valid JSON, so lenient framing would make truncation
-    // invisible to the caller.
+    // invisible to the caller. The four-dimension contract (type,
+    // range, arithmetic, count) is stated in fleet-proxy's http.rs
+    // module doc; this reader follows it.
     let mut content_length: Option<usize> = None;
     let mut transfer_codings: Vec<String> = Vec::new();
     for line in head.lines().skip(1) {
@@ -423,6 +456,10 @@ fn dechunked_len(body: &[u8]) -> Option<usize> {
 
 fn dechunk(body: &[u8]) -> Vec<u8> {
     parse_chunked(body).ok().flatten().unwrap_or_default()
+}
+
+fn count_crlf(bytes: &[u8]) -> usize {
+    bytes.windows(2).filter(|w| *w == b"\r\n").count()
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -1067,6 +1104,70 @@ mod tests {
         assert!(msg.contains("truncated"), "{msg}");
         let msg = served_err(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r");
         assert!(msg.contains("truncated"), "{msg}");
+    }
+
+    #[test]
+    fn header_flooding_peer_is_refused() {
+        // #13466: the head read is bounded by repetition as well as
+        // bytes — past MAX_HEADER_LINES header lines is refused
+        // even though the whole flood is far under the 1 MiB cap.
+        let mut wire = b"HTTP/1.1 200 OK\r\n".to_vec();
+        for i in 0..(fleet_proxy::http::MAX_HEADER_LINES + 1) {
+            wire.extend_from_slice(format!("X-Flood-{i}: 1\r\n").as_bytes());
+        }
+        wire.extend_from_slice(b"Content-Length: 5\r\n\r\nhello");
+        let msg = served_err(&wire);
+        assert!(msg.contains("header lines"), "{msg}");
+        // Control at the cap: MAX_HEADER_LINES header lines in
+        // total (the flood lines plus Content-Length) is accepted.
+        let mut wire = b"HTTP/1.1 200 OK\r\n".to_vec();
+        for i in 0..(fleet_proxy::http::MAX_HEADER_LINES - 1) {
+            wire.extend_from_slice(format!("X-Ok-{i}: 1\r\n").as_bytes());
+        }
+        wire.extend_from_slice(b"Content-Length: 5\r\n\r\nhello");
+        assert_eq!(serve_once(&wire).unwrap(), (200, b"hello".to_vec()));
+    }
+
+    #[test]
+    fn stalled_peer_times_out_instead_of_hanging() {
+        // #13466: a peer that accepts and never sends must fail the
+        // read at its deadline, not park the client forever.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _holder = std::thread::spawn(move || {
+            let (_sock, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        let mut stream = TcpStream::connect(addr).unwrap();
+        apply_timeouts(&stream, Duration::from_millis(200), Duration::from_secs(1)).unwrap();
+        let started = std::time::Instant::now();
+        let err = read_response(&mut stream).err().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "read must hit its deadline"
+        );
+        assert!(err.message().contains("read failed"), "{}", err.message());
+    }
+
+    #[test]
+    fn timeout_set_failures_surface_as_errors() {
+        // #13466: a zero duration is refused by the OS layer; the
+        // failure must surface as a transport error, not be
+        // swallowed by `.ok()` the way open_stream used to.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(addr).unwrap();
+        let err = apply_timeouts(&stream, Duration::ZERO, Duration::from_secs(1))
+            .err()
+            .unwrap();
+        assert!(err.message().contains("read timeout"), "{}", err.message());
+        // And the success path sets what it was asked for.
+        apply_timeouts(&stream, Duration::from_secs(3), Duration::from_secs(2)).unwrap();
+        assert_eq!(stream.read_timeout().unwrap(), Some(Duration::from_secs(3)));
+        assert_eq!(
+            stream.write_timeout().unwrap(),
+            Some(Duration::from_secs(2))
+        );
     }
 
     #[test]

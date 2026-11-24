@@ -89,9 +89,11 @@ Stdin is inherited so prompts still behave.
 
 ## Rotation order and overrides
 
-Default rotation for one invocation (`gh.rs:380-429`): **personal
-first**, then each App leg in App order (fleet → developing.today →
-backup) with that App's owners in list order. Total: 1 + 3 + 2 + 1 =
+Default rotation for one invocation (`gh.rs`, `rotation_with`):
+each App leg in App order (fleet → developing.today → backup) with
+that App's owners in list order, then the **personal leg last**
+(the user, 2026-11-23, code#13310) — the user's own token is the final
+fallback, not the first identity tried. Total: 3 + 2 + 1 + 1 =
 **7 sources**.
 
 Compiled-in owner lists (`gh.rs:104-110`):
@@ -155,8 +157,10 @@ the org, every leg 403s in turn. This is the #10744 gap: live probes
 (2026-11-14, org `layercloud`, all three Apps installed there but no
 leg configured) confirmed the default rotation 403s while
 `FLEET_GH_ORDER=…,app:layercloud,…` succeeds. In the default
-rotation the **personal token, tried first, masks the gap** while it
-has headroom; public reads also pass under any leg. Tracked fix:
+rotation the App legs 403 first, in order; the **personal token,
+tried last, is the final cover** — while it has headroom it still
+masks the gap, but only after every App leg has refused. Public
+reads also pass under any leg. Tracked fix:
 configurable rotation without code changes, code#10311.
 
 ## No caching across invocations

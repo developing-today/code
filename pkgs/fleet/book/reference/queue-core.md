@@ -112,22 +112,25 @@ enqueued new task 19479 (queue repo-health-code, status queued)
 ## fleet queue list
 
 ```text
-usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>]
+usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>] [--json]
 ```
 
-| Flag           | Argument           | Default  | Meaning                                                                                                                |
-| -------------- | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `--queue`      | queue name         | unscoped | Flag → env `REPO_QUEUE_DEFAULT_QUEUE` → **no scope** (all queues). Never the shadow default.                           |
-| `--status`     | status string      | unset    | Filter by status. Help names `queued\|parked\|claimed\|blocked` as the actionable set; any status string is forwarded. |
-| `--limit`      | integer            | 20       | Range 1..=500, rejected (never clamped) outside it, exit 2 naming `--limit`.                                           |
-| `--not-before` | RFC 3339 timestamp | unset    | Filter; validated client-side with the park/revive rule, exit 2 on garbage.                                            |
-| `--lane`       | lane id            | unset    | Filter forwarded to the broker.                                                                                        |
-| `--worker`     | worker id          | unset    | Filter forwarded to the broker.                                                                                        |
-| `--task`       | task id            | unset    | Narrow to one task regardless of status ordering — the recovery path for verifying a just-completed task.              |
+| Flag           | Argument           | Default  | Meaning                                                                                                                               |
+| -------------- | ------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `--queue`      | queue name         | unscoped | Flag → env `REPO_QUEUE_DEFAULT_QUEUE` → **no scope** (all queues). Never the shadow default.                                          |
+| `--status`     | status string      | unset    | Filter by status. Help names `queued\|parked\|claimed\|blocked` as the actionable set; any status string is forwarded.                |
+| `--limit`      | integer            | 20       | Range 1..=500, rejected (never clamped) outside it, exit 2 naming `--limit`.                                                          |
+| `--not-before` | RFC 3339 timestamp | unset    | Filter; validated client-side with the park/revive rule, exit 2 on garbage.                                                           |
+| `--lane`       | lane id            | unset    | Filter forwarded to the broker.                                                                                                       |
+| `--worker`     | worker id          | unset    | Filter forwarded to the broker.                                                                                                       |
+| `--task`       | task id            | unset    | Narrow to one task regardless of status ordering — the recovery path for verifying a just-completed task.                             |
+| `--json`       | —                  | off      | Exact-task status form: requires `--queue` and `--task` together; see **Exact form** below. The bulk flags do not apply in that form. |
 
 **Behaviour.** A bare `list` prints a scope note to **stderr**: it shows one queue (or every queue when unscoped) in the broker's default ordering — _newest terminal rows first_ — "not the actionable set", with pointers to `--status`, `--queue`, `--limit`. Fetching is paged at 100 rows/page with broker offsets, because a single oversized `/list` reply used to render as a silent "(no tasks)". A reply with no `rows` array is an error (exit 3), never an empty list.
 
-Output is a table with columns `task, priority, status, age, dedupe_key, title` (title truncated to 72 chars); `(no tasks)` when empty. When the broker reports a total: `(N matching tasks)`, or `(truncated: showing X of N matching tasks — raise --limit to see more)`. There is **no `--json` flag** on list.
+Output is a table with columns `task, priority, status, age, dedupe_key, title` (title truncated to 72 chars); `(no tasks)` when empty. When the broker reports a total: `(N matching tasks)`, or `(truncated: showing X of N matching tasks — raise --limit to see more)`.
+
+**Exact form (`--json`, #8581 pilot).** With `--json`, `--queue` and `--task` are required together (exit 2 without both) and no other list flag applies (exit 2 naming it). The verb makes one scoped rich `/list` read and prints a single JSON record instead of the table: `verb`, `mode` and `route` actually used (the #8581 contract vocabulary), `queue`, `task_id`, `as_of` (when this seat observed the answer), and a `result` of `found` (the broker row rides under `task`, attributed to `source: cloud`, with the row's own `task_as_of` when it carries a timestamp), `not_found`, `partial`, or `unknown`. Only a complete authoritative zero — ok reply, empty rows, total reported as 0, no truncation — is `not_found`; a truncated window, an uncertified zero, or a reply naming other tasks is `partial` with a `detail` naming why, and a transport failure, a denial, a broker error envelope, a malformed reply, or a matching row that names a different queue is `unknown` with its own `detail`. This slice attempts no replica or marker fallback: when nothing served, the record says `mode: db-degraded`, `route: unavailable` rather than naming a route it never took. Exit codes in this form: 0 found · 1 not_found · 3 partial / unknown / transport · the broker envelope's own exit (default 4) on a broker error.
 
 Exit codes: 0 ok · 2 usage (including out-of-range `--limit`, bad `--not-before`) · 3 transport / malformed reply · 4 broker store failure.
 

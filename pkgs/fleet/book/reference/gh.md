@@ -22,12 +22,12 @@ Before each attempt, one token is resolved by name through the fleet secrets cha
 
 **Rotation order** (source behaviour):
 
-1. **Personal** — the `gh` OAuth token, parsed out of the broker secret named `github-cli.hosts-yml` (the hosts.yml file itself, stored by name; the parser extracts its `oauth_token`).
-2. **Fleet App installations** — "developing.today fleet", App ID **5612056** (`FLEET_GH_APP_ID` may override). Private key by secret name `github-app.developing-today-fleet.private-key`. Default owners, in order: `developing-today`, `developing-today-forks`, `dezren39`.
-3. **developing.today App installations** — App ID and key both by name (`kaneo.github-app-id`, `kaneo.github-app-private-key`). Default owners: `developing-today`, `dezren39`.
-4. **developing-today-backup App installations** — by name (`github-app.backup-app-id`, `github-app.backup-private-key`). Default owner: `developing-today`.
+1. **Fleet App installations** — "developing.today fleet", App ID **5612056** (`FLEET_GH_APP_ID` may override). Private key by secret name `github-app.developing-today-fleet.private-key`. Default owners, in order: `developing-today`, `developing-today-forks`, `dezren39`.
+2. **developing.today App installations** — App ID and key both by name (`kaneo.github-app-id`, `kaneo.github-app-private-key`). Default owners: `developing-today`, `dezren39`.
+3. **developing-today-backup App installations** — by name (`github-app.backup-app-id`, `github-app.backup-private-key`). Default owner: `developing-today`.
+4. **Personal** — the `gh` OAuth token, parsed out of the broker secret named `github-cli.hosts-yml` (the hosts.yml file itself, stored by name; the parser extracts its `oauth_token`). Tried last: the final fallback, not the first identity used.
 
-Known discrepancy: the help summary's "personal, then the developing.today App's installations" understates the source — there are **three** Apps in a fixed order (fleet → developing.today → backup), each expanded over its owners.
+Known discrepancy: the help summary's "the developing.today App's installations, then personal last" understates the source — there are **three** Apps in a fixed order (fleet → developing.today → backup), each expanded over its owners, with the personal token last.
 
 Mechanics per App leg: the private key is resolved by name; an RS256 JWT is signed with the system `openssl`, the key passed over an inherited fd — never written to disk, never in argv; the owner's installation is resolved live from `GET /app/installations`, paginated at 100/page. **Hint-first:** when the call names a repo or org, that owner's installation moves to the front of _each_ App leg, because an installation token only sees its own installation's scope. Controls: `FLEET_GH_ORDER` (comma list fixing the rotation exactly: `personal`, `app:<owner>`, `devtoday:<owner>`, `backup:<owner>`), `FLEET_GH_APP_OWNERS` / `FLEET_GH_DEVTODAY_OWNERS` / `FLEET_GH_BACKUP_OWNERS` (comma lists replacing an App's default owners).
 
@@ -88,7 +88,7 @@ Help: `fleet gh tiers --help` prints the verb's own usage and exits 0; any other
 $ fleet gh tiers
 ```
 
-Prints per-source core and GraphQL headroom for the personal token and all three Apps' installations.
+Prints per-source core and GraphQL headroom for all three Apps' installations and the personal token.
 
 ## fleet gh cache-serve
 

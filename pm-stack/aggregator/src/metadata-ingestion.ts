@@ -25,6 +25,8 @@
  * Metadata *queries*; GitHub stays the system of record for the items.
  */
 import type { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   createPmMetadataStore,
   parsePmMetadata,
@@ -260,7 +262,12 @@ export function runMetadataCheck(item: IngestionItem, context: MetadataCheckCont
     const { candidateSlugs } = resolveAscertainedParent(item, context.epicSlugs);
     return {
       kind: "needs-triage",
-      evidence: triageEvidence(item, ["existing metadata block is unparseable; ascertainment insufficient"], candidateSlugs, true),
+      evidence: triageEvidence(
+        item,
+        ["existing metadata block is unparseable; ascertainment insufficient"],
+        candidateSlugs,
+        true,
+      ),
     };
   }
 
@@ -322,11 +329,7 @@ function ascertain(
  * fields the broker validates (schema, kind, problem, priority_reason,
  * non-empty evidence/acceptance/tests, scope, risk, timebox, attempts).
  */
-export function buildTriagePacket(
-  evidence: TriageEvidence,
-  ingestedBy: string,
-  at: string,
-): Record<string, unknown> {
+export function buildTriagePacket(evidence: TriageEvidence, ingestedBy: string, at: string): Record<string, unknown> {
   const problem = [
     `Dual ingestion (${ingestedBy}) could not ascertain sufficient Metadata for ${evidence.repo}#${evidence.number} (${evidence.kind}):`,
     ...evidence.reasons.map((reason) => `- ${reason}`),
@@ -372,7 +375,10 @@ export function buildTriagePacket(
         "Dual-ingestion forward: item lacks an ascertainable Metadata parent, so full triage owns it (resolved to 30 on the queue design scale).",
       timebox_minutes: 20,
       max_attempts: 1000,
-      dedupe: { checked_at: at, basis: `Dual-ingestion forward for ${evidence.repo}#${evidence.number}; canonical triage key anchors to the item.` },
+      dedupe: {
+        checked_at: at,
+        basis: `Dual-ingestion forward for ${evidence.repo}#${evidence.number}; canonical triage key anchors to the item.`,
+      },
     },
   };
 }
@@ -388,6 +394,13 @@ export function storeOutcome(db: Database, outcome: MetadataCheckOutcome): void 
 
 /** Open (creating) the sweeper/listener database with the store installed. */
 export function openMetadataStore(path: string, open: (path: string) => Database): Database {
+  // bun:sqlite creates the database file but not its parent directories,
+  // so a clean environment (no state directory yet) crashed the server at
+  // boot with SQLITE_CANTOPEN (#13293). Create the parent first, like the
+  // other state stores do on write; genuine open failures (permissions,
+  // a parent that is not a directory) still throw — only the
+  // missing-directory case self-heals.
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = open(path);
   createPmMetadataStore(db);
   return db;

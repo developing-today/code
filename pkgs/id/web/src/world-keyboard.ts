@@ -115,10 +115,10 @@ export function terminalBytesForKey(event: KeyEventLike): Uint8Array | null {
  * Rich (kitty-disambiguate-v1) terminal encoding for world applications —
  * Slice C of issue #787, additive alongside the legacy encoder above.
  *
- * This encoder is NOT used by the UI: nothing calls it yet. It exists so a
- * future per-connection opt-in (Slice F) can select it, exactly as the
- * design requires — `terminalBytesForKey` stays the default legacy path,
- * unchanged. Parity with a terminal is equality of the events the Roc
+ * The UI selects this encoder only for a connection opened with
+ * `?keyboard=kitty` (Slice F, in world.ts); `terminalBytesForKey` stays
+ * the default legacy path, unchanged. Parity with a terminal is equality
+ * of the events the Roc
  * `Key.parse_events` decoder (Slice A) produces, not identical bytes:
  * plain UTF-8 text and a CSI-u form of the same scalar are the same event.
  *
@@ -237,7 +237,7 @@ function unshiftedScalar(key: string): string {
  * anything the profile leaves Unknown (F13+, CapsLock and other
  * modifier-only or unsupported named keys). Multi-scalar text is not
  * a physical key: it stays on the text path (design §4.4).
- * Unused by the UI in this slice (see the block comment above).
+ * Selected per connection by world.ts (see the block comment above).
  */
 export function richTerminalBytesForKey(event: KeyEventLike): Uint8Array | null {
   if (event.metaKey || event.key === "Unidentified" || event.key === "Dead" || event.key === "Process") {

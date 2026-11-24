@@ -364,8 +364,10 @@ pub enum StreamError {
 }
 
 /// One `media.stream` subscription, subscriber side: frames of at most
-/// [`MAX_STREAM_FRAME_BYTES`] arrive under a credit window, and the stream ends
-/// with exactly one explicit end — into an artifact or discarded.
+/// [`MAX_STREAM_FRAME_BYTES`] arrive under a credit window, the assembled
+/// bytes are held under the cumulative [`MAX_MEDIA_BYTES`] artifact ceiling
+/// while the stream is open, and the stream ends with exactly one explicit
+/// end — into an artifact or discarded.
 #[derive(Clone, Debug)]
 pub struct MediaStream {
     sort: MediaSort,
@@ -375,6 +377,7 @@ pub struct MediaStream {
     duration_ms: Option<u64>,
     created_at: u64,
     credit: usize,
+    ceiling: u64,
     buffered: Vec<u8>,
     end: Option<StreamEnd>,
 }
@@ -400,6 +403,7 @@ impl MediaStream {
             duration_ms,
             created_at,
             credit: credit_window,
+            ceiling: MAX_MEDIA_BYTES,
             buffered: Vec::new(),
             end: None,
         }
@@ -417,13 +421,18 @@ impl MediaStream {
     }
 
     /// Accepts one frame. The frame is checked against the ceiling before the
-    /// window, so an oversize frame is refused even by a closed window.
+    /// window, so an oversize frame is refused even by a closed window. The
+    /// cumulative artifact ceiling is checked next, before any credit is
+    /// consumed or the assembly buffer extended, so the bytes retained during
+    /// assembly never exceed the ceiling the finished artifact is held to.
     ///
     /// # Errors
     ///
     /// Returns [`StreamError::AlreadyEnded`] after the end frame,
     /// [`StreamError::FrameTooLarge`] for a frame over
-    /// [`MAX_STREAM_FRAME_BYTES`], and [`StreamError::Backpressure`] when the
+    /// [`MAX_STREAM_FRAME_BYTES`], [`StreamError::Media`] with
+    /// [`MediaError::Oversize`] when the frame would take the assembled bytes
+    /// over the artifact ceiling, and [`StreamError::Backpressure`] when the
     /// credit window is closed.
     pub fn push_frame(&mut self, frame: &[u8]) -> Result<(), StreamError> {
         if self.end.is_some() {
@@ -434,6 +443,13 @@ impl MediaStream {
                 size: frame.len(),
                 max: MAX_STREAM_FRAME_BYTES,
             });
+        }
+        let assembled = len_of(&self.buffered) + len_of(frame);
+        if assembled > self.ceiling {
+            return Err(StreamError::Media(MediaError::Oversize {
+                named: assembled,
+                max: self.ceiling,
+            }));
         }
         if self.credit == 0 {
             return Err(StreamError::Backpressure);
@@ -695,5 +711,34 @@ mod tests {
             Some(&StreamEnd::Discarded("disconnect".to_owned()))
         );
         assert!(dropped.buffered_bytes().is_empty());
+    }
+
+    #[test]
+    fn test_a_stream_refuses_bytes_over_the_artifact_ceiling_during_assembly() {
+        // A small synthetic ceiling stands in for MAX_MEDIA_BYTES so the
+        // boundary is exercised without assembling 256 MiB.
+        let mut stream =
+            MediaStream::new(MediaSort::Image, "image/png", Some(2), Some(3), None, 42, 4);
+        stream.ceiling = 10;
+        // An exact fit is admitted.
+        assert!(stream.push_frame(b"01234").is_ok());
+        assert!(stream.push_frame(b"56789").is_ok());
+        assert_eq!(stream.buffered_bytes(), b"0123456789");
+        assert_eq!(stream.credit(), 2);
+        // One more byte crosses the ceiling: the frame is refused with the
+        // artifact oversize refusal, and neither the assembled bytes nor the
+        // credit window move.
+        assert_eq!(
+            stream.push_frame(b"x"),
+            Err(StreamError::Media(MediaError::Oversize {
+                named: 11,
+                max: 10,
+            }))
+        );
+        assert_eq!(stream.buffered_bytes(), b"0123456789");
+        assert_eq!(stream.credit(), 2);
+        // The admitted prefix still finalizes into an artifact.
+        let media = stream.finish_artifact().unwrap();
+        assert!(media.verify_content(b"0123456789").is_ok());
     }
 }

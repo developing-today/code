@@ -61,6 +61,7 @@ mod tags_ws;
 mod templates;
 mod transport_ad;
 pub mod world_ws;
+pub mod wss_https;
 
 pub use content_mode::{ContentMode, MediaType, detect_mode, detect_mode_with_content};
 pub use markdown::{

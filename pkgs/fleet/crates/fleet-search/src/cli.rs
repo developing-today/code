@@ -79,7 +79,8 @@ usage: fleet search <query> [options]
 Hybrid FTS+vector search over the Atlas corpus, with classification
 filters — the atlas-search client surface (step 5, #5433).
 
-Search options (mirroring `atlas-search search`):
+Search options (the subset of `atlas-search search` that
+translates to the wire request or to routing):
   --k N                 final results (default 10)
   --pool N              per-branch candidates, 1..=400 (default 100)
   --mode MODE           hybrid | fts | vector (default hybrid)
@@ -95,16 +96,19 @@ Search options (mirroring `atlas-search search`):
                         sandbox-scripts personal)
   --group-by-session    roll chunk hits up to sessions
   --expand N            include N neighboring chunks around each hit
+                        (0..=100, atlas-search's cap)
   --with-message        include the parent message text
   --no-cache            bypass the service cache reads (the fresh
                         result still lands in the cache)
   --no-wait             do not block: print the service job handle
                         and return (the one-shot default waits)
   --hydrate N           hydrate the top N results to full content
+                        (max 1000, atlas-search's cap)
   --raw-rows[=branches] ungrouped rows: bare for flat fused rows,
                         =branches for pre-fusion branch rows
   --text                human-readable output instead of JSON
-  --model NAME          embedding model (default Snowflake arctic-embed-m-v2.0)
+  --model NAME          embedding model (default
+                        Snowflake/snowflake-arctic-embed-m-v2.0)
   --embedder NAME       auto | fastembed | st (default auto)
   --trunc N             truncate vectors to N dims (0 = full)
   --vector-backend B    scan | index-fill | index-fixed (default scan)
@@ -124,7 +128,11 @@ get-chunk:
   Fetch one chunk with its provenance (session, client,
   sensitivity). --neighbors N includes N chunks either side in
   the same message; --text renders human-readable instead of
-  JSON. `fleet search get-chunk --help` prints the verb's usage.
+  JSON. Every other argument is forwarded verbatim to
+  atlas-search get-chunk, whose own options (--context,
+  --backend, --db, --vecdb, --via-service, --service-url)
+  therefore work through this verb. `fleet search
+  get-chunk --help` prints the verb's usage.
 
 Provisioning (via-service): the client presents a per-seat
 bearer token — ATLAS_SEARCH_TOKEN, else the JSON file at
@@ -144,6 +152,7 @@ Examples:
 
 const GET_CHUNK_USAGE: &str = "\
 usage: fleet search get-chunk <chunk-id> [--neighbors N] [--text]
+       (any other atlas-search get-chunk option also works — below)
 
 Fetch one chunk from the Atlas corpus with its provenance — the
 chunk a `fleet search` hit named, with the session, client, and
@@ -151,6 +160,21 @@ sensitivity it came from.
 
   --neighbors N   include N chunks either side in the same message
   --text          human-readable output instead of JSON
+
+The verb itself parses nothing else: every other argument is
+forwarded verbatim to the standalone atlas-search artifact, so
+atlas-search get-chunk's own options work through this verb
+unchanged:
+
+  --context LV    disclosure context of the destination surface
+  --backend B     backend selection
+  --db PATH       corpus database path
+  --vecdb PATH    vector database path
+  --via-service   accepted; the verb still runs standalone (below)
+  --service-url U service base URL
+
+A mistyped option is therefore answered by atlas-search, in its
+own wording, not fleet's.
 
 get-chunk is job-scoped in the search protocol, so it always runs
 through the standalone atlas-search artifact, with a loud note
@@ -241,9 +265,13 @@ fn usage_err(message: impl Into<String>) -> CliError {
 /// Validate one count flag against the service's request contract
 /// (atlas-search's `count`, mirroring the server's
 /// `validate_request`): `--k` at least 1, `--pool` between 1 and
-/// 400, and the zero-is-valid counts merely non-negative.
-/// Out-of-range values are a fatal (exit 2), never a silent clamp
-/// to 0 (#5407 — the rule and the messages are atlas's).
+/// 400, `--expand` between 0 and 100 (atlas-core's
+/// MAX_EXPAND_NEIGHBORS — the fleet workspace carries no atlas
+/// dependency, so the value is named here), `--hydrate` at most
+/// 1000 (atlas-proto's request-validation cap), and the remaining
+/// zero-is-valid counts merely non-negative. Out-of-range values
+/// are a fatal (exit 2), never a silent clamp to 0 (#5407 — the
+/// rule and the messages are atlas's).
 fn count(flag: &str, v: i64, min: i64, max: Option<i64>) -> Result<usize, CliError> {
     if v >= min && max.is_none_or(|m| v <= m) {
         return Ok(usize::try_from(v).expect("range-checked count converts"));
@@ -282,65 +310,117 @@ fn parse_i64(flag: &str, value: &str) -> Result<i64, CliError> {
         .map_err(|_| usage_err(format!("{flag}: invalid integer {value:?}")))
 }
 
+/// The value for one flag occurrence: the inline `--flag=value`
+/// value when present, else the following token.
+fn flag_value(
+    args: &[String],
+    i: &mut usize,
+    flag: &str,
+    inline: Option<String>,
+) -> Result<String, CliError> {
+    match inline {
+        Some(v) => Ok(v),
+        None => take_value(args, i, flag),
+    }
+}
+
+/// Switches take no value: `--text=true` is a usage error, the
+/// same shape the fleet-wide verb parser gives it.
+fn no_inline(flag: &str, inline: &Option<String>) -> Result<(), CliError> {
+    match inline {
+        Some(_) => Err(usage_err(format!("{flag} takes no value"))),
+        None => Ok(()),
+    }
+}
+
 /// Parse the search arguments (everything after the optional
 /// `search` subcommand token). Exactly one positional: the query.
+/// Both spellings of a value flag are accepted — `--flag value`
+/// and `--flag=value` — the serve role's parser (and clap, so the
+/// standalone binaries) split on `=` the same way (#13281).
 fn parse_search_args(args: &[String]) -> Result<SearchArgs, CliError> {
     let mut out = SearchArgs::default();
     let mut query: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
-        let arg = &args[i];
-        match arg.as_str() {
+        let raw = &args[i];
+        let (arg, inline): (&str, Option<String>) = match raw.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value.to_string())),
+            _ => (raw.as_str(), None),
+        };
+        match arg {
             "--k" => {
-                let v = take_value(args, &mut i, "--k")?;
+                let v = flag_value(args, &mut i, "--k", inline)?;
                 out.k = parse_i64("--k", &v)?;
             }
             "--pool" => {
-                let v = take_value(args, &mut i, "--pool")?;
+                let v = flag_value(args, &mut i, "--pool", inline)?;
                 out.pool = parse_i64("--pool", &v)?;
             }
-            "--mode" => out.mode = take_value(args, &mut i, "--mode")?,
-            "--kind" => out.kind = Some(take_value(args, &mut i, "--kind")?),
-            "--topic" => out.topic = Some(take_value(args, &mut i, "--topic")?),
-            "--project" => out.project = Some(take_value(args, &mut i, "--project")?),
-            "--client" => out.client_filter = Some(take_value(args, &mut i, "--client")?),
-            "--since" => out.since = Some(take_value(args, &mut i, "--since")?),
-            "--until" => out.until = Some(take_value(args, &mut i, "--until")?),
+            "--mode" => out.mode = flag_value(args, &mut i, "--mode", inline)?,
+            "--kind" => out.kind = Some(flag_value(args, &mut i, "--kind", inline)?),
+            "--topic" => out.topic = Some(flag_value(args, &mut i, "--topic", inline)?),
+            "--project" => out.project = Some(flag_value(args, &mut i, "--project", inline)?),
+            "--client" => out.client_filter = Some(flag_value(args, &mut i, "--client", inline)?),
+            "--since" => out.since = Some(flag_value(args, &mut i, "--since", inline)?),
+            "--until" => out.until = Some(flag_value(args, &mut i, "--until", inline)?),
             "--max-sensitivity" => {
-                out.max_sensitivity = take_value(args, &mut i, "--max-sensitivity")?
+                out.max_sensitivity = flag_value(args, &mut i, "--max-sensitivity", inline)?
             }
-            "--group-by-session" => out.group_by_session = true,
+            "--group-by-session" => {
+                no_inline("--group-by-session", &inline)?;
+                out.group_by_session = true;
+            }
             "--expand" => {
-                let v = take_value(args, &mut i, "--expand")?;
+                let v = flag_value(args, &mut i, "--expand", inline)?;
                 out.expand = parse_i64("--expand", &v)?;
             }
-            "--with-message" => out.with_message = true,
-            "--no-cache" => out.no_cache = true,
-            "--no-wait" => out.no_wait = true,
+            "--with-message" => {
+                no_inline("--with-message", &inline)?;
+                out.with_message = true;
+            }
+            "--no-cache" => {
+                no_inline("--no-cache", &inline)?;
+                out.no_cache = true;
+            }
+            "--no-wait" => {
+                no_inline("--no-wait", &inline)?;
+                out.no_wait = true;
+            }
             "--hydrate" => {
-                let v = take_value(args, &mut i, "--hydrate")?;
+                let v = flag_value(args, &mut i, "--hydrate", inline)?;
                 out.hydrate = parse_i64("--hydrate", &v)?;
             }
-            "--raw-rows" => out.raw_rows = Some("ungrouped".to_string()),
-            other if other.starts_with("--raw-rows=") => {
-                out.raw_rows = Some(other["--raw-rows=".len()..].to_string());
+            "--raw-rows" => {
+                out.raw_rows = Some(inline.unwrap_or_else(|| "ungrouped".to_string()));
             }
-            "--text" => out.text = true,
-            "--model" => out.model = take_value(args, &mut i, "--model")?,
-            "--embedder" => out.embedder = take_value(args, &mut i, "--embedder")?,
+            "--text" => {
+                no_inline("--text", &inline)?;
+                out.text = true;
+            }
+            "--model" => out.model = flag_value(args, &mut i, "--model", inline)?,
+            "--embedder" => out.embedder = flag_value(args, &mut i, "--embedder", inline)?,
             "--trunc" => {
-                let v = take_value(args, &mut i, "--trunc")?;
+                let v = flag_value(args, &mut i, "--trunc", inline)?;
                 out.trunc = parse_i64("--trunc", &v)?;
             }
             "--vector-backend" => {
-                out.vector_backend = take_value(args, &mut i, "--vector-backend")?
+                out.vector_backend = flag_value(args, &mut i, "--vector-backend", inline)?
             }
-            "--via-service" => out.via_flag = true,
-            "--standalone" => out.standalone_flag = true,
-            "--service-url" => out.service_url = Some(take_value(args, &mut i, "--service-url")?),
+            "--via-service" => {
+                no_inline("--via-service", &inline)?;
+                out.via_flag = true;
+            }
+            "--standalone" => {
+                no_inline("--standalone", &inline)?;
+                out.standalone_flag = true;
+            }
+            "--service-url" => {
+                out.service_url = Some(flag_value(args, &mut i, "--service-url", inline)?)
+            }
             "--help" | "-h" => return Err((EXIT_OK, "__help__".to_string())),
             other if other.starts_with('-') => {
-                return Err(usage_err(format!("unknown option {other:?}")));
+                return Err(usage_err(format!("unknown option {raw:?}")));
             }
             other => {
                 if query.is_some() {
@@ -393,8 +473,8 @@ fn resolve_route(parsed: &SearchArgs, config: &Config) -> Route {
 fn proto_request(parsed: &SearchArgs) -> Result<SearchRequest, CliError> {
     let k = count("--k", parsed.k, 1, None)?;
     let pool = count("--pool", parsed.pool, 1, Some(400))?;
-    let expand = count("--expand", parsed.expand, 0, None)?;
-    let hydrate = count("--hydrate", parsed.hydrate, 0, None)?;
+    let expand = count("--expand", parsed.expand, 0, Some(100))?;
+    let hydrate = count("--hydrate", parsed.hydrate, 0, Some(1000))?;
     let raw_mode = match parsed.raw_rows.as_deref() {
         None => crate::proto::RawMode::Off,
         Some("ungrouped") => crate::proto::RawMode::Ungrouped,
@@ -622,11 +702,24 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             EXIT_USAGE
         }
         Some("get-chunk") => cmd_get_chunk(config, args),
-        Some("serve") | Some("init") | Some("fetch-model") => {
+        Some("serve") => {
+            // Unreachable through the fleet binary, which routes
+            // `search serve` to the serve role before this client
+            // surface runs (and `fleet help search` lists the verb
+            // because that route exists) — name the routed shape,
+            // not a rejection of the verb itself (#13281).
+            eprintln!(
+                "fleet search: 'serve' is the service role, not a client verb — \
+                 `fleet search serve` is routed to `fleet serve search`; \
+                 run that for the Atlas service"
+            );
+            EXIT_USAGE
+        }
+        Some("init") | Some("fetch-model") => {
             eprintln!(
                 "fleet search: '{0}' is an atlas-search service verb, not part of the fleet \
-                 search client surface — the service role is `fleet serve search`; `init` and \
-                 `fetch-model` stay on the standalone atlas-search artifact",
+                 search client surface — `init` and `fetch-model` stay on the \
+                 standalone atlas-search artifact",
                 args[0]
             );
             EXIT_USAGE
@@ -765,6 +858,68 @@ mod tests {
         assert!(
             proto_request(&parse_search_args(&args(&["q", "--pool", "401"])).unwrap()).is_err()
         );
+    }
+
+    #[test]
+    fn parse_accepts_equals_spelling_like_the_serve_parser() {
+        // #13281: the serve role's parser (and clap) accept
+        // `--flag=value`; the client parser now splits the same
+        // way, so both spellings parse identically.
+        let spaced = parse_search_args(&args(&["q", "--k", "5", "--mode", "fts"])).unwrap();
+        let joined = parse_search_args(&args(&["q", "--k=5", "--mode=fts"])).unwrap();
+        assert_eq!(joined.k, spaced.k);
+        assert_eq!(joined.mode, spaced.mode);
+        assert_eq!(
+            parse_search_args(&args(&["q", "--raw-rows=branches"]))
+                .unwrap()
+                .raw_rows
+                .as_deref(),
+            Some("branches")
+        );
+        // A value on a switch is a usage error, and an unknown
+        // joined option names the whole token.
+        assert!(parse_search_args(&args(&["q", "--text=true"])).is_err());
+        let err = parse_search_args(&args(&["q", "--bogus=3"])).unwrap_err();
+        assert_eq!(err.1, "unknown option \"--bogus=3\"");
+    }
+
+    #[test]
+    fn proto_request_applies_atlas_expand_and_hydrate_caps() {
+        // #13281: atlas-search caps --expand at 100 (atlas-core's
+        // MAX_EXPAND_NEIGHBORS) and --hydrate at 1000 (atlas-proto's
+        // request validation); the fleet request builder checked
+        // only >= 0.
+        let at_caps =
+            parse_search_args(&args(&["q", "--expand", "100", "--hydrate", "1000"])).unwrap();
+        assert!(proto_request(&at_caps).is_ok());
+        let over_expand = parse_search_args(&args(&["q", "--expand", "101"])).unwrap();
+        assert_eq!(
+            proto_request(&over_expand).unwrap_err(),
+            (
+                2,
+                "--expand must be between 0 and 100 (design section 2)".to_string()
+            )
+        );
+        let over_hydrate = parse_search_args(&args(&["q", "--hydrate", "1001"])).unwrap();
+        assert_eq!(
+            proto_request(&over_hydrate).unwrap_err(),
+            (
+                2,
+                "--hydrate must be between 0 and 1000 (design section 2)".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn service_verbs_answer_from_the_client_surface() {
+        // #13281: `fleet search serve` starts the service (the bin
+        // routes it to `fleet serve search` before this surface
+        // runs); the branch here only answers direct callers and
+        // stays a usage exit. init/fetch-model stay rejected.
+        let config = Config::default();
+        assert_eq!(run(&config, &args(&["serve"])), EXIT_USAGE);
+        assert_eq!(run(&config, &args(&["init"])), EXIT_USAGE);
+        assert_eq!(run(&config, &args(&["fetch-model"])), EXIT_USAGE);
     }
 
     #[test]

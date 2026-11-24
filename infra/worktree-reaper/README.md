@@ -1,6 +1,6 @@
 # worktree-reaper
 
-Retires dead fleet worktrees on the laptop, implementing Drew's
+Retires dead fleet worktrees on the laptop, implementing the user's
 quiet-worktree rule (2026-11-01). Born from the 2026-11-01 reality check
 (`worktree-reality-check-2026-11-01.md`): the fleet creates ~272
 worktrees/day by template (one per dispatched task) and, until now,

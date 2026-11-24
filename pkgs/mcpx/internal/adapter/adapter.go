@@ -154,6 +154,33 @@ type Param struct {
 // <name>.run runs the binary with the given argv, no shell anywhere.
 const bareToolName = "run"
 
+// CheckBareAllowed is the adapters.allowBare gate (#11147, from #1962),
+// shared by every path that can bring a declaration into a running
+// system: the CLI's load and serve paths, and the daemon's live add,
+// which must refuse a bare declaration BEFORE persisting it -- a
+// declaration written first and refused at reload would break every
+// later reload and daemon start.
+//
+// A bare declaration exposes a binary's whole argv surface, so loading
+// one is a policy decision, not just a parse: while the setting is off
+// (its default) any bare declaration fails, naming the setting that
+// would permit it, so an organisation can forbid passthrough
+// declarations centrally instead of auditing every file paths.adapters
+// might be pointed at.
+func CheckBareAllowed(specs []Spec, allowBare bool) error {
+	if allowBare {
+		return nil
+	}
+	for _, s := range specs {
+		if s.Bare {
+			return fmt.Errorf("adapter %q is a bare (passthrough) declaration, and adapters.allowBare is off: "+
+				"set adapters.allowBare to true (or MCPX_ADAPTERS_ALLOW_BARE=true) to permit bare declarations, "+
+				"or remove \"bare\": true from the declaration", s.Name)
+		}
+	}
+	return nil
+}
+
 // ExposedTools is what a declaration presents: the declared tools, or,
 // for a bare declaration, the single passthrough tool. Every listing,
 // calling and serving path uses this, so a bare spec shows one tool

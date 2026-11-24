@@ -998,7 +998,7 @@ fn audit_object(name: &str, arguments: &serde_json::Value) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::mcp_bridge::v1_tool_definitions;

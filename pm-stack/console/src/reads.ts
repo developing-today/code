@@ -27,6 +27,8 @@ export async function platformRead(seg: string[], query: URLSearchParams, ops: O
         return ops.prs();
       case "releases":
         return ops.releases();
+      case "platform":
+        return ops.platform();
       case "roadmaps":
         return plan.capabilities();
       case "roadmap":
