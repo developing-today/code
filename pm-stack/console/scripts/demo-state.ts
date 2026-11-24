@@ -285,7 +285,13 @@ const state = {
   ],
   done: {
     tasks: {
-      day: 3,
+      day: 41,
+      kinds: [
+        { kind: "second_pass", n: 31 },
+        { kind: "small_fix", n: 6 },
+        { kind: "triage", n: 3 },
+        { kind: "feature", n: 1 },
+      ],
       latest: [
         {
           id: 21640,

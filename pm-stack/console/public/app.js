@@ -719,6 +719,15 @@ export function doneSaid(done) {
   return { tiles, line: `In the last day: ${counted.length ? counted.join(", ") : "nothing counted"}${rest}.` };
 }
 
+/** The day's finished tasks by their kind, the most first, in a line.
+ * @param {any} kinds */
+export function doneKindsSaid(kinds) {
+  return (Array.isArray(kinds) ? kinds : [])
+    .filter((k) => k && Number.isSafeInteger(k.n) && k.n > 0)
+    .map((k) => `${k.n} ${k.kind ? String(k.kind).replace(/_/g, " ") : "of no kind"}`)
+    .join(" · ");
+}
+
 /** What the queue's record says came of a finished task (the verdicts
  * are the queue's own: fleet-queue's disposition.rs). */
 const VERDICT_SAID = {
@@ -780,20 +789,30 @@ function viewDone(sub) {
     );
   } else if (which === "tasks") {
     const list = done.tasks.latest || [];
-    out.push(
-      h("h2", {}, "Tasks finished"),
-      ...older(list),
-      ...(list.length
-        ? list.map((t) => {
-            const s = doneTaskSaid(t);
-            return card(
-              h("div", { class: "row" }, ...s.chips.map((c, i) => chip(c, i > 0 && t.verdict === "merged_verified" ? "good" : "")), ...s.links.map((l) => ext(l.url, l.text))),
-              h("h3", {}, t.title),
-              h("p", { class: "meta" }, s.meta),
-            );
-          })
-        : [empty("No task was finished in the last week.")]),
-    );
+    const kinds = doneKindsSaid(done.tasks.kinds);
+    const taskCardOf = (t) => {
+      const s = doneTaskSaid(t);
+      return card(
+        h(
+          "div",
+          { class: "row" },
+          ...s.chips.map((c, i) => chip(c, i > 0 && t.verdict === "merged_verified" ? "good" : "")),
+          ...s.links.map((l) => ext(l.url, l.text)),
+        ),
+        h("h3", {}, t.title),
+        h("p", { class: "meta" }, s.meta),
+      );
+    };
+    // What a task came to is on its record or it is not: those with a
+    // result first, since a day's finished tasks are mostly passes over
+    // an issue that leave no record of one.
+    const withResult = list.filter((t) => t.verdict);
+    const rest = list.filter((t) => !t.verdict);
+    if (kinds) out.push(h("p", { class: "meta" }, `Tasks finished in the last day: ${kinds}.`));
+    out.push(...older(list));
+    if (!list.length) out.push(h("h2", {}, "Tasks finished"), empty("No task was finished in the last week."));
+    if (withResult.length) out.push(h("h2", {}, "With a result on record"), ...withResult.map(taskCardOf));
+    if (rest.length) out.push(h("h2", {}, withResult.length ? "The rest" : "Tasks finished"), ...rest.map(taskCardOf));
   } else {
     const list = done.closed.latest || [];
     out.push(

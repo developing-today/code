@@ -11,6 +11,7 @@ import {
   awayNotice,
   censusSaid,
   differsSaid,
+  doneKindsSaid,
   doneSaid,
   doneTaskSaid,
   acceptAllSaid,
@@ -1065,6 +1066,24 @@ test("what was finished in the last day is said in numbers, with 'at least' wher
   expect(doneSaid(undefined)).toBeNull();
   expect(doneSaid({})).toBeNull();
   expect(doneSaid({ tasks: { day: "many" }, merged: none, closed: none })).toBeNull();
+});
+
+// What the day's finished tasks were, by kind. The oracle is the counts
+// themselves: each is said with its kind's name, the most first, and
+// what is said adds up to what was counted.
+test("the day's finished tasks are said by kind, the most first", () => {
+  expect(
+    doneKindsSaid([
+      { kind: "second_pass", n: 650 },
+      { kind: "small_fix", n: 40 },
+      { kind: null, n: 3 },
+      { kind: "triage", n: 1 },
+    ]),
+  ).toBe("650 second pass · 40 small fix · 3 of no kind · 1 triage");
+  // Nothing counted, a copy without them, and counts that are not counts: nothing is said.
+  expect(doneKindsSaid([])).toBe("");
+  expect(doneKindsSaid(undefined)).toBe("");
+  expect(doneKindsSaid([{ kind: "triage", n: 0 }, { kind: "x", n: "many" }, null])).toBe("");
 });
 
 // A finished task says what came of it. The oracle is the queue's own

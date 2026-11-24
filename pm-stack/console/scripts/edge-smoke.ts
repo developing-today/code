@@ -104,7 +104,7 @@ const data: Record<string, unknown> = {
   priorities: { issues: [], truncated: false },
   // The stand-in machine's own copy says nothing was finished.
   done: {
-    tasks: { day: 0, latest: [] },
+    tasks: { day: 0, kinds: [], latest: [] },
     merged: { day: 0, more: false, latest: [] },
     closed: { day: 0, more: false, latest: [] },
   },

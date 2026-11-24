@@ -17,7 +17,7 @@ import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
-import { BLOCKED_KINDS_SQL, DONE_COUNT_SQL, DONE_TASKS_SQL, promptPacket, Work } from "../src/work.ts";
+import { BLOCKED_KINDS_SQL, DONE_COUNT_SQL, DONE_KINDS_SQL, DONE_TASKS_SQL, promptPacket, Work } from "../src/work.ts";
 import { asThePlatformFetch } from "./support.ts";
 
 const CFG = readConfig({ HOME: "/h" });
@@ -305,10 +305,18 @@ describe("what was finished lately", () => {
     // In the last day: the same tasks less yesterday's, each once.
     expect(db.query(DONE_COUNT_SQL).get(ago(24), CFG.queue)).toEqual({ n: 5 });
     expect(db.query(DONE_COUNT_SQL).get(ago(24), "nobody")).toEqual({ n: 0 });
+    // And by the kind of task: the most first, each task once, adding up to them all.
+    const kinds = db.query(DONE_KINDS_SQL).all(ago(24), CFG.queue) as { kind: string; n: number }[];
+    expect(kinds).toEqual([
+      { kind: "", n: 3 },
+      { kind: "small_fix", n: 1 },
+      { kind: "triage", n: 1 },
+    ]);
+    expect(kinds.reduce((sum, k) => sum + k.n, 0)).toBe(5);
   });
 
   test("it is read from the events of the time asked for, not by going through every task", () => {
-    for (const sql of [DONE_TASKS_SQL, DONE_COUNT_SQL]) {
+    for (const sql of [DONE_TASKS_SQL, DONE_COUNT_SQL, DONE_KINDS_SQL]) {
       const plan = (db.query(`EXPLAIN QUERY PLAN ${sql}`).all(ago(24), CFG.queue) as { detail: string }[]).map(
         (r) => r.detail,
       );
@@ -398,7 +406,9 @@ describe("what was finished lately", () => {
       ? (db.query(DONE_TASKS_SQL).all(...(st.args as [string, string])) as Record<string, unknown>[])
       : st.sql === DONE_COUNT_SQL
         ? [db.query(DONE_COUNT_SQL).get(...(st.args as [string, string])) as Record<string, unknown>]
-        : [];
+        : st.sql === DONE_KINDS_SQL
+          ? (db.query(DONE_KINDS_SQL).all(...(st.args as [string, string])) as Record<string, unknown>[])
+          : [];
 
   test("the tasks finished, the pull requests merged and the issues closed are read together, newest first", async () => {
     const w = world({ rows, commands: (argv) => (argv[1] === "gh" ? JSON.stringify(CLOSED) : "{}") });
@@ -409,12 +419,18 @@ describe("what was finished lately", () => {
       [
         { sql: DONE_TASKS_SQL, args: [ago(7 * 24), CFG.queue] },
         { sql: DONE_COUNT_SQL, args: [ago(24), CFG.queue] },
+        { sql: DONE_KINDS_SQL, args: [ago(24), CFG.queue] },
       ],
     ]);
     expect(w.gh()).toEqual([[`repos/${REPO}/issues?state=closed&sort=updated&direction=desc&per_page=100`]]);
     expect(done).toEqual({
       tasks: {
         day: 5,
+        kinds: [
+          { kind: null, n: 3 },
+          { kind: "small_fix", n: 1 },
+          { kind: "triage", n: 1 },
+        ],
         latest: [
           {
             id: 1,
@@ -576,7 +592,7 @@ describe("what was finished lately", () => {
     expect([done.closed.day, done.closed.more]).toEqual([0, true]);
     expect(done.merged.latest[0].number).toBe(1000);
     // No count of tasks came back: none, not nonsense.
-    expect(done.tasks).toEqual({ day: 0, latest: [] });
+    expect(done.tasks).toEqual({ day: 0, kinds: [], latest: [] });
     // The same page with its oldest from before the day: that is all of them.
     page[99].closed_at = ago(25);
     page[99].updated_at = ago(25);
@@ -1724,7 +1740,7 @@ describe("the interface's endpoints", () => {
       { day: 0, more: false, latest: [] },
       { day: 0, more: false, latest: [] },
     ]);
-    expect(w.sqls.flat().map((st) => st.sql)).toEqual([DONE_TASKS_SQL, DONE_COUNT_SQL]);
+    expect(w.sqls.flat().map((st) => st.sql)).toEqual([DONE_TASKS_SQL, DONE_COUNT_SQL, DONE_KINDS_SQL]);
     expect(w.gh()).toEqual([[`repos/${REPO}/issues?state=closed&sort=updated&direction=desc&per_page=100`]]);
   });
 

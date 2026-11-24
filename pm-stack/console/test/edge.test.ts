@@ -39,7 +39,7 @@ import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
-import { DONE_COUNT_SQL, DONE_TASKS_SQL } from "../src/work.ts";
+import { DONE_COUNT_SQL, DONE_KINDS_SQL, DONE_TASKS_SQL } from "../src/work.ts";
 import { asThePlatformFetch, browser, signer } from "./support.ts";
 
 const HOST = "pm.example";
@@ -357,6 +357,13 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
       };
     }
     if (sql === DONE_COUNT_SQL) return { cols: cols(["n"]), rows: rows([[{ value: queueDone.length }]]) };
+    if (sql === DONE_KINDS_SQL) {
+      // None of the stand-in's finished tasks says what kind it is.
+      return {
+        cols: cols(["kind", "n"]),
+        rows: rows(queueDone.length ? [[{ value: "" }, { value: queueDone.length }]] : []),
+      };
+    }
     if (sql.includes("count(*) AS n") && sql.includes("GROUP BY status")) {
       const counts = new Map<string, number>();
       for (const t of queueTasks) counts.set(t.status, (counts.get(t.status) ?? 0) + 1);
@@ -790,7 +797,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     prs: [],
     priorities: { issues: [], truncated: false },
     done: {
-      tasks: { day: 0, latest: [] },
+      tasks: { day: 0, kinds: [], latest: [] },
       merged: { day: 0, more: false, latest: [] },
       closed: { day: 0, more: false, latest: [] },
     },
@@ -5144,7 +5151,7 @@ describe("the edge does the core itself", () => {
   describe("what was finished lately", () => {
     type Done = {
       done: {
-        tasks: { day: number; latest: Record<string, unknown>[] };
+        tasks: { day: number; kinds: { kind: string | null; n: number }[]; latest: Record<string, unknown>[] };
         merged: { day: number; more: boolean; latest: { number: number; by: string }[] };
         closed: { day: number; more: boolean; latest: { number: number; reason: string | null }[] };
       };
@@ -5184,6 +5191,7 @@ describe("the edge does the core itself", () => {
       const doc = await read(w);
       expect(doc.done.tasks).toEqual({
         day: 1,
+        kinds: [{ kind: null, n: 1 }],
         latest: [
           {
             id: 21001,

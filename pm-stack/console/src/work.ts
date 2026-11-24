@@ -52,6 +52,10 @@ export const DONE_TASKS_SQL = `SELECT t.id AS id, t.title AS title, substr(max(e
   GROUP BY t.id ORDER BY max(e.created_at) DESC, t.id DESC LIMIT ${DONE_SHOWN}`;
 /** How many tasks were finished since a time, each counted once. */
 export const DONE_COUNT_SQL = `SELECT count(DISTINCT t.id) AS n ${DONE_FROM}`;
+/** The same tasks by their kind, the most first: what the day went on. */
+export const DONE_KINDS_SQL = `SELECT coalesce(json_extract(${P},'$.kind'),'') AS kind, count(DISTINCT t.id) AS n
+  ${DONE_FROM}
+  GROUP BY 1 ORDER BY n DESC, kind ASC LIMIT 12`;
 /** One page of what GitHub lists as closed, most lately touched first. */
 const CLOSED_PAGE = 100;
 const DAY_MS = 24 * 3_600_000;
@@ -241,9 +245,10 @@ export class Work {
     const now = this.clock().getTime();
     const day = stamp(now - DAY_MS);
     const since = stamp(now - DONE_SINCE_MS);
-    const [finished, counted] = await this.ops.reads([
+    const [finished, counted, kinds] = await this.ops.reads([
       { sql: DONE_TASKS_SQL, args: [since, this.ops.cfg.queue] },
       { sql: DONE_COUNT_SQL, args: [day, this.ops.cfg.queue] },
+      { sql: DONE_KINDS_SQL, args: [day, this.ops.cfg.queue] },
     ]);
     const listed = await this.ops.gh([
       `repos/${this.repo}/issues?state=closed&sort=updated&direction=desc&per_page=${CLOSED_PAGE}`,
@@ -288,6 +293,8 @@ export class Work {
     return {
       tasks: {
         day: Number(counted[0]?.n) || 0,
+        // By kind, for the same day: what it went on.
+        kinds: kinds.map((r) => ({ kind: said(r.kind, 40), n: Number(r.n) || 0 })),
         latest: finished.map((r) => ({
           id: Number(r.id),
           title: clip(r.title, 200),
