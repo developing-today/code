@@ -256,6 +256,7 @@ pub mod hosted_export;
 pub mod hosted_freeze;
 pub mod hosted_ingest;
 pub mod hosted_migration;
+pub mod hosted_world_partition;
 pub use id_events::idset;
 pub use id_worlds::input_framing;
 pub use id_directory::invite;
