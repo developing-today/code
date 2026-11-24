@@ -43,6 +43,7 @@ Run on the laptop:
 
 import argparse
 import json
+import os
 import re
 import socket
 import subprocess
@@ -55,6 +56,7 @@ HOME = Path.home()
 DEFAULT_OUTPUT = HOME / ".local" / "state" / "pm-aggregator" / "host-health.json"
 DEFAULT_MODE_FILE = HOME / ".local" / "state" / "opencode-claimant" / "mode"
 DEFAULT_RUN_RECORD = HOME / "backups" / "dashboard" / ".last-run.json"
+DEFAULT_FLAKE_LOCK = Path(__file__).resolve().parents[1] / "flake.lock"
 
 UNITS = [
     "pm-git-sync",
@@ -234,6 +236,98 @@ def read_host_name():
     return {"host": name}
 
 
+def read_opencode_runtime(
+    proc_root=Path("/proc"), flake_lock=DEFAULT_FLAKE_LOCK
+):
+    """Report the OpenCode service executable revision against this repo's pin.
+
+    The process executable is read through /proc/<MainPID>/exe, not inferred
+    from systemd's configured ExecStart. A path without an embedded build
+    revision is unknown rather than treated as a match.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                "opencode.service",
+                "--property=ActiveState,MainPID",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+    except Exception as exc:
+        return {"state": "unknown", "detail": f"cannot inspect opencode.service: {exc}"}
+    if result.returncode != 0:
+        return {
+            "state": "unknown",
+            "detail": f"systemctl show opencode.service failed: {result.stderr.strip()[:200]}",
+        }
+    props = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("=")
+        props[key.strip()] = value.strip()
+    if props.get("ActiveState") != "active":
+        return {
+            "state": "down",
+            "activeState": props.get("ActiveState") or "unknown",
+            "detail": "opencode.service is not active",
+        }
+    try:
+        pid = int(props.get("MainPID", ""))
+        if pid <= 0:
+            raise ValueError("MainPID is not positive")
+        executable = os.readlink(Path(proc_root) / str(pid) / "exe")
+    except Exception as exc:
+        return {"state": "unknown", "detail": f"cannot read running opencode executable: {exc}"}
+
+    deleted = executable.endswith(" (deleted)")
+    path = executable.removesuffix(" (deleted)")
+    match = re.search(r"(?:^|/)opencode-[^/]*\+([0-9a-f]{7,40})(?:/|$)", path)
+    runtime_revision = match.group(1) if match else None
+    try:
+        lock = json.loads(Path(flake_lock).read_text())
+        root = lock["nodes"][lock["root"]]
+        input_node = root["inputs"]["opencode"]
+        if isinstance(input_node, dict):
+            input_node = input_node.get("follows")
+            if isinstance(input_node, list):
+                input_node = input_node[-1]
+        expected_revision = lock["nodes"][input_node]["locked"]["rev"]
+        if not isinstance(expected_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_revision):
+            raise ValueError("locked opencode revision is not a full commit hash")
+    except Exception as exc:
+        return {
+            "state": "unknown",
+            "pid": pid,
+            "executable": executable,
+            "deleted": deleted,
+            "runtimeRevision": runtime_revision,
+            "detail": f"cannot read pinned opencode revision: {exc}",
+        }
+    if not runtime_revision or deleted:
+        return {
+            "state": "unknown",
+            "pid": pid,
+            "executable": executable,
+            "deleted": deleted,
+            "runtimeRevision": runtime_revision,
+            "expectedRevision": expected_revision,
+            "detail": "running executable has no usable embedded revision",
+        }
+    state = "match" if expected_revision.startswith(runtime_revision) else "mismatch"
+    return {
+        "state": state,
+        "pid": pid,
+        "executable": executable,
+        "deleted": deleted,
+        "runtimeRevision": runtime_revision,
+        "expectedRevision": expected_revision,
+    }
+
+
 BACKUP_RESULTS = ("complete", "failed")
 
 
@@ -299,6 +393,7 @@ def main(argv=None):
         "host": read_host_name(),
         "claimantMode": read_claimant_mode(args.mode_file),
         "backup": read_backup_record(args.run_record),
+        "opencode": read_opencode_runtime(),
         "units": {},
         "timers": {},
     }

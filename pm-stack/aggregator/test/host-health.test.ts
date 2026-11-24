@@ -44,6 +44,7 @@ function healthySnapshot(over: Partial<HostHealthSnapshot> = {}): HostHealthSnap
     generatedAt: iso(NOW - 60_000),
     host: "amd",
     claimantMode: { state: "live", detail: "mode file content: live" },
+    opencode: null,
     backup: {
       date: "2026-11-22",
       startedAt: "2026-11-22T10:30:00Z",
@@ -234,6 +235,18 @@ describe("host-health snapshot normalization (#10141)", () => {
     expect(normed).not.toBeNull();
     expect(normed!.host).toBeNull();
     expect(normed!.backup).toBeNull();
+  });
+
+  test("OpenCode runtime state is preserved and malformed state is ignored", () => {
+    const raw = JSON.parse(JSON.stringify(healthySnapshot()));
+    raw.opencode = {
+      state: "mismatch", pid: 123, executable: "/nix/store/opencode-1.2.3+abcdef1/bin/opencode",
+      runtimeRevision: "abcdef1", expectedRevision: "0123456789abcdef0123456789abcdef01234567",
+    };
+    const snap = normalizeHostHealthSnapshot(raw);
+    expect(snap!.opencode).toMatchObject({ state: "mismatch", pid: 123, runtimeRevision: "abcdef1" });
+    raw.opencode.state = "healthy";
+    expect(normalizeHostHealthSnapshot(raw)!.opencode).toBeNull();
   });
 
   test("a shapeless backup section reads as null, never as a restore point", () => {
