@@ -331,15 +331,21 @@ fn promoted_agent_memory_is_searchable_by_the_fanout() {
 /// Write a synthetic memory-lancedb-shaped dataset (the store's own
 /// columns, including a vector the reader must ignore) into `path`.
 fn write_fixture_store(path: &Path) {
-    use std::sync::Arc;
-    use arrow::array::{FixedSizeListArray, Float64Array, RecordBatch, RecordBatchIterator, StringArray};
+    use arrow::array::{
+        FixedSizeListArray, Float64Array, RecordBatch, RecordBatchIterator, StringArray,
+    };
     use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
 
     let vec_field = Arc::new(Field::new("item", DataType::Float32, true));
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("text", DataType::Utf8, false),
-        Field::new("vector", DataType::FixedSizeList(vec_field.clone(), 3), true),
+        Field::new(
+            "vector",
+            DataType::FixedSizeList(vec_field.clone(), 3),
+            true,
+        ),
         Field::new("importance", DataType::Float64, true),
         Field::new("category", DataType::Utf8, true),
         Field::new("createdAt", DataType::Float64, true),
@@ -395,16 +401,32 @@ fn native_store_rebuilds_the_index_from_sources() {
     let store = dir.join("memories.lance");
     write_fixture_store(&store);
     let (registry, agent_db) = register(&dir);
-    let sync = atlas_core::memory::sync_lancedb_store_in_db(
-        &store,
-        &agent_db,
-        AGENT_MEMORY_UNIT,
-        NOW,
-    )
-    .unwrap();
+    let sync =
+        atlas_core::memory::sync_lancedb_store_in_db(&store, &agent_db, AGENT_MEMORY_UNIT, NOW)
+            .unwrap();
     assert_eq!((sync.added, sync.restaged, sync.unchanged), (2, 0, 0));
+    let staged = rusqlite::Connection::open(&agent_db).unwrap();
+    let (source, raw_meta): (String, String) = staged
+        .query_row(
+            "SELECT source, meta FROM items WHERE unit_id = ?1 ORDER BY id LIMIT 1",
+            [AGENT_MEMORY_UNIT],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let meta: serde_json::Value = serde_json::from_str(&raw_meta).unwrap();
+    assert_eq!(meta["corpus"], "agent-memory");
+    assert_eq!(meta["agent"], "main");
+    assert_eq!(meta["source_ref"], source);
+    assert!(meta["updated_at"].is_string());
+    assert_eq!(meta["sensitivity"], "internal");
+    assert_eq!(meta["zone"], "fleet");
     let report = embed_unit_into_shard(
-        &registry, AGENT_MEMORY_UNIT, &dir.join("shards"), "agent-memory", &KeywordEmbedder, NOW,
+        &registry,
+        AGENT_MEMORY_UNIT,
+        &dir.join("shards"),
+        "agent-memory",
+        &KeywordEmbedder,
+        NOW,
     )
     .unwrap();
     assert_eq!(report.items, 2);
@@ -420,15 +442,34 @@ fn sync_is_idempotent_and_restages_only_changed_entries() {
     let conn = rusqlite::Connection::open(&agent_db).unwrap();
     let mut entries = parse_memory_export(EXPORT).unwrap();
 
-    let first = atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    let first =
+        atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
     assert_eq!((first.added, first.restaged, first.unchanged), (2, 0, 0));
 
-    let again = atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    let again =
+        atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
     assert_eq!((again.added, again.restaged, again.unchanged), (0, 0, 2));
 
     entries[1].text = "The deploy window moved to Monday.".to_string();
-    let changed = atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
-    assert_eq!((changed.added, changed.restaged, changed.unchanged), (0, 1, 1));
+    let changed =
+        atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    assert_eq!(
+        (changed.added, changed.restaged, changed.unchanged),
+        (0, 1, 1)
+    );
+
+    entries[1].agent = Some("worker".to_owned());
+    let metadata_changed =
+        atlas_core::memory::sync_memory_entries(&conn, AGENT_MEMORY_UNIT, &entries, NOW).unwrap();
+    assert_eq!(
+        (
+            metadata_changed.added,
+            metadata_changed.restaged,
+            metadata_changed.unchanged
+        ),
+        (0, 1, 1),
+        "source metadata changes must restage only their own entry"
+    );
 
     let items = list_staged_items_in_db(&agent_db, Some(AGENT_MEMORY_UNIT)).unwrap();
     assert_eq!(items.len(), 2, "restaging replaces the old item");

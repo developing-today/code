@@ -457,8 +457,8 @@ pub async fn read_lancedb_store(path: &Path) -> Result<Vec<MemoryEntry>> {
                 .map_err(|e| Error::fatal(format!("memory connector: column `{name}`: {e}"))),
         }
     };
-    let id = column("id")?
-        .ok_or_else(|| Error::fatal("memory connector: store has no `id` column"))?;
+    let id =
+        column("id")?.ok_or_else(|| Error::fatal("memory connector: store has no `id` column"))?;
     let text = column("text")?
         .ok_or_else(|| Error::fatal("memory connector: store has no `text` column"))?;
     let agent = column("agentId")?;
@@ -467,11 +467,17 @@ pub async fn read_lancedb_store(path: &Path) -> Result<Vec<MemoryEntry>> {
     let created = numbers("createdAt")?;
 
     fn str_at(col: &Option<ArrayRef>, i: usize) -> Option<String> {
-        let arr = col.as_ref()?.as_any().downcast_ref::<arrow::array::StringArray>()?;
+        let arr = col
+            .as_ref()?
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()?;
         (!arr.is_null(i)).then(|| arr.value(i).to_string())
     }
     fn num_at(col: &Option<ArrayRef>, i: usize) -> Option<f64> {
-        let arr = col.as_ref()?.as_any().downcast_ref::<arrow::array::Float64Array>()?;
+        let arr = col
+            .as_ref()?
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()?;
         (!arr.is_null(i)).then(|| arr.value(i))
     }
 
@@ -482,9 +488,7 @@ pub async fn read_lancedb_store(path: &Path) -> Result<Vec<MemoryEntry>> {
             .ok_or_else(|| Error::fatal(format!("memory connector: row {i} has no `id`")))?;
         let row_text = str_at(&Some(text.clone()), i)
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                Error::fatal(format!("memory connector: row {row_id} has no `text`"))
-            })?;
+            .ok_or_else(|| Error::fatal(format!("memory connector: row {row_id} has no `text`")))?;
         out.push(MemoryEntry {
             id: row_id,
             text: row_text,
@@ -515,6 +519,11 @@ pub fn sync_lancedb_store_in_db(
     unit_id: &str,
     now: &str,
 ) -> Result<SyncReport> {
+    if unit_id != AGENT_MEMORY_UNIT {
+        return Err(Error::fatal(format!(
+            "memory connector: native memory-lancedb rows must be staged in `{AGENT_MEMORY_UNIT}`"
+        )));
+    }
     let entries = read_lancedb_store_blocking(store)?;
     let conn = open(db)?;
     sync_memory_entries(&conn, unit_id, &entries, now)
@@ -533,33 +542,18 @@ pub fn sync_memory_entries(
     check_stage_schema(conn)?;
     let mut report = SyncReport::default();
     for entry in entries {
-        let source = entry.source_ref();
-        let existing: Vec<(i64, String)> = {
-            let mut stmt = conn
-                .prepare("SELECT id, text FROM items WHERE unit_id = ?1 AND source = ?2")
-                .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
-            let rows = stmt
-                .query_map(params![unit_id, source], |r| Ok((r.get(0)?, r.get(1)?)))
-                .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
-            rows.collect::<std::result::Result<_, _>>()
-                .map_err(|e| Error::backend(format!("memory connector: {e}")))?
-        };
-        match existing.as_slice() {
-            [] => {
-                stage_memory_entry(conn, unit_id, entry, now)?;
-                report.added += 1;
-            }
-            [(_, text)] if *text == entry.text => report.unchanged += 1,
-            old => {
-                for (item_id, _) in old {
-                    conn.execute("DELETE FROM chunks_raw WHERE item_id = ?1", params![item_id])
-                        .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
-                    conn.execute("DELETE FROM items WHERE id = ?1", params![item_id])
-                        .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
-                }
-                stage_memory_entry(conn, unit_id, entry, now)?;
-                report.restaged += 1;
-            }
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM items WHERE unit_id = ?1 AND kind = 'memory' AND source = ?2)",
+                params![unit_id, entry.source_ref()],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::backend(format!("memory connector: {e}")))?;
+        let (_, changed) = stage_memory_entry_with_status(conn, unit_id, entry, now)?;
+        match (exists, changed) {
+            (false, true) => report.added += 1,
+            (true, true) => report.restaged += 1,
+            (_, false) => report.unchanged += 1,
         }
     }
     Ok(report)

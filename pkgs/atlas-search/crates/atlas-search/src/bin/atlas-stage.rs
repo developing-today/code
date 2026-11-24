@@ -408,16 +408,15 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Command::IngestMemoryLancedb { db, unit, store } => {
-            let report = atlas_core::memory::sync_lancedb_store_in_db(
-                &store,
-                &db,
-                &unit,
-                &now_utc(),
-            )
-            .map_err(|e| e.to_string())?;
+            let report =
+                atlas_core::memory::sync_lancedb_store_in_db(&store, &db, &unit, &now_utc())
+                    .map_err(|e| e.to_string())?;
             println!(
                 "{{\"unit\":{},\"added\":{},\"restaged\":{},\"unchanged\":{}}}",
-                json_str(&unit), report.added, report.restaged, report.unchanged,
+                json_str(&unit),
+                report.added,
+                report.restaged,
+                report.unchanged,
             );
             Ok(())
         }
