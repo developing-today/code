@@ -54,6 +54,7 @@ pub mod program_gallery_admission;
 pub mod program_gallery_operator;
 pub mod program_registry;
 pub mod program_registry_net;
+pub mod program_registry_pkarr;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 mod session_host;
