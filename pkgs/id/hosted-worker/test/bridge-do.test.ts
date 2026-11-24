@@ -11,7 +11,14 @@ import { authTranscript, bodyHashHex } from "../src/bridge-auth.ts";
 import { BridgeStore, BRIDGE_SCHEMA } from "../src/bridge-store.ts";
 import { bytesToHex, importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
-import { BridgeClient, decodeBatch, encodeBatch, type FrameTransport } from "../src/bridge-session.ts";
+import type { CborValue } from "../src/canonical-cbor.ts";
+import {
+  BridgeClient,
+  decodeBatch,
+  DEFAULT_BRIDGE_LIMITS,
+  encodeBatch,
+  type FrameTransport,
+} from "../src/bridge-session.ts";
 
 const BINDING = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -359,3 +366,112 @@ async function runWsSession(): Promise<void> {
   assert.equal(doStore.chainOf(author.publicHex).next_seq, 3);
   assert.deepEqual(doStore.canonical(), clientStore.canonical());
 }
+
+// A checkpoint event padded to an exact byte size: the segment
+// map tolerates extra entries, and the event tree caps each byte
+// string at 512 bytes, so the pad is an array of 512-byte strings
+// whose total the sizing loop tunes against the signed size.
+async function sizedCheckpoint(
+  key: IdKey,
+  seq: number,
+  prevEvent: SignedEvent | null,
+  target: number,
+): Promise<SignedEvent> {
+  const T = (v: string): CborValue => ({ kind: "text", value: v });
+  const B = (v: Uint8Array): CborValue => ({ kind: "bytes", value: v });
+  const U = (v: bigint): CborValue => ({ kind: "uint", value: v });
+  let padPayload = target - 400;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const parts: Uint8Array[] = [];
+    let left = padPayload;
+    while (left > 512) {
+      parts.push(new Uint8Array(512));
+      left -= 512;
+    }
+    if (left > 0) parts.push(new Uint8Array(left));
+    const segment: CborValue = {
+      kind: "map",
+      value: [
+        [T("segment_seq"), U(BigInt(seq))],
+        [T("prev_checkpoint"), prevEvent ? B(prevEvent.idBytes) : { kind: "null" }],
+        [T("root"), B(new Uint8Array(32).fill(2))],
+        [T("zzpad"), { kind: "array", value: parts.map((p): CborValue => B(p)) }],
+      ],
+    };
+    const header: CborValue = {
+      kind: "map",
+      value: [
+        [T("session_id"), B(new Uint8Array(32).fill(1))],
+        [T("purpose"), T("collab")],
+      ],
+    };
+    const extra: [string, CborValue][] = [
+      ["checkpoint", { kind: "map", value: [[T("header"), header], [T("segment"), segment]] }],
+    ];
+    const candidate = await signEvent(key, {
+      seq,
+      backlink: prevEvent ? prevEvent.idBytes : null,
+      kind: "session.checkpoint",
+      extra,
+    });
+    if (candidate.bytes.length === target) return candidate;
+    padPayload += target - candidate.bytes.length;
+  }
+  throw new Error("checkpoint pad did not converge");
+}
+
+test("pull budgets the encoded batch size, not the payload sum", async () => {
+  const key = await importIdKey(new Uint8Array(32).fill(61));
+  const author = await importIdKey(new Uint8Array(32).fill(67));
+  const { doA } = makeDO();
+  // 64 checkpoint events of exactly 16,384 bytes: the payload sum
+  // (64 x 16384) is exactly the 1 MiB bound, so payload accounting
+  // answers one page whose encoded size (4 + 64 x 16388) crosses
+  // the bound every conforming decoder enforces (#14644). Framed
+  // accounting pages at 63 + 1.
+  const events: SignedEvent[] = [];
+  for (let seq = 0; seq < 64; seq++) {
+    events.push(await sizedCheckpoint(author, seq, seq === 0 ? null : events[seq - 1], 16384));
+  }
+  assert.ok(events.every((e) => e.bytes.length === 16384));
+  // Push in two batches that each fit the bound.
+  for (const chunk of [events.slice(0, 32), events.slice(32)]) {
+    const batch = encodeBatch(chunk.map((e) => e.bytes));
+    const nonce = await challenge(doA, key.publicHex);
+    const headers = await proofHeaders(key, nonce, "push", batch);
+    const push = await doA.fetch(
+      routed("/v1/bridge/push", key.publicHex, { method: "POST", headers, body: batch as BodyInit }),
+    );
+    assert.equal(push.status, 200);
+  }
+  const pulled: Uint8Array[] = [];
+  const pageSizes: number[] = [];
+  let nextSeq = 0;
+  for (let page = 0; page < 4; page++) {
+    const pullBody = new TextEncoder().encode(
+      JSON.stringify({ positions: [{ author: author.publicHex, next_seq: nextSeq }] }),
+    );
+    const pullNonce = await challenge(doA, key.publicHex);
+    const pullHeaders = await proofHeaders(key, pullNonce, "pull", pullBody);
+    const pull = await doA.fetch(
+      routed("/v1/bridge/pull", key.publicHex, {
+        method: "POST",
+        headers: pullHeaders,
+        body: pullBody as BodyInit,
+      }),
+    );
+    assert.equal(pull.status, 200);
+    const raw = new Uint8Array(await pull.arrayBuffer());
+    assert.ok(raw.length <= DEFAULT_BRIDGE_LIMITS.maxBatchBytes, "the page fits the encoded bound");
+    const batchEvents = decodeBatch(raw, DEFAULT_BRIDGE_LIMITS);
+    pageSizes.push(batchEvents.length);
+    pulled.push(...batchEvents);
+    nextSeq += batchEvents.length;
+    if (pull.headers.get("x-bridge-more") === "0") break;
+  }
+  assert.deepEqual(pageSizes, [63, 1]);
+  assert.deepEqual(
+    pulled,
+    events.map((e) => e.bytes),
+  );
+});
