@@ -4187,7 +4187,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         })
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
-  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))}` : ""} — <a href="/health">health</a></div>`;
   // #1116 item (5): when the feed itself has crossed the staleness
   // threshold the dashboard must say so visibly — a "feed X old" suffix
   // is not an actionable warning. The data-signal hook is what the

@@ -31,8 +31,10 @@ members = [
   "crates/id-render",
   "crates/id-native-shell",
   "crates/id-hw-shell",
+  "crates/id-tui-shell",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-client",
 ]
 # The vendored crates stay OUT of the workspace: as path dependencies inside
 # this directory Cargo would otherwise treat them as members, and a member's
@@ -56,6 +58,7 @@ default-members = [
   "crates/id-render",
   "crates/id-cli",
   "crates/id-import-notion",
+  "crates/id-client",
 ]
 
 # =============================================================================

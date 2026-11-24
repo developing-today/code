@@ -51,7 +51,7 @@
 // what is scored.
 //
 // Basis (§1: mandatory, singular): reset_cadence for every
-// record this module emits. Methodology version c4-meth:3 (the
+// record this module emits. Methodology version c4-meth:4 (the
 // C4 methodology log, §6 — the version every C4 kind's current
 // records name). Advisory only: no placement path reads these
 // records — the C6 pages and forecast alerts named by #9572

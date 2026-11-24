@@ -185,13 +185,13 @@ they name. The design part of this book describes that record as design.
 
 The two records disagree in named places, and the disagreements are data,
 not embarrassments to smooth over. The surveys recorded 56 of them: the
-README gives `list` an `ls` alias the parser does not have (CLI-1); the
-README's Cargo quick start misdescribes `--no-default-features` (CLI-2);
+README gives `list` an `ls` alias the parser does not have (CLI-1);
+the README's Cargo quick start misdescribed `--no-default-features` (CLI-2, fixed with DES-10);
 the hosted Worker README's route list describes a first slice the code
 has passed (WEB-9); the MCP v1 tool list contains `presence.set`, a tool
 the bridge refuses on every call (WEB-13); `README.original.md` is not an
 original README at all but the earliest ID concept sketch, with an access
-model the capability system replaced (DES-8). Where a chapter meets one,
+model the capability system replaced (DES-8; it now carries a status header stating that). Where a chapter meets one,
 it states the source behaviour, names the disagreement by its survey
 number, and moves on. A claim this book could not pin against the source
 is marked unverified in the chapter where it appears; a claim with no

@@ -4562,6 +4562,131 @@ mod tests {
             assert_eq!(applied, screen_of(&full));
         }
 
+        /// A 120x50 screen of varied rows; step 2 rewrites the last
+        /// three rows, a sparse redraw big enough for DEFLATE to win.
+        struct BigScreen(Arc<AtomicU64>);
+
+        impl crate::world::WorldProgram for BigScreen {
+            fn view(&mut self, _viewer: &Participant) -> anyhow::Result<Option<String>> {
+                const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+                let step = self.0.load(Ordering::Relaxed);
+                let mut rows = Vec::new();
+                for row in 0..50 {
+                    let mut line = String::with_capacity(120);
+                    for col in 0..120 {
+                        let byte = if step >= 2 && row >= 47 {
+                            b'#'
+                        } else {
+                            ALPHABET[(row * 7 + col * 13) % ALPHABET.len()]
+                        };
+                        line.push(byte as char);
+                    }
+                    rows.push(line);
+                }
+                Ok(Some(format!(
+                    "{{\"kind\":\"screen\",\"version\":1,\"width\":120,\"height\":50,\"rows\":{}}}",
+                    serde_json::to_string(&rows).unwrap()
+                )))
+            }
+        }
+
+        #[tokio::test]
+        async fn compressed_resume_patch_arrives_as_a_version_two_binary_frame() {
+            let step = Arc::new(AtomicU64::new(0));
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(BigScreen(Arc::clone(&step))),
+            );
+            let svc = WorldService::new(world.clone(), None);
+            let (_, capability) = world
+                .issue("player".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+
+            // Establish a retained baseline on a byte transport that
+            // offered compression, at the full 120x50 viewport.
+            let mut first = BytePeer::connect(svc.clone());
+            first
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "screen_msgpack": true,
+                    "screen_compress": true,
+                }))
+                .await;
+            assert_eq!(first.next_text().await["type"], "snapshot");
+            let opening: serde_json::Value = match first.next_view_frame().await {
+                SentFrame::Text(text) => serde_json::from_str(&text).unwrap(),
+                other => panic!("the first frame is a full text view, got {other:?}"),
+            };
+            assert!(opening["patch"].is_null(), "the first frame is a full view");
+            first
+                .say(serde_json::json!({"type": "resize", "width": 120, "height": 50}))
+                .await;
+            let resized: serde_json::Value = match first.next_view_frame().await {
+                SentFrame::Text(text) => serde_json::from_str(&text).unwrap(),
+                other => panic!("a resize resets to a full text view, got {other:?}"),
+            };
+            assert!(resized["patch"].is_null(), "a resize resets to a full view");
+            let mut applied = screen_of(&resized);
+            let token = resized["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = resized["view_revision"].as_u64().unwrap();
+
+            step.store(2, Ordering::Relaxed);
+            first.close().await;
+            let mut resumed = BytePeer::connect(svc.clone());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "screen_msgpack": true,
+                    "screen_compress": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next_text().await["type"], "snapshot");
+            let bytes = match resumed.next_view_frame().await {
+                SentFrame::Bytes(bytes) => bytes,
+                other => panic!("a negotiated catch-up patch is binary, got {other:?}"),
+            };
+            let frame = id_core::screen_codec::decode_view_patch(&bytes)
+                .expect("the binary frame is a versioned view patch");
+            assert_eq!(frame.base_view_revision, Some(base_revision));
+            // The session sent the compressed form, not the plain
+            // version-1 encoding of the same frame.
+            assert_eq!(
+                bytes.len(),
+                id_core::screen_codec::encode_view_patch_compressed(&frame)
+                    .unwrap()
+                    .len(),
+                "the session sends exactly the compressed encoding"
+            );
+            assert!(
+                bytes.len()
+                    < id_core::screen_codec::encode_view_patch(&frame).unwrap().len(),
+                "the compressed frame is smaller than its version-1 form"
+            );
+            applied = frame
+                .patch
+                .apply(&applied)
+                .expect("the binary patch applies to its base");
+
+            // Parity: the compressed-patched client holds exactly a
+            // full-frame client's screen.
+            let mut fresh = Peer::connect(svc, SessionConfig::default());
+            fresh
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                }))
+                .await;
+            assert_eq!(fresh.next().await.unwrap()["type"], "snapshot");
+            let full = next_view(&mut fresh).await;
+            assert_eq!(applied, screen_of(&full));
+        }
+
         #[tokio::test]
         async fn msgpack_offer_on_a_text_only_transport_keeps_json_patches() {
             let step = Arc::new(AtomicU64::new(0));

@@ -218,13 +218,10 @@ of personal-client text were at that point held back from Turso by policy.
 That same day the hold-back was lifted: everything in canonical publishes,
 and privacy moved to query-time classification filters instead.
 
-Since then the store has grown without a recount. Later records (2026-11-12)
-describe the Turso monolith as about **7.3 GB** over the same 107,639 chunks
-plus the 29 topic shards, and state in terms that the canonical counts are
-frozen at the 2026-10-31 publish while the monolith grew _without a verified
-recount_. Read every number in the table above as "true on 2026-10-31", not
-as today's count; a fresh verified census is an open deliverable of the
-Atlas programme. For scale, the laptop's `~/atlas/` directory overall was
+The November 23 canonical count was 18,325 sessions, 122,115 messages and 107,439 chunks.
+The dated publish-source file still held the October table counts above.
+See [Backup, restore and the census](../operations/backup-and-census.md) for the
+store roles, read times and repeatable count procedure. For scale, the laptop's `~/atlas/` directory overall was
 12 GB at the census date, hash-verified to contain no consequential
 byte-identical duplicates — it is distinct versions and working sets, so no
 cleanup windfall exists there.
