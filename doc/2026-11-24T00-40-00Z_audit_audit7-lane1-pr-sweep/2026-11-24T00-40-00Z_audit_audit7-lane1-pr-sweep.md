@@ -192,6 +192,10 @@ openchamber#2584 — UNSTABLE: check "build and test (macos-15)" FAILURE at head
 ### Sequencing
 code#12740 — body requires reconciling #12605 and #12732 first (both DIRTY). Unblocker: land those, then this telemetry PR.
 
+## Supplements
+
+Raw gathered material for this lane (censuses, full PR records incl. bodies/comments/files for the census window in all states, digests, queries and fetch scripts, the follow-up issue body) lives in `supplements/` inside this folder — index and provenance, including the /tmp-loss note, in `supplements/SUPPLEMENTS.md`.
+
 ## Repeatable procedure (the sweep recipe)
 
 1. Census: `fleet gh api repos/<repo>/pulls?state=open&per_page=100` (+ `page=2` …), count-confirm against GraphQL `pullRequests(states:OPEN){totalCount}`.
