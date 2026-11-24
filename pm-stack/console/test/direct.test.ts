@@ -641,7 +641,8 @@ describe("what the edge remembers of GitHub", () => {
     // for again and again.
     const g = tagging();
     await g.api(PULLS);
-    const since = (time: string) => `repos/developing-today/code/issues?state=all&sort=updated&direction=asc&since=${time}&per_page=100`;
+    const since = (time: string) =>
+      `repos/developing-today/code/issues?state=all&sort=updated&direction=asc&since=${time}&per_page=100`;
     const first = await g.api(since("2026-11-01T00:00:00Z"));
     expect(first.code).toBe(0);
     await g.api(since("2026-11-02T00:00:00Z"));
