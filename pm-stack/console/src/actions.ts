@@ -211,6 +211,17 @@ export function actions(
       touch: [],
       audit: (a) => ({ to: a.to, command: a.command === true }),
     },
+    // Revoke an agent's bridge credentials from the Agents screen
+    // (#14374): the per-agent kill switch. It changes no document
+    // section — the Agents screen reads the directory fresh — and it
+    // is held for a machine when asked at the edge: revoking is the
+    // owner's act through the owner token, never the edge's
+    // read-scope credential (edge-proto.ts).
+    "agent.revoke": {
+      run: (a) => ops.revokeCredential(a.surface, a.name),
+      touch: [],
+      audit: ids("surface", "name"),
+    },
   };
 }
 

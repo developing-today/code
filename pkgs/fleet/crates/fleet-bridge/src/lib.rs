@@ -67,6 +67,18 @@ central (owner token):
   agents                       registered agents, groups, unread counts
   log [--agent A] [--direction inbound|outbound] [--kind message|command]
       [--since-id N] [--before-id N] [--limit N] [--order asc|desc]
+  pipeline [--kind K] [--sender S] [--receiver R] [--surface S]
+      [--batch B] [--unread] [--work-state W] [--since-id N]
+      [--before-id N] [--limit N] [--order asc|desc]
+        the unified owner feed over connector messages, fleet
+        mailboxes and notes, real senders shown
+  directory                    the unified agents list: fleet registry
+        and note identities, each row marked by surface
+  credentials                  per-agent credential state (active or
+        revoked, live scopes; never a hash)
+  revoke (--agent A | --identity I)
+        revoke an agent's fleet credentials, or a notes identity's
+        tokens (the owner's kill switch, #14368)
 
 agent (fleet token):
   hello [--agent A] [--groups g1,g2]          register / refresh groups
@@ -128,6 +140,45 @@ usage: fleet bridge log [--agent A] [--direction inbound|outbound] [--kind messa
       [--since-id N] [--before-id N] [--limit N] [--order asc|desc]
 
 central (owner token). The central message log, filtered."
+        }
+        "pipeline" => {
+            "\
+usage: fleet bridge pipeline [--kind K] [--sender S] [--receiver R] [--surface S]
+      [--batch B] [--unread] [--work-state W] [--since-id N]
+      [--before-id N] [--limit N] [--order asc|desc]
+
+central (owner token). The unified owner feed over connector
+messages, fleet mailboxes and notes (#14369), real senders shown:
+kind is message, instruction, command or note; sender and receiver
+name an address or its bare name; surface is connector, fleet or
+notes. --work-state is passed through for the work-item lifecycle
+(#14372)."
+        }
+        "directory" => {
+            "\
+usage: fleet bridge directory
+
+central (owner token). The unified agents list (#14369): fleet
+registry rows (groups, first/last seen, unread counts) and note
+identities (scopes, signal counter), each row marked by surface.
+Notes identities have no presence; the row says so."
+        }
+        "credentials" => {
+            "\
+usage: fleet bridge credentials
+
+central (owner token). Per-agent credential state (#14368): one row
+per agent that has held a credential — active or revoked, the scopes
+its live credentials carry, mint and revocation times. State only:
+no hash or value is ever shown."
+        }
+        "revoke" => {
+            "\
+usage: fleet bridge revoke (--agent A | --identity I)
+
+central (owner token). Revoke every live fleet credential of an
+agent (--agent), or every notes token of an identity (--identity):
+the per-agent kill switch (#14368). Prints how many were revoked."
         }
         "hello" => {
             "\
@@ -471,7 +522,12 @@ struct Args {
 const VALUE_FLAGS: &[&str] = &[
     "--to",
     "--sender",
+    "--receiver",
+    "--surface",
+    "--batch",
+    "--work-state",
     "--agent",
+    "--identity",
     "--groups",
     "--direction",
     "--kind",
@@ -700,6 +756,83 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             ]);
             let token = owner_token(ctx)?;
             client_with(ctx, &token).call("GET", &format!("/api/{token}/fleet/messages{q}"), None)
+        }
+        "pipeline" => {
+            let a = parse(
+                rest,
+                &["--unread"],
+                &[
+                    "--kind",
+                    "--sender",
+                    "--receiver",
+                    "--surface",
+                    "--batch",
+                    "--work-state",
+                    "--since-id",
+                    "--before-id",
+                    "--limit",
+                    "--order",
+                ],
+            )?;
+            a.no_positional("pipeline")?;
+            let q = query(&[
+                ("kind", a.last("--kind")),
+                ("sender", a.last("--sender")),
+                ("receiver", a.last("--receiver")),
+                ("surface", a.last("--surface")),
+                ("batch", a.last("--batch")),
+                (
+                    "unread_only",
+                    a.has("--unread").then(|| "true".to_string()),
+                ),
+                ("work_state", a.last("--work-state")),
+                ("since_id", a.uint("--since-id")?.map(|n| n.to_string())),
+                ("before_id", a.uint("--before-id")?.map(|n| n.to_string())),
+                ("limit", a.uint("--limit")?.map(|n| n.to_string())),
+                ("order", a.last("--order")),
+            ]);
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call("GET", &format!("/api/{token}/pipeline{q}"), None)
+        }
+        "directory" => {
+            let a = parse(rest, &[], &[])?;
+            a.no_positional("directory")?;
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call("GET", &format!("/api/{token}/agents"), None)
+        }
+        "credentials" => {
+            let a = parse(rest, &[], &[])?;
+            a.no_positional("credentials")?;
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call("GET", &format!("/api/{token}/fleet/credentials"), None)
+        }
+        "revoke" => {
+            let a = parse(rest, &[], &["--agent", "--identity"])?;
+            a.no_positional("revoke")?;
+            // Checked before any credential is resolved: a usage error
+            // is a usage error even on a seat with no tokens.
+            let target = match (a.last("--agent"), a.last("--identity")) {
+                (Some(agent), None) => ("fleet", agent),
+                (None, Some(identity)) => ("notes", identity),
+                _ => {
+                    return Err(usage(
+                        "revoke needs exactly one of --agent or --identity",
+                    ));
+                }
+            };
+            let token = owner_token(ctx)?;
+            match target {
+                ("fleet", agent) => client_with(ctx, &token).call(
+                    "POST",
+                    &format!("/api/{token}/fleet/credentials/revoke"),
+                    Some(&json!({ "agent": agent })),
+                ),
+                (_, identity) => client_with(ctx, &token).call(
+                    "POST",
+                    &format!("/api/{token}/notes-tokens/revoke"),
+                    Some(&json!({ "identity": identity })),
+                ),
+            }
         }
         "hello" => {
             let a = parse(rest, &[], &["--agent", "--groups"])?;

@@ -16,9 +16,10 @@
 // into calls to the bridge Worker over its service binding,
 // presenting that credential, so a message the owner sends from the
 // app is delivered by the edge itself — as service:pm-stack, the
-// bridge's name for the PM stack — and the agents list and message
-// log are read there too. Without the credential and the binding,
-// `fleet bridge` stays a machine's, exactly as before.
+// bridge's name for the PM stack — and the agents list, the message
+// log and the unified pipeline, directory and credential views
+// (#14374) are read there too. Without the credential and the
+// binding, `fleet bridge` stays a machine's, exactly as before.
 //
 // What stays a machine's: `fleet queue enqueue` (the fleet binary is
 // not here), `systemctl`, and anything that reads the dashboard or
@@ -729,8 +730,13 @@ export const BRIDGE_AGENT = "pm-stack";
 /** One `fleet bridge` call as a call to the bridge Worker over its
  * service binding, presenting the PM credential in the path (the
  * bridge's own way: /fleet/<credential>/...). The verbs the console's
- * classes use — send, agents, log — and no others: anything else is
- * refused as a machine's, like every verb this side does not carry.
+ * classes use — send, agents, log, and the unified views pipeline,
+ * directory and credentials (#14374) — and no others: anything else
+ * is refused as a machine's, like every verb this side does not
+ * carry. `revoke` is deliberately not among them: the PM credential
+ * holds the read scope, and revoking is the owner's act through the
+ * owner token on a machine — the action is held for one instead
+ * (src/edge-proto.ts).
  * A failed call answers the way the fleet binary would: a non-zero
  * code with the reason on stderr. The bridge's plain 404 for a wrong
  * token is said plainly here — the credential unknown or revoked —
@@ -769,6 +775,39 @@ async function bridgeCall(
     }
     const qs = query.toString();
     path = `/fleet/${token}/messages${qs === "" ? "" : `?${qs}`}`;
+  } else if (what === "pipeline") {
+    // The unified owner feed (#14374): the same flag pairs as `log`,
+    // plus the pipeline's own filters and its --unread switch.
+    const query = new URLSearchParams();
+    const names: Record<string, string> = {
+      "--kind": "kind",
+      "--sender": "sender",
+      "--receiver": "receiver",
+      "--surface": "surface",
+      "--batch": "batch",
+      "--work-state": "work_state",
+      "--since-id": "since_id",
+      "--before-id": "before_id",
+      "--limit": "limit",
+      "--order": "order",
+    };
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--unread") {
+        query.set("unread_only", "true");
+        continue;
+      }
+      const name = names[rest[i]];
+      if (!name || rest[i + 1] === undefined) throw new OpError(502, `fleet bridge pipeline: unexpected argument ${rest[i]}`);
+      query.set(name, rest[++i]);
+    }
+    const qs = query.toString();
+    path = `/fleet/${token}/pipeline${qs === "" ? "" : `?${qs}`}`;
+  } else if (what === "directory") {
+    if (rest.length > 0) throw new OpError(502, "fleet bridge directory takes no arguments here");
+    path = `/fleet/${token}/directory`;
+  } else if (what === "credentials") {
+    if (rest.length > 0) throw new OpError(502, "fleet bridge credentials takes no arguments here");
+    path = `/fleet/${token}/credentials`;
   } else if (what === "send") {
     const to: string[] = [];
     let kind = "message";

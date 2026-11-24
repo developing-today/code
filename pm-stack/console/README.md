@@ -24,7 +24,7 @@ owner does every day; everything else is under More.
 | Next     | The queue in the order it will be claimed; move a task first, sooner or later; why tasks are blocked                                                          |
 | Needs me | Open questions (one tap to answer, undo for a few seconds), things only hands can do, reviews                                                                 |
 | Ask      | Say what you want in your own words (typed or dictated). It becomes an issue and a top-of-queue task in one pass                                              |
-| More     | The plan (roadmaps, bugs, intake), queue by state, pull requests, ranked issues, agents, services, notifications, phones, releases, and the dashboard's pages |
+| More     | The plan (roadmaps, bugs, intake), queue by state, pull requests, ranked issues, agents, messages, services, notifications, phones, releases, and the dashboard's pages |
 
 The page never waits on a live fan-out. The server keeps three documents
 ready (`core`, `questions`, `ops`), each built from sections that are

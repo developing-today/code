@@ -72,6 +72,15 @@
 //   GET  /fleet/<credential>/agents|messages  the owner's pipeline
 //                                     views, for a credential holding
 //                                     the "read" scope (#14373)
+//   GET  /api/<token>/fleet/credentials  owner: per-agent credential
+//                                     state (active / revoked, scopes;
+//                                     never a hash) (#14374)
+//   GET  /fleet/<credential>/pipeline|directory|credentials  the
+//                                     unified pipeline feed, the
+//                                     unified agents list and the
+//                                     credential state, for a
+//                                     credential holding the "read"
+//                                     scope (#14374)
 //   POST /api/<token>/notes-tokens/revoke  owner: revoke an identity's
 //                                     notes token(s)
 //   POST /notes/register              owner Bearer token; registers a
