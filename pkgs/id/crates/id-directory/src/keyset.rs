@@ -923,6 +923,12 @@ fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
                 .context("unknown device key")?;
             ensure!(!device.revoked, "device is already revoked");
             device.revoked = true;
+            // ADR Decision 4 rule 3: revocation removes the key's
+            // authority, not merely one role. Migrated identities can
+            // use the same key as both admin and device.
+            if let Some(admin) = state.admin_keys.get_mut(device_key) {
+                *admin = AdminKeyState::Revoked;
+            }
         }
         KeysetEntry::AdminKeyRotated { new_admin_key } => {
             ensure!(authorized_admin, "admin rotation requires an active admin");
@@ -1735,6 +1741,23 @@ mod tests {
 
         fn apply(&mut self, op: &HistoryOp) {
             let admin = key(self.admin_seed);
+            // Oracle: after losing its authority, this model's signer
+            // can emit evidence but cannot advance the canonical head.
+            if !self.state.is_admin(&public(self.admin_seed)) {
+                let lamport = self.next_lamport();
+                let record = KeysetRecord::sign(
+                    &admin,
+                    lamport,
+                    self.head.hash.clone(),
+                    KeysetEntry::IdpBindingBound {
+                        binding_id: "unauthorized".into(),
+                    },
+                    None,
+                )
+                .unwrap();
+                self.emit(record, false);
+                return;
+            }
             match op {
                 HistoryOp::Enroll(seed) => {
                     let lamport = self.next_lamport();
@@ -1779,6 +1802,9 @@ mod tests {
                         .is_some_and(|device| !device.revoked);
                     if valid {
                         self.state.devices.get_mut(&public(*seed)).unwrap().revoked = true;
+                        if let Some(admin) = self.state.admin_keys.get_mut(&public(*seed)) {
+                            *admin = AdminKeyState::Revoked;
+                        }
                     }
                     self.emit(record, valid);
                 }
