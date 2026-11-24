@@ -1552,7 +1552,11 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(data[overlap:])
                 f.flush()
                 os.fsync(f.fileno())
-                size = offset + len(data)
+                # Report the durable temp length, not the end of this
+                # write: a chunk fully interior to the temp (an
+                # identical replay of already-durable bytes) leaves the
+                # longer tail intact, so `have` wins (#14601).
+                size = max(have, offset + len(data))
             return {"size": size}
         except OSError as e:
             return {"error": f"write {temp}: {e}"}
