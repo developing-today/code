@@ -148,6 +148,7 @@ import {
 } from "./health.ts";
 import { manifestRouteFor } from "./pages.ts";
 import { conflictInbox, type ConflictInbox } from "./conflicts.ts";
+import { ConflictRulingsStore, RULING_CLASS_ID, validateRulingInput, type ConflictRuling } from "./conflict-rulings.ts";
 import { watchdogTierItems, WATCHDOG_PROBE_SERVICE_IDS } from "./watchdog.ts";
 import { readHostHealthSnapshot } from "./host-health.ts";
 import {
@@ -417,6 +418,7 @@ const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.
 // canonical in public.shared_comments under the turso backend.
 const commentsStore = new CommentsStore(cfg.commentsFile, undefined, storeRemotes?.comments);
 const viewsStore = new ViewsStore(cfg.viewsFile);
+const conflictRulingsStore = new ConflictRulingsStore(cfg.conflictRulingsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
 const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
@@ -646,17 +648,31 @@ async function ensureProvenancePrimed(): Promise<void> {
 }
 
 /**
- * The source-conflict inbox (#1282 slice 1), assembled from the same facets
- * the rest of the dashboard reads. Read-only: detection collects what the
- * facets already report, and no render changes because of it.
+ * The source-conflict inbox (#1282 slices 1-2), assembled from the same
+ * facets the rest of the dashboard reads. Detection collects what the
+ * facets already report; a standing per-class trust ruling (slice 2,
+ * data in the rulings store) suppresses that class and renders apply
+ * the trusted value instead of the clash.
  */
 async function assembleConflicts(): Promise<ConflictInbox> {
-  const [pool, orchestration, usage] = await Promise.all([
+  const [pool, orchestration, usage, rulings] = await Promise.all([
     source.projects().catch(() => []),
     source.orchestration().catch(() => null),
     source.usage().catch(() => emptyUsageView()),
+    conflictRulingsStore.all().catch(() => []),
   ]);
-  return conflictInbox({ pool, orchestration, services: usage.services });
+  return conflictInbox({ pool, orchestration, services: usage.services, rulings });
+}
+
+/**
+ * The standing project-vs-derived trust ruling (#1282 slice 2), or null.
+ * Short-TTL cached like the other request-path assemblies; ruling writes
+ * invalidate it alongside the assemblies that consume it, so recording or
+ * revoking a ruling re-renders on the very next request.
+ */
+const projectRulingCache = new TodayCache<ConflictRuling | null>(TODAY_CACHE_TTL_MS);
+async function projectTrustRuling(): Promise<ConflictRuling | null> {
+  return projectRulingCache.get(() => conflictRulingsStore.getForClass(RULING_CLASS_ID).catch(() => null));
 }
 
 /**
@@ -1901,7 +1917,8 @@ async function boardRender() {
   ];
   const comments = refs.length ? await briefCommentsFor(refs) : [];
   const orchestrationStatus = source.diagnostics?.().orchestration.state;
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus });
+  const ruling = await projectTrustRuling();
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus, ruling });
   const act = {
     actionsByObject,
     poolByRef,
@@ -1929,7 +1946,7 @@ async function attentionRender() {
     ...new Set([...view.drewExtra, ...view.orchestratorExtra].flatMap((item) => (item.ref ? [item.ref] : []))),
   ];
   const comments = refs.length ? await briefCommentsFor(refs) : [];
-  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state });
+  const briefs = buildBriefs(pool, { comments, orchestration, orchestrationStatus: diagnosis?.state, ruling: await projectTrustRuling() });
   const act = {
     actionsByObject,
     identities: formOpts.identities,
@@ -1970,7 +1987,7 @@ async function loadTodayContext() {
     todaySignals(),
   ]);
   const diagnosis = source.diagnostics?.().orchestration;
-  const queue = buildQueueView({ board, pool, items, orchestration });
+  const queue = buildQueueView({ board, pool, items, orchestration, ruling: await projectTrustRuling() });
   return {
     today: deriveToday(board, rows, items, orchestration, new Date(), diagnosis, pool),
     view,
@@ -1997,7 +2014,7 @@ async function queueContext() {
     source.projects().catch(() => [] as ProjectPoolItem[]),
     source.orchestration().catch(() => null),
   ]);
-  return buildQueueView({ board, pool, items, orchestration });
+  return buildQueueView({ board, pool, items, orchestration, ruling: await projectTrustRuling() });
 }
 
 /** The render inputs the overview (front door, #1134) assembles:
@@ -2013,7 +2030,7 @@ async function loadOverviewContext() {
     source.orchestration().catch(() => null),
     actionsStore.byObject().catch(() => new Map()),
   ]);
-  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject };
+  return { attention: view, pool, quota, health, board, items, orchestration, actionsByObject, ruling: await projectTrustRuling() };
 }
 
 // #5082: same contract as the board assembly above — the overview
@@ -3565,6 +3582,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       comments: briefRefs.length ? await briefCommentsFor(briefRefs) : [],
       orchestration,
       orchestrationStatus,
+      ruling: await projectTrustRuling(),
     });
     const forecasts = (await allForecastContracts(pool)).byRef;
     // #4830: the same twin /api/flow-analytics.json serves, computed
@@ -3942,9 +3960,44 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   // #1279: briefs need the latest comment per item, guaranteed per ref —
   // the bulk comments() read can truncate an item's latest comment away
   // in a busy batch, so prefer the source's per-ref latest read.
-  // #1282 slice 1: one read-only inbox over every disagreement the facets
+  // #1282 slices 1-2: one inbox over every disagreement the facets
   // report. The page and its JSON twin are the same projection, assembled
   // once per request — they cannot disagree about what disagrees.
+  // Slice 2 adds the ruling write path: POST /api/conflicts/rulings
+  // records a per-class trust ruling (data, owner-verified), DELETE
+  // /api/conflicts/rulings revokes it and re-surfaces the class.
+  if (req.method === "POST" && path === "/api/conflicts/rulings") {
+    try {
+      const parsed = validateRulingInput(await readJsonBody(req));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+      if (!access.ok) return json({ error: access.error }, access.status);
+      const auditActor = access.identity?.sub || access.identity?.email || access.author.id;
+      const ruling = await conflictRulingsStore.set(parsed.value, `drew:${auditActor}`);
+      projectRulingCache.invalidate();
+      overviewContextCache.invalidate();
+      todayContextCache.invalidate();
+      return json({ ruling }, 201);
+    } catch (err) {
+      return json({ error: `invalid ruling: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "DELETE" && path === "/api/conflicts/rulings") {
+    try {
+      const body = (await readJsonBody(req)) as { classId?: unknown };
+      if (typeof body.classId !== "string") return json({ error: "classId required" }, 400);
+      const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+      if (!access.ok) return json({ error: access.error }, access.status);
+      const revoked = await conflictRulingsStore.revoke(body.classId);
+      if (!revoked) return json({ error: "no such ruling" }, 404);
+      projectRulingCache.invalidate();
+      overviewContextCache.invalidate();
+      todayContextCache.invalidate();
+      return json({ revoked: body.classId });
+    } catch (err) {
+      return json({ error: `invalid revocation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
   if (path === "/conflicts" || path === "/api/conflicts.json") {
     const inbox = await assembleConflicts();
     if (path === "/api/conflicts.json") return json(inbox);
@@ -3966,7 +4019,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       source.orchestration().catch(() => null),
     ]);
     const orchestrationStatus = source.diagnostics?.().orchestration.state;
-    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus });
+    const briefs = buildBriefs(pool, { comments: briefComments, orchestration, orchestrationStatus, ruling: await projectTrustRuling() });
     const resolved = await resolveView(url);
     const outPool = resolved ? pool.filter((it) => itemMatchesView(poolItemLike(it), resolved.filters)) : pool;
     const outRefs = new Set(outPool.map((item) => item.ref));
@@ -4013,11 +4066,15 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
     // #1279: the pool cards on /program carry the same comment-backed
     // briefs as the JSON twin — building them here, not the comment-less
-    // fallback projectsBodyHtml would derive on its own.
+    // fallback projectsBodyHtml would derive on its own. The ruling is
+    // read once and shared by the briefs and the pool cards below, so
+    // both suppress the same class.
+    const ruling = await projectTrustRuling();
     const briefs = buildBriefs(pool, {
       comments: pool.length ? await briefCommentsFor(pool.map((p) => p.ref)) : [],
       orchestration,
       orchestrationStatus: source.diagnostics?.().orchestration.state,
+      ruling,
     });
     return html(
       renderProgram(data, items, prov(), provDetail(), {
@@ -4032,6 +4089,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         actionsByObject,
         identities: formOpts.identities,
         briefs,
+        ruling,
         forecasts: (await allForecastContracts(viewPool)).byRef,
         // #4830: the Projects page (merged into /program, #1497)
         // renders the #4829 twin as charts, computed as the endpoint
@@ -5293,6 +5351,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         comments: briefComments,
         orchestration,
         orchestrationStatus: source.diagnostics?.().orchestration.state,
+        ruling: await projectTrustRuling(),
       });
       // Dashboard comments for this item live on its own subject ref
       // and on each linked GitHub ref (gh:<ref>) — one merged thread.

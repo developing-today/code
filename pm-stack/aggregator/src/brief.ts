@@ -10,6 +10,7 @@
 import type { Comment, GhState, OrchestrationSection, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef, refUrl } from "./model.ts";
 import { derivedProjectState, projectDisagreement, type DerivedProjectState } from "./projects.ts";
+import type { ConflictRuling } from "./conflict-rulings.ts";
 
 export interface BriefEvidence {
   text: string;
@@ -49,6 +50,10 @@ export interface BriefInputs {
   orchestration?: OrchestrationSection | null;
   /** A missing/invalid/stale orchestration source cannot support Todo or In Progress claims. */
   orchestrationStatus?: "live" | "absent" | "invalid" | "stale";
+  /** Slice-2 trust ruling (#1282): when a project-vs-derived ruling
+   *  stands, the disagreement is suppressed — the render applies the
+   *  trusted value instead of showing both sides as a clash. */
+  ruling?: ConflictRuling | null;
 }
 
 function buildItemBriefWithIndexes(
@@ -65,6 +70,10 @@ function buildItemBriefWithIndexes(
         ? derivedProjectState(item, inputs.orchestration)
         : "Unknown";
   const clash = derived === "Unknown" ? null : projectDisagreement(item, inputs.orchestration);
+  // #1282 slice 2: a standing project-vs-derived ruling suppresses the
+  // clash at the render layer — detection still reports it to the inbox.
+  const ruled = inputs.ruling?.classId === "project-vs-derived" ? true : false;
+  const visibleClash = ruled ? null : clash;
   const itemEvidence: BriefEvidence = { text: `${item.repo}#${item.number}`, url: item.issueUrl };
 
   // --- State -------------------------------------------------------------
@@ -145,11 +154,11 @@ function buildItemBriefWithIndexes(
 
   // --- Disagreement --------------------------------------------------------
   const disagreement: ItemBrief["disagreement"] =
-    clash && derived !== "Unknown"
+    visibleClash && derived !== "Unknown"
       ? {
-          project: clash.project,
-          derived: clash.derived,
-          text: `Sources disagree: the Project Status says “${clash.project}” while the rest of the dashboard derives “${clash.derived}”. Both are shown; neither is preferred.`,
+          project: visibleClash.project,
+          derived: visibleClash.derived,
+          text: `Sources disagree: the Project Status says “${visibleClash.project}” while the rest of the dashboard derives “${visibleClash.derived}”. Both are shown; neither is preferred.`,
           evidence: { text: `${item.repo}#${item.number} in the Project`, url: item.url },
         }
       : null;
