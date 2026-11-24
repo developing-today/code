@@ -48,6 +48,9 @@ import {
   needsLead,
   recommendedSets,
   machinesMark,
+  matchReportSaid,
+  mergeMatchReport,
+  offerSaid,
   phaseHeading,
   platformCounts,
   prCheck,
@@ -1249,6 +1252,28 @@ test("a goal most of the tasks share is found, to be said once; where there is n
   expect(sharedGoalSaid({ goal: same, n: 3 }, 3)).toBe(
     "All 3 have the same goal, said here once: Record a verdict on the issue",
   );
+});
+
+// The composer's match report, said as the bridge reported it
+// (#14375, acceptance 1-2): matched and delivered counts with the
+// recipients named, the remainder while any are left, and a broaden
+// folded in until none remain — the screen then shows no Broaden.
+test("a match report is said with its recipients, and a broaden folds into it", () => {
+  const sent = { batch: "b9", matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 };
+  expect(matchReportSaid(sent)).toBe("Matched 2 · sent to 1 (felix-1) · 1 more matched and not yet reached");
+  const widened = mergeMatchReport(sent, { batch: "b9", matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 });
+  expect(widened.delivered).toBe(2);
+  expect(widened.recipients).toEqual(["felix-1", "felix-2"]);
+  expect(widened.remaining).toBe(0);
+  expect(matchReportSaid(widened)).toBe("Matched 2 · sent to 2 (felix-1, felix-2)");
+  // An answer that is not a report (a send held for a machine) is
+  // not said as one.
+  expect(matchReportSaid({ held: true })).toBeNull();
+  expect(matchReportSaid(null)).toBeNull();
+  expect(mergeMatchReport(sent, { held: true })).toBe(sent);
+  // An offer is said by its state and its claimed slots.
+  expect(offerSaid({ state: "open", claimed: 1, slots: 2, claims: [{ agent: "felix-1" }] })).toBe("open · 1 of 2 claimed");
+  expect(offerSaid({ state: "filled", slots: 2, claims: [{ agent: "a" }, { agent: "b" }] })).toBe("filled · 2 of 2 claimed");
 });
 
 // A reason that was cut where the queue's store cuts it says that it

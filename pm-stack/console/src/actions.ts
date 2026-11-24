@@ -207,9 +207,23 @@ export function actions(
     // machine, where the tokens are, and never held.
     "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
     "message.send": {
-      run: (a) => ops.send(a.to, a.text, a.command),
+      run: (a) => ops.send(a.to, a.text, a.command, a.limit),
       touch: [],
-      audit: (a) => ({ to: a.to, command: a.command === true }),
+      audit: (a) => ({ to: a.to, command: a.command === true, limit: a.limit ?? null }),
+    },
+    // Broaden and offer are the composer's other two acts (#14375):
+    // broaden delivers a pattern send's remainder on its own batch;
+    // offer posts the text as a claim offer. Neither audit carries
+    // the text, like message.send.
+    "message.broaden": {
+      run: (a) => ops.broaden(a.batch, a.limit),
+      touch: [],
+      audit: (a) => ({ batch: a.batch, limit: a.limit ?? null }),
+    },
+    "message.offer": {
+      run: (a) => ops.offer(a.to, a.text, a.command, a.slots),
+      touch: [],
+      audit: (a) => ({ to: a.to, command: a.command === true, slots: a.slots }),
     },
     // Revoke an agent's bridge credentials from the Agents screen
     // (#14374): the per-agent kill switch. It changes no document

@@ -1497,13 +1497,16 @@ export class Edge {
     return Boolean(this.direct?.bridgeToken) && Boolean(this.direct?.bridgeFetch);
   }
 
-  /** The kinds this side does itself when it does the core. A message
-   * is this side's only with the bridge held (bridgeReady): without
-   * it the kind stays a machine's, as it was before the bridge path
-   * existed, and is held for one like any other. */
+  /** The kinds this side does itself when it does the core. The
+   * composer's kinds — a message, its broaden, its offer (#14375) —
+   * are this side's only with the bridge held (bridgeReady): without
+   * it each stays a machine's, as message.send was before the bridge
+   * path existed, and is held for one like any other. */
   private kinds(): readonly string[] {
     const base = this.direct?.kinds ?? DIRECT_ACTIONS;
-    return this.bridgeReady() && !base.includes("message.send") ? [...base, "message.send"] : base;
+    if (!this.bridgeReady()) return base;
+    const composer = ["message.send", "message.broaden", "message.offer"].filter((k) => !base.includes(k));
+    return composer.length ? [...base, ...composer] : base;
   }
 
   /** A kind this side does itself when it does the core; any other is
@@ -2502,13 +2505,15 @@ export class Edge {
         }
         // What needs only GitHub, the queue store and the bridge is
         // read here, by the code a machine would read it with. The
-        // bridge's own reads (the message log, and the unified
-        // pipeline and directory, #14374) are attempted only while
+        // bridge's own reads (the message log, the unified
+        // pipeline and directory, #14374, and the offers list,
+        // #14375) are attempted only while
         // this side holds the bridge credential: without it they are
         // a machine's to read, and the request goes to the host
         // below as it did before.
         const mine = this.mine(cfg);
-        const bridgeRead = seg.length === 1 && (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory");
+        const bridgeRead =
+          seg.length === 1 && (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory" || seg[0] === "offers");
         if (mine && !(bridgeRead && !this.bridgeReady())) {
           const from = this.outwardN;
           let read: unknown;

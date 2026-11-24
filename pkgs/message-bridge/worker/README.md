@@ -114,6 +114,7 @@ their mailbox, mark what they handled, and post replies and reports back
 | `GET /fleet/<credential>/pipeline` | credential (`read`) | the unified pipeline feed, as the owner's `/api/<token>/pipeline` (#14374) |
 | `GET /fleet/<credential>/directory` | credential (`read`) | the unified agents list, as the owner's `/api/<token>/agents` (#14374) |
 | `GET /fleet/<credential>/credentials` | credential (`read`) | per-agent credential state, as the owner's (state only: a credential can see a revocation, never make one) |
+| `GET /fleet/<credential>/offers` | credential (`read`) | every offer with its claims, as the owner's (#14375) |
 | `POST /api/<token>/fleet/offer`   | owner | `{body, to, kind?, slots, sender?, ttl_seconds?}`: post an offer (below)                   |
 | `GET /api/<token>/fleet/offers`   | owner | every offer with its claims (agent, time, delivered row)                                  |
 | `POST /fleet/<fleet token>/offer` | fleet | `{agent, body, to, kind?, slots, ttl_seconds?}`: an agent posts an offer                  |

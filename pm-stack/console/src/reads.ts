@@ -61,6 +61,12 @@ export async function platformRead(
         return ops.pipelineFeed(query);
       case "directory":
         return ops.directory();
+      // Every offer with its claims (#14375), for the composer's
+      // offer rows on the Messages surface. Same bridge story as the
+      // pipeline: the PM credential's read scope opens it at the
+      // edge, a machine reads it with the owner token.
+      case "offers":
+        return ops.offers();
       case "trends":
         return trends ? trends.read(query.get("days"), fresh, query.get("end")) : undefined;
     }

@@ -3573,12 +3573,67 @@ function viewIssues() {
 /** The Messages screen's filters, kept across draws (#14374). */
 let messageFilters = { kind: "", surface: "", sender: "", receiver: "", batch: "", work: "", unread: false };
 
+/** The composer's fields, kept across draws (#14375). */
+let composerDraft = { to: "", limit: "", slots: "2" };
+let composerCommand = false;
+
+/** The last send's match report, as the bridge answered it (#14375):
+ * kept so the report — and its Broaden button, while matched agents
+ * remain — stays on the screen until the next send replaces it. */
+let composerReport = null;
+
+/** A match report said in one line: how many matched, how many it was
+ * sent to (named), and how many matched agents are still to reach.
+ * This is the bridge's own report, said as it stands — the console
+ * never recounts a send. Null for an answer that is not a report (a
+ * send held for a machine, say), which the caller says its own way.
+ * @param {any} report */
+export function matchReportSaid(report) {
+  if (!report || typeof report.matched !== "number" || typeof report.delivered !== "number") return null;
+  const names =
+    Array.isArray(report.recipients) && report.recipients.length ? ` (${report.recipients.join(", ")})` : "";
+  const left =
+    typeof report.remaining === "number" && report.remaining > 0
+      ? ` · ${report.remaining} more matched and not yet reached`
+      : "";
+  return `Matched ${report.matched} · sent to ${report.delivered}${names}${left}`;
+}
+
+/** A broaden's report folded into the send's: a broaden counts only
+ * its own deliveries, so the screen's running total adds them, names
+ * every recipient once, and takes the broaden's word for what
+ * remains. @param {any} prev @param {any} next */
+export function mergeMatchReport(prev, next) {
+  if (!prev) return next;
+  if (!next || typeof next.delivered !== "number") return prev;
+  const before = Array.isArray(prev.recipients) ? prev.recipients : [];
+  const more = (Array.isArray(next.recipients) ? next.recipients : []).filter((r) => !before.includes(r));
+  return {
+    ...prev,
+    batch: typeof next.batch === "string" ? next.batch : prev.batch,
+    delivered: (typeof prev.delivered === "number" ? prev.delivered : 0) + next.delivered,
+    recipients: [...before, ...more],
+    remaining: typeof next.remaining === "number" ? next.remaining : prev.remaining,
+  };
+}
+
+/** An offer said in one line: its state, and how many of its slots
+ * are claimed. @param {any} offer */
+export function offerSaid(offer) {
+  const claimed = typeof offer?.claimed === "number" ? offer.claimed : (offer?.claims?.length ?? 0);
+  const slots = typeof offer?.slots === "number" ? offer.slots : claimed;
+  return `${offer?.state ?? "open"} · ${claimed} of ${slots} claimed`;
+}
+
 /**
  * Every message on every surface, with the sender it really came from
  * (#14374, design §4.9). This is the owner's console: provenance here
  * is complete — an instruction shows its true sender. (Anonymity is
- * what agents see of an instruction, never this view.) Read-only: the
- * composer is the Agents screen's, as before.
+ * what agents see of an instruction, never this view.) The composer
+ * (#14375) heads the screen: the full addressing grammar as a form,
+ * the bridge's match report in place after a send, a Broaden button
+ * while matched agents remain, and Offer instead — post the text as
+ * a claim offer, whose claims and replies show on this screen.
  */
 async function viewMessages() {
   const f = messageFilters;
@@ -3597,6 +3652,14 @@ async function viewMessages() {
     if (Array.isArray(got)) rows = got;
   } catch (error) {
     failed = error.message;
+  }
+  let offers = [];
+  let offersFailed = "";
+  try {
+    const got = await api("offers");
+    if (Array.isArray(got)) offers = got;
+  } catch (error) {
+    offersFailed = error.message;
   }
   const pick = (label, key, options) =>
     h(
@@ -3663,7 +3726,174 @@ async function viewMessages() {
       .join(" · ");
     return card(h("p", { class: "meta" }, meta), h("p", {}, String(m.body ?? "").slice(0, 1200)));
   };
+  // ---- the composer (#14375, design §4.9) ----
+  const draftTargets = () =>
+    composerDraft.to
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+  const text = typed("composer", {
+    rows: 3,
+    placeholder: "A message, or an instruction to act on",
+    "aria-label": "Message",
+  });
+  const commandBox = h("input", {
+    type: "checkbox",
+    id: "composer-cmd",
+    checked: composerCommand || undefined,
+    onchange: (e) => {
+      composerCommand = e.target.checked;
+    },
+  });
+  const sendNow = (e) => {
+    const to = draftTargets();
+    if (!to.length) return toast("Name who it goes to first", true);
+    if (!text.value.trim()) return toast("Write a message first", true);
+    const limit = composerDraft.limit.trim() === "" ? null : Number(composerDraft.limit);
+    if (limit !== null && (!Number.isInteger(limit) || limit < 1)) return toast("The limit is a whole number, or blank", true);
+    return sendTyped("composer", text, (words) =>
+      act(
+        "message.send",
+        { to, text: words, command: composerCommand, ...(limit === null ? {} : { limit }) },
+        (result) => {
+          const said = matchReportSaid(result);
+          if (said) composerReport = result;
+          return said ?? "Sent";
+        },
+        e.target,
+      ),
+    );
+  };
+  const offerNow = (e) => {
+    const to = draftTargets();
+    if (!to.length) return toast("Name who the offer goes to first", true);
+    if (!text.value.trim()) return toast("Write the offer first", true);
+    const slots = Number(composerDraft.slots);
+    if (!Number.isInteger(slots) || slots < 1) return toast("Say how many may claim it (a whole number)", true);
+    return sendTyped("composer", text, (words) =>
+      act("message.offer", { to, text: words, command: composerCommand, slots }, "Offer posted", e.target),
+    );
+  };
+  const compose = card(
+    h("input", {
+      type: "text",
+      placeholder: "To: agent:f*, group:muse, all…",
+      "aria-label": "To",
+      value: composerDraft.to,
+      onchange: (e) => {
+        composerDraft.to = e.target.value;
+      },
+    }),
+    text,
+    h(
+      "div",
+      { class: "row" },
+      h("label", { for: "composer-cmd", class: "row check meta" }, commandBox, "Send as an instruction"),
+      h("input", {
+        type: "number",
+        min: "1",
+        placeholder: "Limit",
+        "aria-label": "Limit",
+        value: composerDraft.limit,
+        onchange: (e) => {
+          composerDraft.limit = e.target.value;
+        },
+      }),
+    ),
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "label",
+        { class: "row meta" },
+        "Offer slots",
+        h("input", {
+          type: "number",
+          min: "1",
+          "aria-label": "Offer slots",
+          value: composerDraft.slots,
+          onchange: (e) => {
+            composerDraft.slots = e.target.value;
+          },
+        }),
+      ),
+      h("button", { class: "ghost", onclick: offerNow }, "Offer instead"),
+      h("button", { onclick: sendNow }, "Send"),
+    ),
+  );
+  // The last send's match report, in place, with its Broaden button
+  // while matched agents remain: one tap delivers the send's own
+  // remainder on its batch — never a fresh fan-out.
+  const reportCard = composerReport
+    ? card(
+        h("p", {}, matchReportSaid(composerReport) ?? ""),
+        composerReport.remaining > 0 && composerReport.batch
+          ? h(
+              "div",
+              { class: "row end" },
+              h(
+                "button",
+                {
+                  onclick: (e) =>
+                    act(
+                      "message.broaden",
+                      { batch: composerReport.batch },
+                      (result) => {
+                        const merged = mergeMatchReport(composerReport, result);
+                        if (merged !== composerReport) composerReport = merged;
+                        return matchReportSaid(merged) ?? "Broadened";
+                      },
+                      e.target,
+                    ),
+                },
+                `Broaden to the ${composerReport.remaining} remaining`,
+              ),
+            )
+          : null,
+      )
+    : null;
+  const offerRow = (o) => {
+    const claims = Array.isArray(o.claims) ? o.claims : [];
+    return card(
+      h(
+        "p",
+        { class: "meta" },
+        [`${ago(o.ts)} · ${o.kind} · to ${o.pattern ?? "—"}`, offerSaid(o), o.batch ? `batch ${o.batch}` : ""]
+          .filter(Boolean)
+          .join(" · "),
+      ),
+      h("p", {}, String(o.body ?? "").slice(0, 600)),
+      ...(claims.length
+        ? claims.map((c) => h("p", { class: "meta" }, `claimed by ${c.agent} · ${ago(c.claimed_at)}`))
+        : [h("p", { class: "meta" }, "No claims yet.")]),
+      o.batch
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: () => {
+                  messageFilters.batch = o.batch;
+                  draw();
+                },
+              },
+              "See the claims and replies",
+            ),
+          )
+        : null,
+    );
+  };
   return [
+    compose,
+    reportCard,
+    h("h2", {}, `Offers (${offers.length})`),
+    ...(offersFailed
+      ? [empty(`The offers could not be read just now: ${offersFailed}`)]
+      : offers.length
+        ? [...offers].reverse().map(offerRow)
+        : [empty("No offers posted.")]),
     filters,
     h("h2", {}, `Messages (${rows.length})`),
     ...(failed
