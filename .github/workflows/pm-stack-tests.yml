@@ -192,6 +192,24 @@ jobs:
           fi
           echo "fence-check and kaneo-cutover script suites passed."
 
+      # Ownership-map guard for #3989 criterion 1:
+      # pm-stack/scripts/ownership-map.test.sh pins the
+      # machine-checkable citations of
+      # doc/pm-stack/current-state-reconciliation-2026-11-24.md
+      # (one canonical home + one active writer per service, the
+      # muse-dev2 deletion recorded, the #6816 re-plan named), so the
+      # map cannot silently rot. Named explicitly and asserted to
+      # exist first, like the fencing suites above.
+      - name: Test ownership-map doc-rot guard suite
+        run: |
+          t=pm-stack/scripts/ownership-map.test.sh
+          if [ ! -f "$t" ]; then
+            echo "::error::Missing suite file $t — the ownership-map guard suite was not run."
+            exit 1
+          fi
+          bash "$t" || exit 1
+          echo "ownership-map guard suite passed."
+
       # Python suites for #5951: pm-stack/opencode-claimant/test_poll.py
       # (36 tests, the #3026 claimant session-cap gate) and
       # pm-stack/grist/test_update_choice_options.py (7 tests) were run

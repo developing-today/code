@@ -6,10 +6,10 @@ revision: 1
 
 # Roc — Talks, Videos, Releases & Announcements
 
-*Compiled 2026-11-23. The public-showcase side of the Roc ecosystem: people
+_Compiled 2026-11-23. The public-showcase side of the Roc ecosystem: people
 showing off the language, the new (Zig-based) compiler, and what has actually
 shipped. Recent and new-compiler material first; landmark older talks a
-newcomer should still watch are included and marked.*
+newcomer should still watch are included and marked._
 
 ## (a) Talks & videos
 
@@ -35,7 +35,7 @@ newcomer should still watch are included and marked.*
 ### Richard Feldman conference talks (landmarks and Roc-adjacent)
 
 - **Outperforming Imperative with Pure Functional Languages** — Richard
-  Feldman, Strange Loop 2021. *The* landmark Roc talk (~98K views): how a pure
+  Feldman, Strange Loop 2021. _The_ landmark Roc talk (~98K views): how a pure
   functional language can match or beat imperative performance via
   opportunistic in-place mutation, static reference counting, and unboxed
   values. Still the clearest introduction to why Roc exists.
@@ -60,7 +60,7 @@ newcomer should still watch are included and marked.*
   Feldman's platform-design thinking.
   https://www.hallway.video/watch/ZOvxa9aKCCg
 
-- **Rust & Zig Combined** — Richard Feldman, GOTO 2023. How the *original* Roc
+- **Rust & Zig Combined** — Richard Feldman, GOTO 2023. How the _original_ Roc
   compiler combined a Rust codebase with Zig (for its surgical linker and
   LLVM bitcode work) — the prequel that makes the later full Zig rewrite much
   less surprising. Listed in GOTO's Functional Programming playlist
@@ -102,7 +102,7 @@ newcomer should still watch are included and marked.*
 
 - **Roc — A Functional Language Looking for Those Software Sweetspots** —
   Richard Feldman on Developer Voices (Kris Jenkins), June 2025. Focuses on
-  what a language makes *harder* as a design tool, and where Roc is hunting
+  what a language makes _harder_ as a design tool, and where Roc is hunting
   for its niche. (Episode listing page; scroll to the Roc entry.)
   https://www.developervoices.com/episodes/
 
@@ -161,8 +161,7 @@ newcomer should still watch are included and marked.*
   free-for-all with pinned, permanently available builds.
   https://communick.news/post/2449578/4355026
 
-- **Roc's New Compiler for Advent of Code 2025** — Richard Feldman, December
-  2025. The hastily-assembled guide that first put the new compiler in the
+- **Roc's New Compiler for Advent of Code 2025** — Richard Feldman, December 2025. The hastily-assembled guide that first put the new compiler in the
   public's hands: nightly builds, the revised language design, and what
   hadn't been ported yet (e.g. exhaustiveness checking). A primary-source
   snapshot of the new compiler's state at the end of 2025.
@@ -221,10 +220,9 @@ newcomer should still watch are included and marked.*
 
 ---
 
-*Further pointer, unverified recording link: Feldman also gave a keynote,
+_Further pointer, unverified recording link: Feldman also gave a keynote,
 "The Essence of Functional Programming," at Functional Conf (India,
-presented remotely), discussed in ADSP Episode 157.*
-
+presented remotely), discussed in ADSP Episode 157._
 
 ## Change log
 

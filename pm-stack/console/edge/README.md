@@ -17,11 +17,11 @@ With the switch on and both tokens there (the usual state; see
 | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The app's page, script and icons                                                                              | edge                                                                                        | unchanged                                                                                                                                                                    |
 | Checking who is calling                                                                                       | edge, and again on the laptop                                                               | the edge still answers the owner; anyone it is unsure of gets nothing                                                                                                        |
-| The board, the owner's prompts, pull requests, ranked issues                                                  | edge, read from GitHub and the queue store on each section's own interval                   | unchanged                                                                                                                                                                    |
+| The board, the owner's prompts, pull requests, ranked issues, what is labelled as needing the owner           | edge, read from GitHub and the queue store on each section's own interval                   | unchanged                                                                                                                                                                    |
 | One pull request's page, the queue by state, roadmaps, bugs, intake, releases                                 | edge, read when asked for                                                                   | unchanged                                                                                                                                                                    |
 | Ask, reply, close a prompt, comment, rank, move a task, merge, start a deploy, file a note, a bug or a change | edge, at once; never sent to a machine, so never done twice                                 | unchanged                                                                                                                                                                    |
 | The queue task of a prompt, a note or a bug filed at the edge                                                 | a machine: the edge files the issue and holds the task (`prompt.enqueue`, `triage.enqueue`) | held, filed once when one connects, dropped after a day and said so                                                                                                          |
-| Sessions, questions, things for the owner's hands, units, agents                                              | a machine's report, kept at the edge                                                        | as of its last report, and the app says how old                                                                                                                              |
+| Sessions (and what one of them is waiting on the owner for), questions, units, agents                         | a machine's report, kept at the edge                                                        | as of its last report, and the app says how old                                                                                                                              |
 | Notifications: keys, subscriptions, sending                                                                   | edge                                                                                        | unchanged; a reply to a prompt is noticed by the edge itself, which wakes each minute while a device is subscribed; one says the laptop has gone quiet                       |
 | Linked phones and the widget's summary                                                                        | edge                                                                                        | unchanged                                                                                                                                                                    |
 | Actions only a machine can do, safe to do late (answers, messages to agents, …)                               | a machine, relayed at once                                                                  | held at the edge, run once when it is back, dropped after a day and said so                                                                                                  |
@@ -225,6 +225,65 @@ it (the laptop's, the sign-in issuer's).
   says when it answers again and which of the two it was. Health has
   the times as `github.quiet.core` and `github.quiet.search`. "Try
   again now" lifts both.
+- **The repository's settings are the platform's own.** Which
+  repository and queue, where the queue's store answers and what its
+  token is called, the Android app's package and the label that marks
+  an instruction are in `src/settings.ts`. The console on a machine
+  uses them where its environment says nothing else; the Worker's
+  bundle has them, and the Worker goes by its own whatever a machine's
+  report says. So they change with a merge to main and a deploy, and
+  with nothing else: a laptop on another checkout, or a branch nobody
+  merged, does not move where the queue's token is sent. What a machine
+  tells for them is kept as told and compared. The health answer says
+  in which the machine differs (`machineSettingsDiffer`: names only,
+  never a value, `null` while no machine has said anything), and the
+  Machines screen says each with what the machine says, what main
+  says, and which the Worker goes by. Two things are not the platform's
+  own yet. Who may sign in is the deployment's and is still as a
+  machine tells it (#13495). And the list of repositories looked in
+  for what needs the owner is still the machine's while a machine tells
+  one: a machine takes a reply only for an item in a repository on its
+  own list, and what the Worker cannot do itself it leaves to a
+  machine, so reading by another list than the machine's would show
+  items the machine then refuses (#14163).
+- **What is labelled as needing the owner is read from each
+  repository's own list.** Two labels say that something waits on him,
+  `user/review` and `user/escalated`. The edge asks each repository
+  the configuration names (`needsRepos`: unless told otherwise, the
+  ones the dashboard censuses, and a test holds the two lists to each
+  other; the edge is told the list by the laptop, which #14163 is to
+  end) for its open issues carrying each
+  (`GET /repos/<repo>/issues?state=open&labels=<label>`; that list has
+  the pull requests too), and makes the three lists the app shows
+  with the same function the laptop's console uses on the dashboard's
+  census: what only he can do (a hands mark in the body), reviews, and
+  the rest. A test holds the two readings to each other on the same
+  issues. The search is not used for this: it is counted by the minute,
+  it lags, and it takes issues and pull requests in separate queries
+  (asked for both at once it answers 422, which is what the dashboard's
+  own census did until #14103; it asks the same lists now, and a test
+  holds the two to asking for the same pages). The lists are asked for
+  by their tags like any other, so the eight of them cost nothing while
+  nothing changes. A repository the token cannot see (404, or a 403
+  that is not about calling too often) is named in what is shown, and
+  the rest is shown; the app says the list is not whole. Any other failure ends
+  the read at once and nothing more is asked: being called too often
+  or GitHub being out of reach would be no different for the next
+  list. No repository readable at all is a failed read, never an empty
+  list. The list carries no time of its own (the section's stamp says
+  when it was read), so one that has not changed is not written out
+  again. A new thing only the owner can do is told to his devices by
+  the edge's own wake, with no machine reporting. What he does about
+  an item the edge does itself: a reply, and "done" on what needed his
+  hands. "Done" is the label taken off and then the fleet told, in
+  that order: taking a label off twice is the same as once (GitHub
+  says "Label does not exist", which is what was wanted) and saying it
+  twice is two comments, so a failure part-way is tried again from the
+  start and said once. The list is read again before the answer goes
+  back, so the item is gone from the next look. A machine that has
+  not said which repositories to look in (a console from before it
+  did) goes on reporting the list itself: read from no repositories it
+  would be an empty list, and whole.
 - **A list that has not changed costs nothing.** The token is the
   fleet's too: the agents draw on the same hourly allowance, which is
   the account's, and twice on 2026-11-23 they used the hour up. So the
@@ -409,9 +468,9 @@ open nothing.
 
 ## Limits worth knowing
 
-- What only a machine has (sessions, questions, things for the owner's
-  hands, units, agents) is its last report. It ages while no machine is
-  connected, and the app says how old it is.
+- What only a machine has (sessions and what one of them is waiting on
+  the owner for, questions, units, agents) is its last report. It ages
+  while no machine is connected, and the app says how old it is.
 - Something filed at the edge still needs a machine for its queue task:
   the issue is filed at once and only the task is held, as
   `prompt.enqueue` or `triage.enqueue`, until one connects. The queue
@@ -419,9 +478,12 @@ open nothing.
   there, and copying the queue's rows by hand would break its contract.
   (The fleet's own hosted queue door, `pkgs/fleet/hosted-worker`, is
   where that changes.)
-- The edge learns where things are (the repository, the queue, who the
-  owner is) from a machine's report, and keeps it. One that has never
-  had a report serves nothing.
+- The edge learns who may sign in (the owners, the sign-in issuers, the
+  Android signing fingerprints) from a machine's report, and keeps it:
+  that is set where the hostname is set up, which is a script on the
+  laptop today (#13495). One that has never had a report serves
+  nothing. Where things are it knows by itself: see "The repository's
+  settings" above.
 - GitHub's search allows thirty requests a minute for the token, shared
   with whatever else uses it. Ranked issues are read every three
   minutes and a roadmap page at most once a minute for that reason.
@@ -457,8 +519,56 @@ open nothing.
   same issue, task, reference or set of questions) that a machine has
   not taken yet, even when the machine can be reached again: sent
   straight on it would be done first, and the older one would undo it.
-  What is about something else goes straight on. Not covered (#13398):
-  an older action held for a machine and a newer one about the same
-  thing that the edge does itself.
+  What is about something else goes straight on. Where the newer one is
+  the edge's own to do, the older held one still comes first: if a
+  machine has been handed it, or only a machine can do it, the newer
+  waits behind it; otherwise the edge does the older itself first (or,
+  for a rank followed by a newer rank of the same issue, drops it as
+  replaced: the last one wins, and only over its own kind).
+- **What is held and the edge can do, it does itself when it can.**
+  What the owner did while the edge was turned away and no machine
+  could be reached is held, but it does not have to wait for a machine.
+  When the time GitHub gave has come, or the hour the edge leaves a
+  kind alone is up, or the owner says to try again, the edge wakes
+  itself and does what it holds of the kinds it runs: the oldest first,
+  and each thing's actions in the order they were done.
+  Nothing is done twice, by one rule: an action is one side's or the
+  other's. It is a machine's once it may have reached one, and the edge
+  never takes it then, nor anything else about the same thing. It is
+  the edge's once it has taken it out of the held list, which it does,
+  and writes down (`taken`), before it begins. A machine reporting
+  meanwhile is not handed it, nor what waits behind it about the same
+  thing. Turned away again before anything was written, the action goes
+  back where it was. An object put away with an action taken is settled
+  by the next one from its record: ended; never begun, so it waits
+  again; or begun and not known to have ended, which neither side does
+  again and the owner is told to look at. What has waited a day is
+  dropped whether or not a machine ever reports.
+- **Only what certainly reached no machine is the edge's to do.** An
+  action may have reached a machine in two ways: a report's answer
+  handed it out, or it was sent to the host and nothing came back to
+  say it never arrived. The second is the common one. Asking the host
+  ends in an answer of the host's, in no answer at all (the time ran
+  out, the connection broke), or in an answer from what stands in
+  front of the host. Only one of those says the host never had the
+  request: Cloudflare's own 530 (its error 1033 for a tunnel), given
+  when the tunnel has no connection to send anything down. That is
+  what a laptop that is asleep or off looks like. Anything else (a
+  gateway that got no answer out of the host, a wait that ran out)
+  leaves it open whether the host did the thing, so the action is kept
+  as the host's by name: the host, which writes a name down before it
+  starts, is handed it when it reports and says what became of it.
+  Each held action carries the word `unsent` only when it is known to
+  have reached nobody: it never set off toward a machine, or it set
+  off once and that one asking was answered 530. Every setting-off is
+  counted under the action's name, because a device that gave up
+  waiting offers the same name again while the first asking may still
+  be out: word that the second never arrived says nothing of the first.
+  A held action without the word (one kept by a version from before
+  it, too) is a machine's. One waiting here that reached nobody is not
+  sent toward the host when its device offers it again; it goes on
+  waiting for whichever side is first. The app says which of the three
+  each one is ("either", "machine", "asked"), the Machines screen shows
+  it, and the health answer counts them.
 - The storage is one Durable Object. A section larger than one stored
   value is kept in pieces.

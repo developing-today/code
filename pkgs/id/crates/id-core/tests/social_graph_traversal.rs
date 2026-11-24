@@ -13,8 +13,8 @@
 use std::collections::{HashMap, HashSet};
 
 use id_core::graph::social::{
-    traverse, FeedError, FeedLedger, FeedScope, SocialObject, SocialObjectKind, SourcePosition,
-    Traversal, TraversalMark, TraversalProfile,
+    FeedError, FeedLedger, FeedScope, SocialObject, SocialObjectKind, SourcePosition, Traversal,
+    TraversalMark, TraversalProfile, traverse,
 };
 use id_core::graph::term::ObjectRef;
 use id_core::graph::version::ref_order_key;

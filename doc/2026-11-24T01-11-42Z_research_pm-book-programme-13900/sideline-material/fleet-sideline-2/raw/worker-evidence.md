@@ -42,7 +42,7 @@ queue broker at `100.99.113.103:4801`.
   `mcpx` (`pkgs/mcpx/worker/wrangler.toml`, `name = "mcpx"`, header cites
   #13657; doors `mcpx.security.cab` / `mcpx-link.security.cab`). The bounded
   wrangler inventory finds 23 configs across `pkgs/ pm-stack/ scripts/ infra/
-  nixos/` — none for an exec door.
+nixos/` — none for an exec door.
 - `home/common/default.nix` mentions `security.cab` only for Commander (the
   `desktop-commander-bridge` unit comment, ~lines 1077–1080: supergateway on
   `127.0.0.1:8931`, bridge door `commander-link.security.cab`, citing #13404).
@@ -63,7 +63,7 @@ queue broker at `100.99.113.103:4801`.
   - **no Access app in front, by design** — the runner job's GitHub OIDC
     token is the authentication, verified at the broker;
   - verified from outside (Muse sandbox): `POST
-    https://exec.security.cab/actions-exec-poll` with no token returned the
+https://exec.security.cab/actions-exec-poll` with no token returned the
     broker's own `401 {"error":"unauthorized"}`; `POST /claim` and `GET /`
     on the same host returned 404 — path scoping enforced at the tunnel.
 - In code, the door is a broker URL, not a Worker:
@@ -112,8 +112,8 @@ console/edge surface in §3.
   bounded wrangler inventory confirms no config anywhere for an aggregator.
 - Laptop service, two generations of the same fact:
   `pm-stack/systemd/pm-aggregator.service` — `WorkingDirectory=
-  %h/git/code/pm-stack/aggregator`, `ExecStart=/run/current-system/sw/bin/bun
-  run src/server.ts`, "Listens on port 4870", env from
+%h/git/code/pm-stack/aggregator`, `ExecStart=/run/current-system/sw/bin/bun
+run src/server.ts`, "Listens on port 4870", env from
   `%h/.local/state/pm-aggregator/.env`; and the current NixOS module
   `nixos/services/pm-stack/default.nix` — `pm-aggregator` unit running the
   packaged build (`pkgs/pm-aggregator/package.nix`, built from
@@ -131,7 +131,7 @@ console/edge surface in §3.
   `pm-stack/aggregator/src/turso-stores.ts` (store client, ref
   `turso:fleet-platform`), `src/decision-events-sync.ts` —
   `DECISION_EVENTS_TURSO_URL =
-  "https://fleet-platform-dezren39.aws-us-east-1.turso.io"`, token resolved
+"https://fleet-platform-dezren39.aws-us-east-1.turso.io"`, token resolved
   by name `turso.fleet-platform-rw-token`; alerts/incidents and push
   subscriptions live in Turso-backed `alerts.*` tables in the same process.
 - PM-SURVEY's `survey/push.md` (2026-11-23, same clone): "the aggregator

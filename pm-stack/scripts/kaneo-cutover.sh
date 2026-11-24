@@ -106,63 +106,63 @@ fail_usage() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --unreachable)
-      FENCE_ARGS+=("--unreachable")
-      UNREACHABLE_FLAG=1
-      shift
-      ;;
-    --mode|--source-dsn-file|--target-dsn-file|--dump-file|--receipt|--pg-bin-dir|--fence-check|--units-dir|--containers-file)
-      opt="$1"
-      [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
-      val="$2"
-      [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
-      case "$opt" in
-        --mode) MODE="$val" ;;
-        --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
-        --target-dsn-file) TARGET_DSN_FILE="$val" ;;
-        --dump-file) DUMP_FILE="$val" ;;
-        --receipt) RECEIPT="$val" ;;
-        --pg-bin-dir) PG_BIN_DIR="$val" ;;
-        --fence-check) FENCE_CHECK="$val" ;;
-        --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
-        --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
-      esac
-      shift 2
-      ;;
-    --mode=*|--source-dsn-file=*|--target-dsn-file=*|--dump-file=*|--receipt=*|--pg-bin-dir=*|--fence-check=*|--units-dir=*|--containers-file=*)
-      opt="${1%%=*}"
-      val="${1#*=}"
-      [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
-      case "$opt" in
-        --mode) MODE="$val" ;;
-        --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
-        --target-dsn-file) TARGET_DSN_FILE="$val" ;;
-        --dump-file) DUMP_FILE="$val" ;;
-        --receipt) RECEIPT="$val" ;;
-        --pg-bin-dir) PG_BIN_DIR="$val" ;;
-        --fence-check) FENCE_CHECK="$val" ;;
-        --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
-        --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
-      esac
-      shift
-      ;;
-    --*)
-      fail_usage "unexpected argument '$1'"
-      ;;
-    *)
-      fail_usage "unexpected argument '$1' (no positionals)"
-      ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --unreachable)
+    FENCE_ARGS+=("--unreachable")
+    UNREACHABLE_FLAG=1
+    shift
+    ;;
+  --mode | --source-dsn-file | --target-dsn-file | --dump-file | --receipt | --pg-bin-dir | --fence-check | --units-dir | --containers-file)
+    opt="$1"
+    [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
+    val="$2"
+    [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
+    case "$opt" in
+    --mode) MODE="$val" ;;
+    --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
+    --target-dsn-file) TARGET_DSN_FILE="$val" ;;
+    --dump-file) DUMP_FILE="$val" ;;
+    --receipt) RECEIPT="$val" ;;
+    --pg-bin-dir) PG_BIN_DIR="$val" ;;
+    --fence-check) FENCE_CHECK="$val" ;;
+    --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
+    --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
+    esac
+    shift 2
+    ;;
+  --mode=* | --source-dsn-file=* | --target-dsn-file=* | --dump-file=* | --receipt=* | --pg-bin-dir=* | --fence-check=* | --units-dir=* | --containers-file=*)
+    opt="${1%%=*}"
+    val="${1#*=}"
+    [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
+    case "$opt" in
+    --mode) MODE="$val" ;;
+    --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
+    --target-dsn-file) TARGET_DSN_FILE="$val" ;;
+    --dump-file) DUMP_FILE="$val" ;;
+    --receipt) RECEIPT="$val" ;;
+    --pg-bin-dir) PG_BIN_DIR="$val" ;;
+    --fence-check) FENCE_CHECK="$val" ;;
+    --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
+    --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
+    esac
+    shift
+    ;;
+  --*)
+    fail_usage "unexpected argument '$1'"
+    ;;
+  *)
+    fail_usage "unexpected argument '$1' (no positionals)"
+    ;;
   esac
 done
 
 case "$MODE" in
-  presync|promote|rollback) ;;
-  "") fail_usage "--mode is required (presync, promote or rollback)" ;;
-  *) fail_usage "--mode must be presync, promote or rollback (got '$MODE')" ;;
+presync | promote | rollback) ;;
+"") fail_usage "--mode is required (presync, promote or rollback)" ;;
+*) fail_usage "--mode must be presync, promote or rollback (got '$MODE')" ;;
 esac
 
 [ -n "$SOURCE_DSN_FILE" ] || fail_usage "--source-dsn-file is required"
@@ -188,7 +188,10 @@ else
   PSQL="psql"
 fi
 
-[ -x "$FENCE_CHECK" ] || { echo "kaneo-cutover: fence checker '$FENCE_CHECK' is not executable — refusing to gate a promotion on an absent check" >&2; exit 5; }
+[ -x "$FENCE_CHECK" ] || {
+  echo "kaneo-cutover: fence checker '$FENCE_CHECK' is not executable — refusing to gate a promotion on an absent check" >&2
+  exit 5
+}
 
 read_dsn() {
   # Reads a DSN without echoing it. Trailing newline dropped.
@@ -207,8 +210,11 @@ counts_of() {
   fi
   out="$(printf '%s' "$out" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
   case "$out" in
-    [0-9]*" "[0-9]*) printf '%s' "$out" ;;
-    *) echo "kaneo-cutover: unexpected count output from the $1 database: '$out'" >&2; return 5 ;;
+  [0-9]*" "[0-9]*) printf '%s' "$out" ;;
+  *)
+    echo "kaneo-cutover: unexpected count output from the $1 database: '$out'" >&2
+    return 5
+    ;;
   esac
 }
 
@@ -224,18 +230,33 @@ write_receipt() {
 - Verdict: $1
 ${2:-}"
   if [ -n "$RECEIPT" ]; then
-    printf '%s\n' "$RECEIPT_BODY" >"$RECEIPT" || { echo "kaneo-cutover: cannot write receipt '$RECEIPT'" >&2; exit 5; }
+    printf '%s\n' "$RECEIPT_BODY" >"$RECEIPT" || {
+      echo "kaneo-cutover: cannot write receipt '$RECEIPT'" >&2
+      exit 5
+    }
   fi
 }
 
-source_dsn="$(read_dsn "$SOURCE_DSN_FILE")" || { echo "kaneo-cutover: cannot read '$SOURCE_DSN_FILE'" >&2; exit 5; }
-target_dsn="$(read_dsn "$TARGET_DSN_FILE")" || { echo "kaneo-cutover: cannot read '$TARGET_DSN_FILE'" >&2; exit 5; }
+source_dsn="$(read_dsn "$SOURCE_DSN_FILE")" || {
+  echo "kaneo-cutover: cannot read '$SOURCE_DSN_FILE'" >&2
+  exit 5
+}
+target_dsn="$(read_dsn "$TARGET_DSN_FILE")" || {
+  echo "kaneo-cutover: cannot read '$TARGET_DSN_FILE'" >&2
+  exit 5
+}
 
 if [ "$MODE" = "presync" ]; then
   echo "kaneo-cutover: presync — dumping source to '$DUMP_FILE'"
-  "$PG_DUMP" -Fc -f "$DUMP_FILE" -d "$source_dsn" || { echo "kaneo-cutover: pg_dump failed" >&2; exit 5; }
+  "$PG_DUMP" -Fc -f "$DUMP_FILE" -d "$source_dsn" || {
+    echo "kaneo-cutover: pg_dump failed" >&2
+    exit 5
+  }
   echo "kaneo-cutover: presync — restoring into the target"
-  "$PG_RESTORE" --no-owner --no-privileges -d "$target_dsn" "$DUMP_FILE" || { echo "kaneo-cutover: pg_restore failed" >&2; exit 5; }
+  "$PG_RESTORE" --no-owner --no-privileges -d "$target_dsn" "$DUMP_FILE" || {
+    echo "kaneo-cutover: pg_restore failed" >&2
+    exit 5
+  }
 
   SRC_COUNTS="$(counts_of source "$source_dsn")" || exit $?
   TGT_COUNTS="$(counts_of target "$target_dsn")" || exit $?
@@ -271,9 +292,15 @@ if [ "$MODE" = "rollback" ]; then
   FENCE_LINE="$FENCE_OUT"
 
   echo "kaneo-cutover: rollback — exporting the target delta to '$DUMP_FILE'"
-  "$PG_DUMP" -Fc -f "$DUMP_FILE" -d "$target_dsn" || { echo "kaneo-cutover: pg_dump of the target failed" >&2; exit 5; }
+  "$PG_DUMP" -Fc -f "$DUMP_FILE" -d "$target_dsn" || {
+    echo "kaneo-cutover: pg_dump of the target failed" >&2
+    exit 5
+  }
   echo "kaneo-cutover: rollback — replaying into the source"
-  "$PG_RESTORE" --no-owner --no-privileges -d "$source_dsn" "$DUMP_FILE" || { echo "kaneo-cutover: pg_restore into the source failed" >&2; exit 5; }
+  "$PG_RESTORE" --no-owner --no-privileges -d "$source_dsn" "$DUMP_FILE" || {
+    echo "kaneo-cutover: pg_restore into the source failed" >&2
+    exit 5
+  }
 
   SRC_COUNTS="$(counts_of source "$source_dsn")" || exit $?
   TGT_COUNTS="$(counts_of target "$target_dsn")" || exit $?

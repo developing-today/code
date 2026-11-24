@@ -49,14 +49,14 @@ and proofs, wrong if read as a claim about version updates — and the
    make identical subtrees the same object in every blob; length-
    committed labels give constant-size (72-byte) length proofs and
    self-locating slices. Those advantages bind at collection scale and
-   on tiny carriers. But bab_rs computed *incorrect WILLIAM3 digests in
-   every version before 0.7* (the current pin, 0.8.1, "truly fixes"
+   on tiny carriers. But bab_rs computed _incorrect WILLIAM3 digests in
+   every version before 0.7_ (the current pin, 0.8.1, "truly fixes"
    them), fuzzing found integer overflows in it during 2026, there is no
    finished network wire protocol for Bab payloads (WTP is a
    pre-implementation draft), and the upstream is a two-person,
    grant-funded team. Adopting Bab today means forking the payload layer
    away from iroh-blobs' gravity — the iroh-willow precedent shows the
-   cost: it instantiated Willow with BLAKE3 digests and thereby was *a*
+   cost: it instantiated Willow with BLAKE3 digests and thereby was _a_
    Willow but not Willow'25; the hash-world choice is an interop choice.
 4. **Make the future flip cheap now: algorithm-tagged digests from day
    one.** D1 URIs and D3 objects should carry digests in a tagged form
@@ -68,7 +68,7 @@ and proofs, wrong if read as a claim about version updates — and the
 5. **CDC chunking stays out of the peer protocol.** It measured well on
    updates (16%) but its chunks cannot be named, sliced, or verified
    standalone in a D1 URI, and per-item addressing beats it on
-   item-shaped data anyway. It remains legitimate *inside* one
+   item-shaped data anyway. It remains legitimate _inside_ one
    administrative domain (backup/archival tiers, restic-style) where the
    manifest arrives over our own signed channel.
 6. **Manifests: flat now, tree'd when they grow.** A 403-entry manifest
@@ -121,10 +121,10 @@ the three questions.
   research feeds.
 - **Versioned replacement**: an item is superseded; a signed pointer one
   layer up names the current digest. Neither hash layer provides the
-  mutable name; the hash layer decides the *cost* of a new version.
+  mutable name; the hash layer decides the _cost_ of a new version.
 - **Digest-pinned references** (D1, #13886): the URI scheme names a
   single object "with optional payload slice and optional expected
-  digest" — slice references are in the *naming* layer, so slice-proof
+  digest" — slice references are in the _naming_ layer, so slice-proof
   efficiency is a naming property, not just a transfer property. D1 also
   requires offline verifiability on weak carriers (paper, email headers,
   QR, sneakernet bundles).
@@ -166,13 +166,13 @@ specific ways, and this research weighs that gravity honestly:
   P-256 under composition C) is orthogonal to the payload hash.
 - **Dragonfly** (#13929 assessment): not a content-addressing system at
   all — its digests prove consistency inside one trusting cluster, not
-  publisher authenticity. It composes *under* any of these choices when
+  publisher authenticity. It composes _under_ any of these choices when
   `Download.digest` is pinned from our signed channel: the digest is the
   commitment, Dragonfly is a mover. It neither needs nor rewards Bab.
 
 Net: the decided stack assumes (digest, length) payload references
 everywhere, BLAKE3/Bao at the blob layer today, and leaves exactly one
-door open — the digest *algorithm* is nowhere constitutionally fixed,
+door open — the digest _algorithm_ is nowhere constitutionally fixed,
 which is why recommendation 4 (tagged digests) is available at all.
 
 ---
@@ -198,7 +198,7 @@ per proof node — the cheapest verification in the field, on the most
 optimized hash implementation in the field.
 
 **Length.** Bao's wart, and it is a design wart not an implementation
-one: the length header is *not* committed by the root hash. The spec's
+one: the length header is _not_ committed by the root hash. The spec's
 "final chunk requirement" states the length is validated **when and
 only when the decoder validates the final chunk**, and decoders must
 not expose length before that. Proving a blob's total length therefore
@@ -209,8 +209,8 @@ get right.
 **Sharing/versioning.** None below the whole blob. Identical substrings
 are not recognized; an edit anywhere produces a new root under which no
 piece of the old version is addressable. (A client holding both
-versions' *bytes* can range-diff locally, rsync-style — but it cannot
-fetch the unchanged ranges from a third party *by name*, nor verify
+versions' _bytes_ can range-diff locally, rsync-style — but it cannot
+fetch the unchanged ranges from a third party _by name_, nor verify
 them as pieces of the new root without their proofs. Under digest-set
 resync — the content-addressed sync model — reuse across versions is
 zero. §5 measures exactly this.)
@@ -246,7 +246,7 @@ computed over the group's 16 chunks internally.
 
 ### 3.3 Bab / WILLIAM3
 
-Bab is a hash-function *family* designed for exactly this problem —
+Bab is a hash-function _family_ designed for exactly this problem —
 "a specification for a hash function specifically designed for usage in
 peer-to-peer content-addressable storage systems". WILLIAM3 is its
 BLAKE3-based instantiation: width 32 B, chunk size 1024 B, and precisely
@@ -300,8 +300,8 @@ Consequences, each verifiable from those two changes:
 **Costs and risks, stated as plainly:**
 
 - **Digest-correctness churn.** willow25's packaging requires pinning
-  `bab_rs = 0.8.1` because *every bab_rs version before 0.7 computed
-  incorrect WILLIAM3 digests* (recorded in the estate's Willow research
+  `bab_rs = 0.8.1` because _every bab_rs version before 0.7 computed
+  incorrect WILLIAM3 digests_ (recorded in the estate's Willow research
   from the Riot implementation audit). A hash layer whose digests
   changed under it within the last year is a layer whose stored
   addresses may silently rot. This is the single hardest fact against
@@ -321,12 +321,12 @@ Consequences, each verifiable from those two changes:
   first pace, ~$3K/yr donation income. The orbit's posture, per the
   estate's catalogue work, is that LLM-generated contributions are not
   accepted — upstream engagement from this estate would be
-  human-written or none. None of this is disqualifying for a *tracked
-  successor*; all of it argues against betting the payload layer on it
+  human-written or none. None of this is disqualifying for a _tracked
+  successor_; all of it argues against betting the payload layer on it
   this year.
 - **Tree storage is not smaller.** A full Bab label store is 32 B ×
   (2n − 1) nodes ≈ 64 B per chunk — the same ~6.25% as vanilla Bao's
-  outboard. Bab's win is what labels *mean*, not how many bytes they
+  outboard. Bab's win is what labels _mean_, not how many bytes they
   take. (A grouped-leaf profile like bao-tree's is conceivable for a
   Bab instantiation — the family is parameterisable — but WILLIAM3 as
   standardised is 1 KiB chunks, and changing that changes every digest.)
@@ -335,7 +335,7 @@ Consequences, each verifiable from those two changes:
 
 n0's iroh-willow implemented Willow + Meadowcap over iroh with payloads
 in iroh-blobs — which forced instantiating Willow with **BLAKE3**
-digests. Result, in the estate's Willow research's words: "it is *a*
+digests. Result, in the estate's Willow research's words: "it is _a_
 Willow, but not Willow'25, and would not interoperate with willow25
 peers." The implementation is also unmaintained (built against iroh
 0.34-era APIs; downstream vendoring reports broken builds).
@@ -343,13 +343,13 @@ peers." The implementation is also unmaintained (built against iroh
 Two lessons. First, **the payload hash is an interop boundary**: every
 ecosystem you touch has already picked one, and bridging means running
 both or converting at the border (a digest translation is a re-hash —
-cheap for the *receiving* side to verify only if it also fetches the
+cheap for the _receiving_ side to verify only if it also fetches the
 bytes; a translated digest is not self-authenticating across worlds).
 Second, gravity is real but not destiny: iroh-willow chose the
 transport's world over the data model's world because the transport
 was the running code. Our estate's running code is likewise
-iroh/p2panda-shaped today — which is an argument for Bao *now* and for
-keeping the flip *possible*, not for pretending the flip is free.
+iroh/p2panda-shaped today — which is an argument for Bao _now_ and for
+keeping the flip _possible_, not for pretending the flip is free.
 
 ### 3.5 Per-item addressing + manifest (the Merkle-DAG shape)
 
@@ -363,7 +363,7 @@ record CIDs under an MST.
 - **Identity** is intrinsic per item: the same item in a thousand
   collections is one object, stored once, fetched once, verified
   standalone. Transclusion is then not a feature of the store — an
-  embed *is* a manifest entry (plus D2's verb/capability semantics on
+  embed _is_ a manifest entry (plus D2's verb/capability semantics on
   top).
 - **Versioning cost** is exactly the changed items + the manifest diff,
   independent of where edits land (no boundary shift: items are cut by
@@ -380,10 +380,10 @@ record CIDs under an MST.
   large (§3.7), and treated as first-class sync citizens — the shape
   iroh-docs already runs (entries reconciled by set reconciliation,
   values fetched as blobs).
-- **What it does not solve:** sharing *below* item granularity. A 1-byte
+- **What it does not solve:** sharing _below_ item granularity. A 1-byte
   edit to a 40 KiB item is a new 40 KiB item. Git's answer (packfile
   deltas) works for storage but not for named transfer. If the estate
-  grows items that are large *and* internally edited, this layer needs
+  grows items that are large _and_ internally edited, this layer needs
   help from below (§6, hybrids) — that is the workload that would
   re-open the Bab question from the data side.
 
@@ -395,7 +395,7 @@ defaults ≈ 512 KiB / 1 MiB / 8 MiB; this spike used 4/16/64 KiB to fit
 a 1 MiB corpus). Chunks are named by their hashes in a manifest/index.
 
 - **The one thing it does uniquely well:** insertion/deletion locality
-  in a *monolithic* byte string. Boundaries re-synchronize within a
+  in a _monolithic_ byte string. Boundaries re-synchronize within a
   chunk or two after an edit, so version updates touch only the edited
   neighbourhood — measured 16% on the §5 edit cycle, vs 89–100% for
   fixed chunking. This is why every backup tool on earth uses it.
@@ -403,7 +403,7 @@ a 1 MiB corpus). Chunks are named by their hashes in a manifest/index.
   variable-size and content-cut, so a chunk cannot be located, sliced,
   or length-checked from its digest; a D1 URI cannot name "the chunk
   containing offset X"; verification always routes through a manifest
-  that must itself be trusted/fetched; and for data that *has* item
+  that must itself be trusted/fetched; and for data that _has_ item
   structure, per-item addressing beats it on its own metric (1.3% vs
   16%) while also providing names. CDC is the right answer to a
   question — "how do I dedup versions of an opaque byte stream?" —
@@ -412,13 +412,13 @@ a 1 MiB corpus). Chunks are named by their hashes in a manifest/index.
 ### 3.7 Prolly trees / Merkle search trees (the manifest's grown-up form)
 
 A prolly tree is a Merkle tree built by recursively applying a
-content-defined chunker over *sorted keys* (Noms → Dolt); ATProto's MST
+content-defined chunker over _sorted keys_ (Noms → Dolt); ATProto's MST
 is the same idea with key-hash-determined fanout (4, via 2-bit chunks
 of the key's SHA-256). Properties that matter here: history
 independence (same set → same root regardless of insertion order),
 structural sharing between versions, and diff between two versions in
 time proportional to the diff. This is not a blob hash and doesn't
-compete with §3.1–3.3; it is the candidate format for the *item index*
+compete with §3.1–3.3; it is the candidate format for the _item index_
 when collections outgrow flat manifests, and for any future
 Willow-adjacent key/value state (Willow's own store is an entry set
 with range-based set reconciliation over it — a sibling answer to the
@@ -431,7 +431,7 @@ If a domain earns the Willow data model, its store story is: entries
 (path, subspace, timestamp, payload_digest, payload_length) reconciled
 by range-based set reconciliation; payloads fetched by digest with
 Bab verifiable streams and stored via Bab in the persistent store —
-i.e., Willow'25 *presupposes* §3.3 as its payload layer and inherits
+i.e., Willow'25 _presupposes_ §3.3 as its payload layer and inherits
 both its strengths (length-committed digests fit the entry format
 exactly: digest + length is the whole reference) and its current gaps
 (no finished WTP wire protocol; the estate would write the sync, as
@@ -443,19 +443,19 @@ would commit us to.
 
 ## 4. Side-by-side
 
-| | Bao (vanilla) | bao-tree / iroh-blobs | Bab / WILLIAM3 | Per-item + manifest | CDC + manifest |
-|---|---|---|---|---|---|
-| Digest of blob | BLAKE3 root | BLAKE3 root | WILLIAM3 root label | manifest root over item digests | manifest over chunk digests |
-| Sub-blob identity | none (positional) | none (positional) | **subtree labels, position-free** | **per item, intrinsic** | per chunk, content-cut |
-| Slice proof (1 chunk, 1 GiB) | 1,288 B | group transfer ≥16 KiB | 1,288 B (spec opts. go lower, unquantified) | item's own small proof | via manifest only |
-| Length proof | ~2,312 B + final-chunk rule | same | **72 B, constant** | manifest carries lengths | manifest carries lengths |
-| Tree storage overhead | 6.25% | **0.39%** | ~6.25% (label store) | per-item outboards + 40 B/item | ~40 B/chunk of manifest |
-| Dedup of repeats | none | none | aligned subtrees only (measured) | **exact, alignment-free** | content-aligned regions |
-| Update cost, insertion edit (§5) | 100% | 100% | 89% | **1.3%** | 16% |
-| Update cost, in-place edit (§5) | 100% | 100% | **0.3%** | ~item size | ~1 chunk region |
-| Wire protocol today | reference impl | **deployed (`/iroh-bytes/4`)** | none finished (WTP draft) | HashSeq over blobs protocol | restic-style, domain-internal |
-| Maturity | spec stable, BLAKE3 audited | production-hardened | spec young; impl. pre-1.0, digest churn pre-0.7 | deployed at git/IPFS/ATProto scale | deployed at backup scale |
-| Maintenance orbit | BLAKE3 team | n0 (company) | worm-blossom (2 people, grants) | — (a shape, not a project) | restic et al. |
+|                                  | Bao (vanilla)               | bao-tree / iroh-blobs          | Bab / WILLIAM3                                  | Per-item + manifest                | CDC + manifest                |
+| -------------------------------- | --------------------------- | ------------------------------ | ----------------------------------------------- | ---------------------------------- | ----------------------------- |
+| Digest of blob                   | BLAKE3 root                 | BLAKE3 root                    | WILLIAM3 root label                             | manifest root over item digests    | manifest over chunk digests   |
+| Sub-blob identity                | none (positional)           | none (positional)              | **subtree labels, position-free**               | **per item, intrinsic**            | per chunk, content-cut        |
+| Slice proof (1 chunk, 1 GiB)     | 1,288 B                     | group transfer ≥16 KiB         | 1,288 B (spec opts. go lower, unquantified)     | item's own small proof             | via manifest only             |
+| Length proof                     | ~2,312 B + final-chunk rule | same                           | **72 B, constant**                              | manifest carries lengths           | manifest carries lengths      |
+| Tree storage overhead            | 6.25%                       | **0.39%**                      | ~6.25% (label store)                            | per-item outboards + 40 B/item     | ~40 B/chunk of manifest       |
+| Dedup of repeats                 | none                        | none                           | aligned subtrees only (measured)                | **exact, alignment-free**          | content-aligned regions       |
+| Update cost, insertion edit (§5) | 100%                        | 100%                           | 89%                                             | **1.3%**                           | 16%                           |
+| Update cost, in-place edit (§5)  | 100%                        | 100%                           | **0.3%**                                        | ~item size                         | ~1 chunk region               |
+| Wire protocol today              | reference impl              | **deployed (`/iroh-bytes/4`)** | none finished (WTP draft)                       | HashSeq over blobs protocol        | restic-style, domain-internal |
+| Maturity                         | spec stable, BLAKE3 audited | production-hardened            | spec young; impl. pre-1.0, digest churn pre-0.7 | deployed at git/IPFS/ATProto scale | deployed at backup scale      |
+| Maintenance orbit                | BLAKE3 team                 | n0 (company)                   | worm-blossom (2 people, grants)                 | — (a shape, not a project)         | restic et al.                 |
 
 All byte figures from §5's spike or computed from the cited specs'
 parameters; treat the table as a summary of the sections, not as
@@ -484,8 +484,8 @@ Full code and raw output are supplements to this record
 40 KiB attachment, because every repeat sits at a different offset
 mod 1024. The same corpus with each unit padded to chunk alignment:
 **344 of 1,210 chunks duplicate** under Bab. Per-item addressing on the
-unaligned corpus: **298,953 B (~29%) stored once**. *Chunk-layer dedup
-is an alignment lottery; item-layer dedup is exact.*
+unaligned corpus: **298,953 B (~29%) stored once**. _Chunk-layer dedup
+is an alignment lottery; item-layer dedup is exact._
 
 **Scenario A — fetch one 1,812 B item from mid-collection, verified.**
 per-item 3,100 B (item + one manifest slice) · Bao whole-blob slice
@@ -498,9 +498,9 @@ the item.
 item everywhere it is instanced; delete one instance; append five
 items; v2 = 1,042,776 B). Bytes a v1 replica must receive: **per-item
 13,400 (1.3%)** · CDC 170,031 (16%) · Bab 930,136 (89%) · Bao
-1,042,776 (100%). *The insertion, not the hash, is what bankrupts
+1,042,776 (100%). _The insertion, not the hash, is what bankrupts
 fixed chunking: a 198-byte shift re-cuts every downstream chunk in
-both Bao and Bab.* Bab's position-freedom cannot rescue content whose
+both Bao and Bab._ Bab's position-freedom cannot rescue content whose
 chunk boundaries moved.
 
 **Scenario B2 — in-place, length-preserving edit only** (one word
@@ -508,17 +508,17 @@ swapped inside one item). Bab: **3,072 B** (the three affected chunks —
 the other 99.7% of the blob is literally the same pieces). Bao:
 1,035,507 B (under digest-set resync, a new root re-names every piece;
 see the range-diff caveat in §3.1). CDC: 65,536 B (one max-size chunk
-region). *This is the scenario where the seed hypothesis is simply
+region). _This is the scenario where the seed hypothesis is simply
 right — and it is the less common edit shape for normalized data,
-because the item layer makes most edits item-local anyway.*
+because the item layer makes most edits item-local anyway._
 
 **Scenario C — transclusion fetch.** Fresh client fetches a 2 KiB page
 plus the 12 items it embeds (28,194 B of item content): per-item
 45,698 B (uncached manifest slices; ~30 KB with the manifest held) ·
 Bao/Bab whole-blob slices 51,232 B · bao-tree groups **236,192 B**
-(8.4× the content — group rounding on every item). *For
+(8.4× the content — group rounding on every item). _For
 transclusion-heavy rendering, verification granularity is the dominant
-cost in the whole study.*
+cost in the whole study._
 
 **Scenario D — length proof.** Bab: **72 B at any size**. Bao: 1,672 B
 at this corpus's size, 2,312 B at 1 GiB, plus the final-chunk
@@ -530,12 +530,12 @@ Outboard at 1 GiB: vanilla Bao 67.1 MB, bao-tree 4.19 MB. One-chunk
 slice proof at 1 GiB: Bao 1,288 B, Bab 1,288 B (before Bab's §4
 optimizations). Length proof at 1 GiB: Bao 2,312 B, Bab 72 B.
 
-**What was not measured, and why.** (a) *Hashing throughput*: not
+**What was not measured, and why.** (a) _Hashing throughput_: not
 benchmarked — WILLIAM3 is BLAKE3's compression function with different
 constants and inputs, so its cost class is BLAKE3's; quoting a laptop
-microbenchmark of a Python model would have been theatre. (b) *Bab's
-§4 slice optimizations*: spec-level only, no numbers claimed. (c)
-*bab_rs itself*: not run — its storage APIs exist, but the estate
+microbenchmark of a Python model would have been theatre. (b) _Bab's
+§4 slice optimizations_: spec-level only, no numbers claimed. (c)
+_bab_rs itself_: not run — its storage APIs exist, but the estate
 question is a design decision, and timing a pre-1.0 alpha's local API
 would not have measured anything the decision turns on. (d) The corpus
 is synthetic text; media payloads (already-compressed, unaligned,
@@ -552,7 +552,7 @@ above both. Two more hybrids worth recording:
 
 - **Bab item store + Bao bulk transfer.** If the §7 triggers fire, the
   flip is: item payloads re-addressed under WILLIAM3 (Bab store serves
-  items and slices), while *bulk movement between our own servers*
+  items and slices), while _bulk movement between our own servers_
   keeps using Bao/iroh-blobs or Dragonfly-with-pinned-digest as a
   mover — a Bab item can travel inside a Bao blob exactly as a file
   travels inside a tar: the outer layer is transport, the inner digest
@@ -564,11 +564,11 @@ above both. Two more hybrids worth recording:
   re-hash item payloads under WILLIAM3, publish new manifests alongside
   old, let the signed name pointers swing per item or per collection.
   No graph surgery, no URI grammar change (if recommendation 4 is
-  taken), no flag day. What a flip *does* foreclose: digest equality
+  taken), no flag day. What a flip _does_ foreclose: digest equality
   with the iroh-blobs world for those payloads (they leave the
   sendme-interop set), and any external system that pinned our BLAKE3
   digests must be re-pointed — which is why external pinning should
-  always pin the *name* (signed pointer), not the digest, wherever we
+  always pin the _name_ (signed pointer), not the digest, wherever we
   control the contract.
 
 **What each rejected path would have foreclosed.** Bab-everything now:
@@ -587,7 +587,7 @@ and edited in place (the shape per-item addressing handles worst and
 Bab/CDC handle best); iroh-blobs changes its tree format in a way that
 breaks the estate's stored outboards anyway (the gravity argument
 weakening); or Willow'25 interop becomes a goal in itself (a domain
-earns decision point 5 *and* needs to talk to willow25 peers), which
+earns decision point 5 _and_ needs to talk to willow25 peers), which
 makes WILLIAM3 payloads mandatory for that domain regardless of this
 research.
 
@@ -600,12 +600,12 @@ research.
   its Scenario B number, at the cost of fetching proofs for every
   reused range and giving up third-party piece serving. The
   recommendation does not depend on hiding this: even under a
-  range-diff model, Bao cannot *name* a sub-piece, which D1/D2 need.
+  range-diff model, Bao cannot _name_ a sub-piece, which D1/D2 need.
 - Bab's security argument for removing chunk indices is the spec's
   own (§3.5); WILLIAM3 has no independent audit and a fraction of
   BLAKE3's scrutiny. The recommendation's caution is therefore
-  two-sided: Bab is both less mature *and* less reviewed.
-- All measurements are one synthetic corpus at ~1 MiB. The *ordering*
+  two-sided: Bab is both less mature _and_ less reviewed.
+- All measurements are one synthetic corpus at ~1 MiB. The _ordering_
   of strategies is structural (it follows from alignment and
   granularity, not from the corpus), but the percentages are the
   corpus's, not constants of nature. The supplements carry the code so

@@ -112,6 +112,7 @@ impl Chains {
             author: author(who),
             after: after.to_vec(),
             group: Some(group),
+            at: None,
             body: GroupBody::Device(op),
         };
         let body = encode_group_event(&wire).unwrap();

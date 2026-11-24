@@ -24,7 +24,7 @@ Drew has stated plainly: **"Trimmer" was Trimmer — NOT Tremor; the
 research's reading was wrong.**
 
 Every place this record equates "Trimmer" with Tremor is therefore
-withdrawn. Tremor's own facts as recorded (an event *processor* that
+withdrawn. Tremor's own facts as recorded (an event _processor_ that
 sits on top of brokers, never a Kafka/NATS rival, now archived) are
 unaffected — what is withdrawn is the claim that Tremor is the thing
 Drew named.

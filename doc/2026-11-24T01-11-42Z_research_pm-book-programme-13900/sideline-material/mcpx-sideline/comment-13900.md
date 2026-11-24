@@ -8,12 +8,14 @@
 **Registration (both navigation systems):** `docs/SUMMARY.md` entry (H1 matches entry text) and `docs/compendium.manifest.json` (chapter-source in `designs`). The manifest also gains the previously missing entry for `worker/README.md` (not-compendium; its book chapter is the new file) — without it the manifest gate could not pass.
 
 **Verification actually run (laptop worktree, fast local checks):**
+
 - `go test ./internal/settings/ -count=1` — ok (includes TestEveryDocumentHasAChapter)
 - `go test ./internal/refdoc/ -run TestCommittedRegionsAreCurrent -count=1` — ok
 - `mdbook build` with docs-history built from tools/docs-history — builds; only warning is the pre-existing search-index-size warning; worker.html renders with the correct title, and a double-escaping bug in placeholders was caught in the render and fixed before merge
 - Not run: the full Nix `.#mcpx-docs` build (laptop under heavy load; fast gates used per the brief). Post-merge, the "mcpx docs" workflow run 45299935945 at the merge SHA was still queued at last check (runner backlog) — not yet concluded.
 
 **Disagreements found (numbered, for grouped filing):**
+
 1. `worker/README.md` had no compendium manifest entry, so TestEveryDocumentHasAChapter failed on it — fixed in this PR.
 2. The Worker's docs/source assert a bridge proxy on 127.0.0.1:8932 and an mcpx-link tunnel ingress, but no unit or ingress defining either exists in the repo's home configuration (only the Desktop Commander bridge on 127.0.0.1:8931 is defined there). The chapter states this openly.
 3. #13657 calls the Worker a "transparent proxy"; only the full (`?ns=*`) profile is transparent — the other profiles buffer and filter responses.

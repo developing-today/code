@@ -27,9 +27,9 @@ use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use existence_receipt::{
-    check_presence, presence_response, subject_digest, verify, AckContext, AckError,
-    CoalescedExistence, ExistenceEvidence, ExistenceResult, ExistsAck, Responder, SignedAck,
-    StoredUnverifiedObservation,
+    AckContext, AckError, CoalescedExistence, ExistenceEvidence, ExistenceResult, ExistsAck,
+    Responder, SignedAck, StoredUnverifiedObservation, check_presence, presence_response,
+    subject_digest, verify,
 };
 
 // ---------------------------------------------------------------------------

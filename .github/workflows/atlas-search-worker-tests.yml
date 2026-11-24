@@ -7,6 +7,8 @@ name: atlas-search worker tests
 # The atlas-search cache Worker's vitest suite — pkgs/atlas-search/
 # worker/test/ (key.test.ts: query canonicalisation + the DO cache-key
 # digest oracle; space.test.ts: validateEmbed embedding-space pins;
+# admission.test.ts: the #13103 D1 hot-cache admission policy rules
+# against the #9134 design §3/§5 oracles;
 # measurement.test.ts: the #13107 D1 hot-cache §7 counters + report
 # renderer against the #9134 design §7 oracle;
 # worker.test.ts: auth gate, DO cache hit, the #6937 whitespace-query
@@ -52,7 +54,7 @@ jobs:
       - name: Run the atlas-search worker vitest suite
         working-directory: pkgs/atlas-search/worker
         run: |
-          for f in test/key.test.ts test/space.test.ts test/measurement.test.ts test/worker.test.ts package.json package-lock.json; do
+          for f in test/key.test.ts test/space.test.ts test/admission.test.ts test/measurement.test.ts test/worker.test.ts package.json package-lock.json; do
             if [ ! -f "$f" ]; then
               echo "::error::pkgs/atlas-search/worker/$f is missing — the worker suite was not run."
               exit 1

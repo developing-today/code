@@ -8,7 +8,7 @@ both GitHub repos, crates.io / docs.rs, and the BeeKEM paper.
 ## Verdict in one sentence
 
 Keyhive is the only candidate in this programme that treats
-*authorization itself* as a replicated, offline-first data structure — a
+_authorization itself_ as a replicated, offline-first data structure — a
 state-based CRDT of signed delegations and revocations ("Keyline") whose
 evaluation gives coordination-free revocation, plus a decentralised
 group-key protocol (BeeKEM) that turns that membership graph into
@@ -51,10 +51,10 @@ overview draws identity, recovery, and sync as external dashed boxes.
 ## Identity & key management
 
 - **Keys are the only principals.** Every node in the authority graph is
-  an Ed25519 verifying key; at the Keyline level there is *no distinction*
+  an Ed25519 verifying key; at the Keyline level there is _no distinction_
   between individuals, groups, and documents — higher layers assign
   meaning to particular keys.
-- **An individual is one immutable Ed25519 keypair.** A *person* is
+- **An individual is one immutable Ed25519 keypair.** A _person_ is
   modelled as a group whose members are that person's per-device
   individuals; key rotation for a person = add a new device individual,
   remove the old one.
@@ -68,7 +68,7 @@ overview draws identity, recovery, and sync as external dashed boxes.
   registration, discovery, and verification are left to a future layer.
   The design overview names the intended neighbours: PKI, DIDs, Keyoxide,
   KERI, OpenPGP, petnames, ATProto. This composes cleanly with this
-  estate's existing fleet CA / IdP work — Keyhive would *consume* those
+  estate's existing fleet CA / IdP work — Keyhive would _consume_ those
   identities, not replace them.
 - **Key custody is the host's problem, by design.** Keyhive does not own
   key storage; its `AsyncSigner` abstraction lets hosts keep signing keys
@@ -98,8 +98,8 @@ append-only set whose merge is set union:
 
 - **Delegation**: `{issuer, audience, subject, power, citation?}` —
   "issuer asserts that audience may exercise `power` over `subject`."
-  `subject` is a *scope*, not an endpoint: a delegation whose subject is a
-  role is a *membership* and conveys everything that role reaches, now or
+  `subject` is a _scope_, not an endpoint: a delegation whose subject is a
+  role is a _membership_ and conveys everything that role reaches, now or
   in the future (late binding).
 - **Revocation**: `{issuer, revoke: Digest<Delegation>, retain}` — names
   one delegation by hash; `retain` carries per-subject content-retention
@@ -120,7 +120,7 @@ untrusted relays first-class citizens of the graph. `Read` = decrypt,
 
 A delegation has **no proof field**; justification is computed at
 verification time from the whole certificate set: an audience holds
-standing over a subject iff *some* unbroken route exists from the subject
+standing over a subject iff _some_ unbroken route exists from the subject
 to the audience through live delegations. In the design doc's own
 summary: "Keyline is RT₀ with SDSI chain discovery, with revocation
 semantics closest to ARBAC97's administrative relations, evaluated as
@@ -155,12 +155,12 @@ usually hand-wave. Keyline's semantics are specified to an unusual depth:
   replica, can never be un-applied by a merge; access can only be restored
   by a fresh signature from live authority, never by delivery order.
 - **Who can revoke what.** The issuer or the audience of a delegation can
-  kill it on *every* route (total). A third party's revocation breaks the
+  kill it on _every_ route (total). A third party's revocation breaks the
   target only on routes passing through the revoker's **admin reach** —
-  the set of nodes that key *ever* held Admin over, computed with all
+  the set of nodes that key _ever_ held Admin over, computed with all
   revocations ignored, so it only ever grows. Anyone can revoke a
   delegation on routes through their own node. A revocation outside those
-  scopes is *inert* — valid, admissible, zero effect.
+  scopes is _inert_ — valid, admissible, zero effect.
 - **Implicit cascade.** Revoking Alice's membership enumerates nothing;
   every delegation she issued simply fails the liveness check at next
   evaluation, transitively.
@@ -171,12 +171,12 @@ usually hand-wave. Keyline's semantics are specified to an unusual depth:
   practice: explicit revocations on removal (permanent, survives re-add)
   and fresh-key discipline after compromise.
 - **The ex-admin sharp edge, disclosed rather than hidden.** An ex-admin
-  retains revocation power over their frozen admin reach *forever* —
+  retains revocation power over their frozen admin reach _forever_ —
   deny-only, so they can grief but never grant. The durable escape is
   **rotation**: mint a fresh role key, re-supply it, re-roster the
   survivors. The design doc is blunt that "removing an admin needs a
   rotation."
-- **Root-role caveat.** Removal from the root role is *never durable*
+- **Root-role caveat.** Removal from the root role is _never durable_
   while the subject key is destroyed; the root role is append-only trust —
   "treat it like a root CA: set it up once and use it rarely," with all
   churn in second-layer roles where rotation works.
@@ -190,7 +190,7 @@ usually hand-wave. Keyline's semantics are specified to an unusual depth:
   estate used to UCAN-style expiring tokens, this is the single biggest
   semantic difference.
 - **No ambient policy language.** Roles, powerboxes, caretakers, pinning,
-  device groups are *patterns* over the two primitives, not built-in
+  device groups are _patterns_ over the two primitives, not built-in
   constructs.
 - **Back-dating is only partly answerable.** Keyhive cannot distinguish a
   genuinely old operation arriving late from a fabricated back-dated one;
@@ -203,7 +203,7 @@ usually hand-wave. Keyline's semantics are specified to an unusual depth:
 Groups are not a separate subsystem; they are the same graph read
 differently. A **role** is just a key that others hold membership in;
 membership = delegation with the role as `subject`; a **supply** =
-delegation *to* a role about another subject. Roles nest arbitrarily,
+delegation _to_ a role about another subject. Roles nest arbitrarily,
 documents are themselves groups, and documents-as-members gives
 folder-style hierarchies. Because membership is late-bound, supplying a
 role with a new document grants it to all current members with **no
@@ -238,15 +238,15 @@ path doing O(log n) DH decryptions.
 
 - **Why not MLS/TreeKEM**: TreeKEM requires a central server to totally
   order operations and pick winners among concurrent ones. BeeKEM keeps
-  TreeKEM's shape but requires only *causal* order, merging concurrent
+  TreeKEM's shape but requires only _causal_ order, merging concurrent
   updates in any order — when two leaves concurrently update a node, both
   DH keys are kept as "conflict keys," the node is treated as blank for
-  encryption purposes, and updates encrypt to the node's *resolution*, so
+  encryption purposes, and updates encrypt to the node's _resolution_, so
   a compromised old leaf key cannot decrypt across the fork ("cross-fork
   security"). A causally later update collapses the conflicts.
-- **Membership change = key change.** *Remove* blanks the member's leaf
-  and its entire path to the root; *add* places the member at the next
-  blank leaf and blanks its path. The next member *Update* (key rotation)
+- **Membership change = key change.** _Remove_ blanks the member's leaf
+  and its entire path to the root; _add_ places the member at the next
+  blank leaf and blanks its path. The next member _Update_ (key rotation)
   re-keys the blanked path and restores a root secret the removed member
   cannot derive — the post-compromise-security mechanism.
 - **Costs**: O(log n) update/decrypt in the common case, O(n) worst case
@@ -262,7 +262,7 @@ path doing O(log n) DH decryptions.
 Content is encrypted **at rest, in chunks**: ranges of CRDT changes are
 compressed (Automerge binary format) and then encrypted. **Causal
 encryption**: each chunk's key envelope includes the keys of all its
-*causal predecessor* chunks (Cryptree-like). Holding a chunk's key lets
+_causal predecessor_ chunks (Cryptree-like). Holding a chunk's key lets
 you iteratively discover the keys for its entire causal history.
 **Forward secrecy is deliberately sacrificed for content**, and the design
 says why: an op-based CRDT cannot materialise a view with gaps in history,
@@ -282,10 +282,10 @@ as an explicit non-goal.
 
 ### Known gaps — from the project's own threat model
 
-The current *code* falls short of the design in ways the authors disclose
+The current _code_ falls short of the design in ways the authors disclose
 as tracked gaps G1–G4. Two are authorisation-relevant:
 
-- **G1**: CGKA authorisation reads the *positive* graph (ignoring
+- **G1**: CGKA authorisation reads the _positive_ graph (ignoring
   revocations), so **a revoked member can delegate to a fresh key of its
   own and get that key seated in the tree** by every replica.
 - **G2**: a CGKA add's share key is not checked against the added
@@ -293,7 +293,7 @@ as tracked gaps G1–G4. Two are authorisation-relevant:
 - **G3**: eviction DoS — any principal with positive standing (even
   `Relay`) can manufacture a cite-able revocation and remove a reader
   from the tree (denial of service, not disclosure).
-- **G4**: replicas reconcile their BeeKEM trees only after their *own*
+- **G4**: replicas reconcile their BeeKEM trees only after their _own_
   membership writes, so a peer's revocation removes a reader from the
   tree only via the revoker's replica.
 
@@ -307,8 +307,8 @@ production applications… The code has not had a security audit."
 ### What it syncs
 
 Subduction replicates **Sedimentrees**: a set-based, content-addressed
-store for one hash-linked commit DAG — *loose commits* (individual signed
-commits) plus *fragments* (compressed ranges of commits). It is
+store for one hash-linked commit DAG — _loose commits_ (individual signed
+commits) plus _fragments_ (compressed ranges of commits). It is
 essentially an LSM tree adapted to CRDT graph data, with one twist —
 compaction must be deterministic across replicas that have never
 communicated, so fragment depth is assigned by the number of leading zero
@@ -343,7 +343,7 @@ about the CRDT it's carrying.
   sides learn each other's peer ID from the verifying key — Ed25519
   throughout.
 - **Identity ≠ permission, kept separate in the API.** The handshake
-  establishes only *who* is connecting. Whether they may connect is a
+  establishes only _who_ is connecting. Whether they may connect is a
   `ConnectionPolicy`; whether they may fetch/store a given tree is a
   `StoragePolicy` — distinct traits.
 - **Keyhive integration is a policy crate**: with it, a relay serves only
@@ -365,7 +365,7 @@ diffing mechanism that Subduction is meant to replace.
 
 ## BeeKEM the paper — the family's strongest maturity signal
 
-*BeeKEM: Decentralized, Secure and Efficient Group Key Agreement* — Yen,
+_BeeKEM: Decentralized, Secure and Efficient Group Key Agreement_ — Yen,
 Fábrega, Da, Kleppmann, Mumm, Park, Zelenka — is on the Cryptology ePrint
 Archive as [Paper 2026/1434](https://eprint.iacr.asia/2026/1434) (July
 2026; listed as in submission). Its claims: the first decentralised group
@@ -411,7 +411,7 @@ audited.
   quorum.
 - **Conflict story**: data conflicts are the carried CRDT's problem;
   auth conflicts are resolved by the evaluation rules. The one
-  content-layer conflict the family explicitly leaves open is *whiteout*
+  content-layer conflict the family explicitly leaves open is _whiteout_
   — whether a revoked member's past writes stay materialised — punted to
   the application via the `retain` watermark, with the semantics of
   combining watermarks still an open question.
@@ -420,10 +420,10 @@ audited.
 
 - **Keyline's stored state is two append-only tables.** Delegations and
   revocations are flat, fixed-shape, content-addressed rows — as
-  SQLite-shaped as data gets. The subtlety is *evaluation*: the
+  SQLite-shaped as data gets. The subtlety is _evaluation_: the
   implementers' notes work through exactly this question. The pipeline
   (positive pass → coverage → live pass) is expressible in SQL as chained
-  CTEs, **except** the standing derivation itself, which is a *non-linear*
+  CTEs, **except** the standing derivation itself, which is a _non-linear_
   fixpoint (a derivation step can consume two recursively derived facts)
   and therefore exceeds `WITH RECURSIVE` in both SQLite and PostgreSQL. A
   SQL backend needs one ordinary statement per fixpoint round, plus a
@@ -487,11 +487,11 @@ Running Keyline evaluation inside a Worker via `keyhive_wasm` is plausible
 but unpublished and unexercised; the estate would be the first. **R2 is
 reachable in principle**: `subduction_object_storage` puts a Sedimentree
 store on any `object_store` backend, and that crate family speaks S3. This
-is a storage backend for a Subduction *server*, not a Worker deployment
+is a storage backend for a Subduction _server_, not a Worker deployment
 shape. Subduction's server story is the CLI (with NixOS and Home Manager
 modules in the flake — a genuine fit for this estate's NixOS hosts) or
 hyper/axum embedding. In the estate's current shape, a Subduction relay
-would sit *behind* a Cloudflare door, not on the edge.
+would sit _behind_ a Cloudflare door, not on the edge.
 
 ## iroh fit
 
@@ -519,7 +519,7 @@ dogfooding (GAIOS/Automerge Repo) runs over WebSocket-style network stacks.
   correct, not that it is delivered."
 - **Traffic-analysis resistance** beyond coarse size padding; relays see
   the membership graph.
-- **A data model** — Keyhive/Subduction carry *other people's* CRDTs.
+- **A data model** — Keyhive/Subduction carry _other people's_ CRDTs.
   There is no Keyhive answer to "what is a document's schema" or "how do
   concurrent text edits merge."
 - **Production readiness** — by the authors' own repeated statement.
@@ -540,13 +540,13 @@ provides the group keys p2panda itself does not manage.
 The **`Relay` power level is a direct hit on this estate's architecture**:
 the Cloudflare doors and bridge relays that today hold ambient trust
 would hold `Relay` — able to store/forward ciphertext, cryptographically
-unable to read, and *inside* the same authorisation graph as everyone
+unable to read, and _inside_ the same authorisation graph as everyone
 else rather than trusted by construction.
 
 **Subduction is a credible alternative sync for hash-linked data** if the
 estate ever wants a second sync engine: CRDT-agnostic, iroh-native,
 fingerprint reconciliation, and an object-storage backend that fits R2.
-But adopting it *instead of* p2panda-sync means adopting its data
+But adopting it _instead of_ p2panda-sync means adopting its data
 structure (Sedimentree) too, and it is younger and less proven than
 Keyhive's design documents are.
 
@@ -556,8 +556,8 @@ Keyhive's design documents are.
    seating path** as of the current threat model. Until G1/G2 close and
    the ciphersuite gets its independent review, Keyhive cannot be the
    enforcement layer for anything the estate actually needs to keep
-   private — it can be the *model* (the graph semantics are implementable
-   from the design docs + conformance suite) before it can be the *code*.
+   private — it can be the _model_ (the graph semantics are implementable
+   from the design docs + conformance suite) before it can be the _code_.
 2. No expiry anywhere means the estate's short-lived-session patterns
    (Actions runners, leased exec) need a layer Keyhive doesn't provide —
    revocation-as-expiry works only when replicas sync promptly.
@@ -572,7 +572,7 @@ Keyhive's design documents are.
 
 **Net**: if the programme's question is "p2panda for everything, or
 p2panda + a composed auth layer," Keyhive is the only candidate whose auth
-layer was *built* to be composed this way, and its revocation semantics
+layer was _built_ to be composed this way, and its revocation semantics
 are the best-thought-through in the field. The honest sequencing is:
-adopt the *model* now as the reference for whatever auth the estate
-builds or borrows; revisit the *code* when the audit/gap list moves.
+adopt the _model_ now as the reference for whatever auth the estate
+builds or borrows; revisit the _code_ when the audit/gap list moves.

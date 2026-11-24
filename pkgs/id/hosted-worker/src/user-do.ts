@@ -31,12 +31,7 @@ import {
   type R2BucketLike,
 } from "./routing.ts";
 import { issueNonce, verifyProof, type AuthContext } from "./bridge-auth.ts";
-import {
-  BRIDGE_SCHEMA,
-  BridgeStore,
-  DEFAULT_WAITING_LIMITS,
-  type WaitingLimits,
-} from "./bridge-store.ts";
+import { BRIDGE_SCHEMA, BridgeStore, DEFAULT_WAITING_LIMITS, type WaitingLimits } from "./bridge-store.ts";
 import {
   BridgeSessionServer,
   decodeBatch,
@@ -280,7 +275,11 @@ export class UserDO {
       return n;
     };
     return {
-      perAuthor: parse(this.env.BRIDGE_WAITING_PER_AUTHOR, DEFAULT_WAITING_LIMITS.perAuthor, "BRIDGE_WAITING_PER_AUTHOR"),
+      perAuthor: parse(
+        this.env.BRIDGE_WAITING_PER_AUTHOR,
+        DEFAULT_WAITING_LIMITS.perAuthor,
+        "BRIDGE_WAITING_PER_AUTHOR",
+      ),
       total: parse(this.env.BRIDGE_WAITING_TOTAL, DEFAULT_WAITING_LIMITS.total, "BRIDGE_WAITING_TOTAL"),
       maxAgeMs: parse(this.env.BRIDGE_WAITING_MAX_AGE_MS, DEFAULT_WAITING_LIMITS.maxAgeMs, "BRIDGE_WAITING_MAX_AGE_MS"),
     };
@@ -438,7 +437,11 @@ export class UserDO {
         const irohHex = this.requireIroh(req);
         const body = await readBytesUpTo(req, DEFAULT_BRIDGE_LIMITS.maxBatchBytes);
         if (body === null) {
-          throw new FailClosed(413, "batch_too_large", `push body is larger than the ${DEFAULT_BRIDGE_LIMITS.maxBatchBytes}-byte batch bound`);
+          throw new FailClosed(
+            413,
+            "batch_too_large",
+            `push body is larger than the ${DEFAULT_BRIDGE_LIMITS.maxBatchBytes}-byte batch bound`,
+          );
         }
         const store = await this.bridgeProof(req, bindingId, irohHex, "push", body);
         const rawEvents = decodeBatch(body, DEFAULT_BRIDGE_LIMITS);
@@ -459,13 +462,7 @@ export class UserDO {
         const irohHex = this.requireIroh(req);
         const text = await readTextUpTo(req, 64 * 1024);
         if (text === null) throw bodyTooLarge(64 * 1024);
-        const store = await this.bridgeProof(
-          req,
-          bindingId,
-          irohHex,
-          "pull",
-          new TextEncoder().encode(text),
-        );
+        const store = await this.bridgeProof(req, bindingId, irohHex, "pull", new TextEncoder().encode(text));
         let positions = new Map<string, number>();
         let maxEvents = DEFAULT_BRIDGE_LIMITS.maxBatchEvents;
         try {
