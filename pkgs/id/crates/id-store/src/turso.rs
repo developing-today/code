@@ -1101,7 +1101,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use redb::{
-        Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition,
+        Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable,
+        ReadableTable, TableDefinition,
     };
     use rusqlite::types::Value as SqliteValue;
 
