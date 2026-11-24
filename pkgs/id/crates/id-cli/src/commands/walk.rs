@@ -168,6 +168,17 @@ fn config_path(dir: &Path) -> PathBuf {
     dir.join(CONFIG_FILE)
 }
 
+/// Write one of the walk node's small state files durably: the
+/// bytes are synced at a sibling temp path, renamed over `path`,
+/// and the directory is synced, so a crash or ENOSPC mid-write
+/// never leaves a torn file at the real path (#12784) — these are
+/// the files whose whole job is to survive restarts.
+fn write_state_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let tmp = path.with_extension("tmp");
+    id_core::durable_write::write_durable(path, &tmp, bytes)
+        .with_context(|| format!("writing {}", path.display()))
+}
+
 fn read_config(dir: &Path) -> anyhow::Result<NodeConfig> {
     let path = config_path(dir);
     let bytes = std::fs::read(&path).with_context(|| {
@@ -235,8 +246,7 @@ pub async fn init_node(dir: &Path, name: &str) -> anyhow::Result<()> {
         let config = NodeConfig {
             name: name.to_owned(),
         };
-        std::fs::write(&path, serde_json::to_vec_pretty(&config)?)
-            .with_context(|| format!("writing {}", path.display()))?;
+        write_state_file(&path, &serde_json::to_vec_pretty(&config)?)?;
     }
     // Open once so the directory is a valid node (store + index)
     // before the first real command, and so a broken directory
@@ -479,15 +489,21 @@ fn endpoint_key(dir: &Path) -> anyhow::Result<SecretKey> {
     let path = dir.join(ENDPOINT_KEY_FILE);
     match std::fs::read(&path) {
         Ok(bytes) => {
-            let bytes: [u8; 32] = bytes
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("{} is not a 32-byte key", path.display()))?;
+            let bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+                anyhow::anyhow!(
+                    "{} is not a 32-byte key ({} bytes): the file is torn or corrupt. \
+                     Delete {} and re-run to generate a fresh endpoint key — peer tokens \
+                     printed for the old key will stop naming this node",
+                    path.display(),
+                    bytes.len(),
+                    path.display()
+                )
+            })?;
             Ok(SecretKey::from_bytes(&bytes))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let key = SecretKey::generate();
-            std::fs::write(&path, key.to_bytes())
-                .with_context(|| format!("writing {}", path.display()))?;
+            write_state_file(&path, &key.to_bytes())?;
             Ok(key)
         }
         Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
@@ -760,5 +776,72 @@ fn print_transfer(label: &str, transfer: &id_sync::federation::slices::b09_anti_
             Ok(outcome) => println!("  {} -> {}", hex_id(event), outcome_text(outcome)),
             Err(error) => println!("  {} -> refused: {error:?}", hex_id(event)),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_key_torn_file_names_file_and_recovery_step() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(ENDPOINT_KEY_FILE), [7_u8; 10]).unwrap();
+        let error = match endpoint_key(dir.path()) {
+            Ok(_) => panic!("a torn endpoint.key must be an error, not a key"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("endpoint.key"), "{message}");
+        assert!(message.contains("Delete"), "{message}");
+    }
+
+    #[test]
+    fn endpoint_key_generated_once_then_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = endpoint_key(dir.path()).unwrap();
+        let path = dir.path().join(ENDPOINT_KEY_FILE);
+        assert_eq!(std::fs::read(&path).unwrap().len(), 32);
+        // The durable write leaves no temp file behind.
+        assert!(!dir.path().join("endpoint.tmp").exists());
+        let second = endpoint_key(dir.path()).unwrap();
+        assert_eq!(first.to_bytes(), second.to_bytes());
+    }
+
+    #[test]
+    fn read_config_rejects_torn_node_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(dir.path()), b"{\"name\": \"al").unwrap();
+        let error = match read_config(dir.path()) {
+            Ok(_) => panic!("a torn walk-node.json must be an error, not a config"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(message.contains("walk-node.json"), "{message}");
+    }
+
+    #[test]
+    fn write_state_file_replaces_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = NodeConfig {
+            name: "alice".to_owned(),
+        };
+        write_state_file(
+            &config_path(dir.path()),
+            &serde_json::to_vec_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_config(dir.path()).unwrap().name, "alice");
+        // A second write replaces the file; it never appends or tears.
+        let config = NodeConfig {
+            name: "bob".to_owned(),
+        };
+        write_state_file(
+            &config_path(dir.path()),
+            &serde_json::to_vec_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_config(dir.path()).unwrap().name, "bob");
     }
 }

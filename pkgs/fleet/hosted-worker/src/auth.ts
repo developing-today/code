@@ -34,8 +34,17 @@
 
 import type { HostedConfig } from "./config.ts";
 import { FailClosed } from "./errors.ts";
+import type {
+  GitHubBodyEditor,
+  GitHubCommentSurface,
+  GitHubItemSource,
+  GitHubProjectSurface,
+  GitHubWriter,
+} from "./github.ts";
 import { looksLikeJwt, parseJwt, validateRpToken, type JwksFetcher } from "./jwt.ts";
+import type { QueueDepProbe, QueueStore } from "./queue-store.ts";
 import type { SessionRegistry } from "./sessions.ts";
+import type { MetadataStore, QueueRecordSource } from "./stamping.ts";
 
 export type CallerKind = "rp" | "agent" | "service";
 
@@ -60,6 +69,49 @@ export interface AuthDeps {
   /** Session registry (#12584, src/sessions.ts). Absent → the
    * session routes fail closed with 503, like unconfigured auth. */
   sessions?: SessionRegistry;
+  /** Metadata store (#12585, src/stamping.ts). Absent → the stamping
+   * route fails closed with 503, like unconfigured auth. */
+  metadataStore?: MetadataStore;
+  /** GitHub writer (#12585, src/github.ts): the hosted rotation
+   * point or its fixture. Absent → the stamping route fails closed
+   * with 503. */
+  githubWriter?: GitHubWriter;
+  /** GitHub item source (#12587, src/github.ts): the query door's
+   * read path to current bodies — the §13 fallback scan and the
+   * §15 divergence check. Absent → the query door serves DB rows
+   * with body_checked false and runs no fallback; the store stays
+   * the required dependency. */
+  githubItems?: GitHubItemSource;
+  /** Queue record source (#12585, src/stamping.ts). Absent → no
+   * queue record is readable, so queue fields stamp null (the
+   * design §5 rule for work that is not queue-originated); the queue
+   * front door (#12589) wires the real source behind this seam. */
+  queueRecords?: QueueRecordSource;
+  /** Queue store (#12589, src/queue-store.ts): the queue door's
+   * backend — the production home is the existing fleet-queue
+   * Turso DB (#6741) behind the QueueStore interface. Absent → the
+   * queue door fails closed with 503, like unconfigured auth. */
+  queueStore?: QueueStore;
+  /** GitHub dep probe for the queue door's dep-recheck (#12589).
+   * Absent → the no-probe posture the native broker also runs:
+   * GitHub deps report unprobeable and stay blocked until their
+   * TTL; task deps resolve from the store either way. */
+  queueDepProbe?: QueueDepProbe;
+  /** GitHub comment surface (#12589, src/github.ts): the fallback
+   * claim protocol's transport. Absent → the fallback verbs fail
+   * closed with 503; the broker verbs do not need it. */
+  githubComments?: GitHubCommentSurface;
+  /** GitHub body editor (#12590, src/github.ts): ingestion's
+   * write-back of ascertained Metadata blocks. Absent → the
+   * ingestion check stores ascertained blocks DB-only and reports
+   * writeback "not_attempted"; the store stays the required
+   * dependency. */
+  githubEditor?: GitHubBodyEditor;
+  /** GitHub project surface (#12591, src/github.ts): the sync
+   * door's project-sync backend — Projects V2 state and writes
+   * over the rotation. Absent → the project-sync route fails
+   * closed with 503, like unconfigured auth. */
+  githubProjects?: GitHubProjectSurface;
 }
 
 export async function sha256Hex(text: string): Promise<string> {
@@ -153,11 +205,7 @@ export async function authenticate(req: Request, deps: AuthDeps): Promise<Caller
  * slices' business logic, not the plumbing). */
 export function authorizeRoute(ctx: CallerContext, doorId: string): void {
   if (ctx.kind === "service" && !(ctx.serviceRoutes ?? []).includes(doorId)) {
-    throw new FailClosed(
-      403,
-      "service_token_route_scope",
-      `service token is not scoped to the ${doorId} door`,
-    );
+    throw new FailClosed(403, "service_token_route_scope", `service token is not scoped to the ${doorId} door`);
   }
 }
 
@@ -168,11 +216,7 @@ export function assertCallerTenancy(req: Request, ctx: CallerContext): void {
   for (const name of ["x-binding-id", "x-tenancy-binding"]) {
     const asserted = req.headers.get(name);
     if (asserted !== null && asserted !== ctx.bindingId) {
-      throw new FailClosed(
-        403,
-        "cross_tenant_refused",
-        "request asserts a tenancy other than its credential's",
-      );
+      throw new FailClosed(403, "cross_tenant_refused", "request asserts a tenancy other than its credential's");
     }
   }
 }

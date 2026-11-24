@@ -55,13 +55,12 @@ November 2026, when the warden's live job vanished in an environment
 recovery and ready PRs sat unmerged for days. So this reconciliation
 also diffs the repo's ready (non-draft) PRs against live queue tasks:
 the broker `/coverage` call carries the PR numbers and answers which
-of them a LIVE task names (the warden's `pr` dedupe key or the
-merge-watch key — done/cancelled tasks are not coverage, same rule
-as issues). In `--import` mode, any ready PR older than 6 hours with
-no live task naming it gets one `pr_shepherd` packet under the
-warden's own dedupe key, so the warden and this fallback dedupe onto
-a single live task whichever files first. A PR already receiving a
-merge-watch packet this run is not double-filed. Fixtures carry the
+of them a LIVE task names. Merge-watch and ready-PR shepherd packets
+use the same canonical key, `repo-health:v1:pr:<repo>:pr:<n>`, so the
+warden and reconciliation dedupe onto one live task whichever files
+first. In `--import` mode, any ready PR older than 6 hours with no
+live task naming it gets one `pr_shepherd` packet under that key. A PR
+already receiving a merge-watch packet this run is not double-filed. Fixtures carry the
 broker's PR answer as `"uncovered_pulls": [{"number": n}]` inside
 each repo's coverage object; a fixture without it treats every PR as
 uncovered (the pre-#12280 fixture semantics).
@@ -232,9 +231,9 @@ def pr_issue_numbers(pr: dict) -> set[int]:
     return numbers
 
 
-def build_pr_coverage(prs: list[dict]) -> dict[int, dict]:
-    """issue number -> the open PR covering it (first PR wins)."""
-    coverage: dict[int, dict] = {}
+def build_pr_coverage(prs: list[dict]) -> dict[int, list[dict]]:
+    """Issue number -> all open PRs covering it, in PR enumeration order."""
+    coverage: dict[int, list[dict]] = {}
     for pr in prs:
         info = {
             "number": pr["number"],
@@ -242,7 +241,7 @@ def build_pr_coverage(prs: list[dict]) -> dict[int, dict]:
             "branch": ((pr.get("head") or {}).get("ref") or ""),
         }
         for n in pr_issue_numbers(pr):
-            coverage.setdefault(n, info)
+            coverage.setdefault(n, []).append(info)
     return coverage
 
 
@@ -741,12 +740,17 @@ def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dic
             "note if main has superseded it."
         ),
         "priority": 30,
-        "dedupe_key": f"repo-health:v1:merge-watch:{repo}:pr:{pr_number}",
+        # Share the warden's canonical key so all shepherd paths dedupe
+        # onto one live task per PR and the broker's coverage matcher sees it.
+        "dedupe_key": f"repo-health:v1:pr:{repo}:pr:{pr_number}",
         "payload": {
             "schema": "repo-task/v1",
             "kind": "pr_shepherd",
             "repo": repo,
             "queue": None,  # filled by the caller with the pilot queue
+            "prs": [
+                {"number": pr_number, "url": pr_url, "title": pr.get("title") or ""}
+            ],
             "issue": {
                 "number": number,
                 "url": issue_url,
@@ -795,7 +799,7 @@ def merge_watch_packet(repo: str, issue: dict, pr: dict, checked_at: str) -> dic
                 "coverage reconciliation (#4951)."
             ),
             "timebox_minutes": 45,
-            "max_attempts": 4,
+            "max_attempts": 1000,
             "context_refs": [issue_url, pr_url],
             "dedupe": {
                 "checked_at": checked_at,
@@ -1096,11 +1100,11 @@ def render_report(
             "",
         ]
         for r, i in pr_any:
-            pr = i.get("pr") or {}
-            lines.append(
-                f"- {r['repo']}#{i['number']} — PR #{pr.get('number')} "
-                f"({pr.get('branch') or 'branch unknown'})"
-            )
+            for pr in i.get("prs", []):
+                lines.append(
+                    f"- {r['repo']}#{i['number']} — PR #{pr.get('number')} "
+                    f"({pr.get('branch') or 'branch unknown'})"
+                )
         lines.append("")
     verdict_any = [(r, i) for r in results for i in r.get("verdict_covered_issues", [])]
     if verdict_any:
@@ -1243,7 +1247,7 @@ def main(argv: list[str] | None = None) -> int:
         broker_uncovered = cov.get("uncovered_issues", [])
         uncovered = [i for i in broker_uncovered if i["number"] not in pr_coverage]
         pr_covered = [
-            {**i, "pr": pr_coverage[i["number"]]}
+            {**i, "prs": pr_coverage[i["number"]]}
             for i in broker_uncovered
             if i["number"] in pr_coverage
         ]
@@ -1303,16 +1307,17 @@ def main(argv: list[str] | None = None) -> int:
         watch_imported = 0
         if do_import and pr_covered:
             for issue in pr_covered:
-                packet = merge_watch_packet(repo, issue, issue["pr"], checked_at)
-                ok, detail = enqueue_packet(
-                    packet, queue, args.fleet, args.broker_url, args.token_file
-                )
-                if ok:
-                    watch_imported += 1
-                else:
-                    errors.append(
-                        f"merge-watch enqueue failed for {repo}#{issue['number']}: {detail}"
+                for pr in issue["prs"]:
+                    packet = merge_watch_packet(repo, issue, pr, checked_at)
+                    ok, detail = enqueue_packet(
+                        packet, queue, args.fleet, args.broker_url, args.token_file
                     )
+                    if ok:
+                        watch_imported += 1
+                    else:
+                        errors.append(
+                            f"merge-watch enqueue failed for {repo}#{pr['number']}: {detail}"
+                        )
 
         # #12280: ready PRs older than 6h with no live task naming
         # them get a warden-keyed shepherd packet. The broker's PR
@@ -1342,7 +1347,7 @@ def main(argv: list[str] | None = None) -> int:
             ready_shepherd_candidates(
                 pulls,
                 uncovered_pull_numbers,
-                {i["pr"]["number"] for i in pr_covered},
+                {pr["number"] for i in pr_covered for pr in i["prs"]},
                 checked_at,
             )
             if pr_diff_known

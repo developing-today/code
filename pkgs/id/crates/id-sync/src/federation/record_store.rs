@@ -164,6 +164,11 @@ pub enum RecordStoreError {
     Content(ContentStoreError),
     /// A filesystem operation failed.
     Io(std::io::Error),
+    /// Replacing the on-disk index failed; the wrapped error's stage
+    /// says whether the new index was already installed when it
+    /// failed, so a caller can reconcile instead of assuming the
+    /// commit did not happen.
+    DurableWrite(id_core::durable_write::DurableWriteError),
     /// Opening the on-disk blob backend failed.
     Backend(String),
     /// A remote exchange (see
@@ -192,6 +197,9 @@ impl fmt::Display for RecordStoreError {
         match self {
             Self::Content(error) => write!(f, "content store failed: {error}"),
             Self::Io(error) => write!(f, "record store io failed: {error}"),
+            Self::DurableWrite(error) => {
+                write!(f, "record store index write failed: {error}")
+            }
             Self::Backend(error) => write!(f, "blob backend failed: {error}"),
             Self::Exchange(error) => write!(f, "remote exchange failed: {error}"),
             Self::Decode(what) => write!(f, "stored record does not decode: {what}"),
@@ -223,6 +231,12 @@ impl From<ContentStoreError> for RecordStoreError {
 impl From<std::io::Error> for RecordStoreError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<id_core::durable_write::DurableWriteError> for RecordStoreError {
+    fn from(error: id_core::durable_write::DurableWriteError) -> Self {
+        Self::DurableWrite(error)
     }
 }
 
@@ -663,17 +677,29 @@ impl<B: BlobBackend + Sync> NodeStore<B> {
     }
 
     fn flush_index(&self) -> Result<(), RecordStoreError> {
+        self.flush_index_with_parent_sync(|dir| fs::File::open(dir)?.sync_all())
+    }
+
+    fn flush_index_with_parent_sync(
+        &self,
+        sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+    ) -> Result<(), RecordStoreError> {
         // Commit the staged index entries: one write-then-rename
         // publishes a write-through point's version and report
         // records together, so the index on disk never names a
         // version without the reports its admission changed.
+        // The replacement goes through the durable-write contract:
+        // the parent directory is synced after the rename, so an
+        // `Ok` means the new index survives a crash — and a failed
+        // directory sync is reported (stage `AfterRename`), never
+        // swallowed into `Ok`.
         let tmp_path = self.index_path.with_extension("tmp");
-        let mut file = fs::File::create(&tmp_path)?;
-        use std::io::Write as _;
-        file.write_all(&self.index.encode())?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp_path, &self.index_path)?;
+        id_core::durable_write::write_durable_with_parent_sync(
+            &self.index_path,
+            &tmp_path,
+            &self.index.encode(),
+            sync_parent,
+        )?;
         Ok(())
     }
 
@@ -1701,6 +1727,40 @@ mod tests {
             decoded.report.canonical_bytes(),
             stored.report.canonical_bytes()
         );
+    }
+
+    #[test]
+    fn flush_index_reports_a_parent_sync_failure_after_the_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_path = dir.path().join("index");
+        let content = ContentStore::new(MapBackend::default(), ContentStoreConfig::default());
+        let node = NodeStore::new(content, index_path.clone()).unwrap();
+
+        // A directory sync that fails after the rename installed the
+        // new index must surface as an error carrying the AfterRename
+        // stage — never as Ok.
+        let error = node
+            .flush_index_with_parent_sync(|_| {
+                Err(std::io::Error::other("injected parent sync failure"))
+            })
+            .expect_err("parent sync failure is not success");
+        let stage = match &error {
+            RecordStoreError::DurableWrite(durable) => Some(durable.stage()),
+            _ => None,
+        };
+        assert_eq!(
+            stage,
+            Some(id_core::durable_write::WriteStage::AfterRename),
+            "unexpected flush error: {error:?}"
+        );
+
+        // The rename did install the new index before the sync
+        // failed, the staging file is gone, and a normal flush of
+        // the same index installs exactly the same bytes.
+        let installed = std::fs::read(&index_path).unwrap();
+        assert!(!index_path.with_extension("tmp").exists());
+        node.flush_index().unwrap();
+        assert_eq!(std::fs::read(&index_path).unwrap(), installed);
     }
 
     #[tokio::test]

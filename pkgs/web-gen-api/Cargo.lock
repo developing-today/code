@@ -1499,6 +1499,7 @@ dependencies = [
  "leptos_meta",
  "leptos_router",
  "wasm-bindgen",
+ "web-gen-api-app",
 ]
 
 [[package]]
@@ -2757,6 +2758,17 @@ dependencies = [
  "quote",
  "sha2",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "web-gen-api-app"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "leptos",
+ "leptos_actix",
+ "leptos_meta",
+ "leptos_router",
 ]
 
 [[package]]

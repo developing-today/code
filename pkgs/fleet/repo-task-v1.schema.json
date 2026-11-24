@@ -45,7 +45,7 @@
     { "required": ["set"] },
     { "required": ["source"] }
   ],
-  "description": "Structured payload stored in agent.tasks.payload for repo-health queue tasks. The task-row envelope fields (title, body, dedupe_key, priority, not_before, max_attempts) live outside this payload and are validated by repo-queue.py together with the cross-field dedupe rules.",
+  "description": "Structured payload stored in agent.tasks.payload for repo-health queue tasks. The task-row envelope fields (title, body, dedupe_key, priority, not_before, max_attempts) live outside this payload and are validated by the fleet queue validator (pkgs/fleet/crates/fleet-queue validate.rs, ceiling MAX_ATTEMPTS_CEILING) together with the cross-field dedupe rules.",
   "properties": {
     "acceptance": { "items": { "minLength": 1, "type": "string" }, "minItems": 1, "type": "array" },
     "context_refs": { "items": { "type": "string" }, "type": "array" },
@@ -70,8 +70,11 @@
       "required": ["number"],
       "type": "object"
     },
-    "kind": { "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation"], "type": "string" },
-    "max_attempts": { "maximum": 10, "minimum": 1, "type": "integer" },
+    "kind": {
+      "enum": ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice"],
+      "type": "string"
+    },
+    "max_attempts": { "maximum": 1000, "minimum": 1, "type": "integer" },
     "priority_reason": { "minLength": 1, "type": "string" },
     "problem": { "minLength": 1, "type": "string" },
     "prs": {
@@ -99,6 +102,7 @@
         "developing-today/openchamber",
         "developing-today-forks/opencode",
         "developing-today-forks/openchamber",
+        "dezren39/nix",
         "dezren39/darwin-nix",
         "developing-today/zettel",
         "dezren39/dezren39"

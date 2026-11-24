@@ -113,6 +113,8 @@ stdenvNoCC.mkDerivation {
       --add-flags "run $out/libexec/pm-aggregator/scripts/generate-digest.ts"
     makeWrapper ${lib.getExe bun} $out/bin/pm-aggregator-export-turso-stores \
       --add-flags "run $out/libexec/pm-aggregator/scripts/export-turso-stores.ts"
+    makeWrapper ${lib.getExe bun} $out/bin/pm-aggregator-quota-weekly-review \
+      --add-flags "run $out/libexec/pm-aggregator/scripts/quota-weekly-review.ts"
     runHook postInstall
   '';
 

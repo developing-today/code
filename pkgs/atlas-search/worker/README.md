@@ -9,7 +9,10 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
 
 ## Shape
 
-- `src/index.ts` — gate, normalization, keying, routing.
+- `src/index.ts` — the inbound gate and routing. Normalization
+  and keying live in `src/key.ts`; index.ts calls `queryKey`
+  directly only for the inspect/purge routes (search keying runs
+  in `src/search.ts`).
 - `src/cache_do.ts` — the `QueryCache` DO: one per query key;
   check-and-fill runs inside the DO so a fan-out happens once.
   State machine: absent → embedded → complete; the embedding is
@@ -17,14 +20,39 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
 - `src/service.ts` — calls to `fleet serve search`
   (`POST /v1/embed`, `POST /v1/search`) via the
   `atlas-search.security.cab` tunnel hostname + Cloudflare
-  Access service token. The service enforces this client's
-  `personal` tier ceiling; the Worker holds no Turso credentials
+  Access service token. Search requests explicitly state the
+  `hosted-per-user` disclosure context (#12622, `CONTEXT` in
+  `src/space.ts`, typed as `DisclosureContext`) and this client's
+  `personal` tier ceiling. The service enforces this client's
+  `personal` tier ceiling, and the Worker enforces it too: every
+  search response's `effective_ceiling` is checked against the
+  pinned ceiling and a mismatch is refused (502) before anything
+  is cached. The Worker holds no Turso credentials
   and keeps no shard list (new `atlas-core-*` databases join the
   fan-out through the service's manifest discovery).
-- `src/key.ts` — DO key = sha256 over the normalized query plus
-  the pinned config fingerprint (ceiling, model revision, vector
-  table, k). A cached entry is never served across ceilings or
-  embedding spaces.
+- `src/key.ts` — query normalization and DO keying. The key is
+  sha256 over the canonical key material (KEY_SCHEMA 2): the
+  normalized query plus `"v": 2`, the pinned ceiling, the
+  disclosure context (`hosted-per-user`, #12622), model
+  revision, vector table, and k. A cached entry is never served
+  across ceilings, disclosure contexts, or embedding spaces;
+  entries keyed under schema v1 are orphaned, never served.
+- `src/measurement.ts` — the D1 hot-cache measurement report
+  (#13107; design #9134 §7): the §7 counters (hits, skips,
+  revalidations per class and tenant; stale_serves, expected
+  zero; estimated Turso cost avoided; D1 bytes per tenant vs
+  quota) rendered as a report for #9098's economics prototype.
+  Pure accumulator + renderer, fed by the read path (follow-on 4).
+- `src/admission.ts` — the D1 hot-cache admission policy (#13103,
+  #9134 design §3/§5): heat counters, heavy-query immediate
+  admission, per-tenant quotas (tier weights 1:4:16, 5% floor),
+  entry size cap, negative-result TTL, and the LRU eviction sweep.
+  Pure policy, not yet wired into the read path (follow-on 4).
+- `src/freshness.ts` — the D1 hot-cache freshness evaluator
+  (#13101; design #9134 §1): pure per-class watermark/TTL rules
+  with fail-safe degradation, plus the tenant watermark read seam.
+  Not wired into a read path yet — the D1 store is #13100 and
+  read-path integration is follow-on 4 under #9134.
 
 ## Endpoints
 
@@ -60,6 +88,36 @@ query, result, meta}`.
   stale-result complaint.
 - Add an LRU sweeper when there are 10,000 cached queries or 1 GB of
   aggregate cache storage. Until then, entries have no TTL.
+
+## D1 tenant hot cache (#9134, flag off)
+
+The `HOT_CACHE` D1 binding and the store module in
+`src/hot_cache.ts` implement §8 item 1 of the D1 tenant hot cache
+design (`doc/2026-11-23T08-06-00Z_design_atlas_d1_tenant_hot_cache/`):
+the §5 `hot_cache` schema (migration `migrations/0001_hot_cache.sql`)
+plus get/put/touch/evict primitives. The tier is gated by
+`HOT_CACHE_ENABLED` (default `"false"`), but the store is not yet
+wired into the request path at all: nothing in the Worker calls
+it outside tests, so the flag alone does not activate the cache —
+with the flag on and the binding present, the Worker still never
+touches D1 and the read path is unchanged. Freshness
+(#13101), admission/eviction (#13103), measurement (#13107),
+and read-path integration (#13105) are separate follow-ons. The committed `database_id` is a
+local placeholder: the real `atlas-hot-cache` database is created at
+deploy time and its id replaces the placeholder in both
+`wrangler.toml` and `cloudflare.config.ts`.
+
+Invalidation (§8 item 5, #13106) is implemented in
+`src/invalidation.ts` over the tenant-state and purge-audit tables
+of migration `migrations/0002_hot_cache_invalidation.sql`:
+consumption of the per-tenant invalidation events that ride on
+ingest completion records (the design's v1 piggyback transport)
+drops the tenant's Class C entries and sets forced-revalidation,
+and the audited operator purge deletes all of a tenant's classes as
+a store operation. Neither is wired into the request path yet:
+event consumption is invoked by the ingest-completion consumer and
+the purge is operator-only, never called by automated paths;
+read-path integration (#13105) is what consults the recorded state.
 
 ## Secrets (names only; set with `wrangler secret put`)
 
@@ -106,6 +164,8 @@ new deployment at the previous version id — no upload needed.
 The miss path needs `POST /v1/embed` on the fleet search service
 (added in the same change as this Worker, in both `server.rs`
 copies under the #5433 parity guard). Deploying the service side
-is a binary refresh of the laptop's `atlas-search.service`; the
+is a binary refresh of the laptop's `atlas-search.service` — whose
+ExecStart is `fleet serve search` (atlasSearchServeViaFleet, #5604),
+so the binary refreshed is the fleet binary the unit runs; the
 Worker degrades to 502 (nothing cached) while the service is
 unreachable.

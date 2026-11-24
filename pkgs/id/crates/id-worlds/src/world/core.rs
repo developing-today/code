@@ -1228,18 +1228,20 @@ impl WorldCore {
                     holder,
                     epoch,
                     expires_at_ms,
+                    position,
                 } => {
                     core.write_lease
-                        .apply_grant(&holder, epoch, expires_at_ms)?;
+                        .apply_grant(&holder, epoch, expires_at_ms, position)?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::LeaseRenewed {
                     holder,
                     epoch,
                     expires_at_ms,
+                    position,
                 } => {
                     core.write_lease
-                        .apply_renew(&holder, epoch, expires_at_ms)?;
+                        .apply_renew(&holder, epoch, expires_at_ms, position)?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::LeaseHandedOff {
@@ -1247,18 +1249,20 @@ impl WorldCore {
                     to,
                     epoch,
                     expires_at_ms,
+                    position,
                 } => {
                     core.write_lease
-                        .apply_handoff(&from, &to, epoch, expires_at_ms)?;
+                        .apply_handoff(&from, &to, epoch, expires_at_ms, position)?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::LeaseRevoked {
                     former_holder,
                     epoch,
                     reason,
+                    position,
                 } => {
                     core.write_lease
-                        .apply_revoke(&former_holder, epoch, &reason)?;
+                        .apply_revoke(&former_holder, epoch, &reason, position)?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }
                 JournalEntry::LeaseWriteRejected {
@@ -1268,6 +1272,7 @@ impl WorldCore {
                     observed_epoch,
                     reason,
                     received_at_ms,
+                    position,
                 } => {
                     core.write_lease.apply_rejection(LeaseWriteRejection {
                         writer,
@@ -1276,6 +1281,7 @@ impl WorldCore {
                         observed_epoch,
                         reason,
                         received_at_ms,
+                        position,
                     })?;
                     core.since_checkpoint = core.since_checkpoint.saturating_add(1);
                 }

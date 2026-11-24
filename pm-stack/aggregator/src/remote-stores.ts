@@ -33,6 +33,16 @@ type GetClient = () => Promise<SqlClient | null>;
 
 const WRITE_CHUNK = 200;
 
+// Use a single set of mutable columns for assignment and comparison. The
+// null-safe check runs against the actual conflicting row inside the UPSERT,
+// not against a cache that could be stale after another write or lost response.
+function updateChanged(table: string, columns: readonly string[], touchUpdatedAt = false): string {
+  const assignments = columns.map((column) => `${column} = excluded.${column}`);
+  if (touchUpdatedAt) assignments.push("updated_at = now()");
+  const changed = columns.map((column) => `${table}.${column} is not excluded.${column}`);
+  return `do update set ${assignments.join(", ")} where ${changed.join(" or ")}`;
+}
+
 function chunks<T>(rows: readonly T[], size = WRITE_CHUNK): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < rows.length; i += size) out.push(rows.slice(i, i + size));
@@ -160,9 +170,15 @@ export function createTursoActionsRemote(getClient: GetClient = getTursoStoreCli
         const values = chunk.map(actionRowValues).join(",\n");
         await db.query(
           `insert into public.agg_actions (${ACTION_COLUMNS}) values\n${values}\n` +
-            `on conflict (id) do update set state = excluded.state, applied_at = excluded.applied_at, ` +
-            `applied_by_run = excluded.applied_by_run, result_note = excluded.result_note, ` +
-            `supersedes_action_id = excluded.supersedes_action_id, duplicate_of_action_id = excluded.duplicate_of_action_id`,
+            `on conflict (id) ${updateChanged("agg_actions", [
+              "state",
+              "applied_at",
+              "applied_by_run",
+              "result_note",
+              "supersedes_action_id",
+              "duplicate_of_action_id",
+            ])}`,
+          { operation: "actions", candidates: chunk.length },
         );
       }
     },
@@ -234,8 +250,12 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
         await db.query(
           `insert into public.agg_activity_ingestion (source, checkpoint, seen_ids, source_status, updated_at) values\n` +
             `${chunk.join(",\n")}\n` +
-            `on conflict (source) do update set checkpoint = excluded.checkpoint, seen_ids = excluded.seen_ids, ` +
-            `source_status = excluded.source_status, updated_at = now()`,
+            `on conflict (source) ${updateChanged(
+              "agg_activity_ingestion",
+              ["checkpoint", "seen_ids", "source_status"],
+              true,
+            )}`,
+          { operation: "activity.ingestion", candidates: chunk.length },
         );
       }
       const gapRows = data.gaps.map(
@@ -248,8 +268,8 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
         await db.query(
           `insert into public.agg_activity_gaps (id, source, gap_from, gap_to, status, detected_at, resolved_at, updated_at) values\n` +
             `${chunk.join(",\n")}\n` +
-            `on conflict (id) do update set status = excluded.status, gap_to = excluded.gap_to, ` +
-            `resolved_at = excluded.resolved_at, updated_at = now()`,
+            `on conflict (id) ${updateChanged("agg_activity_gaps", ["status", "gap_to", "resolved_at"], true)}`,
+          { operation: "activity.gaps", candidates: chunk.length },
         );
       }
     },
@@ -444,9 +464,14 @@ export function createTursoCommentsRemote(getClient: GetClient = getTursoStoreCl
             // Only the state fields the store mutates after creation
             // ride the update: triage transitions and github posting
             // results. Identity, author and body are write-once.
-            `on conflict (id) do update set triage_state = excluded.triage_state, ` +
-            `github_state = excluded.github_state, github_url = excluded.github_url, ` +
-            `github_error = excluded.github_error, github_failed_at = excluded.github_failed_at`,
+            `on conflict (id) ${updateChanged("shared_comments", [
+              "triage_state",
+              "github_state",
+              "github_url",
+              "github_error",
+              "github_failed_at",
+            ])}`,
+          { operation: "comments", candidates: chunk.length },
         );
       }
     },

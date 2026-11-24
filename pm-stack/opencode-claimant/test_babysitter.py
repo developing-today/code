@@ -35,6 +35,7 @@ no babysitter.py and no babysitter round in the claimant fire
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +53,24 @@ def _load(name, filename):
 
 babysitter = _load("babysitter", "babysitter.py")
 claimant = _load("claimant_for_babysitter", "claimant.py")
+
+
+def _fake_git_run(argv, **kwargs):
+    """Fake git at the subprocess boundary for fire-log tests.
+
+    log_fire() records read_code_source()'s provenance read in every
+    entry; that read spawns git, which the hermetic suite forbids.
+    Fire-log tests whose subject is another entry field fake the read
+    here (the TestCodeSourceFireLog shape, #13254) so the entry still
+    carries a real-shaped code_source and no spawn is attempted.
+    """
+    stdout = (
+        "main\n"
+        if "--abbrev-ref" in argv
+        else "0123456789abcdef0123456789abcdef01234567\n"
+    )
+    return subprocess.CompletedProcess(argv, 0, stdout=stdout)
+
 
 NOW = 1_700_000_000_000  # fixed round clock (ms)
 MIN = 60 * 1000
@@ -168,6 +187,37 @@ class TestVerdicts(unittest.TestCase):
         v = record["verdicts"]["ses_a"]
         self.assertEqual(v["verdict"], "stalled")
         self.assertEqual(v["task_id"], 101)
+
+    def test_bound_progressing_session_carries_full_binding(self):
+        # #2140 criterion 2 (via #1656 AC1): the round output
+        # identifies queue-spawned sessions with their task/issue
+        # binding - not just the task id. Oracle: build_bindings'
+        # binding shape, carried through public_binding.
+        s = session("ses_a", updated=NOW - 1 * MIN)
+        bound = binding(repo="developing-today/code")
+        record, _ = round_of([s], active_ids={"ses_a"}, bindings={"ses_a": bound})
+        v = record["verdicts"]["ses_a"]
+        self.assertEqual(v["verdict"], "progressing")
+        self.assertEqual(
+            v["binding"],
+            {
+                "task_id": 101,
+                "queue": "repo-health-code-pilot",
+                "issue_number": 4242,
+                "repo": "developing-today/code",
+            },
+        )
+
+    def test_error_stopped_bound_session_is_retryable_with_binding(self):
+        s = session("ses_a", idle=NOW, outcome="error")
+        bound = binding(repo="developing-today/code")
+        record, _ = round_of([s], bindings={"ses_a": bound})
+        v = record["verdicts"]["ses_a"]
+        self.assertEqual(v["verdict"], "error-stopped")
+        self.assertEqual(v["outcome"], "error")
+        self.assertTrue(v["retryable"])
+        self.assertEqual(v["binding"]["task_id"], 101)
+        self.assertEqual(v["binding"]["repo"], "developing-today/code")
 
     def test_blocked_reason_explains_silence(self):
         s = session("ses_a", updated=NOW - 25 * MIN)
@@ -391,6 +441,7 @@ class TestFireWiring(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", _fake_git_run),
             ):
                 rc = claimant.main()
             self.assertEqual(rc, 0)

@@ -80,6 +80,44 @@ export function servingCheck(deployments, versionId) {
   return { ok: false, serving };
 }
 
+// Return one unambiguous 100% serving version for code-only upload inheritance.
+export function singleServingVersion(deployments) {
+  const latest = [...deployments].sort((a, b) => createdOn(b) - createdOn(a))[0];
+  const active = (latest?.versions ?? []).filter((v) => Number(v.percentage) > 0);
+  return active.length === 1 && Number(active[0].percentage) === 100 && active[0].version_id
+    ? active[0].version_id
+    : null;
+}
+
+const VERSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function ghaUploadIdentity({ sha, runId, attempt }) {
+  if (!/^[0-9a-f]{40}$/.test(sha ?? "") || !/^[0-9]{1,20}$/.test(runId ?? "") ||
+      !/^[0-9]{1,10}$/.test(attempt ?? "")) {
+    throw new Error("invalid GitHub upload provenance");
+  }
+  return { tag: sha, message: "queue-transport-alert upload " + sha + " run " + runId + " attempt " + attempt };
+}
+
+// Pinned cf 1.0.0-beta.20 emits this machine record to WRANGLER_OUTPUT_FILE_PATH.
+export function uploadedVersionId(raw, worker) {
+  const item = JSON.parse(raw);
+  if (item?.type !== "version-upload" || item.version !== 1 || item.worker_name !== worker ||
+      item.worker_name_overridden !== false || item.wrangler_environment ||
+      !VERSION_UUID.test(item.version_id ?? "")) {
+    throw new Error("cf upload did not return a version UUID for the exact Worker");
+  }
+  return item.version_id;
+}
+
+export function hasExactUpload(versions, id, { tag, message }) {
+  if (!VERSION_UUID.test(id ?? "")) return false;
+  const matches = versions.filter((item) => item.id === id);
+  if (matches.length !== 1) return false;
+  const annotations = matches[0].annotations ?? matches[0].metadata?.annotations;
+  return annotations?.["workers/tag"] === tag && annotations?.["workers/message"] === message;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     parseArgs(process.argv.slice(2));

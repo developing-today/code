@@ -10,7 +10,8 @@ plugins {
     id 'com.android.application'
 }
 
-def site = 'https://pm.security.cab'
+def site = findProperty('pmConsoleSite') ?: 'https://pm.security.cab'
+def siteHost = new URI(site).host
 def keystore = System.getenv('PM_ANDROID_KEYSTORE')
 // A release names its own version (build.sh works both out from the
 // commit, so a later build always installs over an earlier one). A
@@ -20,15 +21,22 @@ def releaseName = System.getenv('PM_ANDROID_VERSION_NAME')
 
 android {
     namespace 'today.developing.pmconsole'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId 'today.developing.pmconsole'
         minSdk 24
-        targetSdk 34
+        targetSdk 36
         versionCode releaseCode ? releaseCode.toInteger() : 3
         versionName releaseName ?: '0.3.0'
-        manifestPlaceholders = [hostName: 'pm.security.cab', defaultUrl: "${site}/console/"]
+        // The site the app opens. The offline check builds it against
+        // the demo edge on the runner instead
+        // (-PpmConsoleSite=http://10.0.2.2:4897, via PM_CONSOLE_SITE in
+        // build.sh); anything else keeps the real site, and the release
+        // build is unchanged. A demo site is plain http, so the app
+        // opens there as a Custom Tab rather than a verified Trusted
+        // Web Activity; the web content under test is the same.
+        manifestPlaceholders = [hostName: siteHost, defaultUrl: "${site}/console/"]
         // The app's half of the link to the site. The site's half is
         // /.well-known/assetlinks.json, served by pm-console.
         resValue 'string', 'console_url', "${site}/console/"
@@ -69,5 +77,5 @@ android {
 }
 
 dependencies {
-    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.7.4'
 }

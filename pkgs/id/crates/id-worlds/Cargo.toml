@@ -23,11 +23,9 @@ license = "MIT OR Apache-2.0"
 # `WorldCore` holds it, the world actor executes directory actions
 # against it, and `world_store` persists it beside the journal, so
 # the cluster moves as the consumer side of the relationship (the
-# seam-6 pattern). Seam 10's remaining half is unchanged by this:
-# step 6's `id-directory` extraction must still invert or re-home
-# `WorldCore`'s hold on the directory, exactly as it would have had
-# to from the facade. The facade re-exports the directory modules at
-# their historical `id::` paths until then.
+# seam-6 pattern). Directory ownership is now in id-directory;
+# id-worlds uses and re-exports its modules for compatibility. The
+# facade likewise preserves the historical `id::` paths.
 #
 # `session_host` also lands here: it implements `id_sync::host::
 # SessionHost` for the hub and `id_sync::artifact::ArtifactSink` for
@@ -65,9 +63,9 @@ id-store = { path = "../id-store", default-features = false }
 id-sync = { path = "../id-sync", default-features = false }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.101", features = ["net"] }
+iroh-gossip = { version = "0.103", features = ["net"] }
 libc = "0.2"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 postcard = { version = "1", features = ["alloc"] }
@@ -81,7 +79,7 @@ reqwest = { version = "0.13", default-features = false, features = [
   "blocking",
   "rustls",
 ] }
-russh = { version = "=0.65.1", optional = true }
+russh = { version = "=0.65.2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
@@ -90,7 +88,7 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-wasmtime = { version = "=49.0.6", default-features = false, features = [
+wasmtime = { version = "=49.0.7", default-features = false, features = [
   "cranelift",
   "runtime",
   "std",

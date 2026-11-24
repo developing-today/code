@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
-distributed-topic-tracker = { git = "https://github.com/rustonbsd/distributed-topic-tracker", version = "0.2.5" }
+distributed-topic-tracker = { git = "https://github.com/rustonbsd/distributed-topic-tracker", rev = "c9bb5e670f69c83c68c6864c0f288795d35954df", version = "0.2.5" }
 ed25519-dalek = "3.0.0-pre.1"
 iroh = "0.95"
 iroh-gossip = "0.95"

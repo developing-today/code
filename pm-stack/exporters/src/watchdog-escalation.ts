@@ -8,6 +8,11 @@
 //   (source, failure class) while the incident is open — the dedupe
 //   record lives on the incident itself (Incident.escalation), so a
 //   second escalation tick for the same pair creates neither;
+// - dedupe is not silence (#10630): once a confirmed hand-off has been
+//   unresolved for ESCALATION_REPEAT_AFTER_MS, the plan updates the
+//   EXISTING escalation — one comment on the incident issue — and
+//   repeats once per window while the source stays down, so a repair
+//   task nobody picks up cannot go quiet past the second threshold;
 // - the queue task carries the full context packet (below), so a
 //   browser-enabled agent can start from the packet alone;
 // - on producer success, the recovery plan comments the resolution on
@@ -40,6 +45,13 @@ import type { EscalationRecord, FailureClass, SourceHealth } from "./watchdog-st
 
 /** How long an ordinary escalation stays quiet before it surfaces. */
 export const ESCALATION_NEEDS_DREW_AFTER_MS = 24 * 60 * 60_000;
+
+/** How long a confirmed hand-off may sit unresolved before the
+ *  escalation re-fires on its existing incident issue (#10630: the
+ *  second threshold). It matches the surfacing threshold: the tick
+ *  that earns the NEEDS DREW line also posts the re-escalation
+ *  update, and each further window earns one more. */
+export const ESCALATION_REPEAT_AFTER_MS = ESCALATION_NEEDS_DREW_AFTER_MS;
 
 /** Per-source wiring the entry point supplies from the adapter. */
 export interface EscalationContext {
@@ -159,16 +171,37 @@ function issueBody(health: SourceHealth, packet: EscalationPacket): string {
   ].join("\n");
 }
 
+function reEscalationBody(health: SourceHealth, rec: EscalationRecord, nowMs: number): string {
+  const anchor = Date.parse(rec.lastReEscalatedAt ?? rec.since);
+  const hours = Math.floor((nowMs - anchor) / 3_600_000);
+  return [
+    `Still unresolved: source \`${health.source}\` is still failing (${health.currentClass ?? "unknown"}) ${hours}h after the last escalation update, and no fresh read has landed.`,
+    "",
+    `- consecutive failures: ${health.consecutiveFailures}`,
+    `- last detail: ${health.lastDetail || "(none)"}`,
+    `- repair task: ${rec.queueTaskId ?? "(unrecorded)"} (dedupe \`${escalationDedupeKey(health.source, rec.class)}\`)`,
+    "",
+    "The watchdog re-escalates on the existing incident instead of opening a new one (#10630); the repair task above remains the work item. Recovery is recorded here when a fresh read lands; disposition stays with the authorized authority.",
+  ].join("\n");
+}
+
 /**
  * Plan the rung-4 effects for a tick whose health record carries an
  * escalating incident. Pure: returns the actions to run, or an empty
  * list when the (source, class) pair is already escalated (dedupe) or
- * the incident is not in an escalating state.
+ * the incident is not in an escalating state. One exception to the
+ * empty dedupe plan (#10630): when `nowMs` is supplied and the
+ * confirmed hand-off has been unresolved for
+ * ESCALATION_REPEAT_AFTER_MS since it (last re-)fired, the plan is a
+ * single re-escalation comment on the existing incident issue,
+ * flagged `reEscalated` so the caller can stamp it via
+ * recordReEscalation once the comment confirms.
  */
 export function planEscalation(
   health: SourceHealth,
   ctx: EscalationContext,
-): { actions: EscalationAction[]; deduped: boolean } {
+  nowMs?: number,
+): { actions: EscalationAction[]; deduped: boolean; reEscalated?: boolean } {
   const incident = health.incident;
   if (!incident || incident.surfacing !== "escalate" || incident.humanBlocked) {
     return { actions: [], deduped: false };
@@ -194,7 +227,30 @@ export function planEscalation(
     const actions: EscalationAction[] = [];
     if (forClass.issueNumber === null) actions.push(openIssue);
     if (forClass.queueTaskId === null) actions.push({ type: "enqueue_task", packet });
-    return { actions, deduped: actions.length === 0 };
+    if (actions.length > 0) return { actions, deduped: false };
+    // Fully confirmed hand-off: dedupe holds — unless the escalation
+    // has been unresolved past the repeat window (#10630). Then the
+    // plan updates the existing escalation with one comment on its
+    // incident issue; no new issue, no new task. The window is
+    // measured from the last re-escalation, else from the hand-off.
+    if (nowMs !== undefined && forClass.issueNumber !== null) {
+      const anchor = Date.parse(forClass.lastReEscalatedAt ?? forClass.since);
+      if (Number.isFinite(anchor) && nowMs - anchor >= ESCALATION_REPEAT_AFTER_MS) {
+        return {
+          actions: [
+            {
+              type: "comment_issue",
+              repo: forClass.issueRepo,
+              issueNumber: forClass.issueNumber,
+              body: reEscalationBody(health, forClass, nowMs),
+            },
+          ],
+          deduped: false,
+          reEscalated: true,
+        };
+      }
+    }
+    return { actions: [], deduped: true };
   }
   return {
     deduped: false,
@@ -340,6 +396,33 @@ export function recordEscalation(
     ...health,
     incident: { ...health.incident, escalation },
   };
+}
+
+/**
+ * Stamp a confirmed re-escalation (#10630) onto the hand-off record
+ * for the health record's current failure class — the current record,
+ * or the displaced one in `previous` when the class changed away and
+ * back. The next repeat window is measured from this stamp, so a
+ * re-escalation fires once per window, never once per tick. Pure.
+ */
+export function recordReEscalation(health: SourceHealth, at: string): SourceHealth {
+  const incident = health.incident;
+  if (!incident?.escalation) return health;
+  const esc = incident.escalation;
+  if (esc.class === health.currentClass) {
+    return { ...health, incident: { ...incident, escalation: { ...esc, lastReEscalatedAt: at } } };
+  }
+  if (!esc.previous) return health;
+  let stamped = false;
+  const previous = esc.previous.map((rec) => {
+    if (!stamped && rec.class === health.currentClass) {
+      stamped = true;
+      return { ...rec, lastReEscalatedAt: at };
+    }
+    return rec;
+  });
+  if (!stamped) return health;
+  return { ...health, incident: { ...incident, escalation: { ...esc, previous } } };
 }
 
 /**

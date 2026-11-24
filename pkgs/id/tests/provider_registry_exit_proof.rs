@@ -16,9 +16,9 @@
 use std::collections::BTreeSet;
 
 use id::world_caps::{
-    CATALOG, CATALOG_ENTRIES, CLIENT_CATALOG_ENTRIES, CLIENT_FILE_READ_NAME, CapLedger, Decision,
-    DefaultCeiling, PROVIDER_REGISTRY, ProviderSide, TEST_PROVIDER_NAME, catalog_names,
-    default_ceiling_names,
+    CATALOG, CATALOG_ENTRIES, CLIENT_CATALOG_ENTRIES, CLIENT_FILE_READ_NAME, CLIENT_NOTIFY_NAME,
+    CapLedger, Decision, DefaultCeiling, PROVIDER_REGISTRY, ProviderSide, TEST_PROVIDER_NAME,
+    catalog_names, default_ceiling_names,
 };
 use id::world_compile::{CompileSpec, check_imports};
 
@@ -116,7 +116,7 @@ fn the_client_segment_is_exactly_the_declared_client_providers() {
     // Every client-side entry in the assembled registry comes from the
     // declared client segment (its position is asserted in
     // the_probe_is_visible_in_the_capability_catalog); here, its
-    // contents: the one F13.7 client provider, by name, client-side,
+    // contents: the two F13.7 client providers, by name, client-side,
     // excluded from every default ceiling, and absent from the legacy
     // host CATALOG view.
     let client_side: Vec<_> = CATALOG_ENTRIES
@@ -150,18 +150,29 @@ fn the_client_segment_is_exactly_the_declared_client_providers() {
 
     assert_eq!(
         CLIENT_CATALOG_ENTRIES.len(),
-        1,
-        "F13.7 declares exactly one client provider so far"
+        2,
+        "F13.7 declares exactly two client providers so far"
     );
-    let declared = CLIENT_CATALOG_ENTRIES
-        .first()
-        .expect("the client segment is non-empty");
-    assert_eq!(declared.name, CLIENT_FILE_READ_NAME);
-    let manifest = PROVIDER_REGISTRY
-        .get(CLIENT_FILE_READ_NAME)
-        .expect("the registry resolves the client provider by name");
-    assert_eq!(manifest, declared);
-    assert_eq!(manifest.version, 1);
+    let declared_names: Vec<&str> = CLIENT_CATALOG_ENTRIES
+        .iter()
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(
+        declared_names,
+        [CLIENT_FILE_READ_NAME, CLIENT_NOTIFY_NAME],
+        "the declared client segment is client.file.read then client.notify, in order"
+    );
+    for name in [CLIENT_FILE_READ_NAME, CLIENT_NOTIFY_NAME] {
+        let declared = CLIENT_CATALOG_ENTRIES
+            .iter()
+            .find(|entry| entry.name == name)
+            .expect("the client segment declares the provider");
+        let manifest = PROVIDER_REGISTRY
+            .get(name)
+            .expect("the registry resolves the client provider by name");
+        assert_eq!(manifest, declared);
+        assert_eq!(manifest.version, 1);
+    }
 }
 
 #[test]

@@ -1,0 +1,180 @@
+[
+  {
+    "evidence": "Explicit 'Closes no issue'; Rust codec foundation + golden vector + 4 tests pass; #805 stays open for negotiation/framing/TS-parity follow-ups as stated.",
+    "gap": null,
+    "issue": 805,
+    "pr": 12241,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Follow-up to merged PR #12227 (not an issue); all nine review findings fixed with failing-first tests (963 pass) and doc update.",
+    "gap": null,
+    "issue": null,
+    "pr": 12243,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Body closes #12244 (CLOSED 'Daily flake sync & config optimization'); 1-line PATH fix in nixos/services/pm-apps/default.nix does not match that scope.",
+    "gap": {
+      "title": "PR 12245 closes unrelated issue #12244",
+      "why": "Closing reference does not match the change; PATH fix may have no spawning issue; #12244 closure is suspect (Lane 2). Umbrella pointer filed; no reopen."
+    },
+    "issue": 12244,
+    "pr": 12245,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Closes #12208 (CLOSED 'Scheduled Palette'); 3-line image-node-view.ts alt-text labelling + test fits palette title.",
+    "gap": null,
+    "issue": 12208,
+    "pr": 12248,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Tracking #12250 (OPEN 'Palette: daily UX/accessibility'); 3-line cursors.ts focus restore matches body.",
+    "gap": null,
+    "issue": 12250,
+    "pr": 12251,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Bolt perf slice (Refs, not Closes); heap-ordered expiry + O(1) counter verified, regression test, 271 pass.",
+    "gap": null,
+    "issue": 12249,
+    "pr": 12253,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Body closes #12254; Rust half of #12242 bullet 2, TS parity deferred to follow-up slice PR 12667 (same batch).",
+    "gap": null,
+    "issue": 12254,
+    "pr": 12255,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Routine flake-input bump; flake evaluates, no tests.",
+    "gap": null,
+    "issue": null,
+    "pr": 12256,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Clock injected into main(), boundary test exact-24h posts / just-inside suppresses; 28 tests pass.",
+    "gap": null,
+    "issue": 12257,
+    "pr": 12258,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only Atlas metadata schema design note; no implementation, no close claim.",
+    "gap": null,
+    "issue": null,
+    "pr": 12259,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "eval removed; env via execve with hostile quote/substitution regression test (24 checks); matches issue suggested fix.",
+    "gap": null,
+    "issue": 12261,
+    "pr": 12262,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "onnxruntime from fork mirror (same NAR hash) per issue option 1; broker binds first with OnceLock + exit-3-until-ready; 437 tests pass.",
+    "gap": null,
+    "issue": 12247,
+    "pr": 12263,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "No close claim (refs closed PR #7657); v8-to-v9 in-place upgrade with refuse-untouched guard; 164 event_store tests pass.",
+    "gap": null,
+    "issue": null,
+    "pr": 12264,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "No close claim; repairs #10219 validator cell-comparison, failing-first test, FDR-0013/finish-work rules in AGENTS.md.",
+    "gap": null,
+    "issue": null,
+    "pr": 12265,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Disposition doc + golden fixture + seam test: producer_unavailable stays opaque, Atlas profile never converts to raw-blake3-256.",
+    "gap": null,
+    "issue": 10179,
+    "pr": 12266,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "All three acceptance items: units committed with per-job route, live timer fired 2026-11-21, evidence on #2019; issue closed by Drew day after merge.",
+    "gap": null,
+    "issue": 2232,
+    "pr": 12267,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Refs #9106/#12232/#10267, explicitly does not close #10267; 44 unreached modules declared, reach checker + skeleton tests (1463 pass).",
+    "gap": null,
+    "issue": 9106,
+    "pr": 12268,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "One backup leg (cold bundle + R2 upload/read-back, 7 tests) for open #8584; scheduling/freshness/rehosting/mirror/D1-restore left open.",
+    "gap": null,
+    "issue": 8584,
+    "pr": 12269,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Conservative cross-source identity resolver + canonical name + model_id FK per slice-3 scope; 12 gatherer tests incl. ambiguity rejection.",
+    "gap": null,
+    "issue": 10041,
+    "pr": 12271,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Doc-only acceptance: fleet-lane adoption decision recorded, deliverable box checked; issue closed.",
+    "gap": null,
+    "issue": 8871,
+    "pr": 12273,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "fd-3 adoption with descriptor validation, no-fallback errors, restart-endpoint refusal; 11 fixture modes + daemon package pass.",
+    "gap": null,
+    "issue": 12270,
+    "pr": 12276,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "No close claim; clamps Retry-After 1..=3600, live-bounds reconciliation on #9029; backoff test passes.",
+    "gap": null,
+    "issue": null,
+    "pr": 12277,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Browser join advertises device_input, session carries into actor validation, cancel/submit + gating tests; 14 form tests pass.",
+    "gap": null,
+    "issue": 8932,
+    "pr": 12281,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Names no issue; epic-closure classifier with fail-closed incomplete facts, 8 epics tests; wiring/reparenting left as follow-ups.",
+    "gap": null,
+    "issue": null,
+    "pr": 12282,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Implements spawnRollup API + 3 unambiguous parentings with live read-back (36 tests); F4/P2 homes and #8829/#8830 blocked by 100-child cap, issue stays open.",
+    "gap": null,
+    "issue": 9068,
+    "pr": 12283,
+    "verdict": "audit:partial"
+  }
+]

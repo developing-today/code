@@ -18,9 +18,10 @@
 //!   [`ComposedDocument`] together, matching elements by document
 //!   path; a path mismatch is a build error, never a guess.
 //! * **States are not lowered yet.** #5851 §3.6 state composition
-//!   operates on the #5850 state grammar, which reaches the
-//!   pipeline through the `assert` slot that stage 2 still carries
-//!   opaquely (see the crate documentation). Resolved properties
+//!   operates on state deltas, which #5850 §5 fixes as
+//!   target-derived from the base roles — the `assert` slot names
+//!   no per-state styling, so there is nothing state-shaped in
+//!   the resolved properties to lower. Resolved properties
 //!   are the assertion dimensions of #5850's closed v1 set as
 //!   adopted by #5851 A3.
 //! * **No silent fallback** (#5855 invariant 4, §3.3): an

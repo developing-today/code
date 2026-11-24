@@ -182,8 +182,37 @@ fn command_words(shell: bool, cmd: &[String]) -> Vec<String> {
     }
 }
 
+/// True when `args` asks for help: a help token before the first
+/// `--` that is not the value of an option. This domain had no help
+/// path at all — `poll --help` parsed `--help` as a job id and
+/// polled it live (#13175). Help wins, the fleet-wide convention
+/// (#10838); everything after `--` is the remote command, and an
+/// option's value is the option's, even when it reads as a flag.
+pub fn wants_help(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            break;
+        }
+        if matches!(a, "--help" | "-h" | "help") {
+            return true;
+        }
+        if matches!(a, "--cwd" | "--timeout" | "--wait") {
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Entry point for `fleet laptop-agent …`: returns the process exit code.
 pub fn run(config: &fleet_config::Config, args: &[String]) -> i32 {
+    if wants_help(args) {
+        println!("{USAGE}");
+        return 0;
+    }
     let command = match parse(args) {
         Ok(c) => c,
         Err(message) => {
@@ -289,6 +318,21 @@ mod tests {
             }
         );
         assert!(parse(&v("poll job1 --wait")).is_err());
+    }
+
+    #[test]
+    fn help_tokens_win_before_any_transport() {
+        // The #13175 shapes: per-verb help used to fall through to
+        // live behaviour (a poll of a job named `--help`).
+        assert!(wants_help(&v("poll --help")));
+        assert!(wants_help(&v("--help")));
+        assert!(wants_help(&v("health --help")));
+        assert!(wants_help(&v("exec --help -- ls")));
+        // Not help: an option's value, and the command after `--`.
+        assert!(!wants_help(&v("exec --cwd --help -- ls")));
+        assert!(!wants_help(&v("exec -- ls --help")));
+        assert!(!wants_help(&v("poll job1 --wait 30")));
+        assert!(!wants_help(&v("health")));
     }
 
     #[test]

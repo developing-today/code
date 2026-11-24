@@ -7,13 +7,13 @@ ran after disk-full events. The `target/`-dir half of #6884's policy is
 the cargo-target-janitor's job (`infra/cargo-target-janitor`, hourly)
 and is out of scope here.
 
-## Policy (Drew, 2026-11-07, as corrected twice on #6884)
+## Policy (the user, 2026-11-07, as corrected twice on #6884)
 
 The corrections on the issue thread are binding and supersede the
 issue body's original text:
 
 - **Age gate: 4 hours.** Nothing younger than 4 hours is ever
-  touched — Drew's correction supersedes the body's 48h figure.
+  touched — the user's correction supersedes the body's 48h figure.
 - **Clean worktrees** are removed only when the provably-safe gate
   from the 2026-11-10/11 pass holds in full, re-verified immediately
   before removal: clean (`git status` empty incl. untracked), HEAD an
@@ -22,7 +22,7 @@ issue body's original text:
   both ≥ 4h old. Removal is plain `git worktree remove` — never
   `--force`, never `rm`. Vanished registrations are cleared with
   `git worktree prune`.
-- **Aging dirty worktrees** follow Drew's mechanism: commit ALL
+- **Aging dirty worktrees** follow the user's mechanism: commit ALL
   changes, push upstream under the worktree's **own branch name**,
   verify the push landed (`ls-remote` == HEAD), only then remove.
   There are **no `archive/*` branches** (an assistant invention,

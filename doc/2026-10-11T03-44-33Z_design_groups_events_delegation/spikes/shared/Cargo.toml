@@ -3,10 +3,8 @@ resolver = "3"
 members = [
   "s1-transport",
   "s2-auth",
-  "s3-history",
   "s4-blobs",
   "s5-cbor",
-  "s6-index",
   "c1-connect",
 ]
 

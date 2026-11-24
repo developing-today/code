@@ -33,7 +33,7 @@ use atlas_core::{
     JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
     SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
     VectorBackend as CoreVectorBackend, chunk_classification, feedback_for, load_feedback_dir,
-    record_feedback, run_get_chunk, run_search_with_executor_traced,
+    record_feedback, run_get_chunk_with_context, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -229,6 +229,10 @@ struct ServiceConfigFile {
     /// Seconds between shard re-discoveries in serve mode
     /// (#6666 slice 1). Default 60; ignored without `shards`.
     shard_refresh_seconds: Option<u64>,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7). Requires
+    /// `shards`; absent = occurrence rows stay unattributed.
+    source_registry: Option<String>,
     limits: Option<RuntimeLimitsFile>,
     clients: Vec<RawClientConfig>,
 }
@@ -247,6 +251,13 @@ pub struct ServeSettings {
     /// snapshot-bound result cache invalidates on the new
     /// snapshot id.
     pub shard_refresh: Duration,
+    /// Path to the catalog/source-registry database for
+    /// occurrence attribution (#3125 slice 7): opened at serve
+    /// start and attached to the shard fan-out, so served
+    /// get-chunk occurrence rows carry `root_id` for registered
+    /// locators. Requires `shards`; `None` = unattributed rows,
+    /// exactly as before slice 7.
+    pub source_registry: Option<PathBuf>,
 }
 
 /// Default shard re-discovery interval for serve mode (#6666).
@@ -270,7 +281,10 @@ pub fn default_service_config_path() -> PathBuf {
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
-    if let Some(p) = flag {
+    // An empty flag value counts as absent (same reasoning as
+    // service::base_url: the clap env binding on --config passes a
+    // set-but-empty ATLAS_SEARCH_SERVICE_CONFIG through as a value).
+    if let Some(p) = flag.filter(|p| !p.as_os_str().is_empty()) {
         return p.to_path_buf();
     }
     if let Ok(p) = std::env::var("ATLAS_SEARCH_SERVICE_CONFIG")
@@ -372,6 +386,19 @@ pub fn load_service_settings(
     if shard_refresh_seconds == 0 {
         return Err("service config shard_refresh_seconds must be at least 1".to_string());
     }
+    let source_registry = match raw.source_registry {
+        Some(p) if !p.trim().is_empty() => Some(PathBuf::from(p)),
+        Some(_) => {
+            return Err("service config source_registry path must not be empty".to_string());
+        }
+        None => None,
+    };
+    if source_registry.is_some() && shards.is_none() {
+        return Err(
+            "service config source_registry requires shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        );
+    }
     Ok(ServeSettings {
         listen,
         clients,
@@ -381,6 +408,7 @@ pub fn load_service_settings(
         limits,
         shards,
         shard_refresh: Duration::from_secs(shard_refresh_seconds),
+        source_registry,
     })
 }
 
@@ -772,8 +800,23 @@ where
         if !allowed || excluded {
             return Err(not_found());
         }
-        run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
-            .map_err(|e| ServerError::from_core(&e))
+        // The explicit-id gate keeps its documented form (a
+        // by-id lookup with no caller ceiling; the LocalOwner
+        // context applies, exactly like the Python), while the
+        // caller's actual ceiling is threaded through so the
+        // occurrence provenance is bounded by it — never by the
+        // destination context's standalone ceiling (P1: a
+        // personal-capped caller must not receive secret-tier
+        // source locators, and a personal-only service must not
+        // request a secret-tier fan-out).
+        run_get_chunk_with_context(
+            self.backend.as_ref(),
+            chunk_id,
+            neighbors,
+            DisclosureContext::LocalOwner,
+            core_sensitivity(ceiling),
+        )
+        .map_err(|e| ServerError::from_core(&e))
     }
 
     fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
@@ -2513,6 +2556,7 @@ mod tests {
             limits,
             shards: None,
             shard_refresh: Duration::from_secs(DEFAULT_SHARD_REFRESH_SECONDS),
+            source_registry: None,
         }
     }
 
@@ -2539,6 +2583,57 @@ mod tests {
             })
             .unwrap_err(),
             "max_queued_jobs_per_client must be at least 1"
+        );
+    }
+
+    #[test]
+    fn service_config_source_registry_round_trips() {
+        // #3125 slice 7: `source_registry` in the service config
+        // lands on ServeSettings as a path; it requires `shards`
+        // (attribution rides the fan-out) and must not be empty.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-service-registry-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        let wired = write(
+            "wired.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#
+            ),
+        );
+        let settings = load_service_settings(&wired, ServeOverrides::default()).unwrap();
+        assert_eq!(
+            settings.source_registry.as_deref(),
+            Some(std::path::Path::new("/tmp/catalog.db"))
+        );
+        let orphan = write(
+            "orphan.json",
+            &format!(r#"{{"source_registry": "/tmp/catalog.db", "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&orphan, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry requires shards"),
+            "got: {err}"
+        );
+        let empty = write(
+            "empty.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "source_registry": "  ", "clients": [{client}]}}"#
+            ),
+        );
+        let err = load_service_settings(&empty, ServeOverrides::default()).unwrap_err();
+        assert!(
+            err.contains("source_registry path must not be empty"),
+            "got: {err}"
         );
     }
 

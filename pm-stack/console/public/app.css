@@ -9,8 +9,11 @@
   --accent: #4c9aff;
   --accent-ink: #06121f;
   --good: #3fb950;
+  --good-ink: #04130a;
   --warn: #d29922;
   --bad: #f85149;
+  /* Text on that red: white on it was 3.4 to 1. */
+  --bad-ink: #1a0405;
   --tab-h: 62px;
   --top-h: 52px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -27,6 +30,16 @@
     --quiet: #5b6777;
     --accent: #0b63ce;
     --accent-ink: #ffffff;
+    /* The status colours above are made for a dark page: on a light one
+       they are too faint to read (2.2 to 3.4 to 1). These are at least
+       5 to 1 on every light surface here. */
+    --good: #18753a;
+    /* Text on that darker green: the dark ink made for the dark page's
+       green was 3.3 to 1 on it. */
+    --good-ink: #ffffff;
+    --warn: #8a5a00;
+    --bad: #c5222c;
+    --bad-ink: #ffffff;
   }
 }
 * {
@@ -42,8 +55,17 @@ body {
   padding: calc(var(--top-h) + env(safe-area-inset-top)) 0 calc(var(--tab-h) + env(safe-area-inset-bottom) + 12px);
   -webkit-tap-highlight-color: transparent;
 }
+/* A link in running text is underlined: its colour alone is too close
+   to the text's to tell it by. Links drawn as rows or buttons say what
+   they are by their shape. */
 a {
   color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+a.link,
+a.button {
   text-decoration: none;
 }
 [hidden] {
@@ -80,6 +102,26 @@ a {
 }
 .fresh.down {
   color: var(--bad);
+}
+/* The line under the header: no connection, and what is kept to send. */
+.kept {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  min-height: 44px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: left;
+}
+.kept.warn {
+  color: var(--warn);
 }
 main {
   max-width: 760px;
@@ -133,7 +175,9 @@ main {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 9px;
-  background: var(--bad);
+  /* White on the theme's own red is too faint in either theme; this
+     red carries white at 5.4 to 1. */
+  background: #cf222e;
   color: #fff;
   font-size: 0.68rem;
   font-weight: 700;
@@ -261,7 +305,7 @@ p {
 }
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
   gap: 8px;
   margin-bottom: 4px;
 }
@@ -269,7 +313,7 @@ p {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 10px 6px;
+  padding: 10px 2px;
   text-align: center;
   color: var(--text);
   min-height: 0;
@@ -356,7 +400,7 @@ button.ghost {
 button.danger {
   background: var(--bad);
   border-color: var(--bad);
-  color: #fff;
+  color: var(--bad-ink);
 }
 button.small {
   min-height: 34px;
@@ -537,6 +581,42 @@ summary {
   font-size: 0.8rem;
   color: var(--quiet);
 }
+/* A form in a dialog: a note, a change, a new item. */
+dialog.sheet {
+  width: min(560px, calc(100vw - 24px));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 16px;
+}
+dialog.sheet::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+dialog.sheet label {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 0.86rem;
+  color: var(--quiet);
+}
+dialog.sheet label.check {
+  display: flex;
+  color: var(--text);
+}
+dialog.sheet textarea,
+dialog.sheet select,
+dialog.sheet input[type="text"] {
+  width: 100%;
+}
+.chip + .chip {
+  margin-left: 6px;
+}
+/* A list of runs, each a link to its page: a line tall enough to tap. */
+.runs a {
+  display: block;
+  padding: 6px 0;
+  font-size: 0.88rem;
+}
 pre {
   margin: 8px 0 0;
   padding: 10px;
@@ -559,13 +639,19 @@ pre {
   padding: 12px 14px;
   border-radius: 12px;
   background: var(--good);
-  color: #04130a;
+  color: var(--good-ink);
   font-weight: 600;
   z-index: 20;
 }
 .toast.bad {
   background: var(--bad);
-  color: #fff;
+  color: var(--bad-ink);
+}
+/* A button on it (Undo) is written in the toast's own ink: the page's
+   text colour is made for the page, not for this green or red. */
+.toast button {
+  color: inherit;
+  border-color: currentColor;
 }
 dialog {
   width: min(92vw, 520px);

@@ -5,23 +5,28 @@
 //! contract. Its envelope is a canonical CBOR array:
 //!
 //! ```text
-//! ["group.event", version, id, author, after, group, [kind, args]]
+//! ["group.event", version, id, author, after, group, at, [kind, args]]
 //! ```
 //!
 //! `id`, `author`, each hash in `after`, and a non-null `group` are 32-byte
-//! byte strings. The body `kind` is an open text name; its args are a compact
+//! byte strings. `at` is the author's asserted Unix-seconds timestamp (uint) or
+//! null. The body `kind` is an open text name; its args are a compact
 //! array. Structured policy and create-policy values are canonical CBOR maps
-//! using the model's stable field names. Version 1 kinds are `create`, `join`,
+//! using the model's stable field names. Version 2 kinds are `create`, `join`,
 //! `friendship.decline`, `policy`, `member.add`, `member.remove`,
 //! `member.set-role`, `delegate`, `cross`, `veto`, `device.add`, and
 //! `device.revoke`. A friendship request is a `create` with the Friendship
 //! template; `join` is its acceptance. Decline is distinct from dissolution:
 //! dissolution remains the existing member-removal plus policy behavior.
 //! Template codes are `0` Custom, `1` Friendship, `2` Channel, and `3` Private.
+//! Delegate args are `[grantee, scope, can_redelegate, expires_at]` with
+//! `expires_at` uint or null.
 //!
 //! Decoders require canonical CBOR, the exact envelope and per-kind arity,
 //! known kinds, known version-1 fields, and no trailing data. Unknown kinds or
-//! versions are errors; extensions require a new version. Events are bounded
+//! versions are errors; extensions require a new version. Version 1 envelopes
+//! (7 elements, no `at`) and 3-element delegate tuples decode as `at`/`expires_at`
+//! `None`. Events are bounded
 //! to 1 MiB and 256 causal predecessors / create members. These limits apply
 //! before decoding large structures as well as before encoding.
 
@@ -36,8 +41,8 @@ use super::{Body, Create, Delegate, DeviceOp, Event, Key, MemberOp, Role};
 /// The tag for this body family.
 pub const TAG: &str = "group.event";
 
-/// The version written and read by this implementation.
-pub const VERSION: u64 = 1;
+/// The version written by this implementation (reads 1 and 2).
+pub const VERSION: u64 = 2;
 
 /// Maximum encoded event size, including the envelope.
 pub const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -74,6 +79,8 @@ pub struct GroupEvent {
     pub after: Vec<Hash>,
     /// The named group, when applicable.
     pub group: Option<Hash>,
+    /// The author's asserted timestamp (`None` decodes from version 1).
+    pub at: Option<u64>,
     /// The event body.
     pub body: EventBody,
 }
@@ -85,6 +92,7 @@ impl From<Event> for GroupEvent {
             author: event.author,
             after: event.after,
             group: event.group,
+            at: event.at,
             body: EventBody::Group(event.body),
         }
     }
@@ -128,6 +136,7 @@ pub fn encode(event: &Event) -> Result<Vec<u8>, EventError> {
         author: event.author,
         after: event.after.clone(),
         group: event.group,
+        at: event.at,
         body: EventBody::Group(event.body.clone()),
     })
 }
@@ -144,6 +153,7 @@ pub fn encode_group_event(event: &GroupEvent) -> Result<Vec<u8>, EventError> {
         key_value(&event.author),
         Value::Array(after),
         event.group.as_ref().map_or_else(Value::null, hash_value),
+        event.at.map_or_else(Value::null, Value::Unsigned),
         Value::Array(vec![Value::TextString(kind.to_owned().into()), args]),
     ]);
     let bytes = value.encode();
@@ -173,17 +183,42 @@ pub fn decode(bytes: &[u8]) -> Result<GroupEvent, EventError> {
     if value.encode().as_slice() != bytes {
         return Err(EventError::NotCanonical);
     }
-    let [tag, version, id, author, after, group, body] = list(&value, 7)?;
-    let Value::TextString(tag) = tag else {
-        return Err(EventError::Shape("tag is not text".to_owned()));
+    let values = array(&value, "envelope")?;
+    let (version, id, author, after, group, at, body) = match values {
+        [tag, version, id, author, after, group, body] => {
+            let Value::TextString(tag) = tag else {
+                return Err(EventError::Shape("tag is not text".to_owned()));
+            };
+            if tag != TAG {
+                return Err(EventError::Tag(tag.to_string()));
+            }
+            let version = unsigned(version)?;
+            if version != 1 {
+                return Err(EventError::Version(version));
+            }
+            (version, id, author, after, group, &Value::null(), body)
+        }
+        [tag, version, id, author, after, group, at, body] => {
+            let Value::TextString(tag) = tag else {
+                return Err(EventError::Shape("tag is not text".to_owned()));
+            };
+            if tag != TAG {
+                return Err(EventError::Tag(tag.to_string()));
+            }
+            let version = unsigned(version)?;
+            if version != VERSION {
+                return Err(EventError::Version(version));
+            }
+            (version, id, author, after, group, at, body)
+        }
+        other => {
+            return Err(EventError::Shape(format!(
+                "array has {} items, expected 7 or 8",
+                other.len()
+            )));
+        }
     };
-    if tag != TAG {
-        return Err(EventError::Tag(tag.to_string()));
-    }
-    let version = unsigned(version)?;
-    if version != VERSION {
-        return Err(EventError::Version(version));
-    }
+    let _ = version;
     let id = decode_hash(id, "event ID")?;
     let author = decode_key(author, "author")?;
     let after_values = array(after, "after")?;
@@ -201,6 +236,11 @@ pub fn decode(bytes: &[u8]) -> Result<GroupEvent, EventError> {
         value if is_null(value) => None,
         value => Some(decode_hash(value, "group ID")?),
     };
+    let at = match at {
+        value if is_null(value) => None,
+        Value::Unsigned(t) => Some(*t),
+        _ => return Err(EventError::Shape("at is not null or uint".to_owned())),
+    };
     let [kind, args] = list(body, 2)?;
     let Value::TextString(kind) = kind else {
         return Err(EventError::Shape("body kind is not text".to_owned()));
@@ -211,6 +251,7 @@ pub fn decode(bytes: &[u8]) -> Result<GroupEvent, EventError> {
         author,
         after,
         group,
+        at,
         body,
     };
     check_bounds(&event)?;
@@ -425,15 +466,40 @@ fn delegate_value(delegate: &Delegate) -> Value<'static> {
         key_value(&delegate.grantee),
         role_value(delegate.scope),
         Value::from_bool(delegate.can_redelegate),
+        delegate
+            .expires_at
+            .map_or_else(Value::null, Value::Unsigned),
     ])
 }
 
 fn decode_delegate(value: &Value<'static>) -> Result<Delegate, EventError> {
-    let [grantee, scope, can_redelegate] = list(value, 3)?;
+    let values = array(value, "delegate")?;
+    let (grantee, scope, can_redelegate, expires_at) = match values {
+        [grantee, scope, can_redelegate] => (grantee, scope, can_redelegate, &Value::null()),
+        [grantee, scope, can_redelegate, expires_at] => {
+            (grantee, scope, can_redelegate, expires_at)
+        }
+        other => {
+            return Err(EventError::Shape(format!(
+                "array has {} items, expected 3 or 4",
+                other.len()
+            )));
+        }
+    };
+    let expires_at = match expires_at {
+        value if is_null(value) => None,
+        Value::Unsigned(t) => Some(*t),
+        _ => {
+            return Err(EventError::Shape(
+                "delegate expires_at is not null or uint".to_owned(),
+            ));
+        }
+    };
     Ok(Delegate {
         grantee: decode_key(grantee, "delegate grantee")?,
         scope: decode_role(scope)?,
         can_redelegate: decode_bool(can_redelegate, "can_redelegate")?,
+        expires_at,
     })
 }
 
@@ -635,6 +701,7 @@ mod tests {
             author: [2; 32],
             after: vec![Hash::from_bytes([4; 32]), Hash::from_bytes([5; 32])],
             group: Some(Hash::from_bytes([3; 32])),
+            at: Some(1_700_000_000),
             body,
         }
     }
@@ -675,12 +742,14 @@ mod tests {
                 grantee: [6; 32],
                 scope: Role::Write,
                 can_redelegate: true,
+                expires_at: Some(1_700_000_100),
             })),
             EventBody::Group(Body::Cross {
                 delegate: Delegate {
                     grantee: [6; 32],
                     scope: Role::Read,
                     can_redelegate: false,
+                    expires_at: None,
                 },
                 world: "another-world".to_owned(),
             }),
@@ -711,18 +780,19 @@ mod tests {
             author: [2; 32],
             after: vec![],
             group: Some(Hash::from_bytes([3; 32])),
+            at: None,
             body: EventBody::FriendshipDecline,
         };
-        let mut expected = vec![0x87, 0x6b];
+        let mut expected = vec![0x88, 0x6b];
         expected.extend_from_slice(b"group.event");
-        expected.extend_from_slice(&[0x01, 0x58, 0x20]);
+        expected.extend_from_slice(&[0x02, 0x58, 0x20]);
         expected.extend_from_slice(&[1; 32]);
         expected.extend_from_slice(&[0x58, 0x20]);
         expected.extend_from_slice(&[2; 32]);
         expected.push(0x80);
         expected.extend_from_slice(&[0x58, 0x20]);
         expected.extend_from_slice(&[3; 32]);
-        expected.extend_from_slice(&[0x82, 0x72]);
+        expected.extend_from_slice(&[0xf6, 0x82, 0x72]);
         expected.extend_from_slice(b"friendship.decline");
         expected.push(0x80);
         assert_eq!(encode_group_event(&event).unwrap(), expected);
@@ -735,15 +805,16 @@ mod tests {
             author: [2; 32],
             after: vec![],
             group: None,
+            at: None,
             body: EventBody::Group(Body::Join),
         };
-        let mut expected = vec![0x87, 0x6b];
+        let mut expected = vec![0x88, 0x6b];
         expected.extend_from_slice(b"group.event");
-        expected.extend_from_slice(&[0x01, 0x58, 0x20]);
+        expected.extend_from_slice(&[0x02, 0x58, 0x20]);
         expected.extend_from_slice(&[1; 32]);
         expected.extend_from_slice(&[0x58, 0x20]);
         expected.extend_from_slice(&[2; 32]);
-        expected.extend_from_slice(&[0x80, 0xf6, 0x82, 0x64]);
+        expected.extend_from_slice(&[0x80, 0xf6, 0xf6, 0x82, 0x64]);
         expected.extend_from_slice(b"join");
         expected.push(0x80);
         assert_eq!(encode_group_event(&event).unwrap(), expected);
@@ -774,6 +845,7 @@ mod tests {
             key_value(&event.author),
             Value::Array(vec![]),
             hash_value(event.group.as_ref().unwrap()),
+            Value::Unsigned(1),
             Value::Array(vec![
                 Value::TextString("future.kind".to_owned().into()),
                 Value::Array(vec![]),
@@ -789,6 +861,7 @@ mod tests {
             key_value(&event.author),
             Value::Array(vec![]),
             hash_value(event.group.as_ref().unwrap()),
+            Value::Unsigned(1),
             Value::Array(vec![
                 Value::TextString("friendship.decline".to_owned().into()),
                 Value::Array(vec![]),
@@ -804,6 +877,7 @@ mod tests {
             key_value(&event.author),
             Value::Array(vec![]),
             hash_value(event.group.as_ref().unwrap()),
+            Value::Unsigned(1),
             Value::Array(vec![
                 Value::TextString("friendship.decline".to_owned().into()),
                 Value::Array(vec![]),
@@ -822,6 +896,7 @@ mod tests {
             key_value(&event.author),
             Value::Array(vec![]),
             hash_value(event.group.as_ref().unwrap()),
+            Value::Unsigned(1),
             Value::Array(vec![
                 Value::TextString("join".to_owned().into()),
                 Value::Array(vec![Value::Unsigned(0)]),
@@ -850,6 +925,7 @@ mod tests {
                 hash_value(&Hash::from_bytes([4; 32])),
             ]),
             hash_value(dup_after.group.as_ref().unwrap()),
+            dup_after.at.map_or_else(Value::null, Value::Unsigned),
             Value::Array(vec![
                 Value::TextString("join".to_owned().into()),
                 Value::Array(vec![]),
@@ -872,6 +948,7 @@ mod tests {
             key_value(&self_after.author),
             Value::Array(vec![hash_value(&self_after.id)]),
             hash_value(self_after.group.as_ref().unwrap()),
+            self_after.at.map_or_else(Value::null, Value::Unsigned),
             Value::Array(vec![
                 Value::TextString("join".to_owned().into()),
                 Value::Array(vec![]),
@@ -916,7 +993,7 @@ mod tests {
             let Value::Array(envelope) = value else {
                 panic!("envelope is an array");
             };
-            let Value::Array(body) = &envelope[6] else {
+            let Value::Array(body) = &envelope[7] else {
                 panic!("body is an array");
             };
             let kind = body[0].clone();
@@ -942,6 +1019,7 @@ mod tests {
             key_value(&dup_member.author),
             Value::Array(vec![]),
             hash_value(dup_member.group.as_ref().unwrap()),
+            dup_member.at.map_or_else(Value::null, Value::Unsigned),
             Value::Array(vec![kind, args]),
         ])
         .encode();

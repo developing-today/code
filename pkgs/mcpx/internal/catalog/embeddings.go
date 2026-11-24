@@ -267,6 +267,18 @@ func (c *CascadeEmbedder) Backend() string {
 	return c.backend
 }
 
+// CloseWasm lets the registry retire the replaced embedder's wazero runtime
+// after a hot swap (#13616). It blocks until an in-flight Embed holding the
+// wasm mutex finishes, and is a no-op when the cascade holds no wasm module.
+func (c *CascadeEmbedder) CloseWasm(ctx context.Context) {
+	if c == nil {
+		return
+	}
+	if c.wasm != nil {
+		_ = c.wasm.Close(ctx)
+	}
+}
+
 // Embed generates embeddings according to configured strategy and fallback cascade.
 func (c *CascadeEmbedder) Embed(ctx context.Context, text string) (Vector, error) {
 	switch c.backend {
