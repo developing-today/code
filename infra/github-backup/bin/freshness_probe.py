@@ -267,10 +267,18 @@ def _fetch_advertisement(url):
     request = urllib.request.Request(
         url, headers={"user-agent": "fleet-freshness-probe"}
     )
-    with urllib.request.urlopen(
-        request, timeout=REHOST_FETCH_TIMEOUT_SECONDS
-    ) as response:
-        return response.read()
+    try:
+        with urllib.request.urlopen(
+            request, timeout=REHOST_FETCH_TIMEOUT_SECONDS
+        ) as response:
+            return response.read()
+    except Exception as exc:
+        # Transport failures surface as URLError (an OSError), but a
+        # truncated body is http.client.IncompleteRead — a bare
+        # HTTPException, not an OSError. Normalize both to RuntimeError
+        # so collect_outcomes records an unverified copy instead of
+        # the probe crashing on a network-shaped error.
+        raise RuntimeError(f"GET {url} failed: {exc}") from exc
 
 
 def fetch_rehost_pairs(root, base):
