@@ -235,7 +235,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [Cloudflare research — Workers, costs, containers and prototypes](2026-11-24T02-42-57Z_research_cloudflare/2026-11-24T02-42-57Z_research_cloudflare.md) — the 2026-10-20 Cloudflare research series (Workers Paid, free tiers, paid-only, declarative infra, multiple-plans ToS, containers-vs-DO costs, DO practices) plus ideas, project README, magic-environment note and the two prototype READMEs; code stays in hatch-personal (tracking #13877).
 - [mcpx door build record](2026-11-24T02-09-07Z_research_mcpx-door-20261123/2026-11-24T02-09-07Z_research_mcpx-door-20261123.md) — dated record of the 2026-11-23 mcpx door build (public MCP endpoint at `mcpx.security.cab`, part of #13657): door README, lane continuation brief, `adapt.py` and `filter.ts`, copied byte-for-byte (tracking #13877).
 - [design(fleet): TypeScript second version — WASM, transports, direct-Turso prudence (#9085)](2026-11-24T04-50-00Z_design_fleet_typescript_second_version/2026-11-24T04-50-00Z_design_fleet_typescript_second_version.md) — design record, PR #14085 (2026-11-24).
-- [docs(9147): amendment — alternatives, rollback, named deciders](2026-11-24T04-50-00Z_design_9147-reputation-gaps/amendment.md) — design record, PR #14088 (2026-11-24).
+- [Design record (Part of #7843): consolidated 9-point elicitation-identity record](2026-11-24T06-05-00Z_design_7843_elicitation_identity/2026-11-24T06-05-00Z_design_7843_elicitation_identity.md) — design record, PR #14110 (2026-11-24).
 
 ## Legacy places
 
