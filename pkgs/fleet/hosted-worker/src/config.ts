@@ -81,9 +81,17 @@ export interface HostedEnv {
   /** Queue libSQL file (#12589 follow-on): path of the file-backed
    * local libSQL DB holding the shared fleet-queue schema (#6741).
    * Empty/unset → the fixture store (tests/local-dev default). A
-   * remote Turso DB needs an async Hrana opener this sync interface
-   * cannot serve — documented follow-up, not a second schema. */
+   * remote Turso DB is QUEUE_LIBSQL_URL below, not a second schema. */
   QUEUE_LIBSQL_FILE?: string;
+  /** The remote fleet-queue Turso DB (#14592): the queue verbs run
+   *  against it through the Hrana opener — the production backend,
+   *  the live DB the native broker serves (#6741). A libsql:// or
+   *  https:// URL (wrangler [vars]); takes precedence over
+   *  QUEUE_LIBSQL_FILE when both are set. */
+  QUEUE_LIBSQL_URL?: string;
+  /** The Turso auth token for QUEUE_LIBSQL_URL (a secret binding,
+   *  never committed). Unset for unauthenticated local endpoints. */
+  QUEUE_LIBSQL_AUTH_TOKEN?: string;
 }
 
 /** Stamp signing key material: the parsed key, bytes only. */
@@ -155,6 +163,13 @@ export interface HostedConfig {
    * injected at the worker seam (tests inject node:sqlite — the
    * Worker bundle itself stays runtime-agnostic). */
   queueLibsqlFile: string | null;
+  /** The remote fleet-queue Turso DB the queue verbs run against
+   *  through the Hrana opener (#14592) — the production backend.
+   *  Null → the file backend above, or the fixture. */
+  queueLibsqlUrl: string | null;
+  /** The auth token for queueLibsqlUrl (secret, never a [vars]
+   *  value); null for unauthenticated endpoints. */
+  queueLibsqlAuthToken: string | null;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -270,6 +285,8 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     ingestionRepos: parseIngestionRepos(env.INGESTION_REPOS),
     directRead: parseDirectReadConfig(env),
     queueLibsqlFile: parseQueueLibsqlFile(env.QUEUE_LIBSQL_FILE),
+    queueLibsqlUrl: parseQueueLibsqlUrl(env.QUEUE_LIBSQL_URL),
+    queueLibsqlAuthToken: parseQueueLibsqlUrl(env.QUEUE_LIBSQL_AUTH_TOKEN),
   };
 }
 
@@ -277,6 +294,15 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
  * null when unset/blank — the fixture default. Whitespace-only is
  * unconfigured, not a file. */
 function parseQueueLibsqlFile(raw: string | undefined): string | null {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/** The remote queue Turso URL and its token (#14592): trimmed, or
+ * null when unset/blank — same shape as the file parse above. The
+ * URL's scheme is validated where it is opened (the opener maps
+ * libsql:// → https and lets URL parsing fail loudly there). */
+function parseQueueLibsqlUrl(raw: string | undefined): string | null {
   const trimmed = raw?.trim();
   return trimmed ? trimmed : null;
 }

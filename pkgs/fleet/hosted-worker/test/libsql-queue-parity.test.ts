@@ -93,16 +93,16 @@ function fixPacket(issue = 4242, payloadExtra: JsonObject = {}, packetExtra: Jso
   };
 }
 
-function enqueue(store: QueueStore, env: QueueEnv, packet: JsonObject, extra: JsonObject = {}): JsonObject {
-  return executeQueueVerb(store, "enqueue", { queue: "repo-health", packet, ...extra }, env);
+async function enqueue(store: QueueStore, env: QueueEnv, packet: JsonObject, extra: JsonObject = {}): Promise<JsonObject> {
+  return await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet, ...extra }, env);
 }
 
-function claim(store: QueueStore, env: QueueEnv, extra: JsonObject = {}): JsonObject {
-  return executeQueueVerb(store, "claim", { worker: "worker-a", ...extra }, env);
+async function claim(store: QueueStore, env: QueueEnv, extra: JsonObject = {}): Promise<JsonObject> {
+  return await executeQueueVerb(store, "claim", { worker: "worker-a", ...extra }, env);
 }
 
-function verb(store: QueueStore, env: QueueEnv, name: string, req: JsonObject): JsonObject {
-  return executeQueueVerb(store, name, req, env);
+async function verb(store: QueueStore, env: QueueEnv, name: string, req: JsonObject): Promise<JsonObject> {
+  return await executeQueueVerb(store, name, req, env);
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +126,7 @@ const NATIVE_LEDGER_COLS = (
   "assigned_at, executed_at, updated_at"
 ).split(", ");
 
-test("schema: the store carries the native queue tables and columns, no second queue", () => {
+test("schema: the store carries the native queue tables and columns, no second queue", async () => {
   const t = openStore();
   try {
     const tables = (
@@ -150,10 +150,10 @@ test("schema: the store carries the native queue tables and columns, no second q
   }
 });
 
-test("store: a full task row round-trips every column through the shared schema", () => {
+test("store: a full task row round-trips every column through the shared schema", async () => {
   const t = openStore();
   try {
-    const row = t.store.insertTask({
+    const row = await t.store.insertTask({
       queue: "repo-health",
       title: "t",
       body: "b",
@@ -190,18 +190,18 @@ test("store: a full task row round-trips every column through the shared schema"
       dep_blocked_until: "2026-01-02T00:00:00Z",
       dep_recheck_seconds: 300,
     });
-    assert.deepEqual(t.store.getTask(row.id), row);
-    assert.deepEqual(t.store.tasksByDedupe("repo-health", "k1").map((r) => r.id), [row.id]);
-    assert.equal(t.store.getTask(row.id + 1), null);
+    assert.deepEqual(await t.store.getTask(row.id), row);
+    assert.deepEqual((await t.store.tasksByDedupe("repo-health", "k1")).map((r) => r.id), [row.id]);
+    assert.equal(await t.store.getTask(row.id + 1), null);
   } finally {
     closeOpened(t);
   }
 });
 
-test("store: a losing conditional update reports false and leaves the row", () => {
+test("store: a losing conditional update reports false and leaves the row", async () => {
   const t = openStore();
   try {
-    const row = t.store.insertTask({
+    const row = await t.store.insertTask({
       queue: "repo-health",
       title: null,
       body: null,
@@ -239,15 +239,15 @@ test("store: a losing conditional update reports false and leaves the row", () =
       dep_recheck_seconds: null,
     } as Omit<TaskRow, "id">);
     assert.equal(
-      t.store.conditionalUpdateTask(row.id, { status: "claimed" }, { worker_id: "x" }),
+      await t.store.conditionalUpdateTask(row.id, { status: "claimed" }, { worker_id: "x" }),
       false,
     );
-    assert.equal(t.store.getTask(row.id)?.worker_id, null);
+    assert.equal((await t.store.getTask(row.id))?.worker_id, null);
     assert.equal(
-      t.store.conditionalUpdateTask(row.id, { status: "queued", worker_id: null }, { status: "claimed", worker_id: "w" }),
+      await t.store.conditionalUpdateTask(row.id, { status: "queued", worker_id: null }, { status: "claimed", worker_id: "w" }),
       true,
     );
-    assert.equal(t.store.getTask(row.id)?.worker_id, "w");
+    assert.equal((await t.store.getTask(row.id))?.worker_id, "w");
   } finally {
     closeOpened(t);
   }
@@ -257,18 +257,18 @@ test("store: a losing conditional update reports false and leaves the row", () =
 // Acceptance 1 + 2 over the real DB
 // ---------------------------------------------------------------------------
 
-test("acceptance 1 (libsql): hosted-enqueued work is claimed natively and vice versa, one timeline", () => {
+test("acceptance 1 (libsql): hosted-enqueued work is claimed natively and vice versa, one timeline", async () => {
   const t = openStore();
   try {
     const store = t.store;
-    const enq = enqueue(store, hostedEnv(), fixPacket());
+    const enq = await enqueue(store, hostedEnv(), fixPacket());
     const id = (enq["row"] as JsonObject)["id"] as number;
-    const claimedNative = claim(store, nativeEnv(), { worker: "native-worker" });
+    const claimedNative = await claim(store, nativeEnv(), { worker: "native-worker" });
     assert.equal(claimedNative["ok"], true);
     assert.equal((claimedNative["row"] as JsonObject)["worker_id"], "native-worker");
-    const hb = verb(store, hostedEnv(), "heartbeat", { task_id: id, worker: "native-worker" });
+    const hb = await verb(store, hostedEnv(), "heartbeat", { task_id: id, worker: "native-worker" });
     assert.equal(hb["ok"], true, "the hosted door heartbeats the native claim: same worker identity");
-    const doneNative = verb(store, nativeEnv(), "complete", {
+    const doneNative = await verb(store, nativeEnv(), "complete", {
       task_id: id,
       worker: "native-worker",
       result: {
@@ -284,18 +284,18 @@ test("acceptance 1 (libsql): hosted-enqueued work is claimed natively and vice v
     });
     assert.equal(doneNative["ok"], true);
 
-    const enq2 = enqueue(store, nativeEnv(), fixPacket(5151));
+    const enq2 = await enqueue(store, nativeEnv(), fixPacket(5151));
     const id2 = (enq2["row"] as JsonObject)["id"] as number;
-    const claimedHosted = claim(store, hostedEnv(), { worker: "hosted-worker" });
+    const claimedHosted = await claim(store, hostedEnv(), { worker: "hosted-worker" });
     assert.equal(claimedHosted["ok"], true);
     assert.equal((claimedHosted["row"] as JsonObject)["id"], id2);
 
-    const timeline = verb(store, hostedEnv(), "timeline", { task_id: id2 });
+    const timeline = await verb(store, hostedEnv(), "timeline", { task_id: id2 });
     const rows = (timeline["row"] as JsonObject)["rows"] as JsonObject[];
     const claimedEvent = rows.find((r) => r["kind"] === "claimed");
     assert.ok(claimedEvent);
     assert.equal((claimedEvent["detail"] as JsonObject)["binding_id"], BINDING_A);
-    const timeline1 = verb(store, nativeEnv(), "timeline", { task_id: id });
+    const timeline1 = await verb(store, nativeEnv(), "timeline", { task_id: id });
     const rows1 = (timeline1["row"] as JsonObject)["rows"] as JsonObject[];
     const nativeClaimed = rows1.find((r) => r["kind"] === "claimed");
     assert.ok(nativeClaimed);
@@ -305,35 +305,35 @@ test("acceptance 1 (libsql): hosted-enqueued work is claimed natively and vice v
   }
 });
 
-test("acceptance 2 (libsql): two doors claiming concurrently for one item produce exactly one claim", () => {
+test("acceptance 2 (libsql): two doors claiming concurrently for one item produce exactly one claim", async () => {
   const t = openStore();
   try {
     const store = t.store;
-    enqueue(store, hostedEnv(), fixPacket());
-    const first = claim(store, hostedEnv(), { worker: "door-one" });
-    const second = claim(store, nativeEnv(), { worker: "door-two" });
+    await enqueue(store, hostedEnv(), fixPacket());
+    const first = await claim(store, hostedEnv(), { worker: "door-one" });
+    const second = await claim(store, nativeEnv(), { worker: "door-two" });
     assert.equal((first["row"] as JsonObject)["worker_id"], "door-one");
     assert.equal(second["row"], null);
-    const claimedEvents = store.allEvents().filter((e) => e.kind === "claimed");
+    const claimedEvents = (await store.allEvents()).filter((e) => e.kind === "claimed");
     assert.equal(claimedEvents.length, 1);
   } finally {
     closeOpened(t);
   }
 });
 
-test("acceptance 2 race at the seam (libsql): a preempted conditional update re-picks and gets nothing", () => {
+test("acceptance 2 race at the seam (libsql): a preempted conditional update re-picks and gets nothing", async () => {
   const t = openStore();
   try {
     class RacingStore extends LibSQLQueueStore {
       raced = false;
-      override conditionalUpdateTask(
+      override async conditionalUpdateTask(
         id: number,
         guard: Partial<TaskRow>,
         set: Partial<TaskRow>,
-      ): boolean {
+      ): Promise<boolean> {
         if (!this.raced && set.status === "claimed" && guard.status === "queued") {
           this.raced = true;
-          super.conditionalUpdateTask(
+          await super.conditionalUpdateTask(
             id,
             { status: "queued" },
             {
@@ -363,11 +363,11 @@ test("acceptance 2 race at the seam (libsql): a preempted conditional update re-
       },
       { nowIso: () => iso(clock) },
     );
-    enqueue(racing, hostedEnv(), fixPacket());
-    const res = claim(racing, hostedEnv(), { worker: "door-one" });
+    await enqueue(racing, hostedEnv(), fixPacket());
+    const res = await claim(racing, hostedEnv(), { worker: "door-one" });
     assert.equal(racing.raced, true);
     assert.equal(res["row"], null, "the losing door claims nothing");
-    assert.equal(racing.allTasks()[0].worker_id, "racer");
+    assert.equal((await racing.allTasks())[0].worker_id, "racer");
   } finally {
     closeOpened(t);
   }
@@ -390,18 +390,18 @@ const MIRROR_DDL = `CREATE TABLE IF NOT EXISTS github_mirror_issues (
   mirrored_at TEXT NOT NULL,
   PRIMARY KEY (repo, number))`;
 
-test("mirror (libsql): no row reads null, a row reads its labels, a missing table throws", () => {
+test("mirror (libsql): no row reads null, a row reads its labels, a missing table throws", async () => {
   const t = openStore();
   try {
-    assert.throws(() => t.store.mirrorLabels("developing-today/code", 4242), /no such table/);
+    await assert.rejects(() => t.store.mirrorLabels("developing-today/code", 4242), /no such table/);
     t.db.prepare(MIRROR_DDL).run();
-    assert.equal(t.store.mirrorLabels("developing-today/code", 4242), null);
+    assert.equal(await t.store.mirrorLabels("developing-today/code", 4242), null);
     t.db
       .prepare("INSERT INTO github_mirror_issues (repo, number, labels, mirrored_at) VALUES (?, ?, ?, ?)")
       .run("developing-today/code", 4242, JSON.stringify(["expedite", "next-up"]), "2026-01-01T00:00:00Z");
-    assert.deepEqual(t.store.mirrorLabels("developing-today/code", 4242), ["expedite", "next-up"]);
+    assert.deepEqual(await t.store.mirrorLabels("developing-today/code", 4242), ["expedite", "next-up"]);
     t.db.prepare("DROP TABLE github_mirror_issues").run();
-    assert.throws(() => t.store.mirrorLabels("developing-today/code", 4242), /no such table/);
+    await assert.rejects(() => t.store.mirrorLabels("developing-today/code", 4242), /no such table/);
   } finally {
     closeOpened(t);
   }
@@ -448,16 +448,16 @@ test("acceptance 3 (libsql): an anonymous claim at the hosted door is refused; t
     const { deps } = await routerDeps(t.store, writer);
     const anon = await dispatch(post("/v1/queue/claim", null, { worker: "anon" }), deps);
     assert.equal(anon.status, 401);
-    const enq = enqueue(t.store, nativeEnv(), fixPacket());
+    const enq = await enqueue(t.store, nativeEnv(), fixPacket());
     assert.equal(enq["ok"], true);
-    const claimed = claim(t.store, nativeEnv(), { worker: "native-worker" });
+    const claimed = await claim(t.store, nativeEnv(), { worker: "native-worker" });
     assert.equal(claimed["ok"], true);
-    assert.equal(describeHealth(t.store)["backend"], "libsql");
+    assert.equal((await describeHealth(t.store))["backend"], "libsql");
   } finally {
     closeOpened(t);
   }
 });
 
-function describeHealth(store: QueueStore): { backend: string } {
-  return store.describe();
+async function describeHealth(store: QueueStore): Promise<{ backend: string }> {
+  return await store.describe();
 }

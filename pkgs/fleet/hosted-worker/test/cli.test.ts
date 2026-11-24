@@ -154,7 +154,7 @@ async function enqueue(world: World, token: string, issue: number): Promise<void
 
 // --- Token carriage ---------------------------------------------------
 
-test("token resolution is explicit > env > stored, whitespace absent", () => {
+test("token resolution is explicit > env > stored, whitespace absent", async () => {
   const envWith = (value: string | null) => (name: string) => (name === "FLEET_HOSTED_TOKEN" ? value : null);
   assert.equal(resolveCallerToken({ explicit: "tok-a", env: envWith("tok-b"), stored: "tok-c" }), "tok-a");
   assert.equal(resolveCallerToken({ explicit: "  ", env: envWith("tok-b"), stored: "tok-c" }), "tok-b");
@@ -384,7 +384,7 @@ test("acceptance: open, create, query back by session, take and claim — no fle
   assert.equal(nextDoc.intake.length, 1);
   assert.equal(nextDoc.intake[0].lane.ok, true);
   assert.equal(nextDoc.intake[0].bind?.ok, true);
-  const ledger = world.queueStore.getLedger(nextDoc.claim.row.id);
+  const ledger = await world.queueStore.getLedger(nextDoc.claim.row.id);
   assert.equal(ledger?.session_id, sessionId);
 
   // The bare claim verb takes the second item on its own.
