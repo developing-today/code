@@ -1634,16 +1634,25 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 out_off = int(q.get("out_off", [0])[0])
                 err_off = int(q.get("err_off", [0])[0])
+                wait_s = int(q.get("wait_s", [0])[0])
             except (TypeError, ValueError):
-                raise ValueError("out_off/err_off must be integers")
+                raise ValueError("out_off/err_off/wait_s must be integers")
             if out_off < 0 or err_off < 0:
                 raise ValueError("out_off/err_off must be >= 0")
+            if wait_s < 0:
+                raise ValueError("wait_s must be >= 0")
             if job.get("kind") == "exec":
                 # Reading an exec's spool is `fleet http attach`: it
                 # turns the exec into an ordinary job, so its grace
                 # reap and its exec timeout no longer apply (#15420).
                 job["attached"] = True
-            return self._send(200, job_public(job, out_off, err_off))
+            deadline = time.monotonic() + min(wait_s, 30)
+            while True:
+                result = job_public(job, out_off, err_off)
+                if (result["state"] == "done" or result["stdout"] or result["stderr"]
+                        or time.monotonic() >= deadline):
+                    return self._send(200, result)
+                time.sleep(min(0.1, max(0, deadline - time.monotonic())))
         return self._send(404, {"error": "no such route"})
 
     def _exec_with_grace(self, trip, cmds, timeout, grace, t_received_ms):

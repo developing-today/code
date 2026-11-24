@@ -633,7 +633,17 @@ def _broker_roundtrip(method, path, body, trip=None):
             # which is subtracted: a long REMOTE command is not a
             # transport wait and must not be labelled one.
             waited = time.time() - t_start
-            if waited > 10:
+            intentional_wait = 0
+            try:
+                if path.startswith("/jobs/"):
+                    import urllib.parse
+
+                    intentional_wait = min(
+                        30, int(urllib.parse.parse_qs(path.partition("?")[2]).get("wait_s", [0])[0])
+                    )
+            except (TypeError, ValueError):
+                pass
+            if waited > 10 and waited > intentional_wait + 5:
                 remote_ms = None
                 try:
                     results = obj["body"].get("results") or []
@@ -994,9 +1004,15 @@ def _ssh_poll_job(job_id, query):
     qs = urllib.parse.parse_qs(query)
     out_off = int(qs.get("out_off", ["0"])[0] or 0)
     err_off = int(qs.get("err_off", ["0"])[0] or 0)
+    wait_s = min(30, max(0, int(qs.get("wait_s", ["0"])[0] or 0)))
     d = _ssh_job_dir(job_id)
     remote = (
-        f"d={d}; "
+        f"d={d}; end=$(( $(date +%s) + {wait_s} )); "
+        f'while [ ! -f "$d/exit" ]; do '
+        f'os=$(stat -c%s "$d/out" 2>/dev/null || echo 0); '
+        f'es=$(stat -c%s "$d/err" 2>/dev/null || echo 0); '
+        f'if [ "$os" -gt {out_off} ] || [ "$es" -gt {err_off} ]; then break; fi; '
+        f'[ $(date +%s) -ge "$end" ] && break; sleep 0.2; done; '
         f'os=$(stat -c%s "$d/out" 2>/dev/null || echo 0); '
         f'es=$(stat -c%s "$d/err" 2>/dev/null || echo 0); '
         f'start=$(cat "$d/start" 2>/dev/null || date +%s); '
@@ -1651,8 +1667,9 @@ def main():
         _threading.Thread(target=_watchdog, daemon=True).start()
         try:
             while True:
+        wait_s = max(0, min(10, int(deadline - time.time() + 0.999999)))
                 out = request(
-                    "GET", f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}"
+                    "GET", f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}&wait_s={wait_s}"
                 )
                 sys.stdout.write(out.get("stdout", ""))
                 sys.stdout.flush()
@@ -1693,11 +1710,6 @@ def main():
                 if time.time() >= deadline:
                     print(f"[laptop-agent] job {job_id} still running", file=sys.stderr)
                     return
-                try:
-                    time.sleep(min(3, max(0.0, deadline - time.time())))
-                except CallTimeout:
-                    _poll_cancel()
-                    _exit_timeout()
         except CallTimeout:
             _poll_cancel()
             _exit_timeout()

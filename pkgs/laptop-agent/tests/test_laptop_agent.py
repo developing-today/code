@@ -439,11 +439,25 @@ class JobsListShapeTest(unittest.TestCase):
                     "argv": [
                         sys.executable,
                         "-c",
-                        "import sys; sys.stdout.write('k' * 64); "
-                        "sys.stderr.write('e' * 64)",
+                        "import sys,time; time.sleep(.3); "
+                        "sys.stdout.write('k' * 64); sys.stdout.flush(); "
+                        "time.sleep(.3); sys.stderr.write('e' * 64)",
                     ],
                 },
             )["job_id"]
+            started = time.monotonic()
+            early = call("GET", f"/jobs/{job_id}?wait_s=2")
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertEqual(early["stdout"], "k" * 64)
+            self.assertEqual(early["state"], "running")
+            quiet_id = call("POST", "/jobs", {"cwd": "/", "argv": [
+                sys.executable, "-c", "import time; time.sleep(2)"]})["job_id"]
+            started = time.monotonic()
+            quiet = call("GET", f"/jobs/{quiet_id}?wait_s=1")
+            elapsed = time.monotonic() - started
+            self.assertGreaterEqual(elapsed, .8)
+            self.assertLess(elapsed, 1.5)
+            self.assertEqual(quiet["state"], "running")
             deadline = time.time() + 10
             single = None
             while time.time() < deadline:
@@ -467,6 +481,7 @@ class JobsListShapeTest(unittest.TestCase):
             proc.terminate()
             proc.wait(timeout=10)
             os.unlink(token_path)
+
 
 
 class JobSpoolSizeTest(unittest.TestCase):
@@ -1326,6 +1341,7 @@ class MalformedRequestTest(unittest.TestCase):
         job_id = body["job_id"]
         self._assert_400_then_health("GET", f"/jobs/{job_id}?out_off=abc")
         self._assert_400_then_health("GET", f"/jobs/{job_id}?err_off=-1")
+        self._assert_400_then_health("GET", f"/jobs/{job_id}?wait_s=abc")
 
 
 class PersistedJobTimestampTest(unittest.TestCase):

@@ -701,7 +701,15 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
     let mut offs = load_offsets(job);
     let fetch = |o: &Offsets| {
         let trip = crate::new_trip();
-        let path = format!("/jobs/{job}?out_off={}&err_off={}", o.out, o.err);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let wait = remaining
+            .as_secs()
+            .saturating_add(u64::from(remaining.subsec_nanos() > 0))
+            .min(10);
+        let path = format!(
+            "/jobs/{job}?out_off={}&err_off={}&wait_s={wait}",
+            o.out, o.err
+        );
         call(ladder, &trip, "GET", &path, None, true, default_deadline()).map(|r| r.body)
     };
     let mut out = std::io::stdout();
@@ -713,7 +721,7 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
         &mut out,
         &mut err,
         |o| save_offsets(job, o),
-        thread::sleep,
+        |_| {},
     ) {
         Drained::Done(body) => {
             if let Some(marker) = spool_cap_marker(&body) {
