@@ -159,16 +159,16 @@ cost of doing nothing is the program stalling at intake.
 filed as sub-issues of #9079 (blocked-by sequencing 2←1, 3←1, 4←3, 5←1,
 6←1, 8←3):
 
-| Slice | Issue | Acceptance |
-| ----- | ----- | ---------- |
-| 1. Tenant store schema + migrations | #12825 (CLOSED) | Registry/pool/link/Metadata/roadmap/release/lease rows exist in the tenant Turso DB behind migrations |
-| 2. Hosted collector (Cron + `IngestDO`) | #12826 | Registry-driven multi-board ingest lands snapshots in the tenant DB, fail-soft per board, tokens minted per run and never stored |
-| 3. Read API parity | #12828 | `projects.json` / item ancestors+release / roadmap / releases match the #9060 §6 shapes |
-| 4. Dashboard surfaces | #12829 | V1 parity list (§4) server-rendered on Workers |
-| 5. `BoardDO` live + presence | #12830 | Snapshot-change fan-out + ephemeral board presence, state rebuildable from the DB |
-| 6. `ReconcileDO` + lease + flip runbook | #12831 | Hosted reconcile port, lease/epoch fencing, laptop lease guard, first flip on one satellite board (the one slice gated on ratification, per its body) |
-| 7. Identity wiring | #12832 | H/#9077 session → `binding_id`, E role checks on every route, fail-closed tests |
-| 8. Dual-edition conformance suite | #12833 | Shared fixtures: same snapshot in → same API JSON out, laptop vs hosted; Metadata shape pinned vs #9074 |
+| Slice                                   | Issue           | Acceptance                                                                                                                                            |
+| --------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Tenant store schema + migrations     | #12825 (CLOSED) | Registry/pool/link/Metadata/roadmap/release/lease rows exist in the tenant Turso DB behind migrations                                                 |
+| 2. Hosted collector (Cron + `IngestDO`) | #12826          | Registry-driven multi-board ingest lands snapshots in the tenant DB, fail-soft per board, tokens minted per run and never stored                      |
+| 3. Read API parity                      | #12828          | `projects.json` / item ancestors+release / roadmap / releases match the #9060 §6 shapes                                                               |
+| 4. Dashboard surfaces                   | #12829          | V1 parity list (§4) server-rendered on Workers                                                                                                        |
+| 5. `BoardDO` live + presence            | #12830          | Snapshot-change fan-out + ephemeral board presence, state rebuildable from the DB                                                                     |
+| 6. `ReconcileDO` + lease + flip runbook | #12831          | Hosted reconcile port, lease/epoch fencing, laptop lease guard, first flip on one satellite board (the one slice gated on ratification, per its body) |
+| 7. Identity wiring                      | #12832          | H/#9077 session → `binding_id`, E role checks on every route, fail-closed tests                                                                       |
+| 8. Dual-edition conformance suite       | #12833          | Shared fixtures: same snapshot in → same API JSON out, laptop vs hosted; Metadata shape pinned vs #9074                                               |
 
 **Rollout + rollback.** §5's flip procedure, per board: quiesce → epoch
 increment + writer set → verify-only first run → writes resume. Rollback is
@@ -184,9 +184,9 @@ limitation note).
 
 **Open questions, each with a named decider.**
 
-| Question | Decider |
-| -------- | ------- |
-| §1 one-Worker recommendation (proposed) | Design mill or Drew (ratification) |
-| §5 lease mechanism (proposed) | Design mill or Drew (ratification) |
-| Timing of the first writer flip | Operator, after slice 6 lands |
-| Multi-tenant PM beyond the operator's tenancy | Program, post-V1 |
+| Question                                      | Decider                            |
+| --------------------------------------------- | ---------------------------------- |
+| §1 one-Worker recommendation (proposed)       | Design mill or Drew (ratification) |
+| §5 lease mechanism (proposed)                 | Design mill or Drew (ratification) |
+| Timing of the first writer flip               | Operator, after slice 6 lands      |
+| Multi-tenant PM beyond the operator's tenancy | Program, post-V1                   |

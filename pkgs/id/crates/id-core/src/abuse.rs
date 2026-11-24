@@ -1823,7 +1823,10 @@ mod tests {
     #[test]
     fn directional_snapshot_is_empty_without_traffic() {
         let eval = evaluator();
-        assert!(eval.counters().snapshot_directional().is_empty());
+        assert_eq!(
+            eval.counters().snapshot_directional(),
+            [] as [(([u8; 32], [u8; 32]), crate::abuse::DirectionalCounters); 0]
+        );
     }
 }
 
@@ -1881,7 +1884,10 @@ mod budget_tests {
             policy.per_ip,
             vec![BudgetLimit::bytes(3_600_000, 250 * mib)]
         );
-        assert!(policy.counterparty_overrides.is_empty());
+        assert_eq!(
+            policy.counterparty_overrides,
+            [] as [([u8; 32], std::vec::Vec<crate::abuse::BudgetLimit>); 0]
+        );
     }
 
     #[test]
@@ -2097,6 +2103,13 @@ mod budget_tests {
             0,
         )
         .expect("unconfigured budgets never refuse");
-        assert!(eval.budget_usage(0).is_empty());
+        assert_eq!(
+            eval.budget_usage(0),
+            [] as [(
+                crate::abuse::BudgetScope,
+                crate::abuse::BudgetLimit,
+                crate::abuse::BudgetUsage
+            ); 0]
+        );
     }
 }

@@ -173,9 +173,7 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   return { ok: true, value };
 }
 
-function validateDecisionSpec(
-  raw: unknown,
-): { ok: true; value: PromptDecisionSpec } | { ok: false; error: string } {
+function validateDecisionSpec(raw: unknown): { ok: true; value: PromptDecisionSpec } | { ok: false; error: string } {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { ok: false, error: "decision must be an object when target is decision" };
   }

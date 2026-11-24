@@ -29,12 +29,12 @@ The shipped job creates dated, unbundled Google Drive backup files for the cold-
 
 ## 3. Alternatives and trade-offs
 
-| Option | Trade-off | Disposition |
-| --- | --- | --- |
-| Do nothing / keep the former coupled run | Smallest change, but one export failure can skip pruning, manifest sync, and status; a missing journal record weakens diagnosis. | Rejected; the current orchestrator isolates steps and writes a durable run log. |
-| Stop after the first failed step | Makes the overall failure obvious but leaves independent maintenance and status work undone. | Rejected; attempt every step and return non-zero at the end if any failed. |
-| Bundle nightly DB backups using the R2-layout design | Aligns with the proposed archive model, but adds a different packaging/index/restore pipeline and is not what the shipped job does. | Not selected for this shipped path; future change requires its own design and migration/restore proof. |
-| Keep direct, unbundled dated Drive backups | Simple per-database restore points and existing `put-backup` verification/retention; Drive listing and upload limits remain relevant. | Selected and implemented. |
+| Option                                               | Trade-off                                                                                                                             | Disposition                                                                                            |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Do nothing / keep the former coupled run             | Smallest change, but one export failure can skip pruning, manifest sync, and status; a missing journal record weakens diagnosis.      | Rejected; the current orchestrator isolates steps and writes a durable run log.                        |
+| Stop after the first failed step                     | Makes the overall failure obvious but leaves independent maintenance and status work undone.                                          | Rejected; attempt every step and return non-zero at the end if any failed.                             |
+| Bundle nightly DB backups using the R2-layout design | Aligns with the proposed archive model, but adds a different packaging/index/restore pipeline and is not what the shipped job does.   | Not selected for this shipped path; future change requires its own design and migration/restore proof. |
+| Keep direct, unbundled dated Drive backups           | Simple per-database restore points and existing `put-backup` verification/retention; Drive listing and upload limits remain relevant. | Selected and implemented.                                                                              |
 
 ## 4. Chosen design and contracts
 

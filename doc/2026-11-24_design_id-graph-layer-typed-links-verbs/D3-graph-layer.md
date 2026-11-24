@@ -114,12 +114,12 @@ reply-`context` shape (`root` + `previous[]`), and quote-`snapshot.digest` prese
 
 ## 3. Alternatives weighed (with tradeoffs)
 
-| Alternative | Verdict | Why |
-|---|---|---|
-| Links as fields on the source/target object (reply-to fields, backlink counters in payloads) | **Rejected** | Links inherit the object's authorship and lifecycle: a reply from another app becomes a write into someone else's object, and deleting the target silently deletes the reply evidence. Backlink counters additionally fork on concurrent writes. |
-| Links as substrate-native relations (extend the p2panda op layer) | **Rejected** | Best performance story, worst portability story; composition A was chosen partly to avoid forking the substrate. A link object on the existing data plane gets sync, partial replication, and the renewal service for free. Revisit only if link-query load proves the index insufficient (D5 measures this). |
-| Freeform nesting only (the Rummager model: nesting as the single primitive) | **Rejected** | Maximum app freedom, no interop guarantee. Nesting says "inside", which cannot express mention-without-containment, supersede-across-apps, or quote-with-pinning. Nesting survives as the `nest` verb (§5), not as the whole model. |
-| Tangle-only model (SSB-style: replies are the only structured link) | **Adopted as a subset** | Proven socially for conversation, too narrow for attach/supersede/quote. The reply verb carries the tangle structure (`context.root` + `context.previous[]`, §7); the registry generalises the pattern to non-conversational relations. |
+| Alternative                                                                                  | Verdict                 | Why                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Links as fields on the source/target object (reply-to fields, backlink counters in payloads) | **Rejected**            | Links inherit the object's authorship and lifecycle: a reply from another app becomes a write into someone else's object, and deleting the target silently deletes the reply evidence. Backlink counters additionally fork on concurrent writes.                                                              |
+| Links as substrate-native relations (extend the p2panda op layer)                            | **Rejected**            | Best performance story, worst portability story; composition A was chosen partly to avoid forking the substrate. A link object on the existing data plane gets sync, partial replication, and the renewal service for free. Revisit only if link-query load proves the index insufficient (D5 measures this). |
+| Freeform nesting only (the Rummager model: nesting as the single primitive)                  | **Rejected**            | Maximum app freedom, no interop guarantee. Nesting says "inside", which cannot express mention-without-containment, supersede-across-apps, or quote-with-pinning. Nesting survives as the `nest` verb (§5), not as the whole model.                                                                           |
+| Tangle-only model (SSB-style: replies are the only structured link)                          | **Adopted as a subset** | Proven socially for conversation, too narrow for attach/supersede/quote. The reply verb carries the tangle structure (`context.root` + `context.previous[]`, §7); the registry generalises the pattern to non-conversational relations.                                                                       |
 
 ## 4. Freeform nesting expressed in the model
 
@@ -134,7 +134,7 @@ is expressed as the structural verb `nest`: `source` = child, `target` = parent
 - Depth caps, fold points, and page sizes are view policy (cf. #9128 §2, §7), never
   admission rules: the model caps nothing.
 - A container's visible children are a projection (links with `target = container,
-  verb = nest`, ordered by an append-list or ranking the app names), parallel to #9128's
+verb = nest`, ordered by an append-list or ranking the app names), parallel to #9128's
   append-list admission. The social record's `parent_ref` is exactly a `nest` link
   factored out of the envelope — D3 keeps it factored out so nesting shares links'
   capability and revocation story.
@@ -145,6 +145,7 @@ Each verb has operational semantics (not just social meaning), a create-rule, a
 traverse-rule, and a rendering hint for D5. `source`/`target` orientation is per §2.2.
 
 ### reply
+
 Operational semantics: `source` is offered as a conversational successor of `target`.
 `context` REQUIRED: `{ root: <object_id of thread root>, previous: [<object_id>, …] }`
 — the tangle structure (§7). `root = target` for a direct reply to the root.
@@ -156,6 +157,7 @@ Rendering hint: nested/indented under `target` in conversation order; cross-app
 replies carry the source app's badge, never silently restyled as native.
 
 ### mention
+
 Operational semantics: `source` names `target` (a person-root, an object, a thread)
 without containing or succeeding it. No `context`. Notify-side effects are app policy,
 not model semantics: the link only asserts "source refers to target".
@@ -165,6 +167,7 @@ capability for `source`'s area. Rendering hint: inline chip/pill resolving to th
 target's D5 summary; unresolvable targets render as plain text, never as errors.
 
 ### quote
+
 Operational semantics: `source` embeds the bytes of `target` (or a slice) frozen at
 quote time. `snapshot` REQUIRED: `{ digest }` of the exact bytes quoted. A reader
 that can fetch `target` compares digests: match → "quoted text matches current";
@@ -178,6 +181,7 @@ snapshot-only display, never to an error. Rendering hint: blockquote with attrib
 and a freshness badge (match / changed / unavailable); changed quotes offer "view current".
 
 ### attach
+
 Operational semantics: `source` carries `target` as a payload attachment (image in a
 post, file in a message). The attachment bytes are referenced by digest (media) or
 embedded (small files); the link asserts "source presents target as part of itself".
@@ -190,6 +194,7 @@ Rendering hint: thumbnail/card inline at the end of `source`; large media behind
 fetch-or-consent gate per app policy.
 
 ### supersede
+
 Operational semantics: `source` replaces `target` as the current version for the
 relation the app names (edit, retraction, moderation tombstone — distinguished by
 `source`'s kind, not by sub-verbs). Readers resolving "current X" follow the
@@ -203,6 +208,7 @@ for the area. Rendering hint: only the chain head renders in normal views; "edit
 retracted / removed" badge links to history where policy admits.
 
 ### nest
+
 Operational semantics: `source` is placed inside `target` (container, thread, board,
 album). The container's visible children are the projection of inbound `nest` links
 (§4). No `context`. Create-rule: write capability for the area containing the
@@ -212,6 +218,7 @@ views; multi-parent `nest` renders in each parent with an "also in …" marker r
 than duplicating identity.
 
 ### Admission rule for new verbs
+
 A new verb is admitted by a design PR that states: (1) operational semantics in one
 paragraph, (2) a create-rule, (3) a traverse-rule, (4) a rendering hint, (5) two
 independent app implementations OR one implementation plus Drew's sign-off, and
@@ -226,6 +233,7 @@ The contract every app (chat, forum, media, and later arrivals) signs by impleme
 this layer. It is stated as reader rules and writer rules so conformance is testable.
 
 ### Reader rules
+
 1. **Shared IDs, no translation.** Object IDs are global. A reader MUST NOT remap,
    prefix, or namespace another app's IDs.
 2. **Unknown verbs and kinds are preserved and skipped, never fatal.** A reader that
@@ -242,6 +250,7 @@ this layer. It is stated as reader rules and writer rules so conformance is test
    inbound references.
 
 ### Writer rules
+
 1. **Base content renders without the new verb.** A writer introducing a new verb or
    kind MUST ensure its objects still render usefully in an app that skips the novelty
    (the degradation story in the admission rule is normative for this).
@@ -251,6 +260,7 @@ this layer. It is stated as reader rules and writer rules so conformance is test
    (§5) and MUST fill `context.root`/`previous` when replying (§7).
 
 ### Three-app walkthrough (acceptance)
+
 The fixtures in `fixtures/` enact it end to end: Ana's chat message `msg-ask-photo`
 asks for the group photo; Bo's forum thread `post-meetup-thread` collects retrospective
 material; Cyp's media object `img-group-photo` is the photo. Cyp answers from the chat
@@ -265,12 +275,14 @@ context); `lnk-mention-photo` shows mention-without-containment. Run
 ## 7. SSB tangle evaluation
 
 ### What the tangle model is (for this record)
+
 In SSB, a reply references its thread root and its immediate predecessors, forming a
 DAG ("tangle") per thread: ordering and completeness are checkable from the messages,
 not from any server. This design's `reply` verb carries exactly that structure in
 `context: { root, previous[] }`.
 
 ### Adopt / adapt / reject
+
 - **Root + previous references on replies — ADOPT.** `context.root` scopes the thread;
   `context.previous[]` names the messages the author had seen. Loss-tolerant ordering
   and "missing messages" detection fall out of the DAG, same as SSB.
@@ -286,6 +298,7 @@ not from any server. This design's `reply` verb carries exactly that structure i
   covers conversation, not attach/supersede/quote. The registry generalises it.
 
 ### Decline-lessons annex (each lesson gets a named answer or open question)
+
 1. **Single-device identity; multi-device use corrupts forked feeds.** ANSWER: identity
    is the IdP/linking story's stable identity, not a device key; the data plane has no
    per-feed chain to fork. Concurrent writes are DAG branches with deterministic merge
@@ -314,19 +327,20 @@ not from any server. This design's `reply` verb carries exactly that structure i
 ## 8. Capability mapping: per-verb rules on composition A + Roc declarations
 
 ### How a link authorises on composition A
+
 Creating a link object is writing a p2panda object: it requires a Meadowcap write
 capability (as-spec token in the op header extension) covering the link's area, within
 a live window renewed at broker check-in. Traversing (reading) a link requires read
 capability for the area it is stored under. Per-verb tightenings:
 
-| Verb | Create (write grant for…) | Traverse (read grant for…) | Extra condition |
-|---|---|---|---|
-| reply | conversation area of `target` | conversation area | — |
-| mention | `source` author's own area | `source`'s area | never needs target rights |
-| quote | `source` author's own area | `source`'s area (target access only for freshness check) | `snapshot.digest` mandatory |
-| attach | `source`'s area | `source`'s area | author must already hold read on `target` (anti-exfiltration) |
-| supersede | area of `target` | area of `target` | author(`source`) = author(`target`) OR moderation grant |
-| nest | area of `target` container | container's area | — |
+| Verb      | Create (write grant for…)     | Traverse (read grant for…)                               | Extra condition                                               |
+| --------- | ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------- |
+| reply     | conversation area of `target` | conversation area                                        | —                                                             |
+| mention   | `source` author's own area    | `source`'s area                                          | never needs target rights                                     |
+| quote     | `source` author's own area    | `source`'s area (target access only for freshness check) | `snapshot.digest` mandatory                                   |
+| attach    | `source`'s area               | `source`'s area                                          | author must already hold read on `target` (anti-exfiltration) |
+| supersede | area of `target`              | area of `target`                                         | author(`source`) = author(`target`) OR moderation grant       |
+| nest      | area of `target` container    | container's area                                         | —                                                             |
 
 Storage-area convention (recommended, D5/D1 may refine): a link is stored under the
 area of its `source` for mention/quote/attach (it extends the author's object), and
@@ -335,6 +349,7 @@ surface). Readers subscribe to areas, so placement decides who pays sync cost �
 convention keeps shared-surface links where subscribers of that surface already sync.
 
 ### Roc declaration/grant/omission mapping
+
 Each app ships a manifest declaring the verbs it uses, split into creates and
 traverses. The grant authority (broker at check-in, per composition A) issues
 capabilities per declared verb: a chat app that declares `reply{create,traverse},
@@ -345,6 +360,7 @@ submission attempts are rejected at the edge, and sync filters drop inbound
 user sees; they are absences the app never renders (reader rule 2, §6).
 
 ### Worked examples per app type
+
 - **Chat app** declares: create {reply, quote, attach, mention}, traverse {reply,
   quote, attach, mention, nest, supersede(heads only)}. Omitted: supersede/create
   (chat cannot retract the room's history — moderation happens in the forum app),

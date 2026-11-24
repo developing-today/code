@@ -23,6 +23,14 @@ interface Env {
   GITHUB_TOKEN?: string;
   QUEUE_TOKEN?: string;
   EDGE_DIRECT?: string;
+  /** The message bridge, by service binding (#14373), and the PM
+   * stack's own bridge credential: a Worker secret like the two
+   * tokens, put there by scripts/expose.py --edge-direct from the
+   * vault. With both, the edge sends the owner's messages itself, as
+   * service:pm-stack, and reads the agents list and the message log
+   * from the bridge; without either, those stay a machine's. */
+  BRIDGE?: { fetch(request: Request): Promise<Response> };
+  BRIDGE_TOKEN?: string;
   /** Local development only: where GitHub's API and the queue store
    * are, when they are stand-ins. Never set where this is deployed: the
    * Worker's tokens are sent to whatever these name. */
@@ -72,6 +80,7 @@ export class PmEdge extends DurableObject<Env> {
     // The app says "ping" to keep its connection from being dropped as
     // idle; the platform answers "pong" itself, without waking this.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    const bridge = env.BRIDGE;
     this.edge = new Edge({
       fetchImpl: keysFetch(env),
       kv: {
@@ -85,6 +94,12 @@ export class PmEdge extends DurableObject<Env> {
         enabled: env.EDGE_DIRECT === "on",
         githubToken: env.GITHUB_TOKEN,
         queueToken: env.QUEUE_TOKEN,
+        bridgeToken: env.BRIDGE_TOKEN,
+        // The binding's fetch, shaped as the fetch the classes take:
+        // not to be called as a method, like the platform's own.
+        bridgeFetch: bridge
+          ? (url: string | URL | Request, init?: RequestInit) => bridge.fetch(new Request(url as string, init))
+          : undefined,
         githubApi: env.GITHUB_API_ORIGIN,
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,

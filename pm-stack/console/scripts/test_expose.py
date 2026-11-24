@@ -641,6 +641,65 @@ class Expose(unittest.TestCase):
         self.assertEqual(account.changes, [])
         self.assertEqual(account.order, [])
 
+    def test_direct_mode_gives_the_worker_its_bridge_token_when_the_vault_holds_one(
+        self,
+    ):
+        account = Account()
+        marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
+        path = f"/accounts/acc/workers/scripts/{expose.WORKER}/secrets"
+        secrets = {
+            expose.GITHUB_TOKEN_SECRET: "gh-test-value",
+            expose.QUEUE_TOKEN_DEFAULT: "queue-test-value",
+            expose.BRIDGE_TOKEN_DEFAULT: "bridge-test-value",
+        }
+        # Turning direct mode on uploads the bridge token as a fourth
+        # secret, after the three the mode stands on.
+        account.order.clear()
+        self.assertEqual(
+            run(account, self.home, "--edge-direct", "on", secrets=secrets), 0
+        )
+        self.assertEqual(
+            account.worker_secrets,
+            {
+                "GITHUB_TOKEN": "gh-test-value",
+                "QUEUE_TOKEN": "queue-test-value",
+                "EDGE_DIRECT": "on",
+                "BRIDGE_TOKEN": "bridge-test-value",
+            },
+        )
+        self.assertEqual(account.order, [f"PUT {path}"] * 4)
+        self.assertEqual(marker.read_text().strip(), "on")
+        # The bridge value is in nothing printed, said or written.
+        said = "\n".join(account.printed + account.changes)
+        self.assertNotIn("bridge-test-value", said)
+        for kept in pathlib.Path(self.home).rglob("*"):
+            if kept.is_file():
+                self.assertNotIn("bridge-test-value", kept.read_text())
+        # A timer's run changes nothing while the Worker holds it...
+        account.order.clear()
+        self.assertEqual(run(account, self.home, secrets=secrets), 0)
+        self.assertEqual(account.changes, [])
+        self.assertEqual(account.order, [])
+        # ...and gives it back, alone, when the Worker has lost it.
+        del account.worker_secrets["BRIDGE_TOKEN"]
+        account.order.clear()
+        self.assertEqual(run(account, self.home, secrets=secrets), 0)
+        self.assertEqual(account.worker_secrets["BRIDGE_TOKEN"], "bridge-test-value")
+        self.assertEqual(account.order, [f"PUT {path}"])
+        # Off takes it away with the other tokens.
+        account.order.clear()
+        self.assertEqual(run(account, self.home, "--edge-direct", "off"), 0)
+        self.assertEqual(account.worker_secrets, {"EDGE_DIRECT": "off"})
+        self.assertEqual(
+            account.order,
+            [
+                f"PUT {path}",
+                f"DELETE {path}/GITHUB_TOKEN",
+                f"DELETE {path}/QUEUE_TOKEN",
+                f"DELETE {path}/BRIDGE_TOKEN",
+            ],
+        )
+
     def test_the_worker_is_given_its_tokens_unless_told_off(self):
         marker = pathlib.Path(self.home) / ".local/state/pm-console/edge-direct"
         path = f"/accounts/acc/workers/scripts/{expose.WORKER}/secrets"

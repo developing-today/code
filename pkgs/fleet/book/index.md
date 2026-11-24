@@ -78,17 +78,17 @@ answers with a stub message and exit code 69. The full mechanics are in
 | `secrets`       | Resolve secrets by name: the secrets broker first, Bitwarden as fallback.                                                                                                        |
 | `gh`            | The real `gh` CLI, passed through under a rotating fleet token (the fleet's GitHub Apps, then personal last); rate-limit and permission failures fail over to the next token.    |
 | `bridge`        | Fleet messaging through the message bridge: central sends messages or commands to an agent, a group, or all; agents read their mailbox, answer, and ack.                         |
-| `orgs`          | Turso-backed GitHub org, App and installation registry. |
+| `orgs`          | Turso-backed GitHub org, App and installation registry.                                                                                                                          |
 | `agent`         | The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder.                                        |
 | `shell`         | Run a command, or open a shell, where builds belong: the laptop, a codespace, or here.                                                                                           |
 | `search`        | Atlas corpus search over the session history (hybrid full-text plus vector search). Alias: `atlas-search`.                                                                       |
-| `cert`          | PKI/X.509: root and issuer CAs, leaf certificates, chains and bundles. Alias: `pki`. |
+| `cert`          | PKI/X.509: root and issuer CAs, leaf certificates, chains and bundles. Alias: `pki`.                                                                                             |
 | `laptop-agent`  | Client for the laptop-agent daemon: run and manage jobs on the laptop. Alias: `laptop-agent`.                                                                                    |
-| `commander`     | Tier T1 (commander/fleet) of the laptop route forms: run commands on the laptop through the Desktop Commander MCP endpoint. |
-| `http`          | Tier T2 (http/fleet) of the laptop route forms: the laptop-agent daemon HTTP API as a fleet subcommand (HTTP legs only; never ssh). |
-| `ssh`           | Tier T3 (ssh/fleet) of the laptop route forms: real SSH to the laptop under a binary-owned client contract. |
-| `laptop`        | Tier T0 (tiered/fleet) of the laptop route forms: the generic tiered command — walks T1 → T2 → T3 and reports the serving tier. |
-| `actions`       | Live short-lived exec sessions inside GitHub Actions runners: start a session in a runner, run commands in it, stream its IO, renew or extend its lease, close it. |
+| `commander`     | Tier T1 (commander/fleet) of the laptop route forms: run commands on the laptop through the Desktop Commander MCP endpoint.                                                      |
+| `http`          | Tier T2 (http/fleet) of the laptop route forms: the laptop-agent daemon HTTP API as a fleet subcommand (HTTP legs only; never ssh).                                              |
+| `ssh`           | Tier T3 (ssh/fleet) of the laptop route forms: real SSH to the laptop under a binary-owned client contract.                                                                      |
+| `laptop`        | Tier T0 (tiered/fleet) of the laptop route forms: the generic tiered command — walks T1 → T2 → T3 and reports the serving tier.                                                  |
+| `actions`       | Live short-lived exec sessions inside GitHub Actions runners: start a session in a runner, run commands in it, stream its IO, renew or extend its lease, close it.               |
 
 Alongside the domains there are five built-in commands that are not domains:
 `init` (autostart this host's roles per the host manifest), `session bind`

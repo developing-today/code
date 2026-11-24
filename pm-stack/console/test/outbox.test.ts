@@ -77,6 +77,8 @@ test("what may wait, what is sent only while it is fresh, and what needs a conne
     "issue.rank",
     "task.move",
     "message.send",
+    "message.broaden",
+    "message.offer",
     "intake.send",
   ]) {
     expect([kind, O.rule(kind)]).toEqual([kind, "late"]);
@@ -142,6 +144,8 @@ test("each action is said in a line the owner will know it by", () => {
   expect(said("question.defer", {})).toBe("Put a question off");
   expect(said("questions.accept", { set: "s" })).toBe("Accept the recommended answers");
   expect(said("message.send", { to: ["xaltha"], text: "hello" })).toBe("Message to xaltha: “hello”");
+  expect(said("message.broaden", { batch: "b9" })).toBe("Broaden the send on batch b9");
+  expect(said("message.offer", { to: ["agent:f*"], slots: 2, text: "take it" })).toBe("Offer to agent:f* (2 slots): “take it”");
   expect(said("unit.act", { unit: "pm-console.service", action: "restart" })).toBe("restart pm-console.service");
   // One it does not know is still said, as it came; and no arguments are no reason to fail.
   expect(said("something.new", { a: 1 })).toBe("something.new");
@@ -530,6 +534,8 @@ test("what an action is about: two about one thing keep their order, on the devi
     ["ask.send", { text: "x" }, null],
     ["intake.send", { text: "x", kind: "bug" }, null],
     ["message.send", { to: ["a"], text: "x" }, null],
+    ["message.broaden", { batch: "b9" }, "batch:b9"],
+    ["message.offer", { to: ["a"], text: "x", slots: 2 }, null],
     ["deploy.start", { what: "site" }, null],
     ["prompt.enqueue", { issue: 201, text: "x" }, null],
     ["something.new", { issue: 1 }, null],

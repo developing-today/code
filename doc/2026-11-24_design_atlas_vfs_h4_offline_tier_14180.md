@@ -64,7 +64,7 @@ GROUP BY content_id, tenant_scope
 HAVING SUM(CASE WHEN state = 'fresh' THEN 1 ELSE 0 END) = 0;
 ```
 
-- **Semantics:** a row in the output is a *candidate* — bytes whose every known location in this generation is `stale`, `deleted`, or `unverified`. Liveness is #9084's verdict, not this query's; candidates are reconciled against the collector, and disagreement (collector says live, scan says orphan, or vice versa) is itself an audited finding.
+- **Semantics:** a row in the output is a _candidate_ — bytes whose every known location in this generation is `stale`, `deleted`, or `unverified`. Liveness is #9084's verdict, not this query's; candidates are reconciled against the collector, and disagreement (collector says live, scan says orphan, or vice versa) is itself an audited finding.
 - **Cost envelope:** Basin SQL bills $2.50/TB compressed scanned with a 10 MB minimum per query (parent §5 evidence). At current corpus scale (~1 GB, #3125 figures) each run bills the 10 MB minimum — the proving run is near-free and its measured scan bytes become the baseline for the growth trigger in §5.
 - **Cadence:** on demand for the proving run; scheduled (weekly at most) only after the §5 trigger fires. No standing schedule before then.
 
@@ -101,11 +101,11 @@ Rollback is snapshot deletion — sidecars, manifests, tables, and bytes are unt
 
 ## 9. Open questions
 
-| Question | Default in this spec | Decider |
-| --- | --- | --- |
-| H2 refines manifest encoding / generation boundary | reconcile §§3–4 editorially to the H2 spec before implementation | H2 spec owner (#14178); before export implementation |
+| Question                                             | Default in this spec                                                                                 | Decider                                                 |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| H2 refines manifest encoding / generation boundary   | reconcile §§3–4 editorially to the H2 spec before implementation                                     | H2 spec owner (#14178); before export implementation    |
 | Snapshot retention (how many generations kept on R2) | keep all until measured cost forces a policy; purge is a retention-policy action with lineage owners | joint with #9084/#3125 lineage owners; never unilateral |
-| Second offline question before trigger | allowed as one-off proving runs; standing schedule only post-trigger | Atlas program owner (#8983) |
+| Second offline question before trigger               | allowed as one-off proving runs; standing schedule only post-trigger                                 | Atlas program owner (#8983)                             |
 
 ## 10. Record and tracking
 
