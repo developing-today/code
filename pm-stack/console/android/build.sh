@@ -4,7 +4,9 @@
 # Inputs (environment):
 #   KEYSTORE_B64                  base64 of the PKCS#12 signing keystore (key alias pmconsole)
 #   PM_ANDROID_KEYSTORE_PASSWORD  its password
-#   GRADLE_VERSION                Gradle to fetch (default 8.9; AGP 8.5 needs 8.7 or later)
+#   PM_CONSOLE_SITE               site the app opens (default https://pm.security.cab);
+#                               the offline check sets it to the demo edge
+#                               on the runner, http://10.0.2.2:4897
 # Needs: a JDK 17 or 21, an Android SDK at ANDROID_HOME, curl, unzip.
 #
 # With both keystore variables set the result is app/build/outputs/apk/release/pm-console.apk,
@@ -58,7 +60,11 @@ if [ -n "${KEYSTORE_B64:-}" ] && [ -n "${PM_ANDROID_KEYSTORE_PASSWORD:-}" ]; the
   export PM_ANDROID_KEYSTORE="$keystore"
 fi
 
-"$GRADLE" --no-daemon --console=plain assembleRelease
+GRADLE_ARGS=(--no-daemon --console=plain assembleRelease)
+if [ -n "${PM_CONSOLE_SITE:-}" ]; then
+  GRADLE_ARGS+=("-PpmConsoleSite=$PM_CONSOLE_SITE")
+fi
+"$GRADLE" "${GRADLE_ARGS[@]}"
 printf '%s\n%s\n' "${PM_ANDROID_VERSION_NAME:-0.3.0}" "${PM_ANDROID_VERSION_CODE:-3}" >"$OUT/version"
 echo "build.sh: version ${PM_ANDROID_VERSION_NAME:-0.3.0} (code ${PM_ANDROID_VERSION_CODE:-3})"
 

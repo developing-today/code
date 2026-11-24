@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "types": ["bun", "@cloudflare/workers-types"],
+    "typeRoots": ["./edge/node_modules/@types", "./edge/node_modules"]
+  },
+  "include": ["src", "edge/src", "test", "scripts"]
+}

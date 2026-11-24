@@ -409,6 +409,7 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
             author: node.author,
             after: Vec::new(),
             group: Some(group),
+            at: None,
             body: GroupBody::Device(*op),
         });
     }
@@ -475,6 +476,7 @@ fn bridge(node: &Node) -> Option<GroupEvent> {
         author: node.author,
         after: Vec::new(),
         group: node.group,
+        at: None,
         body,
     })
 }

@@ -26,10 +26,10 @@ The split discipline is the harness's social contract. Every query belongs to a 
 
 Golden-311 carries two recorded rows that are both labelled the production hybrid, and they do not agree. This book states both, with their configurations, rather than picking one:
 
-| Row | Configuration | Result on golden-311 |
-|---|---|---|
-| Bake-off best row, recorded in the Python reference's header as the 2026-10-31 production decision | one-stage hybrid, reciprocal rank fusion at k=10, pool 100 per branch | 189 hits@10, MRR 0.3894 |
-| Row reproduced by the gate-5733 sanity check from the fused rerank evaluator | branch depth 30, reciprocal rank fusion at k=60, query vectors truncated to 384 dimensions | 183 of 311 at recall@10, MRR 0.3640 |
+| Row                                                                                                | Configuration                                                                              | Result on golden-311                |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------- |
+| Bake-off best row, recorded in the Python reference's header as the 2026-10-31 production decision | one-stage hybrid, reciprocal rank fusion at k=10, pool 100 per branch                      | 189 hits@10, MRR 0.3894             |
+| Row reproduced by the gate-5733 sanity check from the fused rerank evaluator                       | branch depth 30, reciprocal rank fusion at k=60, query vectors truncated to 384 dimensions | 183 of 311 at recall@10, MRR 0.3640 |
 
 These are different configurations, not a measurement error — pool 100 against depth 30, fusion constant 10 against 60, full-width against truncated vectors — both called themselves "production hybrid" and, until the #13283 reconciliation, neither source named the other's row; the source records now cross-name the two configurations, so each row can be traced to the configuration that produced it. The shipped service's fusion constant is 10 (the versioned query-parameters contract); the Python eval lineage, including the gate below, fuses at 60. Any future citation of a golden-311 production number that does not name its configuration is incomplete.
 

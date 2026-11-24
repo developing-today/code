@@ -28,7 +28,7 @@ id serve [FLAGS]
 | `--dht` | none (switch) | off | Enable mainline DHT address lookup and publishing for the server's endpoint. The flag exists in the parser regardless of the `dht` cargo feature. |
 | `--iroh-port` | `PORT` | `0` | Port for the Iroh QUIC endpoint. `0` lets the OS assign a random available port. |
 
-Topic and secret default caveat (discrepancy CLI-6): the help text for `--topic` states "Default: `id-peer-discovery-v1`" and the help text for `--topic-secret` states "Default: `id-public-discovery-v1`". Those two strings are the hardcoded constants, and the constants are the fallback, not the operative default. On a stock serve, the topic and secret are read first from `defaults.json`; the constants apply only when `defaults.json` supplies neither, or when `--no-default-topic` is passed. The `--version` provenance line (see [The id command line](cli.md)) reports which defaults source is in force. Help alone therefore misstates what a stock serve uses.
+Topic and secret default caveat: the strings `id-peer-discovery-v1` (topic) and `id-public-discovery-v1` (secret) are the hardcoded constants, and the constants are the fallback, not the operative default. On a stock serve, the topic and secret are read first from `defaults.json`; the constants apply only when `defaults.json` supplies neither, or when `--no-default-topic` is passed. The `--version` provenance line (see [The id command line](cli.md)) reports which defaults source is in force. The `--topic`/`--topic-secret` help text once presented the constants as "the default" (discrepancy CLI-6, resolved — the help now describes them as the fallback).
 
 ### Web UI flags
 

@@ -2,7 +2,7 @@
 
 import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
 import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
-import { terminalBytesForKey } from "./world-keyboard";
+import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
 import { decodeViewPatch } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
@@ -125,6 +125,16 @@ function initWorld(): void {
   const worldSocketPath = root.dataset.worldSocket ?? "/ws/world";
   // `/world?world=arena` opens the page on that world.
   worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
+  // The keyboard encoder for this connection (#787 Slice F): the legacy
+  // encoder is the default; `?keyboard=kitty` selects the
+  // kitty-disambiguate-v1 rich encoder for worlds compiled with the
+  // extended Key module. The choice is fixed for the page's lifetime —
+  // switching encoders mid-connection would mix two key grammars on one
+  // input stream.
+  const encodeKey =
+    new URLSearchParams(window.location.search).get("keyboard") === "kitty"
+      ? richTerminalBytesForKey
+      : terminalBytesForKey;
   // A program-only surface (#2146 phase 2) pins its world server-side:
   // the rendered data-world-program wins over the ?world= parameter.
   if (root.dataset.worldProgram) worldInput.value = root.dataset.worldProgram;
@@ -487,7 +497,7 @@ function initWorld(): void {
   };
 
   view.addEventListener("keydown", (event: KeyboardEvent) => {
-    const bytes = terminalBytesForKey(event);
+    const bytes = encodeKey(event);
     if (!bytes) return;
     if (sendInputBytes(bytes)) event.preventDefault();
   });

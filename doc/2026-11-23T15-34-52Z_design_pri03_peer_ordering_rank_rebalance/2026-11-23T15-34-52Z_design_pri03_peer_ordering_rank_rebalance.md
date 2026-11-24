@@ -10,7 +10,7 @@ design package
 PR #9225) into the rank, rebalance, and comparator-parity
 contract a separately scoped implementation issue can be filed
 against. The package's component #9199 states the candidate
-order and sketches the rank semantics; this record *decides*
+order and sketches the rank semantics; this record _decides_
 the points that sketch left open — representation, stride,
 bounds, epoch, refusal vocabulary, and the parity rule — and it
 authorizes no code, schema, migration, deployment, or live
@@ -42,7 +42,7 @@ Governing decisions consumed, not re-opened:
 - **FDR-PMO-008** (bounded exploration, fairness, calibration):
   selection fairness consumes the total order this slice
   defines; it does not amend it. A deterministic order is the
-  substrate the fairness state perturbs *by policy*, never by
+  substrate the fairness state perturbs _by policy_, never by
   comparator drift between surfaces.
 - **The package `architecture.md` digest contract**: the
   selection-order fingerprint is
@@ -62,7 +62,7 @@ Governing decisions consumed, not re-opened:
   `flag.priority-after`, and `priority.move` (census
   command-slice map). Spelling and grammar are CLI-02's;
   registration is CLI-13's. This record fixes what an accepted
-  command *does*, not how it is spelled.
+  command _does_, not how it is spelled.
 - **CEN-04** ([#9434](https://github.com/developing-today/code/issues/9434),
   design record PR #13341) **§5, the field-admission gate**: a
   persisted field with no matrix row may not be written. This
@@ -76,7 +76,7 @@ Governing decisions consumed, not re-opened:
   is PRI-02): the profile contract, the dimension types
   (intrinsic urgency, nullable importance, effective pressure),
   and the explanation shape are theirs. This record consumes
-  *effective urgency* as an input computed under a pinned
+  _effective urgency_ as an input computed under a pinned
   policy snapshot; it defines no urgency semantics, no aging,
   and no pressure derivation (PRI-04/PRI-05 territory).
 
@@ -125,8 +125,8 @@ meanings, and cannot express a relative order anyway when two
 items must stay equals. The source requirements are explicit
 that before/after peer operations are a first-class input
 (component #9199: "do not omit them"), and that the resulting
-order must be *the same order on every surface that claims
-it*: the broker's claim path, its list path, and the
+order must be _the same order on every surface that claims
+it_: the broker's claim path, its list path, and the
 cross-target selection-order fingerprint.
 
 PRI-03 supplies that missing layer: an explicit, exact,
@@ -170,7 +170,7 @@ package architecture's rule that potentially unsafe
 integer-like values travel as decimal strings; it is never a
 JSON number and is never coerced through a JavaScript number
 on any surface. In the broker store it is a nullable SQLite
-`INTEGER` column (§7): `NULL` means *never explicitly ranked*
+`INTEGER` column (§7): `NULL` means _never explicitly ranked_
 and **normalizes to `0` on read**; every write stores an
 explicit value. No reader ever observes SQL `NULL` ordering —
 normalization happens in the comparator's input, in Rust and
@@ -188,16 +188,16 @@ scores, or headroom promises.
 membership and a target insertion point, the allocated rank
 is exactly one of:
 
-- *Between neighbors* `a < b` (the ranks bounding the gap):
+- _Between neighbors_ `a < b` (the ranks bounding the gap):
   if `b - a >= 2`, the midpoint `a + (b - a) / 2` (integer
   division, rounding toward `a`). If `b - a < 2`, no integer
   exists in the gap: allocation does not squeeze — it
   escalates to the rebalance of §5.
-- *Before the first member* with rank `f`: `f - S`, unless
+- _Before the first member_ with rank `f`: `f - S`, unless
   that would underflow `i64`, in which case §5.
-- *After the last member* with rank `l`: `l + S`, unless that
+- _After the last member_ with rank `l`: `l + S`, unless that
   would overflow `i64`, in which case §5.
-- *Into an empty group*: `0`.
+- _Into an empty group_: `0`.
 
 Repeated midpoint insertion halves the gap each time, so a
 group sustains ~10 same-gap insertions per stride interval
@@ -274,20 +274,20 @@ ORDER BY (priority IS NULL), priority ASC,
          created_at ASC, id ASC
 ```
 
-- `id ASC` *is* §3.1 step 5 inside this store: the store's
+- `id ASC` _is_ §3.1 step 5 inside this store: the store's
   identities are integers, so integer order and the
   digit-count-then-digits rule coincide. The string form of
   the rule governs cross-target surfaces (§3.4), where work
   IDs travel as decimal strings.
 - The effective-urgency leg is written with today's
   `priority` column because, until PRI-02's derivation lands,
-  the broker's stored value *is* the effective value under
+  the broker's stored value _is_ the effective value under
   the pinned profile; when derivation lands, this leg's
   expression changes under PRI-02's sequencing, and the
   parity fixture (§3.5) is re-pinned — the tuple does not
   change.
 - **One ordering, both paths.** After this slice, claim and
-  list may differ in *which rows* they return (claim takes
+  list may differ in _which rows_ they return (claim takes
   the head; list pages), never in the order of the rows they
   share. The V1 divergence recorded in the header is a
   defect this slice repairs, and the §8 oracle asserts the
@@ -364,8 +364,8 @@ transaction**, all of the following hold:
    inputs — see §4.4 for the mismatch path).
 2. The anchor is **adjacent to the insertion point**: in the
    group's current order, the anchor is the immediate
-   predecessor (for *after*) or immediate successor (for
-   *before*) of the position the target will occupy, once
+   predecessor (for _after_) or immediate successor (for
+   _before_) of the position the target will occupy, once
    the target's own current position is discounted. A third
    item sitting where the caller believed a gap was makes
    the neighborhood stale, however fresh the versions look.
@@ -430,12 +430,12 @@ one:
 
 This slice's typed refusals, all with zero writes:
 
-| Refusal | Cause |
-| --- | --- |
-| `stale_neighbor` | §4.2(2) adjacency fails, or §4.2(3) a work version mismatches |
-| `rank_epoch_conflict` | §4.2(4) the group epoch moved since the caller's snapshot |
-| `cross_priority_move_requires_confirmation` | §4.4 group mismatch, unconfirmed |
-| `rank_rebalance_required` | §5.2 the local range cannot be re-spread within bounds |
+| Refusal                                     | Cause                                                         |
+| ------------------------------------------- | ------------------------------------------------------------- |
+| `stale_neighbor`                            | §4.2(2) adjacency fails, or §4.2(3) a work version mismatches |
+| `rank_epoch_conflict`                       | §4.2(4) the group epoch moved since the caller's snapshot     |
+| `cross_priority_move_requires_confirmation` | §4.4 group mismatch, unconfirmed                              |
+| `rank_rebalance_required`                   | §5.2 the local range cannot be re-spread within bounds        |
 
 Unknown command versions, ambiguous identity (an
 `authority_id`/`work_id` pair that does not resolve to
@@ -452,7 +452,7 @@ A rebalance is triggered only by allocation (§2.1): the
 bounding ranks differ by less than 2, or an endpoint
 extension would leave the `i64` range. Nothing else
 renumbers ranks — not reads, not claims, not triage sweeps
-(PRI-05 may *request* moves; it does not rebalance), and
+(PRI-05 may _request_ moves; it does not rebalance), and
 never a background process. Rebalance is a subroutine of a
 move command that a caller asked for and can see refused;
 it is not maintenance that happens to a group unobserved.
@@ -532,7 +532,7 @@ against moved ranks) or the epoch moved but ranks did not
 **Decision — audit.** Every accepted mutation appends one
 record to the broker's existing `events` surface (CEN-04
 §3.6 — the broker events table is the journal-adjacent
-record of broker effects; this slice adds event *kinds*,
+record of broker effects; this slice adds event _kinds_,
 not a store): `peer_rank.moved` for a plain allocation,
 `peer_rank.rebalanced` for a move that re-spread a run.
 The record carries the operation id, the group (queue +
@@ -753,20 +753,20 @@ this table records only which part of this design speaks
 to each group — it claims design coverage, not
 implementation.
 
-| IDs | Where addressed |
-| --- | --- |
-| C-R002, C-R041, C-R046 | §2, §3.1 — exact integer rank and the deterministic total order within equal effective urgency |
-| C-R005, C-R009 | §3.3, §3.5, §8 — claim/list parity and the comparator oracle carried into implementation acceptance |
-| C-R049 | §4.4 — cross-group moves as confirmed compounds, never silent rank effects |
-| C-R053 | §8 — the golden-tie example (`9` before `10`) as a pinned fixture |
-| C-R107, C-R108 | §4.1, §4.5 — the allocated command keys and shared flag vocabulary this contract serves (spelling itself is CLI-02's) |
-| H-R004, H-R007 | §4.2, §6 — before/after operations against versioned neighbors; stale input refused, never re-targeted |
-| H-R017, H-R024, H-R031 | §8, §9 — oracle, compatibility, and gate coverage carried into the implementation issue's acceptance |
-| O-R003, O-R004, O-R005, O-R006, O-R007, O-R009 | §2–§5 — candidate occurrences behind the rank, allocation, and rebalance rules and their bounds |
-| O-R017, O-R023 | §3.4, §6 — selection-order fingerprint inputs and replay/idempotency behavior |
-| O-R038, O-R054, O-R055, O-R056, O-R057, O-R059, O-R066, O-R067, O-R068, O-R069 | §4, §5 — proposal occurrences behind the move preconditions, epoch conflicts, and bounded atomic rebalance |
-| P-R009, P-R014 | §3, §7 — proposal occurrences behind comparator parity and the persisted-field admissions |
-| S-R005, S-R007 | §5.2, §5.4 — bounded range and atomic, audited mutation as the safety case |
+| IDs                                                                            | Where addressed                                                                                                       |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| C-R002, C-R041, C-R046                                                         | §2, §3.1 — exact integer rank and the deterministic total order within equal effective urgency                        |
+| C-R005, C-R009                                                                 | §3.3, §3.5, §8 — claim/list parity and the comparator oracle carried into implementation acceptance                   |
+| C-R049                                                                         | §4.4 — cross-group moves as confirmed compounds, never silent rank effects                                            |
+| C-R053                                                                         | §8 — the golden-tie example (`9` before `10`) as a pinned fixture                                                     |
+| C-R107, C-R108                                                                 | §4.1, §4.5 — the allocated command keys and shared flag vocabulary this contract serves (spelling itself is CLI-02's) |
+| H-R004, H-R007                                                                 | §4.2, §6 — before/after operations against versioned neighbors; stale input refused, never re-targeted                |
+| H-R017, H-R024, H-R031                                                         | §8, §9 — oracle, compatibility, and gate coverage carried into the implementation issue's acceptance                  |
+| O-R003, O-R004, O-R005, O-R006, O-R007, O-R009                                 | §2–§5 — candidate occurrences behind the rank, allocation, and rebalance rules and their bounds                       |
+| O-R017, O-R023                                                                 | §3.4, §6 — selection-order fingerprint inputs and replay/idempotency behavior                                         |
+| O-R038, O-R054, O-R055, O-R056, O-R057, O-R059, O-R066, O-R067, O-R068, O-R069 | §4, §5 — proposal occurrences behind the move preconditions, epoch conflicts, and bounded atomic rebalance            |
+| P-R009, P-R014                                                                 | §3, §7 — proposal occurrences behind comparator parity and the persisted-field admissions                             |
+| S-R005, S-R007                                                                 | §5.2, §5.4 — bounded range and atomic, audited mutation as the safety case                                            |
 
 ## 11. Non-goals
 

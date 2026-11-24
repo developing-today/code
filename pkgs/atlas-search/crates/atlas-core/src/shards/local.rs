@@ -20,11 +20,13 @@ use crate::types::{Row, Stmt, Value};
 type RValue = rusqlite::types::Value;
 
 fn blob_to_f32(b: &[u8]) -> Option<Vec<f32>> {
-    if b.len() % 4 != 0 {
+    if !b.len().is_multiple_of(4) {
         return None;
     }
     Some(
-        b.chunks_exact(4)
+        b.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
     )

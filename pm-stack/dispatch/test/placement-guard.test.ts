@@ -19,7 +19,7 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
       },
       (command) => {
         calls.push(command);
-        return { status: 0, stdout: "{\"option\":\"opencode-session\",\"rule\":\"R4\"}\n", stderr: "" };
+        return { status: 0, stdout: '{"option":"opencode-session","rule":"R4"}\n', stderr: "" };
       },
     );
 
@@ -83,7 +83,7 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
       { taskId: 2, repo: "developing-today/code", model: { providerID: "cline-pass", id: "claude-sonnet" } },
       (command) => {
         calls.push(command);
-        return { status: 0, stdout: "{\"option\":\"opencode-session\",\"rule\":\"R4\"}", stderr: "" };
+        return { status: 0, stdout: '{"option":"opencode-session","rule":"R4"}', stderr: "" };
       },
     );
     expect(result).toEqual({
@@ -111,12 +111,12 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
       },
       () => ({
         status: 0,
-        stdout: "{\"option\":\"opencode-session\",\"rule\":\"R4\",\"b4_unknown_read_relied_on\":true}",
-        stderr: "placement-record: B4 last-known quota relied on for pool \"opencode-go.popesdrew\"",
+        stdout: '{"option":"opencode-session","rule":"R4","b4_unknown_read_relied_on":true}',
+        stderr: 'placement-record: B4 last-known quota relied on for pool "opencode-go.popesdrew"',
       }),
     );
     expect(result?.poolId).toBe("opencode-go.popesdrew");
-    expect(logged).toEqual(["placement-record: B4 last-known quota relied on for pool \"opencode-go.popesdrew\""]);
+    expect(logged).toEqual(['placement-record: B4 last-known quota relied on for pool "opencode-go.popesdrew"']);
   });
 
   test("disabled guard and non-covered providers do not invoke the helper", () => {

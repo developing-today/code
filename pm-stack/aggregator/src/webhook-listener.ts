@@ -15,7 +15,7 @@ const ACCEPTED_ACTIONS = new Set(["opened", "edited", "closed", "labeled"]);
 type JsonRecord = Record<string, unknown>;
 
 function record(value: unknown): JsonRecord | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : null;
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
 }
 
 function stringValue(value: unknown): string | null {
@@ -101,13 +101,14 @@ function toIngestionItem(payload: JsonRecord, event: string): IngestionItem | nu
   const mergedAt = stringValue(rawItem.merged_at);
   const closedAt = stringValue(rawItem.closed_at) ?? mergedAt;
   const isMerged = event === "pull_request" && (rawItem.merged === true || mergedAt !== null);
-  const state = isMerged ? "MERGED" : stringValue(rawItem.state)?.toUpperCase() ?? "OPEN";
+  const state = isMerged ? "MERGED" : (stringValue(rawItem.state)?.toUpperCase() ?? "OPEN");
   const parent = record(rawItem.parent);
   const parentRepo = stringValue(record(parent?.repository)?.full_name) ?? stringValue(parent?.repository_full_name);
   const parentNumber = parent?.number;
-  const nativeParent = parentRepo && Number.isSafeInteger(parentNumber) && (parentNumber as number) > 0
-    ? { repo: parentRepo, number: parentNumber as number, kind: "sub-issue" }
-    : null;
+  const nativeParent =
+    parentRepo && Number.isSafeInteger(parentNumber) && (parentNumber as number) > 0
+      ? { repo: parentRepo, number: parentNumber as number, kind: "sub-issue" }
+      : null;
 
   return {
     repo,

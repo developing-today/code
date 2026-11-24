@@ -120,9 +120,7 @@ pub fn mux_negotiated(client_capabilities: &[String], broker_capabilities: &[Str
 /// A stream identifier. Client-initiated streams are odd (record
 /// §4); ids are scoped to one tunnel and freed by `rst` or by both
 /// directions reaching `fin`. Id 0 is never a stream.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct StreamId(pub u64);
 
@@ -315,9 +313,7 @@ impl StreamFrame {
             }
         }
         match self {
-            StreamFrame::Open { .. } => {
-                self.intent().map(|_| ())
-            }
+            StreamFrame::Open { .. } => self.intent().map(|_| ()),
             StreamFrame::Data { .. } => self.payload().map(|_| ()),
             StreamFrame::Window { credit, .. } => {
                 if *credit == 0 {
@@ -495,8 +491,14 @@ mod tests {
         // Either side missing it — including the legacy dialect,
         // which advertises nothing — leaves the pooled path in
         // charge (record §5).
-        assert!(!mux_negotiated(&caps(&[CAP_PROXY_MUX]), &caps(&["proxy-serve"])));
-        assert!(!mux_negotiated(&caps(&["proxy-connect"]), &caps(&[CAP_PROXY_MUX])));
+        assert!(!mux_negotiated(
+            &caps(&[CAP_PROXY_MUX]),
+            &caps(&["proxy-serve"])
+        ));
+        assert!(!mux_negotiated(
+            &caps(&["proxy-connect"]),
+            &caps(&[CAP_PROXY_MUX])
+        ));
         assert!(!mux_negotiated(&caps(&[]), &caps(&[])));
     }
 

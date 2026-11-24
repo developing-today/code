@@ -53,7 +53,7 @@ Governing decisions consumed, not re-opened:
   shared by design. The semantics — whole command line declared,
   strict parse before any effect, unaccounted input is a usage
   error — are adopted unchanged.
-- **#9200 priority policy**: numeric priority *range and meaning* are
+- **#9200 priority policy**: numeric priority _range and meaning_ are
   policy-owned. The parser checks the shape of a priority argument;
   the policy validates its range (DSP-02's dependency note).
 
@@ -82,7 +82,7 @@ Verified state at writing (2026-11-23, origin/main `4cfceaa8a`):
 
 Every Fleet command surface — an agent typing `fleet work …`, a
 `/fleet …` comment on an issue, a PM Stack action request — must mean
-exactly one thing, and must fail *before* it does anything when it
+exactly one thing, and must fail _before_ it does anything when it
 cannot be understood exactly. Today the surfaces parse independently
 (or loosely), so the same intent can be spelled several ways, a typo'd
 flag can fall through to a different operation, and a malformed
@@ -102,10 +102,10 @@ argv or raw comment text.
 The parser accepts three ingress shapes and normalizes all of them to
 one closed typed AST, then to the shared envelope:
 
-| Ingress | Raw form | Specified in |
-| --- | --- | --- |
-| CLI argv | `fleet work <operation> [flags]` token sequence | §3, §4 |
-| Slash command | one `/fleet …` command in a comment body | §5 |
+| Ingress           | Raw form                                                                           | Specified in |
+| ----------------- | ---------------------------------------------------------------------------------- | ------------ |
+| CLI argv          | `fleet work <operation> [flags]` token sequence                                    | §3, §4       |
+| Slash command     | one `/fleet …` command in a comment body                                           | §5           |
 | PM action request | structured action via #9201, normalized to the same Command interface (#9203 §3.1) | this section |
 
 Rules:
@@ -118,8 +118,8 @@ Rules:
   step. Policy, authorization, resolution, and execution all live
   behind the seam (#9206 §4: no client-side policy, no independent
   resolver). The parser never calls a service to decide whether an
-  argument is *acceptable*; it only decides whether it is
-  *well-formed against the declaration*.
+  argument is _acceptable_; it only decides whether it is
+  _well-formed against the declaration_.
 - **Composed operations are spellings, not backends.** Sugar such as
   `fleet work next --claim --hydrate full` parses to the composed
   operation kind whose steps (selection → claim → hydration →
@@ -162,7 +162,7 @@ Each operation declares, in one place in `cli.rs`:
 3. its mutual exclusions and required-together groups;
 4. which shared-flag families (§3.3) it participates in, flag by flag.
 
-A flag family's presence in this section is a *vocabulary*, never an
+A flag family's presence in this section is a _vocabulary_, never an
 acceptance rule: `--json` is accepted by an operation only because
 that operation's declaration lists it (#9206 §4).
 
@@ -170,11 +170,11 @@ that operation's declaration lists it (#9206 §4).
 
 The shared vocabulary (C-R108), grouped:
 
-| Family | Flags |
-| --- | --- |
-| Identity / target | `--work`, `--issue`, `--pr`, `--repo`, `--agent-id`, `--session-id`, `--lease-token` |
-| Time / cursor | `--since`, `--since-start`, `--since-checkpoint`, `--external-only` |
-| Output | `--json`, `--format` |
+| Family             | Flags                                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------- |
+| Identity / target  | `--work`, `--issue`, `--pr`, `--repo`, `--agent-id`, `--session-id`, `--lease-token`      |
+| Time / cursor      | `--since`, `--since-start`, `--since-checkpoint`, `--external-only`                       |
+| Output             | `--json`, `--format`                                                                      |
 | Safety / execution | `--dry-run`, `--explain`, `--expected-version`, `--idempotency-key`, `--verify`, `--wait` |
 
 Value-shape rules the parser enforces (policy stays downstream):
@@ -187,14 +187,14 @@ Value-shape rules the parser enforces (policy stays downstream):
   is never echoed into output, logs, error details, or the intent DTO
   (#9206 §4).
 - `--expected-version` and `--lease-generation` (carried by
-  `--lease-token`'s companion state) are *separate* preconditions;
+  `--lease-token`'s companion state) are _separate_ preconditions;
   the parser keeps them as distinct typed fields and never merges
   them into one "version" argument.
 - A bare numeric target (e.g. `842` with no kind) is structurally
   ambiguous and is rejected by the parser; typed locators
   (`--work`, `--issue`, `--pr`, or a canonical `(authority_id,
-  work_id)` pair) are the only target forms. Whether a well-formed
-  locator *resolves* to exactly one item is the resolver's question
+work_id)` pair) are the only target forms. Whether a well-formed
+  locator _resolves_ to exactly one item is the resolver's question
   (§10), not the parser's.
 
 CLI-02's exact command allocation from `census/command-slice-map.jsonl`
@@ -239,7 +239,7 @@ rules 7–9 are the #9206 §4 additions for a service-backed CLI.
    different operation or a default.
 5. **Valueless means error.** A value-flag present without a value
    is a usage error, never an invitation to substitute the default.
-   Defaults are applied only to *absent* flags, at default-expansion
+   Defaults are applied only to _absent_ flags, at default-expansion
    time (§6), where they become visible to the digest.
 6. **Safety flags bind every path.** A parsed `--dry-run` /
    `--explain` is honoured on every code path the invocation can
@@ -255,7 +255,7 @@ rules 7–9 are the #9206 §4 additions for a service-backed CLI.
    target from ambient state. Session/context defaults
    (architecture: "infer active context only when unambiguous") are
    applied by the service behind the seam from recorded session
-   state, and the *expanded* values — never the inference process —
+   state, and the _expanded_ values — never the inference process —
    are what enter the envelope and digest.
 9. **Unknown schema versions refuse.** An envelope or DTO whose
    `schema_version` is not one the parser/contract recognizes is
@@ -297,7 +297,7 @@ Rules:
   mapping table is part of the parser's fixture corpus (§8).
 - **Aliases are candidates, not behavior.** Informal spellings found
   in the sources (`/retry`, `/queue`, `/start`, `/merge`) are alias
-  *candidates* only. An alias is accepted only after an explicit
+  _candidates_ only. An alias is accepted only after an explicit
   mapping to one canonical verb is approved, documented, and tested;
   ambiguous forms are rejected. No alias ever resolves to a shell or
   runner invocation.
@@ -357,8 +357,8 @@ the envelope and its fingerprint in this order:
    the architecture and restated here because the parser owns the
    boundary: operation/key IDs, delivery attempts, receipt times,
    output format (`--json`/`--format`), wait/timeout, and dry-run
-   execution mode. `--dry-run` still changes *behavior* (no effects);
-   it does not change *intent identity*.
+   execution mode. `--dry-run` still changes _behavior_ (no effects);
+   it does not change _intent identity_.
 
 ## 7. Parser errors and the result surface
 
@@ -378,7 +378,7 @@ the envelope and its fingerprint in this order:
   shipped code is a breaking change; adding one is not.
 - **Exit status.** A usage error exits non-zero — 2, per #3352's
   default where the tool has no established usage code. A successful
-  parse that reaches the seam reports its outcome *in the envelope*
+  parse that reaches the seam reports its outcome _in the envelope_
   (outcomes: `rejected`, `accepted`, `running`, `pending_sync`,
   `partial`, `conflict`, `uncertain`, `verified_complete`, per
   CLI-01/architecture); exit status signals the invocation/domain
@@ -542,15 +542,15 @@ Full per-occurrence text for every allocated ID is in
 this table records only which part of this design speaks to each
 group — it claims design coverage, not implementation.
 
-| IDs | Where addressed |
-| --- | --- |
+| IDs                                    | Where addressed                                                                                                                                           |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | C-R005, C-R009, C-R107, H-R017, O-R023 | §2, §3 — one cohesive command surface across the agent/queue/work/GitHub/dependency/metadata/sync/session families, names reconciled to Fleet conventions |
-| C-R108, O-R024, P-R005, P-R009, P-R012 | §3.3, §6 — the shared identity/time/output/safety flag vocabulary, per-operation declaration, default expansion, unambiguous context only |
-| C-R086, C-R087, O-R014, S-R004 | §5 — the strict slash grammar, its closed verb set, alias discipline, and plain-language classification boundary |
-| C-R106, C-R109, C-R110, P-R003 | §2, §3 — composed operations and sugar over the one envelope/seam; primitives and workflows share the grammar |
-| C-R149, C-R150, C-R152, C-R156 | §8.4 — reference-scenario command lines pinned as golden parser coverage |
-| P-R024, P-R028 | §6, §7 — stable JSON output, stable error identifiers, distinct outcome states, auditable normal path and recovery via `operation_id` |
-| H-R012, H-R016, H-R024, H-R031 | §8, §9 — original commands/options/schemas/errors/failures carried into compatibility and acceptance coverage; nothing silently dropped |
+| C-R108, O-R024, P-R005, P-R009, P-R012 | §3.3, §6 — the shared identity/time/output/safety flag vocabulary, per-operation declaration, default expansion, unambiguous context only                 |
+| C-R086, C-R087, O-R014, S-R004         | §5 — the strict slash grammar, its closed verb set, alias discipline, and plain-language classification boundary                                          |
+| C-R106, C-R109, C-R110, P-R003         | §2, §3 — composed operations and sugar over the one envelope/seam; primitives and workflows share the grammar                                             |
+| C-R149, C-R150, C-R152, C-R156         | §8.4 — reference-scenario command lines pinned as golden parser coverage                                                                                  |
+| P-R024, P-R028                         | §6, §7 — stable JSON output, stable error identifiers, distinct outcome states, auditable normal path and recovery via `operation_id`                     |
+| H-R012, H-R016, H-R024, H-R031         | §8, §9 — original commands/options/schemas/errors/failures carried into compatibility and acceptance coverage; nothing silently dropped                   |
 
 ## 13. Non-goals
 
@@ -564,7 +564,7 @@ group — it claims design coverage, not implementation.
 - No full exit-code ↔ outcome matrix (§7 fixes only the parse-failure
   row; the matrix is the implementation issue's conformance
   deliverable, per #9206 §4).
-- No alias approvals: §5 admits alias *candidates* only; approving
+- No alias approvals: §5 admits alias _candidates_ only; approving
   any one of them is a separate, documented decision.
 - No identity-resolution semantics (§10: CLI-03's), no merge/effect
   preconditions (REL-06's), and no priority ranges (#9200's policy).

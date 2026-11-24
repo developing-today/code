@@ -42,6 +42,10 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_muse_bootstrap_check_op.py' -v
       - name: Run worker preflight contract tests (#4862)
         run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
+      - name: Run orchestration-pass retirement record contract tests (#2136)
+        run: |
+          test -f scripts/tests/test_orchestration_pass_retirement.py
+          python3 -m unittest discover -s scripts/tests -p 'test_orchestration_pass_retirement.py' -v
       - name: Run failure classifier contract tests (#2176)
         run: python3 -m unittest discover -s scripts/tests -p 'test_classify_failure.py' -v
       - name: Run bitwarden-load-secrets multiline contract tests (#5650)

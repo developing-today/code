@@ -44,14 +44,18 @@
 - [Tutorial: run the golden set and read a gate](tutorials/run-an-evaluation.md)
 
 - [Design: automatic ingest of all sources](design/automatic-ingest.md)
+  - [Source adapter contracts and replay fixtures](design/adapter-fixtures.md)
 - [Design: query planning](design/query-planning.md)
 - [Design: layered search characteristics on Snowflake](design/layered-search.md)
+  - [Planner, approximate search and ranking experiments](design/retrieval-experiments.md)
 - [Design: the reranking stage](design/reranking.md)
 - [Design: the single-user recommender](design/recommender.md)
 - [Design: search integration for fleet and ID](design/fleet-and-id-integration.md)
 - [Design: MCP and programmatic access, next steps](design/access-evolution.md)
+  - [Consumer, cache and recommendation acceptance](design/consumer-acceptance.md)
 - [Design: the standing evaluation programme](design/evaluation-programme.md)
 - [Roadmap and issue map](design/roadmap-and-issue-map.md)
+- [High-level roadmap](design/high-level-roadmap.md)
 
 - [Repository layout](development/layout.md)
 - [Building and testing](development/building.md)
@@ -67,3 +71,5 @@
 - [Deploying this book](operations/deploying-this-book.md)
 - [FAQ](operations/faq.md)
 - [Glossary](operations/glossary.md)
+
+- [Implementation programme and evidence gates](design/implementation-programme.md)

@@ -80,8 +80,7 @@ const stubCtx = (storage: StorageLike) => {
     contextFn!(input as never);
     return input;
   };
-  const fireNew = (sessionID: string): ContextInput =>
-    fire({ sessionID, system: [], tools: {} });
+  const fireNew = (sessionID: string): ContextInput => fire({ sessionID, system: [], tools: {} });
   return { ctx, fire, fireNew };
 };
 
@@ -94,9 +93,7 @@ const setupWith = async (env: string | undefined, rawOptions?: Options) => {
 };
 
 const texts = (input: ContextInput): string[] =>
-  input.system.map((part) =>
-    typeof part === "string" ? part : ((part as { text?: string }).text ?? ""),
-  );
+  input.system.map((part) => (typeof part === "string" ? part : ((part as { text?: string }).text ?? "")));
 
 describe("plugin.instructions (MCPX_PLUGIN_INSTRUCTIONS)", () => {
   test("unset: the context hook appends nothing", async () => {

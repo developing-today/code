@@ -3,7 +3,7 @@
 - **Slice:** REL-06 of the #9209 component (leases, fencing, transactional
   outbox & direct verified completion), pm-orchestration program #9196.
 - **Issue:** #9516, `design(pm-orchestration): Effect-specific GitHub
-  preconditions and readback adapter`.
+preconditions and readback adapter`.
 - **Status:** design record. This is the bounded design deliverable for
   #9516. It is a V3 proposal in the issue's own terms: it does **not**
   authorize implementation. Implementation starts only under a
@@ -105,20 +105,20 @@ No REL-06 adapter exists on origin/main today:
 
 ## 3. Settled inputs consumed, not re-decided
 
-| Input | What REL-06 takes from it |
-| --- | --- |
-| #9209 component §4 | Operation model: immutable intent, expected remote precondition carried on the operation, per-target ordering, retry classes (terminal / conflict / unknown-after-send / rate-limit backoff), supersede rules. |
-| #9209 component §5 | Direct completion phases; merge with expected head SHA; 202 is accepted/enqueued, never merged; per-method merge verification (§5.4); issue closure verified per issue; partial effects stay recoverable. |
-| #9209 component §6 | Comment/body writes have no remote CAS: GET-compare is not optimistic concurrency; the design must not promise prevention of a human race. |
-| #9209 component §8 | Failure-matrix rows for stale head, async merge, squash/rebase results, partial close, duplicate delivery. |
-| FDR-PMO-006 | Local transactional intent + effect-specific adapter + remote observation/reconciliation + direct local finalization (option 1, adopted). "Effectively once" is scoped, never universal exactly-once. GitHub close/readback may not prove actor attribution; report confidence. |
-| REL-03 (#9513) | Operation id + idempotency key + request digest; the stable structured receipt is shared by commands. Same key + same digest replays the receipt; same key + different digest is a deterministic conflict. |
-| REL-04 (#9514) | The outbox intent is committed atomically with local state + journal; the adapter is a delivery/verification step over that intent, never a second store of intent. |
-| AUTH-01 (#9429) | Every write checks authenticated principal capability and scope, expected version, and reason. The adapter refuses an effect the presented operation is not authorized for; it does not itself grant scope. |
-| AUTH-02 (#9499) | Public mirroring is explicit, allowlisted, operation-scoped, default private. A comment effect exists only because an operation names it; the adapter never mirrors on its own initiative. |
-| CEN-04 (#9434) | One owner per persisted fact. REL-06 persists nothing new (§9); any future persisted receipt field goes through CEN-04's matrix first. |
-| #9177 close guard | Precedent for refusing before send inside `gh.rs`, and for a wrapper-only flag (stripped before `gh` runs) as the inter-component channel. |
-| #9073 create path | Precedent for effect-specific interception in `gh.rs` (fail-closed parse → stamp → send → record), and the first registered effect family (§5). |
+| Input              | What REL-06 takes from it                                                                                                                                                                                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #9209 component §4 | Operation model: immutable intent, expected remote precondition carried on the operation, per-target ordering, retry classes (terminal / conflict / unknown-after-send / rate-limit backoff), supersede rules.                                                                  |
+| #9209 component §5 | Direct completion phases; merge with expected head SHA; 202 is accepted/enqueued, never merged; per-method merge verification (§5.4); issue closure verified per issue; partial effects stay recoverable.                                                                       |
+| #9209 component §6 | Comment/body writes have no remote CAS: GET-compare is not optimistic concurrency; the design must not promise prevention of a human race.                                                                                                                                      |
+| #9209 component §8 | Failure-matrix rows for stale head, async merge, squash/rebase results, partial close, duplicate delivery.                                                                                                                                                                      |
+| FDR-PMO-006        | Local transactional intent + effect-specific adapter + remote observation/reconciliation + direct local finalization (option 1, adopted). "Effectively once" is scoped, never universal exactly-once. GitHub close/readback may not prove actor attribution; report confidence. |
+| REL-03 (#9513)     | Operation id + idempotency key + request digest; the stable structured receipt is shared by commands. Same key + same digest replays the receipt; same key + different digest is a deterministic conflict.                                                                      |
+| REL-04 (#9514)     | The outbox intent is committed atomically with local state + journal; the adapter is a delivery/verification step over that intent, never a second store of intent.                                                                                                             |
+| AUTH-01 (#9429)    | Every write checks authenticated principal capability and scope, expected version, and reason. The adapter refuses an effect the presented operation is not authorized for; it does not itself grant scope.                                                                     |
+| AUTH-02 (#9499)    | Public mirroring is explicit, allowlisted, operation-scoped, default private. A comment effect exists only because an operation names it; the adapter never mirrors on its own initiative.                                                                                      |
+| CEN-04 (#9434)     | One owner per persisted fact. REL-06 persists nothing new (§9); any future persisted receipt field goes through CEN-04's matrix first.                                                                                                                                          |
+| #9177 close guard  | Precedent for refusing before send inside `gh.rs`, and for a wrapper-only flag (stripped before `gh` runs) as the inter-component channel.                                                                                                                                      |
+| #9073 create path  | Precedent for effect-specific interception in `gh.rs` (fail-closed parse → stamp → send → record), and the first registered effect family (§5).                                                                                                                                 |
 
 ## 4. Adapter shape
 
@@ -182,15 +182,15 @@ into four treatments. Read verbs are not effects; they are the
 read-back channels, and the adapter's verifications are expressed
 in terms of them.
 
-| Treatment | Allocated commands | Adapter behavior |
-| --- | --- | --- |
-| **Preconditioned, read-back-verified write** | `github.pr.merge`, `github.issue.close` | Full contract: §6 preconditions, §7 verification. These are the effects direct completion depends on. |
-| **Marker-verified write** | `github.comment.add` | Send carries the stable operation marker (REL-03 identity); verification adopts by marker (§7.3). |
-| **Compare-verified write** | `github.comment.edit`, `github.issue.update`, `github.pr.update` | GET-compare against the intent's baseline digest before send; read-back compares the managed content only. No CAS is claimed (#9209 §6); a baseline mismatch is `conflict`, never a silent overwrite. |
-| **Registered existing write** | `github.issue.create`, `github.pr.create`, `fleet-gh.create` | Already implemented by the #9073 metadata create path in `gh.rs`. REL-06 registers it as an effect family whose receipt is the create outcome (created URL + metadata record status); no redesign. |
-| **Read-back channels (reads)** | `github.pr.get`, `github.pr.checks`, `github.pr.commits`, `github.pr.diff`, `github.pr.reviews`, `github.issue.get`, `github.issue.comments`, `github.issue.timeline`, `github.comment.list`, `github.comment.reply` (a write shaped as a reply; treated as `comment.add` when under an intent, passthrough otherwise) | Plain passthrough outside an intent; inside verification, the adapter issues them itself and treats their results as evidence, not as caller-supplied claims. |
-| **Passthrough, unchanged** | `fleet-gh.passthrough`, `flag.*` spellings, `agent.slash.merge`, `flag.close-issues`, `flag.close-linked-issues`, `flag.merge-pr`, `flag.merge-linked-prs`, `flag.comment-id`, `flag.issue`, `flag.pr`, `flag.verify` | Flag/spelling inventory is preserved verbatim (compatibility rule); the flags select intents for the layers above the adapter. The adapter defines no spelling and normalizes none. |
-| **Consumers of receipts** | `queue.stack.replay`, `sync.outbox.retry`, `sync.verify`, `work.complete` | Not adapter entry points: they consume the verdicts in §8 (retry only on the classes §6.4 permits; verify = run the read-back again; complete only on verified required effects, decided by REL-07). |
+| Treatment                                    | Allocated commands                                                                                                                                                                                                                                                                                                     | Adapter behavior                                                                                                                                                                                      |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Preconditioned, read-back-verified write** | `github.pr.merge`, `github.issue.close`                                                                                                                                                                                                                                                                                | Full contract: §6 preconditions, §7 verification. These are the effects direct completion depends on.                                                                                                 |
+| **Marker-verified write**                    | `github.comment.add`                                                                                                                                                                                                                                                                                                   | Send carries the stable operation marker (REL-03 identity); verification adopts by marker (§7.3).                                                                                                     |
+| **Compare-verified write**                   | `github.comment.edit`, `github.issue.update`, `github.pr.update`                                                                                                                                                                                                                                                       | GET-compare against the intent's baseline digest before send; read-back compares the managed content only. No CAS is claimed (#9209 §6); a baseline mismatch is `conflict`, never a silent overwrite. |
+| **Registered existing write**                | `github.issue.create`, `github.pr.create`, `fleet-gh.create`                                                                                                                                                                                                                                                           | Already implemented by the #9073 metadata create path in `gh.rs`. REL-06 registers it as an effect family whose receipt is the create outcome (created URL + metadata record status); no redesign.    |
+| **Read-back channels (reads)**               | `github.pr.get`, `github.pr.checks`, `github.pr.commits`, `github.pr.diff`, `github.pr.reviews`, `github.issue.get`, `github.issue.comments`, `github.issue.timeline`, `github.comment.list`, `github.comment.reply` (a write shaped as a reply; treated as `comment.add` when under an intent, passthrough otherwise) | Plain passthrough outside an intent; inside verification, the adapter issues them itself and treats their results as evidence, not as caller-supplied claims.                                         |
+| **Passthrough, unchanged**                   | `fleet-gh.passthrough`, `flag.*` spellings, `agent.slash.merge`, `flag.close-issues`, `flag.close-linked-issues`, `flag.merge-pr`, `flag.merge-linked-prs`, `flag.comment-id`, `flag.issue`, `flag.pr`, `flag.verify`                                                                                                  | Flag/spelling inventory is preserved verbatim (compatibility rule); the flags select intents for the layers above the adapter. The adapter defines no spelling and normalizes none.                   |
+| **Consumers of receipts**                    | `queue.stack.replay`, `sync.outbox.retry`, `sync.verify`, `work.complete`                                                                                                                                                                                                                                              | Not adapter entry points: they consume the verdicts in §8 (retry only on the classes §6.4 permits; verify = run the read-back again; complete only on verified required effects, decided by REL-07).  |
 
 ## 6. Preconditions
 
@@ -248,7 +248,7 @@ from.
 - **Stable operation marker — required for verifiability.** The
   body carries the operation's marker (the REL-03 operation
   identity in the family's established marker form). An intent
-  without a marker is accepted only as an *unverifiable* effect:
+  without a marker is accepted only as an _unverifiable_ effect:
   the receipt can never rise above `unknown` after a lost
   acknowledgement, and completion policy must not count it as a
   verified required effect. This is stated, not hidden.
@@ -478,7 +478,7 @@ a named oracle above, run against the fake remote's 200 / 202 /
   schedule on any surface; `doc/fleet-schedule-registry.md` needs
   no entry for it.
 - **Secrets.** Identity sources are named, never valued, exactly
-  as `gh.rs` does today; receipts record the token *source name*
+  as `gh.rs` does today; receipts record the token _source name_
   only.
 
 ## 11. Gates and sequencing for implementation
@@ -510,18 +510,18 @@ equivalence or changes a persisted schema while that stands.
 Full per-occurrence citations remain in the #9209 package's
 `census/requirements-crosswalk.jsonl`; this is the slice-level map.
 
-| IDs | Answered in |
-| --- | --- |
-| C-R005, C-R107, C-R108, H-R001, H-R017, H-R024, H-R031, P-R001, P-R002, P-R009, P-R012 | §4–§5: one adapter inside the existing cohesive `fleet gh` surface; full allocated command/flag inventory preserved and classified, none renamed. |
+| IDs                                                                                    | Answered in                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C-R005, C-R107, C-R108, H-R001, H-R017, H-R024, H-R031, P-R001, P-R002, P-R009, P-R012 | §4–§5: one adapter inside the existing cohesive `fleet gh` surface; full allocated command/flag inventory preserved and classified, none renamed.                                                        |
 | C-R007, C-R143, C-R144, C-R145, C-R146, H-R015, O-R025, O-R034, P-R011, P-R022, P-R033 | §6–§7: the merge → verify → close → verify chain direct completion runs on, with no webhook/sweeper on the normal path (C-R147's webhook-for-recovery role is preserved by the `unknown` recovery path). |
-| C-R009, C-R150–C-R153, H-R016, O-R021, O-R049, O-R050, O-R052, P-R027, P-R035, P-R036 | §7, §9: the walkthrough scenarios' remote-effect steps (verify merge/closure on resume, checkpoint-instead-of-unsafe-merge) resolve to adapter verdicts and named oracles. |
-| C-R087 | §5: slash `merge` and the `flag.*` spellings are inventory preserved verbatim; semantics attach at the intent layer, not the spelling. |
-| C-R110 | §4.2: composed workflows (`work next/park/complete`) reach the adapter only through intents; no workflow logic lives in the adapter. |
-| C-R140, C-R141 | §6, §8: stable operation id + expected version/SHA stored on the intent and receipt; verify-before-retry is the §6.4 discipline. |
-| C-R148, O-R035, P-R023, P-R038 | §7, §9: partial effects (merge verified, close failed) stay per-effect receipts in a recoverable state; no aggregate success is reported. |
-| H-R014, O-R027, O-R032, O-R033, P-R007, P-R013, P-R021, P-R025 | §3, §6.4, §8: fencing stays local (the adapter claims no remote fence); lifecycle, ownership, and GitHub state stay distinct — a merge or a closure alone is never work completion. |
-| H-R015 (adapter half), O-R022, O-R023, O-R026, O-R029 | §4–§5: the GitHub adapter is one responsibility with stated boundaries; hydrator/reconciler/resolver stay other slices' modules. |
-| P-R040 | §6.1, §9: a stale or unverifiable merge is refused, not rushed — the near-timeout path checkpoints instead. |
+| C-R009, C-R150–C-R153, H-R016, O-R021, O-R049, O-R050, O-R052, P-R027, P-R035, P-R036  | §7, §9: the walkthrough scenarios' remote-effect steps (verify merge/closure on resume, checkpoint-instead-of-unsafe-merge) resolve to adapter verdicts and named oracles.                               |
+| C-R087                                                                                 | §5: slash `merge` and the `flag.*` spellings are inventory preserved verbatim; semantics attach at the intent layer, not the spelling.                                                                   |
+| C-R110                                                                                 | §4.2: composed workflows (`work next/park/complete`) reach the adapter only through intents; no workflow logic lives in the adapter.                                                                     |
+| C-R140, C-R141                                                                         | §6, §8: stable operation id + expected version/SHA stored on the intent and receipt; verify-before-retry is the §6.4 discipline.                                                                         |
+| C-R148, O-R035, P-R023, P-R038                                                         | §7, §9: partial effects (merge verified, close failed) stay per-effect receipts in a recoverable state; no aggregate success is reported.                                                                |
+| H-R014, O-R027, O-R032, O-R033, P-R007, P-R013, P-R021, P-R025                         | §3, §6.4, §8: fencing stays local (the adapter claims no remote fence); lifecycle, ownership, and GitHub state stay distinct — a merge or a closure alone is never work completion.                      |
+| H-R015 (adapter half), O-R022, O-R023, O-R026, O-R029                                  | §4–§5: the GitHub adapter is one responsibility with stated boundaries; hydrator/reconciler/resolver stay other slices' modules.                                                                         |
+| P-R040                                                                                 | §6.1, §9: a stale or unverifiable merge is refused, not rushed — the near-timeout path checkpoints instead.                                                                                              |
 
 ## 13. What this record deliberately does not decide
 

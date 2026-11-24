@@ -69,6 +69,15 @@ pub mod reconcile;
 #[cfg(feature = "world")]
 pub mod gateway_service;
 
+/// The gateway verification flow for conversion submissions
+/// (#3801, Phase 2 of #2290): chain decode + signature, LP-tier
+/// eligibility, the account-control chain, and live-state checks
+/// over the Phase 1 fold, consulted at submission time. Every
+/// failure is a typed pre-flight refusal (FAILED_PRE_SUBMIT)
+/// with zero TigerBeetle writes; settlement is #3802.
+#[cfg(feature = "world")]
+pub mod conversion;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 

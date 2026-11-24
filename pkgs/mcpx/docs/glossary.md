@@ -68,10 +68,10 @@ one itself and polls for readiness (the poll interval is
 calls `<namespace>.<tool>(…)`.
 
 **operation** — one entry in the daemon's `/v1` operation
-table (`internal/api.Ops`): a method, a path, and where each
-parameter travels. The CLI commands, the MCP tools, the
-OpenAPI document and the Go client are all derived from this
-one table. See [Parity](./parity.md).
+table (`api.Ops` in `internal/api/ops.go`): a method, a path,
+and where each parameter travels. The CLI commands, the MCP
+tools, the OpenAPI document and the Go client are all derived
+from this one table. See [Parity](./parity.md).
 
 **parity** — the property that the four derived surfaces
 agree, because they are generated from the same declarations;
@@ -88,7 +88,7 @@ repo, worktree, session, …) and its `sharing` whether callers
 share it or queue.
 
 **preset / profile** — a named bundle of configuration: a
-*profile* selects which servers are active; a *preset* is a
+_profile_ selects which servers are active; a _preset_ is a
 named settings bundle. `--profile` is a global flag; presets
 live in the `presets` settings.
 
@@ -97,8 +97,8 @@ live in the `presets` settings.
 `mcpx recipes` runs them. See [Scripts](./scripts.md).
 
 **registry** — two senses, kept apart by context: the
-*settings registry* (every setting declared once, in
-`internal/settings`) and a *public registry* of MCP servers
+_settings registry_ (every setting declared once, in
+`internal/settings`) and a _public registry_ of MCP servers
 that `mcpx registry` searches.
 
 **scope** — who reads a setting (daemon, client, one call,

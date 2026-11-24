@@ -61,6 +61,26 @@ placement-record --policy placement-policy.yaml --answers answers.json \
 # placement-record: monthly-guard refusal: option "Muse" on pool "chatgpt-plan" refused (monthly 98.4% at/above 97% threshold [source: monthly-guard])
 ```
 
+## Steward hard-stop file (#2732 proposal step 2)
+
+The monthly percent covers the threshold guards; the steward hard-stop
+covers the judgement call — a pool the steward declares stopped before
+it walls. Pass `--hard-stops <hard-stops.json>` and the tool checks the
+steward-written registry for the seating's pool before evaluating:
+
+```json
+{ "version": 1, "stops": { "chatgpt-plan": { "stopped": true, "note": "monthly 97% hard stop", "issuedAt": "2026-10-29T13:22:00Z" } } }
+```
+
+A stop for that pool refuses the seating with the hard-stop refusal
+line the weekly audit already counts (`[source: hard-stop]`); a pool
+with no entry — or an explicit `stopped: false` — seats unaffected,
+and the file never clears a `pool_hard_stop` recorded in the answers.
+A missing or malformed registry fails the dispatch loudly instead of
+seating unguarded. Follow-up (not this slice): the steward writer that
+maintains `hard-stops.json` beside `quota-current.json`, and the
+trailing-pace input, which still has no live producer.
+
 ## Tests
 
 `go test ./...` evaluates the real policy of record (the tests load the
@@ -69,7 +89,9 @@ rule path, first-match-wins, the guard's exclusion of R8 and unreachability
 of R3, the B5 gate (missing read, stale read, B4 reliance), the `"n/a"`
 non-pool case, the exception path, the monthly pace guard (refuse at
 ≥97% / >1pp/h / hard-stop; B4, missing data, and non-pool seatings
-proceed), and the weekly audit sample (emitted records re-checked against
+proceed), the hard-stop registry (stopped/absent/explicit-false reads,
+sticky stop, fail-closed I/O, pool identity required), and the weekly
+audit sample (emitted records re-checked against
 the table, tampered records named by finding kind, deterministic
 sampling, refusal counting).
 

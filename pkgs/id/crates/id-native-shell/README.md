@@ -43,10 +43,15 @@ cargo test -p id-native-shell    # unit + transcript + parity tests
     test that comes with it (`tests/live_session.rs`: one game
     played through both the native loop and a terminal-style raw
     client, with the host journal as the oracle).
-- Steps 3–4 (rich 3D/audio/widget surfaces) are conditional on the
-  design's Q1 decision for the user and are **not** in this crate.
+- The later [rich-surface work (#12657)](https://github.com/developing-today/code/issues/12657)
+  added three presentation plugins to the binary. A validated scene becomes
+  3D entities ([scene.rs](src/scene.rs)). An audio surface produces
+  scheduled cue entities and playback state ([audio.rs](src/audio.rs));
+  audio device output remains a separate step. A widget surface produces
+  placed controls and an initial focus marker ([widget.rs](src/widget.rs));
+  keyboard and pointer activation of those controls remains future work.
 
-## Capability statement
+## Recorded shells v1 capability statement
 
 Per the shells v1 record (`doc/2026-11-10T20-40-00Z_design_more_shells_v1`,
 §2 and "The one gate"), this shell's capability statement is recorded
@@ -56,12 +61,14 @@ frames it sends (`join`, `input`, `paste`, `resize`, `chat`,
 the server frames it presents (the `SessionState` fold, with `error`
 surfaced as a session refusal), the one capability provider it
 declares (`client.file.read`, F13.7), and what it excludes by name
-(rich surfaces, offline reading, mobile-native). The conformance run
+(rich surfaces, offline reading, mobile-native). These exclusions describe
+the v1 profile recorded for #10928. The subsequent rich presenters are
+described above. The conformance run
 is wired into the check — the `test-native-shell` flake check runs
 this crate's whole test suite — and
 `tests/capability_statement.rs` pins the statement to the contract
 and to the code's actual builders, session fold, and provider
-adapter, so the record cannot drift from the shell it describes.
+adapter for the recorded v1 profile.
 Recording the statement completes issue #10928's Done alongside the
 already-landed conformance wiring and the behavioral checks
 (`tests/parity.rs`, `tests/live_session.rs`).

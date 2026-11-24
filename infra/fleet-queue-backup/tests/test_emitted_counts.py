@@ -62,9 +62,7 @@ class TestEmittedCounts(unittest.TestCase):
         self.assertEqual(counts, {"tasks": 3})
         rebuilt = sqlite3.connect(":memory:")
         rebuilt.executescript(dump)
-        self.assertEqual(
-            rebuilt.execute("SELECT count(*) FROM tasks").fetchone()[0], 3
-        )
+        self.assertEqual(rebuilt.execute("SELECT count(*) FROM tasks").fetchone()[0], 3)
 
 
 if __name__ == "__main__":
