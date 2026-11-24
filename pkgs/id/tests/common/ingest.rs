@@ -14,7 +14,7 @@ use id::event_store::{Chain, EventStore, Storage};
 use id::waiting::{AuthorKey, WaitingLimits};
 use p2panda_core::{Hash, SeqNum};
 use redb::backends::InMemoryBackend;
-use redb::{Database, DatabaseError, StorageBackend, StorageError};
+use redb::{BackendError, Database, DatabaseError, StorageBackend, StorageError};
 
 /// The applied state of a set of authors, as a store reports it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -82,23 +82,23 @@ pub struct MemStorage {
 struct Shared(Arc<InMemoryBackend>);
 
 impl StorageBackend for Shared {
-    fn len(&self) -> Result<u64, io::Error> {
+    fn len(&self) -> Result<u64, BackendError> {
         self.0.len()
     }
 
-    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), BackendError> {
         self.0.read(offset, out)
     }
 
-    fn set_len(&self, len: u64) -> Result<(), io::Error> {
+    fn set_len(&self, len: u64) -> Result<(), BackendError> {
         self.0.set_len(len)
     }
 
-    fn sync_data(&self) -> Result<(), io::Error> {
+    fn sync_data(&self) -> Result<(), BackendError> {
         self.0.sync_data()
     }
 
-    fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), BackendError> {
         self.0.write(offset, data)
     }
 }
