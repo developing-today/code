@@ -242,26 +242,27 @@ async function handleListSets(url: URL, env: Env): Promise<Response> {
   const limitRaw = Number(url.searchParams.get("limit") ?? "200");
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 1000) : 200;
   const { results } = await env.DB.prepare(
-    "SELECT set_id, COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts FROM decision_set_events GROUP BY set_id ORDER BY last_ts DESC, set_id ASC LIMIT ?",
+    `WITH ranked AS (
+      SELECT set_id, COUNT(*) OVER (PARTITION BY set_id) AS n,
+        MIN(ts) OVER (PARTITION BY set_id) AS first_ts,
+        ts AS last_ts, event_id AS last_event_id, type AS last_type,
+        ROW_NUMBER() OVER (PARTITION BY set_id ORDER BY ts DESC, event_id DESC) AS row_num
+      FROM decision_set_events
+    )
+    SELECT set_id, n, first_ts, last_ts, last_event_id, last_type
+    FROM ranked WHERE row_num = 1
+    ORDER BY last_ts DESC, set_id ASC LIMIT ?`,
   )
     .bind(limit)
     .all<Record<string, unknown>>();
-  const sets: Record<string, unknown>[] = [];
-  for (const row of results ?? []) {
-    const last = await env.DB.prepare(
-      "SELECT event_id, type, ts FROM decision_set_events WHERE set_id = ? ORDER BY ts DESC, event_id DESC LIMIT 1",
-    )
-      .bind(row.set_id)
-      .first<Record<string, unknown>>();
-    sets.push({
-      setId: row.set_id,
-      events: row.n,
-      firstTs: row.first_ts,
-      lastTs: row.last_ts,
-      lastEventId: last?.event_id ?? null,
-      lastType: last?.type ?? null,
-    });
-  }
+  const sets = (results ?? []).map((row) => ({
+    setId: row.set_id,
+    events: row.n,
+    firstTs: row.first_ts,
+    lastTs: row.last_ts,
+    lastEventId: row.last_event_id,
+    lastType: row.last_type,
+  }));
   return Response.json({ count: sets.length, sets });
 }
 
