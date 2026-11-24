@@ -100,7 +100,7 @@ export async function route(request: Request, io: Io): Promise<Response> {
     });
   }
 
-  const forHost = request.clone();
+  const forHost = request.clone() as Request;
   let res = await io.state(request);
   let what = res.headers.get("x-pm-next");
 
@@ -168,7 +168,9 @@ export async function route(request: Request, io: Io): Promise<Response> {
     const body = (await answer.json().catch(() => null)) as Record<string, unknown> | null;
     if (body === null) return offline("the host's answer could not be read");
     const { sections, acts, ...rest } = body;
-    if (sections !== undefined || acts !== undefined) await tell("/internal/relayed", { sections, acts });
+    // The relayed name is settled even when the host read nothing new:
+    // a hold left behind by a lost answer for the same name is dropped.
+    await tell("/internal/relayed", { sections, acts, id: detail.id });
     const headers = new Headers(answer.headers);
     headers.delete("content-length");
     headers.delete("content-encoding");

@@ -69,9 +69,7 @@ class TestTableColumns(unittest.TestCase):
             fq_common.table_columns(CHECKPOINTS),
             ["worker_id", "key", "value", "updated_at"],
         )
-        self.assertEqual(
-            fq_common._pk_columns(CHECKPOINTS), ["worker_id", "key"]
-        )
+        self.assertEqual(fq_common._pk_columns(CHECKPOINTS), ["worker_id", "key"])
 
 
 if __name__ == "__main__":

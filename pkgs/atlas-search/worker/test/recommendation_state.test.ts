@@ -42,12 +42,9 @@ const PARENT: ParentEnvelope = {
 };
 const PAGE_0_SIGNATURE_HEX = "746573742d706167652d30";
 const PAGE_2_SIGNATURE_HEX = "746573742d706167652d32";
-const EXPECTED_PARENT_SNAPSHOT_ID =
-  "sha256:8797b6bd7f4821dfb8273ee23cad9dacd50e9361b06d8a4e686f2515b8cf5c91";
-const EXPECTED_PAGE_0_ENVELOPE_ID =
-  "sha256:e67e1aa7ad2343411ec8019ec1bef037ee0c8e8d27d01f305df641a2d957fc7d";
-const EXPECTED_PAGE_2_ENVELOPE_ID =
-  "sha256:50edb5f8e6dfb49b16580b44dffd8932998f4f21bee6836a951698f01c2de0a2";
+const EXPECTED_PARENT_SNAPSHOT_ID = "sha256:8797b6bd7f4821dfb8273ee23cad9dacd50e9361b06d8a4e686f2515b8cf5c91";
+const EXPECTED_PAGE_0_ENVELOPE_ID = "sha256:e67e1aa7ad2343411ec8019ec1bef037ee0c8e8d27d01f305df641a2d957fc7d";
+const EXPECTED_PAGE_2_ENVELOPE_ID = "sha256:50edb5f8e6dfb49b16580b44dffd8932998f4f21bee6836a951698f01c2de0a2";
 
 async function fixtureSnapshot() {
   return createSnapshot(PARENT);
@@ -120,8 +117,7 @@ describe("recommendation snapshot paging (oracle: recommendation-page-fixture)",
       pageFromCursor(
         snapshot,
         {
-          parent_snapshot_id:
-            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          parent_snapshot_id: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
           position: 0,
         },
         PAGE_0_SIGNATURE_HEX,
@@ -156,9 +152,7 @@ describe("recommendation snapshot paging (oracle: recommendation-page-fixture)",
   it("rejects invalid page positions", async () => {
     const snapshot = await fixtureSnapshot();
     for (const position of [-1, 1, 3, 4]) {
-      await expect(makePage(snapshot, position, PAGE_0_SIGNATURE_HEX)).rejects.toBeInstanceOf(
-        InvalidPagePositionError,
-      );
+      await expect(makePage(snapshot, position, PAGE_0_SIGNATURE_HEX)).rejects.toBeInstanceOf(InvalidPagePositionError);
     }
   });
 

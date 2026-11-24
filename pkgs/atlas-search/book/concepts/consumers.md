@@ -44,14 +44,14 @@ The final consumer is Atlas's own quality loop. Evaluation consumes the same cor
 
 ## The ceilings, in one table
 
-| Consumer | Surface | Ceiling cap |
-|---|---|---|
-| The user's own CLI (`drew-cli`) | `fleet search` / `atlas-search`, standalone or via-service | `secret-bearing` |
-| OpenChamber sessions | via-service | `personal` |
-| Fork / OpenCode agents | via-service | `personal` |
-| Sandbox scripts and Muse lanes (`sandbox-scripts`) | via-service | `personal` |
-| Hosted MCP callers (all agents, shared identity) | Worker `POST /mcp` via mcpx `atlas` | `personal` (context `hosted-per-user`) |
-| The Worker itself (`cf-worker`) | Worker to laptop service | `personal` |
-| Evaluation | local harness against the corpus and saved rankings | no client cap — it runs locally under the user's own access, not through the service |
+| Consumer                                           | Surface                                                    | Ceiling cap                                                                          |
+| -------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| The user's own CLI (`drew-cli`)                    | `fleet search` / `atlas-search`, standalone or via-service | `secret-bearing`                                                                     |
+| OpenChamber sessions                               | via-service                                                | `personal`                                                                           |
+| Fork / OpenCode agents                             | via-service                                                | `personal`                                                                           |
+| Sandbox scripts and Muse lanes (`sandbox-scripts`) | via-service                                                | `personal`                                                                           |
+| Hosted MCP callers (all agents, shared identity)   | Worker `POST /mcp` via mcpx `atlas`                        | `personal` (context `hosted-per-user`)                                               |
+| The Worker itself (`cf-worker`)                    | Worker to laptop service                                   | `personal`                                                                           |
+| Evaluation                                         | local harness against the corpus and saved rankings        | no client cap — it runs locally under the user's own access, not through the service |
 
 Two properties of this table matter more than any row. First, the caps are enforced where the consumer cannot reach them: in the service's clamp, inside the branch queries, and — for the Worker — in a compile-time pin verified again before caching. Second, the table is short because the client set was kept short on purpose: Aster is explicitly not a client of this service, and there is no public or anonymous search surface at all. A new consumer joins Atlas by being named, tokened, and capped — never by finding an open door.

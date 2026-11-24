@@ -1,0 +1,64 @@
+# High-level roadmap
+
+This chapter is Fleet's section of the whole-project priority list: the merged census of record for the Code Book programme. The full merged list, ordered across the whole project, lives in the [Code Book](https://developing-today.github.io/code/code/); the programme is tracked on [#13905](https://github.com/developing-today/code/issues/13905). The ordering logic is stated once there and summarised here: execution substrate first (nothing else lands without a trustworthy queue, build capacity, and transport), then the physical substrate, then the data substrate, then search intelligence, then the ID platform build-out, then the gateway, PM and fork surfaces, then the record itself. Within a tier, dependency order wins; ties break on leverage.
+
+Four items are Fleet's own and are given in full below. The remaining Fleet-assigned items belong primarily to another book; they appear as one-line entries at the end, each linking to the primary book's high-level roadmap chapter. This chapter cross-references the [Fleet research and implementation roadmap](program-roadmap.md), which carries the engineering order and acceptance evidence, and the [Fleet issue and blocker map](../operations/program-issue-map.md), which carries issue-by-issue membership; it does not duplicate either. Statuses are as of the 2026-11-23 census unless a later read is named. Timing is taken from the census record: where the record has no timing, this chapter says so rather than projecting a date.
+
+## 1. Fleet queue, claim and placement correctness
+
+- **Type:** problem.
+- **Description:** The queue broker, claim/renewal fencing, packet repair and placement must be provably correct — every other programme's work is dispatched through them.
+- **Status:** in flight, substantially landed. The repair verb shipped (PR [#13218](https://github.com/developing-today/code/pull/13218)), with a production drain of 37 repairs on broker generation 6 recorded on [#13191](https://github.com/developing-today/code/issues/13191); the double-serve defect ([#13091](https://github.com/developing-today/code/issues/13091)) is fixed (PR #13143 merged); [#13146](https://github.com/developing-today/code/issues/13146) placement improvement closed after criterion 1 was proven cross-seat on 2026-11-23. The [Fleet research and implementation roadmap](program-roadmap.md) puts "reconcile the production repair cohort" first, ahead of any queue-policy change.
+- **Most related:** [#13272 fleet programme tracker](https://github.com/developing-today/code/issues/13272) · [#13191 repair verb for quarantined packets](https://github.com/developing-today/code/issues/13191) · [#13091 double-serve defect](https://github.com/developing-today/code/issues/13091) · [#13146 placement improvement](https://github.com/developing-today/code/issues/13146) · [#4986 placement framework v1](https://github.com/developing-today/code/issues/4986) · [#12236 every lane on the intake ladder](https://github.com/developing-today/code/issues/12236) · roadmap order 1–6 in the [Fleet research and implementation roadmap](program-roadmap.md).
+- **Timing:** entered the record as the fleet programme [#13272](https://github.com/developing-today/code/issues/13272), 2026-11-23. The repair-verb production drain and the generation-6 broker state are dated 2026-11-23 in the programme roadmap. Nothing was planned against a completion date in the record, and nothing was missed against one; what came in during the window was the repair cohort itself, which reprioritised this item's interior — reconcile the production repair cohort and inspect renewal arithmetic before changing queue policy.
+- **Ordering rationale:** dependency root of the whole project: a queue that double-serves or loses packets silently corrupts every other item's evidence. Highest leverage in the census.
+
+## 2. Containerised build/compile systems — in the cluster and in Actions
+
+- **Type:** capability-set.
+- **Description:** Builds and compiles run in containers with a central coordinator — atomic slots, a true load view, global budgets — plus live short-lived exec sessions inside Actions runners, so no build depends on one laptop.
+- **Status:** designed + in flight. The compile coordinator is designed and its first packet is parked on the flag route; actions-exec was actively building on 2026-11-23, with slices landing through 22:10Z. The in-cluster half is not started — it waits on the Talos cluster (cross-linked item 6 below).
+- **Most related:** [#13765 compile coordinator](https://github.com/developing-today/code/issues/13765) (already tasked — task 21517 parked, flag-routed to a laptop OpenCode session per the ID-100 record) · [#13774 actions-exec](https://github.com/developing-today/code/issues/13774) · [#13844 Turso→D1 audit's exec-door family #13404/#13657](https://github.com/developing-today/code/issues/13844) · stream F (build and test: mirror parity, image/cache identity) in the [Fleet research and implementation roadmap](program-roadmap.md).
+- **Timing:** [#13765](https://github.com/developing-today/code/issues/13765) and [#13774](https://github.com/developing-today/code/issues/13774) were both filed 2026-11-23 (21:14Z / 21:21Z); actions-exec slices were landing through 22:10Z the same day. No projected dates in record; no miss recorded — the in-cluster half is sequenced, not late: it waits on item 6.
+- **Ordering rationale:** build capacity is the second bottleneck after the queue; the Actions half can proceed now, the cluster half sequences behind the cluster itself.
+
+## 3. Transport and P2P auth — one honest transport for agents and ID alike
+
+- **Type:** shift-goal.
+- **Description:** Host selection without Tailscale, iroh for non-Muse agents, a generic pool primitive, and capability auth over P2P transport (p2panda-first, honestly compared) — replacing today's accreted per-surface transports.
+- **Status:** designed / investigation open. Both programme issues were filed 2026-11-23 and are open; the laptop-agent fallback is partially landed (SSH leg PR'd 2026-11-22).
+- **Most related:** [#13752 fleet transport & pooling](https://github.com/developing-today/code/issues/13752) · [#13779 capability auth + P2P transport investigation](https://github.com/developing-today/code/issues/13779) · [#10796 laptop-agent domain: automatic transport fallback](https://github.com/developing-today/code/issues/10796) · mcpx transports incl. [#1384 supervisor design](https://github.com/developing-today/code/issues/1384).
+- **Timing:** [#13752](https://github.com/developing-today/code/issues/13752) filed 2026-11-23T21:11Z; [#13779](https://github.com/developing-today/code/issues/13779) filed 2026-11-23T21:29Z. No projected dates in record; nothing missed — the item entered the record during the census window itself.
+- **Ordering rationale:** every dynamic-server, federation and remote-exec ambition in the merged list assumes this answer; settling it early prevents three programmes building three transports.
+
+## 28. Fleet secrets, CA and quota plane — the trust and capacity layer
+
+- **Type:** capability-set.
+- **Description:** The fleet CA/credentials design completed, the secrets broker hardened (no silent eviction on partial refresh), and the quota plane's staged acceptance (S3 observation history → S4 single-pool trial → S7 recurring activation) finished.
+- **Status:** in flight. S3 history is accumulating (first qualifying record 2026-11-23 02:30 UTC; 63 records in 61 of 62 quarter-hour buckets at census); the weekly-review timer was absent on the laptop at inspection — S7 activation is the open tail, tracked by [#13591](https://github.com/developing-today/code/issues/13591). The CA/credentials design mill [#9155](https://github.com/developing-today/code/issues/9155) is already tasked (task 17413 parked at expert ruling).
+- **Most related:** [#9155 Fleet CA, credentials & secrets v0.3 design mill](https://github.com/developing-today/code/issues/9155) · [#5504 secrets-broker partial-refresh eviction](https://github.com/developing-today/code/issues/5504) · [#12694 quota acceptance](https://github.com/developing-today/code/issues/12694) · [#13591 S7 installation follow-up](https://github.com/developing-today/code/issues/13591) · [#13081 secrets health-gate / cold restart](https://github.com/developing-today/code/issues/13081) · roadmap order 4–5 in the [Fleet research and implementation roadmap](program-roadmap.md).
+- **Timing:** this item carries the one hard near-term date in the census: the quota S3 seven-day interval can first elapse **2026-11-30 at 02:30:06.420 UTC** (from the first qualifying record 2026-11-23 02:30 UTC). S7's weekly-review timer was absent at inspection — [#13591](https://github.com/developing-today/code/issues/13591) tracks its first scheduled invocation; no date in record. [#9155](https://github.com/developing-today/code/issues/9155) task 17413 is parked at expert ruling, no date. Nothing has missed yet; the S3 interval is a wait, not a slip.
+- **Ordering rationale:** placed late deliberately: the quota doctrine (burn to 100% at reset; a failed read never idles a pool) means today's manual stewardship works; this item makes it systematic rather than possible.
+
+## Related topic sections — owned by the PM programme
+
+Two Fleet topics adjacent to item 2 above are being written as dedicated sections of this book by the PM programme, in parallel, under the PM-BOOK tracker [#13900](https://github.com/developing-today/code/issues/13900). They are pointed to here, not written here:
+
+- **Fleet temporary builds and custom connections** — the topic section covering temporary build capacity and custom connection shapes for fleet work. The PM programme owns the fleet-book treatment; tracker [#13900](https://github.com/developing-today/code/issues/13900).
+- **The central compile coordinator** — the topic section covering the coordinator named in item 2 above (its roadmap entry, issues and timing stay in this chapter). The PM programme owns the dedicated fleet-book section; tracker [#13900](https://github.com/developing-today/code/issues/13900).
+
+## Cross-linked items — primary in another book
+
+Each entry is one line: the item as this book consumes it, linking to the primary book's high-level roadmap chapter, where the item is given in full.
+
+- **6. Talos cluster booted live, accepting data on Cozystack** — Fleet consumes the in-cluster build and hosting half of item 2. [Lab Book high-level roadmap](https://developing-today.github.io/code/lab/high-level-roadmap.html)
+- **7. Backups + storage automated, one coherent complete backup set** — the fleet and queue Turso stores are part of the estate the backup mesh must cover. [Atlas high-level roadmap](https://developing-today.github.io/code/atlas/design/high-level-roadmap.html)
+- **9. All repos / all ID objects into Atlas ingestion** — queue and PM data are named sources. [Atlas high-level roadmap](https://developing-today.github.io/code/atlas/design/high-level-roadmap.html)
+- **14. Atlas as a multi-client search service** — `fleet search` is the client of record. [Atlas high-level roadmap](https://developing-today.github.io/code/atlas/design/high-level-roadmap.html)
+- **17. Tunnels to spin up ID servers dynamically** — the tunnel and transport leg is item 3 above. [ID high-level roadmap](https://developing-today.github.io/code/id/design/high-level-roadmap.html)
+- **19. ID scale and performance hardening** — benchmark placement rides items 1–2 above. [ID high-level roadmap](https://developing-today.github.io/code/id/design/high-level-roadmap.html)
+- **25. mcpx completion** — the fleet MCP via mcpx designs (#10389/#10390/#10393/#10405) are Fleet's stake. [mcpx high-level roadmap](https://developing-today.github.io/code/mcpx/program/high-level-roadmap.html)
+- **26. PM stack completion** — queues and dispatch are shared with Fleet. Primary in the PM book; programme coordination on [#13905](https://github.com/developing-today/code/issues/13905), PM-BOOK tracker [#13900](https://github.com/developing-today/code/issues/13900).
+- **27. OpenCode / OpenChamber forks programme** — routing and quota doctrine is shared with Fleet. Primary in the PM book; programme coordination on [#13905](https://github.com/developing-today/code/issues/13905), PM-BOOK tracker [#13900](https://github.com/developing-today/code/issues/13900).
+- **29. Design-register burn-down (AUDIT-7)** — the fleet families are designed in this book's programme chapters. Primary in the PM book as the cross-project register; audit umbrella [#13871](https://github.com/developing-today/code/issues/13871).
+- **30. The books and Spaces themselves** — this chapter is the fleet book's deliverable under the Code Book programme, [#13905](https://github.com/developing-today/code/issues/13905). The merged list lives in the [Code Book](https://developing-today.github.io/code/code/).

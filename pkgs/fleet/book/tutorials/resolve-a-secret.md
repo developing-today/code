@@ -183,11 +183,10 @@ last_refresh_unix, refreshing, oldest_secret_age_seconds}`.
   `oldest_secret_age_seconds` tells you the stalest value it can serve.
   A resolution failure against a serving broker is a `404` problem
   (Step 4), not a health problem.
-- HTTP `503` with `serving: false`: no refresh has succeeded yet. If the
-  body carries `refresh_error`, that is the diagnosis — the refresh's
-  `bws` leg is failing (credential, missing `bws`, malformed vault
-  entry). Fix that leg; the broker keeps answering health honestly
-  while it cannot serve.
+- HTTP `503` with `serving: false`: no refresh has succeeded yet.
+  Check `refreshing` and `last_refresh_unix`. A failed authenticated
+  secret read during startup can include `refresh_error` in its 503
+  response. Use that diagnostic when available.
 - No answer at all: the broker process is not running, or this seat
   cannot reach it. On a sandbox seat, run `fleet init` (it starts the
   local loopback broker copy the sandbox uses) or see
@@ -201,8 +200,8 @@ the broker's `X-Agent-Token` header — supply the token through your
 normal operator tooling for the daemon-side token file
 (`~/.config/secrets-broker/token` on the laptop), without printing its
 contents or placing them in a command line. It answers
-`202 {"ok": true, "refresh": "started"}`; a refresh requested while one
-is already in progress is refused with "refresh already in progress".
+`202 {"ok": true, "refresh": "started"}`. This acknowledges the request.
+If a refresh is already running, the worker skips the overlapping sweep.
 Then re-read `/health`: a successful refresh sets `last_refresh_unix`
 and clears the recorded refresh error.
 

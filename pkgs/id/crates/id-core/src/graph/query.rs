@@ -25,9 +25,6 @@
 //!
 //! A page that is not the last carries a [`Cursor`] bound to the
 //! snapshot frontier and the query (see [`super::cursor`]).
-//!
-//! Module wiring into `graph/mod.rs` belongs to slice 9110-09; until
-//! then the integration test includes this file by path.
 
 use std::collections::BTreeMap;
 use std::fmt;

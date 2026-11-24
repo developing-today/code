@@ -218,10 +218,10 @@ pub fn filter_candidate(
     if facts.secret_tier {
         return FilterOutcome::Hold(Some(ReasonCode::SecretTierHeld));
     }
-    if let Some(address) = &facts.content_address {
-        if landed.contains(address) {
-            return FilterOutcome::Reject(ReasonCode::DuplicateContent);
-        }
+    if let Some(address) = &facts.content_address
+        && landed.contains(address)
+    {
+        return FilterOutcome::Reject(ReasonCode::DuplicateContent);
     }
     match class {
         SourceClass::BootRecords => {
@@ -363,17 +363,18 @@ pub fn evaluate_guardrails(m: &Measurements, previous_throttled: bool) -> Vec<Gu
             ),
         });
     }
-    if let Some(median) = m.class_median_write_rows {
-        if median > 0 && m.tgt_write_rows > median.saturating_mul(2) {
-            events.push(GuardrailEvent {
-                alert: Some("guardrail/tgt-burst".to_string()),
-                action: GuardrailAction::PauseClass,
-                detail: format!(
-                    "tgt_write_rows {} above 2x trailing median {}",
-                    m.tgt_write_rows, median
-                ),
-            });
-        }
+    if let Some(median) = m.class_median_write_rows
+        && median > 0
+        && m.tgt_write_rows > median.saturating_mul(2)
+    {
+        events.push(GuardrailEvent {
+            alert: Some("guardrail/tgt-burst".to_string()),
+            action: GuardrailAction::PauseClass,
+            detail: format!(
+                "tgt_write_rows {} above 2x trailing median {}",
+                m.tgt_write_rows, median
+            ),
+        });
     }
     events
 }
@@ -565,12 +566,11 @@ impl SweepLock {
         std::fs::create_dir_all(state_dir)
             .map_err(|e| Error::backend(format!("create {}: {e}", state_dir.display())))?;
         let path = lock_path(state_dir, class, host);
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(existing) = serde_json::from_str::<LockFile>(&text) {
-                if now_unix.saturating_sub(existing.at_unix) < LOCK_TTL_SECONDS {
-                    return Ok(None);
-                }
-            }
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Ok(existing) = serde_json::from_str::<LockFile>(&text)
+            && now_unix.saturating_sub(existing.at_unix) < LOCK_TTL_SECONDS
+        {
+            return Ok(None);
         }
         let text = serde_json::to_string(&LockFile {
             run_id: run_id.to_string(),
@@ -588,12 +588,11 @@ impl SweepLock {
 
 impl Drop for SweepLock {
     fn drop(&mut self) {
-        if let Ok(text) = std::fs::read_to_string(&self.path) {
-            if let Ok(existing) = serde_json::from_str::<LockFile>(&text) {
-                if existing.run_id == self.run_id {
-                    let _ = std::fs::remove_file(&self.path);
-                }
-            }
+        if let Ok(text) = std::fs::read_to_string(&self.path)
+            && let Ok(existing) = serde_json::from_str::<LockFile>(&text)
+            && existing.run_id == self.run_id
+        {
+            let _ = std::fs::remove_file(&self.path);
         }
     }
 }

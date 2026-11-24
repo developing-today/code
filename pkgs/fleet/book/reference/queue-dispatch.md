@@ -40,10 +40,10 @@ Known discrepancy: the help line says `[--ref REF]`; the placement module's froz
 Exit codes: 0 decision printed (dry run) or dispatched · 2 usage / unknown surface / bad flag value (this family's errors are exit 2).
 
 ```text
-$ fleet queue dispatch --repo developing-today/code --command 'nix build .#fleet' --json
-{"surface": "fleet-org", "provider": "github", "platform": "linux", "dry_run": true, "reason": "owner capacity available; sticky threshold not reached"}
-$ fleet queue dispatch --repo developing-today/code --command 'nix build .#fleet' --dispatch
-fp_9f2c41aa07b34d5e8c01aa22334455
+$ fleet queue dispatch --repo developing-today/code --command 'nix build .#fleet' --json | jq -r .mode
+dry-run (no session written; pass --dispatch to submit)
+$ fleet queue dispatch --repo developing-today/code --command 'nix build .#fleet' --dispatch --json | jq -r .handle
+fp_d0a842c9bd33aa2999f5a12393397ab9
 ```
 
 ## fleet queue session status
@@ -59,7 +59,7 @@ usage: repo-queue session <status|result|list> [HANDLE|OWNER/REPO#RUN_ID] [--min
 | `--json`                | boolean                                                   | off                               | Print the record as JSON instead of the one-line text form.                                               |
 | `--registry`            | file path                                                 | resolution order (see `surfaces`) | Placement registry file.                                                                                  |
 
-**Behaviour.** Session records are a labeled **STOPGAP**: a local JSON store at `~/.local/state/fleet-place/sessions.json` (same path/shape as the reference implementation, so records migrate when the designed placement-sessions table lands). The store is lock-guarded on write. `session status <handle>` refreshes the record from GitHub and prints `<handle>: state=<state> surface=<id> run=<url>` (or the record as JSON with `--json`).
+**Behaviour.** Dispatch commits the session locally, then mirrors it to the queue broker on a best-effort basis. For an `fp_` handle, status selects the newer local or broker record by `updated_at` (the broker wins ties). A broker record can seed an empty local store on a second seat. Status then refreshes the provider state and prints the handle, state, surface and run URL. A failed mirror read leaves the local path available.
 
 Help: a help flag after the subcommand prints the session usage and exits 0 — `session status --help` asks for help; it does not look up a session named `--help` (#13175). The flags documented here come from source.
 
@@ -107,7 +107,7 @@ usage: repo-queue session <status|result|list> [HANDLE|OWNER/REPO#RUN_ID] [--min
 | `--json`     | boolean   | off                               | Print `{"sessions": […]}` instead of one status line per session. |
 | `--registry` | file path | resolution order (see `surfaces`) | Placement registry file.                                          |
 
-**Behaviour.** Lists all session records in the local store, newest first. Text form is one status line per session, or `no sessions`; `--json` gives `{"sessions": […]}`. Group-level behaviour: `session` with no subcommand prints the usage and returns 2; `session --help` prints usage and returns 0; an unknown subcommand dies exit 2.
+**Behaviour.** Combines the local store with up to 200 broker records, deduplicates by handle and sorts by creation time, newest first. A failed broker read leaves the local records available. Listing shows the recorded state without polling GitHub. Text form is one status line per session, or `no sessions`; `--json` gives `{"sessions": […]}`. Group-level behaviour: `session` with no subcommand prints the usage and returns 2; `session --help` prints usage and returns 0; an unknown subcommand dies exit 2.
 
 Exit codes: 0 ok · 2 usage / unknown subcommand.
 
@@ -119,14 +119,14 @@ fp_d0a842c9bd33aa2999f5a12393397ab9: state=running surface="fleet-org" run=https
 ## fleet queue surfaces
 
 ```text
-usage: repo-queue surfaces [--registry PATH]
+usage: repo-queue surfaces [--json] [--registry PATH]
 ```
 
 | Flag         | Argument  | Default                          | Meaning                 |
 | ------------ | --------- | -------------------------------- | ----------------------- |
 | `--registry` | file path | resolution order (see Behaviour) | Registry file to print. |
 
-**Behaviour.** Prints the resolved placement registry verbatim as pretty JSON, exit 0. `surfaces --help` prints a short usage instead of the registry. Registry resolution order: `--registry <path>` or env `FLEET_PLACE_REGISTRY` → a home copy → the source-tree relative path → the registry **embedded in the binary**. Registry shape (version 2): `{comment, version, laptop: {busy, busy_source, note}, owners: {<owner>: {concurrent_jobs_cap, concurrent_macos_cap, plan, private_minutes_monthly}}, surfaces: […]}`.
+**Behaviour.** Prints the resolved placement registry as pretty JSON, exit 0. The optional `--json` flag selects the same output. `surfaces --help` prints a short usage instead of the registry. Registry resolution order: `--registry <path>` or env `FLEET_PLACE_REGISTRY` → a home copy → the source-tree relative path → the registry **embedded in the binary**. Registry shape (version 2): `{comment, version, laptop: {busy, busy_source, note}, owners: {<owner>: {concurrent_jobs_cap, concurrent_macos_cap, plan, private_minutes_monthly}}, surfaces: […]}`.
 
 The shipped surfaces: `fleet-personal` (github-actions, dezren39/fleet, App installation, active), `fleet-org` (github-actions, developing-today/fleet, user-token dispatch, active; also the Blacksmith host), `fleet-forks` (github-actions, developing-today-forks/fleet, **public targets only**, active), `org-run` (standby, retained for manual use; placement prefers fleet-org), `fleet-org-blacksmith` (kind `blacksmith`, Linux-only fallback; budget 3000 free min/mo, paid cap 0 — paid overage disabled unless a dispatch explicitly supplies `--allow-paid-blacksmith`), `codespace-overflow` (kind `codespace`, status `pending-scope`, max 3 live, 180 core-hours/mo budget; uses existing codespaces only, never creates them), `laptop` (kind `laptop`, `handoff-only` — a placement record only; this adapter never runs shell commands on the laptop). Targets accept exact `owner/repo`, `owner/*`, or `*`. `sticky_queue_threshold: 2` and `selection_priority` (10 for the active runners, 20 for org-run) drive the cascade.
 

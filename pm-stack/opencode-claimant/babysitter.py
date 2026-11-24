@@ -195,6 +195,8 @@ def classify_session(session, *, binding, active_ids, pools, prior_entry, now_ms
         "pool_walled": pool_walled,
         "task_id": binding.get("task_id") if binding else None,
     }
+    if binding:
+        entry["binding"] = public_binding(binding)
 
     timing = poll._session_timing(session)
     member = active_ids is not None and session_id in active_ids
@@ -232,7 +234,6 @@ def classify_session(session, *, binding, active_ids, pools, prior_entry, now_ms
                         "verdict": "error-stopped",
                         "outcome": error_outcome,
                         "retryable": True,
-                        "binding": public_binding(binding),
                         "reason": (
                             f"terminal outcome {error_outcome}; "
                             "retry through the recorded queue route"

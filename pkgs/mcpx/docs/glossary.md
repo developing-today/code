@@ -88,7 +88,7 @@ repo, worktree, session, …) and its `sharing` whether callers
 share it or queue.
 
 **preset / profile** — a named bundle of configuration: a
-*profile* selects which servers are active; a *preset* is a
+_profile_ selects which servers are active; a _preset_ is a
 named settings bundle. `--profile` is a global flag; presets
 live in the `presets` settings.
 
@@ -97,8 +97,8 @@ live in the `presets` settings.
 `mcpx recipes` runs them. See [Scripts](./scripts.md).
 
 **registry** — two senses, kept apart by context: the
-*settings registry* (every setting declared once, in
-`internal/settings`) and a *public registry* of MCP servers
+_settings registry_ (every setting declared once, in
+`internal/settings`) and a _public registry_ of MCP servers
 that `mcpx registry` searches.
 
 **scope** — who reads a setting (daemon, client, one call,

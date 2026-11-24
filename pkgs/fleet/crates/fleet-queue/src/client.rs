@@ -27,6 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
+pub mod actions_exec;
 mod commands_lifecycle;
 mod commands_query;
 mod fallback_stack;
@@ -580,12 +581,12 @@ mod tests {
         assert_eq!(batch_count_flag(Some(1)), Ok(1));
         assert_eq!(batch_count_flag(Some(2)), Ok(2));
         assert_eq!(
-            batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX)),
-            Ok(crate::turso_queue::BATCH_CLAIM_MAX)
+            batch_count_flag(Some(crate::BATCH_CLAIM_MAX)),
+            Ok(crate::BATCH_CLAIM_MAX)
         );
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
-        assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+        assert!(batch_count_flag(Some(crate::BATCH_CLAIM_MAX + 1)).is_err());
     }
 
     #[test]
@@ -1482,14 +1483,13 @@ mod tests {
         // the same outcome class, distinct from unavailable —
         // and a denial is never retried under another identity.
         let at_transport = Err((3, "session proxy: unauthorized token".to_string()));
-        let (rec, code) =
-            exact_task_status("repo-health", 7, at_transport, "2026-11-23T12:05:00Z");
+        let (rec, code) = exact_task_status("repo-health", 7, at_transport, "2026-11-23T12:05:00Z");
         assert_eq!(code, 3);
         assert_eq!(rec["result"], json!("unknown"));
         assert_eq!(rec["detail"], json!("denied"));
-        let by_envelope = Ok(json!({"ok": false, "error": "permission denied for this queue", "exit": 4}));
-        let (rec, code) =
-            exact_task_status("repo-health", 7, by_envelope, "2026-11-23T12:05:00Z");
+        let by_envelope =
+            Ok(json!({"ok": false, "error": "permission denied for this queue", "exit": 4}));
+        let (rec, code) = exact_task_status("repo-health", 7, by_envelope, "2026-11-23T12:05:00Z");
         assert_eq!(code, 4);
         assert_eq!(rec["result"], json!("unknown"));
         assert_eq!(rec["detail"], json!("denied"));

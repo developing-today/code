@@ -1,0 +1,6 @@
+# Private keys and generation intermediates for the s11-relay spike are
+# produced locally by generate-certs.sh and are never committed.
+# (The public certificates .pem/.der and leaf.ext stay tracked.)
+*.key
+*.csr
+*.srl

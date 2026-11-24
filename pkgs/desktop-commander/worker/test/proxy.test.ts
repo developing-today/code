@@ -33,10 +33,7 @@ describe("desktop-commander Worker proxy", () => {
   it("answers /healthz without touching the bridge", async () => {
     const bridge = vi.fn();
     vi.stubGlobal("fetch", bridge);
-    const res = await worker.fetch(
-      new Request("https://commander.security.cab/healthz"),
-      env,
-    );
+    const res = await worker.fetch(new Request("https://commander.security.cab/healthz"), env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, service: "desktop-commander" });
     expect(bridge).not.toHaveBeenCalled();
@@ -77,10 +74,7 @@ describe("desktop-commander Worker proxy", () => {
     expect(res.headers.get("mcp-session-id")).toBe("session-123");
 
     expect(bridge).toHaveBeenCalledTimes(1);
-    const [calledUrl, calledInit] = bridge.mock.calls[0] as unknown as [
-      URL,
-      RequestInit,
-    ];
+    const [calledUrl, calledInit] = bridge.mock.calls[0] as unknown as [URL, RequestInit];
     expect(String(calledUrl)).toBe("https://commander-link.security.cab/mcp");
     const sent = new Headers(calledInit.headers);
     expect(sent.get("cf-access-client-id")).toBe("bridge-id.access");
@@ -91,10 +85,7 @@ describe("desktop-commander Worker proxy", () => {
 
   it("404s unknown paths", async () => {
     vi.stubGlobal("fetch", vi.fn());
-    const res = await worker.fetch(
-      new Request("https://commander.security.cab/nope"),
-      env,
-    );
+    const res = await worker.fetch(new Request("https://commander.security.cab/nope"), env);
     expect(res.status).toBe(404);
   });
 });

@@ -162,10 +162,14 @@ describe("validation (design §1 shapes, rejected loudly)", () => {
 
   test("snapshot rejects a bad seq, a non-https endpoint, and wrong key lengths", () => {
     expect(validateSnapshot({ snapshotSeq: 0, subscriptions: [] }).ok).toBe(false);
-    expect(validateSnapshot({ snapshotSeq: 1, subscriptions: [sub({ endpoint: "http://fcm.googleapis.com/x" })] }).ok).toBe(false);
+    expect(
+      validateSnapshot({ snapshotSeq: 1, subscriptions: [sub({ endpoint: "http://fcm.googleapis.com/x" })] }).ok,
+    ).toBe(false);
     expect(validateSnapshot({ snapshotSeq: 1, subscriptions: [sub({ p256dh: "AAAA" })] }).ok).toBe(false);
     expect(validateSnapshot({ snapshotSeq: 1, subscriptions: [sub({ auth: "AAAA" })] }).ok).toBe(false);
-    expect(validateSnapshot({ snapshotSeq: 1, subscriptions: [sub({ classes: { incident: "yes" } as never })] }).ok).toBe(false);
+    expect(
+      validateSnapshot({ snapshotSeq: 1, subscriptions: [sub({ classes: { incident: "yes" } as never })] }).ok,
+    ).toBe(false);
   });
 
   test("heartbeat rejects an empty epoch and a negative seq", () => {

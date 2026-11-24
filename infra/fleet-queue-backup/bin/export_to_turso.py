@@ -189,7 +189,7 @@ def recover_interrupted_swap(home):
     """
     schema = home_schema(home)
     retiring = {
-        name[len(RETIRE_PREFIX):]: name
+        name[len(RETIRE_PREFIX) :]: name
         for _kind, name, _t, _sql in schema
         if name.startswith(RETIRE_PREFIX)
     }
@@ -242,11 +242,11 @@ _CREATE_TABLE_HEAD = re.compile(
 
 
 def _staged_create(sql, table, stage):
-    out, n = _CREATE_TABLE_HEAD.subn(
-        lambda m: m.group(1) + f'"{stage}"', sql, count=1
-    )
+    out, n = _CREATE_TABLE_HEAD.subn(lambda m: m.group(1) + f'"{stage}"', sql, count=1)
     if n != 1:
-        raise RuntimeError(f"cannot stage {table}: CREATE head not recognized: {sql[:80]!r}")
+        raise RuntimeError(
+            f"cannot stage {table}: CREATE head not recognized: {sql[:80]!r}"
+        )
     return out
 
 
@@ -318,13 +318,9 @@ def _swap(home, schema, counts, record):
         _write_meta(home, "swap", marker)
         _drop_objects(home, current)
         for name in live_tables:
-            home.execute(
-                f'ALTER TABLE "{name}" RENAME TO "{RETIRE_PREFIX}{name}"'
-            )
+            home.execute(f'ALTER TABLE "{name}" RENAME TO "{RETIRE_PREFIX}{name}"')
         for name, _sql in tables:
-            home.execute(
-                f'ALTER TABLE "{STAGE_PREFIX}{name}" RENAME TO "{name}"'
-            )
+            home.execute(f'ALTER TABLE "{STAGE_PREFIX}{name}" RENAME TO "{name}"')
         live = fq_common.table_counts(home, home_schema(home))
         mismatched = {
             name: (counts[name], live.get(name))

@@ -6,7 +6,7 @@ Three unrelated command groups share this chapter. `id gallery` administers the 
 
 Exit behaviour, all commands in this chapter unless a command states otherwise: success exits `0`; a handler error prints `Error: <message>` to stderr and exits `1`; a clap parse error (unknown subcommand or flag, missing required argument, conflicting flags, bad value) prints the error and usage to stderr and exits `2`.
 
-Feature gating differs per group. `id gallery` and `id walk` are not feature-gated: both work in every build, including a `--no-default-features` build. `id match-audit` is gated on the `sandbox` cargo feature at the parser level: in a build without `sandbox` the command does not exist in help or in the parser, and invoking it is a clap error, exit `2`. That is one half of disagreement CLI-10; the other half is `id world`, which parses without its feature and fails only at runtime — see [World commands: joining and playing](cli-worlds.md).
+Feature gating differs per group. `id gallery` and `id walk` are not feature-gated: both work in every build, including a `--no-default-features` build. `id match-audit` parses in every build but needs the `sandbox` cargo feature at dispatch: in a build without `sandbox` it fails with `this build has no sandbox support`, exit `1` — the same parse-everywhere, fail-at-dispatch pattern as `id world`, which parses without its feature and fails only at runtime (disagreement CLI-10, resolved; see [World commands: joining and playing](cli-worlds.md)).
 
 ## `gallery`
 
@@ -229,7 +229,7 @@ Failures: giving neither `--program` nor `--author` is a clap error, exit `2` (t
 
 ## `match-audit`
 
-Exports and verifies match-audit v0 logs for tic-tac-toe. The whole command is gated on the `sandbox` cargo feature; see the gating note at the top of this chapter.
+Exports and verifies match-audit v0 logs for tic-tac-toe. The whole command needs the `sandbox` cargo feature at dispatch; see the gating note at the top of this chapter.
 
 ### `match-audit export-tic-tac-toe`
 
@@ -249,7 +249,7 @@ Example:
 $ id match-audit export-tic-tac-toe --output ./toy-match.log
 ```
 
-Failures: an unwritable output path fails the command, exit `1`. In a build without the `sandbox` feature the command does not exist: clap error, exit `2`.
+Failures: an unwritable output path fails the command, exit `1`. In a build without the `sandbox` feature the command fails at dispatch with `this build has no sandbox support`, exit `1`.
 
 ### `match-audit verify`
 
@@ -269,7 +269,7 @@ Example:
 $ id match-audit verify ./toy-match.log
 ```
 
-Failures: a log that does not verify against the pinned program fails the command, exit `1`. A missing log file fails the command, exit `1`. In a build without the `sandbox` feature the command does not exist: clap error, exit `2`.
+Failures: a log that does not verify against the pinned program fails the command, exit `1`. A missing log file fails the command, exit `1`. In a build without the `sandbox` feature the command fails at dispatch with `this build has no sandbox support`, exit `1`.
 
 ## `walk`
 

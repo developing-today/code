@@ -58,20 +58,14 @@ def defn(**overrides):
 # The fleet app is deployed as two services running bin/fleet; mcpx is
 # a definition named after its app with no evidence workflow.
 REGISTRY = {
-    "queue-broker": defn(
-        entryPoint="bin/fleet", evidenceWorkflow="fleet-rust-tests"
-    ),
-    "secrets-broker": defn(
-        entryPoint="bin/fleet", evidenceWorkflow="fleet-rust-tests"
-    ),
+    "queue-broker": defn(entryPoint="bin/fleet", evidenceWorkflow="fleet-rust-tests"),
+    "secrets-broker": defn(entryPoint="bin/fleet", evidenceWorkflow="fleet-rust-tests"),
     "mcpx": defn(entryPoint="bin/mcpx"),
 }
 
 
 def git(repo, *args):
-    proc = subprocess.run(
-        ["git", "-C", repo, *args], capture_output=True, text=True
-    )
+    proc = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
     if proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {proc.stderr}")
     return proc.stdout.strip()
@@ -118,18 +112,16 @@ class FakeGh:
                     "",
                 )
             if endpoint.startswith("git/ref/tags/"):
-                name = endpoint[len("git/ref/tags/"):]
+                name = endpoint[len("git/ref/tags/") :]
                 if name not in self.tag_refs:
                     return 1, "", "gh: Not Found (HTTP 404)"
                 return (
                     0,
-                    json.dumps(
-                        {"object": {"sha": self.tag_refs[name], "type": "tag"}}
-                    ),
+                    json.dumps({"object": {"sha": self.tag_refs[name], "type": "tag"}}),
                     "",
                 )
             if endpoint.startswith("git/tags/"):
-                obj = self.tag_objects.get(endpoint[len("git/tags/"):])
+                obj = self.tag_objects.get(endpoint[len("git/tags/") :])
                 if obj is None:
                     return 1, "", "gh: Not Found (HTTP 404)"
                 return (
@@ -157,11 +149,10 @@ class ReleaseFixture(unittest.TestCase):
         self.state = os.path.join(self.tmp, "state")
         subprocess.run(
             ["git", "init", "--bare", self.remote],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
         )
-        subprocess.run(
-            ["git", "init", self.work], capture_output=True, check=True
-        )
+        subprocess.run(["git", "init", self.work], capture_output=True, check=True)
         git(self.work, "symbolic-ref", "HEAD", "refs/heads/main")
         git(self.work, "config", "user.email", "test@example.invalid")
         git(self.work, "config", "user.name", "deploy test")
@@ -200,7 +191,7 @@ class ReleaseFixture(unittest.TestCase):
             if not line:
                 continue
             ref = line.split("\t")[1]
-            name = ref[len("refs/tags/"):]
+            name = ref[len("refs/tags/") :]
             if not name.endswith("^{}"):
                 names.append(name)
         return sorted(names)
@@ -227,15 +218,15 @@ class TestReleaseSuccess(ReleaseFixture):
         )
         # The attestation block parses and verifies (the §4 record).
         message = git(
-            self.work, "for-each-ref", "refs/tags/fleet/v0.1.0",
+            self.work,
+            "for-each-ref",
+            "refs/tags/fleet/v0.1.0",
             "--format=%(contents)",
         )
         parsed = deploy.verify_attestation(message, "fleet", "0.1.0", self.head)
         self.assertIsNotNone(parsed)
         judged = {wf for wf, _id, _c, _s in parsed["runs"]}
-        self.assertEqual(
-            judged, set(deploy.WATCHED_WORKFLOWS) | {"fleet-rust-tests"}
-        )
+        self.assertEqual(judged, set(deploy.WATCHED_WORKFLOWS) | {"fleet-rust-tests"})
         # The ledger round-trips through the status report: the tag
         # confirms the record, no disagreement.
         entries = deploy.read_releases(self.state)
@@ -325,7 +316,9 @@ class TestReleaseRefusals(ReleaseFixture):
         code, lines = self.release(requested_version="0.1.0")
         self.assertEqual(code, 1)
         self.assertIn("already released", "\n".join(lines))
-        self.assertEqual(self.remote_tag_names(), ["fleet/v0.1.0", f"repo/v{self.today()}.1.0"])
+        self.assertEqual(
+            self.remote_tag_names(), ["fleet/v0.1.0", f"repo/v{self.today()}.1.0"]
+        )
 
     def test_unknown_app_refuses(self):
         code, lines = self.release(app="nope")
@@ -467,9 +460,7 @@ class TestAttestationAndNumbering(unittest.TestCase):
         good = {"svc": defn(evidenceWorkflow="fleet-rust-tests")}
         self.assertEqual(deploy.validate(good), [])
         bad = {"svc": defn(evidenceWorkflow=7)}
-        self.assertTrue(
-            any("evidenceWorkflow" in e for e in deploy.validate(bad))
-        )
+        self.assertTrue(any("evidenceWorkflow" in e for e in deploy.validate(bad)))
 
     def test_ledger_disagreement_tag_wins(self):
         entries = [
