@@ -88,8 +88,8 @@ pub use journal::{
     JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
     JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
     JournalAckMode, JournalAdminHistory, JournalEntry, JournalSignedMove, JournalSnapshot,
-    JournalSnapshotSource,
-    MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
+    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
+    journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,

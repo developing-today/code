@@ -18,12 +18,12 @@ That is the whole public surface: **5 public routes**, plus a catch-all 404 for 
 
 Every route except `GET /health` sits behind one shared gate:
 
-| Aspect | Rule |
-|---|---|
-| Secret name | `GATE_TOKEN` (named only; never valued in this book). |
-| Presentation | Header `Authorization: Bearer &lt;GATE_TOKEN&gt;`. The prefix check is the exact, case-sensitive string `Bearer `; anything else presents an empty token and fails. |
-| Comparison | Both the presented and the configured token are SHA-256 digested, and the 32 digest bytes are XOR-folded; equal if and only if the fold is 0. Digests are fixed-size, so the comparison is length-safe and constant-time by construction. |
-| Failure | Missing presented token, or `GATE_TOKEN` unset → the gate fails → 401. |
+| Aspect       | Rule                                                                                                                                                                                                                                      |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Secret name  | `GATE_TOKEN` (named only; never valued in this book).                                                                                                                                                                                     |
+| Presentation | Header `Authorization: Bearer &lt;GATE_TOKEN&gt;`. The prefix check is the exact, case-sensitive string `Bearer `; anything else presents an empty token and fails.                                                                       |
+| Comparison   | Both the presented and the configured token are SHA-256 digested, and the 32 digest bytes are XOR-folded; equal if and only if the fold is 0. Digests are fixed-size, so the comparison is length-safe and constant-time by construction. |
+| Failure      | Missing presented token, or `GATE_TOKEN` unset → the gate fails → 401.                                                                                                                                                                    |
 
 The gate failure shape is the shared error envelope (below) with code `unauthorized` and message `missing or invalid gate token`.
 
@@ -57,14 +57,14 @@ with status 200. It is liveness only; it says nothing about the laptop service b
 
 The gated search route. Validation order is fixed — the gate is checked **before the body is read**, then the body chain runs:
 
-| Order | Check | Failure |
-|---|---|---|
-| 1 | Gate token | 401, `unauthorized`, `missing or invalid gate token` |
-| 2 | Body ≤ 64 KiB | 413, `payload_too_large`, `body is larger than the 64 KiB limit` |
-| 3 | Body parses as JSON | 400, `bad_request`, `body must be JSON` |
-| 4 | Parsed body is an object (JSON `null` parses, then fails here) | 400, `bad_request`, `body must be a JSON object` |
-| 5 | `query` is a string | 400, `bad_request`, `query must be a string` |
-| 6 | `query` non-empty **after normalization** | 400, `bad_request`, `query must not be empty` |
+| Order | Check                                                          | Failure                                                          |
+| ----- | -------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 1     | Gate token                                                     | 401, `unauthorized`, `missing or invalid gate token`             |
+| 2     | Body ≤ 64 KiB                                                  | 413, `payload_too_large`, `body is larger than the 64 KiB limit` |
+| 3     | Body parses as JSON                                            | 400, `bad_request`, `body must be JSON`                          |
+| 4     | Parsed body is an object (JSON `null` parses, then fails here) | 400, `bad_request`, `body must be a JSON object`                 |
+| 5     | `query` is a string                                            | 400, `bad_request`, `query must be a string`                     |
+| 6     | `query` non-empty **after normalization**                      | 400, `bad_request`, `query must not be empty`                    |
 
 Normalization is NFC, trim, and collapse of every whitespace run to one space — so a whitespace-only query passes check 5 and fails check 6. Case is preserved; the fan-out is case-sensitive. `Content-Type` is not checked: the body is read as text and parsed regardless of header.
 
@@ -100,10 +100,10 @@ Request:
 
 The operator and audit surface: metadata readback for one cache entry, without running a search. Gated (failure → the same 401 as above). Parameters arrive in the query string:
 
-| Parameter | Required | Rule |
-|---|---|---|
-| `query` | yes | Missing or empty parameter → 400, `bad_request`, `query parameter is required`. After normalization, empty → 400, `bad_request`, `query must not be empty`. |
-| `k` | no | Read as a number, then `clampK`. Absent → 10; non-numeric → 10 (see `clampK`). |
+| Parameter | Required | Rule                                                                                                                                                        |
+| --------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query`   | yes      | Missing or empty parameter → 400, `bad_request`, `query parameter is required`. After normalization, empty → 400, `bad_request`, `query must not be empty`. |
+| `k`       | no       | Read as a number, then `clampK`. Absent → 10; non-numeric → 10 (see `clampK`).                                                                              |
 
 The route computes the cache key, opens the cache object for that key, and merges its metadata into the response. When no entry exists, the whole answer is:
 
@@ -157,11 +157,11 @@ The path `/mcp` matches regardless of method, and the method check runs **before
 
 One function clamps the result depth on every Worker surface — REST search body, REST purge body, inspect query parameter, and MCP tool arguments:
 
-| Input | Result |
-|---|---|
-| A JSON number | Floored (`10.9` → 10), then clamped to [1, 50]: 0 and negatives → 1, over 50 → 50. |
-| A non-finite number (`NaN`, `Infinity` — reachable through the inspect route's numeric coercion) | 10 |
-| Anything that is not a JSON number — a numeric string such as `"20"`, a boolean, null, or an absent field | 10 |
+| Input                                                                                                     | Result                                                                             |
+| --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| A JSON number                                                                                             | Floored (`10.9` → 10), then clamped to [1, 50]: 0 and negatives → 1, over 50 → 50. |
+| A non-finite number (`NaN`, `Infinity` — reachable through the inspect route's numeric coercion)          | 10                                                                                 |
+| Anything that is not a JSON number — a numeric string such as `"20"`, a boolean, null, or an absent field | 10                                                                                 |
 
 The defaults behind the table: `DEFAULT_K = 10`, `MAX_K = 50`. Because the clamped `k` is a field of the cache key, different clamped values are different cache entries.
 
@@ -177,27 +177,27 @@ with HTTP status taken from the error when it carries one, else 500. The two err
 
 ## Status codes, all of them
 
-| Status | Code | Produced by |
-|---|---|---|
-| 200 | — | Health, search success, inspect, purge. |
-| 400 | `bad_request` | Unparseable JSON body; non-object body; `query` not a string; `query` empty after normalization; missing or empty inspect `query` parameter. |
-| 401 | `unauthorized` | Gate failure on any gated route. |
-| 404 | `not_found` | The catch-all: any other method/path combination, including `GET /v1/search` and `POST /health` — method is part of the match for every route except `/mcp`. Message: `no route`. |
-| 405 | `method_not_allowed` | Non-POST to `/mcp`, with `Allow: POST`. |
-| 413 | `payload_too_large` | Body over the 64 KiB cap, on any route that reads a body. |
-| 500 | `query_failed` | Unexpected error inside the cache object, with no status of its own. |
-| 502 | `query_failed` | Upstream service or embedding-space failure, passed through from the cache object. |
+| Status | Code                 | Produced by                                                                                                                                                                       |
+| ------ | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 200    | —                    | Health, search success, inspect, purge.                                                                                                                                           |
+| 400    | `bad_request`        | Unparseable JSON body; non-object body; `query` not a string; `query` empty after normalization; missing or empty inspect `query` parameter.                                      |
+| 401    | `unauthorized`       | Gate failure on any gated route.                                                                                                                                                  |
+| 404    | `not_found`          | The catch-all: any other method/path combination, including `GET /v1/search` and `POST /health` — method is part of the match for every route except `/mcp`. Message: `no route`. |
+| 405    | `method_not_allowed` | Non-POST to `/mcp`, with `Allow: POST`.                                                                                                                                           |
+| 413    | `payload_too_large`  | Body over the 64 KiB cap, on any route that reads a body.                                                                                                                         |
+| 500    | `query_failed`       | Unexpected error inside the cache object, with no status of its own.                                                                                                              |
+| 502    | `query_failed`       | Upstream service or embedding-space failure, passed through from the cache object.                                                                                                |
 
 ## Internal routes: the `QueryCache` Durable Object
 
 **Internal — not reachable from the public internet.** These three routes exist only on synthetic `https://do/…` URLs, invoked by the Worker itself through the `QUERY_CACHE` binding, one object instance per cache key. No gate token is checked inside the object; the public routes above are the only gate.
 
-| Method and path | Caller | Behaviour | Response |
-|---|---|---|---|
-| `POST /query` | The search execution path | Body `{ "query": …, "k": … }`. Runs the check-and-fill: serve a complete entry as a hit, otherwise embed, persist the embedding, search, persist the result. | 200 with the outcome, or the `query_failed` envelope. |
-| `GET /inspect` | `GET /v1/cache/inspect` | Metadata readback for the entry. | 200 with the metadata object. |
-| `POST /purge` | `POST /v1/cache/purge` | Deletes the object's single entry row. | 200 with `{ "purged": &lt;bool&gt; }`. |
-| anything else | — | — | 404 with `{ "error": { "code": "not_found", "message": "no route" } }` |
+| Method and path | Caller                    | Behaviour                                                                                                                                                    | Response                                                               |
+| --------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `POST /query`   | The search execution path | Body `{ "query": …, "k": … }`. Runs the check-and-fill: serve a complete entry as a hit, otherwise embed, persist the embedding, search, persist the result. | 200 with the outcome, or the `query_failed` envelope.                  |
+| `GET /inspect`  | `GET /v1/cache/inspect`   | Metadata readback for the entry.                                                                                                                             | 200 with the metadata object.                                          |
+| `POST /purge`   | `POST /v1/cache/purge`    | Deletes the object's single entry row.                                                                                                                       | 200 with `{ "purged": &lt;bool&gt; }`.                                 |
+| anything else   | —                         | —                                                                                                                                                            | 404 with `{ "error": { "code": "not_found", "message": "no route" } }` |
 
 ## Worked example
 

@@ -1,6 +1,6 @@
 # id
 
-A peer-to-peer file sharing CLI built with [Iroh](https://iroh.computer). Store, retrieve, and share files across a decentralized network with optional collaborative web editing.
+The `id` platform and Rust facade, built with [Iroh](https://iroh.computer). It includes peer-to-peer file sharing, a sandboxed world runtime, directory and group services, sync, currency registry, and optional web editing. The command layer lives in `id-cli` and is re-exported by the facade.
 
 ## The book
 
@@ -44,15 +44,52 @@ just serve
 ### With Cargo
 
 ```bash
-# Library-only (no web UI)
-cargo build --no-default-features
-cargo run --no-default-features -- serve
+# Default build: sandbox and world included, no web UI
+# (--no-default-features would also remove sandbox and world)
+cargo build
+cargo run -- serve
 
 # With web UI (build assets first)
 cd web && bun install && bun run build && cd ..
 cargo build --features web
 cargo run --features web -- serve --web
 ```
+
+## Five-minute path
+
+Phase 12 exit criterion 1 (#12595): from an empty directory to a
+running world a friend can join in under 5 minutes, one command per
+step. `pkgs/id/scripts/five-minute-path.sh` runs the path and prints
+the elapsed time; run it from anywhere — it creates its own run
+directory, clones the repo, builds `id`, serves a world, mints an
+invite, and has a second node join it:
+
+```bash
+pkgs/id/scripts/five-minute-path.sh
+# ... per-step output ...
+# RESULT verdict=PASS elapsed_s=123 budget_s=300 world=five-minute steps=clone=12 build=80 serve=3 invite=1 join=2 records=1 run_dir=/tmp/tmp.XXXXXX
+```
+
+The steps, one command each (the script runs exactly these):
+
+```bash
+git clone --depth 1 https://github.com/developing-today/code.git five-minute-path
+cargo build --release --no-default-features -p id   # in five-minute-path/pkgs/id
+id serve --world --world-name five-minute --data-dir host --iroh-port 17001 --no-relay --no-gossip --no-mdns
+id --data-dir host id                                # the host's node id
+id world invite <node> --name friend --world five-minute --addr 127.0.0.1:17001 --no-relay
+id world join <node> --capability <cap> --world five-minute --addr 127.0.0.1:17001 --no-relay --command-mode --json
+id world records <node> --capability <cap> --world five-minute --addr 127.0.0.1:17001 --no-relay
+```
+
+The admin token is a fresh random value passed only through
+`ID_WORLD_ADMIN_TOKEN`; the guest capability travels via
+`ID_WORLD_CAPABILITY`. All traffic is direct loopback, so no relay,
+DHT, gossip, or mDNS is involved. `--dry-run` prints the steps without
+running them; `--id-bin PATH` skips the clone and build steps (reported
+as skipped in the `RESULT` line). The script exits 0 only when the
+path completes under the 300-second budget. The timed result is
+recorded on #12595, where the Phase 12 exit audit (#12231) can cite it.
 
 ## Usage
 
@@ -66,8 +103,8 @@ id get myfile.txt
 # List all files
 id list
 
-# Find files by pattern
-id find "*.rs"
+# Find files by query (case-insensitive substring; no glob matching)
+id find ".rs"
 
 # Search files
 id search "hello"
@@ -256,7 +293,7 @@ it is — a valid world capability, minted by the host's admin with
 | `peek`         |                                | Preview with configurable head/tail lines               |
 | `find`         |                                | Find files by query, optionally output content          |
 | `search`       |                                | Search files and list all matches                       |
-| `list`         | `ls`                           | List all stored files                                   |
+| `list`         |                                | List all stored files                                   |
 | `tag`          | `label`, `link`                | Manage metadata tags on files                           |
 | `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files               |
 | `id`           |                                | Print local node public ID                              |
@@ -313,7 +350,8 @@ id repl
 > tag search author:Jane          # Structured search syntax
 > tag find readme                 # find = search alias
 > migrate-tags                    # Add name/file tags to all files
-> cat myfile.txt | head -5        # Pipe output to shell
+> !head -5 myfile.txt             # Shell escape: run any shell command
+> printf 'bread\n' |> put - bakery.txt  # Pipe shell output into a stored file
 > $(id id)                        # Subshell expansion
 > help                            # Show all commands
 ```
@@ -424,7 +462,7 @@ tests/
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System architecture and design decisions
 - [WEB.md](WEB.md) — Web interface documentation
 - [web/README.md](web/README.md) — Wire protocol and frontend details
-- [docs/](docs/) — Feature documentation (chronological)
+- [docs/](docs/) — Design-record archive (symlink to the repo-root `doc/` archive)
 - [AGENTS.md](AGENTS.md) — AI agent development guidelines
 
 ### ID program

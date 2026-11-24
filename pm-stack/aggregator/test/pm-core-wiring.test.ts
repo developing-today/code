@@ -3,11 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  FLEET_FEED_CADENCE_MS,
-  QUOTA_CADENCE_MS,
-  type SchedulerAudit,
-} from "../src/pm-core-scheduler.ts";
+import { FLEET_FEED_CADENCE_MS, QUOTA_CADENCE_MS, type SchedulerAudit } from "../src/pm-core-scheduler.ts";
 import { createPmCoreJobs, startPmCoreSchedulers } from "../src/pm-core-wiring.ts";
 
 type Timer = ReturnType<typeof setInterval>;
@@ -19,7 +15,7 @@ function fakeTimers() {
     scheduled,
     cleared,
     setInterval: (callback: () => void, delayMs: number) => {
-      const timer = scheduled.length + 1 as unknown as Timer;
+      const timer = (scheduled.length + 1) as unknown as Timer;
       scheduled.push({ callback, delayMs, timer });
       return timer;
     },
@@ -50,10 +46,7 @@ describe("pm-core wiring (#8570)", () => {
       resignal: () => {},
     });
 
-    expect(timers.scheduled.map((entry) => entry.delayMs)).toEqual([
-      QUOTA_CADENCE_MS,
-      FLEET_FEED_CADENCE_MS,
-    ]);
+    expect(timers.scheduled.map((entry) => entry.delayMs)).toEqual([QUOTA_CADENCE_MS, FLEET_FEED_CADENCE_MS]);
     runtime.shutdown();
   });
 
@@ -224,9 +217,7 @@ describe("pm-core wiring (#8570)", () => {
 
     timers.scheduled[0].callback();
     await flush();
-    const lines = (await readFile(join(dir, "pm-core-scheduler-audit.jsonl"), "utf8"))
-      .trim()
-      .split("\n");
+    const lines = (await readFile(join(dir, "pm-core-scheduler-audit.jsonl"), "utf8")).trim().split("\n");
     expect(lines).toHaveLength(1);
     const record = JSON.parse(lines[0]) as SchedulerAudit;
     expect(record.job).toBe("quota");

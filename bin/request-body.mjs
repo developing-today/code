@@ -22,5 +22,9 @@ export function createRequestBodyCollector(maxBytes) {
       if (tooLarge) throw new Error('Request body exceeds configured byte limit');
       return Buffer.concat(chunks, byteLength).toString('utf8');
     },
+    bytes() {
+      if (tooLarge) throw new Error('Request body exceeds configured byte limit');
+      return Buffer.concat(chunks, byteLength);
+    },
   };
 }

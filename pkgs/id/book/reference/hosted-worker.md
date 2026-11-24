@@ -140,6 +140,8 @@ The `d1-journal-poc/` subfolder is a second, local-only D1 fit probe. It uses a 
 | GET | `/snapshot` | Read a snapshot. |
 | GET | `/tail` | Read the journal tail. Journal header version is `1`; entries include `created` and `caps_granted`. A D1 bookmark is not a stream cursor. |
 
+The two proofs of concept have their own chapters, which carry their full surfaces and results: [id-worker-poc: the World Durable Object proof of concept](worker-poc.md) and [id-d1-journal-poc: the D1 journal proof of concept](d1-journal-poc.md). A third Worker belongs to ID but is not part of the hosted edition at all: the production mail Worker covered in [The mail Worker API](mail-worker.md).
+
 ## Worked example
 
 Toy data: a bound user with `binding_id` written here as `BINDING_ID`, run under the local test harness, where the ceiling is `1073741824` bytes.

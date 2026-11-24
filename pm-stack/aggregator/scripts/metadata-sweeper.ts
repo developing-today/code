@@ -121,7 +121,8 @@ function parseArgs(argv: string[]): Options {
       case "--limit": {
         const raw = valueOf("--limit");
         const parsed = Number(raw);
-        if (!Number.isSafeInteger(parsed) || parsed < 1) usageError(`--limit requires a positive integer (got ${JSON.stringify(raw)})`);
+        if (!Number.isSafeInteger(parsed) || parsed < 1)
+          usageError(`--limit requires a positive integer (got ${JSON.stringify(raw)})`);
         limit = parsed;
         break;
       }
@@ -158,7 +159,8 @@ function parseArgs(argv: string[]): Options {
     repos.push(...(fromEnv.length > 0 ? fromEnv : ["developing-today/code"]));
   }
   for (const repo of repos) {
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) usageError(`--repo must be <owner/name> (got ${JSON.stringify(repo)})`);
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo))
+      usageError(`--repo must be <owner/name> (got ${JSON.stringify(repo)})`);
   }
   return { repos, only, dbPath, limit, triageQueue, writeBack, forwardTriage, dryRun };
 }
@@ -291,7 +293,13 @@ async function fetchNativeParent(
 ): Promise<{ repo: string; number: number; kind: string } | null | undefined> {
   let stdout: string;
   try {
-    stdout = await runFleet(["gh", "api", `repos/${repo}/issues/${number}/parent`, "--jq", "{number: .number, repo_url: .repository_url}"]);
+    stdout = await runFleet([
+      "gh",
+      "api",
+      `repos/${repo}/issues/${number}/parent`,
+      "--jq",
+      "{number: .number, repo_url: .repository_url}",
+    ]);
   } catch {
     return undefined;
   }
@@ -364,7 +372,9 @@ async function main(): Promise<void> {
           try {
             epicSlugs = await fetchEpicSlugs(repo);
           } catch (error) {
-            console.error(`metadata-sweeper: repo ${repo}: epic catalog fetch failed (${(error as Error).message}); falling back to scanned issues`);
+            console.error(
+              `metadata-sweeper: repo ${repo}: epic catalog fetch failed (${(error as Error).message}); falling back to scanned issues`,
+            );
             epicSlugs = new Map();
             for (const issue of issues) {
               if (!issue.labels.includes("kind/epic")) continue;
@@ -399,10 +409,15 @@ async function main(): Promise<void> {
               if (item.kind === "issue" && !item.nativeParent && outcome.kind !== "current") {
                 const parent = await fetchNativeParent(repo, item.number);
                 if (parent) {
-                  outcome = runMetadataCheck({ ...item, nativeParent: parent }, { epicSlugs, ingestedBy: "metadata-sweeper" });
+                  outcome = runMetadataCheck(
+                    { ...item, nativeParent: parent },
+                    { epicSlugs, ingestedBy: "metadata-sweeper" },
+                  );
                 } else if (parent === undefined) {
                   counts.errors++;
-                  console.error(`metadata-sweeper: ${repo}#${item.number}: native-parent lookup failed; skipping (retry next sweep)`);
+                  console.error(
+                    `metadata-sweeper: ${repo}#${item.number}: native-parent lookup failed; skipping (retry next sweep)`,
+                  );
                   continue;
                 }
               }
@@ -430,12 +445,23 @@ async function main(): Promise<void> {
                   const current = await fetchOne(repo, item.kind, item.number).catch(() => null);
                   if (!current || current.body !== item.body) {
                     counts.errors++;
-                    console.error(`metadata-sweeper: ${repo}#${item.number}: body changed since the check; skipping write-back`);
+                    console.error(
+                      `metadata-sweeper: ${repo}#${item.number}: body changed since the check; skipping write-back`,
+                    );
                   } else {
                     const bodyPath = join(scratch, `body-${repo.replace("/", "-")}-${item.number}.md`);
                     await writeFile(bodyPath, outcome.body);
                     const command = item.kind === "issue" ? "issue" : "pr";
-                    await runFleet(["gh", command, "edit", String(item.number), "--repo", repo, "--body-file", bodyPath]);
+                    await runFleet([
+                      "gh",
+                      command,
+                      "edit",
+                      String(item.number),
+                      "--repo",
+                      repo,
+                      "--body-file",
+                      bodyPath,
+                    ]);
                     counts.writtenBack++;
                   }
                 }

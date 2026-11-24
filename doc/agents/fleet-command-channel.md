@@ -17,12 +17,12 @@ section by hand. Enrolment and the full ladder:
 
 ## Every lane run (Muse lanes and any other fleet agent)
 
-At the start of each run, before claiming queue work:
-
-```bash
-fleet bridge hello --agent <lane> --groups <surface>[,<more>]   # once per run
-fleet bridge inbox --agent <lane> --commands --take
-```
+At the start of each run, take work with `fleet agent next`: it checks
+the mailbox, then the queue, the host's shortlist and GitHub priority, in
+that order, and returns one task with the commands to run when it is done
+([onboarding](onboarding-an-agent.md)). Run its `then` lines when the
+task is done. Do not run the mailbox and claim steps by hand — that is
+what `next` is for.
 
 - `<lane>` is the lane's own stable name (`muse-3`, `oc-go-1`, ...), the
   same name the queue claim uses as worker or lane. Lowercase, letters,
@@ -30,8 +30,19 @@ fleet bridge inbox --agent <lane> --commands --take
 - Groups say who you are for "all of a kind" sends: `muse` for Muse
   lanes, `opencode` for OpenCode lanes, `laptop` for laptop jobs.
   `hello` replaces the group list, so pass every group each time.
-- `--take` marks what it returns as read, so two runs of the same lane
-  never both act on one command.
+
+### By hand, only when `fleet agent next` cannot run
+
+On a seat whose installed binary predates `fleet agent`, run the mailbox
+check yourself at the start of each run, before claiming queue work:
+
+```bash
+fleet bridge hello --agent <lane> --groups <surface>[,<more>]   # once per run
+fleet bridge inbox --agent <lane> --commands --take
+```
+
+`--take` marks what it returns as read, so two runs of the same lane
+never both act on one command.
 
 For each command returned, in id order:
 

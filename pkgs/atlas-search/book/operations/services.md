@@ -8,12 +8,12 @@ Atlas serving has two halves on two machines. The **service** is a long-lived pr
 
 The unit is the systemd **user** service `atlas-search.service`, declared in `home/common/default.nix` (not under `nixos/`):
 
-| Property | Value |
-|---|---|
-| Description | `Atlas search service (hybrid corpus search, serve mode)` |
-| Ordering | `After` / `Wants` = `network-online.target` |
-| Restart | `Restart = on-failure`, `RestartSec = 3` |
-| Enablement | `Install.WantedBy = [default.target]` — added at the step-6 cutover; in step 5 the unit landed with no Install section so it could not auto-start |
+| Property    | Value                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Description | `Atlas search service (hybrid corpus search, serve mode)`                                                                                         |
+| Ordering    | `After` / `Wants` = `network-online.target`                                                                                                       |
+| Restart     | `Restart = on-failure`, `RestartSec = 3`                                                                                                          |
+| Enablement  | `Install.WantedBy = [default.target]` — added at the step-6 cutover; in step 5 the unit landed with no Install section so it could not auto-start |
 
 **Which binary is live.** The unit's `ExecStart` is selected by a home-manager flag, `atlasSearchServeViaFleet`:
 
@@ -41,13 +41,13 @@ Service configuration lives in **`~/.local/state/atlas-search/service.json`**, m
 
 The clamp is the security property: the server computes `effective = min(requested, token ceiling cap)`, records the effective ceiling on the job, and reports it in the result envelope. Raising a cap is a local edit by the user in that file — never something a request can do. The v1 client set and caps, as designed and configured:
 
-| Client | Ceiling cap |
-|---|---|
-| The user's CLI on the laptop (`drew-cli`) | `secret-bearing` |
-| OpenChamber sessions | `personal` |
-| Fork / OpenCode agents | `personal` |
-| Sandbox scripts and Muse lanes via the tailnet (`sandbox-scripts`) | `personal` |
-| The Worker (`cf-worker`) | `personal` |
+| Client                                                             | Ceiling cap      |
+| ------------------------------------------------------------------ | ---------------- |
+| The user's CLI on the laptop (`drew-cli`)                          | `secret-bearing` |
+| OpenChamber sessions                                               | `personal`       |
+| Fork / OpenCode agents                                             | `personal`       |
+| Sandbox scripts and Muse lanes via the tailnet (`sandbox-scripts`) | `personal`       |
+| The Worker (`cf-worker`)                                           | `personal`       |
 
 Aster is explicitly not a v1 client. The sensitivity ladder and the context intersection that further narrows a request are in [Sensitivity tiers and client ceilings](../concepts/sensitivity.md); the full variable and file inventory is in [Configuration and environment](../reference/configuration.md).
 
@@ -83,19 +83,19 @@ Every route except `/health` is gated by one shared secret, named `GATE_TOKEN`, 
 
 ### Bindings, variables, and secrets (names only)
 
-| Binding / variable | Kind | Target / value |
-|---|---|---|
-| `QUERY_CACHE` | Durable Object | Class `QueryCache` in this Worker, SQLite-backed (`new_sqlite_classes`, migration tag `v1`) — the per-query cache; see [The service and the Worker](../concepts/service-and-worker.md) |
-| `HOT_CACHE` | D1 database | Database `atlas-hot-cache`. The committed `database_id` in both config files is a local placeholder (`00000000-0000-0000-0000-000000000001`), replaced with the real id when the database is created at deploy time |
-| `SERVICE_BASE` | Plain variable | `https://atlas-search.security.cab` — the tunnel hostname of the laptop service. Every service call is `fetch` against this base |
+| Binding / variable  | Kind           | Target / value                                                                                                                                                                                                                 |
+| ------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `QUERY_CACHE`       | Durable Object | Class `QueryCache` in this Worker, SQLite-backed (`new_sqlite_classes`, migration tag `v1`) — the per-query cache; see [The service and the Worker](../concepts/service-and-worker.md)                                         |
+| `HOT_CACHE`         | D1 database    | Database `atlas-hot-cache`. The committed `database_id` in both config files is a local placeholder (`00000000-0000-0000-0000-000000000001`), replaced with the real id when the database is created at deploy time            |
+| `SERVICE_BASE`      | Plain variable | `https://atlas-search.security.cab` — the tunnel hostname of the laptop service. Every service call is `fetch` against this base                                                                                               |
 | `HOT_CACHE_ENABLED` | Plain variable | `"false"` as committed. Only the literal string `"true"` enables the D1 store — and today that still changes nothing, because the store is not wired into the request path (#13105); see [Troubleshooting](troubleshooting.md) |
 
 Secrets are set with `wrangler secret put` or uploaded with the new version at deploy time; values are never in either config file:
 
-| Secret name | Purpose |
-|---|---|
-| `GATE_TOKEN` | The inbound bearer gate above |
-| `SERVICE_TOKEN` | The service's `cf-worker` client token (service-side cap `personal`), presented as a bearer on every service call |
+| Secret name                                 | Purpose                                                                                                                                                               |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GATE_TOKEN`                                | The inbound bearer gate above                                                                                                                                         |
+| `SERVICE_TOKEN`                             | The service's `cf-worker` client token (service-side cap `personal`), presented as a bearer on every service call                                                     |
 | `ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET` | The Cloudflare Access service token for `atlas-search.security.cab`, presented as the `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers on every service call |
 
 At deploy time these are assembled from fleet secrets under the names `atlas.search-worker-gate-token`, `atlas.search-cf-worker-token`, `cloudflare.access-atlas-search-client-id`, and `cloudflare.access-atlas-search-client-secret`, plus `cloudflare.api-token-account-wide` for the `cf` CLI itself. The Worker holds **no Turso credentials and no shard list**: fan-out, shard discovery, manifest reads, and merging all live in the laptop service.

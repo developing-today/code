@@ -253,11 +253,16 @@ describe("a roadmap file", () => {
         expect(["doing", "now", "next", "later", "built"]).toContain(row.phase);
       }
     }
-    // The two this was written against have rows now: a parser that
-    // read none would pass the loop above.
+    // A parser that read nothing would pass the loop above, so the files
+    // between them have rows. How many each has is the planners' to
+    // change, and not counted here: for an evening this asked ten of the
+    // id roadmap, which had just been tidied down to eight, and every
+    // run of the tests failed for it.
     const count = (file: string) => parseRoadmap(readFileSync(`${ROOT}/${file}`, "utf8")).length;
-    expect(count("planning/roadmaps/id.md")).toBeGreaterThanOrEqual(10);
-    expect(count("planning/roadmaps/pm-stack.md")).toBeGreaterThanOrEqual(4);
+    const files = CAPABILITIES.flatMap((c) => (c.file ? [c.file] : []));
+    // (Fleet and Atlas had no file until 2026-11-23, and their pages showed issues alone.)
+    expect(files).toEqual(expect.arrayContaining(["planning/roadmaps/fleet.md", "planning/roadmaps/atlas.md"]));
+    expect(files.reduce((sum, file) => sum + count(file), 0)).toBeGreaterThan(0);
   });
 });
 
@@ -351,7 +356,7 @@ describe("a capability's roadmap", () => {
     // What was read for one capability is not the answer for another.
     const other = await w.plan.roadmap("atlas");
     expect(other.area).toBe("atlas");
-    expect(w.calls).toHaveLength(8); // atlas has no file: its two searches
+    expect(w.calls).toHaveLength(9); // its own file, and its own two searches
     w.calls.splice(6);
     // A minute on, it is asked again by itself.
     w.state.now += 60_000;
@@ -373,25 +378,57 @@ describe("a capability's roadmap", () => {
   });
 
   test("a capability with no file is its issues, and a part that cannot be read says so alone and is asked again", async () => {
+    // Each capability has a file now (Fleet and Atlas had none until 2026-11-23). One added
+    // before its file is written is still its issues alone, so one is added here for the test.
+    CAPABILITIES.push({ id: "unwritten", title: "Unwritten", labels: ["app/unwritten"], file: null });
+    try {
+      let fail = true;
+      const w = world((c) =>
+        c.q?.includes("is:open") && fail ? { fail: "HTTP 403: rate limit" } : { items: [], total_count: 0 },
+      );
+      const got = await w.plan.roadmap("unwritten");
+      expect(got.file).toBeNull();
+      expect(got.rows).toEqual([]);
+      for (const phase of ["doing", "now", "next", "later"] as const) {
+        expect((got.issues[phase] as { error: string }).error).toContain("rate limit");
+      }
+      expect(got.issues.built).toEqual([]);
+      expect(got.partial).toBe(true);
+      expect(w.calls.some((c) => c.path.includes("/contents/"))).toBe(false);
+      // What failed is not what the next minute is answered from.
+      fail = false;
+      const next = await w.plan.roadmap("unwritten");
+      expect(next.partial).toBe(false);
+      expect(next.issues.now).toEqual([]);
+      expect(() => w.plan.roadmap("nonesuch")).toThrow(/area: one of id, fleet, atlas, pm-stack/);
+    } finally {
+      CAPABILITIES.pop();
+    }
+    expect(CAPABILITIES.some((c) => c.id === "unwritten")).toBe(false);
+  });
+
+  test("a capability's file that cannot be read says so alone: its issues still show, and it is asked for again", async () => {
     let fail = true;
     const w = world((c) =>
-      c.q?.includes("is:open") && fail ? { fail: "HTTP 403: rate limit" } : { items: [], total_count: 0 },
+      c.path.includes("/contents/")
+        ? fail
+          ? { fail: "HTTP 404: Not Found" }
+          : {
+              content: btoa(
+                "## Now\n\n| Title | Status | Intent | Links |\n| --- | --- | --- | --- |\n| A row | planned | Why. | #7 |\n",
+              ),
+            }
+        : { items: [], total_count: 0 },
     );
     const got = await w.plan.roadmap("atlas");
-    expect(got.file).toBeNull();
-    expect(got.rows).toEqual([]);
-    for (const phase of ["doing", "now", "next", "later"] as const) {
-      expect((got.issues[phase] as { error: string }).error).toContain("rate limit");
-    }
-    expect(got.issues.built).toEqual([]);
-    expect(got.partial).toBe(true);
-    expect(w.calls.some((c) => c.path.includes("/contents/"))).toBe(false);
-    // What failed is not what the next minute is answered from.
+    expect(got.file).toBe("planning/roadmaps/atlas.md");
+    expect((got.rows as unknown as { error: string }).error).toContain("Not Found");
+    expect([got.issues.now, got.issues.built, got.partial]).toEqual([[], [], true]);
+    expect(w.calls.filter((c) => c.path.endsWith("/contents/planning/roadmaps/atlas.md"))).toHaveLength(1);
     fail = false;
     const next = await w.plan.roadmap("atlas");
     expect(next.partial).toBe(false);
-    expect(next.issues.now).toEqual([]);
-    expect(() => w.plan.roadmap("nonesuch")).toThrow(/area: one of id, fleet, atlas, pm-stack/);
+    expect(next.rows).toMatchObject([{ title: "A row", status: "planned", issues: [7], phase: "now" }]);
   });
 
   test("the four the owner named come first, and every roadmap file in the repository has a page", () => {
@@ -934,29 +971,35 @@ describe("over HTTP", () => {
     const { d, w } = served((c) =>
       c.path.includes("/issues?labels=") ? [] : c.path.includes("/contents/") ? { content: "" } : { items: [] },
     );
-    const caps = await (await handle(get("/console/api/roadmaps"), d)).json();
+    const caps = (await (await handle(get("/console/api/roadmaps"), d)).json()) as {
+      id: string;
+      title: string;
+      file: string | null;
+    }[];
     expect(caps.slice(0, 4)).toEqual([
       { id: "id", title: "id", file: "planning/roadmaps/id.md" },
-      { id: "fleet", title: "Fleet", file: null },
-      { id: "atlas", title: "Atlas", file: null },
+      { id: "fleet", title: "Fleet", file: "planning/roadmaps/fleet.md" },
+      { id: "atlas", title: "Atlas", file: "planning/roadmaps/atlas.md" },
       { id: "pm-stack", title: "PM stack", file: "planning/roadmaps/pm-stack.md" },
     ]);
     expect(w.calls).toHaveLength(0); // the list of capabilities asks GitHub nothing
     const fleet = await handle(get("/console/api/roadmap?area=fleet"), d);
     expect(fleet.status).toBe(200);
     expect(await fleet.json()).toMatchObject({ area: "fleet", title: "Fleet", rows: [], partial: false });
-    expect(w.calls).toHaveLength(2);
+    // Its file, what is open and what closed lately: three reads.
+    expect(w.calls).toHaveLength(3);
+    expect(w.calls.filter((c) => c.path.endsWith("/contents/planning/roadmaps/fleet.md"))).toHaveLength(1);
     await handle(get("/console/api/roadmap?area=fleet"), d);
-    expect(w.calls).toHaveLength(2);
+    expect(w.calls).toHaveLength(3);
     await handle(get("/console/api/roadmap?area=fleet&fresh=1"), d);
-    expect(w.calls).toHaveLength(4);
+    expect(w.calls).toHaveLength(6);
     // Only "1" asks again: anything else in its place is a look like any other.
     await handle(get("/console/api/roadmap?area=fleet&fresh=0"), d);
-    expect(w.calls).toHaveLength(4);
+    expect(w.calls).toHaveLength(6);
     expect((await handle(get("/console/api/roadmap?area=nonesuch"), d)).status).toBe(400);
     expect((await handle(get("/console/api/roadmap"), d)).status).toBe(400);
     expect(await (await handle(get("/console/api/bugs"), d)).json()).toMatchObject({ open: [], fixed: [] });
-    expect((await (await handle(get("/console/api/intake"), d)).json()).items).toEqual([]);
+    expect(((await (await handle(get("/console/api/intake"), d)).json()) as { items: unknown[] }).items).toEqual([]);
     const before = w.calls.length;
     await handle(get("/console/api/bugs?fresh=1"), d);
     await handle(get("/console/api/intake?fresh=1"), d);
@@ -983,7 +1026,7 @@ describe("over HTTP", () => {
       d,
     );
     expect(res.status).toBe(200);
-    expect((await res.json()).result).toEqual({
+    expect(((await res.json()) as { result: Record<string, unknown> }).result).toEqual({
       issue: 13020,
       url: "https://github.com/x/y/issues/13020",
       commented: false,

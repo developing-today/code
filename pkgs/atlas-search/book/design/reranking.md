@@ -45,7 +45,7 @@ Both routes are Rust, in-process, and need no hosted service:
 
 Serving shape follows the consumers. For the CLI and the local service, an in-process library keeps the deployment Atlas already has. If several consumers (the service, fleet, ID, the MCP server) end up reranking, a small shared inference service holding one warm model beats each consumer loading its own ~0.5–1 GB copy — that decision is deferred until a second consumer actually needs the stage.
 
-One Atlas-specific caution: the existing embedder's ONNX path is a *parity contract* (bit-identical output is a gate, not a preference — see [Embeddings: Snowflake Arctic and the parity contract](../concepts/embeddings.md)). The reranker carries no such contract: it is a new model with no Python reference to match, judged on ranking quality alone. The ONNX-versus-candle choice for the reranker is therefore free to be made on robustness and latency evidence, without touching the embedder's route.
+One Atlas-specific caution: the existing embedder's ONNX path is a _parity contract_ (bit-identical output is a gate, not a preference — see [Embeddings: Snowflake Arctic and the parity contract](../concepts/embeddings.md)). The reranker carries no such contract: it is a new model with no Python reference to match, judged on ranking quality alone. The ONNX-versus-candle choice for the reranker is therefore free to be made on robustness and latency evidence, without touching the embedder's route.
 
 ## Hosted rerankers: quality ceilings, never a serving path
 
@@ -55,7 +55,7 @@ They are never a serving path, for a reason that is not negotiable: **secret-tie
 
 ## Gating: per-corpus, or it does not ship
 
-Rerankers can hurt. In one local deployment measurement cited by the survey, two of four rerankers scored *below* plain hybrid retrieval on that corpus, and the largest was both the slowest and the worse. Leaderboard standing is therefore evidence for candidacy, never for adoption. The adoption rule is:
+Rerankers can hurt. In one local deployment measurement cited by the survey, two of four rerankers scored _below_ plain hybrid retrieval on that corpus, and the largest was both the slowest and the worse. Leaderboard standing is therefore evidence for candidacy, never for adoption. The adoption rule is:
 
 1. Build a fixed candidate pool per golden query with the shipped retrieval pipeline.
 2. Score the reranked order with the #5741 harness (nDCG@10, MRR@10), overall and per query class.
@@ -63,7 +63,7 @@ Rerankers can hurt. In one local deployment measurement cited by the survey, two
 
 ## Pool size is the latency knob
 
-Cross-encoder cost is linear in the number of candidates scored, so the pool size *is* the latency budget: in the survey's local measurements, reranking a top-10 pool was roughly 3× faster than top-30 on that corpus, with no quality loss there; top-50–100 is the common production compromise. This design therefore exposes the rerank pool as a named parameter (alongside the existing retrieval `pool`, from which it draws), defaults it inside the 50–200 band, and sets the shipped default from the golden-set run — the pool size at which nDCG stops improving is the pool size Atlas pays for, and no larger.
+Cross-encoder cost is linear in the number of candidates scored, so the pool size _is_ the latency budget: in the survey's local measurements, reranking a top-10 pool was roughly 3× faster than top-30 on that corpus, with no quality loss there; top-50–100 is the common production compromise. This design therefore exposes the rerank pool as a named parameter (alongside the existing retrieval `pool`, from which it draws), defaults it inside the 50–200 band, and sets the shipped default from the golden-set run — the pool size at which nDCG stops improving is the pool size Atlas pays for, and no larger.
 
 ## Blend, don't replace (an option the gate decides)
 
@@ -71,11 +71,11 @@ Pure reranker order is the simple design. The alternative is to min-max-normalis
 
 ## The feedback loop is the prerequisite for learning-to-rank
 
-Everything above is a fixed model applied to fixed pools. Any stronger claim — learning-to-rank (training or tuning a ranker on Atlas's own usage), personalised ranking, behavioural boosts that adapt — needs labelled evidence of what good ranking looks like *for this corpus and this user*. That evidence is the feedback loop:
+Everything above is a fixed model applied to fixed pools. Any stronger claim — learning-to-rank (training or tuning a ranker on Atlas's own usage), personalised ranking, behavioural boosts that adapt — needs labelled evidence of what good ranking looks like _for this corpus and this user_. That evidence is the feedback loop:
 
 - **Capture exists.** `atlas-feedback/v1` records a vote (`up`/`down`, optional comment, `opened` flag) against the `(query_id, chunk_id)` identity of a served result, append-only, with a normalised derivative (`atlas-feedback-normalised/v1`) that classifies comments into categories such as `ranking-too-low`, `missing-result` and `right-file-wrong-chunk`, weighted by requester kind (Drew/user 1.0, agent 0.25, anonymous 0.1; self-feedback by an agent on its own session's retrieval is weighted 0). Query traces (`atlas-query-trace/v1`) record per-result stage scores for every pool entrant, served or not.
 - **The seam is the design work.** The #6046/#8062 seam is where those records become ranking experiments: feedback joined back to traces gives, per query, the pool that was available, the order that was served, and a human/agent judgement on it — the minimum dataset from which a learned ranker, or even an honest per-class weight tuning, can be built and gated.
-- **Until that seam is wired, no learning-to-rank claim is made.** A reranker adopted on golden-set evidence is a measured component; calling any part of today's ranking "learned" would be false. The feedback loop is sequenced *before* learning-to-rank work in the programme for exactly this reason.
+- **Until that seam is wired, no learning-to-rank claim is made.** A reranker adopted on golden-set evidence is a measured component; calling any part of today's ranking "learned" would be false. The feedback loop is sequenced _before_ learning-to-rank work in the programme for exactly this reason.
 
 ## What exists today
 

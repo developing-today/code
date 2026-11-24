@@ -27,8 +27,8 @@ export async function browser(host = "fcm.googleapis.com") {
   const hkdf = async (salt: Uint8Array, ikm: Uint8Array, info: Uint8Array, n: number) =>
     new Uint8Array(
       await crypto.subtle.deriveBits(
-        { name: "HKDF", hash: "SHA-256", salt, info },
-        await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]),
+        { name: "HKDF", hash: "SHA-256", salt: salt as BufferSource, info: info as BufferSource },
+        await crypto.subtle.importKey("raw", ikm as BufferSource, "HKDF", false, ["deriveBits"]),
         n * 8,
       ),
     );

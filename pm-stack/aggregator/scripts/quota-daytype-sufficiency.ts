@@ -25,10 +25,7 @@
 // the offending argument.
 import { writeFile } from "node:fs/promises";
 import { SnapshotStore } from "../src/snapshots.ts";
-import {
-  measureDayTypeSufficiency,
-  renderDayTypeSufficiencyReport,
-} from "../src/quota-daytype-sufficiency.ts";
+import { measureDayTypeSufficiency, renderDayTypeSufficiencyReport } from "../src/quota-daytype-sufficiency.ts";
 
 const VALUE_OPTIONS = ["--store-dir", "--report-out", "--json-out", "--as-of"] as const;
 type ValueOption = (typeof VALUE_OPTIONS)[number];

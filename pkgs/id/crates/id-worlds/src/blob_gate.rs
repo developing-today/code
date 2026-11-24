@@ -279,6 +279,7 @@ mod tests {
                 author: founder,
                 after: Vec::new(),
                 group: None,
+                at: None,
                 body: Body::Create(Create {
                     template: Template::Custom,
                     policy: Policy::default(),
@@ -291,6 +292,7 @@ mod tests {
                 author: founder,
                 after: vec![create],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member,
                     role: Role::Read,
@@ -303,6 +305,7 @@ mod tests {
                 author: founder,
                 after: vec![add],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Remove {
                     member,
                     mode: crate::groups::RemoveMode::Revoke,
@@ -389,6 +392,7 @@ mod tests {
                 author: founder,
                 after: Vec::new(),
                 group: None,
+                at: None,
                 body: create(),
             },
             Event {
@@ -396,6 +400,7 @@ mod tests {
                 author: founder,
                 after: vec![create_a],
                 group: Some(create_a),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member: member_a,
                     role: Role::Read,
@@ -406,6 +411,7 @@ mod tests {
                 author: founder,
                 after: vec![create_a, add_a],
                 group: None,
+                at: None,
                 body: create(),
             },
             Event {
@@ -413,6 +419,7 @@ mod tests {
                 author: founder,
                 after: vec![create_b, add_a],
                 group: Some(create_b),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member: member_b,
                     role: Role::Read,
@@ -470,6 +477,7 @@ mod tests {
                 author: founder,
                 after: Vec::new(),
                 group: None,
+                at: None,
                 body: Body::Create(Create {
                     template: Template::Custom,
                     policy: Policy::default(),
@@ -482,6 +490,7 @@ mod tests {
                 author: founder,
                 after: vec![create],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member: member_key,
                     role: crate::groups::Role::Read,
@@ -494,6 +503,7 @@ mod tests {
                 author: founder,
                 after: vec![add],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Remove {
                     member: member_key,
                     mode: crate::groups::RemoveMode::Revoke,

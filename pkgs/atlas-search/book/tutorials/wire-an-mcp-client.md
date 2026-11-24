@@ -67,8 +67,7 @@ For a client that is not mcpx, register the same three facts in that client's ow
 Before searching, ask the server what it offers. Send an `initialize` first if your client does not do it for you, then `tools/list`:
 
 ```json
-{ "jsonrpc": "2.0", "id": 1, "method": "initialize",
-  "params": { "protocolVersion": "2025-03-26" } }
+{ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "protocolVersion": "2025-03-26" } }
 ```
 
 ```json
@@ -80,20 +79,22 @@ Both go as `POST` bodies to the `/mcp` URL, with the gate header from Step 1. A 
 A correct `tools/list` result contains exactly one tool:
 
 ```json
-{ "tools": [ {
-  "name": "search",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "query": { "type": "string", "description": "The query text." },
-      "k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10,
-             "description": "Maximum number of results to return." }
-    },
-    "required": ["query"]
-  },
-  "annotations": { "readOnlyHint": true, "destructiveHint": false,
-                   "idempotentHint": true, "openWorldHint": false }
-} ] }
+{
+  "tools": [
+    {
+      "name": "search",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "The query text." },
+          "k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 10, "description": "Maximum number of results to return." }
+        },
+        "required": ["query"]
+      },
+      "annotations": { "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+    }
+  ]
+}
 ```
 
 The description returned with the tool states the operating facts in one place: it searches the unified Atlas index, runs under the hosted surface's pinned disclosure context (`hosted-per-user`) and sensitivity ceiling (`personal`), returns the search envelope with per-hit provenance and the effective ceiling the service enforced, and serves a repeat query from cache. If `tools/list` returns more than this one tool, you are not talking to the Atlas Worker described here.
@@ -105,9 +106,7 @@ Common failures at this step: no gate header or a malformed bearer prefix gives 
 Call the `search` tool with a toy query of your own — pick words you expect to occur in your own recent work, not text copied from anyone else's corpus:
 
 ```json
-{ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-  "params": { "name": "search",
-              "arguments": { "query": "queue broker lease", "k": 5 } } }
+{ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "search", "arguments": { "query": "queue broker lease", "k": 5 } } }
 ```
 
 Behaviour to expect:
@@ -149,11 +148,7 @@ The `query` parameter is required; `k` is optional, defaults to 10, and is clamp
 A healthy verification after one miss and one hit returns metadata like this (values are the shape, with a toy query):
 
 ```json
-{ "key": "<64-hex-character cache key>", "query": "queue broker lease",
-  "exists": true, "k": 5,
-  "has_embedding": true, "embedding_dims": 768, "embedding_valid": true,
-  "has_result": true, "result_bytes": 1234,
-  "hit_count": 1, "embed_ms": 0, "search_ms": 0 }
+{ "key": "<64-hex-character cache key>", "query": "queue broker lease", "exists": true, "k": 5, "has_embedding": true, "embedding_dims": 768, "embedding_valid": true, "has_result": true, "result_bytes": 1234, "hit_count": 1, "embed_ms": 0, "search_ms": 0 }
 ```
 
 Check four things:
