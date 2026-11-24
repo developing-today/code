@@ -298,18 +298,6 @@ export async function handleNotes(request, env, url, getStore) {
       if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
       if (!auth.can_send) return json({ error: "this token cannot send notes" }, 403);
       const data = normalizeNoteSend(await readJson(request));
-      if (data.reply_to !== null) {
-        // A reply answers the original note's sender, resolved
-        // store-side; the replier names only the note's id, never
-        // the sender (who may be projected away in their inbox).
-        const origin = await store.noteOrigin(auth.identity, data.reply_to);
-        if (origin === null) throw new InputError(`reply_to ${data.reply_to} is not a note in your inbox`);
-        const recipients = [origin];
-        return json(
-          await store.noteDeliver({ from: auth.identity, recipients, note: data.note, kind: data.kind, reply_to: data.reply_to }),
-          201,
-        );
-      }
       if (data.broaden) {
         const extra_matched = data.to
           ? (await store.noteIdentities()).filter((identity) => noteAddressMatches(data.to, identity))
@@ -323,6 +311,18 @@ export async function handleNotes(request, env, url, getStore) {
         });
         if (out && typeof out.error === "string") throw new InputError(out.error);
         return json(out, 201);
+      }
+      if (data.reply_to !== null) {
+        // A reply answers the original note's sender, resolved
+        // store-side; the replier names only the note's id, never
+        // the sender (who may be projected away in their inbox).
+        const origin = await store.noteOrigin(auth.identity, data.reply_to);
+        if (origin === null) throw new InputError(`reply_to ${data.reply_to} is not a note in your inbox`);
+        const recipients = [origin];
+        return json(
+          await store.noteDeliver({ from: auth.identity, recipients, note: data.note, kind: data.kind, reply_to: data.reply_to }),
+          201,
+        );
       }
       // Identities come back in name order, so a limit takes the first
       // N matches deterministically; the response is the match report.
