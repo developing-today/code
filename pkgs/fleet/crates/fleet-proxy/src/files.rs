@@ -514,7 +514,13 @@ pub fn put_stream(
             }),
         )?;
         let written = reply.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
-        if written != offset + len as u64 {
+        // The daemon reports the durable temp length, which can exceed
+        // this chunk's end when the write replayed already-durable
+        // bytes (an identical interior retry returns the longer tail,
+        // #14601) — so only a shortfall is a divergence. A conflicting
+        // rewrite never reaches this check: the daemon refuses it with
+        // an `error` reply, which `post` already turned into `Err`.
+        if written < offset + len as u64 {
             return Err(ClientError::Transport(format!(
                 "daemon write at offset {offset} reports {written} bytes durably written, expected {}",
                 offset + len as u64
@@ -1243,7 +1249,11 @@ mod tests {
                     if slot[offset..offset + overlap] != data[..overlap] {
                         return json!({"error": "conflicting rewrite at offset"});
                     }
-                    slot.truncate(offset + overlap);
+                    // Extend-only: never truncate. When the replay is
+                    // fully interior (`offset + data.len() <= len`), the
+                    // overlapping bytes already matched and there is
+                    // nothing to append; truncating here destroyed the
+                    // durable tail (#14601).
                     slot.extend_from_slice(&data[overlap..]);
                     json!({"size": slot.len() as u64})
                 }
@@ -1414,6 +1424,137 @@ mod tests {
             }),
         );
         assert!(conflict.is_err());
+    }
+
+    #[test]
+    fn interior_identical_replay_preserves_tail_and_reports_len() {
+        // #14601: replaying identical bytes fully interior to the
+        // temp must be a no-op success reporting the durable length —
+        // the fake used to truncate the tail to the replay's end.
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport { daemon };
+        let data = patterned_bytes(100);
+        let sha = sha256_hex(&data);
+        t.post(
+            "/files/begin",
+            json!({"path": "/srv/i.bin", "size": data.len(), "sha256": sha}),
+        )
+        .unwrap();
+        let first = t
+            .post(
+                "/files/write",
+                json!({
+                    "path": "/srv/i.bin", "sha256": sha, "offset": 0,
+                    "data_b64": b64_encode(&data),
+                }),
+            )
+            .unwrap();
+        assert_eq!(first["size"], 100);
+        // Identical replay of [0, 10) against a 100-byte temp.
+        let replay = t
+            .post(
+                "/files/write",
+                json!({
+                    "path": "/srv/i.bin", "sha256": sha, "offset": 0,
+                    "data_b64": b64_encode(&data[..10]),
+                }),
+            )
+            .unwrap();
+        assert_eq!(replay["size"], 100);
+        // Mid-temp interior replay likewise reports the durable length.
+        let mid = t
+            .post(
+                "/files/write",
+                json!({
+                    "path": "/srv/i.bin", "sha256": sha, "offset": 40,
+                    "data_b64": b64_encode(&data[40..50]),
+                }),
+            )
+            .unwrap();
+        assert_eq!(mid["size"], 100);
+        // The tail survived: the full hash still verifies at commit.
+        let committed = t
+            .post(
+                "/files/commit",
+                json!({"path": "/srv/i.bin", "sha256": sha}),
+            )
+            .unwrap();
+        assert_eq!(committed["size"], 100);
+    }
+
+    #[test]
+    fn interior_conflicting_rewrite_refused_and_preserves_temp() {
+        // #14601: a conflicting interior rewrite is refused without
+        // touching the durable bytes.
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport { daemon };
+        let data = patterned_bytes(100);
+        let sha = sha256_hex(&data);
+        t.post(
+            "/files/begin",
+            json!({"path": "/srv/c.bin", "size": data.len(), "sha256": sha}),
+        )
+        .unwrap();
+        t.post(
+            "/files/write",
+            json!({
+                "path": "/srv/c.bin", "sha256": sha, "offset": 0,
+                "data_b64": b64_encode(&data),
+            }),
+        )
+        .unwrap();
+        let mut bad = data[50..60].to_vec();
+        bad[0] ^= 0xFF;
+        let conflict = t.post(
+            "/files/write",
+            json!({
+                "path": "/srv/c.bin", "sha256": sha, "offset": 50,
+                "data_b64": b64_encode(&bad),
+            }),
+        );
+        assert!(conflict.is_err());
+        let committed = t
+            .post(
+                "/files/commit",
+                json!({"path": "/srv/c.bin", "sha256": sha}),
+            )
+            .unwrap();
+        assert_eq!(committed["size"], 100);
+    }
+
+    #[test]
+    fn put_stream_accepts_durable_size_on_identical_replay() {
+        // #14601: when the temp already holds the whole file (a prior
+        // attempt completed its writes but never committed), a fresh
+        // `put_stream` re-sends every chunk and the daemon answers
+        // each with the durable length — the client must accept that
+        // benign replay instead of failing the transfer.
+        let daemon = Arc::new(Mutex::new(FakeDaemon::default()));
+        let mut t = FakeTransport {
+            daemon: daemon.clone(),
+        };
+        let data = patterned_bytes(1000);
+        let sha = sha256_hex(&data);
+        t.post(
+            "/files/begin",
+            json!({"path": "/srv/r.bin", "size": data.len(), "sha256": sha}),
+        )
+        .unwrap();
+        t.post(
+            "/files/write",
+            json!({
+                "path": "/srv/r.bin", "sha256": sha, "offset": 0,
+                "data_b64": b64_encode(&data),
+            }),
+        )
+        .unwrap();
+        // No resume: every chunk is re-sent over durable bytes.
+        let report = put_bytes(&mut t, "/srv/r.bin", &data, false).unwrap();
+        assert_eq!(report.size, data.len() as u64);
+        let mut out: Vec<u8> = Vec::new();
+        let got = get_to_writer(&mut t, "/srv/r.bin", &mut out).unwrap();
+        assert_eq!(got.sha256, report.sha256);
+        assert_eq!(out, data);
     }
 
     #[test]
