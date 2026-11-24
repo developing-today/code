@@ -59,18 +59,20 @@ const detail = Object.fromEntries(
 
 describe("projectorLinks ref filter (#6211)", () => {
   test("board subject: unsafe-integer registry ref dropped, good ref kept", async () => {
-    const links = await projectorLinks("http://projector", "kaneo:board-item");
+    // #8570: projectorLinks is null only on a failed read; the stubbed
+    // registry answers, so the links resolve here.
+    const links = (await projectorLinks("http://projector", "kaneo:board-item")) ?? [];
     expect(links).toEqual([{ ref: GOOD, relation: "implements" }]);
   });
 
   test("roadmap subject: non-GitHub-shaped and unsafe refs dropped, good ref kept", async () => {
-    const links = await projectorLinks("http://projector", "grist:roadmap-row");
+    const links = (await projectorLinks("http://projector", "grist:roadmap-row")) ?? [];
     expect(links).toEqual([{ ref: GOOD, relation: "tracks" }]);
   });
 
   test("/search renders a board item and roadmap row enriched from filtered registry links", async () => {
-    const boardLinks = await projectorLinks("http://projector", "kaneo:board-item");
-    const roadmapLinks = await projectorLinks("http://projector", "grist:roadmap-row");
+    const boardLinks = (await projectorLinks("http://projector", "kaneo:board-item")) ?? [];
+    const roadmapLinks = (await projectorLinks("http://projector", "grist:roadmap-row")) ?? [];
     const board: BoardItem[] = [
       {
         id: "kaneo:pm-stack/task-6211",

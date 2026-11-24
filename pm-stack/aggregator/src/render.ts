@@ -5790,7 +5790,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   var bandsEl = document.getElementById("xf-bands");
   if (bandsEl) bandsEl.addEventListener("change", function (ev) { S.bandCount = Number(ev.target.value); renderRecs(); renderBandComparisons(); enhanceCharts(); });
   var bandScaleEl = document.getElementById("xf-bandscale");
-  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); });
+  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); enhanceCharts(); });
   function syncRecInputs() {
     document.querySelectorAll("[data-rec]").forEach(function (el) {
       var f = el.getAttribute("data-rec");
