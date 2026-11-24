@@ -105,6 +105,49 @@ pub struct ProjectedHeadVersion {
     pub note: ProjectedNote,
 }
 
+/// Immutable Atlas version identity, independent of content and path.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct AtlasVersionKey {
+    pub file_id: String,
+    pub version_seq: u64,
+}
+
+/// One immutable version, with a note operation only if explicitly selected
+/// as a historical head transition.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectedSelectedVersion {
+    pub key: AtlasVersionKey,
+    pub document: ProjectedVersion,
+    pub note: Option<ProjectedNote>,
+}
+
+/// Replay immutable rows with an explicit complete set of historical head
+/// transitions, not merely the current heads. Sequence is ingestion order:
+/// neither a larger sequence nor later ingestion makes a backfill a head.
+///
+/// Every row produces document/claims; only selected keys produce note events.
+/// Empty selection is document-only. Selected keys must exist and be unique.
+/// As with `project_head_versions`, selected rows must include each file's first
+/// published head and every subsequent transition; completeness is the caller's
+/// obligation. This does not accept incremental suffixes or resolve lineage.
+pub fn project_selected_versions(
+    rows: &[AtlasVersionRow],
+    _head_transitions: &[AtlasVersionKey],
+) -> Result<Vec<ProjectedSelectedVersion>> {
+    // Red baseline: treating every immutable row as a head is unsafe.
+    Ok(project_head_versions(rows)?
+        .into_iter()
+        .map(|head| ProjectedSelectedVersion {
+            key: AtlasVersionKey {
+                file_id: head.event_ref.file_id,
+                version_seq: head.event_ref.version_seq,
+            },
+            document: head.document,
+            note: Some(head.note),
+        })
+        .collect())
+}
+
 fn refuse(message: impl std::fmt::Display) -> Error {
     Error::fatal(format!("version_projection: {message}"))
 }
@@ -251,6 +294,85 @@ mod tests {
 
     fn fixture_rows() -> Vec<AtlasVersionRow> {
         serde_json::from_str(include_str!("../../../fixtures/id_projection_rows.json")).unwrap()
+    }
+
+    fn fixture_head_keys() -> Vec<AtlasVersionKey> {
+        // Oracle input: explicit historical transition facts, not max(sequence).
+        #[derive(Deserialize)]
+        struct Selection {
+            file_id: String,
+            version_seq: u64,
+            head_transition: bool,
+        }
+        let rows: Vec<Selection> =
+            serde_json::from_str(include_str!("../../../fixtures/id_projection_rows.json"))
+                .unwrap();
+        rows.into_iter()
+            .filter(|row| row.head_transition)
+            .map(|row| AtlasVersionKey {
+                file_id: row.file_id,
+                version_seq: row.version_seq,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fixture_explicit_selection_recomputes_heads_without_backfill_revisions() {
+        let rows = fixture_rows();
+        let keys = fixture_head_keys();
+        let heads: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                keys.contains(&AtlasVersionKey {
+                    file_id: row.file_id.clone(),
+                    version_seq: row.version_seq,
+                })
+            })
+            .cloned()
+            .collect();
+        let output = project_selected_versions(&rows, &keys).unwrap();
+        assert_eq!(output.len(), rows.len());
+        assert!(
+            heads.len() < rows.len(),
+            "fixture must include non-head backfills"
+        );
+        for projected in &output {
+            let row = rows
+                .iter()
+                .find(|row| {
+                    row.file_id == projected.key.file_id
+                        && row.version_seq == projected.key.version_seq
+                })
+                .unwrap();
+            assert_recomputes(row, &projected.document);
+            if keys.contains(&projected.key) {
+                assert_head_recomputes(
+                    &heads,
+                    &ProjectedHeadVersion {
+                        event_ref: ProjectedNoteEventRef {
+                            file_id: row.file_id.clone(),
+                            version_seq: row.version_seq,
+                        },
+                        document: projected.document.clone(),
+                        note: projected.note.clone().unwrap(),
+                    },
+                );
+            } else {
+                assert_eq!(
+                    projected.note, None,
+                    "non-head backfills never revise a note"
+                );
+            }
+        }
+        let mut reversed_rows = rows.clone();
+        reversed_rows.reverse();
+        let mut reversed_keys = keys.clone();
+        reversed_keys.reverse();
+        assert_eq!(
+            serde_json::to_vec(&output).unwrap(),
+            serde_json::to_vec(&project_selected_versions(&reversed_rows, &reversed_keys).unwrap())
+                .unwrap()
+        );
     }
 
     /// Oracle: every publication field is recomputed from the fixture Atlas
