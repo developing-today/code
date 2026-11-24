@@ -1392,9 +1392,14 @@ export function liveSource(
         }
         return merged;
       } catch (err) {
-        provenance.board = `fixtures (kaneo unreachable: ${err instanceof Error ? err.message : err})`;
+        // #14397 slice 1: a failed board fetch is unavailable, never
+        // fixture-backed. Fixture cards would masquerade as the
+        // team's real work; an empty board with the failure named in
+        // provenance tells readers Kaneo could not be reached. Other
+        // sources keep their own fallbacks in this slice.
+        provenance.board = `unavailable (kaneo unreachable: ${err instanceof Error ? err.message : err})`;
+        return [];
       }
-      return fix.board();
     },
     async roadmap() {
       try {
