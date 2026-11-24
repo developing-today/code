@@ -7,7 +7,7 @@
 
 ## 1. Verdict up front
 
-The separation Drew is asking for **already exists as a design** — the #9199 family designed intrinsic urgency, nullable importance, and derived effective pressure as separate things in November, with slices, oracles, and a completed research slice on exactly the urgency/importance nuance. What that family does **not** have is (a) first-class temporal fields on queue items, and (b) a queue-level answer to the rot problem. Those two are the genuinely new material here, and both are small. The scale question has a definite answer: the ~10x expansion Drew half-remembers was the mill charter's 0–2000+ profile, and the design already ruled on it — do not transplant it (§3). The decision page is §7.
+The separation Drew is asking for **already exists as a design** — the #9199 family designed intrinsic urgency, nullable importance, and derived effective pressure as separate things in November, with slices, oracles, and a completed research slice on exactly the urgency/importance nuance. What that family does **not** have is (a) first-class temporal fields on queue items, and (b) a queue-level answer to the rot problem. Those two are the genuinely new material here, and both are small. The scale question has a definite answer: the ~10x expansion Drew half-remembers was the mill charter's 0–2000+ profile, and the design already ruled on it — do not transplant it (§3). A follow-up on label↔number mechanics (§8) closes the scale question from the other side. The decision page is §9.
 
 ## 2. What already exists — the recovered model
 
@@ -118,7 +118,7 @@ Answered with the model, not by taste:
 - What granularity *does* buy in the mill design is mechanical, and it is already provided elsewhere: room to order peers without collisions is provided by the exact-integer **peer rank** (PRI-03 design), and smooth sampler weights are a *calibration* property of the profile (the `d=200` lesson), not a reason to renumber humans' bands.
 - Human judgement is categorical at the point of triage — the mill's own triage vocabulary is much-more / slightly-more / equal / slightly-less / much-less. A coarse named scale matches the instrument actually used to assign values; the fine distinctions belong in rank and derived pressure, where machines consume them.
 
-**Verdict: do not expand the live scale.** If a future machine consumer needs finer resolution, PRI-01's versioned `PriorityProfile` already allows a second profile to exist beside the named one without touching a single live value.
+**Verdict: do not expand the live scale.** If a future machine consumer needs finer resolution, PRI-01's versioned `PriorityProfile` already allows a second profile to exist beside the named one without touching a single live value. §8 gives the practical resolution from the label side: band ranges with set points deliver the usable content of a finer scale — precision in the integer, vocabulary in the bands — without one.
 
 ## 7. The queue as a planning dataset — which fields earn their storage
 
@@ -132,7 +132,75 @@ Drew's test: queue items needn't back up all of GitHub, but searchable / queryab
 
 **Metadata (JSON), not columns:** programme, tracking issue, held marks, coverage exceptions (#14170's registry) — context that travels with the item but is never a sort/filter key. The moment a metadata key becomes a planning filter, it graduates to a column under #14170's rule; the three datetimes start as columns because their queries are already named.
 
-## 8. Decision page for Drew
+## 8. Label ↔ number mechanics (follow-up, Drew 2026-11-24 01:42 CST)
+
+Drew endorsed the direction above ("yes looks good") and sketched a label mechanism to explore in the same deliverable: a band label sets the number to the band's set point; an exact-value label sets the number exactly, after which the system may replace it with the canonical band label. On that last point he then deferred explicitly (01:44 CST): *"I'm not sure if they replace, might both have use but defer to what the research shows."* Replace-vs-coexist is therefore treated here as an open question and evaluated, not assumed (§8.4). Cross-links: #14100 (the reprioritize verb — label sync semantics live there), #9200 (label normalization design), #9483 (hysteresis/cooldown).
+
+### 8.1 Vocabulary check
+
+The actual label spelling is `priority/<name>` with a slash (#14100 amendment, 2026-11-23) — Drew's `priority:now` dictation forms are the same labels. The generated set is exactly ten: `priority/immediate`, `priority/now`, `priority/critical`, `priority/urgent`, `priority/very-high`, `priority/high`, `priority/medium`, `priority/low`, `priority/very-low`, `priority/minimal`; the legacy `priority/normal` reads as `medium` and is replaced on next sync. #14100's sync rule is the foundation everything here stands on: **the queue row is the source of truth; the GitHub write happens after the queue commit, never blocks it, and never rolls it back**; a failed sync leaves a `reprioritize_sync_pending` event plus a durable outbox retry.
+
+### 8.2 Bands as ranges, and the set point
+
+#14100's amendment maps each category to exactly one number and each *on-scale* number to exactly one category — but it does not define which category an off-scale stored number projects to, and off-scale values already exist (ratified 15/25) and would multiply under §8.3's exact writes. Drew's sketch supplies the missing piece: **bands as ranges**.
+
+Proposal: each band owns the integers closer to its set point than to any neighbour's; boundaries sit at the midpoints between adjacent set points; an exact midpoint tie falls to the **less urgent** band (a value must be *strictly* closer to a band's set point to earn that band):
+
+| Band | Set point | Owns (integers) |
+| --- | --- | --- |
+| immediate | 5 | ≤ 7 |
+| now | 10 | 8–14 |
+| critical | 20 | 15–24 |
+| urgent | 30 | 25–34 |
+| very high | 40 | 35–44 |
+| high | 50 | 45–54 |
+| medium | 60 | 55–64 |
+| low | 70 | 65–74 |
+| very low | 80 | 75–84 |
+| minimal | 90 | ≥ 85 |
+
+- **Drew's boundary question — which band owns 75?** Very low. 75 is the exact midpoint of low (70) and very low (80); under the tie rule it falls to the less urgent neighbour. Likewise 15 → critical and 25 → urgent, so the ratified values land sensibly: `expedite` 15 reads as critical, `next-up` 25 as urgent. (Under #14100's superseded 4-category mapping 15 read as "high" — the *vocabulary* changed, not the value; projections are vocabulary-relative, which #9200's versioned payloads already assume.)
+- **Set point = the named number itself**, not the range's arithmetic midpoint. Under nearest-set-point ranges the set point is near-central by construction — low's range 65–74 centres on 69.5 ≈ 70 — so Drew's "often midpoint" holds automatically. Redefining set points as exact midpoints would move defaults off the ratified numbers to buy a symmetry nothing consumes; rejected under the no-renumbering principle.
+- **Projection is a pure function** of (number, scale version): any viewer, replay, or reconciliation computes the same label from the same row. That purity is load-bearing for #9200's reconciliation — it is also the constraint that decides §8.4.
+
+### 8.3 Applying a band label, removing one, and within-band order
+
+A label edit is a *producer command* into the broker's one write path (#9200), executed with #14100's ordering (queue commit first, sync after). Sharpened semantics:
+
+- **Label added, row already inside the band → retain the exact value.** The label asserted the band; the within-band position is information (often a deliberate clump-refinement placement) and a band assertion does not erase it. The command records a no-numeric-change normalization.
+- **Label added, row outside the band → move to the set point**, not the nearest edge. The set point is the band's canonical "no further information" value; landing on an edge would manufacture false precision and park the item one step from re-crossing.
+- **Label removed → not a priority change** (#9200's rule, kept): the score is preserved, triage is expedited, and there is never a silent reset to a default or an escalation to emergency. A label is a projection and an input surface; deleting the projection does not delete the fact.
+- **Within-band ordering:** exact values already order within a band, because claim order is by the number itself — no machinery needed. The discipline from #9199 still applies: exact values are *urgency*, refined deliberately (clump refinement is a triage act with reason and evidence), and PRI-03's peer rank remains the tool for items whose urgency is genuinely equal. Do not uniquify values merely to force an order.
+
+### 8.4 Exact-value labels — replace or coexist? (the open question, evaluated)
+
+An exact-value label (`priority:82`) is grammatically unambiguous beside the band names (names are non-numeric; the generated set never contains a numeric label). As an *input* both shapes agree: an authorized exact label is a reprioritize command carrying the exact integer, with provenance (actor = the label editor, reason = label-applied). They differ in what remains on GitHub afterwards.
+
+**Shape R — Replace (normalise away).** After the command commits, the post-commit sync swaps `priority:82` for the canonical band label (`priority/very-low`). GitHub carries exactly one priority label per issue, always a band name; the exact number lives only in the queue row.
+*For:* the label vocabulary stays closed and mutually exclusive, so any reader — human or machine — can validate an issue's label set at a glance; the projection stays a pure function of the row, so GitHub state is always derivable and reconcilable (#9200); zero new machinery — this is exactly the swap #14100 already specifies. *Against:* the exact value is not visible on GitHub itself; a human who pinned 82 leaves no GitHub-side receipt of the exact intent (the receipt exists, but in queue history).
+
+**Shape C — Coexist (distinct roles).** The band label (system-maintained projection) and the exact label (human-authored pin) live side by side with different meanings: the band says where the item sits, the exact label says a human chose the precise point.
+*For:* the exact intent stays visible where humans work; "82 because a human said 82" is distinguishable from "82 because a band move landed there" without leaving GitHub. *Against:* the two labels can disagree, and every resolution rule reintroduces what #14100 exists to prevent. If a later band move takes the row to 30, either the system removes the exact label — coexist collapses into replace-with-delay, plus a removal rule to design — or it stays, and GitHub permanently shows a stale assertion: the two-places-to-edit drift that was the verb's founding problem ("so the two never drift and no human edits both places"). Coexist also needs a second synchronisation rule for *every* transition, and a permanent exception class in the mutual-exclusivity/conflict rules.
+
+**What the evidence says.** The information coexist would preserve on GitHub — the exact value, and the fact a human set it — is already preserved *better* in the queue: the row holds the value, and the `reprioritized` history event (#14100) / `task_history` (#14170) holds actor, reason, and from/to. A bare label is the weakest carrier of the three: no actor, no reason, no timestamp discipline. The one genuine loss under Replace — GitHub-side visibility of the exact number — has a cheaper remedy already in the family: #14100 already syncs the pm-metadata block's `lineage.priority`; carrying the exact number beside the category in that block gives display coexistence (band label for the vocabulary, exact number visible in the block the fleet binary already maintains) with storage singularity (one label, one row, one truth).
+
+**Recommendation: Shape R — replace**, with the pm-metadata exact-value display as the pressure valve if GitHub-side visibility proves necessary in practice. If Drew later picks coexist anyway, the honest cost to budget is the stale-pin rule set above; nothing else in this record changes.
+
+Two boundary conditions either way: exact integers outside the scale's span (`priority:3`, `priority:400`) are rejected as label inputs and held for triage (#9200's untrusted/conflicting rule) — the charter's 0–2000 numbers do not re-enter through the label grammar; and adopting exact writes requires one named amendment to #14100, whose verb validation currently rejects off-scale values: distinguish *vocabulary* from *storage* — the named scale governs categories, band defaults, and enqueue, while the stored field is an integer (as #9199's `intrinsicUrgency` always was) that an exact write may set anywhere in span, with provenance. Enqueue and band moves stay on-scale.
+
+### 8.5 Edge cases
+
+- **Race — GitHub label edit vs a verb change:** both are commands into the broker's single path; #14100's guarded write (expected from-value; the 2026-11-12 programme raced zero of 392 writes under the same discipline) serializes them. The loser receives a conflict, its intent is recorded, and the projection is recomputed from the committed row. The projector never writes numbers directly, so there is no second writer to race.
+- **Two band labels at once** (human error, racing editors): mutually exclusive in projection, so the pair is a conflicting producer input — held for triage under #9200 rather than resolved by guessing. Latest-edit-wins was considered and rejected: label edit timestamps are not authority.
+- **Flapping near a boundary:** three defences, each already designed somewhere. (1) The retain-intra-band rule (§8.3) means most label applications never move the number, so the snap-to-set-point flap source fires only on genuine crossings. (2) Band moves are ordinary movements under #9483's hysteresis — buffer, cooldown, at most one ordinary automatic movement per item per sweep; a re-crossing inside cooldown is held, not applied. (3) Label *writes* are coalesced (#9200's threshold/coalesced managed updates), so a wobbling projection doesn't flood the issue with label churn. The asymmetry is the whole answer: **projection (read) is pure and instant; application (write) is hysteretic.**
+- **The sync loop:** the system's own replacement write (`priority:82` → `priority/very-low`) re-enters as an input — and terminates by construction: the replacement label asserts the band the row is already in, the retain rule makes it a numeric no-op, and no further write follows. Provenance marks system writes, so the audit trail shows the replacement as a projection, not a human judgement.
+- **Protected values:** Drew's protected expedite membership/placement (#9199's protected-owner gate) is not editable by label application either; a band label that would move a protected item is held for the owner path, exactly like a routine verb write.
+
+### 8.6 Verdict
+
+Adopt the mechanics as the label surface of the priority model — they are mostly already designed (#9200 normalization + #14100 sync + #9483 hysteresis); the new content is the ranges making projection total, the retain-vs-set-point rule stated sharply, the exact-value grammar, and the replace recommendation in §8.4. And on the scale question: **yes, this makes the ~10x expansion moot in practice.** Precision lives in the integer, vocabulary lives in the bands, and a human gets an exact write path *through* the coarse vocabulary. A finer named scale would add names nobody can hold in their head to solve a problem the ranges already solve.
+
+## 9. Decision page for Drew
 
 **The question:** the single priority number conflates urgency and importance, and briefly-useful work rots unnoticed. Three clean options; all preserve every live value (no renumbering under any option):
 
@@ -149,5 +217,7 @@ No new fields anywhere. Stewardship surfaces stale items from #14170's history (
 *Daily behaviour:* cheapest possible change; the "not noticed" symptom is reduced but not solved — with no expiry dates, the sweep cannot distinguish *stale* (value gone) from merely *quiet* (patiently waiting), so its list needs more human judgement per item than B's.
 
 **Recommendation: A, staged B-first.** Do B's temporal slice first — it is small, immediately useful, and its `due_at` is a prerequisite input to A's pressure derivation anyway — then the PRI chain in its designed order, with importance collection starting as a pilot on newly triaged items (the PRI-08 sufficiency path). The why: the mill already paid the design cost, and its research showed the binding constraint is *data existence*, not model choice. The temporal fields plus null-first importance collection **are** the data-collection step; adopting the model's formulas before collecting its inputs would repeat the conflation under new names. C is the honest fallback if even B's three columns are unwanted — strictly better than today, strictly weaker than B.
+
+**Label mechanics (§8) ride along under any option.** They are orthogonal to A/B/C: under A they are already inside the family via #9200; under B or C they attach to #14100's verb alone. On replace-vs-coexist Drew deferred to the research (2026-11-24 01:44 CST: "I'm not sure if they replace, might both have use but defer to what the research shows") — §8.4 is that research: **replace** (exact labels normalise into band labels; the exact number's GitHub-visible home, if wanted, is the pm-metadata block, not a second label). So whichever of A/B/C Drew picks, the research-backed label shape is visibly the one that rides along, unless he names coexist and accepts its stale-pin rule set. §8 also closes the scale question for good: ranges + set points put the fine grain where it is consumed (the integer) and coarse words where humans talk, so no option needs a bigger scale.
 
 **Explicitly not asked, under any option:** a scale expansion (ruled out in §6), a live renumbering, or a queue migration. This record changes no behaviour until Drew picks an option and the corresponding slices are packetised.
