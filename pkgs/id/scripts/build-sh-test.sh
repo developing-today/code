@@ -28,9 +28,12 @@ self="$(cd "$(dirname "$0")" && pwd)/build-sh-test.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-mkdir -p "$tmp/bin" "$tmp/work/web/dist" "$tmp/work/src" "$tmp/work/crates" \
+mkdir -p "$tmp/bin" "$tmp/work/web/dist" "$tmp/work/src" "$tmp/work/crates" "$tmp/work/scripts" "$tmp/work/composition" \
   "$tmp/work/target/debug" "$tmp/work/target/release"
 cp "$script" "$tmp/work/build.sh"
+cp "$(dirname "$script")/variant-features.sh" "$tmp/work/scripts/variant-features.sh"
+cp "$(dirname "$script")/../composition/variants.toml" "$tmp/work/composition/variants.toml"
+chmod +x "$tmp/work/scripts/variant-features.sh"
 
 # Stub cargo: record every invocation, produce nothing. build.sh
 # touches the binary itself after a successful cargo run.
@@ -78,15 +81,15 @@ bash ./build.sh assets >assets.out 2>&1 ||
 after="$(wc -l <"$tmp/cargo.log")"
 [ "$before" = "$after" ] || fail "assets invoked cargo"
 
-# web control: still invokes cargo with --features web and records
+# web control: still invokes cargo with the generated web feature set and records
 # the web variant (the variant mismatch with the lib build above is
 # what must trigger the rebuild).
 bash ./build.sh web debug >web.out 2>web.err || {
   cat web.err >&2
   fail "web debug exited non-zero"
 }
-grep -qx 'cargo build --features web' "$tmp/cargo.log" ||
-  fail "web debug did not invoke 'cargo build --features web'"
+grep -qx 'cargo build --features web,ssh' "$tmp/cargo.log" ||
+  fail "web debug did not invoke 'cargo build --features web,ssh'"
 [ "$(cat target/.build-variant)" = "web" ] ||
   fail "web debug did not write 'web' to target/.build-variant"
 
@@ -110,13 +113,13 @@ bash ./build.sh lib debug >missing.out 2>missing.err || {
   fail "missing-marker rebuild did not rewrite the marker as 'lib'"
 
 # Empty marker (the interrupted-build state): truncate it, request
-# web — cargo must run with --features web, marker rewritten as 'web'.
+# web — cargo must run with the generated web feature set, marker rewritten as 'web'.
 : >target/.build-variant
 bash ./build.sh web debug >empty.out 2>empty.err || {
   cat empty.err >&2
   fail "empty-marker web debug exited non-zero"
 }
-[ "$(tail -n 1 "$tmp/cargo.log")" = "cargo build --features web" ] ||
+[ "$(tail -n 1 "$tmp/cargo.log")" = "cargo build --features web,ssh" ] ||
   fail "empty marker did not force a web rebuild (log tail: $(tail -n 1 "$tmp/cargo.log"))"
 [ "$(cat target/.build-variant)" = "web" ] ||
   fail "empty-marker rebuild did not rewrite the marker as 'web'"

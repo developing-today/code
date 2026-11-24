@@ -16,6 +16,10 @@ categories = ["command-line-utilities", "network-programming"]
 # id-core sub-crate under crates/; this package is the workspace root.
 
 [workspace]
+# Pin the feature resolver explicitly (plan §7.4, S2 of #14056): edition 2024
+# already implies resolver 3 for this package, but the pin makes it visible and
+# keeps member feature unification fixed if the edition ever moves.
+resolver = "3"
 members = [
   "crates/id-core",
   "crates/id-config",
