@@ -72,7 +72,16 @@ async function infoRefs(request, env, owner, repo) {
 async function uploadPack(request, env, owner, repo) {
   const doc = await loadDoc(env, owner, repo);
   if (!doc) return notFound();
-  const body = await request.arrayBuffer();
+  // git's HTTP transport gzip-compresses larger upload-pack requests
+  // (Content-Encoding: gzip); the pkt-lines live inside the encoding.
+  let stream = request.body;
+  const encoding = (request.headers.get("content-encoding") || "").toLowerCase();
+  if (encoding === "gzip" || encoding === "deflate") {
+    stream = stream.pipeThrough(new DecompressionStream(encoding));
+  } else if (encoding && encoding !== "identity") {
+    return text(`unsupported content-encoding: ${encoding}\n`, 400);
+  }
+  const body = await new Response(stream).arrayBuffer();
   if (body.byteLength > MAX_REQUEST_BYTES) {
     return text("upload-pack request too large\n", 400);
   }

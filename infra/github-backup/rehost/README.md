@@ -57,6 +57,11 @@ git clone https://git.security.cab/…  ──▶ Worker fleet-git-rehost
 - The pack is streamed from R2 through the Worker; nothing is
   buffered in Worker memory, so repo size is an R2/bandwidth
   question, not a Worker-limits one.
+- git's HTTP transport sends larger upload-pack requests
+  gzip-compressed (`Content-Encoding: gzip`); the Worker decompresses
+  before parsing pkt-lines. (Found by the first live clone drill:
+  a 55-ref advertisement makes a request body big enough for git to
+  compress, and a server that parses the raw bytes answers 400.)
 
 ## Operations
 
