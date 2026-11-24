@@ -7,10 +7,12 @@
 //! every transition must be remembered. This store is that state:
 //!
 //! - `identities` — one row per (provider, subject): status
-//!   (`active` | `unlinked`), link/unlink timestamps. Rows are never
+//!   (`active` | `pending` | `unlinked`), link/unlink timestamps,
+//!   and pending-claim provenance. Rows are never
 //!   hard-deleted while the account lives; unlinking flips status.
 //! - `identity_events` — append-only history (`seed` | `link` |
-//!   `relink` | `unlink`), protected by the same no-UPDATE /
+//!   `relink` | `unlink` | `register` | `approve` | `reject` |
+//!   `provision`), protected by the same no-UPDATE /
 //!   no-DELETE triggers as the audit table, so the continuity of
 //!   who-was-linked-when survives every later change.
 //!
@@ -18,7 +20,7 @@
 //! configured identity that the store has never seen is inserted as
 //! active with a `seed` event. After that the store is authoritative.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -27,15 +29,17 @@ pub struct IdentityRow {
     pub provider: String,
     pub subject: String,
     pub account_id: String,
-    pub status: String, // "active" | "unlinked"
+    pub status: String, // "active" | "pending" | "unlinked"
     pub linked_at: i64,
     pub unlinked_at: Option<i64>,
+    pub claimed_via: Option<String>,
+    pub claimed_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdentityEvent {
     pub ts_unix: i64,
-    pub event: String, // "seed" | "link" | "relink" | "unlink"
+    pub event: String, // seed | link | relink | unlink | register | approve | reject | provision
     pub provider: String,
     pub subject: String,
     pub account_id: String,
@@ -76,6 +80,8 @@ impl IdentityStore {
                 status TEXT NOT NULL,
                 linked_at INTEGER NOT NULL,
                 unlinked_at INTEGER,
+                claimed_via TEXT,
+                claimed_at INTEGER,
                 PRIMARY KEY (provider, subject)
             );
             CREATE TABLE IF NOT EXISTS identity_events (
@@ -97,6 +103,27 @@ impl IdentityStore {
             END;",
         )
         .map_err(|e| format!("failed to initialise identity schema: {e}"))?;
+        // Existing runtime databases predate pending claims. Keep this
+        // migration additive so restarts preserve their rows.
+        for (column, declaration) in [("claimed_via", "TEXT"), ("claimed_at", "INTEGER")] {
+            let exists: bool = conn
+                .prepare("PRAGMA table_info(identities)")
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| row.get::<_, String>("name"))
+                        .and_then(|rows| {
+                            rows.collect::<Result<Vec<_>, _>>()
+                                .map(|names| names.iter().any(|name| name == column))
+                        })
+                })
+                .map_err(|e| format!("failed to inspect identity schema: {e}"))?;
+            if !exists {
+                conn.execute(
+                    &format!("ALTER TABLE identities ADD COLUMN {column} {declaration}"),
+                    [],
+                )
+                .map_err(|e| format!("failed to migrate identity schema: {e}"))?;
+            }
+        }
         Ok(IdentityStore {
             conn: Mutex::new(conn),
         })
@@ -195,6 +222,118 @@ impl IdentityStore {
     /// closed (treated as not linked).
     pub fn is_active(&self, provider: &str, subject: &str) -> bool {
         matches!(self.status(provider, subject), Ok(Some(ref s)) if s == "active")
+    }
+
+    /// Register a previously unseen identity as pending. Claim provenance
+    /// and its timestamp remain on the row after approval or rejection.
+    pub fn register_pending(
+        &self,
+        provider: &str,
+        subject: &str,
+        account_id: &str,
+        claimed_via: &str,
+    ) -> Result<bool, String> {
+        let mut conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("identity registration transaction failed: {e}"))?;
+        let now = crate::registry::now_unix();
+        let inserted = tx
+            .execute(
+                "INSERT OR IGNORE INTO identities
+                 (provider, subject, account_id, status, linked_at, unlinked_at, claimed_via, claimed_at)
+                 VALUES (?1, ?2, ?3, 'pending', ?4, NULL, ?5, ?4)",
+                rusqlite::params![provider, subject, account_id, now, claimed_via],
+            )
+            .map_err(|e| format!("pending identity registration failed: {e}"))?;
+        if inserted == 1 {
+            Self::record_event(&tx, "register", provider, subject, account_id, claimed_via)?;
+        }
+        tx.commit()
+            .map_err(|e| format!("identity registration commit failed: {e}"))?;
+        Ok(inserted == 1)
+    }
+
+    pub fn approve_pending(
+        &self,
+        provider: &str,
+        subject: &str,
+        actor: &str,
+    ) -> Result<bool, String> {
+        self.transition_pending(provider, subject, "active", "approve", actor)
+    }
+
+    pub fn reject_pending(
+        &self,
+        provider: &str,
+        subject: &str,
+        actor: &str,
+    ) -> Result<bool, String> {
+        self.transition_pending(provider, subject, "unlinked", "reject", actor)
+    }
+
+    fn transition_pending(
+        &self,
+        provider: &str,
+        subject: &str,
+        status: &str,
+        event: &str,
+        actor: &str,
+    ) -> Result<bool, String> {
+        let mut conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("identity transition transaction failed: {e}"))?;
+        let account_id: Option<String> = tx
+            .query_row(
+                "SELECT account_id FROM identities WHERE provider = ?1 AND subject = ?2 AND status = 'pending'",
+                rusqlite::params![provider, subject],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("pending identity lookup failed: {e}"))?;
+        let Some(account_id) = account_id else {
+            return Ok(false);
+        };
+        let now = crate::registry::now_unix();
+        tx.execute(
+            "UPDATE identities SET status = ?1, linked_at = ?2,
+             unlinked_at = CASE WHEN ?1 = 'unlinked' THEN ?2 ELSE NULL END
+             WHERE provider = ?3 AND subject = ?4 AND status = 'pending'",
+            rusqlite::params![status, now, provider, subject],
+        )
+        .map_err(|e| format!("pending identity transition failed: {e}"))?;
+        Self::record_event(&tx, event, provider, subject, &account_id, actor)?;
+        tx.commit()
+            .map_err(|e| format!("identity transition commit failed: {e}"))?;
+        Ok(true)
+    }
+
+    /// Record the identity established as part of provisioning. Account
+    /// creation itself is deliberately outside this store.
+    pub fn record_provision(
+        &self,
+        provider: &str,
+        subject: &str,
+        account_id: &str,
+        actor: &str,
+    ) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("identity provision transaction failed: {e}"))?;
+        let now = crate::registry::now_unix();
+        tx.execute(
+            "INSERT INTO identities
+             (provider, subject, account_id, status, linked_at, unlinked_at, claimed_via, claimed_at)
+             VALUES (?1, ?2, ?3, 'active', ?4, NULL, NULL, NULL)",
+            rusqlite::params![provider, subject, account_id, now],
+        )
+        .map_err(|e| format!("provisioned identity insert failed: {e}"))?;
+        Self::record_event(&tx, "provision", provider, subject, account_id, actor)?;
+        tx.commit()
+            .map_err(|e| format!("identity provision commit failed: {e}"))?;
+        Ok(())
     }
 
     /// Link an identity to the account. Returns the event recorded:
@@ -312,7 +451,7 @@ impl IdentityStore {
         let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
         let mut stmt = conn
             .prepare(
-                "SELECT provider, subject, account_id, status, linked_at, unlinked_at
+                "SELECT provider, subject, account_id, status, linked_at, unlinked_at, claimed_via, claimed_at
                  FROM identities ORDER BY provider, subject",
             )
             .map_err(|e| format!("identity list query failed: {e}"))?;
@@ -325,6 +464,8 @@ impl IdentityStore {
                     status: row.get(3)?,
                     linked_at: row.get(4)?,
                     unlinked_at: row.get(5)?,
+                    claimed_via: row.get(6)?,
+                    claimed_at: row.get(7)?,
                 })
             })
             .map_err(|e| format!("identity list query failed: {e}"))?;
