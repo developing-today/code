@@ -69,6 +69,7 @@ import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
+import { PROMPT_MODES, PROMPT_TARGETS, type PromptRecord } from "./prompts.ts";
 import {
   reconciledInProgress,
   type InProgressSignal,
@@ -609,9 +610,9 @@ function layout(
   return `<!doctype html>
 <html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
+<body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}<a class="badge prompt-unread" href="/chat" data-prompt-unread hidden>✉ <span data-prompt-unread-count>0</span> unread</a>${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script><script src="/assets/prompt-badge.js?v=prompt-badge-2026-11-23" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
 
 /** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */
@@ -4186,7 +4187,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         })
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
-  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))}` : ""} — <a href="/health">health</a></div>`;
   // #1116 item (5): when the feed itself has crossed the staleness
   // threshold the dashboard must say so visibly — a "feed X old" suffix
   // is not an actionable warning. The data-signal hook is what the
@@ -6733,6 +6734,183 @@ export function renderCommentsQueue(comments: DashComment[], provenance: Provena
 <p>${summary}</p>
 ${list}`;
   return layout("Comments queue", body, provenance, "/comments");
+}
+
+// --- Chat/session surface (#10035 S6, design #9539 §4) ---------------------
+// The threaded view over the prompt store: every submission in its
+// thread (a "session"), oldest first inside the thread, threads by
+// latest activity. Reply posts replyTo the specific prompt (the store
+// inherits its thread); refs render as cross-reference links to the
+// referenced prompt's card; archive/read toggles PATCH the record.
+// Archived prompts are hidden by default, per the design — the
+// ?archived=1 view shows them, marked. The page script (CHAT_SCRIPT)
+// only wires the buttons/forms to the existing API; a no-JS browser
+// still gets the full read view.
+
+const CHAT_EXCERPT_CHARS = 80;
+
+function chatExcerpt(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > CHAT_EXCERPT_CHARS ? `${flat.slice(0, CHAT_EXCERPT_CHARS - 1)}…` : flat;
+}
+
+function chatReplyForm(p: PromptRecord): string {
+  const targets = PROMPT_TARGETS.map(
+    (t) => `<option value="${t}"${t === p.target ? " selected" : ""}>${esc(t)}</option>`,
+  ).join("");
+  const modes = PROMPT_MODES.map(
+    (m) => `<option value="${m}"${m === p.mode ? " selected" : ""}>${esc(m)}</option>`,
+  ).join("");
+  return (
+    `<details class="chat-reply"><summary>Reply</summary>` +
+    `<form class="prompt-widget chat-reply-form" method="post" action="/api/prompt" enctype="multipart/form-data">` +
+    `<input type="hidden" name="scope" value="${esc(p.scope)}">` +
+    `<input type="hidden" name="page" value="${esc(p.page)}">` +
+    (p.sectionRef ? `<input type="hidden" name="sectionRef" value="${esc(p.sectionRef)}">` : "") +
+    `<input type="hidden" name="replyTo" value="${esc(p.id)}">` +
+    `<textarea name="prompt" rows="2" required aria-label="Reply"></textarea>` +
+    `<select name="target" aria-label="Target">${targets}</select>` +
+    `<select name="mode" aria-label="Mode">${modes}</select>` +
+    `<label><input type="checkbox" name="notify" value="true"> Notify me</label>` +
+    `<button type="submit">Reply</button>` +
+    `<span class="status muted" role="status"></span>` +
+    `</form></details>`
+  );
+}
+
+function chatPromptHtml(p: PromptRecord, byId: Map<string, PromptRecord>, visible: Set<string>): string {
+  const badges = [
+    `<span class="badge">${esc(p.status)}</span>`,
+    p.archived ? `<span class="badge closed">archived</span>` : "",
+    !p.read ? `<span class="badge msg">unread</span>` : "",
+    `<span class="muted">${esc(p.target)} · ${esc(p.mode)} · ${esc(p.page)}</span>`,
+    `<time datetime="${esc(p.createdAt)}">${esc(p.createdAt)}</time>`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const parent = p.replyTo ? byId.get(p.replyTo) : undefined;
+  const replyLine = p.replyTo
+    ? `<p class="muted">in reply to ${
+        parent ? `<a href="#prompt-${esc(parent.id)}">${esc(chatExcerpt(parent.prompt))}</a>` : esc(p.replyTo)
+      }</p>`
+    : "";
+  const refs = p.refs.length
+    ? `<p>Cross-references: ${p.refs
+        .map((ref) => {
+          const target = byId.get(ref);
+          if (!target) return `<span class="badge closed">↪ ${esc(ref)} · unknown</span>`;
+          if (!visible.has(ref))
+            return `<a class="badge" href="/chat?archived=1#prompt-${esc(ref)}">↪ ${esc(chatExcerpt(target.prompt))} (archived)</a>`;
+          return `<a class="badge" href="#prompt-${esc(ref)}">↪ ${esc(chatExcerpt(target.prompt))}</a>`;
+        })
+        .join(" ")}</p>`
+    : "";
+  const answer = p.answer ? `<div class="chat-answer"><strong>Answer</strong><p>${esc(p.answer)}</p></div>` : "";
+  const error = p.error ? `<p class="chat-error"><strong>Error:</strong> ${esc(p.error)}</p>` : "";
+  const attachments = p.attachments.length
+    ? `<p>Attachments: ${p.attachments
+        .map(
+          (a) =>
+            `<a href="/api/prompt/${encodeURIComponent(p.id)}/attachments/${encodeURIComponent(a.ref)}">${esc(a.name)}</a>`,
+        )
+        .join(" · ")}</p>`
+    : "";
+  const toggles = [
+    p.read
+      ? ""
+      : `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="read" data-patch-value="true">Mark read</button>`,
+    p.archived
+      ? `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="archived" data-patch-value="false">Unarchive</button>`
+      : `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="archived" data-patch-value="true">Archive</button>`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<div class="card chat-prompt${p.read ? "" : " unread"}" id="prompt-${esc(p.id)}"><p>${esc(p.prompt)}</p>${replyLine}<p>${badges}</p>${answer}${error}${refs}${attachments}<p>${toggles}</p>${chatReplyForm(p)}</div>`;
+}
+
+const CHAT_SCRIPT = `<script>
+document.querySelectorAll('[data-prompt-patch]').forEach(function (btn) {
+  btn.addEventListener('click', async function () {
+    var body = {};
+    body[btn.dataset.patchKey] = btn.dataset.patchValue === 'true';
+    btn.disabled = true;
+    try {
+      var r = await fetch('/api/prompt/' + encodeURIComponent(btn.dataset.promptId), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      window.location.reload();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Failed: ' + e.message;
+    }
+  });
+});
+document.querySelectorAll('form.chat-reply-form').forEach(function (form) {
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    var status = form.querySelector('.status');
+    var button = form.querySelector('button[type=submit]');
+    button.disabled = true;
+    if (status) status.textContent = 'Sending…';
+    try {
+      var r = await fetch('/api/prompt', { method: 'POST', body: new FormData(form) });
+      var body = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(body.error || 'HTTP ' + r.status);
+      window.location.reload();
+    } catch (e) {
+      if (status) status.textContent = 'Not sent: ' + e.message;
+      button.disabled = false;
+    }
+  });
+});
+</script>`;
+
+export function renderChat(
+  prompts: PromptRecord[],
+  provenance: Provenance,
+  opts: { showArchived?: boolean } = {},
+): string {
+  const showArchived = opts.showArchived === true;
+  const byId = new Map(prompts.map((p) => [p.id, p]));
+  const visiblePrompts = prompts.filter((p) => showArchived || !p.archived);
+  const visible = new Set(visiblePrompts.map((p) => p.id));
+  const archivedCount = prompts.filter((p) => p.archived).length;
+  const unreadCount = prompts.filter((p) => !p.read && !p.archived).length;
+  const byThread = new Map<string, PromptRecord[]>();
+  for (const p of visiblePrompts) {
+    const arr = byThread.get(p.threadId) ?? [];
+    arr.push(p);
+    byThread.set(p.threadId, arr);
+  }
+  const threads = [...byThread.entries()]
+    .map(([threadId, ps]) => {
+      const ordered = ps.slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+      return { threadId, prompts: ordered, latest: ordered[ordered.length - 1]?.createdAt ?? "" };
+    })
+    .sort((a, b) => (a.latest < b.latest ? 1 : a.latest > b.latest ? -1 : 0));
+  const threadHtml = threads.length
+    ? threads
+        .map((t) => {
+          const root = t.prompts.find((p) => p.replyTo === null) ?? t.prompts[0];
+          return `<section class="chat-thread"><h2>${esc(chatExcerpt(root.prompt))}</h2>\n${t.prompts
+            .map((p) => chatPromptHtml(p, byId, visible))
+            .join("\n")}</section>`;
+        })
+        .join("\n")
+    : `<p class="muted">No prompts yet — submissions from the prompt widgets land here, one thread per session.</p>`;
+  const toggle = showArchived
+    ? `<a href="/chat">Hide archived</a>`
+    : archivedCount > 0
+      ? `<a href="/chat?archived=1">Show archived (${archivedCount})</a>`
+      : "";
+  const body = `<h1>Chat</h1>
+<p class="muted">Every prompt submission in its thread (#10035, design #9539 §4): reply in context, cross-reference other prompts, archive when done. Archived prompts are hidden by default. Machine-first: <a href="/api/prompt/threads">/api/prompt/threads</a> · <a href="/api/prompt/unread-count">/api/prompt/unread-count</a>.</p>
+<p>${threads.length} thread${threads.length === 1 ? "" : "s"} · ${unreadCount} unread${toggle ? ` · ${toggle}` : ""}</p>
+${threadHtml}`;
+  return layout("Chat", body, provenance, "/chat", CHAT_SCRIPT);
 }
 
 // --- Projects page (#910 stage 5: the live GitHub Project pool) ------------

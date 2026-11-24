@@ -43,6 +43,26 @@ Explicit questions still needing resolution under #1258 before the dependent cut
 
 This document supplies the current-state inventory for **#3989 acceptance criterion 1** only. It does not claim laptop-off availability, a cutover, writer fencing, measured RTO/RPO, or a successful restore. The remaining #3989 criteria still wait on the unresolved #1258 mapping/backup decisions and on #1514's remaining restore evidence. #3142 remains the owner of aggregator schema migration; #3869 remains the owner of silent/empty backup-failure handling.
 
+## Health visibility slice (#3989 criterion 6)
+
+The existing host-health path now also reads the active host name and
+`~/backups/dashboard/.last-run.json`, the run record written by
+`pm-dashboard-backup.sh`. `/api/health` exposes `hostHealth.host` and the
+latest backup's date, finish time, result, failing step, archive SHA-256,
+and destination outcomes. The watchdog surfaces a failed generation by
+date and failing step; a missing, malformed, empty, or unverified
+generation is an unavailable-restore-point item, never a successful
+backup. Unit success age remains the separate alarm for a backup chain
+that stops without writing a new run record.
+
+This is health/restore-point visibility only: the PM services and their
+canonical stores have not moved off the laptop, and this slice does not
+complete criterion 6's broader monitoring requirements or claim a
+cutover, fencing, or successful restore. The collector projection is
+covered by `pm-stack/tests/test_host_health_collector.py`; watchdog
+derivation and normalization are covered by
+`pm-stack/aggregator/test/host-health.test.ts`.
+
 ## Evidence references
 
 Live checks on 2026-11-05 were read-only: host name; running container list and volume mounts; systemd service/timer state; aggregator state filenames (not file contents); the 2026-11-04 backup run record; and archive member categories. GitHub was freshly queried for #3989, #1258, and #1514, including #1258's 2026-11-03 owner rulings and #1514's 2026-11-04 backup-run update.

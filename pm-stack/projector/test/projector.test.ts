@@ -122,6 +122,36 @@ describe("projector: issues", () => {
     expect(items.has("developing-today/code#102")).toBe(false);
   });
 
+  test("transferred issue deletes the source-repo row by source number (D-1, #10673)", async () => {
+    const { store, items, deletedItems, deletions } = fakeStore();
+    const issue = {
+      number: 13664,
+      id: 6567821587,
+      title: "Moved",
+      state: "open",
+      html_url: "https://github.com/developing-today/code/issues/13664",
+      url: "https://api.github.com/repos/developing-today/code/issues/13664",
+      user: { login: "dezren39" },
+      created_at: "2026-11-23T20:08:06Z",
+      updated_at: "2026-11-23T20:08:06Z",
+    };
+    const repo = { full_name: "developing-today/code" };
+    await applyEvent(store, "issues", { action: "opened", repository: repo, issue });
+    expect(items.has("developing-today/code#13664")).toBe(true);
+    const r = await applyEvent(store, "issues", {
+      action: "transferred",
+      repository: repo,
+      issue: { ...issue, updated_at: "2026-11-23T20:08:12Z" },
+      changes: { new_issue: { number: 4 }, new_repository: { full_name: "developing-today/demo-repository" } },
+    });
+    expect(r.wrote).toBe(true);
+    expect(r.refs).toEqual(["developing-today/code#13664"]);
+    expect(deletedItems).toEqual(["developing-today/code#13664"]);
+    expect(deletions.get("developing-today/code#13664")).toBe("2026-11-23T20:08:12Z");
+    expect(items.has("developing-today/code#13664")).toBe(false);
+    expect(items.has("developing-today/demo-repository#4")).toBe(false);
+  });
+
   test("issue with pull_request field is classified as a PR", async () => {
     const { store, items } = fakeStore();
     const payload = {

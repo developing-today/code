@@ -33,6 +33,77 @@ export interface NewHostedAccount {
 }
 
 /**
+ * Profile fields a normal update may carry. Only `jurisdiction` is
+ * recognised here, and only to guard it: the design
+ * (doc/2026-11-01_jurisdiction_aware_user_store_design.md §1–4) says
+ * normal profile updates cannot change `jurisdiction`, even before
+ * first DO creation — only the migration state machine may change it.
+ * Any other profile content lives outside this record.
+ */
+export interface HostedAccountProfilePatch {
+  jurisdiction?: string | null;
+}
+
+/**
+ * Apply a normal profile update to a hosted account record. Fails
+ * closed (throws `FailClosed`) when the patch attempts to change
+ * `jurisdiction` to a different value. A patch with the same
+ * jurisdiction, no jurisdiction, or a null jurisdiction returns the
+ * record with `jurisdiction`, `jurisdictionPending`, `migrationId`,
+ * `phase`, and `routingEpoch` unchanged — only the migration state
+ * machine may change those. The input record is never mutated.
+ */
+export function updateHostedAccountRecord(
+  record: HostedAccountRecord,
+  patch: HostedAccountProfilePatch,
+): HostedAccountRecord {
+  if (patch.jurisdiction !== undefined && patch.jurisdiction !== null && patch.jurisdiction !== record.jurisdiction) {
+    throw new FailClosed(
+      403,
+      "jurisdiction_immutable",
+      "profile updates cannot change hosted jurisdiction; only the migration state machine may change it",
+    );
+  }
+
+  return { ...record };
+}
+
+/**
+ * In-memory hosted account directory keyed by the unique pseudonymous
+ * subject key (design doc/2026-11-01_jurisdiction_aware_user_store_design.md:
+ * "Duplicate signup reads the existing row; it never overwrites it or
+ * resets the policy").
+ *
+ * This is the contract the persistent unique-subject transaction slice
+ * will implement against durable storage; it holds no production state
+ * and enables no signup or migration path on its own.
+ */
+export class HostedAccountDirectory {
+  private readonly rows = new Map<string, HostedAccountRecord>();
+
+  get size(): number {
+    return this.rows.size;
+  }
+
+  signup(input: NewHostedAccount): HostedAccountRecord {
+    const existing = this.rows.get(input.subjectKey);
+    if (existing !== undefined) {
+      if (existing.bindingId !== input.bindingId) {
+        throw new FailClosed(
+          409,
+          "duplicate_subject_conflict",
+          "subject key is already bound to a different binding id; failing closed",
+        );
+      }
+      return existing;
+    }
+    const record = createHostedAccountRecord(input);
+    this.rows.set(record.subjectKey, record);
+    return record;
+  }
+}
+
+/**
  * Validate the identity and explicit jurisdiction before constructing the
  * first directory row. There is deliberately no policy default: missing or
  * unsupported jurisdiction cannot create metadata that could later route to

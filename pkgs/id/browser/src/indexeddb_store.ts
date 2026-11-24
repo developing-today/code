@@ -1,11 +1,7 @@
 /**
- * IndexedDB request-batch store prototype (slice 9110-05, #10213).
- *
- * An isolated adapter that exercises the declared browser-store
- * capability subset of the port contract (port-v1, contract version
- * 2) against a real browser engine, without deciding product
- * adoption: the adapter is evaluation-only, nothing in the product
- * enables it, and the adopt/defer/reject decision belongs to #9082.
+ * IndexedDB request-batch record-store adapter (port contract version 2).
+ * #10213 evaluated it in Chromium; #9082 adopted that profile. The web
+ * product still chooses its own store. This adapter is opt-in.
  *
  * The one structural rule the evaluation exists to prove: this
  * adapter never advertises — and cannot express — a long-lived
@@ -91,7 +87,7 @@ export interface IndexedDbDescriptor {
  *   transaction may span every object store of the database, so a
  *   batch commits or aborts as a unit. It is *not* a session
  *   transaction — no capability here names one.
- * - `durable: true` means data survives a browser restart (the
+ * - `durable: true` means data survives closing and reopening the database (the
  *   conformance suite proves it by closing and reopening the
  *   database). Browser storage is best-effort under storage
  *   pressure unless the origin is granted persistence
@@ -232,7 +228,7 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 }
 
 /**
- * The prototype adapter. One instance owns one database connection;
+ * The request-batch adapter. One instance owns one database connection;
  * namespaces are object stores created at open (upgrade) time.
  */
 export class IndexedDbStore {

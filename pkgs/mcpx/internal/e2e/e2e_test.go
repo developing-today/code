@@ -42,6 +42,16 @@ type env struct {
 
 func newEnv(t *testing.T, cfgBody string) *env {
 	t.Helper()
+	// Remote mode (#13386): the suite runs against a shared daemon the
+	// test did not start. Selection fails closed — a test that is not in
+	// remote_safe_tests.txt never gets an env, so a full-suite remote run
+	// skips it instead of pointing host-local fixtures at the daemon.
+	if remoteMode() {
+		if !remoteSafeTest(t.Name()) {
+			t.Skipf("remote mode: %s is not declared remote-safe in remote_safe_tests.txt", t.Name())
+		}
+		return newRemoteEnv(t, cfgBody)
+	}
 	// Outside $HOME: the daemon finds scripts and recipes by walking up
 	// from here, and must not reach the user's own (testsupport.TempDir).
 	dir := testsupport.TempDir(t)

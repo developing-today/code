@@ -2481,6 +2481,7 @@ mod tests {
             author: bound,
             after: Vec::new(),
             group: None,
+            at: None,
             body: Body::Create(Create {
                 template: Template::Custom,
                 policy: Policy::default(),
@@ -2494,6 +2495,7 @@ mod tests {
             author: bound,
             after: vec![group],
             group: Some(group),
+            at: None,
             body: Body::Device(DeviceOp::Add {
                 device,
                 scope: Role::Read,

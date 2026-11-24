@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::LedgerKind;
-use crate::registry::{AccountRecord, CurrencyRecord, IssuerGrant};
+use crate::registry::{AccountRecord, CurrencyRecord, CurrencyStatus, IssuerGrant};
 
 /// One row of `ledger_allocation` (design section 2.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +110,16 @@ pub trait Store {
     /// Record a currency row for an allocated currency ledger.
     fn insert_currency(&mut self, record: CurrencyRecord) -> Result<(), StoreError>;
 
+    /// Set the lifecycle status of the currency recorded for
+    /// `ledger_id` (the registry's status-transition write,
+    /// #13342). Fails with [`StoreError::UnknownLedger`] if no
+    /// currency row exists for the ledger.
+    fn set_currency_status(
+        &mut self,
+        ledger_id: u32,
+        status: CurrencyStatus,
+    ) -> Result<(), StoreError>;
+
     /// Look up a currency by its semantic id.
     fn currency_by_id(&self, currency_id: &str) -> Option<&CurrencyRecord>;
 
@@ -193,6 +203,22 @@ impl Store for InMemoryStore {
         Ok(())
     }
 
+    fn set_currency_status(
+        &mut self,
+        ledger_id: u32,
+        status: CurrencyStatus,
+    ) -> Result<(), StoreError> {
+        let currency_id = self
+            .currencies_by_ledger
+            .get(&ledger_id)
+            .cloned()
+            .ok_or(StoreError::UnknownLedger(ledger_id))?;
+        if let Some(record) = self.currencies_by_id.get_mut(&currency_id) {
+            record.status = status;
+        }
+        Ok(())
+    }
+
     fn currency_by_id(&self, currency_id: &str) -> Option<&CurrencyRecord> {
         self.currencies_by_id.get(currency_id)
     }
@@ -266,6 +292,14 @@ impl<T: Store + ?Sized> Store for &mut T {
 
     fn insert_currency(&mut self, record: CurrencyRecord) -> Result<(), StoreError> {
         (**self).insert_currency(record)
+    }
+
+    fn set_currency_status(
+        &mut self,
+        ledger_id: u32,
+        status: CurrencyStatus,
+    ) -> Result<(), StoreError> {
+        (**self).set_currency_status(ledger_id, status)
     }
 
     fn currency_by_id(&self, currency_id: &str) -> Option<&CurrencyRecord> {

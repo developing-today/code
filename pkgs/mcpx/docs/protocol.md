@@ -807,7 +807,7 @@ era has.
   that subscribe before they know (the official suite's
   `server-resources-subscribe` and `-unsubscribe` among them). The reason is
   not lost: the daemon publishes a `server.log` event at level `warning`
-  ("no updates will be delivered for <uri>: <reason>"), visible on
+  ("no updates will be delivered for &lt;uri&gt;: &lt;reason&gt;"), visible on
   `/v1/events`. Honesty stays where the protocol has a mechanism for it, the
   listen acknowledgement. Only agreed URIs' updates are ever sent on a stream.
 - **Absolute-path URIs.** A listing drops a leading `/` when it namespaces

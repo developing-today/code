@@ -1,0 +1,483 @@
+# PM-stack env/config census — top-up survey (CONFIG-CENSUS lane, programme #13900)
+
+Mechanical census from source on the laptop clone `~/git/code` (branch `oc-code-02/design-2819-native-spill-lease`, HEAD `44aaf731ad2`), 2026-11-23. Every name below was found by grep in code or a config file — none from memory. Patterns: `process.env.<NAME>`, `Bun.env.<NAME>`, local `env.<NAME>` (config-helper parameter / Worker binding), `this.env.<NAME>`, literal helper reads (`port(env, "NAME", default)` / `list(env, "NAME", …)`), `Deno.env`, Python `os.environ`/`getenv`, shell `${NAME:-default}` in install/deploy scripts, systemd `Environment=` lines, NixOS `Environment = [...]` lists in `nixos/services/pm-stack|pm-apps`, wrangler `[vars]` + binding names, compose `environment:` keys + `${VAR:-default}`, and `pm-stack/projector/.env.example` keys.
+
+Scope exclusions: `node_modules/`, test files (`test/`, `*.test.*`) — test-only env assignments are in the raw pass-1 dump, not in these tables. Pure shell locals (assigned in-file, no `:-` default form) are excluded. `pkgs/pm-*` (`pm-aggregator`, `pm-dispatch`, `pm-projector`, `pm-git-sync`) contain only `package.nix` build wrappers — **zero env reads**; all env behaviour lives in the `pm-stack/` sources they package.
+
+**Totals: 318 distinct verified env/config names; 373 (component, name) rows.** Per component: aggregator 175, console 71, dispatch 23, projector 15, decision-events-worker 3, voice-line-worker 9, notify-relay 3, ready-for-agent 7, platform-scripts 28, nixos-pm 39. The three names the earlier surveys verified — `PM_AGG_PAD_URL`, `PM_AGG_RFA_URL`, `PM_AGG_NOTIFY_RELAY_URL` — are all present in the aggregator table below.
+
+Raw grep output: `~/workspace/pm-book/sideline-material/config-census/` (`raw-grep-pass1-full.txt` — 546-row unfiltered pass incl. tests/shell locals; `raw-pass2-workers-wrangler-systemd.txt` — Worker Env interfaces, wrangler files, systemd/compose verbatim; `raw-pass3-clean-census.txt` — the filtered pass these tables are built from; plus the three `census*.py` scripts so the census is re-runnable).
+
+
+## aggregator (175)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `AA_OPENCODE_CONFIG_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:318` | process.env/Bun.env | join(PKG |
+| `AA_OPENCODE_RUNTIME_CONFIG_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:320` | process.env/Bun.env | join(HOME |
+| `AGE` | `pm-stack/aggregator/scripts/kill-collector-drill.sh:197` | shell ${VAR:-default} | unknown |
+| `ALERTS_INTAKE_URL` | `pm-stack/aggregator/scripts/post-alert.ts:91` | process.env/Bun.env | "http://127.0.0.1:4870").replace(/\/+$/ |
+| `ALERT_ACK_WINDOW_MIN` | `pm-stack/aggregator/src/config.ts:411` | env binding | no default in code |
+| `BURN_HISTORY_STATE_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:317` | process.env/Bun.env | join(dirname(chargesSurfacedStatePath |
+| `BWS_ACCESS_TOKEN_FILE` | `pm-stack/aggregator/src/secrets.ts:43` | process.env/Bun.env | join(HOME |
+| `BWS_BIN` | `pm-stack/aggregator/src/secrets.ts:41` | process.env/Bun.env | (await firstReadable([join("/run/current-system/sw/bin/bws" |
+| `CHARGES_SURFACED_STATE_PATH` | `pm-stack/aggregator/scripts/push-fleet-feed.sh:78` | shell ${VAR:-default} | $HOME/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-surfaced- |
+| `CHARGE_CANDIDATES_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:314` | process.env/Bun.env | join(HIDDEN |
+| `CHARGE_INPUTS_DIR` | `pm-stack/aggregator/scripts/produce-charge-candidates.ts:72` | process.env/Bun.env | no default in code |
+| `CLAUDE_LAUNCH_RECORDS_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:311` | process.env/Bun.env | join(HIDDEN |
+| `CUR_STAMP` | `pm-stack/aggregator/scripts/age-feed-drill.sh:245` | shell ${VAR:-default} | unreadable |
+| `DECISION_EVENTS_OUTBOX_FILE` | `pm-stack/aggregator/src/decision-events-sync.ts:108` | env binding | no default in code |
+| `DECISION_EVENTS_STATE_FILE` | `pm-stack/aggregator/src/decision-events-sync.ts:117` | env binding | no default in code |
+| `DECISION_EVENTS_SYNC` | `pm-stack/aggregator/scripts/sync-decision-events.ts:107` | process.env/Bun.env | no default in code |
+| `DECISION_EVENTS_TURSO_TOKEN` | `pm-stack/aggregator/scripts/sync-decision-events.ts:159` | process.env/Bun.env | no default in code |
+| `DECISION_EVENTS_TURSO_URL` | `pm-stack/aggregator/scripts/sync-decision-events.ts:172` | process.env/Bun.env | DECISION_EVENTS_TURSO_URL |
+| `DECISION_EVENTS_WEBHOOK_SECRET` | `pm-stack/aggregator/scripts/sync-decision-events.ts:162` | process.env/Bun.env | no default in code |
+| `DECISION_EVENTS_WEBHOOK_URL` | `pm-stack/aggregator/scripts/sync-decision-events.ts:138` | process.env/Bun.env | undefined |
+| `DEPLOY_COMMIT` | `pm-stack/aggregator/install.sh:90` | shell ${VAR:-default} | tree:${SRC_HASH |
+| `DNS_REGISTER_JSON_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:310` | process.env/Bun.env | join(dirname(dnsRegisterPath |
+| `DNS_REGISTER_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:306` | process.env/Bun.env | no default in code |
+| `FLEET_BIN` | `pm-stack/aggregator/src/server.ts:2227` | process.env/Bun.env | "fleet" |
+| `FLEET_FEED_OUT` | `pm-stack/aggregator/src/pm-core-wiring.ts:57` | env binding | join(PKG |
+| `GH_BILLING_USER` | `pm-stack/aggregator/scripts/collect-github-billing.ts:93` | process.env/Bun.env | "dezren39" |
+| `GH_TOKEN` | `pm-stack/aggregator/scripts/epic-reparent.ts:78` | process.env/Bun.env | process.env.GITHUB_TOKEN |
+| `GITHUB_TOKEN` | `pm-stack/aggregator/src/sources/live.ts:870` | process.env/Bun.env | process.env.GITHUB_TOKEN |
+| `GMAIL_CLI` | `pm-stack/aggregator/scripts/produce-charge-candidates.ts:70` | process.env/Bun.env | "/opt/hatch/bin/hatch_gws_cli" |
+| `GRIST_API_KEY` | `pm-stack/aggregator/src/config.ts:390` | env binding | null |
+| `GRIST_ROADMAP_DOC` | `pm-stack/aggregator/src/config.ts:392` | env binding | no default in code |
+| `GRIST_URL` | `pm-stack/aggregator/src/config.ts:389` | env binding | no default in code |
+| `HOME` | `pm-stack/aggregator/scripts/push-fleet-feed.sh:37` | shell ${VAR:-default} | /nonexistent |
+| `HTTPS_PROXY` | `pm-stack/aggregator/scripts/push-fleet-feed.sh:60` | shell ${VAR:-default} | no default in code |
+| `ITEM_HISTORY_FILE` | `pm-stack/aggregator/src/item-history.ts:180` | process.env/Bun.env | no default in code |
+| `KANEO_ADMIN_EMAIL` | `pm-stack/aggregator/src/config.ts:382` | env binding | null |
+| `KANEO_ADMIN_PASSWORD` | `pm-stack/aggregator/src/config.ts:383` | env binding | null |
+| `KANEO_CLIENT_URL` | `pm-stack/aggregator/src/config.ts:381` | env binding | no default in code |
+| `KANEO_ORIGIN` | `pm-stack/aggregator/src/config.ts:381` | env binding | no default in code |
+| `KANEO_URL` | `pm-stack/aggregator/src/config.ts:379` | env binding | no default in code |
+| `LIVE_VERSION` | `pm-stack/aggregator/install.sh:246` | shell ${VAR:-default} | <no response> |
+| `METADATA_SWEEP_REPOS` | `pm-stack/aggregator/scripts/metadata-sweeper.ts:155` | process.env/Bun.env | "" |
+| `META_CREDENTIAL_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:495` | process.env/Bun.env | no default in code |
+| `META_EXPORTER_LATEST_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:494` | process.env/Bun.env | no default in code |
+| `META_RENEWAL_DISABLED` | `pm-stack/aggregator/scripts/gather-quota.ts:490` | process.env/Bun.env | no default in code |
+| `META_RENEWAL_STATE_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:493` | process.env/Bun.env | join(dirname(currentPath |
+| `META_TEAM_ID` | `pm-stack/aggregator/src/meta-renewal.ts:480` | process.env/Bun.env | process.env.META_TEAM_ID ?? META_DEFAULT_TEAM_ID |
+| `NO_PROXY` | `pm-stack/aggregator/scripts/push-fleet-feed.sh:73` | shell ${VAR:-default} | 127.0.0.1,localhost,100.99.113.103 |
+| `OPENCHAMBER_LIB_DIR` | `pm-stack/aggregator/scripts/gather-quota.ts:211` | process.env/Bun.env | no default in code |
+| `OPENCHAMBER_LIB_INSTALL_CMD` | `pm-stack/aggregator/scripts/gather-quota.ts:395` | process.env/Bun.env | [] |
+| `OPENCODE_BASE_URL` | `pm-stack/aggregator/opencode-tools/session-identity.ts:44` | process.env/Bun.env | (port ? `http://127.0.0.1:${port}` : null |
+| `OPENCODE_CONFIG_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:652` | process.env/Bun.env | join(HOME |
+| `OPENCODE_PORT` | `pm-stack/aggregator/opencode-tools/session-identity.ts:43` | process.env/Bun.env | no default in code |
+| `OPENCODE_SERVER_PASSWORD` | `pm-stack/aggregator/opencode-tools/session-identity.ts:47` | process.env/Bun.env | no default in code |
+| `OPENCODE_SERVER_PASSWORD_FILE` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:328` | process.env/Bun.env | join(HOME |
+| `OPENCODE_SERVER_URL` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:321` | process.env/Bun.env | process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096" |
+| `OPENCODE_SESSION_SOURCE` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:326` | process.env/Bun.env | no default in code |
+| `OPENDESIGN_CDP_URL` | `pm-stack/aggregator/scripts/gather-quota.ts:426` | process.env/Bun.env | "http://127.0.0.1:19222" |
+| `OPENDESIGN_RENEWAL_DISABLED` | `pm-stack/aggregator/scripts/gather-quota.ts:384` | process.env/Bun.env | no default in code |
+| `OPENDESIGN_RENEWAL_FORCE_CAPTURE` | `pm-stack/aggregator/scripts/gather-quota.ts:428` | process.env/Bun.env | no default in code |
+| `OPENDESIGN_RENEWAL_STATE_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:427` | process.env/Bun.env | join(dirname(currentPath |
+| `ORCHESTRATION_PATH` | `pm-stack/aggregator/scripts/check-contract-corpus.ts:41` | process.env/Bun.env | null |
+| `ORCHESTRATION_SOURCE` | `pm-stack/aggregator/src/orchestration-db.ts:45` | env binding | no default in code |
+| `PAGE_WARN` | `pm-stack/aggregator/scripts/age-feed-drill.sh:342` | shell ${VAR:-default} | unknown |
+| `PLAID_CLI` | `pm-stack/aggregator/scripts/produce-charge-candidates.ts:69` | process.env/Bun.env | "/opt/hatch/bin/plaid" |
+| `PM_AGG_ACCESS_AUD` | `pm-stack/aggregator/src/access-identity.ts:37` | env binding | "").trim( |
+| `PM_AGG_ACCESS_TEAM_DOMAIN` | `pm-stack/aggregator/src/access-identity.ts:36` | env binding | "").trim( |
+| `PM_AGG_ACTIONS_FILE` | `pm-stack/aggregator/src/config.ts:264` | env binding | no default in code |
+| `PM_AGG_ACTIVITY_FILE` | `pm-stack/aggregator/src/config.ts:291` | env binding | no default in code |
+| `PM_AGG_BREAK_GLASS_FILE` | `pm-stack/aggregator/src/config.ts:273` | env binding | no default in code |
+| `PM_AGG_BUILD_VERSION` | `pm-stack/aggregator/src/health.ts:433` | env binding | no default in code |
+| `PM_AGG_CLOUDFLARE_EXPORT` | `pm-stack/aggregator/src/config.ts:339` | env binding | no default in code |
+| `PM_AGG_CODE_CHECKOUT` | `pm-stack/aggregator/src/config.ts:262` | env binding | no default in code |
+| `PM_AGG_COMMENTS_FILE` | `pm-stack/aggregator/src/config.ts:253` | env binding | no default in code |
+| `PM_AGG_CONSOLE_HOST` | `pm-stack/aggregator/src/server.ts:5379` | process.env/Bun.env | "pm.security.cab" |
+| `PM_AGG_COVERAGE_SNAPSHOT_FILE` | `pm-stack/aggregator/src/config.ts:364` | env binding | no default in code |
+| `PM_AGG_DECISIONS_FILE` | `pm-stack/aggregator/src/config.ts:310` | env binding | no default in code |
+| `PM_AGG_DECISION_EVENTS_FILE` | `pm-stack/aggregator/src/decision-events.ts:88` | env binding | no default in code |
+| `PM_AGG_DECISION_OUTBOX_FILE` | `pm-stack/aggregator/src/decision-events.ts:99` | env binding | no default in code |
+| `PM_AGG_DEV` | `pm-stack/aggregator/src/config.ts:238` | env binding | no default in code |
+| `PM_AGG_DIGESTS_DIR` | `pm-stack/aggregator/systemd/digest-weekly.service:11` | systemd Environment= | %h/.local/state/pm-aggregator/digests |
+| `PM_AGG_EVENTS_FILE` | `pm-stack/aggregator/src/config.ts:266` | env binding | process.env.PM_AGG_EVENTS_FILE ?? join(process.cwd( |
+| `PM_AGG_FEED_FILE` | `pm-stack/aggregator/src/config.ts:252` | env binding | no default in code |
+| `PM_AGG_FLEET_INVOCATION_LEDGER_FILE` | `pm-stack/aggregator/src/config.ts:375` | env binding | no default in code |
+| `PM_AGG_FORECAST_ADMISSION` | `pm-stack/aggregator/src/quota-admission-forecast-config.ts:35` | env binding | "").trim( |
+| `PM_AGG_FORECAST_ADMISSION_MARGIN_MS` | `pm-stack/aggregator/src/quota-admission-forecast-config.ts:46` | env binding | "").trim( |
+| `PM_AGG_FORECAST_ADMISSION_POOL` | `pm-stack/aggregator/src/quota-admission-forecast-config.ts:42` | env binding | "").trim( |
+| `PM_AGG_FREE_SERVICES_TRACKER` | `pm-stack/aggregator/src/config.ts:336` | env binding | no default in code |
+| `PM_AGG_FRESHNESS_FILE` | `pm-stack/aggregator/src/config.ts:280` | env binding | no default in code |
+| `PM_AGG_FRESHNESS_PORT` | `pm-stack/aggregator/src/config.ts:281` | env binding | no default in code |
+| `PM_AGG_FRESHNESS_URL` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:1465` | process.env/Bun.env | "http://127.0.0.1:4871/publish" |
+| `PM_AGG_GITHUB_TOKEN` | `pm-stack/aggregator/src/sources/live.ts:870` | process.env/Bun.env | process.env.GITHUB_TOKEN |
+| `PM_AGG_HOSTS` | `pm-stack/aggregator/src/config.ts:251` | env binding | no default in code |
+| `PM_AGG_HOST_HEALTH_FILE` | `pm-stack/aggregator/src/host-health.ts:76` | env binding | no default in code |
+| `PM_AGG_IDENTITY_REGISTRY_FILE` | `pm-stack/aggregator/src/config.ts:268` | env binding | no default in code |
+| `PM_AGG_ITEM_HISTORY_FILE` | `pm-stack/aggregator/src/config.ts:357` | env binding | no default in code |
+| `PM_AGG_LAST_GOOD_DIR` | `pm-stack/aggregator/src/config.ts:327` | env binding | no default in code |
+| `PM_AGG_MCPX_CALL_LEDGER_DIR` | `pm-stack/aggregator/src/config.ts:373` | env binding | no default in code |
+| `PM_AGG_NEEDS_DREW_FILE` | `pm-stack/aggregator/src/config.ts:307` | env binding | no default in code |
+| `PM_AGG_NIX_CHECKOUT` | `pm-stack/aggregator/src/config.ts:263` | env binding | no default in code |
+| `PM_AGG_NOTIFICATIONS_FILE` | `pm-stack/aggregator/src/config.ts:303` | env binding | no default in code |
+| `PM_AGG_NOTIFY_RELAY_STATE_FILE` | `pm-stack/aggregator/src/config.ts:417` | env binding | no default in code |
+| `PM_AGG_NOTIFY_RELAY_URL` | `pm-stack/aggregator/src/config.ts:415` | env binding | no default in code |
+| `PM_AGG_OPENCHAMBER_STATE` | `pm-stack/aggregator/src/config.ts:366` | env binding | no default in code |
+| `PM_AGG_OPENCODE_CONFIG_FILE` | `pm-stack/aggregator/src/config.ts:353` | env binding | no default in code |
+| `PM_AGG_OPENCODE_SERVER_STATE` | `pm-stack/aggregator/src/config.ts:370` | env binding | no default in code |
+| `PM_AGG_OUTAGE_QUEUE_FILE` | `pm-stack/aggregator/src/config.ts:277` | env binding | no default in code |
+| `PM_AGG_OUTCOME_BINDINGS_FILE` | `pm-stack/aggregator/src/config.ts:296` | env binding | no default in code |
+| `PM_AGG_OUTCOME_FILE` | `pm-stack/aggregator/src/config.ts:294` | env binding | no default in code |
+| `PM_AGG_OWNER_IDS` | `pm-stack/aggregator/src/access-identity.ts:39` | env binding | "" |
+| `PM_AGG_PAD_URL` | `pm-stack/aggregator/src/config.ts:404` | env binding | no default in code |
+| `PM_AGG_PORT` | `pm-stack/aggregator/src/config.ts:250` | env binding | no default in code |
+| `PM_AGG_PROMPTS_FILE` | `pm-stack/aggregator/src/config.ts:246` | env binding | no default in code |
+| `PM_AGG_PROMPT_ATTACHMENTS_DIR` | `pm-stack/aggregator/src/config.ts:255` | env binding | no default in code |
+| `PM_AGG_PROMPT_SYNC_TIMEOUT_MS` | `pm-stack/aggregator/src/config.ts:257` | env binding | no default in code |
+| `PM_AGG_PUBLIC_ORIGIN` | `pm-stack/aggregator/src/config.ts:409` | env binding | no default in code |
+| `PM_AGG_QUEUE_BROKER_TOKEN_FILE` | `pm-stack/aggregator/src/config.ts:283` | env binding | no default in code |
+| `PM_AGG_QUEUE_BROKER_URL` | `pm-stack/aggregator/src/config.ts:282` | env binding | no default in code |
+| `PM_AGG_QUOTA_CURRENT_FILE` | `pm-stack/aggregator/src/config.ts:344` | env binding | no default in code |
+| `PM_AGG_QUOTA_HEARTBEAT_FILE` | `pm-stack/aggregator/src/config.ts:346` | env binding | no default in code |
+| `PM_AGG_QUOTA_REGISTRY` | `pm-stack/aggregator/src/config.ts:341` | env binding | no default in code |
+| `PM_AGG_QUOTA_VIEW` | `pm-stack/aggregator/src/config.ts:329` | env binding | no default in code |
+| `PM_AGG_REGISTRY_FILE` | `pm-stack/aggregator/src/config.ts:299` | env binding | no default in code |
+| `PM_AGG_REPORT_RECORDS_FILE` | `pm-stack/aggregator/src/report-records.ts:51` | env binding | no default in code |
+| `PM_AGG_RFA_URL` | `pm-stack/aggregator/src/config.ts:407` | env binding | no default in code |
+| `PM_AGG_ROADMAP_ANNOTATIONS_FILE` | `pm-stack/aggregator/src/config.ts:261` | env binding | no default in code |
+| `PM_AGG_SLO_JOURNAL_FILE` | `pm-stack/aggregator/src/config.ts:361` | env binding | process.env.PM_AGG_SLO_JOURNAL_FILE ?? defaultJournal |
+| `PM_AGG_SNAPSHOTS_DIR` | `pm-stack/aggregator/src/config.ts:300` | env binding | join(PKG |
+| `PM_AGG_SOURCE` | `pm-stack/aggregator/systemd/digest-weekly.service:9` | systemd Environment= | live |
+| `PM_AGG_STACK_HEALTH_FILE` | `pm-stack/aggregator/src/stack-health.ts:47` | env binding | no default in code |
+| `PM_AGG_STACK_SENTINEL_STATE_FILE` | `pm-stack/aggregator/scripts/stack-sentinel.ts:110` | process.env/Bun.env | no default in code |
+| `PM_AGG_STACK_TOKEN_SECRET` | `pm-stack/aggregator/src/config.ts:271` | env binding | null |
+| `PM_AGG_STORE_BACKEND` | `pm-stack/aggregator/src/store-backend.ts:22` | env binding | "").trim( |
+| `PM_AGG_STORE_WRITER` | `pm-stack/aggregator/src/store-backend.ts:32` | env binding | "").trim( |
+| `PM_AGG_VIEWS_FILE` | `pm-stack/aggregator/src/config.ts:265` | env binding | no default in code |
+| `PM_CORE_JOBS_AUDIT_PATH` | `pm-stack/aggregator/src/pm-core-jobs.ts:25` | process.env/Bun.env | process.env.PM_CORE_JOBS_AUDIT_PATH ?? DEFAULT_AUDIT_PATH |
+| `PM_DRILL_AGE_MS` | `pm-stack/aggregator/scripts/age-feed-drill.sh:91` | shell ${VAR:-default} | 1200000 |
+| `PM_DRILL_ATTENTION_CMD` | `pm-stack/aggregator/scripts/age-feed-drill.sh:83` | shell ${VAR:-default} | curl -s --max-time 25 http://127.0.0.1:4870/api/attention.json |
+| `PM_DRILL_FEED_FILE` | `pm-stack/aggregator/scripts/age-feed-drill.sh:81` | shell ${VAR:-default} | $HOME/.local/state/pm-aggregator/fleet-feed.json |
+| `PM_DRILL_HEALTH_CMD` | `pm-stack/aggregator/scripts/age-feed-drill.sh:82` | shell ${VAR:-default} | curl -s --max-time 25 http://127.0.0.1:4870/api/health |
+| `PM_DRILL_INCIDENT_FLAG` | `pm-stack/aggregator/scripts/kill-collector-drill.sh:54` | shell ${VAR:-default} | $STATE_DIR/incident.flag |
+| `PM_DRILL_MAX_WAIT_MIN` | `pm-stack/aggregator/scripts/kill-collector-drill.sh:55` | shell ${VAR:-default} | 25 |
+| `PM_DRILL_NO_POST` | `pm-stack/aggregator/scripts/kill-collector-drill.sh:217` | shell ${VAR:-default} | 0 |
+| `PM_DRILL_PAGE_CMD` | `pm-stack/aggregator/scripts/age-feed-drill.sh:90` | shell ${VAR:-default} | curl -s --max-time 25 http://127.0.0.1:4870/ |
+| `PM_DRILL_RESTORE_WAIT_MIN` | `pm-stack/aggregator/scripts/age-feed-drill.sh:93` | shell ${VAR:-default} | 12 |
+| `PM_DRILL_STATE_DIR` | `pm-stack/aggregator/scripts/kill-collector-drill.sh:53` | shell ${VAR:-default} | $HOME/.local/state/pm-drills |
+| `PM_KANEO_PROJECTS_FILE` | `pm-stack/aggregator/src/config.ts:386` | env binding | no default in code |
+| `PM_METADATA_DB_PATH` | `pm-stack/aggregator/src/server.ts:2251` | process.env/Bun.env | join(homedir( |
+| `PM_PRIMARY_CHECKOUT_DIR` | `pm-stack/aggregator/scripts/stack-sentinel.ts:99` | process.env/Bun.env | join(homedir( |
+| `PM_PROJECTOR_API_TOKEN` | `pm-stack/aggregator/src/config.ts:401` | env binding | null |
+| `PM_PROJECTOR_URL` | `pm-stack/aggregator/src/config.ts:398` | env binding | env.PM_PROJECTOR_URL === "none" |
+| `POOL_STATE_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:225` | process.env/Bun.env | join(HOME |
+| `PROVIDER_USAGE_SNAPSHOT_PATH` | `pm-stack/aggregator/scripts/append-usage-snapshots.ts:51` | process.env/Bun.env | join(HIDDEN |
+| `PUSH_FLEET_FEED_KNOWN_HOSTS` | `pm-stack/aggregator/scripts/push-fleet-feed.sh:51` | shell ${VAR:-default} | $PKG/scripts/laptop_known_hosts |
+| `QUOTA_ANOMALY_HISTORY_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:244` | process.env/Bun.env | join(dirname(currentPath |
+| `QUOTA_ANOMALY_STATE_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:242` | process.env/Bun.env | join(dirname(currentPath |
+| `QUOTA_CLAUDE_RETRY_BASE_MS` | `pm-stack/aggregator/scripts/gather-quota.ts:616` | process.env/Bun.env | no default in code |
+| `QUOTA_CURRENT_PATH` | `pm-stack/aggregator/systemd/quota-gatherer.service:14` | systemd Environment= | %h/.local/state/pm-aggregator/quota-current.json |
+| `QUOTA_FORECAST_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:228` | process.env/Bun.env | join(dirname(currentPath |
+| `QUOTA_GATHERER_STATE_PATH` | `pm-stack/aggregator/systemd/quota-gatherer.service:16` | systemd Environment= | %h/.local/state/pm-aggregator/quota-gatherer-state.json |
+| `QUOTA_HEARTBEAT_PATH` | `pm-stack/aggregator/systemd/quota-gatherer.service:15` | systemd Environment= | %h/.local/state/pm-aggregator/quota-gatherer-heartbeat.json |
+| `QUOTA_PREDICTIONS_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:232` | process.env/Bun.env | join(dirname(currentPath |
+| `QUOTA_REFRESH_CMD` | `pm-stack/aggregator/src/quota-refresh.ts:142` | process.env/Bun.env | "systemctl --user start --no-block quota-gatherer.service" |
+| `QUOTA_REGISTRY_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:312` | process.env/Bun.env | join(HIDDEN |
+| `QUOTA_SHADOW_PLACEMENT_HISTORY_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:239` | process.env/Bun.env | join(dirname(currentPath |
+| `QUOTA_SHADOW_PLACEMENT_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:237` | process.env/Bun.env | join(dirname(currentPath |
+| `QUOTA_SNAPSHOTS_DIR` | `pm-stack/aggregator/systemd/quota-gatherer.service:17` | systemd Environment= | %h/.local/state/pm-aggregator/snapshots |
+| `QUOTA_SUBCOMMAND` | `pm-stack/aggregator/scripts/gather-quota.ts:625` | process.env/Bun.env | no default in code |
+| `QUOTA_SUBCOMMAND_TIMEOUT_MS` | `pm-stack/aggregator/scripts/gather-quota.ts:259` | process.env/Bun.env | no default in code |
+| `QUOTA_VIEW_PATH` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:300` | process.env/Bun.env | defaultQuotaViewPath(HOME |
+| `SANDBOX_OPENCODE_URL` | `pm-stack/aggregator/scripts/collect-fleet-feed.ts:321` | process.env/Bun.env | process.env.SANDBOX_OPENCODE_URL ?? "http://127.0.0.1:4096" |
+| `TAILNET_IP` | `pm-stack/aggregator/install.sh:43` | shell ${VAR:-default} | 100.99.113.103 |
+| `TURSO_QUOTA_SINK` | `pm-stack/aggregator/scripts/gather-quota.ts:864` | process.env/Bun.env | no default in code |
+| `USAGE_SNAPSHOT_OUTBOX_PATH` | `pm-stack/aggregator/scripts/gather-quota.ts:220` | process.env/Bun.env | null |
+| `XDG_STATE_HOME` | `pm-stack/aggregator/src/config.ts:376` | env binding | join(homedir( |
+
+## console (71)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `ANDROID_HOME` | `pm-stack/console/android/build.sh:41` | shell ${VAR:-default} | no default in code |
+| `ASSETS` | `pm-stack/console/edge/wrangler.jsonc:25` | wrangler binding | (binding, no scalar default) |
+| `CLOUDFLARE_ACCOUNT_ID` | `pm-stack/console/edge/release.mjs:86` | process.env/Bun.env | "" |
+| `CLOUDFLARE_API_TOKEN` | `pm-stack/console/edge/release.mjs:85` | process.env/Bun.env | "" |
+| `EDGE` | `pm-stack/console/scripts/edge-smoke.ts:51` | process.env/Bun.env | "http://localhost:8799" |
+| `EDGE_DIRECT` | `pm-stack/console/edge/src/worker.ts:81` | env binding | no default in code |
+| `GITHUB_API_ORIGIN` | `pm-stack/console/edge/src/worker.ts:84` | env binding | no default in code |
+| `GITHUB_REPOSITORY` | `pm-stack/console/android/release.sh:40` | shell ${VAR:-default} | no default in code |
+| `GITHUB_RUN_ID` | `pm-stack/console/edge/release.mjs:93` | process.env/Bun.env | 0 |
+| `GITHUB_SERVER_URL` | `pm-stack/console/android/release.sh:72` | shell ${VAR:-default} | https://github.com |
+| `GITHUB_SHA` | `pm-stack/console/android/release.sh:39` | shell ${VAR:-default} | no default in code |
+| `GITHUB_STEP_SUMMARY` | `pm-stack/console/android/offline-check.sh:257` | shell ${VAR:-default} | no default in code |
+| `GITHUB_TOKEN` | `pm-stack/console/edge/src/worker.ts:82` | env binding | no default in code |
+| `GRADLE_VERSION` | `pm-stack/console/android/build.sh:27` | shell ${VAR:-default} | 8.9 |
+| `HOME` | `pm-stack/console/src/config.ts:123` | env binding | "" |
+| `HOST_ORIGIN` | `pm-stack/console/edge/src/worker.ts:135` | env binding | no default in code |
+| `JAVA_HOME_17_X64` | `pm-stack/console/android/build.sh:40` | shell ${VAR:-default} | ${JAVA_HOME_21_X64:-${JAVA_HOME:- |
+| `KEYSTORE_B64` | `pm-stack/console/android/build.sh:56` | shell ${VAR:-default} | no default in code |
+| `KEYS_FROM` | `pm-stack/console/edge/src/worker.ts:51` | env binding | !env.KEYS_TO) return undefined |
+| `KEYS_TO` | `pm-stack/console/edge/src/worker.ts:51` | env binding | !env.KEYS_TO) return undefined |
+| `OWN_CLOCK_MS` | `pm-stack/console/edge/src/worker.ts:89` | env binding | no default in code |
+| `PM_ANDROID_KEYSTORE` | `pm-stack/console/android/build.sh:71` | shell ${VAR:-default} | $HOME/.local/state/pm-console/android/release.p12 |
+| `PM_ANDROID_KEYSTORE_PASSWORD` | `pm-stack/console/android/build.sh:56` | shell ${VAR:-default} | no default in code |
+| `PM_ANDROID_KEYSTORE_PASSWORD_FILE` | `pm-stack/console/android/sign.sh:27` | shell ${VAR:-default} | $(dirname "$keystore")/keystore-password |
+| `PM_ANDROID_REPO` | `pm-stack/console/android/release-built.sh:37` | shell ${VAR:-default} | developing-today/code |
+| `PM_ANDROID_VERSION_CODE` | `pm-stack/console/android/build.sh:30` | shell ${VAR:-default} | 3 |
+| `PM_ANDROID_VERSION_NAME` | `pm-stack/console/android/build.sh:30` | shell ${VAR:-default} | 0.3.0 |
+| `PM_CONSOLE_ACCESS_AUD` | `pm-stack/console/src/config.ts:128` | env binding | no default in code |
+| `PM_CONSOLE_ACCESS_TEAM_DOMAIN` | `pm-stack/console/src/config.ts:127` | env binding | no default in code |
+| `PM_CONSOLE_ANDROID_APK` | `pm-stack/console/src/config.ts:258` | env binding | `${home}/.local/state/pm-console/android/pm-console.apk` |
+| `PM_CONSOLE_ANDROID_PACKAGE` | `pm-stack/console/src/config.ts:256` | env binding | "today.developing.pmconsole" |
+| `PM_CONSOLE_AUDIT_FILE` | `pm-stack/console/src/config.ts:254` | env binding | `${home}/.local/state/pm-console/audit.jsonl` |
+| `PM_CONSOLE_BIND` | `pm-stack/console/src/config.ts:175` | env binding | "127.0.0.1" |
+| `PM_CONSOLE_BUN` | `pm-stack/console/redeploy.sh:26` | shell ${VAR:-default} | /run/current-system/sw/bin/bun |
+| `PM_CONSOLE_CERT_NAMES` | `pm-stack/console/src/config.ts:238` | literal helper read list(env, "PM_CONSOLE_CERT_NAMES") | no default in code (empty list) |
+| `PM_CONSOLE_DASHBOARD_URL` | `pm-stack/console/src/config.ts:183` | env binding | "http://127.0.0.1:4870" |
+| `PM_CONSOLE_DECISIONS_FILE` | `pm-stack/console/src/config.ts:264` | env binding | `${home}/.local/state/pm-aggregator/decisions.json` |
+| `PM_CONSOLE_DEMO_ACT_LOG` | `pm-stack/console/scripts/demo-state.ts:642` | process.env/Bun.env | no default in code |
+| `PM_CONSOLE_DEVICES_FILE` | `pm-stack/console/src/config.ts:259` | env binding | `${home}/.local/state/pm-console/devices.json` |
+| `PM_CONSOLE_EDGE_DONE_FILE` | `pm-stack/console/src/config.ts:262` | env binding | `${home}/.local/state/pm-console/edge-done.json` |
+| `PM_CONSOLE_EDGE_KEY_FILE` | `pm-stack/console/src/config.ts:261` | env binding | `${home}/.local/state/pm-console/edge-key.json` |
+| `PM_CONSOLE_EDGE_URL` | `pm-stack/console/src/config.ts:209` | env binding | null |
+| `PM_CONSOLE_FLEET_BIN` | `pm-stack/console/src/config.ts:244` | env binding | "fleet" |
+| `PM_CONSOLE_ISSUERS_FILE` | `pm-stack/console/src/config.ts:150` | env binding | no default in code |
+| `PM_CONSOLE_MACHINE` | `pm-stack/console/src/config.ts:263` | env binding | no default in code |
+| `PM_CONSOLE_OWNER_EMAILS` | `pm-stack/console/src/config.ts:237` | literal helper read list(env, "PM_CONSOLE_OWNER_EMAILS") | no default in code (empty list) |
+| `PM_CONSOLE_PORT` | `pm-stack/console/src/config.ts:235` | literal helper read port(env, "PM_CONSOLE_PORT", 4872) | 4872 |
+| `PM_CONSOLE_PROMPT_LABEL` | `pm-stack/console/src/config.ts:265` | env binding | "owner/prompt" |
+| `PM_CONSOLE_PROTECTED_UNITS` | `pm-stack/console/src/config.ts:253` | literal helper read list(env, "PM_CONSOLE_PROTECTED_UNITS", [...]) | pm-tunnel.service, pm-console.service |
+| `PM_CONSOLE_QUEUE` | `pm-stack/console/src/config.ts:241` | env binding | "repo-health-code-pilot" |
+| `PM_CONSOLE_QUEUE_DB_URL` | `pm-stack/console/src/config.ts:242` | env binding | "https://fleet-queue-dezren39.aws-us-east-1.turso.io" |
+| `PM_CONSOLE_QUEUE_TOKEN_NAME` | `pm-stack/console/src/config.ts:243` | env binding | "turso.fleet-queue-rw-token" |
+| `PM_CONSOLE_REPO` | `pm-stack/console/src/config.ts:240` | env binding | "developing-today/code" |
+| `PM_CONSOLE_SITE` | `pm-stack/console/android/build.sh:64` | shell ${VAR:-default} | no default in code |
+| `PM_CONSOLE_UNITS` | `pm-stack/console/src/config.ts:245` | literal helper read list(env, "PM_CONSOLE_UNITS", [...]) | list default in code at config.ts:245 (see file) |
+| `PM_GH` | `pm-stack/console/android/release-built.sh:46` | shell ${VAR:-default} | no default in code |
+| `PM_RELEASE_API` | `pm-stack/console/edge/release.mjs:51` | process.env/Bun.env | "https://api.cloudflare.com/client/v4" |
+| `PM_RELEASE_HEALTH` | `pm-stack/console/edge/release.mjs:152` | process.env/Bun.env | no default in code |
+| `PM_RELEASE_HEALTH_TRIES` | `pm-stack/console/edge/release.mjs:54` | process.env/Bun.env | 40 |
+| `PM_RELEASE_HEALTH_WAIT_MS` | `pm-stack/console/edge/release.mjs:55` | process.env/Bun.env | 6_000 |
+| `PM_RELEASE_STAND_UP_TRIES` | `pm-stack/console/edge/release.mjs:60` | process.env/Bun.env | 4 |
+| `PM_RELEASE_STAND_UP_WAIT_MS` | `pm-stack/console/edge/release.mjs:61` | process.env/Bun.env | 5_000 |
+| `PM_SIGNED_HERE` | `pm-stack/console/android/release.sh:73` | shell ${VAR:-default} | no default in code |
+| `PORT` | `pm-stack/console/install.sh:55` | shell ${VAR:-default} | 4872 |
+| `PUBLIC_HOST` | `pm-stack/console/edge/wrangler.jsonc:20` | wrangler vars (jsonc) | pm.security.cab |
+| `QUEUE_DB_ORIGIN` | `pm-stack/console/edge/src/worker.ts:85` | env binding | no default in code |
+| `QUEUE_TOKEN` | `pm-stack/console/edge/src/worker.ts:83` | env binding | no default in code |
+| `SMOKE_PRIMARY` | `pm-stack/console/scripts/edge-smoke.ts:309` | process.env/Bun.env | no default in code |
+| `VERSION` | `pm-stack/console/edge/src/worker.ts:137` | env binding | null |
+| `VERSION_CODE` | `pm-stack/console/android/release.sh:38` | shell ${VAR:-default} | no default in code |
+| `VERSION_NAME` | `pm-stack/console/android/release.sh:37` | shell ${VAR:-default} | no default in code |
+
+## dispatch (23)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `DEPLOY_COMMIT` | `pm-stack/dispatch/install.sh:99` | shell ${VAR:-default} | tree:${SRC_HASH |
+| `DISPATCH_API_TOKEN` | `pm-stack/dispatch/src/config.ts:128` | env binding | no default in code |
+| `DISPATCH_BUILD_VERSION` | `pm-stack/dispatch/src/config.ts:127` | env binding | dev (via s() helper, src/config.ts) |
+| `DISPATCH_HOSTS` | `pm-stack/dispatch/src/config.ts:102` | env binding | 127.0.0.1 (via s() helper, src/config.ts) |
+| `DISPATCH_OIDC_AUDIENCE` | `pm-stack/dispatch/src/config.ts:129` | env binding | pm-dispatch (via s() helper, src/config.ts) |
+| `DISPATCH_PORT` | `pm-stack/dispatch/install.sh:52` | shell ${VAR:-default} | 4879 |
+| `DISPATCH_REPO_ALLOWLIST` | `pm-stack/dispatch/src/config.ts:111` | env binding | no default in code |
+| `GITHUB_APP_ID` | `pm-stack/dispatch/src/config.ts:136` | env binding | no default in code |
+| `GITHUB_APP_PRIVATE_KEY_BASE64` | `pm-stack/dispatch/src/config.ts:116` | env binding | no default in code |
+| `LIVE_VERSION` | `pm-stack/dispatch/install.sh:163` | shell ${VAR:-default} | <no response> |
+| `OPENCODE_AUTH_FILE` | `pm-stack/dispatch/src/config.ts:135` | env binding | no default in code |
+| `OPENCODE_URL` | `pm-stack/dispatch/src/config.ts:134` | env binding | http://127.0.0.1:13420 (via s() helper, src/config.ts) |
+| `PM_DISPATCH_PLACEMENT_GUARD` | `pm-stack/dispatch/src/config.ts:156` | env binding | "" |
+| `PM_DISPATCH_PLACEMENT_POLICY` | `pm-stack/dispatch/src/config.ts:158` | env binding | no default in code |
+| `PM_DISPATCH_PLACEMENT_RECORD` | `pm-stack/dispatch/src/config.ts:157` | env binding | placement-record (via s() helper, src/config.ts) |
+| `PM_DISPATCH_WORKTREE_REGISTRY` | `pm-stack/dispatch/src/config.ts:143` | env binding | no default in code |
+| `PM_DISPATCH_WORKTREE_ROOT` | `pm-stack/dispatch/src/config.ts:139` | env binding | no default in code |
+| `PM_DISPATCH_WORKTREE_SWEEP_SECONDS` | `pm-stack/dispatch/src/config.ts:147` | env binding | 900 (via s() helper, src/config.ts) |
+| `QUEUE_BROKER_TOKEN` | `pm-stack/dispatch/src/config.ts:133` | env binding | no default in code |
+| `QUEUE_BROKER_TOKEN_FILE` | `pm-stack/dispatch/src/config.ts:132` | env binding | no default in code |
+| `QUEUE_BROKER_URL` | `pm-stack/dispatch/src/config.ts:131` | env binding | http://100.99.113.103:4801 (via s() helper, src/config.ts) |
+| `QUOTA_CURRENT_PATH` | `pm-stack/dispatch/src/config.ts:160` | env binding | no default in code |
+| `TAILNET_IP` | `pm-stack/dispatch/install.sh:51` | shell ${VAR:-default} | 100.99.113.103 |
+
+## projector (15)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `DATABASE_URL` | `pm-stack/projector/.env.example:5` | .env.example | "file:data/projector.db" |
+| `GITHUB_APP_ID` | `pm-stack/projector/.env.example:10` | .env.example | no default in code |
+| `GITHUB_APP_INSTALL_ID` | `pm-stack/projector/src/github.ts:160` | env binding | no default in code |
+| `GITHUB_APP_PRIVATE_KEY` | `pm-stack/projector/.env.example:11` | .env.example | # PEM, or base64 of the PEM |
+| `GITHUB_TOKEN` | `pm-stack/projector/.env.example:12` | .env.example | # fallback for repos the App can't reach |
+| `GITHUB_WEBHOOK_SECRET` | `pm-stack/projector/.env.example:9` | .env.example | no default in code |
+| `HOSTNAME` | `pm-stack/projector/.env.example:22` | .env.example | 127.0.0.1 |
+| `LIBXML_SRC` | `pm-stack/projector/scripts/setup-deps.sh:18` | shell ${VAR:-default} | $HOME/.cache/opencode/npm/opencode-mem@latest/1792868233137/node_modules |
+| `PM_AGGREGATOR_URL` | `pm-stack/projector/src/queue-view.ts:255` | env binding | "pm-stack/aggregator" |
+| `PM_AGG_FRESHNESS_URL` | `pm-stack/projector/src/server.ts:47` | env binding | no default in code |
+| `PM_PROJECTOR_API_TOKEN` | `pm-stack/projector/.env.example:15` | .env.example | no default in code |
+| `PM_PROJECTOR_URL` | `pm-stack/projector/src/queue-view.ts:254` | env binding | "http://127.0.0.1:7801" |
+| `PM_REPOS` | `pm-stack/projector/.env.example:18` | .env.example | developing-today/code,developing-today-forks/opencode,developing-today-forks/openchamber,dezren39/da |
+| `PORT` | `pm-stack/projector/.env.example:21` | .env.example | 7801 |
+| `TURSO_AUTH_TOKEN` | `pm-stack/projector/.env.example:6` | .env.example | no default in code |
+
+## decision-events-worker (3)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `DB` | `pm-stack/decision-events-worker/wrangler.toml:15` | wrangler binding | (binding, no scalar default) |
+| `SET_EVENTS` | `pm-stack/decision-events-worker/wrangler.toml:20` | wrangler binding | (binding, no scalar default) |
+| `WEBHOOK_SECRET` | `pm-stack/decision-events-worker/src/index.ts:171` | env binding | no default in code |
+
+## voice-line-worker (9)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `AI` | `pm-stack/voice-line-worker/wrangler.toml:9` | wrangler binding | (binding, no scalar default) |
+| `GH_TOKEN` | `pm-stack/voice-line-worker/scripts/check-environment.mjs:8` | process.env/Bun.env | process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" // !process.env.GH_TOKEN) { |
+| `GITHUB_EVENT_NAME` | `pm-stack/voice-line-worker/scripts/check-environment.mjs:8` | process.env/Bun.env | process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" // !process.env.GH_TOKEN) { |
+| `GITHUB_REF` | `pm-stack/voice-line-worker/scripts/check-environment.mjs:7` | process.env/Bun.env | process.env.GITHUB_REPOSITORY !== releaseRepository // process.env.GITHUB_REF !== "refs/heads/main" |
+| `GITHUB_REPOSITORY` | `pm-stack/voice-line-worker/scripts/check-environment.mjs:7` | process.env/Bun.env | process.env.GITHUB_REPOSITORY !== releaseRepository // process.env.GITHUB_REF !== "refs/heads/main" |
+| `STATUS_INGEST_TOKEN` | `pm-stack/voice-line-worker/src/index.ts:108` | env cast read | no default in code |
+| `TURSO_TOKEN` | `pm-stack/voice-line-worker/src/index.ts:97` | env binding | no default in code |
+| `TURSO_URL` | `pm-stack/voice-line-worker/wrangler.toml:21` | wrangler [vars] | https://voice-line-ledger-dezren39.aws-us-east-1.turso.io |
+| `VOICE_SESSIONS` | `pm-stack/voice-line-worker/wrangler.toml:12` | wrangler binding | (binding, no scalar default) |
+
+## notify-relay (3)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `PM_NOTIFY` | `pm-stack/notify-relay/wrangler.toml:24` | wrangler binding | (binding, no scalar default) |
+| `RELAY_SHARED_SECRET` | `pm-stack/notify-relay/src/index.ts:64` | env binding | no default in code |
+| `VAPID_PRIVATE_KEY` | `pm-stack/notify-relay/src/index.ts:50` | Env interface + this.env read (src/index.ts:98) | no default in code |
+
+## ready-for-agent (7)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `DRY_RUN` | `pm-stack/ready-for-agent/apply-config.sh:36` | shell ${VAR:-default} | no default in code |
+| `PATH` | `pm-stack/ready-for-agent/systemd/ready-for-agent.service:39` | systemd Environment= | %h/.local/bin:/etc/profiles/per-user/user/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/bi |
+| `RFA_CONFIG` | `pm-stack/ready-for-agent/apply-config.sh:32` | shell ${VAR:-default} | $PWD/config.json |
+| `RFA_GRAPHQL_URL` | `pm-stack/ready-for-agent/apply-config.sh:33` | shell ${VAR:-default} | no default in code |
+| `RFA_REPOS_DIR` | `pm-stack/ready-for-agent/apply-config.sh:34` | shell ${VAR:-default} | $PWD/repos |
+| `STUB_PID` | `pm-stack/ready-for-agent/test-apply-config.sh:10` | shell ${VAR:-default} | no default in code |
+| `XDG_STATE_HOME` | `pm-stack/ready-for-agent/install.sh:46` | shell ${VAR:-default} | ${HOME |
+
+## platform-scripts (28)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `AUTH_SECRET` | `pm-stack/.env.example:21` | .env.example | no default in code |
+| `DISABLE_REGISTRATION` | `pm-stack/.env.example:30` | .env.example | true |
+| `FENCE_LINE` | `pm-stack/scripts/kaneo-cutover.sh:197` | shell ${VAR:-default} | not checked (presync) |
+| `FENCE_OUT` | `pm-stack/scripts/kaneo-cutover.sh:237` | shell ${VAR:-default} | fence-check produced no output |
+| `GITHUB_APP_ID` | `pm-stack/.env.example:34` | .env.example | no default in code |
+| `GITHUB_APP_NAME` | `pm-stack/.env.example:36` | .env.example | no default in code |
+| `GITHUB_PRIVATE_KEY_BASE64` | `pm-stack/.env.example:41` | .env.example | no default in code |
+| `GITHUB_WEBHOOK_SECRET` | `pm-stack/.env.example:38` | .env.example | no default in code |
+| `KANEO_CLIENT_URL` | `pm-stack/.env.example:10` | .env.example | https://kaneo.security.cab |
+| `KANEO_OPEN_REGISTRATION` | `pm-stack/deploy.sh:72` | shell ${VAR:-default} | no default in code |
+| `KCODE` | `pm-stack/scripts/restore-rehearsal.sh:101` | shell ${VAR:-default} | none |
+| `NOTIFICATION_SECRET_ENCRYPTION_KEY` | `pm-stack/.env.example:24` | .env.example | no default in code |
+| `PATH` | `pm-stack/systemd/pm-console-android-release.service:13` | systemd Environment= | %h/.local/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin:/usr/bin:/bin |
+| `PM_AGG_DIGESTS_DIR` | `pm-stack/systemd/pm-aggregator.service:18` | systemd Environment= | %h/.local/state/pm-aggregator/digests |
+| `PM_GIT_SYNC_QUARANTINE` | `pm-stack/scripts/pm-git-sync.sh:81` | shell ${VAR:-default} | $HOME/backups/pm-git-sync-quarantine |
+| `PM_GIT_SYNC_REPO` | `pm-stack/scripts/pm-git-sync.sh:55` | shell ${VAR:-default} | $HOME/git/code |
+| `PM_STACK_SECRETS` | `pm-stack/connect-repo.sh:44` | shell ${VAR:-default} | $STACK_DIR/../secrets/pm-stack.sops.yaml |
+| `PM_STACK_TAILNET_IP` | `pm-stack/grist/compose.yml:31` | compose ${VAR:-default} (also pm-stack/pad/compose.yml:27) | 127.0.0.1 |
+| `PM_SWEEPER_SUBPROCESS_TIMEOUT` | `pm-stack/invariant-sweeper.py:186` | python environ | no default in code |
+| `POSTGRES_DB` | `pm-stack/compose.yml:22` | compose ${VAR} | kaneo |
+| `POSTGRES_PASSWORD` | `pm-stack/.env.example:16` | .env.example | no default in code |
+| `POSTGRES_USER` | `pm-stack/compose.yml:21` | compose ${VAR} | kaneo |
+| `QUOTA_WATCHDOG_ADAPTERS_DIR` | `pm-stack/systemd/pm-quota-watchdog.service:9` | systemd Environment= | /home/user/.config/quota-watchdog/adapters |
+| `QUOTA_WATCHDOG_LIVE` | `pm-stack/systemd/pm-quota-watchdog.service:10` | systemd Environment= | 1 |
+| `QUOTA_WATCHDOG_LIVE_REPAIRS` | `pm-stack/systemd/pm-quota-watchdog.service:11` | systemd Environment= | 1 |
+| `SOPS_AGE_KEY_FILE` | `pm-stack/connect-repo.sh:45` | shell ${VAR:-default} | $HOME/.config/sops/age/keys.txt |
+| `SRC_COUNTS` | `pm-stack/scripts/kaneo-cutover.sh:198` | shell ${VAR:-default} | unknown |
+| `TGT_COUNTS` | `pm-stack/scripts/kaneo-cutover.sh:199` | shell ${VAR:-default} | unknown |
+
+## nixos-pm (39)
+
+| name | evidence (file:line, first hit) | kind | default |
+|---|---|---|---|
+| `BWS_ACCESS_TOKEN_FILE` | `nixos/services/pm-stack/default.nix:327` | nixos Environment | "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token" |
+| `BWS_BIN` | `nixos/services/pm-stack/default.nix:326` | nixos Environment | "BWS_BIN=/run/current-system/sw/bin/bws" |
+| `CHARGES_SURFACED_STATE_PATH` | `nixos/services/pm-stack/default.nix:543` | nixos Environment | "CHARGES_SURFACED_STATE_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-sur |
+| `CHARGE_CANDIDATES_PATH` | `nixos/services/pm-stack/default.nix:542` | nixos Environment | "CHARGE_CANDIDATES_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/charges-candidat |
+| `CLAUDE_LAUNCH_RECORDS_PATH` | `nixos/services/pm-stack/default.nix:544` | nixos Environment | "CLAUDE_LAUNCH_RECORDS_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/claude-launc |
+| `DNS_REGISTER_PATH` | `nixos/services/pm-stack/default.nix:541` | nixos Environment | "DNS_REGISTER_PATH=${home}/hatch-personal/workspace/goals/stand-up-lab-cluster-talm-talos-cozystack-postgres-rustfs/file |
+| `FLEET_FEED_OUT` | `nixos/services/pm-stack/default.nix:536` | nixos Environment | "FLEET_FEED_OUT=${aggState}/fleet-feed.json" |
+| `OPENCODE_SERVER_PASSWORD_FILE` | `nixos/services/pm-stack/default.nix:549` | nixos Environment | "OPENCODE_SERVER_PASSWORD_FILE=${aggState}/opencode-server-password" |
+| `OPENCODE_SERVER_URL` | `nixos/services/pm-stack/default.nix:547` | nixos Environment | "OPENCODE_SERVER_URL=http://127.0.0.1:13420" |
+| `OPENCODE_SESSION_SOURCE` | `nixos/services/pm-stack/default.nix:548` | nixos Environment | "OPENCODE_SESSION_SOURCE=opencode-laptop" |
+| `ORCHESTRATION_PATH` | `nixos/services/pm-stack/default.nix:540` | nixos Environment | "ORCHESTRATION_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/orchestration.json" |
+| `PATH` | `nixos/services/pm-apps/default.nix:179` | nixos Environment | "PATH=${home}/.local/bin:/etc/profiles/per-user/${cfg.user}/bin:${home}/.nix-profile/bin:/run/current-system/sw/bin:/usr |
+| `PM_AGG_ACTIVITY_FILE` | `nixos/services/pm-stack/default.nix:317` | nixos Environment | "PM_AGG_ACTIVITY_FILE=${aggState}/activity-ingestion.json" |
+| `PM_AGG_COVERAGE_SNAPSHOT_FILE` | `nixos/services/pm-stack/default.nix:293` | nixos Environment | "PM_AGG_COVERAGE_SNAPSHOT_FILE=${aggState}/coverage-snapshot.json" |
+| `PM_AGG_DIGESTS_DIR` | `nixos/services/pm-stack/default.nix:330` | nixos Environment | "PM_AGG_DIGESTS_DIR=${aggState}/digests" |
+| `PM_AGG_EVENTS_FILE` | `nixos/services/pm-stack/default.nix:306` | nixos Environment | "PM_AGG_EVENTS_FILE=${aggState}/events.json" |
+| `PM_AGG_FRESHNESS_FILE` | `nixos/services/pm-stack/default.nix:310` | nixos Environment | "PM_AGG_FRESHNESS_FILE=${aggState}/freshness.json" |
+| `PM_AGG_FRESHNESS_PORT` | `nixos/services/pm-stack/default.nix:311` | nixos Environment | "PM_AGG_FRESHNESS_PORT=4871" |
+| `PM_AGG_FRESHNESS_URL` | `nixos/services/pm-stack/default.nix:249` | nixos Environment | Environment = [ "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish" ]; |
+| `PM_AGG_ROADMAP_ANNOTATIONS_FILE` | `nixos/services/pm-stack/default.nix:298` | nixos Environment | "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${aggState}/roadmap-annotations.json" |
+| `PM_AGG_SOURCE` | `nixos/services/pm-stack/default.nix:452` | nixos Environment | "PM_AGG_SOURCE=live" |
+| `PM_AGG_STORE_BACKEND` | `nixos/services/pm-stack/default.nix:324` | nixos Environment | "PM_AGG_STORE_BACKEND=turso" |
+| `PM_AGG_STORE_WRITER` | `nixos/services/pm-stack/default.nix:325` | nixos Environment | "PM_AGG_STORE_WRITER=pm-aggregator.service" |
+| `PM_AGG_VIEWS_FILE` | `nixos/services/pm-stack/default.nix:307` | nixos Environment | "PM_AGG_VIEWS_FILE=${aggState}/views.json" |
+| `PM_APPS_HEALTH_APPS` | `nixos/services/pm-apps/pm-apps-health.sh:30` | shell ${VAR:-default} | @apps@ |
+| `PM_APPS_HEALTH_GRACE_SECONDS` | `nixos/services/pm-apps/pm-apps-health.sh:28` | shell ${VAR:-default} | @graceSeconds@ |
+| `PM_APPS_HEALTH_NOW` | `nixos/services/pm-apps/pm-apps-health.sh:29` | shell ${VAR:-default} | $(date +%s) |
+| `PM_APPS_HEALTH_STATE_DIR` | `nixos/services/pm-apps/pm-apps-health.sh:27` | shell ${VAR:-default} | @stateDir@ |
+| `PM_KANEO_PROJECTS_FILE` | `nixos/services/pm-stack/default.nix:292` | nixos Environment | "PM_KANEO_PROJECTS_FILE=${pmAggregator}/libexec/pm-aggregator/kaneo-projects.json" |
+| `PM_PROJECTOR_URL` | `nixos/services/pm-stack/default.nix:287` | nixos Environment | "PM_PROJECTOR_URL=http://127.0.0.1:${toString cfg.projectorPort}" |
+| `POOL_STATE_PATH` | `nixos/services/pm-stack/default.nix:432` | nixos Environment | "POOL_STATE_PATH=${home}/.local/state/opencode-claimant/pool-state.json" |
+| `QUOTA_CURRENT_PATH` | `nixos/services/pm-stack/default.nix:425` | nixos Environment | "QUOTA_CURRENT_PATH=${aggState}/quota-current.json" |
+| `QUOTA_GATHERER_STATE_PATH` | `nixos/services/pm-stack/default.nix:427` | nixos Environment | "QUOTA_GATHERER_STATE_PATH=${aggState}/quota-gatherer-state.json" |
+| `QUOTA_HEARTBEAT_PATH` | `nixos/services/pm-stack/default.nix:426` | nixos Environment | "QUOTA_HEARTBEAT_PATH=${aggState}/quota-gatherer-heartbeat.json" |
+| `QUOTA_REGISTRY_PATH` | `nixos/services/pm-stack/default.nix:539` | nixos Environment | "QUOTA_REGISTRY_PATH=${home}/hatch-personal/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-regi |
+| `QUOTA_SNAPSHOTS_DIR` | `nixos/services/pm-stack/default.nix:428` | nixos Environment | "QUOTA_SNAPSHOTS_DIR=${aggState}/snapshots" |
+| `QUOTA_VIEW_PATH` | `nixos/services/pm-stack/default.nix:538` | nixos Environment | "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_file |
+| `SANDBOX_OPENCODE_URL` | `nixos/services/pm-stack/default.nix:546` | nixos Environment | "SANDBOX_OPENCODE_URL=http://127.0.0.1:13420" |
+| `USAGE_SNAPSHOT_OUTBOX_PATH` | `nixos/services/pm-stack/default.nix:545` | nixos Environment | "USAGE_SNAPSHOT_OUTBOX_PATH=${aggState}/usage-snapshot-outbox.jsonl" |
+
+## Config files
+
+| path | what it configures |
+|---|---|
+| `pm-stack/decision-events-worker/wrangler.toml` | decision-events Worker: D1 binding `DB` (database `decision-events`), Durable Object binding `SET_EVENTS`; secret `WEBHOOK_SECRET` named in header comment |
+| `pm-stack/voice-line-worker/wrangler.toml` | voice-line Worker: Workers AI binding `AI`, Durable Object binding `VOICE_SESSIONS`, `[vars] TURSO_URL`; secrets `TURSO_TOKEN`, `STATUS_INGEST_TOKEN` named in comment |
+| `pm-stack/notify-relay/wrangler.toml` | pm-notify relay Worker: Durable Object binding `PM_NOTIFY`; secrets `RELAY_SHARED_SECRET`, `VAPID_PRIVATE_KEY` named in header comment |
+| `pm-stack/console/edge/wrangler.jsonc` | pm-console-edge Worker: `vars.PUBLIC_HOST=pm.security.cab`, assets binding `ASSETS`, Durable Object binding `PM`; optional secrets `GITHUB_TOKEN`, `QUEUE_TOKEN`, `EDGE_DIRECT` named in comment |
+| `pm-stack/console/edge/init/wrangler.jsonc` | empty bootstrap version of pm-console-edge (`vars.PUBLIC_HOST`, `VERSION=empty`) |
+| `pm-stack/projector/.env.example` | projector env template (names only): DATABASE_URL, TURSO_AUTH_TOKEN, GITHUB_WEBHOOK_SECRET, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_TOKEN, PM_PROJECTOR_API_TOKEN, PM_REPOS, PORT, HOSTNAME |
+| `pm-stack/compose.yml` | Kaneo + PostgreSQL: `env_file .env` (rendered by deploy.sh from SOPS), `POSTGRES_USER`/`POSTGRES_DB` with `kaneo` defaults |
+| `pm-stack/grist/compose.yml` | Grist: `env_file .env`, `GRIST_DEFAULT_EMAIL` with operator default, tailnet bind via `PM_STACK_TAILNET_IP` |
+| `pm-stack/pad/compose.yml` | Pad: `env_file .env`, `PAD_PORT=7777`, `PAD_DB=/data/pad.db`, tailnet bind via `PM_STACK_TAILNET_IP` |
+| `pm-stack/systemd/pm-aggregator.service` | aggregator unit: `EnvironmentFile=%h/.local/state/pm-aggregator/.env`, `PM_AGG_DIGESTS_DIR` |
+| `pm-stack/systemd/pm-console.service` | console unit: `EnvironmentFile=%h/.local/state/pm-console/.env` |
+| `pm-stack/systemd/pm-dispatch.service` | dispatch unit: `EnvironmentFile=%h/pm-stack/dispatch/.env` + `-%h/secrets/dispatch.env` |
+| `pm-stack/systemd/pm-tunnel.service` | tunnel unit: `EnvironmentFile=%h/pm-stack/tunnel.env` |
+| `pm-stack/systemd/pm-quota-watchdog.service` | quota watchdog: `QUOTA_WATCHDOG_ADAPTERS_DIR`, `QUOTA_WATCHDOG_LIVE=1`, `QUOTA_WATCHDOG_LIVE_REPAIRS=1` |
+| `pm-stack/systemd/pm-console-{android-release,expose,redeploy}.service`, `pm-host-health.service`, `pm-invariant-sweeper.service`, `pm-kaneo-sync-guard.service` | console/host maintenance units (PATH-only Environment) |
+| `pm-stack/aggregator/systemd/quota-gatherer.service` | quota gatherer: `QUOTA_CURRENT_PATH`, `QUOTA_HEARTBEAT_PATH`, `QUOTA_GATHERER_STATE_PATH`, `QUOTA_SNAPSHOTS_DIR` + aggregator EnvironmentFile |
+| `pm-stack/aggregator/systemd/digest-{daily,weekly}.service` | digests: `PM_AGG_SOURCE=live`, `PM_AGG_DIGESTS_DIR` + aggregator EnvironmentFile |
+| `pm-stack/ready-for-agent/systemd/ready-for-agent.service` | ready-for-agent unit (PATH-only Environment); sibling `pm-stack/ready-for-agent/config.json` is its file config |
+| `pm-stack/scheduled-history/scheduled-history.service` | scheduled-history unit |
+| `nixos/services/pm-stack/default.nix` | NixOS/home-manager deployment of the whole stack: per-unit `Environment` lists + `EnvironmentFile` state `.env` files (aggregator, projector, dispatch, quota-gatherer, claimant) — the authoritative deployed values for the names in the nixos-pm table |
+| `nixos/services/pm-apps/default.nix` + `pm-apps-health.sh` | pm-apps health unit: `PM_APPS_HEALTH_*` names |
+| `pm-stack/platform/workers.json` | platform Worker registry (names/routes of the Cloudflare Workers; no env values) |
+| `pm-stack/aggregator/bunfig.toml`, `*/package.json`, `*/tsconfig.json` (each component) | Bun/package/TypeScript config — no env names |
+
+## DOCS-ONLY — named in docs, never read in code (13)
+
+These names appear in READMEs / runbooks / PORTS.md but no code or config-file read was found by any pass. This is disagreement material: either the docs are stale, or the read happens outside the pm-stack tree (CI workflows, Android build scripts, another repo). Caveat: names read only via dynamic `process.env[name]` variable-name lookups would also land here — the five console names first flagged this way (`PM_CONSOLE_PORT`, `PM_CONSOLE_OWNER_EMAILS`, `PM_CONSOLE_CERT_NAMES`, `PM_CONSOLE_UNITS`, `PM_CONSOLE_PROTECTED_UNITS`) were checked by targeted grep and ARE read literally at `pm-stack/console/src/config.ts:235-253`, so they are in the console table, not here. `VAPID_PRIVATE_KEY`, `STATUS_INGEST_TOKEN` and `PM_STACK_TAILNET_IP` were likewise promoted to verified after targeted grep (`this.env.` / cast / compose reads the first passes missed).
+
+| name | docs evidence (first hit) | mentions |
+|---|---|---|
+| `AUTH_SECRET` | `doc/pm-stack/COLD-RESTORE-RUNBOOK.md:93` | 5 |
+| `CLOUDFLARE_VOICE_LINE_PROMOTION_TOKEN` | `pm-stack/voice-line-worker/README.md:95` | 1 |
+| `CLOUDFLARE_VOICE_LINE_UPLOAD_TOKEN` | `pm-stack/voice-line-worker/README.md:91` | 1 |
+| `GRIST_BOOT_KEY` | `pm-stack/README.md:380` | 1 |
+| `PAD_API_KEY` | `pm-stack/README.md:353` | 1 |
+| `PM_CONSOLE_ANDROID_KEYSTORE_B64` | `pm-stack/console/android/README.md:114` | 1 |
+| `PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD` | `pm-stack/console/android/README.md:115` | 1 |
+| `PM_CONSOLE_ANDROID_SHA256` | `pm-stack/console/README.md:407` | 2 |
+| `PM_HEALTH_HOOKS_INCIDENT_FILE` | `pm-stack/health-hooks/README.md:31` | 1 |
+| `PORT_SECRETS_BROKER` | `pm-stack/PORTS.md:63` | 1 |
+| `REPO_QUEUE_BROKER_URL` | `pm-stack/opencode-claimant/README.md:528` | 1 |
+| `REPO_QUEUE_TOKEN_FILE` | `pm-stack/opencode-claimant/README.md:529` | 1 |
+| `UPLOAD_SECRET` | `pm-stack/design-register-2026-11-11.md:834` | 1 |
+
+Likely explanations to check in the fix-up pass (hypotheses, not findings): the `CLOUDFLARE_VOICE_LINE_*` pair and the Android keystore pair are probably CI-workflow env (`.github/workflows`), which was outside this census's tree scope; `REPO_QUEUE_*` may be the claimant's rename of the verified `QUEUE_BROKER_*` names; `GRIST_BOOT_KEY` / `PAD_API_KEY` are probably rendered into the compose `.env` files (consumed by the Grist/Pad containers themselves, not by pm-stack code).

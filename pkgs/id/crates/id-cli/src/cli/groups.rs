@@ -116,6 +116,10 @@ pub struct DelegateArgs {
     /// Let the grantee pass the scope on to others.
     #[arg(long)]
     pub redelegate: bool,
+    /// Optional signed expiry bound (Unix seconds): the grant carries no
+    /// authority at or past this time (design §7.4, D1).
+    #[arg(long)]
+    pub expires_at: Option<u64>,
     /// The group's delegation mode, set first if it differs: `keep_prior`, `cascade` or `transfer`.
     #[arg(long, value_enum)]
     pub mode: Option<Delegation>,

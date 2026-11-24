@@ -43,8 +43,8 @@ against those slices' stated outputs, not against running code.
 ## 1. Intent
 
 `fleet work changes <work-id> --since-start --external-only` (C-R118)
-answers the question an agent actually asks mid-task: *what happened
-on this work item that did not originate from my session?* The naive
+answers the question an agent actually asks mid-task: _what happened
+on this work item that did not originate from my session?_ The naive
 implementation — filter out everything whose GitHub actor is the
 Fleet bot login — is wrong in both directions:
 
@@ -53,7 +53,7 @@ Fleet bot login — is wrong in both directions:
   logins. Actor filtering hides other sessions' writes, other Fleet
   components' writes, and a human driving the same App installation —
   exactly the concurrent activity `--external-only` exists to surface.
-- **False attribution.** A shared login never establishes *which*
+- **False attribution.** A shared login never establishes _which_
   session caused an event (C-R121: session attribution requires Fleet
   operation/session IDs, not only a GitHub username).
 
@@ -64,11 +64,11 @@ performs a remote write, never on who the source says acted.
 
 ### 2.1 Fleet-side keys
 
-| Key | Owner | Meaning |
-| --- | --- | --- |
-| `operation_id` | REL-03 (#9513), carried in the shared command/result envelope (`src/work/contracts.rs`) | One logical Fleet operation; idempotency identity and stable effect receipt hang off it. |
-| `session_id` | #9206 session identity, surfaced in lifecycle receipts (CLI-05, #9502) | The agent session that issued the operation. Opaque; never derived from an actor name. |
-| `outbox_id` | #9209 outbox (FDR-PMO-006) | The durable outbox record for a remote write that is delivered asynchronously rather than inside the operation's own call. |
+| Key            | Owner                                                                                   | Meaning                                                                                                                    |
+| -------------- | --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `operation_id` | REL-03 (#9513), carried in the shared command/result envelope (`src/work/contracts.rs`) | One logical Fleet operation; idempotency identity and stable effect receipt hang off it.                                   |
+| `session_id`   | #9206 session identity, surfaced in lifecycle receipts (CLI-05, #9502)                  | The agent session that issued the operation. Opaque; never derived from an actor name.                                     |
+| `outbox_id`    | #9209 outbox (FDR-PMO-006)                                                              | The durable outbox record for a remote write that is delivered asynchronously rather than inside the operation's own call. |
 
 ### 2.2 Remote-side keys
 
@@ -113,7 +113,7 @@ Rules:
 - **Scoped match.** A lookup matches on `(source_ref, remote_id)`
   together. The same numeric ID in a different repository is not a
   hit. An entry whose `remote_revision_at_write` is known and whose
-  event revision differs is evidence about the *creation*, not about
+  event revision differs is evidence about the _creation_, not about
   the later revision (see §4 on edits).
 - **Co-located with the activity store.** The map lives with
   HYD-06's normalized records in `src/work/activity.rs`'s domain (the
@@ -140,15 +140,15 @@ Decision order — first matching rule wins:
 
 1. **Own session (`mapped`).** A map entry matches the event's
    `(source_ref, remote_id)` and its `session_id` equals the
-   requesting session. This is the *only* rule that may exclude an
+   requesting session. This is the _only_ rule that may exclude an
    event from `--external-only` output.
 2. **Other Fleet (`mapped`/`marked`).** A map entry matches but names
    a different session (or an operation with no session, e.g. a PM
    Stack writer), or the event carries a verifiable Fleet content
-   marker with no map entry. Reported as Fleet-caused but *not* the
+   marker with no map entry. Reported as Fleet-caused but _not_ the
    requesting session's — still included in `--external-only` output,
-   labeled, because C-R118 asks what did not originate from *that
-   session*.
+   labeled, because C-R118 asks what did not originate from _that
+   session_.
 3. **External (`distinct_actor`).** No Fleet evidence, and the
    event's provenance (AUTH-05 record) positively names a principal
    that is not a shared Fleet identity — a human user, another
@@ -212,7 +212,7 @@ slice (`activity.list`, `activity.since`, `queue.timeline`,
   `origin`, `confidence`, and evidence. Classification is annotation,
   not filtering.
 - With `--external-only`: the result is `fleet_other ∪ external ∪
-  uncertain` — everything not positively attributed to the requesting
+uncertain` — everything not positively attributed to the requesting
   session. Uncertain rows are included **by default** (C-R122) and
   are labeled `uncertain`, never relabeled `external`; consumers can
   distinguish "definitely not ours" from "cannot prove whose".
@@ -225,11 +225,11 @@ slice (`activity.list`, `activity.since`, `queue.timeline`,
   underlying source coverage is not cleanly reconciled (per HYD-06's
   reconciliation state — unprocessed pages, known deletion gaps,
   map unavailable) is returned as the shared outcome `partial` with
-  the gap named, rather than as a plain list that merely *looks*
+  the gap named, rather than as a plain list that merely _looks_
   complete. Without the flag, the same rows are returned with their
   per-row confidence and a coverage note in the summary. The flag
   changes how gaps are surfaced, never which rows classify which way.
-- A session's own prior write may still be *visible* in hydration
+- A session's own prior write may still be _visible_ in hydration
   (it is part of the record); visibility is not attribution. It is
   excluded from `--external-only` only via rule 1.
 
@@ -245,14 +245,14 @@ specified here so the implementation issue can be scoped to it:
 (requesting) and B. Only session A has an operation/remote-ID map.
 Events in the window:
 
-| # | Event | Map evidence | Expected in `--external-only` for A |
-| --- | --- | --- | --- |
-| 1 | Comment created by A's operation | entry (A, remote ID) | **excluded** — rule 1 |
-| 2 | Comment created by B's operation, same bot login | no entry | **included**, `uncertain` |
-| 3 | Human comment with a body identical to event 1's | no entry | **included**, `external` — coincidence is not evidence |
-| 4 | Edit to event 1's comment, no edit mapping | creation entry only | **included**, `uncertain` — edits don't inherit |
-| 5 | Comment whose map entry is stale (remote ID re-keyed) | non-matching entry | **included**, `uncertain` |
-| 6 | Comment by a distinct human actor | provenance names the human | **included**, `external` |
+| #   | Event                                                 | Map evidence               | Expected in `--external-only` for A                    |
+| --- | ----------------------------------------------------- | -------------------------- | ------------------------------------------------------ |
+| 1   | Comment created by A's operation                      | entry (A, remote ID)       | **excluded** — rule 1                                  |
+| 2   | Comment created by B's operation, same bot login      | no entry                   | **included**, `uncertain`                              |
+| 3   | Human comment with a body identical to event 1's      | no entry                   | **included**, `external` — coincidence is not evidence |
+| 4   | Edit to event 1's comment, no edit mapping            | creation entry only        | **included**, `uncertain` — edits don't inherit        |
+| 5   | Comment whose map entry is stale (remote ID re-keyed) | non-matching entry         | **included**, `uncertain`                              |
+| 6   | Comment by a distinct human actor                     | provenance names the human | **included**, `external`                               |
 
 The assertion the test name carries: event 2 — same actor, no map —
 is present in the output. Zero-test filter passes are not acceptance
@@ -301,16 +301,16 @@ Full per-occurrence text for every allocated ID is in
 this table records only which part of this design speaks to each
 group — it claims design coverage, not implementation.
 
-| IDs | Where addressed |
-| --- | --- |
-| C-R118, C-R121, C-R122 | §1, §3, §5, §6 — the session-relative filter, ID-based attribution, uncertain-included rule |
-| C-R119, C-R120 | §2.2–§2.3, §4 — event identity/revision separation the classifier consumes; cursor rules stay HYD-06's |
-| C-R111, C-R112 | §5 — the activity/changes surface this classification annotates |
-| C-R005, C-R009, C-R107, C-R108 | §5 — command/flag allocation consumed as-is (`--session-id`, `--since-start`, `--external-only`) |
-| C-R150, C-R151 | §2.3, §7 — durable correlation metadata and its legacy treatment |
-| H-R014, H-R016, H-R017, H-R024, H-R031 | §6, §8 — oracle and compatibility coverage carried into the implementation issue's acceptance |
-| O-R022, O-R023, O-R028, O-R030, O-R049, O-R050 | §3, §4 — candidate/example occurrences behind the classifier rules and negative cases |
-| P-R009, P-R012, P-R015, P-R016, P-R018, P-R027, P-R039, P-R050, P-R051, P-R065, P-R066 | §2, §3 — proposal occurrences behind the identity model and provenance consumption |
+| IDs                                                                                    | Where addressed                                                                                        |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| C-R118, C-R121, C-R122                                                                 | §1, §3, §5, §6 — the session-relative filter, ID-based attribution, uncertain-included rule            |
+| C-R119, C-R120                                                                         | §2.2–§2.3, §4 — event identity/revision separation the classifier consumes; cursor rules stay HYD-06's |
+| C-R111, C-R112                                                                         | §5 — the activity/changes surface this classification annotates                                        |
+| C-R005, C-R009, C-R107, C-R108                                                         | §5 — command/flag allocation consumed as-is (`--session-id`, `--since-start`, `--external-only`)       |
+| C-R150, C-R151                                                                         | §2.3, §7 — durable correlation metadata and its legacy treatment                                       |
+| H-R014, H-R016, H-R017, H-R024, H-R031                                                 | §6, §8 — oracle and compatibility coverage carried into the implementation issue's acceptance          |
+| O-R022, O-R023, O-R028, O-R030, O-R049, O-R050                                         | §3, §4 — candidate/example occurrences behind the classifier rules and negative cases                  |
+| P-R009, P-R012, P-R015, P-R016, P-R018, P-R027, P-R039, P-R050, P-R051, P-R065, P-R066 | §2, §3 — proposal occurrences behind the identity model and provenance consumption                     |
 
 ## 10. Non-goals
 

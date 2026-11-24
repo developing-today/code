@@ -1,0 +1,1082 @@
+[
+  {
+    "id": "n01",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9716447275909424,
+          "noul": 0.9716447275909424,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 163,
+        "total_input_tokens": 163,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 163
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n02",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.99,
+          "noul": 0.01,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 125,
+        "total_input_tokens": 125,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 125
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n03",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.989078614327458,
+          "noul": 0.01092138567254199,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 125,
+        "total_input_tokens": 125,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 125
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n04",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9470432444148285,
+          "noul": 0.9470432444148285,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 126,
+        "total_input_tokens": 126,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 126
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n05",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9639700861641917,
+          "noul": 0.9639700861641917,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 123,
+        "total_input_tokens": 123,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 123
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n06",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.99,
+          "noul": 0.01,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 123,
+        "total_input_tokens": 123,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 123
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n07",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9805436254641536,
+          "noul": 0.9805436254641536,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 129,
+        "total_input_tokens": 129,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 129
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n08",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.99,
+          "noul": 0.01,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 128,
+        "total_input_tokens": 128,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 128
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n09",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9781006703346352,
+          "noul": 0.021899329665364745,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 119,
+        "total_input_tokens": 119,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 119
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n10",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9790507414173223,
+          "noul": 0.9790507414173223,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 128,
+        "total_input_tokens": 128,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 128
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n11",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.99,
+          "noul": 0.01,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 136,
+        "total_input_tokens": 136,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 136
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "n12",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9790059370315535,
+          "noul": 0.9790059370315535,
+          "type": "noul"
+        }
+      },
+      "usage": {
+        "total_tokens": 136,
+        "total_input_tokens": 136,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 136
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c01",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9929434156077076,
+          "choice": "billing",
+          "probabilities": {
+            "other": 0.0029093264417094033,
+            "technical": 0.0016201119640952882,
+            "shipping": 0.0025271459864876092,
+            "billing": 0.9929434156077076
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 148,
+        "total_input_tokens": 148,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 148
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c02",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.995741299748294,
+          "choice": "technical",
+          "probabilities": {
+            "technical": 0.995741299748294,
+            "billing": 0.000788111326818114,
+            "shipping": 0.0008819427552323888,
+            "other": 0.002588646169655397
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 146,
+        "total_input_tokens": 146,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 146
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c03",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9979164686569185,
+          "choice": "shipping",
+          "probabilities": {
+            "other": 0.0010816263709038081,
+            "technical": 0.00014377239385834735,
+            "billing": 0.0008581325783194113,
+            "shipping": 0.9979164686569185
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 150,
+        "total_input_tokens": 150,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 150
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c04",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9757685624051424,
+          "choice": "other",
+          "probabilities": {
+            "billing": 0.012200687159867748,
+            "technical": 0.01122833611200143,
+            "other": 0.9757685624051424,
+            "shipping": 0.0008024143229885027
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 146,
+        "total_input_tokens": 146,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 146
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c05",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9847027000109335,
+          "choice": "dispatch",
+          "probabilities": {
+            "dispatch": 0.9847027000109335,
+            "hold": 0.006934680231866736,
+            "escalate": 0.0069540979331337415,
+            "drop": 0.0014085218240660854
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 147,
+        "total_input_tokens": 147,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 147
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c06",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9796146907704797,
+          "choice": "hold",
+          "probabilities": {
+            "hold": 0.9796146907704797,
+            "dispatch": 0.002427800285572166,
+            "escalate": 0.014474050066507045,
+            "drop": 0.003483458877441172
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 154,
+        "total_input_tokens": 154,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 154
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c07",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.6244340086226682,
+          "choice": "escalate",
+          "probabilities": {
+            "dispatch": 0.012784611667060419,
+            "hold": 0.3148331053114161,
+            "drop": 0.0479482743988551,
+            "escalate": 0.6244340086226682
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 156,
+        "total_input_tokens": 156,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 156
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c08",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9934069878462142,
+          "choice": "drop",
+          "probabilities": {
+            "drop": 0.9934069878462142,
+            "escalate": 0.002199850155340995,
+            "hold": 0.00409608775980863,
+            "dispatch": 0.0002970742386362378
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 149,
+        "total_input_tokens": 149,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 149
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c09",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9834919691226902,
+          "choice": "free_leg",
+          "probabilities": {
+            "plan_leg": 0.013387690009396897,
+            "none": 0.0004590803415595278,
+            "payg_leg": 0.0026612605263533658,
+            "free_leg": 0.9834919691226902
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 188,
+        "total_input_tokens": 188,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 188
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c10",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9983312544490061,
+          "choice": "plan_leg",
+          "probabilities": {
+            "plan_leg": 0.9983312544490061,
+            "none": 0.0002902275529332522,
+            "payg_leg": 0.0011203946080993617,
+            "free_leg": 0.0002581233899612133
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 190,
+        "total_input_tokens": 190,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 190
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c11",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9921528020287703,
+          "choice": "payg_leg",
+          "probabilities": {
+            "free_leg": 0.0011631635603719904,
+            "plan_leg": 0.0032808426253068414,
+            "payg_leg": 0.9921528020287703,
+            "none": 0.0034031917855510845
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 190,
+        "total_input_tokens": 190,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 190
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "c12",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9844681655625926,
+          "choice": "none",
+          "probabilities": {
+            "plan_leg": 0.005826958130042769,
+            "free_leg": 0.004788473913247812,
+            "none": 0.9844681655625926,
+            "payg_leg": 0.004916402394116957
+          },
+          "type": "choice"
+        }
+      },
+      "usage": {
+        "total_tokens": 163,
+        "total_input_tokens": 163,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 163
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s01",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9848454182200398,
+          "score": 0.016299365124995684,
+          "probabilities": {
+            "0": 0.9848454182200398,
+            "1": 0.014290290016105846,
+            "3": 0.0002804915811813115,
+            "2": 0.0005838001826729524
+          },
+          "legend": {
+            "0": "Cosmetic only: appearance affected, no functionality lost.",
+            "2": "Major: a core task fails with no workaround.",
+            "3": "Critical: data loss or a security breach.",
+            "1": "Minor: a feature is degraded but a workaround exists."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 155,
+        "total_input_tokens": 155,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 155
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s02",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.905991643889074,
+          "score": 1.0077869709642204,
+          "probabilities": {
+            "3": 0.007725839080202846,
+            "0": 0.04697361211345411,
+            "2": 0.03930890491726892,
+            "1": 0.905991643889074
+          },
+          "legend": {
+            "3": "Critical: data loss or a security breach.",
+            "0": "Cosmetic only: appearance affected, no functionality lost.",
+            "1": "Minor: a feature is degraded but a workaround exists.",
+            "2": "Major: a core task fails with no workaround."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 157,
+        "total_input_tokens": 157,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 157
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s03",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.7810404915856731,
+          "score": 2.1980225681550993,
+          "probabilities": {
+            "0": 0.000627507244216509,
+            "2": 0.7810404915856731,
+            "1": 0.009527209263289382,
+            "3": 0.2088047919068212
+          },
+          "legend": {
+            "0": "Cosmetic only: appearance affected, no functionality lost.",
+            "3": "Critical: data loss or a security breach.",
+            "1": "Minor: a feature is degraded but a workaround exists.",
+            "2": "Major: a core task fails with no workaround."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 158,
+        "total_input_tokens": 158,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 158
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s04",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9926908240897017,
+          "score": 2.9920568242403074,
+          "probabilities": {
+            "3": 0.9926908240897017,
+            "1": 0.00046613823052937646,
+            "0": 8.393080943239014e-05,
+            "2": 0.006759106870336556
+          },
+          "legend": {
+            "2": "Major: a core task fails with no workaround.",
+            "1": "Minor: a feature is degraded but a workaround exists.",
+            "0": "Cosmetic only: appearance affected, no functionality lost.",
+            "3": "Critical: data loss or a security breach."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 153,
+        "total_input_tokens": 153,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 153
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s05",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.6875234716940871,
+          "score": 0.7708614605157353,
+          "probabilities": {
+            "1": 0.6875234716940871,
+            "0": 0.274061227000427,
+            "2": 0.03190791509480972,
+            "3": 0.006507386210676252
+          },
+          "legend": {
+            "0": "No evidence: the claim is unsupported.",
+            "2": "Moderate evidence: two independent verified sources agree.",
+            "1": "Weak evidence: one unverified report only.",
+            "3": "Strong evidence: primary records plus independent verification agree."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 157,
+        "total_input_tokens": 157,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 157
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s06",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9631052059764994,
+          "score": 0.99639934236117,
+          "probabilities": {
+            "3": 0.0030911150854791014,
+            "2": 0.012010395564116655,
+            "1": 0.9631052059764994,
+            "0": 0.021793283373904893
+          },
+          "legend": {
+            "1": "Weak evidence: one unverified report only.",
+            "0": "No evidence: the claim is unsupported.",
+            "2": "Moderate evidence: two independent verified sources agree.",
+            "3": "Strong evidence: primary records plus independent verification agree."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 155,
+        "total_input_tokens": 155,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 155
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s07",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.8656491709992477,
+          "score": 2.112482112765891,
+          "probabilities": {
+            "2": 0.8656491709992477,
+            "3": 0.12376808717349823,
+            "1": 0.009879509246901147,
+            "0": 0.0007032325803530598
+          },
+          "legend": {
+            "0": "No evidence: the claim is unsupported.",
+            "2": "Moderate evidence: two independent verified sources agree.",
+            "3": "Strong evidence: primary records plus independent verification agree.",
+            "1": "Weak evidence: one unverified report only."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 149,
+        "total_input_tokens": 149,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 149
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s08",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9327879817369784,
+          "score": 2.9300886685275938,
+          "probabilities": {
+            "2": 0.06476468609578792,
+            "3": 0.9327879817369784,
+            "1": 0.002195351125082459,
+            "0": 0.0002519810421512948
+          },
+          "legend": {
+            "3": "Strong evidence: primary records plus independent verification agree.",
+            "1": "Weak evidence: one unverified report only.",
+            "0": "No evidence: the claim is unsupported.",
+            "2": "Moderate evidence: two independent verified sources agree."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 153,
+        "total_input_tokens": 153,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 153
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s09",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9795629538900108,
+          "score": 0.023157061009900642,
+          "probabilities": {
+            "3": 0.0006769608107207938,
+            "0": 0.9795629538900108,
+            "1": 0.018393992020798833,
+            "2": 0.0013660932784697153
+          },
+          "legend": {
+            "0": "Low: cosmetic or documentation only, no user impact.",
+            "3": "Urgent: core workflow blocked for all users or data at risk, act immediately.",
+            "1": "Normal: user impact with a workaround, fix in the normal queue.",
+            "2": "High: core workflow blocked for some users, expedite."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 165,
+        "total_input_tokens": 165,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 165
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s10",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.45458447333427526,
+          "score": 1.6752485883209585,
+          "probabilities": {
+            "2": 0.45458447333427526,
+            "0": 0.020645415848965436,
+            "3": 0.1206547654178243,
+            "1": 0.404115345398935
+          },
+          "legend": {
+            "2": "High: core workflow blocked for some users, expedite.",
+            "3": "Urgent: core workflow blocked for all users or data at risk, act immediately.",
+            "0": "Low: cosmetic or documentation only, no user impact.",
+            "1": "Normal: user impact with a workaround, fix in the normal queue."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 166,
+        "total_input_tokens": 166,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 166
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s11",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.8303266962699347,
+          "score": 2.0337658934080074,
+          "probabilities": {
+            "2": 0.8303266962699347,
+            "3": 0.1025818719722391,
+            "0": 0.0017245468064053116,
+            "1": 0.06536688495142083
+          },
+          "legend": {
+            "0": "Low: cosmetic or documentation only, no user impact.",
+            "1": "Normal: user impact with a workaround, fix in the normal queue.",
+            "3": "Urgent: core workflow blocked for all users or data at risk, act immediately.",
+            "2": "High: core workflow blocked for some users, expedite."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 172,
+        "total_input_tokens": 172,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 172
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  },
+  {
+    "id": "s12",
+    "http": 200,
+    "raw": {
+      "answers": {
+        "q": {
+          "confidence": 0.9921264908505397,
+          "score": 2.9917568590264065,
+          "probabilities": {
+            "3": 0.9921264908505397,
+            "0": 2.3774138227318365e-05,
+            "1": 0.00032208354767889537,
+            "2": 0.007527651463554089
+          },
+          "legend": {
+            "2": "High: core workflow blocked for some users, expedite.",
+            "1": "Normal: user impact with a workaround, fix in the normal queue.",
+            "0": "Low: cosmetic or documentation only, no user impact.",
+            "3": "Urgent: core workflow blocked for all users or data at risk, act immediately."
+          },
+          "type": "score"
+        }
+      },
+      "usage": {
+        "total_tokens": 164,
+        "total_input_tokens": 164,
+        "input_tokens_by_modality": [
+          {
+            "modality": "text",
+            "tokens": 164
+          }
+        ],
+        "total_output_tokens": 0
+      }
+    }
+  }
+]

@@ -2,7 +2,7 @@
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/lib.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/backend.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/shards/mod.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/index.ts, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/worker/src/service.ts, https://github.com/developing-today/code/blob/main/pkgs/fleet/crates/fleet-search/src/lib.rs
 
-Atlas is a unified search index over every corpus Drew produces: AI-client
+Atlas is a unified search index over every corpus the user produces: AI-client
 conversations first, and — through the same staging discipline — notes, repo
 docs, GitHub comments, query traces, and research. One logical pipeline carries
 every source from raw material to a searchable chunk, and one retrieval core
@@ -75,14 +75,14 @@ step is a tool rather than a daemon, this chapter says so.
 
 ## Stage by stage
 
-**Sources.** A *source* is anything that produces text worth searching again:
+**Sources.** A _source_ is anything that produces text worth searching again:
 a client's on-disk conversation store, a GitHub comment thread, a batch of
 notes. Sources are the truth; everything downstream is derived from them and
 can in principle be rebuilt. The extracts store that preserves source material
 content-addressed is part of this layer — see
 [The corpus: provenance and content addressing](corpus-and-provenance.md).
 
-**Staging.** Producers write into a *staging unit*: one small database per
+**Staging.** Producers write into a _staging unit_: one small database per
 unit of work (a queue task, a session, an epic, a notes batch), provisioned
 with the versioned `atlas_stage` v1 schema — `items`, `chunks_raw`, `notes`,
 `kv`, and a schema-version row. A registry database maps each unit id to its
@@ -113,7 +113,7 @@ vectors from different embedding models are not comparable.
 
 **Canonical store and shards.** The canonical store is the laptop database
 `~/atlas/turso-atlas/data/atlas.db`, shaped `sessions -> messages -> chunks`,
-with a published copy — the *monolith* — hosted on Turso. Beside it sits the
+with a published copy — the _monolith_ — hosted on Turso. Beside it sits the
 shard set: scan shards named `atlas-core-<tier>-<topic>-<nn>`, each a small
 database holding chunks and their vectors for one tier and topic, plus one
 content store per tier holding the messages and sessions that shard-served
@@ -137,7 +137,7 @@ and the bit-parity contract with the Python reference pipeline are in
 `run_search` in atlas-core. A hybrid search runs a full-text branch (FTS5,
 BM25-ranked) and a vector branch (exact cosine scan) and fuses the two
 candidate pools with reciprocal rank fusion. The caller's sensitivity ceiling
-and every filter are applied *inside* the branch queries, before any ranking
+and every filter are applied _inside_ the branch queries, before any ranking
 — a chunk above the ceiling is never retrieved, counted, or leaked by its
 absence. After fusion, a disclosure check at the output boundary intersects
 the caller's ceiling with the destination surface's ceiling, and only the
@@ -148,12 +148,12 @@ walks the pipeline in order.
 
 The Rust workspace is `pkgs/atlas-search/`, four crates:
 
-| Crate | Role |
-|---|---|
-| `atlas-core` | The engine as a library: search orchestration and the result envelope, the FTS and vector branches and their fusion, filters and sensitivity ceilings, the Turso and local backends, staging, classification, the promotion aggregator, shards, evaluation, traces and feedback. It also carries the helper binaries `atlas-classify`, `atlas-eval`, `atlas-github-comments`, and `atlas-sweep`. |
-| `atlas-embed` | The Snowflake embedder: dynamically loaded ONNX Runtime, the model's own Unigram tokenizer, CLS pooling, full-768 output. It knows nothing about queries or prompts; that policy lives in atlas-core. |
-| `atlas-proto` | The wire contract: serde types only — no HTTP, no storage, no search policy — shared by the service and the via-service CLI client so their definitions cannot drift. It also carries the versioned query-parameter defaults both sides read. |
-| `atlas-search` | The binary: the one-shot CLI, the via-service client, and `serve` mode, plus the `atlas-stage` staging tool. |
+| Crate          | Role                                                                                                                                                                                                                                                                                                                                                                                             |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `atlas-core`   | The engine as a library: search orchestration and the result envelope, the FTS and vector branches and their fusion, filters and sensitivity ceilings, the Turso and local backends, staging, classification, the promotion aggregator, shards, evaluation, traces and feedback. It also carries the helper binaries `atlas-classify`, `atlas-eval`, `atlas-github-comments`, and `atlas-sweep`. |
+| `atlas-embed`  | The Snowflake embedder: dynamically loaded ONNX Runtime, the model's own Unigram tokenizer, CLS pooling, full-768 output. It knows nothing about queries or prompts; that policy lives in atlas-core.                                                                                                                                                                                            |
+| `atlas-proto`  | The wire contract: serde types only — no HTTP, no storage, no search policy — shared by the service and the via-service CLI client so their definitions cannot drift. It also carries the versioned query-parameter defaults both sides read.                                                                                                                                                    |
+| `atlas-search` | The binary: the one-shot CLI, the via-service client, and `serve` mode, plus the `atlas-stage` staging tool.                                                                                                                                                                                                                                                                                     |
 
 Two further implementations shadow these. `atlas_search.py`, kept in the same
 package, is the production Python implementation the Rust was ported from; it
@@ -203,7 +203,7 @@ boundaries, in the order data crosses them:
    nothing but SELECT statements — it holds no write credential for any Turso
    database, and there is no write path to opt into.
 4. **Caller to service.** Every service client is a named identity presenting
-   a per-client token. The *server* clamps the requested sensitivity ceiling
+   a per-client token. The _server_ clamps the requested sensitivity ceiling
    to that identity's cap; a client cannot widen its own access by asking.
 5. **Service to shard set.** Tier ceilings are physical: a shard above the
    ceiling, or of a tier with no credential, is never connected, never
@@ -220,12 +220,12 @@ boundaries, in the order data crosses them:
    check: the destination surface's ceiling intersects the caller's, and
    cached or paged payloads inherit the filter because the served set is
    collected from the rendered envelope.
-8. **The embedder boundary.** Embedding happens in-process, on hardware Drew
+8. **The embedder boundary.** Embedding happens in-process, on hardware the user
    controls. Secret-tier text is never sent to a hosted embedder — a rule
    stated in full in [Sensitivity tiers and client ceilings](sensitivity.md).
 
 Consumers sit outside every boundary above and inherit the strictest one they
-cross: Drew's own CLI is the only identity granted the `secret-bearing`
+cross: The user's own CLI is the only identity granted the `secret-bearing`
 ceiling; agents on the sandbox seat search at `personal`; hosted callers
 arrive through the Worker at `personal` under the `hosted-per-user`
 disclosure context. Who consumes Atlas, and by which path, is the subject of
