@@ -485,9 +485,8 @@ usage: repo-queue reprioritize <task-id> <new-priority> [--reason <text>] [--wor
 **Behaviour.** Calls the broker's `POST /reprioritize`; the broker
 applies the new priority in the Turso queue store and syncs the task's
 GitHub category to match. Prints the served task row as JSON. Landed in
-#14100 (PR #14203). Note: the verb is a client/broker verb — it is not
-in the registry's subcommand inventory, so domain help does not list it
-(situation at 2026-11-24).
+#14100 (PR #14203) and registered in the queue domain's subcommand
+inventory (`crates/fleet-registry/src/lib.rs`), so domain help lists it.
 
 Exit codes: 0 success · 2 usage (including a missing or unresolvable
 priority).
