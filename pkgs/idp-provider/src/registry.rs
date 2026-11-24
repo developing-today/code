@@ -262,7 +262,10 @@ pub struct UpstreamDoor {
 pub const SAML_ATTRIBUTES: [&str; 2] = ["roles", "displayName"];
 
 fn default_saml_attributes() -> Vec<String> {
-    SAML_ATTRIBUTES.iter().map(str::to_string).collect()
+    SAML_ATTRIBUTES
+        .iter()
+        .map(|attr| (*attr).to_string())
+        .collect()
 }
 
 /// One statically registered SAML service provider (design §5). Trust
