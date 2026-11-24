@@ -4572,7 +4572,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         const v = validateNeedsDrew(ext.needsDrew);
         if (!v.ok) return json({ error: v.error }, 400);
         try {
-          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source, parsed.value.key);
           requestAlertTick();
           return json(
             { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },

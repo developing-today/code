@@ -462,15 +462,16 @@ describe("what needs the owner's hands", () => {
     expect(s.waiting).toEqual([{ id: "p", title: "log in", ref: "gh:x/y#1", why: "" }]);
   });
 
-  test("done means a comment and the label gone, only for a repository on the list", async () => {
+  test("done means the label gone and a comment, only for a repository on the list", async () => {
     const w = world({});
     const work = new Work(w.ops);
     await work.handsDone({ ref: "dezren39/darwin-nix#12", note: " the BMC is on " });
+    // The label first: see the next test for why.
     expect(w.gh()).toEqual([
-      ["-X", "POST", "repos/dezren39/darwin-nix/issues/12/comments", "--input", "-"],
       ["-X", "DELETE", "repos/dezren39/darwin-nix/issues/12/labels/user%2Fescalated"],
+      ["-X", "POST", "repos/dezren39/darwin-nix/issues/12/comments", "--input", "-"],
     ]);
-    expect(JSON.parse(w.calls[0].stdin ?? "").body).toContain("the BMC is on");
+    expect(JSON.parse(w.calls[1].stdin ?? "").body).toContain("the BMC is on");
     await work.needComment({ ref: `${REPO}#5`, text: "go on" });
     expect(w.gh()[2]).toEqual(["-X", "POST", `repos/${REPO}/issues/5/comments`, "--input", "-"]);
     const before = w.calls.length;
@@ -479,6 +480,75 @@ describe("what needs the owner's hands", () => {
     }
     await expect(work.needComment({ ref: `${REPO}#5`, text: " " })).rejects.toThrow(OpError);
     expect(w.calls.length).toBe(before);
+  });
+
+  // "Done" is two things asked of GitHub, and either may fail. Taking a
+  // label off twice is the same as once: GitHub says it is not there,
+  // which is what was wanted. Saying "done" twice is two comments. So
+  // the label goes first, and a failure part-way is tried again from
+  // the start without anything being said twice. The oracle for "not
+  // there" is GitHub's own answer to removing a label an issue does not
+  // carry: 404, "Label does not exist".
+  test("done: the label is taken off first, so that trying again after a failure says it once", async () => {
+    const comments: string[] = [];
+    let labelled = true;
+    let commentsFail = 1;
+    const w = world({
+      commands: (argv, stdin) => {
+        if (argv.includes("DELETE")) {
+          if (!labelled) return { code: 1, stderr: "gh: Label does not exist (HTTP 404)" };
+          labelled = false;
+          return "[]";
+        }
+        if (argv.includes("POST")) {
+          if (commentsFail-- > 0) return { code: 1, stderr: "gh: Server Error (HTTP 500)" };
+          comments.push(JSON.parse(stdin ?? "{}").body);
+          return '{"html_url":"https://github.com/x"}';
+        }
+        return "{}";
+      },
+    });
+    const work = new Work(w.ops);
+    // The comment fails: the label is off, and nothing was said.
+    await expect(work.handsDone({ ref: `${REPO}#7`, note: "plugged in" })).rejects.toThrow(/Server Error/);
+    expect([labelled, comments]).toEqual([false, []]);
+    // Tried again: the label is not there to take off, which is fine, and it is said once.
+    expect(await work.handsDone({ ref: `${REPO}#7`, note: "plugged in" })).toEqual({ ref: `${REPO}#7`, done: true });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain("plugged in");
+  });
+
+  test("done: a label an agent had already taken off does not stop the fleet being told", async () => {
+    const said: string[] = [];
+    const w = world({
+      commands: (argv, stdin) => {
+        if (argv.includes("DELETE")) return { code: 1, stderr: '{"message":"Label does not exist","status":"404"}' };
+        if (argv.includes("POST")) said.push(JSON.parse(stdin ?? "{}").body);
+        return "{}";
+      },
+    });
+    expect(await new Work(w.ops).handsDone({ ref: `${REPO}#7` })).toEqual({ ref: `${REPO}#7`, done: true });
+    expect(said).toHaveLength(1);
+  });
+
+  test("done: any other failure to take the label off stops it there, with nothing said", async () => {
+    for (const stderr of [
+      "gh: Not Found (HTTP 404)",
+      "gh: Resource not accessible by personal access token (HTTP 403)",
+      "gh: API rate limit exceeded (HTTP 403)",
+      "gh: Server Error (HTTP 500)",
+    ]) {
+      const said: string[] = [];
+      const w = world({
+        commands: (argv, stdin) => {
+          if (argv.includes("DELETE")) return { code: 1, stderr };
+          if (argv.includes("POST")) said.push(JSON.parse(stdin ?? "{}").body);
+          return "{}";
+        },
+      });
+      await expect(new Work(w.ops).handsDone({ ref: `${REPO}#7` })).rejects.toThrow(OpError);
+      expect([stderr, said]).toEqual([stderr, []]);
+    }
   });
 });
 

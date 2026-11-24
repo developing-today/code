@@ -387,19 +387,30 @@ export class Work {
     return { repo: m[1], number: Number(m[2]) };
   }
 
-  /** The owner did the one thing only he could: say so and take the item off his list. */
+  /** The owner did the one thing only he could: take the item off his
+   * list and say so. The label goes first. Taking a label off twice is
+   * the same as once (GitHub says it is not there, which is what was
+   * wanted), and saying "done" twice is two comments: so a failure
+   * part-way can be tried again from the start, by the owner or by
+   * whoever holds this for him, and it is said once. */
   async handsDone(args: Record<string, unknown>) {
     const { repo, number } = this.ref(args.ref);
     const note =
       typeof args.note === "string" && args.note.trim() !== "" ? `\n\n${words(args.note, "note", 4000)}` : "";
+    try {
+      await this.ops.gh([
+        "-X",
+        "DELETE",
+        `repos/${repo}/issues/${number}/labels/${encodeURIComponent("user/escalated")}`,
+      ]);
+    } catch (error) {
+      // Already off: an agent took it, or this is a second try after
+      // the comment failed. GitHub's words for it, and no other 404.
+      if (!(error instanceof OpError) || !/Label does not exist/i.test(error.message)) throw error;
+    }
     await this.ops.gh(["-X", "POST", `repos/${repo}/issues/${number}/comments`], {
       body: `Done by the owner, from the PM console. The step that needed a person is finished; carry on.${note}\n\n${OWNER_REPLY_MARK}`,
     });
-    await this.ops.gh([
-      "-X",
-      "DELETE",
-      `repos/${repo}/issues/${number}/labels/${encodeURIComponent("user/escalated")}`,
-    ]);
     return { ref: args.ref, done: true };
   }
 

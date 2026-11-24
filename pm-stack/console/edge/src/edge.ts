@@ -82,7 +82,7 @@ import type { Later } from "../../src/plan.ts";
 import { platformRead } from "../../src/reads.ts";
 import { Notifier, WATCHED as NOTIFIED } from "../../src/notify.ts";
 import { contact, Push } from "../../src/push.ts";
-import { settingsThatDiffer } from "../../src/settings.ts";
+import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
 import type { Store } from "../../src/store.ts";
 import { timed, unread } from "../../src/timed.ts";
 
@@ -283,6 +283,13 @@ export interface EdgeOptions {
      * puts stand-ins in their place. */
     githubApi?: string;
     queueDb?: string;
+    /** Which kinds this object does itself: every one it can
+     * (DIRECT_ACTIONS) unless said. A test says, to stand for a kind
+     * only a machine can do that is about the same thing as one done
+     * here: since "done" became this side's no kind of today's is, and
+     * the rule for one (what comes after it waits behind it) has to
+     * hold for the next that is. */
+    kinds?: readonly string[];
   };
   /** Ask to be woken at a time: to read again what the owner is told
    * about, and to notice a machine gone quiet. */
@@ -373,7 +380,10 @@ export class Edge {
   private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
   private getAlarm: () => Promise<number | null>;
+  /** What this side goes by (see config()), worked out from `told`. */
   private cfg: EdgeConfig | null | undefined;
+  /** What a machine told, as it is kept; undefined until read. */
+  private told: EdgeConfig | null | undefined;
   private mirrors = new Map<string, Mirror | null>();
   private held: Held[] | null = null;
   /** Held actions already handed to a machine in a report answer and not
@@ -479,7 +489,7 @@ export class Edge {
     this.push = new Push(
       kvStore(this.kv, "push"),
       // The contact a push service is given: the project's page.
-      () => contact(this.cfg?.repo ?? "developing-today/code"),
+      () => contact(platformSettings().repo),
       (url, init) => this.fetchImpl(url, init as RequestInit),
       this.now,
     );
@@ -741,8 +751,23 @@ export class Edge {
 
   // ---- what is kept ------------------------------------------------------
 
+  /** What a machine told, as it told it and as it is kept. */
+  private async toldConfig(): Promise<EdgeConfig | null> {
+    if (this.told === undefined) this.told = edgeConfig(await this.kv.get("cfg"));
+    return this.told;
+  }
+
+  /** What this side goes by; null until a machine has said who may
+   * sign in. Who may sign in is as the machine told it (the
+   * deployment's, until that is applied from Actions: #13495). The
+   * repository's settings are this side's own, as its deploy carries
+   * them, whatever a machine told for them; the list of repositories
+   * alone is still the machine's (src/settings.ts says why). */
   private async config(): Promise<EdgeConfig | null> {
-    if (this.cfg === undefined) this.cfg = edgeConfig(await this.kv.get("cfg"));
+    if (this.cfg === undefined) {
+      const told = await this.toldConfig();
+      this.cfg = told === null ? null : goesBy(told);
+    }
     return this.cfg;
   }
 
@@ -959,12 +984,7 @@ export class Edge {
     for (const h of held) {
       const about = this.heldAbout(h);
       if (this.withMachine(h, handed)) waits.set(h.id, "asked");
-      else if (
-        can &&
-        (DIRECT_ACTIONS as readonly string[]).includes(h.kind) &&
-        !withMachine.has(about) &&
-        !behind.has(about)
-      ) {
+      else if (can && this.does(h.kind) && !withMachine.has(about) && !behind.has(about)) {
         waits.set(h.id, "either");
       } else {
         waits.set(h.id, "machine");
@@ -1161,7 +1181,7 @@ export class Edge {
       const about = this.heldAbout(h);
       if (seen.has(about)) continue;
       seen.add(about);
-      if ((DIRECT_ACTIONS as readonly string[]).includes(h.kind) && !withMachine.has(about)) first.push(h);
+      if (this.does(h.kind) && !withMachine.has(about)) first.push(h);
     }
     return first;
   }
@@ -1273,6 +1293,8 @@ export class Edge {
     const primary = this.primary(cfg);
     const refused = this.refusedKinds();
     const seen = this.hostSeen || null;
+    const told = await this.toldConfig();
+    const differs = told === null ? [] : settingsDifferences(told);
     return {
       served: "edge",
       platform: {
@@ -1282,7 +1304,7 @@ export class Edge {
         // less what it was turned away for and a machine does for the hour.
         actions: [
           ...Object.keys(this.table).sort(),
-          ...(primary ? (DIRECT_ACTIONS as readonly string[]).filter((kind) => !refused.includes(kind)) : []),
+          ...(primary ? this.kinds().filter((kind) => !refused.includes(kind)) : []),
         ],
         sections: primary ? this.owned(cfg) : [],
         refused: [...refused, ...this.refusedReads().map((name) => `read.${name}`)],
@@ -1299,6 +1321,7 @@ export class Edge {
                 version: this.hostVersion,
                 actions: this.machine?.actions ?? [],
                 sections: this.machine?.sections ?? [],
+                ...(differs.length > 0 ? { differs } : {}),
               },
             ],
       held: await this.heldSaid(cfg),
@@ -1430,23 +1453,28 @@ export class Edge {
 
   // ---- doing the core here ------------------------------------------------
 
+  /** The kinds this side does itself when it does the core. */
+  private kinds(): readonly string[] {
+    return this.direct?.kinds ?? DIRECT_ACTIONS;
+  }
+
+  /** A kind this side does itself when it does the core; any other is
+   * a machine's whenever one comes. */
+  private does(kind: string): boolean {
+    return this.kinds().includes(kind);
+  }
+
   /** The switch is on and both tokens are here. */
   private directCapable(): boolean {
     return this.direct?.enabled === true && Boolean(this.direct.githubToken) && Boolean(this.direct.queueToken);
   }
 
-  /** The config carries what this side needs to do the core: a config
-   * stored or reported before that existed has these empty, and the
-   * edge serves the app from the mirror without acting itself. */
-  private directConfigReady(cfg: EdgeConfig | null): boolean {
-    return cfg !== null && cfg.queueDbUrl !== "" && cfg.queueTokenName !== "" && cfg.promptLabel !== "";
-  }
-
-  /** This side does the core itself: it has the switch, the tokens, and
-   * has been told where things are. Whether a machine is reporting
-   * makes no difference to this. */
+  /** This side does the core itself: it has the switch and the tokens,
+   * and a machine has said who may sign in. Where things are it knows
+   * by itself (src/settings.ts). Whether a machine is reporting makes
+   * no difference to this. */
   private primary(cfg: EdgeConfig | null): boolean {
-    return this.directCapable() && this.directConfigReady(cfg);
+    return this.directCapable() && cfg !== null;
   }
 
   /** A section this side reads itself. */
@@ -1841,12 +1869,15 @@ export class Edge {
     await this.ready();
     const last = this.hostSeq ?? 0;
     if (msg.at <= last) return json({ error: "replay", last }, 409);
-    const cfg = edgeConfig(msg.config);
-    if (!cfg) return json({ error: "config: not one this side can use" }, 400);
-    if (JSON.stringify(cfg) !== JSON.stringify(await this.config())) {
-      await this.kv.put("cfg", cfg);
-      this.cfg = cfg;
-      // New settings may be what lets this side do the core itself.
+    const says = edgeConfig(msg.config);
+    if (!says) return json({ error: "config: not one this side can use" }, 400);
+    if (JSON.stringify(says) !== JSON.stringify(await this.toldConfig())) {
+      // Kept as told: what is gone by is worked out from it (config()),
+      // and where the machine differs is said from it.
+      await this.kv.put("cfg", says);
+      this.told = says;
+      this.cfg = undefined;
+      // Who may sign in, or the list of repositories, may have changed.
       await this.showEdge();
     }
     const settings = await this.config();
@@ -2130,6 +2161,7 @@ export class Edge {
     // Public: nothing here says anything about the fleet.
     if (path === `${BASE}/health` && method === "GET") {
       await this.ready();
+      const told = await this.toldConfig();
       // The self-check runs when the capability is there: one direct
       // read of each kind, and how it went. Nothing here is a secret.
       await this.maybeSelfCheck(cfg);
@@ -2142,7 +2174,7 @@ export class Edge {
         githubTokenConfigured: Boolean(this.direct?.githubToken),
         queueTokenConfigured: Boolean(this.direct?.queueToken),
         // This side does the core itself: the switch and the tokens are
-        // here, and it has been told where things are. `directReady` is
+        // here, and a machine has said who may sign in. `directReady` is
         // the same thing under the name it had when this side acted
         // only while the laptop was away.
         primary: this.primary(cfg),
@@ -2191,8 +2223,8 @@ export class Edge {
         // src/settings.ts) the machine said it runs with others, by
         // name and never by value; null while no machine has said any.
         // A machine on other code than this, or with an environment of
-        // its own, shows here.
-        machineSettingsDiffer: cfg === null ? null : settingsThatDiffer(cfg),
+        // its own, shows here. This side goes by its own all the same.
+        machineSettingsDiffer: told === null ? null : settingsThatDiffer(told),
         // The copy of the Android build kept here: when it was built,
         // and whether it is the host's newest. Null if there is none.
         androidBuild: await this.apkState(),
@@ -2382,11 +2414,7 @@ export class Edge {
         const before = id === null ? null : (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null);
         const given = before?.state === "given";
         const here =
-          before !== null
-            ? !given
-            : (DIRECT_ACTIONS as readonly string[]).includes(kind) &&
-              this.primary(cfg) &&
-              !this.refusedKinds().includes(kind);
+          before !== null ? !given : this.does(kind) && this.primary(cfg) && !this.refusedKinds().includes(kind);
         if (here) {
           // An older action held for a machine about the same thing
           // comes first. One already handed to a machine may be being
@@ -2425,7 +2453,7 @@ export class Edge {
               if (older.some((h) => this.withMachine(h, handed))) return this.keep(newer);
               // One that only a machine can do is a machine's whenever
               // one comes: the newer waits behind it too.
-              if (older.some((h) => !(DIRECT_ACTIONS as readonly string[]).includes(h.kind))) return this.keep(newer);
+              if (older.some((h) => !this.does(h.kind))) return this.keep(newer);
               const old = older[0];
               // One of the same kind where the last one wins is dropped
               // as replaced by this. (Only by its own kind: a comment
