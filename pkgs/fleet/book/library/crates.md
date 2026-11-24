@@ -246,8 +246,8 @@ variant unconditionally.
 | `shell`                                          | `agent`            | `fleet-agent`                                   | `fleet_agent::run_shell`                                             |
 | `search`                                         | `search`           | `fleet-search`                                  | `fleet_search::run`                                                  |
 | `laptop-agent`                                   | `laptop-agent`     | `fleet-laptop-agent`                            | `fleet_laptop_agent::cli::run`                                       |
-| `orgs`                                           | `orgs`             | `fleet-orgs`                                    | `fleet_orgs::run`                                                            |
-| `cert`                                           | `cert`             | `fleet-cert`                                    | `fleet_cert::run`                                                            |
+| `orgs`                                           | `orgs`             | `fleet-orgs`                                    | `fleet_orgs::run`                                                    |
+| `cert`                                           | `cert`             | `fleet-cert`                                    | `fleet_cert::run`                                                    |
 
 Note the two irregular rows, because embedders trip on both: `shell`
 has **no capability atom of its own** — it rides the `agent` capability

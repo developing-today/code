@@ -284,6 +284,25 @@ export const HOLDABLE = new Set([
   "issue.rank",
   "task.move",
   "message.send",
+  // The composer's broaden and offer (#14375) are the owner's words
+  // too: a broaden done late still delivers the send's own remainder
+  // (and nothing, once none is left), and an offer posted late
+  // stands open until its ttl or its slots fill.
+  "message.broaden",
+  "message.offer",
+  // A revocation is the owner's kill switch (#14374): done late it is
+  // still the right act — a credential revoked an hour late is revoked,
+  // and one already revoked answers so — so it is held for a machine
+  // rather than refused while the laptop is away. The edge itself
+  // never revokes: its bridge credential holds the read scope only.
+  "agent.revoke",
+  // Taking back an agent's unused enroll tokens (#14376) is the same
+  // shape: no value travels in it, and done late it is still the right
+  // act. The mints are deliberately NOT here: a mint's answer is the
+  // secret itself, shown once on the screen that asked — held and
+  // done late, the value would reach nobody and be lost, so a mint
+  // asked at the edge while no machine answers is refused, never held.
+  "agent.revoke-enroll",
   "prompt.enqueue",
   // What the owner says is never lost for want of a machine: it is
   // kept and filed when one is back (or filed here, when the edge can).
@@ -322,6 +341,22 @@ export function subjectOf(kind: string, args: Record<string, unknown> | null | u
       return of("questions", a.set);
     case "pr.merge":
       return of("pr", a.pr);
+    case "agent.revoke": {
+      // One agent's credentials on one surface: two revocations of
+      // the same agent keep the owner's order.
+      const surface = typeof a.surface === "string" ? a.surface : "";
+      const name = typeof a.name === "string" ? a.name : "";
+      return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
+    }
+    case "message.broaden":
+      // A batch's broadenings keep the owner's order, like a
+      // revocation's: each delivers what the ones before it left.
+      return of("batch", a.batch);
+    case "agent.revoke-enroll":
+      // One agent's enroll tokens: a later mint for the same agent
+      // does not queue behind this (a mint is never held), but two
+      // take-backs of one agent keep the owner's order.
+      return of("enroll", a.agent);
     case "unit.act":
       return of("unit", a.unit);
     default:

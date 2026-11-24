@@ -37,6 +37,11 @@ import {
 import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
 import { getNeedsDrew } from "./needs-drew.ts";
 import { getDecisionSet } from "./decisions.ts";
+import {
+  notifyRelayIncidentEventCursor,
+  requestNotifyRelayCandidatesMirror,
+  requestNotifyRelayIncidentEvents,
+} from "./notify-relay.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -69,6 +74,12 @@ export interface IncidentEvent {
   source?: string;
   incident_key?: string;
   title?: string;
+}
+
+export interface IncidentMirrorRow extends Incident {
+  mirror_event_id: number;
+  mirror_event_at: string;
+  mirror_event_kind: IncidentEvent["kind"];
 }
 
 export interface PushSubscriptionRow {
@@ -567,6 +578,20 @@ export class AlertsStore {
     );
   }
 
+  /** Read the append-only incident ledger from the relay's durable cursor. */
+  async incidentEventsAfter(cursor: number, limit = 100): Promise<IncidentMirrorRow[]> {
+    return this.db.query<IncidentMirrorRow>(
+      `select e.id as mirror_event_id, e.at as mirror_event_at, e.kind as mirror_event_kind, i.*
+       from alerts.incident_events e join alerts.incidents i on i.id = e.incident_id
+       where e.id > ${sqlInt(cursor)} order by e.id limit ${sqlInt(limit)}`,
+    );
+  }
+
+  async latestIncidentEventId(): Promise<number> {
+    const rows = await this.db.query<{ id: number | null }>("select max(id) as id from alerts.incident_events");
+    return rows[0]?.id ?? 0;
+  }
+
   /** Ack is exactly-once: only the open -> acked transition writes an
    * event; a repeat ack returns the current state unchanged. */
   async ackIncident(id: string): Promise<{ incident: Incident | null; transitioned: boolean }> {
@@ -924,11 +949,13 @@ async function runDashboardNotificationTick(
   push: PushSender,
   options: AlertTickOptions,
 ): Promise<void> {
-  if (!options.dashboardSnapshot || subscriptions.length === 0) return;
+  if (!options.dashboardSnapshot) return;
   const now = options.now ?? Date.now();
   const historyStore = options.notificationHistory ?? new JsonlNotificationHistory(cfg.notificationsFile);
   const [snapshot, history] = await Promise.all([options.dashboardSnapshot(), historyStore.read()]);
   const candidates = buildNotificationCandidates(snapshot, now);
+  await requestNotifyRelayCandidatesMirror(candidates);
+  if (subscriptions.length === 0) return;
 
   const keyOf = (
     entry: Pick<NotificationHistoryEntry, "class" | "objectRef" | "stateFingerprint" | "subscriptionId">,
@@ -1210,8 +1237,22 @@ export async function runAlertTick(
 ): Promise<void> {
   const subs = await store.listSubscriptions();
   const targets = subs.filter((s) => classEnabled(s, "incident"));
-  if (targets.length > 0) {
-    for (const incident of await store.pendingDeliveries()) {
+  let incidentCursor = notifyRelayIncidentEventCursor();
+  if (incidentCursor === null) {
+    incidentCursor = await store.latestIncidentEventId();
+    await requestNotifyRelayIncidentEvents([], incidentCursor, cfg.publicOrigin);
+  } else if (incidentCursor !== undefined) {
+    while (true) {
+      const rows = await store.incidentEventsAfter(incidentCursor, 100);
+      if (rows.length === 0) break;
+      const nextCursor = rows.at(-1)!.mirror_event_id;
+      await requestNotifyRelayIncidentEvents(rows, nextCursor, cfg.publicOrigin);
+      incidentCursor = nextCursor;
+      if (rows.length < 100) break;
+    }
+  }
+  for (const incident of await store.pendingDeliveries()) {
+    if (targets.length > 0) {
       const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, false, push);
       if (summary.sent > 0) {
         await store.markDelivered(incident.id, { ...summary });
@@ -1221,6 +1262,8 @@ export async function runAlertTick(
         );
       }
     }
+  }
+  if (targets.length > 0) {
     for (const incident of await store.pendingEscalations(cfg.alerts.ackWindowMin)) {
       const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, true, push);
       if (summary.sent > 0) {

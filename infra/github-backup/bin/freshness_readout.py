@@ -165,11 +165,7 @@ def _parser():
 
 def main(argv=None):
     args = _parser().parse_args(argv)
-    now = (
-        parse_time(args.now, "--now")
-        if args.now
-        else datetime.now(timezone.utc)
-    )
+    now = parse_time(args.now, "--now") if args.now else datetime.now(timezone.utc)
     if now is None:
         return 2
     doc, problems = load_status(args.status_json)
@@ -182,7 +178,9 @@ def main(argv=None):
         print(json.dumps({"results": results}, indent=2, sort_keys=True))
     else:
         for row in results:
-            print(f"freshness_readout: {row['copy']}: {row['verdict']}: {row['detail']}")
+            print(
+                f"freshness_readout: {row['copy']}: {row['verdict']}: {row['detail']}"
+            )
         stale = [r["copy"] for r in results if r["verdict"] != "PASS"]
         if stale:
             print(

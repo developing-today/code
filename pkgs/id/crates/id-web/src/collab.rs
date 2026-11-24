@@ -3554,7 +3554,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_note_session_wire_round_trip_publishes_and_hydrates() {
+    async fn test_note_checkpoint_wire_round_trip_publishes_and_hydrates() {
         use axum::Router;
         use futures::SinkExt;
         use iroh::endpoint::{Endpoint, RelayMode, presets};
@@ -3586,7 +3586,7 @@ mod tests {
             .await
             .unwrap(),
         );
-        let state = crate::AppState::new(
+        let mut state = crate::AppState::new(
             store,
             None,
             "collab-note-wire-test".to_owned(),
@@ -3596,6 +3596,11 @@ mod tests {
         )
         .await
         .unwrap();
+        // Persist the event log just as the host does so a fresh
+        // CollabState can restore it below, independently of the live
+        // ProseMirror document.
+        let snapshot_path = dir.path().join(NOTE_CHECKPOINT_SNAPSHOT_FILE_NAME);
+        state.collab = Arc::new(CollabState::new().with_note_snapshot_path(snapshot_path.clone()));
 
         let app = Router::new()
             .route("/ws/collab/{doc_id}", axum::routing::get(ws_collab_handler))
@@ -3607,7 +3612,7 @@ mod tests {
         });
 
         let note = Hash::from_bytes([41u8; 32]);
-        let url = format!("ws://{addr}/ws/collab/{}", note_session_key(&note));
+        let mut url = format!("ws://{addr}/ws/collab/{}", note_session_key(&note));
 
         // First session: connect, edit (steps), checkpoint the live
         // text, disconnect.
@@ -3656,14 +3661,25 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 1);
 
-        // A session document outlives its last client by a one-hour
-        // cleanup grace period (DOCUMENT_CLEANUP), so a quick
-        // reconnect rejoins the live session; hydration is the
-        // cold-open path, after eviction or a restart. Simulate the
-        // eviction the cleanup task performs.
-        state.collab.remove_document(&note_session_key(&note)).await;
+        // A new process rebuilds the durable log from its snapshot. The
+        // wire session below must append to that rebuilt head, not create
+        // a parallel root or reuse the dead process's document state.
+        server.abort();
+        let restarted = CollabState::new().with_note_snapshot_path(snapshot_path);
+        assert!(restarted.restore_persisted_note_snapshot().await.unwrap());
+        assert_eq!(restarted.note_events().await, events);
+        state.collab = Arc::new(restarted);
+        let app = Router::new()
+            .route("/ws/collab/{doc_id}", axum::routing::get(ws_collab_handler))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        url = format!("ws://{addr}/ws/collab/{}", note_session_key(&note));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
 
-        // Second session: the Init document is the checkpointed
+        // A genuinely fresh session: the Init document is the checkpointed
         // text, hydrated from the blob store under its document
         // hash. The checkpoint is recorded as text/markdown, so the
         // heading parses as a heading and its plain text drops the
@@ -3677,9 +3693,93 @@ mod tests {
             crate::routes::file_handlers::extract_plain_text(&doc),
             "Saved over the wire"
         );
+        let second_checkpoint = CollabMessage::Checkpoint {
+            text: "# Chained after restart".to_owned(),
+        };
+        client
+            .send(ClientMessage::Binary(second_checkpoint.encode().into()))
+            .await
+            .unwrap();
+        let done = wait_for_message(&mut client, "checkpointed").await;
+        assert!(matches!(done, CollabMessage::Checkpointed { .. }));
         drop(client);
-        // Disconnects published nothing further.
-        assert_eq!(state.collab.note_events().await.len(), 1);
+        let events_after_restart = state.collab.note_events().await;
+        assert_eq!(events_after_restart.len(), 2);
+        assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 1);
+        let id_store::notes::NoteOp::Revise { parents, .. } = &events_after_restart[1].op else {
+            panic!("post-restart checkpoint must be a revision");
+        };
+        assert_eq!(parents, &vec![Hash::from_bytes([41u8; 32])]);
+
+        // Concurrent/offline branches remain separate. A wire save from
+        // that state is refused until an explicit merge is made through
+        // the existing checkpoint API; it must never silently discard a
+        // head. The protocol has no Merge message, so exercise the
+        // explicit merge through the existing API and assert its parents.
+        let mut forked_log = NoteCheckpoints::from_events(events_after_restart.clone()).unwrap();
+        let fork = DocumentRef::for_bytes("text/markdown", b"# Offline fork").unwrap();
+        forked_log
+            .checkpoint(
+                note,
+                Hash::from_bytes([51u8; 32]),
+                [7u8; 32],
+                fork,
+                vec![events_after_restart[1].id],
+            )
+            .unwrap();
+        let other = DocumentRef::for_bytes("text/markdown", b"# Other offline fork").unwrap();
+        forked_log
+            .checkpoint(
+                note,
+                Hash::from_bytes([52u8; 32]),
+                [7u8; 32],
+                other,
+                vec![events_after_restart[1].id],
+            )
+            .unwrap();
+        state
+            .collab
+            .seed_note_events(forked_log.events().to_vec())
+            .await
+            .unwrap();
+        assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 2);
+        let (mut client, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let _ = wait_for_message(&mut client, "init").await;
+        client
+            .send(ClientMessage::Binary(
+                CollabMessage::Checkpoint {
+                    text: "# Must not join forks".to_owned(),
+                }
+                .encode()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        let refused = wait_for_message(&mut client, "error").await;
+        assert!(matches!(refused, CollabMessage::Error { .. }));
+        drop(client);
+        assert_eq!(state.collab.note_events().await.len(), 4);
+        assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 2);
+        let merge_id = Hash::from_bytes([53u8; 32]);
+        let merged = forked_log
+            .merge(
+                note,
+                merge_id,
+                [7u8; 32],
+                DocumentRef::for_bytes("text/markdown", b"# Explicit merge").unwrap(),
+            )
+            .unwrap();
+        let merged_record = merged.revision(merge_id).unwrap();
+        assert_eq!(
+            merged_record.parents,
+            vec![Hash::from_bytes([51u8; 32]), Hash::from_bytes([52u8; 32])]
+        );
+        state
+            .collab
+            .seed_note_events(forked_log.events().to_vec())
+            .await
+            .unwrap();
+        assert_eq!(state.collab.note_heads(note).await.unwrap(), vec![merge_id]);
 
         // A filename session refuses checkpoints.
         let (mut client, _) =
@@ -3696,7 +3796,7 @@ mod tests {
         let refused = wait_for_message(&mut client, "error").await;
         assert!(matches!(refused, CollabMessage::Error { .. }));
         drop(client);
-        assert_eq!(state.collab.note_events().await.len(), 1);
+        assert_eq!(state.collab.note_events().await.len(), 5);
 
         server.abort();
     }

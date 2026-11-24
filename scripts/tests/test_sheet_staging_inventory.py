@@ -57,9 +57,7 @@ def expected_turso(source: str) -> str:
 
 class TestSheetStagingInventory(unittest.TestCase):
     def test_manifest_exists(self):
-        self.assertTrue(
-            MANIFEST.is_file(), f"missing Slice 1 manifest: {MANIFEST}"
-        )
+        self.assertTrue(MANIFEST.is_file(), f"missing Slice 1 manifest: {MANIFEST}")
 
     def test_exactly_19_in_scope_tables(self):
         text = MANIFEST.read_text()
@@ -122,7 +120,9 @@ class TestSheetStagingInventory(unittest.TestCase):
     def test_cited_repo_files_exist(self):
         text = MANIFEST.read_text()
         cited = set(re.findall(r"`((?:pkgs|scripts|pm-stack)/[^`]+?)`", text))
-        missing = [c for c in cited if not (ROOT / c.split("#")[0].split(":")[0]).exists()]
+        missing = [
+            c for c in cited if not (ROOT / c.split("#")[0].split(":")[0]).exists()
+        ]
         self.assertEqual(missing, [], f"cited repo files must exist: {missing}")
 
 

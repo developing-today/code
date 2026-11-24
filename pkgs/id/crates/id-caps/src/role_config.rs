@@ -681,7 +681,10 @@ mod tests {
         let revoked = registry.revoke("participant", agent(9), OWNER, NOW + 3);
         assert_eq!(revoked.decision, Ok(()));
         assert_eq!(revoked.event.kind, EVENT_ROLE_REVOKE);
-        assert!(registry.list_grants().is_empty());
+        assert_eq!(
+            registry.list_grants(),
+            [] as [&crate::role_config::RoleGrant; 0]
+        );
 
         // Revoking a grant that is not held is refused and audited.
         let missing = registry.revoke("participant", agent(9), OWNER, NOW + 4);
@@ -792,10 +795,14 @@ mod tests {
                 object_classes: BTreeSet::new(),
                 program_allowlist: BTreeSet::new(),
             },
-            quota: Quota {
-                frames: 10,
-                tool_calls: 10,
-                program_invocations: 0,
+            role: "participant".to_owned(),
+            quota_class: QuotaClass {
+                budget: Quota {
+                    frames: 10,
+                    tool_calls: 10,
+                    program_invocations: 0,
+                },
+                replenishment: None,
             },
             rate_limits: Vec::new(),
         };
@@ -803,6 +810,7 @@ mod tests {
             grant,
             BridgeSession::start(&v1_tool_definitions()).expect("bridge starts"),
             host,
+            NOW,
         );
         let joined = session.act("world.join", &json!({ "capability": "cap-1" }), NOW);
         assert!(matches!(joined, PolicyOutcome::Executed(_)));
