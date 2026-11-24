@@ -94,10 +94,13 @@ two active writers" is mechanical instead of advisory:
   database, `pg_restore` it into the target, and require **schema parity**
   (same public table count). Row drift is reported, not failed — the final
   delta has not landed yet.
-- `--mode promote` (step 5, the gate): refuses unless
-  `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail closed on
-  anything unreadable) **and** the target's exact table count and row count
-  equal the source's. A refused promotion touches no store. Only a pass
+- `--mode promote` (step 5, the gate): refuses unless the latest backup
+  record (`--backup-record-file`) describes a complete generation with a
+  valid archive identity and verified local, R2, and Drive copies, finished
+  no more than 36 hours ago by default (`--max-backup-age-hours` can set a
+  stricter window); `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail
+  closed on anything unreadable) **and** the target's exact table count and row
+  count equal the source's. A refused promotion touches no store. Only a pass
   writes a cutover receipt (fence verdict, both counts, verdict line) with
   no DSN in it — the operator attaches it to the window record.
 
