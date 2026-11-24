@@ -241,6 +241,7 @@ import {
   validateNewSubscription,
   type PushPayload,
 } from "./alerts.ts";
+import { requestActionsExecApplyTick, startActionsExecApplier } from "./actions-exec-apply.ts";
 import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
 import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
 import { requestNotifyRelaySubscriptionSync, startNotifyRelay } from "./notify-relay.ts";
@@ -4683,6 +4684,10 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       via: "api",
     });
     if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    // #14043 S3: a recorded broker-sourced answer is carried to the
+    // decide verb by the applier; kick it now rather than waiting for
+    // the periodic pass.
+    requestActionsExecApplyTick();
     // #8605: the answer resolves the question, so close its alert
     // incident — the raiser posted it under this question's source with
     // key needs-drew:<ledgerId>, and until now nothing ever closed it.
@@ -5546,6 +5551,17 @@ if (cfg.source === "live") {
 // Shutdown is tied to process signals inside the wiring.
 if (cfg.source === "live") {
   startPmCoreSchedulers({ feedFile: cfg.feedFile });
+}
+
+// #14043 S3: the answer applier carries recorded broker answers to the
+// queue broker's signed decide verb (live mode only).
+if (cfg.source === "live") {
+  startActionsExecApplier({
+    needsDrewFile: cfg.needsDrewFile,
+    applyFile: cfg.actionsExecApplyFile,
+    brokerUrl: cfg.queueBrokerUrl,
+    brokerTokenFile: cfg.queueBrokerTokenFile,
+  });
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
