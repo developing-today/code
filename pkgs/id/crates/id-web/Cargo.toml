@@ -55,7 +55,7 @@ tower-http = { version = "0.7", features = ["fs", "cors", "compression-gzip"] }
 rust-embed = { version = "8" }
 mime_guess = { version = "2" }
 futures = { version = "0.3.32" }
-comrak = { version = "1.1", default-features = false }
+comrak = { version = "0.59", default-features = false }
 urlencoding = { version = "2" }
 aes-gcm = { version = "0.11", default-features = false, features = [
   "aes",
