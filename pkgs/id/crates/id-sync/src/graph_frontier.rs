@@ -313,6 +313,53 @@ mod tests {
     }
 
     #[test]
+    fn signed_unknown_group_flood_stays_unauthorized_and_bounded() {
+        // Oracle: valid self-signed nonmember envelopes naming distinct
+        // unknown groups are all refused, while the backing store's
+        // retained roster cache stays within its declared count/payload
+        // bounds without relying on an ingest to invalidate it.
+        let (_dir, store) = open_store();
+        let shared = SharedEventStore::new(store);
+        let frontier = GraphFrontier::new(shared.clone());
+        let mut gate = RelayGate::new(&key(7), frontier);
+        let origin = key(71);
+
+        for sequence in 0..(id_events::event_store::MAX_ROSTER_CACHE_ENTRIES + 64) as u64 {
+            let group = Hash::digest(sequence.to_be_bytes()).to_string();
+            let envelope = ChainedEnvelope::signed(
+                &origin,
+                &group,
+                sequence,
+                Vec::new(),
+                "durable",
+                ChainedContent::Inline {
+                    bytes: b"unknown group probe".to_vec(),
+                },
+                1_000,
+            )
+            .unwrap();
+            let decision = gate.decide(&RelayedMessage::new(envelope), 2_000 + sequence);
+            assert!(
+                matches!(
+                    decision,
+                    GateDecision::Refuse(GateRefusal::NotAuthorized { .. })
+                ),
+                "unknown group {group} must be refused as NotAuthorized, got {decision:?}"
+            );
+        }
+
+        let entries = shared
+            .read(|store| Ok(store.roster_cache_entries()))
+            .unwrap();
+        let payload_bytes = shared
+            .read(|store| Ok(store.roster_cache_payload_bytes()))
+            .unwrap();
+        assert_eq!(entries, id_events::event_store::MAX_ROSTER_CACHE_ENTRIES);
+        assert!(entries <= id_events::event_store::MAX_ROSTER_CACHE_ENTRIES);
+        assert!(payload_bytes <= id_events::event_store::MAX_ROSTER_CACHE_PAYLOAD_BYTES);
+    }
+
+    #[test]
     fn gate_forwards_for_graph_member_and_refuses_removed_member() {
         // The whole path: signed membership events in a real store,
         // read through the frontier by the production gate.
