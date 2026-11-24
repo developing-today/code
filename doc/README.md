@@ -234,6 +234,14 @@ Two names break the pattern. They stay as they are because other documents link 
 - [Iroh investigation research corpus](2026-11-24T02-11-50Z_research_iroh-investigation/2026-11-24T02-11-50Z_research_iroh-investigation.md) — the 2026-11-23 iroh source set (protocol census, real-projects and community review, blog-chunk working files); the blog catalogue and talks files are living documents in `doc/living/iroh/` (tracking #13877).
 - [Cloudflare research — Workers, costs, containers and prototypes](2026-11-24T02-42-57Z_research_cloudflare/2026-11-24T02-42-57Z_research_cloudflare.md) — the 2026-10-20 Cloudflare research series (Workers Paid, free tiers, paid-only, declarative infra, multiple-plans ToS, containers-vs-DO costs, DO practices) plus ideas, project README, magic-environment note and the two prototype READMEs; code stays in hatch-personal (tracking #13877).
 - [mcpx door build record](2026-11-24T02-09-07Z_research_mcpx-door-20261123/2026-11-24T02-09-07Z_research_mcpx-door-20261123.md) — dated record of the 2026-11-23 mcpx door build (public MCP endpoint at `mcpx.security.cab`, part of #13657): door README, lane continuation brief, `adapt.py` and `filter.ts`, copied byte-for-byte (tracking #13877).
+- [design(fleet): TypeScript second version — WASM, transports, direct-Turso prudence (#9085)](2026-11-24T04-50-00Z_design_fleet_typescript_second_version/2026-11-24T04-50-00Z_design_fleet_typescript_second_version.md) — design record, PR #14085 (2026-11-24).
+- [Design record (Part of #7843): consolidated 9-point elicitation-identity record](2026-11-24T06-05-00Z_design_7843_elicitation_identity/2026-11-24T06-05-00Z_design_7843_elicitation_identity.md) — design record, PR #14110 (2026-11-24).
+- [docs(9147): amendment — alternatives, rollback, named deciders](2026-11-24T04-50-00Z_design_9147-reputation-gaps/amendment.md) — design record, PR #14088 (2026-11-24).
+- [docs(13096): board view builder tree-projection design](2026-11-24T06-00-00Z_design_id13096_board_view_builder.md) — design record, PR #14108 (2026-11-24).
+- [Design record (Part of #12921): consolidated 9-point capability-change-notices record](2026-11-24T06-15-00Z_design_12921_capability_notices/2026-11-24T06-15-00Z_design_12921_capability_notices.md) — design record, PR #14114 (2026-11-24).
+- [docs(pm-stack): complete needs-user design standard (#8830)](2026-11-24T05-55-00Z_design_pm-needs-user-actions-8830/2026-11-24T05-55-00Z_design_pm-needs-user-actions-8830.md) — design record, PR #14115 (2026-11-24).
+- [docs(13524): Notion importer slice 4 design — comments, degradation, export reader](2026-11-24T06-05-00Z_design_id13524_notion_importer_slice4.md) — design record, PR #14118 (2026-11-24).
+- [docs(id): design record for #12922 invite capability_pin term](2026-11-24T05-52-00Z_design_id12922_capability_pin/2026-11-24T05-52-00Z_design_id12922_capability_pin.md) — design record, PR #14120 (2026-11-24).
 
 ## Legacy places
 
