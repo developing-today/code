@@ -346,6 +346,12 @@ export interface NeedsDrewAnswer {
   via: string;
 }
 
+export interface NeedsDrewBrokerMapping {
+  source: "fleet-actions-exec";
+  key: string;
+  handle: string;
+}
+
 export interface NeedsDrewQuestion {
   ledgerId: string;
   question: string;
@@ -356,6 +362,8 @@ export interface NeedsDrewQuestion {
   token: string;
   raisedAt: string;
   source: string;
+  /** Present only when a broker-raised Actions-exec question has a valid key. */
+  brokerMapping?: NeedsDrewBrokerMapping;
   answer?: NeedsDrewAnswer;
 }
 
@@ -469,11 +477,13 @@ export async function raiseNeedsDrew(
   file: string,
   input: NeedsDrewInput,
   source = "fleet-queue",
+  key?: string,
 ): Promise<NeedsDrewQuestion> {
   return serializeNeedsDrew(file, async () => {
     const items = await readNeedsDrewItems(file);
     const existing = items.find((i) => i.ledgerId === input.ledgerId);
     if (existing) return existing;
+    const brokerMapping = actionsExecMapping(source, key);
     const item: NeedsDrewQuestion = {
       ledgerId: input.ledgerId,
       question: input.question,
@@ -483,11 +493,30 @@ export async function raiseNeedsDrew(
       token: randomUUID(),
       raisedAt: new Date().toISOString(),
       source,
+      ...(brokerMapping ? { brokerMapping } : {}),
     };
     items.push(item);
     await writeNeedsDrewItems(file, items);
     return item;
   });
+}
+
+function actionsExecMapping(source: string, key: string | undefined): NeedsDrewBrokerMapping | null {
+  const normalizedKey = key?.trim() ?? "";
+  const prefix = "actions-exec-ext:";
+  if (source !== "fleet-actions-exec" || !normalizedKey.startsWith(prefix)) return null;
+  const handle = normalizedKey.slice(prefix.length).trim();
+  if (!handle) return null;
+  return { source: "fleet-actions-exec", key: normalizedKey, handle };
+}
+
+/** Resolve only answered questions with a verified broker mapping. */
+export function needsDrewAnswerHandle(question: NeedsDrewQuestion): string | null {
+  const mapping = question.brokerMapping;
+  if (!question.answer || question.source !== "fleet-actions-exec" || !mapping) return null;
+  const parsed = actionsExecMapping(mapping.source, mapping.key);
+  if (!parsed || parsed.handle !== mapping.handle) return null;
+  return mapping.handle;
 }
 
 export async function getNeedsDrew(file: string, ledgerId: string): Promise<NeedsDrewQuestion | null> {
