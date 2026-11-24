@@ -477,7 +477,7 @@ async function act(kind, args, done, button) {
 // ---- now ---------------------------------------------------------------
 
 function taskCard(t, extra) {
-  const who = [t.worker, t.lane, t.model].filter(Boolean).join(" · ");
+  const who = [t.worker, laneSaid(t.lane), t.model].filter(Boolean).join(" · ");
   const when = t.claimed ? `claimed ${ago(t.claimed)}` : `queued ${ago(t.created)}`;
   return card(
     h(
@@ -627,6 +627,7 @@ function viewNow() {
   const b = c.board || { counts: {}, now: [], next: [], blockedWhy: [] };
   const s = c.sessions || { moving: [], waiting: [] };
   const lead = needsLead(needCounts());
+  const finished = doneSaid(docs.done?.done);
   const stat = (value, label, to) =>
     h("button", { class: "stat", onclick: () => go(to) }, h("b", {}, String(value ?? "–")), h("span", {}, label));
   const out = [
@@ -637,6 +638,7 @@ function viewNow() {
       stat(b.counts.queued ?? 0, "queued", "next"),
       stat(lead.tile, lead.tileLabel, "needs"),
       stat(b.counts.blocked ?? 0, "blocked", "more/queue"),
+      stat(finished ? finished.tiles[0].n : "–", "done in 24h", "now/done"),
     ),
     ...notices(c),
     h("h2", {}, "In progress"),
@@ -682,6 +684,149 @@ function viewNow() {
           ),
         ),
       ),
+    );
+  }
+  return out;
+}
+
+// ---- done --------------------------------------------------------------
+
+const DONE_NOUNS = {
+  tasks: ["task finished", "tasks finished"],
+  merged: ["pull request merged", "pull requests merged"],
+  closed: ["issue closed", "issues closed"],
+};
+
+/** What was finished in the last day, in numbers: tasks the queue says
+ * are done, pull requests merged, issues closed. `more` on a count says
+ * GitHub's page was full of things touched within the day, so there
+ * may be more than were counted: "at least". Null when it has not been
+ * read, or comes from a console that does not read it: nothing is said
+ * then, not zeros.
+ * @param {any} done */
+export function doneSaid(done) {
+  const parts = ["tasks", "merged", "closed"].map((key) => {
+    const part = done?.[key];
+    return Number.isSafeInteger(part?.day) && part.day >= 0 ? { key, n: part.day, more: part.more === true } : null;
+  });
+  if (parts.some((part) => part === null)) return null;
+  const noun = (part) => DONE_NOUNS[part.key][part.n === 1 ? 0 : 1];
+  const tiles = parts.map((part) => ({ n: `${part.n}${part.more ? "+" : ""}`, label: noun(part) }));
+  const counted = parts.filter((part) => part.n > 0).map((part) => `${part.more ? "at least " : ""}${part.n} ${noun(part)}`);
+  const uncounted = parts.filter((part) => part.n === 0 && part.more).map(noun);
+  if (counted.length === 0 && uncounted.length === 0) return { tiles, line: "Nothing was finished in the last day." };
+  const rest = uncounted.length ? `; ${listed(uncounted)} could not all be counted` : "";
+  return { tiles, line: `In the last day: ${counted.length ? counted.join(", ") : "nothing counted"}${rest}.` };
+}
+
+/** The day's finished tasks by their kind, the most first, in a line.
+ * @param {any} kinds */
+export function doneKindsSaid(kinds) {
+  return (Array.isArray(kinds) ? kinds : [])
+    .filter((k) => k && Number.isSafeInteger(k.n) && k.n > 0)
+    .map((k) => `${k.n} ${k.kind ? String(k.kind).replace(/_/g, " ") : "of no kind"}`)
+    .join(" · ");
+}
+
+/** What the queue's record says came of a finished task (the verdicts
+ * are the queue's own: fleet-queue's disposition.rs). */
+const VERDICT_SAID = {
+  merged_verified: "merged",
+  closed_verified: "issue closed",
+  open_draft_with_followup: "left as a draft, with a follow-up",
+  open_draft_superseded: "its draft was superseded",
+  invalid_no_work: "no work came of it",
+};
+
+/** A finished task's card, in words: what kind it was and what came of
+ * it, where its pull request and issue are, who did it and when.
+ * @param {any} task
+ * @param {number} [now] */
+export function doneTaskSaid(task, now = Date.now()) {
+  const chips = [];
+  if (task.kind) chips.push(String(task.kind).replace(/_/g, " "));
+  if (task.verdict) chips.push(VERDICT_SAID[task.verdict] || String(task.verdict).replace(/_/g, " "));
+  const links = [];
+  if (task.pr && task.prUrl) links.push({ text: `#${task.pr}`, url: task.prUrl });
+  if (task.issue && task.url) links.push({ text: `issue #${task.issue}`, url: task.url });
+  const when = ago(task.at, now);
+  return {
+    chips,
+    links,
+    meta: [`task ${task.id}`, laneSaid(task.lane), task.model, when ? `finished ${when}` : ""].filter(Boolean).join(" · "),
+  };
+}
+
+function viewDone(sub) {
+  const doc = docs.done;
+  if (!doc) return [empty("Reading what was finished…")];
+  const done = doc.done;
+  const said = doneSaid(done);
+  const out = [...notices(doc, ["done"])];
+  if (!said) return [...out, empty("What was finished has not been read yet.")];
+  const which = ["merged", "tasks", "closed"].includes(sub) ? sub : "merged";
+  const seg = (name, label, tile) =>
+    h("button", { "aria-pressed": String(which === name), onclick: () => go(`now/done/${name}`) }, `${label} ${tile.n}`);
+  out.push(
+    h("p", { class: "meta" }, said.line),
+    h(
+      "div",
+      { class: "seg" },
+      seg("merged", "Merged", said.tiles[1]),
+      seg("tasks", "Tasks", said.tiles[0]),
+      seg("closed", "Issues", said.tiles[2]),
+    ),
+  );
+  const older = (list) => (list.length ? [h("p", { class: "meta" }, `The latest ${list.length} of the last week, newest first.`)] : []);
+  if (which === "merged") {
+    const list = done.merged.latest || [];
+    const byWhom = mergedBySaid(list);
+    out.push(
+      h("h2", {}, "Pull requests merged"),
+      ...older(list),
+      ...(list.length
+        ? list.map((p) => card(h("h3", {}, p.title), h("p", { class: "meta" }, ext(p.url, `#${p.number}`), ` · ${[byWhom ? p.by : "", `merged ${ago(p.at)}`].filter(Boolean).join(" · ")}`)))
+        : [empty("No pull request was merged in the last week.")]),
+    );
+  } else if (which === "tasks") {
+    const list = done.tasks.latest || [];
+    const kinds = doneKindsSaid(done.tasks.kinds);
+    const taskCardOf = (t) => {
+      const s = doneTaskSaid(t);
+      return card(
+        h(
+          "div",
+          { class: "row" },
+          ...s.chips.map((c, i) => chip(c, i > 0 && t.verdict === "merged_verified" ? "good" : "")),
+          ...s.links.map((l) => ext(l.url, l.text)),
+        ),
+        h("h3", {}, t.title),
+        h("p", { class: "meta" }, s.meta),
+      );
+    };
+    // What a task came to is on its record or it is not: those with a
+    // result first, since a day's finished tasks are mostly passes over
+    // an issue that leave no record of one.
+    const withResult = list.filter((t) => t.verdict);
+    const rest = list.filter((t) => !t.verdict);
+    if (kinds) out.push(h("p", { class: "meta" }, `Tasks finished in the last day: ${kinds}.`));
+    out.push(...older(list));
+    if (!list.length) out.push(h("h2", {}, "Tasks finished"), empty("No task was finished in the last week."));
+    if (withResult.length) out.push(h("h2", {}, "With a result on record"), ...withResult.map(taskCardOf));
+    if (rest.length) out.push(h("h2", {}, withResult.length ? "The rest" : "Tasks finished"), ...rest.map(taskCardOf));
+  } else {
+    const list = done.closed.latest || [];
+    out.push(
+      h("h2", {}, "Issues closed"),
+      ...older(list),
+      ...(list.length
+        ? list.map((i) =>
+            card(
+              h("h3", {}, i.title),
+              h("p", { class: "meta" }, ext(i.url, `#${i.number}`), ` · ${[i.reason === "not_planned" ? "closed as not planned" : i.reason === "duplicate" ? "closed as a duplicate" : "closed", ago(i.at)].join(" ")}`),
+            ),
+          )
+        : [empty("No issue was closed in the last week.")]),
     );
   }
   return out;
@@ -837,6 +982,25 @@ export function unitStateSaid(unit) {
   return active === sub || sub === "" ? active : `${active} · ${sub}`;
 }
 
+/** A lane the pool made up for itself ("any-" and a long run of
+ * letters) is nobody's name. */
+const POOLED_LANE = /^any-[a-z]{20,}$/;
+
+/** A lane as it is said on a card: a named one by its name, one the
+ * pool made up as what it is.
+ * @param {string | null | undefined} lane */
+export function laneSaid(lane) {
+  if (typeof lane !== "string" || lane === "") return "";
+  return POOLED_LANE.test(lane) ? "a pooled lane" : lane;
+}
+
+/** Whether to say who each pull request in a list is by: only when
+ * they are not all by the same one, since then it tells nothing.
+ * @param {any} list */
+export function mergedBySaid(list) {
+  return new Set((Array.isArray(list) ? list : []).map((p) => p?.by)).size > 1;
+}
+
 /** Who a task's agent is, to send it a message: its lane where that is
  * a registered agent's name, else its worker where that is. `names` is
  * the registered agents' names where the app has them; without them
@@ -849,7 +1013,7 @@ export function taskAgent(task, names = null) {
   const lane = typeof task?.lane === "string" ? task.lane : "";
   const worker = typeof task?.worker === "string" ? task.worker : "";
   if (names) return names.has(lane) ? lane : names.has(worker) ? worker : null;
-  if (lane && !/^any-[a-z]{20,}$/.test(lane)) return lane;
+  if (lane && !POOLED_LANE.test(lane)) return lane;
   return worker || null;
 }
 
@@ -2140,6 +2304,7 @@ const REFUSED_SAID = {
   "read.priorities": "reading the ranked issues",
   "read.asks": "reading your prompts",
   "read.census": "reading what needs you",
+  "read.done": "reading what was finished",
 };
 
 /** What the edge says of doing the core itself, read from its public
@@ -2315,6 +2480,7 @@ const SECTION_SAID = {
   questions: "questions",
   prs: "pull requests",
   priorities: "ranked issues",
+  done: "what was finished",
   agents: "agents",
   services: "its units",
   more: "the dashboard's pages",
@@ -3230,7 +3396,8 @@ const TABS = [
   ["more", "More", "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"],
 ];
 const VIEWS = {
-  now: ["Now", viewNow],
+  now: ["Now", viewNow, "done"],
+  "now/done": ["Done", viewDone, "done"],
   next: ["Next", viewNext, "ops"],
   needs: ["Needs me", viewNeeds, "questions"],
   ask: ["Ask", viewAsk],
@@ -3328,7 +3495,7 @@ export function freshSaid(state, now = Date.now()) {
 // machine serving the app by itself, a network that will not carry
 // one) the app looks every twenty seconds, as it always did.
 
-const LIVE_DOCS = ["core", "questions", "ops"];
+const LIVE_DOCS = ["core", "questions", "ops", "done"];
 
 /** What a message over the live connection asks for: the documents to
  * read again. Anything that is not such a message asks for nothing. */

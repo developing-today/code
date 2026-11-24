@@ -102,6 +102,12 @@ const data: Record<string, unknown> = {
   questions: big,
   prs: [],
   priorities: { issues: [], truncated: false },
+  // The stand-in machine's own copy says nothing was finished.
+  done: {
+    tasks: { day: 0, kinds: [], latest: [] },
+    merged: { day: 0, more: false, latest: [] },
+    closed: { day: 0, more: false, latest: [] },
+  },
   agents: [],
   services: [],
   more: [],
@@ -270,6 +276,32 @@ const server = Bun.serve({
             updated_at: "2026-11-23T09:00:00Z",
             labels: [{ name: "user/review" }],
             pull_request: { url: "https://api.github.com/repos/developing-today/code/pulls/31" },
+          },
+        ]);
+      }
+      if (path === "repos/developing-today/code/issues" && url.searchParams.get("state") === "closed") {
+        // What GitHub lists as closed: a pull request merged an hour ago
+        // and an issue closed two hours ago, as it sends them.
+        const hoursAgo = (hours: number) =>
+          new Date(Date.now() - hours * 3_600_000).toISOString().replace(/\.\d+Z$/, "Z");
+        return tagged(req, entry, [
+          {
+            number: 41,
+            title: "fix: smoke merged",
+            html_url: "https://github.com/developing-today/code/pull/41",
+            closed_at: hoursAgo(1),
+            updated_at: hoursAgo(1),
+            user: { login: "smoke-lane" },
+            pull_request: { merged_at: hoursAgo(1) },
+          },
+          {
+            number: 42,
+            title: "Smoke closed",
+            html_url: "https://github.com/developing-today/code/issues/42",
+            closed_at: hoursAgo(2),
+            updated_at: hoursAgo(2),
+            state_reason: "completed",
+            user: { login: "owner" },
           },
         ]);
       }
@@ -460,7 +492,7 @@ try {
     );
     check(
       "and it told the host what it reads itself, so the host stops sending it",
-      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks", "census"]),
+      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks", "census", "done"]),
       JSON.stringify(second?.owns),
     );
 
@@ -800,6 +832,28 @@ try {
           JSON.stringify([["developing-today/code#31", true]]) &&
         needsAsked.length >= 8,
       `${JSON.stringify(needs)}; ${needsAsked.length} list reads`,
+    );
+    // What was finished lately is read by the Worker itself too: GitHub's
+    // list of what is closed and the queue's own events (none, here),
+    // in this runtime, with no machine asked.
+    const finished = (await (await asOwner("/console/api/doc/done")).json()) as {
+      done?: {
+        tasks?: { day: number; latest: unknown[] };
+        merged?: { day: number; latest: { number: number; by: string }[] };
+        closed?: { day: number; latest: { number: number; reason: string | null }[] };
+      };
+      health?: { done?: { ok: boolean; error: string | null } };
+    };
+    check(
+      "what was finished lately is read by the Worker itself: the pull request merged and the issue closed",
+      finished.health?.done?.ok === true &&
+        JSON.stringify(finished.done?.merged?.latest.map((m) => [m.number, m.by])) ===
+          JSON.stringify([[41, "smoke-lane"]]) &&
+        JSON.stringify(finished.done?.closed?.latest.map((c) => [c.number, c.reason])) ===
+          JSON.stringify([[42, "completed"]]) &&
+        finished.done?.merged?.day === 1 &&
+        finished.done?.tasks?.day === 0,
+      JSON.stringify(finished).slice(0, 400),
     );
     // The app connected to be told of changes: a real WebSocket, held by
     // this runtime's own object. Only the platform can make one, so

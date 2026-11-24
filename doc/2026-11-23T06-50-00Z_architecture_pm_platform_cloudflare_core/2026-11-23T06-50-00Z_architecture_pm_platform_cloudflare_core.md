@@ -1576,3 +1576,71 @@ by character because that is what makes the search plainly right.)
 
 **Not seen.** A real phone showing the buttons: it takes a real push to
 a subscribed device, which is the owner's.
+
+## 2026-11-24T09:25Z Update: what was finished lately
+
+**Intent.** The app said what is happening, what is next and what needs
+the owner. It did not say what was done. He asked for that.
+
+**Done.** A `done` document, read by Cloudflare itself like the rest of
+the core: the tasks the queue says were finished, the pull requests
+merged and the issues closed, newest first, with how many of each in
+the last day. Now has a fifth tile for it; the Done screen lists each
+kind, with what came of a task (merged, issue closed, left as a draft
+with a follow-up, superseded, no work) and links to its pull request
+and issue.
+
+**How it is read.** The queue has some seventeen thousand finished
+tasks and keeps no order of when each was finished, so going through
+them would read every one, every time. The events that say a task was
+finished are kept in order of time: the read starts from those of the
+last week and looks each task up by its number. SQLite's own plan for
+the statements is checked in the tests (the events by their index, the
+tasks by their key, nothing gone through whole). GitHub is asked for
+one page of what is closed, most lately touched first, at one unchanging
+address, so an unchanged answer is "not modified" and costs nothing.
+
+**Checked.** The statements are run in SQLite on the queue's own tables
+with rows written the way the fleet writes them: finished once, twice,
+taken up again, another queue's, older than the week, written by
+something older. GitHub's list is given as GitHub documents it. In the
+Worker's real runtime the document is read with no machine. Fifty
+faults planted one at a time across the read, the wiring and the app's
+words, all caught after three tests were tightened.
+
+**Seen on the machine,** drawn from the live queue and GitHub: 715
+tasks finished in a day (292 second passes over an issue, 142 feature
+slices, 140 small fixes, 130 triage), at least 46 pull requests merged
+and at least 39 issues closed. That look changed the screen. Of the
+forty latest finished tasks, thirty-seven were second passes with no
+record of what came of them, so the tasks tab now says the day by kind
+and lists the tasks with a result on record first. Every merged pull
+request said the same author (the owner's name, which his agents work
+under), so the author is said only where they differ. A lane the pool
+made up ran across two lines as forty letters, and is said as a pooled
+lane.
+
+**Not seen.** The screen as Cloudflare serves it to a signed-in owner.
+
+## 2026-11-24T09:29Z Correction: whole numbers from the queue's store came as text
+
+**Found.** The first look at the Done screen on the machine, drawn from
+the live queue: 709 tasks finished in the last day, and not one of them
+showed its issue. The tasks had issues. The queue's store sends a whole
+number over HTTP as text marked as an integer (`{"type":"integer","value":"7920"}`),
+and the console read the text and dropped the mark. Every screen so far
+had coped, by treating numbers loosely. The new read asked for a number
+and, given text, showed nothing.
+
+**Why the tests had not said so.** The tests' stand-in for the store
+answered with plain numbers, which the store never does. The oracle did
+not match the thing it stood in for.
+
+**Fixed.** The store's values are read by their marks: a whole number
+that a number can hold exactly is read as that number, one that is too
+large stays the text it came as, and text that looks like a number
+stays text. The work tests' store now answers the way the real one
+does, so a read that mishandles it fails there. Checked against the
+store's own format, six faults planted and caught, and seen on the
+machine afterwards: each of the forty latest with its issue, where none
+had shown one.

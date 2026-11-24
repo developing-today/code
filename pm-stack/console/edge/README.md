@@ -242,6 +242,17 @@ it (the laptop's, the sign-in issuer's).
   A push service takes a message of 4096 bytes and may refuse a longer
   one (RFC 8030), so a message that would be longer as it is sealed is
   cut to the longest start that fits, marked as cut, buttons kept.
+- **What was finished lately is read here too.** The `done` document
+  (`Work.done()`, the Done screen, and the fifth tile on Now) is tasks
+  the queue says are done, pull requests merged and issues closed: one
+  round trip to the queue store and one question of GitHub. The tasks
+  are found by the events that say they were finished, which the store
+  keeps in order of time (the tasks themselves it does not, and there
+  are tens of thousands); a task is shown once, at its last finishing,
+  and only while it still stands as done. GitHub is asked for one page
+  of what is closed, at an address that does not change from one
+  asking to the next, so an answer that has not changed costs nothing.
+  A full page of things touched within the day is said as "at least".
 - **The app is told when something changes.** The open app holds a
   WebSocket to the Worker (`/console/api/events`, the owner signed in
   like any other request). The Worker's object keeps it by the

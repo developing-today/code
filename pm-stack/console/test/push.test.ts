@@ -448,7 +448,15 @@ describe("when a notification is owed", () => {
     try {
       let now = state();
       const still = { ttlMs: 1e12, load: async () => "x" };
-      const sections = { board: still, prs: still, priorities: still, agents: still, more: still, questions: still };
+      const sections = {
+        board: still,
+        prs: still,
+        priorities: still,
+        done: still,
+        agents: still,
+        more: still,
+        questions: still,
+      };
       const live = (name: string) => ({ ttlMs: 1e12, load: async () => (now as Record<string, unknown>)[name] });
       const docs = new Docs({
         ...sections,
@@ -598,6 +606,7 @@ test("a list of units that has stopped being read cannot make one failed run loo
           "questions",
           "prs",
           "priorities",
+          "done",
           "agents",
           "more",
         ].map((name) => [name, empty]),
