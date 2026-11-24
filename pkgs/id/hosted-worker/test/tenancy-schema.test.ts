@@ -1,15 +1,19 @@
-// E1 of #9083 (issue #12796): the central tenancy DB schema baseline.
+// E1 of #9083 (issue #12796): the central tenancy DB schema baseline,
+// as amended by H2 of #9086 (issue #14260).
 //
 // Oracle: the hosted-tenancy design record
 // (doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture)
 // section 2.1 (the schema this migration must implement) and
-// section 2.3 (the "never central" list this suite guards).
+// section 2.3 (the "never central" list this suite guards); for the
+// identity_link tables, the SSO relying-party design record
+// (doc/2026-11-24T04-50-00Z_design_sso-relying-party-9086) section
+// 4.3 — migration 0002 adds them and bumps schema_version to 2.
 //
 // The suite applies every migration under ../tenancy/migrations to
 // an in-memory SQLite database (the tenancy DB is a Turso/SQLite
 // database) and pins three things:
 //
-//   1. the baseline shape, table for table, column for column;
+//   1. the schema of record's shape, table for table, column for column;
 //   2. the never-central invariant: no column may hold content, a
 //      key, or a token value -- tokens are metadata only (a `jti`
 //      revocation handle), keys appear only as the public `iroh_id`;
@@ -74,6 +78,8 @@ const EXPECTED_SCHEMA: Record<string, string[]> = {
     "issuer",
     "jti",
   ],
+  identity_link: ["link_id", "account_id", "door", "provider_sub", "linked_at", "linked_by", "unlinked_at"],
+  identity_link_event: ["event_id", "link_id", "account_id", "door", "action", "actor_binding_id", "at"],
   meta: ["name", "value"],
   peer_policy: [
     "peer_id",
@@ -143,16 +149,16 @@ function neverCentralViolations(columns: [string, string][]): string[] {
   return violations;
 }
 
-test("migrations apply cleanly and create exactly the baseline tables", () => {
+test("migrations apply cleanly and create exactly the schema-of-record tables", () => {
   const db = freshTenancyDb();
   assert.deepEqual(tableNames(db), Object.keys(EXPECTED_SCHEMA).sort());
   const row = db.prepare("SELECT value FROM meta WHERE name = 'schema_version'").get() as {
     value: string;
   };
-  assert.equal(row.value, "1");
+  assert.equal(row.value, "2");
 });
 
-test("schema matches the section 2.1 baseline column for column", () => {
+test("schema matches the section 2.1 baseline (plus the H2 link tables) column for column", () => {
   const db = freshTenancyDb();
   for (const [table, expected] of Object.entries(EXPECTED_SCHEMA)) {
     assert.deepEqual(columnNames(db, table), expected, `table ${table}`);

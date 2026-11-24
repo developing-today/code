@@ -33,6 +33,7 @@ import { Ops, type Fetch, type Run, type RunResult } from "../../src/ops.ts";
 import { Plan } from "../../src/plan.ts";
 import { timed } from "../../src/timed.ts";
 import { Work } from "../../src/work.ts";
+import { memoryShelf, type Shelf, Trends } from "../../src/trends.ts";
 
 /** Sections the edge reads itself. `agents` is read through the
  * bridge, so it is only the edge's while it holds the PM bridge
@@ -111,6 +112,9 @@ export interface DirectSecrets {
   github?: GitHubMemory;
   /** The clock, where a test sets it. */
   now?: () => number;
+  /** Where the history behind the Trends screen is kept. Without it,
+   * it is kept in memory and read again when the object next starts. */
+  shelf?: Shelf;
 }
 
 const GITHUB_API = "https://api.github.com";
@@ -615,7 +619,11 @@ async function ghApi(
     };
   }
   // A list asked for before is asked for by its tag.
-  const had = write ? undefined : await memory?.get(url);
+  // An address with a time in it ("everything changed since…") is asked
+  // once and never again in those words: keeping its answer would only
+  // push out the answers that are asked for again.
+  const moving = /[?&]since=/.test(url);
+  const had = write || moving ? undefined : await memory?.get(url);
   let got: { res: Awaited<ReturnType<Fetch>>; text: string; whole: boolean };
   try {
     // The answer and its body, within the time; and no timer left
@@ -699,7 +707,9 @@ async function ghApi(
     // empty answer this once; kept under GitHub's tag it would be the
     // answer every time GitHub said "not modified" after.
     const etag = res.headers?.get("etag") ?? null;
-    if (etag && whole) await memory.set(url, { etag, text });
+    if (moving) {
+      // Not kept (see above).
+    } else if (etag && whole) await memory.set(url, { etag, text });
     else await memory.delete(url);
   }
   return { code: 0, stdout: text, stderr: "" };
@@ -897,6 +907,7 @@ export interface DirectClasses {
   ops: Ops;
   work: Work;
   plan: Plan;
+  trends: Trends;
 }
 
 /** The console's own classes, wired for the edge. They are made once
@@ -923,7 +934,12 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
   const ops = new Ops(config, edgeRun(config, options, fetchImpl), options.seen ? queueFetch : fetchImpl);
   const clock = options.now ? () => new Date((options.now as () => number)()) : undefined;
   const work = new Work(ops, undefined, clock);
-  return { ops, work, plan: new Plan(ops, work, clock) };
+  return {
+    ops,
+    work,
+    plan: new Plan(ops, work, clock),
+    trends: new Trends(ops, options.shelf ?? memoryShelf(), clock, "leave"),
+  };
 }
 
 /** Whether a request of the queue store may change something: any

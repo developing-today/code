@@ -8,10 +8,17 @@
 // questions) is not here, and is asked of one.
 import type { Ops } from "./ops.ts";
 import type { Plan } from "./plan.ts";
+import type { Trends } from "./trends.ts";
 
 /** The answer to `GET /console/api/<seg...>`, or undefined when that is
  * not one of these reads. */
-export async function platformRead(seg: string[], query: URLSearchParams, ops: Ops, plan: Plan): Promise<unknown> {
+export async function platformRead(
+  seg: string[],
+  query: URLSearchParams,
+  ops: Ops,
+  plan: Plan,
+  trends?: Trends,
+): Promise<unknown> {
   // `fresh=1` is the reader pressing refresh: asked again now, not
   // answered from the last minute's read.
   const fresh = query.get("fresh") === "1";
@@ -45,6 +52,8 @@ export async function platformRead(seg: string[], query: URLSearchParams, ops: O
       // edge/src/direct.ts reads it the same way.)
       case "messages":
         return ops.messages(query.get("limit"));
+      case "trends":
+        return trends ? trends.read(query.get("days"), fresh, query.get("end")) : undefined;
     }
   }
   if (seg.length === 2 && seg[0] === "prs") return ops.pr(seg[1]);

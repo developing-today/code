@@ -94,7 +94,16 @@
 //
 // `to` names recipients as "agent:<name>" (or a bare name), "group:<name>"
 // (every registered agent in that group) or "all" (every registered
-// agent); a list or a comma-separated string mixes them. kind is
+// agent); a list or a comma-separated string mixes them. An agent name
+// containing "*" is a glob over registered agents (agent:f*), resolved
+// in name order; an optional `limit: N` on a send delivers to only the
+// first N matches, and the send returns a match report {matched,
+// delivered, recipients, remaining}. Every send records a distribution
+// (bridge_distribution: batch, sender, pattern, limit, matched and
+// delivered sets); a follow-up send with `broaden: <batch>` and an
+// optional new limit or pattern delivers the original body to exactly
+// the matched-but-undelivered remainder. The notes surface (notes.js)
+// follows the same matching rule per identity segment. kind is
 // "message" (default) or "command". Central, a connector or another
 // agent (relay.js) can send either; a row another assistant or agent
 // sent carries its address in from_addr ("channel:chatgpt",
@@ -115,6 +124,7 @@
 // word to any connector or agent.
 
 import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./auth.js";
+import { GLOB_SEGMENT, globMatch, isGlob } from "./glob.js";
 import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
 import { normalizeNoteIdentity, noteTokenHash } from "./notes.js";
 import { relay, replyAddress } from "./relay.js";
@@ -215,9 +225,46 @@ function boolParam(v, dflt) {
   throw new InputError("expected true or false");
 }
 
+/** Validates an agent glob ("f*", "muse-*"): name characters plus "*". */
+export function normalizePattern(raw) {
+  if (typeof raw !== "string") throw new InputError("agent pattern must be a string");
+  const p = raw.trim().toLowerCase();
+  if (!GLOB_SEGMENT.test(p)) {
+    throw new InputError("agent pattern must be 1-64 of a-z 0-9 . _ - and * starting with a letter, digit or *");
+  }
+  return p;
+}
+
+/** An agent target: an exact name, or a glob when it contains "*". */
+function normalizeAgentTarget(raw) {
+  return isGlob(raw) ? normalizePattern(raw) : normalizeName(raw, "agent");
+}
+
+/** The raw `to` as one string, for the distribution record's pattern column. */
+function rawPattern(to) {
+  if (typeof to === "string") return to;
+  if (Array.isArray(to)) return to.join(",");
+  return null;
+}
+
+function normalizeLimit(v) {
+  const n = intParam(v, "limit", { min: 1 });
+  if (n !== null && n > MAX_RECIPIENTS) throw new InputError(`limit must be at most ${MAX_RECIPIENTS}`);
+  return n;
+}
+
+const BATCH = /^[A-Za-z0-9_-]{8,40}$/;
+
+function normalizeBatch(v, what = "batch") {
+  if (typeof v !== "string" || !BATCH.test(v)) throw new InputError(`${what} must be a batch id`);
+  return v;
+}
+
 /**
- * Parses `to` into { agents: [names], groups: [names], all: bool }.
- * "agent:x" or "x" is an agent, "group:g" a group, "all" every agent.
+ * Parses `to` into { agents: [names and globs], groups: [names], all: bool }.
+ * "agent:x" or "x" is an agent (a glob when x contains "*"), "group:g"
+ * a group, "all" every agent. Globs resolve against the registry at
+ * send time (fleetOp "send"), in name order.
  */
 export function parseTargets(to) {
   if (to === undefined || to === null || to === "") throw new InputError("to must name at least one recipient");
@@ -235,7 +282,7 @@ export function parseTargets(to) {
       const g = normalizeName(t.slice(6), "group");
       if (!groups.includes(g)) groups.push(g);
     } else {
-      const a = normalizeName(t.startsWith("agent:") ? t.slice(6) : t, "agent");
+      const a = normalizeAgentTarget(t.startsWith("agent:") ? t.slice(6) : t);
       if (!agents.includes(a)) agents.push(a);
     }
   }
@@ -295,13 +342,26 @@ export function normalizeFleetOp(op, a = {}) {
         targets: parseTargets(a.to),
         kind: normalizeFleetKind(a.kind),
         sender: normalizeSender(a.sender),
-        batch: typeof a.batch === "string" && /^[A-Za-z0-9_-]{8,40}$/.test(a.batch) ? a.batch : null,
+        batch: typeof a.batch === "string" && BATCH.test(a.batch) ? a.batch : null,
         from_addr: normalizeFromAddr(a.from_addr),
         // relay.js: the sending agent never gets its own message, and
         // "all" reaching no agent yet isn't an error when it also
         // reached a connector.
         exclude: a.exclude === undefined || a.exclude === null ? null : normalizeName(a.exclude),
         lenient: a.lenient === true,
+        // Pattern addressing (§4.1): an optional cap on deliveries and
+        // the raw address text, recorded on the distribution.
+        limit: normalizeLimit(a.limit),
+        pattern: rawPattern(a.to),
+      };
+    case "broaden":
+      return {
+        batch: normalizeBatch(a.batch, "broaden"),
+        targets: a.to === undefined || a.to === null || a.to === "" ? null : parseTargets(a.to),
+        pattern: rawPattern(a.to),
+        limit: normalizeLimit(a.limit),
+        from_addr: normalizeFromAddr(a.from_addr),
+        exclude: a.exclude === undefined || a.exclude === null ? null : normalizeName(a.exclude),
       };
     case "origin":
       return { agent: normalizeName(a.agent), id: intParam(a.id, "id", { min: 1 }) };
@@ -383,6 +443,41 @@ export function fleetSchema(sql) {
     revoked_at TEXT,
     created TEXT NOT NULL
   )`);
+  // One record per pattern send (design §4.1): what the address
+  // resolved to and who actually got a row, so a later broaden can
+  // deliver to exactly the matched-but-undelivered remainder. The
+  // notes surface writes its distributions here too (same store).
+  sql.exec(`CREATE TABLE IF NOT EXISTS bridge_distribution (
+    batch TEXT PRIMARY KEY,
+    sender_addr TEXT,
+    pattern TEXT,
+    limit_n INTEGER,
+    matched TEXT NOT NULL,
+    delivered TEXT NOT NULL,
+    ts TEXT NOT NULL
+  )`);
+}
+
+/** Records (or replaces) one send's distribution; matched/delivered are name lists. */
+export function recordDistribution(sql, { batch, sender_addr, pattern, limit_n, matched, delivered, ts }) {
+  sql.exec(
+    `INSERT OR REPLACE INTO bridge_distribution (batch, sender_addr, pattern, limit_n, matched, delivered, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    batch,
+    sender_addr ?? null,
+    pattern ?? null,
+    limit_n ?? null,
+    JSON.stringify(matched),
+    JSON.stringify(delivered),
+    ts,
+  );
+}
+
+/** One distribution record by batch, or null. */
+export function getDistribution(sql, batch) {
+  const r = sql.exec("SELECT * FROM bridge_distribution WHERE batch = ?", batch).toArray()[0];
+  if (!r) return null;
+  return { ...r, matched: JSON.parse(r.matched), delivered: JSON.parse(r.delivered) };
 }
 
 const rows = (cursor) => cursor.toArray().map((r) => ({ ...r }));
@@ -425,10 +520,43 @@ function mailboxStats(sql, agent) {
   return { ...s };
 }
 
-function randomBatch() {
+export function randomBatch() {
   const b = new Uint8Array(12);
   crypto.getRandomValues(b);
   return b64url(b);
+}
+
+/**
+ * Resolves parsed targets against the registry, in name order.
+ * Returns { matched: [names] } or { error }. Exact names resolve to
+ * themselves (registered or not, as fleet sends have always done);
+ * globs, groups and all resolve over registered agents, the sender
+ * excluded. A glob, group or all matching nobody is an error, except
+ * a lenient all (relay.js: it also reached a connector).
+ */
+function resolveTargets(registered, targets, { exclude = null, lenient = false } = {}) {
+  const others = registered.filter((r) => r.name !== exclude);
+  const matched = new Set();
+  for (const t of targets.agents) {
+    if (isGlob(t)) {
+      const hits = others.filter((r) => globMatch(t, r.name));
+      if (!hits.length) return { error: `no registered agent matches agent:${t}` };
+      for (const r of hits) matched.add(r.name);
+    } else {
+      if (exclude && t === exclude) return { error: "an agent can't send to itself" };
+      matched.add(t);
+    }
+  }
+  if (targets.all) {
+    if (!others.length && !lenient) return { error: "no agents have registered yet" };
+    for (const r of others) matched.add(r.name);
+  }
+  for (const g of targets.groups) {
+    const members = others.filter((r) => r.groups.includes(g));
+    if (!members.length) return { error: `no registered agent is in group ${g}` };
+    for (const r of members) matched.add(r.name);
+  }
+  return { matched: [...matched].sort() };
 }
 
 /**
@@ -519,23 +647,15 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
     }
     case "send": {
       const registered = rows(sql.exec("SELECT * FROM fleet_agent ORDER BY name")).map(agentRow);
-      const names = new Set(a.targets.agents);
-      if (a.exclude && names.has(a.exclude)) return { error: "an agent can't send to itself" };
-      const others = registered.filter((r) => r.name !== a.exclude);
-      if (a.targets.all) {
-        if (!others.length && !a.lenient) return { error: "no agents have registered yet" };
-        for (const r of others) names.add(r.name);
-      }
-      for (const g of a.targets.groups) {
-        const members = others.filter((r) => r.groups.includes(g));
-        if (!members.length) return { error: `no registered agent is in group ${g}` };
-        for (const r of members) names.add(r.name);
-      }
-      if (names.size > MAX_RECIPIENTS) return { error: `that reaches more than ${MAX_RECIPIENTS} agents` };
+      const resolved = resolveTargets(registered, a.targets, { exclude: a.exclude, lenient: a.lenient });
+      if (resolved.error) return { error: resolved.error };
+      const matched = resolved.matched;
+      if (!a.limit && matched.length > MAX_RECIPIENTS) return { error: `that reaches more than ${MAX_RECIPIENTS} agents` };
+      const recipients = a.limit ? matched.slice(0, a.limit) : matched;
       const known = new Set(registered.map((r) => r.name));
       const batch = a.batch ?? randomBatch();
       const messages = [];
-      for (const agent of [...names].sort()) {
+      for (const agent of recipients) {
         messages.push({
           ...sql
             .exec(
@@ -552,7 +672,87 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
             .toArray()[0],
         });
       }
-      return { batch, messages, unregistered: [...names].filter((n) => !known.has(n)).sort() };
+      recordDistribution(sql, {
+        batch,
+        sender_addr: a.from_addr,
+        pattern: a.pattern,
+        limit_n: a.limit,
+        matched,
+        delivered: recipients,
+        ts: now,
+      });
+      return {
+        batch,
+        messages,
+        unregistered: recipients.filter((n) => !known.has(n)),
+        matched: matched.length,
+        delivered: recipients.length,
+        recipients,
+        remaining: matched.length - recipients.length,
+      };
+    }
+    case "broaden": {
+      const dist = getDistribution(sql, a.batch);
+      if (!dist) return { error: `no distribution recorded for batch ${a.batch}` };
+      // Broadening re-sends under the original sender's identity, so
+      // only that sender may broaden — or central (from_addr null,
+      // the owner token), who may broaden any distribution.
+      if (a.from_addr !== null && dist.sender_addr !== null && a.from_addr !== dist.sender_addr) {
+        return { error: "only the original sender can broaden this distribution" };
+      }
+      const sample = sql
+        .exec("SELECT * FROM fleet_message WHERE batch = ? AND direction = 'inbound' ORDER BY id ASC LIMIT 1", a.batch)
+        .toArray()[0];
+      if (!sample) return { error: `batch ${a.batch} has no fleet messages to broaden` };
+      let matched = dist.matched;
+      if (a.targets) {
+        const registered = rows(sql.exec("SELECT * FROM fleet_agent ORDER BY name")).map(agentRow);
+        const resolved = resolveTargets(registered, a.targets, { exclude: a.exclude });
+        if (resolved.error) return { error: resolved.error };
+        matched = [...new Set([...dist.matched, ...resolved.matched])].sort();
+      }
+      const deliveredSet = new Set(dist.delivered);
+      const pending = matched.filter((n) => !deliveredSet.has(n));
+      const recipients = a.limit ? pending.slice(0, a.limit) : pending;
+      const messages = [];
+      for (const agent of recipients) {
+        messages.push({
+          ...sql
+            .exec(
+              `INSERT INTO fleet_message (ts, agent, direction, kind, sender, body, batch, from_addr)
+               VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?) RETURNING *`,
+              now,
+              agent,
+              sample.kind,
+              sample.sender,
+              sample.body,
+              a.batch,
+              sample.from_addr,
+            )
+            .toArray()[0],
+        });
+        deliveredSet.add(agent);
+      }
+      const delivered = [...deliveredSet].sort();
+      recordDistribution(sql, {
+        batch: a.batch,
+        sender_addr: dist.sender_addr,
+        pattern: a.pattern ?? dist.pattern,
+        limit_n: a.limit ?? dist.limit_n,
+        matched,
+        delivered,
+        ts: now,
+      });
+      const known = new Set(rows(sql.exec("SELECT name FROM fleet_agent")).map((r) => r.name));
+      return {
+        batch: a.batch,
+        messages,
+        unregistered: recipients.filter((n) => !known.has(n)),
+        matched: matched.length,
+        delivered: recipients.length,
+        recipients,
+        remaining: matched.length - delivered.length,
+      };
     }
     case "origin": {
       const orig = sql
@@ -933,6 +1133,23 @@ const query = (url) => Object.fromEntries(url.searchParams.entries());
  * agent:<the agent>, as it has always been.
  */
 async function agentSend(store, d, delivered, fromAddr = null) {
+  if (d.broaden !== undefined && d.broaden !== null && (d.to === undefined || d.to === null || d.to === "")) {
+    // Broadening one of the sender's own earlier distributions: the
+    // store re-delivers its body to the matched-but-undelivered rest.
+    // from_addr is the credential's fixed address when there is one
+    // (agent:<name>, or service:<name> for a service credential),
+    // exactly as the relay path below passes it: the store lets only
+    // the distribution's original sender broaden it.
+    const agent = normalizeName(d.agent);
+    const out = await store.fleet("broaden", {
+      batch: d.broaden,
+      limit: d.limit,
+      exclude: agent,
+      from_addr: fromAddr ?? `agent:${agent}`,
+    });
+    delivered({ messages: [], fleet: out.messages });
+    return out;
+  }
   if (d.to === undefined || d.to === null || d.to === "") {
     let origin = null;
     if (d.reply_to !== undefined && d.reply_to !== null) {
@@ -954,6 +1171,8 @@ async function agentSend(store, d, delivered, fromAddr = null) {
     body: d.body,
     kind: d.kind,
     sender: d.sender ?? agent,
+    limit: d.limit,
+    broaden: d.broaden,
   });
   if (d.reply_to !== undefined && d.reply_to !== null) await store.fleet("ack", { agent, ids: [d.reply_to] });
   delivered(out);
@@ -1045,7 +1264,12 @@ async function ownerRoute(request, store, what, url, delivered) {
   if (what === "send") {
     if (request.method !== "POST") return notAllowed("POST");
     const d = await readJson(request);
-    const out = await store.fleet("send", { body: d.body, to: d.to, kind: d.kind, sender: d.sender });
+    if (d.broaden !== undefined && d.broaden !== null) {
+      const out = await store.fleet("broaden", { batch: d.broaden, to: d.to, limit: d.limit });
+      delivered({ messages: [], fleet: out.messages });
+      return json(out, 201);
+    }
+    const out = await store.fleet("send", { body: d.body, to: d.to, kind: d.kind, sender: d.sender, limit: d.limit });
     delivered({ messages: [], fleet: out.messages });
     return json(out, 201);
   }

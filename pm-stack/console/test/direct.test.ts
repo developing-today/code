@@ -751,6 +751,28 @@ describe("what the edge remembers of GitHub", () => {
     expect(g.state.bodiless).toBe(0);
   });
 
+  test("a question with a time in it is asked once and never the same again: its answer is not kept, and keeps nothing else out", async () => {
+    // The history behind the Trends screen asks "everything changed
+    // since <time>", a page at a time, each with a later time. Kept,
+    // a hundred such answers would push out the lists that are asked
+    // for again and again.
+    const g = tagging();
+    await g.api(PULLS);
+    const since = (time: string) =>
+      `repos/developing-today/code/issues?state=all&sort=updated&direction=asc&since=${time}&per_page=100`;
+    const first = await g.api(since("2026-11-01T00:00:00Z"));
+    expect(first.code).toBe(0);
+    await g.api(since("2026-11-02T00:00:00Z"));
+    // Asked the same again, it is asked in full: no tag was kept for it.
+    await g.api(since("2026-11-01T00:00:00Z"));
+    expect(g.calls.slice(1).map((call) => call.tag)).toEqual([null, null, null]);
+    // One answer is kept: the list that is asked for again.
+    expect((await g.memory?.said())?.kept).toBe(1);
+    expect(await g.memory?.get(at(since("2026-11-01T00:00:00Z")))).toBeUndefined();
+    await g.api(PULLS);
+    expect(g.calls[g.calls.length - 1].tag).toBe('W/"1"');
+  });
+
   test("each address has its own answer, and a write is never asked for by a tag", async () => {
     const g = tagging();
     await g.api(PULLS);

@@ -17,6 +17,8 @@
 // response carries no content and no registration marker.
 
 import { safeEqual, tokenConfigured } from "./auth.js";
+import { randomBatch } from "./fleet.js";
+import { GLOB_SEGMENT, globMatch, isGlob } from "./glob.js";
 import { InputError, MAX_BODY } from "./messages.js";
 
 export const NOTE_SEGMENT = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -66,20 +68,31 @@ export function normalizeNoteIdentity(value) {
   return `${segment(parts[0], "identity class")}/${segment(parts[1], "identity name")}`;
 }
 
-/** Validates a recipient address: an identity with either segment optionally `*`. */
+/**
+ * Validates a recipient address: an identity whose segments are exact
+ * names, `*`, or globs (`f*`) — the same matching rule as fleet
+ * addressing (design §4.1), applied per segment.
+ */
 export function normalizeNoteAddress(value) {
   if (typeof value !== "string") throw new InputError("to must be class/name");
   const parts = value.trim().toLowerCase().split("/");
   if (parts.length !== 2) throw new InputError("to must be class/name, with * allowed in either segment");
-  const parse = (raw, what) => (raw === "*" ? "*" : segment(raw, what));
+  const parse = (raw, what) => {
+    if (raw === "*") return "*";
+    if (isGlob(raw)) {
+      if (!GLOB_SEGMENT.test(raw)) throw new InputError(`${what} must be 1-64 of a-z 0-9 . _ - and *`);
+      return raw;
+    }
+    return segment(raw, what);
+  };
   return `${parse(parts[0], "address class")}/${parse(parts[1], "address name")}`;
 }
 
-/** True when a wildcard address names an identity. */
+/** True when a wildcard or glob address names an identity. */
 export function noteAddressMatches(address, identity) {
   const [ac, an] = address.split("/");
   const [ic, iname] = identity.split("/");
-  return (ac === "*" || ac === ic) && (an === "*" || an === iname);
+  return globMatch(ac, ic) && globMatch(an, iname);
 }
 
 function boolField(value, dflt, what) {
@@ -102,12 +115,36 @@ export function normalizeNoteRegister(data) {
   };
 }
 
-/** Validates a send body: `{to, note}`. */
+const NOTE_BATCH = /^[A-Za-z0-9_-]{8,40}$/;
+export const NOTE_MAX_LIMIT = 200;
+
+function noteLimit(value) {
+  if (value === undefined || value === null) return null;
+  if (!Number.isInteger(value) || value < 1) throw new InputError("limit must be a positive integer");
+  if (value > NOTE_MAX_LIMIT) throw new InputError(`limit must be at most ${NOTE_MAX_LIMIT}`);
+  return value;
+}
+
+/**
+ * Validates a send body: `{to, note, limit?}`, or a broaden follow-up
+ * `{broaden, to?, limit?}` (no note: the original body is re-delivered
+ * to the distribution's matched-but-undelivered remainder).
+ */
 export function normalizeNoteSend(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
+  const limit = noteLimit(data.limit);
+  if (data.broaden !== undefined && data.broaden !== null) {
+    if (typeof data.broaden !== "string" || !NOTE_BATCH.test(data.broaden)) throw new InputError("broaden must be a batch id");
+    return {
+      broaden: data.broaden,
+      to: data.to === undefined || data.to === null || data.to === "" ? null : normalizeNoteAddress(data.to),
+      note: null,
+      limit,
+    };
+  }
   if (typeof data.note !== "string" || data.note.trim() === "") throw new InputError("note must be a non-empty string");
   if (data.note.length > MAX_BODY) throw new InputError(`note is longer than ${MAX_BODY} characters`);
-  return { to: normalizeNoteAddress(data.to), note: data.note };
+  return { broaden: null, to: normalizeNoteAddress(data.to), note: data.note, limit };
 }
 
 /** Validates an ack body: `{id}`, `{ids}` or `{up_to_id}`. */
@@ -201,7 +238,7 @@ async function readJson(request) {
 /**
  * Handles the authenticated note API:
  *   POST /notes/register  owner access token as Bearer; {identity, token, can_send?, can_inbox?}
- *   POST /notes/send      identity token; {to, note}
+ *   POST /notes/send      identity token; {to, note, limit?} or {broaden, to?, limit?}
  *   GET  /notes/inbox     identity token; pending notes for that identity
  *   POST /notes/ack       identity token; {id | ids | up_to_id}
  * Returns null when the path is not this API's.
@@ -236,9 +273,36 @@ export async function handleNotes(request, env, url, getStore) {
       if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
       if (!auth.can_send) return json({ error: "this token cannot send notes" }, 403);
       const data = normalizeNoteSend(await readJson(request));
-      const recipients = (await store.noteIdentities()).filter((identity) => noteAddressMatches(data.to, identity));
-      if (!recipients.length) throw new InputError(`no registered identity matches ${data.to}`);
-      return json(await store.noteDeliver({ from: auth.identity, recipients, note: data.note }), 201);
+      if (data.broaden) {
+        const extra_matched = data.to
+          ? (await store.noteIdentities()).filter((identity) => noteAddressMatches(data.to, identity))
+          : [];
+        const out = await store.noteBroaden({
+          from: auth.identity,
+          batch: data.broaden,
+          extra_matched,
+          pattern: data.to,
+          limit: data.limit,
+        });
+        if (out && typeof out.error === "string") throw new InputError(out.error);
+        return json(out, 201);
+      }
+      // Identities come back in name order, so a limit takes the first
+      // N matches deterministically; the response is the match report.
+      const matched = (await store.noteIdentities()).filter((identity) => noteAddressMatches(data.to, identity));
+      if (!matched.length) throw new InputError(`no registered identity matches ${data.to}`);
+      const recipients = data.limit ? matched.slice(0, data.limit) : matched;
+      const batch = randomBatch();
+      const out = await store.noteDeliver({
+        from: auth.identity,
+        recipients,
+        note: data.note,
+        batch,
+        pattern: data.to,
+        limit_n: data.limit,
+        matched,
+      });
+      return json({ ...out, batch, matched: matched.length, remaining: matched.length - recipients.length }, 201);
     }
     if (what === "inbox") {
       if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
