@@ -2199,5 +2199,66 @@ class ReaperStartupTest(unittest.TestCase):
                 os.unlink(token_path)
 
 
+class WriteMetaFailureTest(unittest.TestCase):
+    """Issue #12195 (darwin-nix#2037): a failed final meta write must
+    be audible, not silent.
+
+    Oracle: with the spool directory made unwritable, _write_meta
+    emits exactly one stderr line naming the job and leaves no
+    meta.json behind; on success it writes silently.
+    """
+
+    def _import_agent(self):
+        with tempfile.NamedTemporaryFile("w", suffix="-token", delete=False) as f:
+            f.write("write-meta-test-token\n")
+            token_path = f.name
+        os.environ.setdefault("LAPTOP_AGENT_TOKEN_FILE", token_path)
+        sys.path.insert(0, str(AGENT.parent))
+        import laptop_agent as la
+
+        return la
+
+    def _job(self):
+        return {
+            "id": "wm-job",
+            "cwd": "/",
+            "cmd_repr": "test",
+            "started_at": 1.0,
+            "ended_at": 2.0,
+            "exit": 0,
+            "state": "done",
+        }
+
+    def test_failed_final_write_is_loud_and_names_job(self):
+        la = self._import_agent()
+        with tempfile.TemporaryDirectory() as state_dir:
+            spool = Path(state_dir) / "wm-job"
+            spool.mkdir()
+            spool.chmod(0o500)
+            try:
+                err = io.StringIO()
+                with patch.object(la, "job_dir", return_value=spool):
+                    with contextlib.redirect_stderr(err):
+                        la._write_meta(self._job())
+                lines = [ln for ln in err.getvalue().splitlines() if ln.strip()]
+                self.assertEqual(len(lines), 1, err.getvalue())
+                self.assertIn("wm-job", lines[0])
+                self.assertFalse((spool / "meta.json").exists())
+            finally:
+                spool.chmod(0o700)
+
+    def test_successful_write_is_silent(self):
+        la = self._import_agent()
+        with tempfile.TemporaryDirectory() as state_dir:
+            spool = Path(state_dir) / "wm-job"
+            err = io.StringIO()
+            with patch.object(la, "job_dir", return_value=spool):
+                with contextlib.redirect_stderr(err):
+                    la._write_meta(self._job())
+            self.assertEqual(err.getvalue(), "")
+            meta = json.loads((spool / "meta.json").read_text())
+            self.assertEqual(meta["state"], "done")
+
+
 if __name__ == "__main__":
     unittest.main()

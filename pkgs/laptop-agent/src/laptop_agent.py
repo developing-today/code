@@ -544,8 +544,12 @@ def _write_meta(job):
         tmp = d / "meta.json.tmp"
         tmp.write_text(json.dumps(meta))
         os.replace(tmp, d / "meta.json")
-    except OSError:
-        pass
+    except OSError as e:
+        print(
+            f"laptop-agent: cannot write meta for job {job['id']}: {e}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 # Restore contract (design #1578, phase 1 -- issue #1579): the
