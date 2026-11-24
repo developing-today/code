@@ -39,7 +39,7 @@ describe("fetchOpenCodeProviderQuota", () => {
       baseUrl: "http://127.0.0.1:13420",
       auth: { username: "opencode", password: "fixture-password" },
       providerId: "opendesign",
-      fetchImpl: (async () => new Response(null, { status: 404 })) as typeof fetch,
+      fetchImpl: (async () => new Response(null, { status: 404 })) as unknown as typeof fetch,
     });
     expect(result).toBeNull();
   });
@@ -59,7 +59,7 @@ describe("fetchOpenCodeProviderQuota", () => {
             usage: null,
             fetchedAt: 1,
           },
-        })) as typeof fetch,
+        })) as unknown as typeof fetch,
     });
     expect(result).toBeNull();
   });
