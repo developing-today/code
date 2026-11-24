@@ -27,3 +27,17 @@ acceptance criterion is claimed by this storage-level slice alone.
 
 References: [design](../2026-11-01_design_id3397.md),
 [issue #3898](https://github.com/developing-today/code/issues/3898).
+
+---
+
+## 2026-11-24T23-18-00Z Review: filesystem aliases
+
+Review found an unscoped symlink alias could evade the adjacent sidecar and its
+lock. Journal opens now refuse final-component symlinks and, on Unix, hard-linked
+journals (including local ones). Ordinary local journals are unchanged; alias
+users must select the canonical, singly-linked journal path. Ancestor directories
+remain operator-owned, not a sandbox boundary against a filesystem administrator
+who can remove metadata or replace locks. No path is derived from a jurisdiction.
+Sidecar creation uses fsynced, same-directory temporary storage and a no-clobber
+persist followed by directory fsync on Unix. Bare relative paths use `.` as their
+parent. Tests cover aliases without repairing the target's torn tail.
