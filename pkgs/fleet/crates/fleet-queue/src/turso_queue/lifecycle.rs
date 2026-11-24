@@ -2305,7 +2305,7 @@ mod reprioritize_tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::{Arc, Mutex};
 
-    fn fake_backend() -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>) {
+    pub(super) fn fake_backend() -> (TursoBackend, Arc<Mutex<rusqlite::Connection>>) {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         for ddl in SCHEMA {
             conn.execute_batch(ddl).unwrap();
@@ -2532,7 +2532,7 @@ mod reprioritize_tests {
         r.last_insert_rowid.unwrap()
     }
 
-    fn events_for(t: &TursoBackend, task_id: i64, kind: &str) -> Vec<Value> {
+    pub(super) fn events_for(t: &TursoBackend, task_id: i64, kind: &str) -> Vec<Value> {
         t.query_objs(
             "SELECT id, worker_id, task_id, kind, detail, created_at FROM events WHERE task_id = ? AND kind = ? ORDER BY id",
             &[Arg::Int(task_id), Arg::Text(kind.to_string())],
@@ -2750,5 +2750,124 @@ mod reprioritize_tests {
             )
             .unwrap();
         assert!(rows.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod task_history_tests {
+    use super::reprioritize_tests::{events_for, fake_backend};
+    use super::*;
+
+    fn history_rows(t: &TursoBackend, task_id: i64) -> Vec<Value> {
+        t.query_objs(
+            "SELECT event_id, kind, from_status, to_status, from_priority, to_priority, actor, session_id, model_id \
+             FROM task_history WHERE task_id = ? ORDER BY id",
+            &[Arg::Int(task_id)],
+            &[],
+        )
+        .unwrap()
+    }
+
+    /// Oracle (#14170 Q1): a scripted lifecycle through the real verbs
+    /// writes exactly one task_history row per mapped event, in order,
+    /// and each row's to_status equals the task's actual status right
+    /// after that verb. from/to, actor, session and model are asserted
+    /// on the rows the claim, park, block and complete verbs wrote.
+    #[test]
+    fn scripted_lifecycle_history_is_one_to_one_with_transitions() {
+        let (t, _) = fake_backend();
+        let queue = "repo-health-code-pilot";
+        let enq = verb_enqueue(
+            &t,
+            &json!({"queue": queue, "task": {"title": "oracle", "payload": {"kind": "ungated"}, "priority": 90}}),
+        );
+        assert_eq!(enq["ok"], true, "{enq}");
+        let id = enq["task"]["id"].as_i64().expect("enqueued task id");
+        let status_of = |t: &TursoBackend| {
+            get_task(t, id).unwrap().unwrap()["status"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let last_to = |t: &TursoBackend| {
+            history_rows(t, id)
+                .last()
+                .map(|r| r["to_status"].as_str().unwrap_or("").to_string())
+                .unwrap_or_default()
+        };
+        assert_eq!(history_rows(&t, id).len(), 1, "enqueued row");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let claim = |t: &TursoBackend| {
+            verb_claim(
+                t,
+                &json!({"worker": "oracle-w", "queue": queue, "lane": "code-oracle",
+                        "session_id": "ses_oracle", "model_provider": "anthropic",
+                        "model_id": "claude-haiku-5-5", "model_variant": "default"}),
+            )
+        };
+        let c = claim(&t);
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(last_to(&t), "claimed");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let p = verb_park(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "wait", "delay_seconds": 60}));
+        assert_eq!(p["ok"], true, "{p}");
+        assert_eq!(last_to(&t), "parked");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let w = verb_wake(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "ready"}));
+        assert_eq!(w["ok"], true, "{w}");
+        assert_eq!(last_to(&t), status_of(&t), "woken to_status must equal the actual status");
+
+        if status_of(&t) != "claimed" {
+            let c2 = claim(&t);
+            assert_eq!(c2["ok"], true, "{c2}");
+        }
+        let b = verb_block(&t, &json!({"task_id": id, "worker": "oracle-w", "reason_class": "external", "blocker": "oracle"}));
+        assert_eq!(b["ok"], true, "{b}");
+        assert_eq!(last_to(&t), "blocked");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let u = verb_unblock(&t, &json!({"task_id": id, "worker": "oracle-w", "reason": "clear"}));
+        assert_eq!(u["ok"], true, "{u}");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let r = verb_reprioritize(&t, &json!({"task_id": id, "priority": 20, "worker": "oracle-w", "reason": "hot"}));
+        assert_eq!(r["ok"], true, "{r}");
+        let rp = history_rows(&t, id).last().unwrap().clone();
+        assert_eq!(rp["kind"], "reprioritized");
+        assert_eq!((rp["from_priority"].as_i64(), rp["to_priority"].as_i64()), (Some(90), Some(20)));
+
+        let c3 = claim(&t);
+        assert_eq!(c3["ok"], true, "{c3}");
+        let done = verb_complete(&t, &json!({"task_id": id, "worker": "oracle-w", "result": {"note": "oracle"}}));
+        assert_eq!(done["ok"], true, "{done}");
+        assert_eq!(last_to(&t), "done");
+        assert_eq!(last_to(&t), status_of(&t));
+
+        let rows = history_rows(&t, id);
+        let events: Vec<Value> = {
+            let mut all = Vec::new();
+            for kind in ["enqueued", "claimed", "parked", "woken", "blocked", "unblocked", "reprioritized", "completed"] {
+                all.extend(events_for(&t, id, kind));
+            }
+            all.sort_by_key(|e| e["id"].as_i64().unwrap_or(0));
+            all
+        };
+        assert_eq!(rows.len(), events.len(), "1:1 history rows and mapped events");
+        for (row, ev) in rows.iter().zip(events.iter()) {
+            assert_eq!(row["event_id"], ev["id"], "row maps to its event");
+            assert_eq!(row["kind"], ev["kind"]);
+        }
+        let claimed = rows.iter().find(|r| r["kind"] == "claimed").unwrap();
+        assert_eq!(claimed["actor"], "oracle-w");
+        assert_eq!(claimed["session_id"], "ses_oracle");
+        assert_eq!(claimed["model_id"], "claude-haiku-5-5");
+        let parked = rows.iter().find(|r| r["kind"] == "parked").unwrap();
+        assert_eq!((parked["from_status"].as_str(), parked["to_status"].as_str()), (Some("claimed"), Some("parked")));
+        let blocked = rows.iter().find(|r| r["kind"] == "blocked").unwrap();
+        assert_eq!(blocked["to_status"], "blocked");
+        assert_eq!(blocked["actor"], "oracle-w");
     }
 }
