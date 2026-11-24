@@ -148,9 +148,17 @@ export interface MachinesAnswer {
     actions: string[];
     sections: string[];
   }[];
-  /** What the owner did that waits for a machine, oldest first. */
-  held: Held[];
+  /** What the owner did that waits to be done, oldest first, and who
+   * each waits for (absent from an answer older than the saying). */
+  held: (Held & { waits?: HeldFor })[];
 }
+
+/** Who a held action waits for. "either": the platform does it itself
+ * as soon as it can again, or a machine that is back first. "machine":
+ * only a machine can do it, or it comes after something that waits for
+ * one. "asked": a machine was given it, or may have got it, and says
+ * what became of it when it is back; nobody else does it meanwhile. */
+export type HeldFor = "either" | "machine" | "asked";
 
 export interface PhoneLinks {
   devices: { id: string; name: string; hash: string; createdAt: string; seenAt: string | null }[];
@@ -165,6 +173,12 @@ export interface Held {
   /** Who took it, as the edge verified them. */
   who: string;
   at: string;
+  /** It certainly reached no machine: it was never sent toward one, or
+   * the one time it was, what answered in the machine's place said it
+   * never arrived. Only then may the platform do it itself. Without
+   * this a machine may have got it (no answer came, or one that does
+   * not say) and may have done it: it stays that machine's by name. */
+  unsent?: true;
 }
 
 export interface ApkReport {

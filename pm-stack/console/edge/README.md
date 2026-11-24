@@ -457,8 +457,56 @@ open nothing.
   same issue, task, reference or set of questions) that a machine has
   not taken yet, even when the machine can be reached again: sent
   straight on it would be done first, and the older one would undo it.
-  What is about something else goes straight on. Not covered (#13398):
-  an older action held for a machine and a newer one about the same
-  thing that the edge does itself.
+  What is about something else goes straight on. Where the newer one is
+  the edge's own to do, the older held one still comes first: if a
+  machine has been handed it, or only a machine can do it, the newer
+  waits behind it; otherwise the edge does the older itself first (or,
+  for a rank followed by a newer rank of the same issue, drops it as
+  replaced: the last one wins, and only over its own kind).
+- **What is held and the edge can do, it does itself when it can.**
+  What the owner did while the edge was turned away and no machine
+  could be reached is held, but it does not have to wait for a machine.
+  When the time GitHub gave has come, or the hour the edge leaves a
+  kind alone is up, or the owner says to try again, the edge wakes
+  itself and does what it holds of the kinds it runs: the oldest first,
+  and each thing's actions in the order they were done.
+  Nothing is done twice, by one rule: an action is one side's or the
+  other's. It is a machine's once it may have reached one, and the edge
+  never takes it then, nor anything else about the same thing. It is
+  the edge's once it has taken it out of the held list, which it does,
+  and writes down (`taken`), before it begins. A machine reporting
+  meanwhile is not handed it, nor what waits behind it about the same
+  thing. Turned away again before anything was written, the action goes
+  back where it was. An object put away with an action taken is settled
+  by the next one from its record: ended; never begun, so it waits
+  again; or begun and not known to have ended, which neither side does
+  again and the owner is told to look at. What has waited a day is
+  dropped whether or not a machine ever reports.
+- **Only what certainly reached no machine is the edge's to do.** An
+  action may have reached a machine in two ways: a report's answer
+  handed it out, or it was sent to the host and nothing came back to
+  say it never arrived. The second is the common one. Asking the host
+  ends in an answer of the host's, in no answer at all (the time ran
+  out, the connection broke), or in an answer from what stands in
+  front of the host. Only one of those says the host never had the
+  request: Cloudflare's own 530 (its error 1033 for a tunnel), given
+  when the tunnel has no connection to send anything down. That is
+  what a laptop that is asleep or off looks like. Anything else (a
+  gateway that got no answer out of the host, a wait that ran out)
+  leaves it open whether the host did the thing, so the action is kept
+  as the host's by name: the host, which writes a name down before it
+  starts, is handed it when it reports and says what became of it.
+  Each held action carries the word `unsent` only when it is known to
+  have reached nobody: it never set off toward a machine, or it set
+  off once and that one asking was answered 530. Every setting-off is
+  counted under the action's name, because a device that gave up
+  waiting offers the same name again while the first asking may still
+  be out: word that the second never arrived says nothing of the first.
+  A held action without the word (one kept by a version from before
+  it, too) is a machine's. One waiting here that reached nobody is not
+  sent toward the host when its device offers it again; it goes on
+  waiting for whichever side is first. The app says which of the three
+  each one is ("either", "machine", "asked"), the Machines screen shows
+  it, and the health answer counts them.
 - The storage is one Durable Object. A section larger than one stored
   value is kept in pieces.

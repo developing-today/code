@@ -143,10 +143,18 @@ const outside: {
   tag?: string | null;
   status?: number;
   etag?: string;
+  /** How GitHub was asked: a read, or something written. */
+  method?: string;
 }[] = [];
 /** GitHub turning every call away as one too many, until this second
  * (as it says it: nothing left of the allowance, and when it is back). */
 const spent = { until: 0 };
+/** The host out of reach while GitHub and the queue store still
+ * answer, and what answers in its place. 530 is what Cloudflare says of
+ * a tunnel with no connection (its error 1033): the host was never
+ * reached. 502 is a gateway that could not get an answer out of it:
+ * that does not say the host never had the request. */
+const hostAway: { on: boolean; status: 530 | 502 } = { on: false, status: 530 };
 /** The list of Workers answered at length, as GitHub answers a list of
  * open pull requests: well over a million characters, each of two
  * units (the Worker's store holds about two million bytes a value, so
@@ -189,6 +197,7 @@ const server = Bun.serve({
         path,
         auth: req.headers.get("authorization"),
         agent: req.headers.get("user-agent"),
+        method: req.method,
       };
       outside.push(entry);
       if (spent.until > 0) {
@@ -219,6 +228,11 @@ const server = Bun.serve({
           },
         ]);
       }
+      if (req.method === "POST" && /\/issues\/\d+\/comments$/.test(path)) {
+        // A comment is made, as GitHub answers one.
+        entry.status = 201;
+        return Response.json({ html_url: `https://github.com/${path.replace("repos/", "")}#made` }, { status: 201 });
+      }
       if (path === "search/issues") return tagged(req, entry, { total_count: 0, items: [] });
       if (path.endsWith("/issues")) return tagged(req, entry, []);
       return tagged(req, entry, { message: "Not Found" }, 404);
@@ -234,6 +248,9 @@ const server = Bun.serve({
             : { type: "ok", response: { type: "close" } },
         ),
       });
+    }
+    if (hostAway.on) {
+      return new Response(hostAway.status === 530 ? "error code: 1033" : "Bad Gateway", { status: hostAway.status });
     }
     seen.push(`${req.method} ${url.pathname}`);
     // Everything that arrives here came through the Worker, as it does
@@ -540,6 +557,95 @@ try {
         (await githubSaid())?.quiet.core === null,
       `quiet until ${shortSaid}, GitHub said ${shortTo}; ${heldThen - askedThen} calls while quiet, ${hourly() - askedThen} after`,
     );
+    // What is held that Cloudflare can do itself, it does, with no
+    // machine. The host is out of reach and GitHub turns the account
+    // away, so a comment the owner makes is held. Then GitHub answers
+    // again and the owner says to try again now: the Worker asks to be
+    // woken, the runtime wakes it, and it makes the comment itself, once.
+    {
+      const commentId = "55555555-5555-4555-8555-555555555555";
+      const commentsOn = (issue: number, status: number) =>
+        outside.filter(
+          (o) =>
+            o.to === "github" &&
+            o.method === "POST" &&
+            o.path.endsWith(`/issues/${issue}/comments`) &&
+            o.status === status,
+        ).length;
+      const comments = (status: number) => commentsOn(7, status);
+      type Waiting = { held?: { id: string; waits?: string }[] };
+      hostAway.on = true;
+      hostAway.status = 530;
+      spent.until = Math.ceil(Date.now() / 1000) + 600;
+      const heldComment = (await (
+        await actAsOwner(
+          "issue.comment",
+          { issue: 7, text: "held by the smoke run, then done by the Worker" },
+          commentId,
+        )
+      ).json()) as { ok?: boolean; held?: boolean; waits?: string };
+      spent.until = 0;
+      check(
+        "turned away by GitHub with the tunnel down, a comment is held as either side's, and nothing was written",
+        heldComment.held === true && heldComment.waits === "either" && comments(403) === 1 && comments(201) === 0,
+        `${JSON.stringify(heldComment)}; ${comments(403)} turned away, ${comments(201)} made`,
+      );
+      const tryAgain = await actAsOwner("edge.retry", {});
+      await tryAgain.text();
+      for (let waited = 0; waited < 20_000 && comments(201) === 0; waited += 500) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      // (Time for it to be done a second time, if it were going to be.)
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      const waiting = (await (await asOwner("/console/api/machines")).json()) as Waiting;
+      check(
+        "and when GitHub answers and the owner says to try again, the Worker wakes itself and makes the comment: once, with no machine",
+        tryAgain.status === 200 && comments(201) === 1 && !(waiting.held ?? []).some((h) => h.id === commentId),
+        `try again ${tryAgain.status}; ${comments(201)} made; still waiting ${JSON.stringify(waiting.held)}`,
+      );
+      // The other way of being out of reach. What answers in the host's
+      // place does not say the host never had the request (a gateway
+      // that got no answer out of it): the host may have made the
+      // comment, so the Worker holds it for the host and never makes it
+      // itself, however able it is. This is the Worker's own reading of
+      // what came back, which only this run exercises.
+      const maybeId = "66666666-6666-4666-8666-666666666666";
+      hostAway.status = 502;
+      spent.until = Math.ceil(Date.now() / 1000) + 600;
+      const heldMaybe = (await (
+        await actAsOwner("issue.comment", { issue: 9, text: "held by the smoke run for the host alone" }, maybeId)
+      ).json()) as { held?: boolean; waits?: string };
+      spent.until = 0;
+      const againMaybe = await actAsOwner("edge.retry", {});
+      await againMaybe.text();
+      // (As long as the other took to be made, and more.)
+      await new Promise((resolve) => setTimeout(resolve, 8000));
+      const waitingMaybe = (await (await asOwner("/console/api/machines")).json()) as Waiting;
+      const countsMaybe = ((await (await get("/console/health")).json()) as { held?: Record<string, number> }).held;
+      check(
+        "out of reach with nothing to say the host never had it, a comment is held for the host alone: the Worker does not make it",
+        heldMaybe.held === true &&
+          heldMaybe.waits === "asked" &&
+          againMaybe.status === 200 &&
+          commentsOn(9, 403) === 1 &&
+          commentsOn(9, 201) === 0 &&
+          (waitingMaybe.held ?? []).some((h) => h.id === maybeId && h.waits === "asked") &&
+          countsMaybe?.asked === 1 &&
+          countsMaybe?.either === 0,
+        `${JSON.stringify(heldMaybe)}; ${commentsOn(9, 403)} turned away, ${commentsOn(9, 201)} made; waiting ${JSON.stringify(waitingMaybe.held)}; health ${JSON.stringify(countsMaybe)}`,
+      );
+      // Taken back, so that nothing of this is left waiting for the rest of the run.
+      const takenBack = await actAsOwner("held.drop", { id: maybeId });
+      await takenBack.text();
+      const left = (await (await asOwner("/console/api/machines")).json()) as Waiting;
+      check(
+        "and the owner can take it back",
+        takenBack.status === 200 && (left.held ?? []).length === 0,
+        `${takenBack.status}; waiting ${JSON.stringify(left.held)}`,
+      );
+      hostAway.on = false;
+      hostAway.status = 530;
+    }
     // Someone to tell: a device takes notifications (its service is a
     // known one and its key a real point; nothing is sent to it in
     // this run unless the clock's news is worth sending).

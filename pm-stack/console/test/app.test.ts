@@ -24,6 +24,7 @@ import {
   intakeSaid,
   keptGroups,
   keptSaid,
+  heldWaitsSaid,
   levelHeadings,
   listed,
   machineSaid,
@@ -646,7 +647,7 @@ test("what is kept is listed by what it needs: waiting, kept back, failed, with 
     ["Waiting to send", ["drop"], ["w2", "w1"]],
     ["Kept back for you to look at", ["send", "drop"], ["s1"]],
     ["Could not be done", ["again", "drop"], ["f1"]],
-    ["With the platform, waiting for a machine", [], ["h1"]],
+    ["With the platform, waiting to be done", [], ["h1"]],
     ["Sent", [], ["d1"]],
   ]);
   // A group with nothing in it is not shown.
@@ -717,7 +718,17 @@ test("what the owner is told of something just done, from what became of it when
   });
   expect(sentSaid({ ...quiet, entry: { state: "done" } }, id)).toEqual({ state: "done", result: null, others: [] });
   // Taken by the platform for a machine.
-  expect(sentSaid({ ...quiet, entry: { state: "held" }, others: older }, id)).toEqual({ state: "held", others: older });
+  // Taken by the platform to be done later, with what it said of who will.
+  expect(sentSaid({ ...quiet, entry: { state: "held", note: "Kept: who will" }, others: older }, id)).toEqual({
+    state: "held",
+    note: "Kept: who will",
+    others: older,
+  });
+  expect(sentSaid({ ...quiet, entry: { state: "held" }, others: older }, id)).toEqual({
+    state: "held",
+    note: "",
+    others: older,
+  });
   // Refused: said, and nothing more.
   expect(sentSaid({ ...quiet, entry: { state: "failed", note: "no such issue" } }, id)).toEqual({
     state: "failed",
@@ -872,6 +883,7 @@ test("the Machines screen is drawn again when what it shows has changed, and not
     ["there is another", answer({ machines: [machine, { ...machine, name: "amd" }] })],
     ["there is none", answer({ machines: [] })],
     ["something else waits", answer({ held: [{ id: "h1" }, { id: "h2" }] })],
+    ["what waits now waits for someone else", answer({ held: [{ id: "h1", kind: "task.move", waits: "asked" }] })],
     ["nothing waits", answer({ held: [] })],
     [
       "the platform stopped doing the core",
@@ -891,6 +903,19 @@ test("the Machines screen is drawn again when what it shows has changed, and not
   expect(machinesMark(quiet, now + 60_000)).not.toBe(machinesMark(quiet, now));
   // An answer that is not one is not a crash.
   expect(machinesMark(null, now)).toBe(machinesMark({}, now));
+});
+
+test("who something held waits for is said in the owner's words, and not at all when the platform did not say", () => {
+  // Each of the three says something of its own.
+  const said = ["either", "machine", "asked"].map((waits) => heldWaitsSaid(waits));
+  expect(said.every((line) => line.length > 20)).toBe(true);
+  expect(new Set(said).size).toBe(3);
+  expect(said[0]).toContain("Cloudflare does this as soon as it can again");
+  expect(said[2]).toContain("may have got it");
+  // An answer older than the saying, or one that says something else: nothing is made up.
+  for (const waits of [undefined, null, "", "someone", "constructor", "toString", 3, {}]) {
+    expect([waits, heldWaitsSaid(waits)]).toEqual([waits, ""]);
+  }
 });
 
 test("a Worker's line on the Platform screen: how it gets into service, and how its last deploy went", () => {
