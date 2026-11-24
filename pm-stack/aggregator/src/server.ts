@@ -12,6 +12,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
+import { startPmCoreJobs } from "./pm-core-jobs.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
@@ -30,14 +31,15 @@ import {
   queuedComments,
   validateNewComment,
 } from "./comments.ts";
-import {
-  PROMPT_STATUSES,
-  PromptsStore,
-  syncBlockHttpResult,
-  validateNewPrompt,
-  type PromptStatus,
-} from "./prompts.ts";
+import { PROMPT_STATUSES, PromptsStore, syncBlockHttpResult, validateNewPrompt, type PromptStatus } from "./prompts.ts";
 import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
+import {
+  PromptAttachmentsStore,
+  readMultipartForm,
+  submissionFieldsFromForm,
+  uploadedFilesFromForm,
+  type PromptAttachment,
+} from "./prompt-attachments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
@@ -46,6 +48,7 @@ import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
 import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
 import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
+import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -202,6 +205,7 @@ import {
   renderOverview,
   renderOverviewBody,
   renderOverviewShell,
+  renderChat,
   renderCommentsQueue,
   renderPages,
   renderProgram,
@@ -238,6 +242,8 @@ import {
   type PushPayload,
 } from "./alerts.ts";
 import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
+import { requestNotifyRelaySubscriptionSync, startNotifyRelay } from "./notify-relay.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
 import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
 import { createMetadataWebhookHandler } from "./webhook-listener.ts";
@@ -313,6 +319,7 @@ const cfg = loadConfig();
 // the first request after a deploy serves it instead of a 503.
 const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
 const promptsStore = new PromptsStore(cfg.promptsFile);
+const promptAttachmentsStore = new PromptAttachmentsStore(cfg.promptAttachmentsDir);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
@@ -2240,7 +2247,8 @@ async function withMetadataTempFile<T>(prefix: string, content: string, run: (pa
   }
 }
 
-const metadataDbPath = process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+const metadataDbPath =
+  process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
 const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
 const metadataWebhookHandler = createMetadataWebhookHandler({
   secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
@@ -2264,7 +2272,7 @@ const metadataWebhookHandler = createMetadataWebhookHandler({
     const slugs: EpicSlugMap = new Map();
     for (const row of rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[]) {
       if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
-      const labels = (row.labels ?? []).map((label) => typeof label === "string" ? label : String(label.name ?? ""));
+      const labels = (row.labels ?? []).map((label) => (typeof label === "string" ? label : String(label.name ?? "")));
       if (!labels.includes("kind/epic")) continue;
       for (const label of labels) {
         const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
@@ -2680,8 +2688,37 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   }
 
   if (req.method === "POST" && path === "/api/prompt") {
-    const parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
-    if (!parsed.ok) return json({ error: parsed.error }, 400);
+    // #10036 S7 (design #9539 §3.2/§6): a multipart submission carries
+    // file parts under "attachments"; its text fields are shaped into
+    // the same JSON body the validator accepts, the files are persisted
+    // to the attachments dir first, and the record carries their
+    // storage refs. The JSON path is unchanged.
+    let savedAttachments: PromptAttachment[] = [];
+    let parsed: ReturnType<typeof validateNewPrompt>;
+    if ((req.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
+      let form: FormData;
+      try {
+        form = await readMultipartForm(req);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: `invalid multipart body: ${message}` }, message === "body too large" ? 413 : 400);
+      }
+      try {
+        parsed = validateNewPrompt(submissionFieldsFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      try {
+        savedAttachments = await promptAttachmentsStore.saveAll(await uploadedFilesFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (savedAttachments.length > 0) parsed.value.attachments = savedAttachments;
+    } else {
+      parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+    }
     try {
       const record = await promptsStore.add(parsed.value);
       // #10033 S3 (design §3.5/§3.7): a sync-block submission waits
@@ -2696,6 +2733,10 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       }
       return json({ prompt: record }, 201);
     } catch (err) {
+      // A submission that failed to persist must not orphan its blobs.
+      for (const attachment of savedAttachments) {
+        await promptAttachmentsStore.remove(attachment.ref).catch(() => {});
+      }
       return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
     }
   }
@@ -2732,6 +2773,35 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     prompts.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     return json({ prompts });
   }
+  if (req.method === "GET" && path.startsWith("/api/prompt/") && path.includes("/attachments/")) {
+    // #10036 S7: fetch one attachment blob by its storage ref. The ref
+    // must be carried by the named prompt's record — a ref alone is not
+    // a capability — and the store revalidates the ref's shape before
+    // resolving it. Served as a download (never inline) with nosniff,
+    // so an uploaded HTML file cannot render as a stack page.
+    const rest = decodeURIComponent(path.slice("/api/prompt/".length));
+    const segments = rest.split("/");
+    if (segments.length !== 3 || segments[1] !== "attachments") {
+      return json({ error: "prompt not found" }, 404);
+    }
+    const [id, , ref] = segments;
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    if (!prompt.attachments.some((a) => a.ref === ref)) {
+      return json({ error: "attachment not found" }, 404);
+    }
+    const found = await promptAttachmentsStore.read(ref);
+    if (!found) return json({ error: "attachment not found" }, 404);
+    return new Response(found.bytes, {
+      headers: {
+        "content-type": found.meta.contentType,
+        "content-length": String(found.bytes.byteLength),
+        "content-disposition": `attachment; filename="${found.meta.name.replace(/"/g, "")}"; filename*=UTF-8''${encodeURIComponent(found.meta.name)}`,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, no-store",
+      },
+    });
+  }
   if (req.method === "GET" && path.startsWith("/api/prompt/")) {
     const rest = decodeURIComponent(path.slice("/api/prompt/".length));
     if (rest === "thread" || rest.startsWith("thread/")) {
@@ -2750,6 +2820,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       read: prompt.read,
       replyTo: prompt.replyTo,
       refs: prompt.refs,
+      attachments: prompt.attachments,
     });
   }
   if (req.method === "PATCH" && path.startsWith("/api/prompt/")) {
@@ -2770,8 +2841,24 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     if (typeof b.read === "boolean") patch.read = b.read;
     if (Array.isArray(b.refs) && b.refs.every((x) => typeof x === "string")) patch.refs = b.refs as string[];
     if (b.replyTo === null || typeof b.replyTo === "string") patch.replyTo = b.replyTo as string | null;
+    const before = await promptsStore.get(id);
     const updated = await promptsStore.update(id, patch);
     if (!updated) return json({ error: "prompt not found" }, 404);
+    // #10035 S6 (design #9539 §4): push on async completion, opt-in
+    // per submission (the record's notify flag). Answers land only
+    // through this route, so the terminal transition is detected
+    // here; the send is fire-and-forget — a push failure must never
+    // fail the answer itself.
+    if (promptCompletionTransition(before, updated)) {
+      void (async () => {
+        const store = await getAlertsStore();
+        if (store) await notifyPromptCompletion(store, updated, cfg.publicOrigin);
+      })().catch((err) => {
+        console.error(
+          `[prompt-notify] completion push failed for ${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
     return json({ prompt: updated });
   }
   if (req.method === "POST" && path === "/api/comments") {
@@ -2867,10 +2954,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
             );
           }
         } catch (err) {
-          return json(
-            { error: `outage queueing failed: ${err instanceof Error ? err.message : err}` },
-            500,
-          );
+          return json({ error: `outage queueing failed: ${err instanceof Error ? err.message : err}` }, 500);
         }
         return json({ error: actionAccess.error }, actionAccess.status);
       }
@@ -4094,6 +4178,14 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     return html(renderCommentsQueue(await commentsStore.all(), prov()));
   }
 
+  if (path === "/chat") {
+    // #10035 S6: the threaded chat/session view over the prompt
+    // store. list() with includeArchived returns every record; the
+    // render hides archived unless ?archived=1 asks for them.
+    const showArchived = url.searchParams.get("archived") === "1";
+    return html(renderChat(await promptsStore.list({ includeArchived: true }), prov(), { showArchived }));
+  }
+
   if (path === "/api/comments/queue.json") {
     const all = await commentsStore.all();
     return json({ comments: queuedComments(all), counts: commentKindCounts(all) });
@@ -4343,6 +4435,13 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
     });
   }
+  if (path === "/assets/prompt-badge.js") {
+    const file = Bun.file(new URL("./assets/prompt-badge.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
   if (path === "/assets/freshness-client.js") {
     const file = Bun.file(new URL("./assets/freshness-client.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
@@ -4372,7 +4471,9 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        return json({ subscription: toPublicSubscription(await store.upsertSubscription(parsed.value)) }, 201);
+        const row = await store.upsertSubscription(parsed.value);
+        requestNotifyRelaySubscriptionSync();
+        return json({ subscription: toPublicSubscription(row) }, 201);
       } catch (err) {
         return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
       }
@@ -4382,6 +4483,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         const body = (await readJsonBody(req)) as { endpoint?: unknown };
         if (typeof body.endpoint !== "string") return json({ error: "endpoint required" }, 400);
         const deleted = await store.deleteSubscription(body.endpoint);
+        if (deleted) requestNotifyRelaySubscriptionSync();
         return deleted ? json({ deleted: true }) : json({ error: "no such subscription" }, 404);
       } catch (err) {
         return json({ error: `invalid delete: ${err instanceof Error ? err.message : err}` }, 400);
@@ -5101,8 +5203,19 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     // #1147 extends the shape in place (services/feed/pages/jobs
     // added from the same assembly /health renders; the existing
     // status/source/sections keys are unchanged).
-    const view = await healthContext();
+    const [view, hostHealth] = await Promise.all([
+      healthContext(),
+      // #3989 criterion 6: expose the collector's active host and the
+      // newest verified backup generation (date / finish time / hash /
+      // destinations) on the existing machine health surface. A failed
+      // or unreadable generation remains explicit; never synthesize a
+      // healthy restore point from missing data.
+      readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
+    ]);
     const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
+    body.hostHealth = hostHealth
+      ? { host: hostHealth.host, backup: hostHealth.backup }
+      : { host: null, backup: null, state: "unavailable" };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
     body.services = view.services.map((s) => ({
@@ -5400,11 +5513,31 @@ const freshnessIpcServer = Bun.serve({
 });
 console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
 
+// #8570: in live mode the aggregator process owns the quota gatherer and
+// fleet-feed collector schedules. Their output files remain audit/debug
+// products; request freshness is held by the in-process stores/caches.
+if (cfg.source === "live") {
+  void startPmCoreJobs({
+    warn: (message) => console.log(`[pm-core] ${message}`),
+  }).catch((error) => {
+    console.error(`[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
+
 // #3976: start the anti-entropy loop in live mode — one pass now,
 // then the 5-minute cadence. Fixtures mode has no journal to reconcile.
 if (cfg.source === "live") {
   void freshnessReconciler.reconcile().catch(() => undefined);
   freshnessReconciler.start();
+}
+
+// #8570: pm-core consolidation — in live mode the quota gatherer and
+// the fleet-feed collector also run as in-process schedulers on the
+// seam's cadences (quota 15 minutes, fleet-feed 5 minutes), ahead of
+// the systemd timer-unit cutover (a later slice of this issue).
+// Shutdown is tied to process signals inside the wiring.
+if (cfg.source === "live") {
+  startPmCoreSchedulers({ feedFile: cfg.feedFile });
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
@@ -5644,3 +5777,11 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
     stackHealthStates,
   };
 });
+
+// The notify relay's laptop half (#8569 Phase 2 step 1): ~60s
+// heartbeats to the pm-notify edge Durable Object + the
+// subscription mirror that authorizes its sends. A no-op until
+// PM_AGG_NOTIFY_RELAY_URL is set (the deploy is a separate leg),
+// and fail-soft once running — the edge is a mirror of this
+// stack, never a dependency of it.
+startNotifyRelay(cfg, () => getAlertsStore());

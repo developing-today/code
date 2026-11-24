@@ -21,6 +21,16 @@ cut the scan. The bge-small set remains in the publish as a dormant
 fallback (--model BAAI/bge-small-en-v1.5 --vec-table
 vec_bge_small_384_f32 --embedder fastembed).
 
+Recorded-row note (#13283): the #5733 gate's verdict record
+(eval/gate-5733-results.md) records a different golden-311 row —
+recall@10 183/311, MRR 0.3640 — under the same "production hybrid"
+label. That row belongs to the Python eval lineage's configuration
+(branch depth 30, RRF k=60, vectors truncated to 384 dimensions),
+not to this production shape (k=10, pool 100 per branch, full 768
+dimensions). The two rows are different configurations, not a
+measurement error; a golden-311 number cited without its
+configuration is incomplete.
+
 Privacy model (docs/atlas-provenance-and-scale-design-2026-10-31.md):
 sensitivity is a caller ceiling, not a display hint. The default ceiling
 is `personal` — local-only and secret-bearing chunks are excluded

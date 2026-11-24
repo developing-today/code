@@ -20,6 +20,7 @@ func Registry() []Setting {
 	s = append(s, execSettings()...)
 	s = append(s, depsSettings()...)
 	s = append(s, pathSettings()...)
+	s = append(s, adapterSettings()...)
 	s = append(s, daemonSettings()...)
 	s = append(s, hookSettings()...)
 	s = append(s, outputSettings()...)
@@ -458,7 +459,7 @@ func scriptSettings() []Setting {
 			Path: "script.devshell", Commands: runCommands, Kind: KindString, Default: "host",
 			Scope: ScopeClient,
 			Name:  "Script environment",
-			Short: "environment the script runs inside: host, or flake:<ref> for a Nix flake devshell",
+			Short: "environment the script runs inside: host, or `flake:<ref>` for a Nix flake devshell",
 			Long: "\"host\" runs the script with the caller's environment, as before. " +
 				"\"flake:<ref>\" runs it inside the named flake's devshell via " +
 				"nix develop <ref> -c, so the runtime and tools come from the flake. " +

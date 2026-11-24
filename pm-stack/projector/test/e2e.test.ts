@@ -61,6 +61,7 @@ const EVENT_BY_FILE: Record<string, string> = {
   "05-pr-review.json": "pull_request_review",
   "06-pr-review-comment.json": "pull_request_review_comment",
   "07-openchamber-issue.json": "issues",
+  "08-issue-transferred.json": "issues",
 };
 
 async function sendFixture(dbx: Client, env: ServerEnv, file: string, delivery: string): Promise<Response> {
@@ -141,6 +142,7 @@ describe("end-to-end webhook + read model", () => {
       "05-pr-review.json",
       "06-pr-review-comment.json",
       "07-openchamber-issue.json",
+      "08-issue-transferred.json",
     ]);
 
     const responses: Record<string, any> = {};

@@ -76,11 +76,11 @@ From v1 (#6300) and the shipped `id` record discipline:
 The registry's whole surface is three signed record kinds in the
 family wire form above, each with its own domain tag:
 
-| Kind | Domain tag | Signed by | Settles |
-| --- | --- | --- | --- |
-| Listing version | `id-listing/v1` | owner (+ agent countersignature at genesis; + operator attestation per version) | §2 of this record |
-| Suspension / resumption | `id-listing-suspension/v1` | owner or operator | §5 |
-| Delisting / reinstatement | `id-listing-delisting/v1` | registry operator | §6 |
+| Kind                      | Domain tag                 | Signed by                                                                       | Settles           |
+| ------------------------- | -------------------------- | ------------------------------------------------------------------------------- | ----------------- |
+| Listing version           | `id-listing/v1`            | owner (+ agent countersignature at genesis; + operator attestation per version) | §2 of this record |
+| Suspension / resumption   | `id-listing-suspension/v1` | owner or operator                                                               | §5                |
+| Delisting / reinstatement | `id-listing-delisting/v1`  | registry operator                                                               | §6                |
 
 A record's identity is the BLAKE3 hash of its full wire bytes
 (header, body, signature). Every cross-reference in the family —
@@ -336,10 +336,10 @@ routine triage items, and hands off anything ambiguous.
   `max_worlds` 8, `max_concurrent_claims` 4.
 - Willing roles: one entry — `player`, ceiling `JOIN | CHAT | INPUT`.
 - Availability: `OnDemand { wake: claim offered | subscribed surface
-  changed }`.
+changed }`.
 - A world owner queries `{ roles_any: [player], scopes_required:
-  JOIN | CHAT | INPUT, surfaces_all: [board], availability_any:
-  on-demand }`; the listing matches, the response carries its history
+JOIN | CHAT | INPUT, surfaces_all: [board], availability_any:
+on-demand }`; the listing matches, the response carries its history
   summary (say: 3 worlds served, 41 claims completed, 2 expired, 38
   reviews accepted / 3 rejected, with evidence head hash), and the
   owner makes the trust call and hires under #10663.

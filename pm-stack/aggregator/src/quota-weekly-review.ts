@@ -291,11 +291,15 @@ function fmtErr(e: ErrorDistribution | null): string {
 /** The report the job posts on epic #12694 (design §7 step 3). */
 export function renderWeeklyReview(review: WeeklyReview): string {
   const lines: string[] = [];
-  lines.push(`# Quota forecast weekly review — ${review.weekStartIso.slice(0, 10)} → ${review.weekEndIso.slice(0, 10)}`);
+  lines.push(
+    `# Quota forecast weekly review — ${review.weekStartIso.slice(0, 10)} → ${review.weekEndIso.slice(0, 10)}`,
+  );
   lines.push("");
   lines.push("Stage-3 S7 weekly review (#12701; design §7, D7), posted by the quota-weekly-review job.");
   lines.push("");
-  lines.push(`- Week: ${review.weekStartIso} → ${review.weekEndIso} (a scored forecast belongs to the week its reset period completed in)`);
+  lines.push(
+    `- Week: ${review.weekStartIso} → ${review.weekEndIso} (a scored forecast belongs to the week its reset period completed in)`,
+  );
   lines.push(`- Model under score: ${review.model}`);
   lines.push(
     `- Store: ${review.store.records} records (${review.store.pctRecords} percent readings), ${review.store.fromIso ?? "?"} → ${review.store.toIso ?? "?"}`,
@@ -303,7 +307,9 @@ export function renderWeeklyReview(review: WeeklyReview): string {
   lines.push("");
   lines.push("## Per-pool accuracy — this week (projected vs realized)");
   lines.push("");
-  lines.push("| pool | forecasts scored | TP / FP / FN / TN | precision | recall | wall error (projected − realized) |");
+  lines.push(
+    "| pool | forecasts scored | TP / FP / FN / TN | precision | recall | wall error (projected − realized) |",
+  );
   lines.push("|---|---|---|---|---|---|");
   for (const p of review.pools) {
     const w = p.week;

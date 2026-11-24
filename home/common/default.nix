@@ -136,6 +136,10 @@ let
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
+  # supergateway: the stdio <-> streamable-HTTP bridge that fronts the
+  # packaged Desktop Commander for the self-hosted endpoint (#13404).
+  # See pkgs/supergateway; the desktop-commander-bridge unit below runs it.
+  supergateway = pkgs.callPackage ../../pkgs/supergateway { };
   # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
@@ -1065,6 +1069,37 @@ in
       # a slow restart so a failing OAuth flow cannot spin.
       Restart = "on-failure";
       RestartSec = 15;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
+  # Self-hosted Desktop Commander endpoint (#13404): the local half of
+  # commander.security.cab. supergateway wraps the packaged Desktop
+  # Commander (stdio) as a streamable-HTTP MCP server on
+  # 127.0.0.1:8931/mcp; the sandbox-link Cloudflare Tunnel carries it to
+  # the bridge door (commander-link.security.cab, Access service-token
+  # only), where the desktop-commander Worker picks it up. This unit
+  # replaces nothing: the vendor device agent above stays until the
+  # self-hosted endpoint is verified and is stood down separately.
+  #
+  # PATH matters for the same reason it does in
+  # desktop-commander-remote above: the wrapped server exists to run
+  # arbitrary user commands, so it needs the real user PATH.
+  systemd.user.services.desktop-commander-bridge = {
+    Unit = {
+      Description = "Desktop Commander local MCP bridge (stdio to streamable HTTP, 127.0.0.1:8931)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "desktop-commander-bridge-start" ''
+          export PATH="/run/current-system/sw/bin:/run/wrappers/bin:/etc/profiles/per-user/$USER/bin:$HOME/.nix-profile/bin:$PATH"
+          exec ${supergateway}/bin/supergateway --stdio ${desktop-commander}/bin/desktop-commander --outputTransport streamableHttp --streamableHttpPath /mcp --port 8931 --host 127.0.0.1 --stateful --healthEndpoint /healthz --logFormat json
+        ''
+      );
+      Restart = "on-failure";
+      RestartSec = 5;
     };
     Install.WantedBy = [ "default.target" ];
   };

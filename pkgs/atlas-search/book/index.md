@@ -1,6 +1,6 @@
 # atlas
 
-Atlas is Drew's unified search system: one search engine over the corpora Drew
+Atlas is the user's unified search system: one search engine over the corpora the user
 and his agents produce — AI-client conversations first, and, through the same
 staging discipline, notes, repository documents, GitHub comments, query traces,
 and reports. Every stored unit keeps its _provenance_ (where it came from: the
@@ -40,8 +40,9 @@ after:
   classification, and a follow-up fetch returns one chunk with that same
   provenance attached. A result that cannot say where it came from is not a
   result Atlas serves.
-- **Tiered sensitivity.** Sensitivity is a four-step ladder,
-  `shareable < personal < local-only < secret-bearing`. A caller searches
+- **Tiered sensitivity.** Sensitivity is a four-step ladder —
+  canonically `public < internal < private < sensitive`, spelled in code
+  today `shareable < personal < local-only < secret-bearing`. A caller searches
   under a _ceiling_ — the highest sensitivity it may see — and the ceiling is
   applied inside the branch queries, so material above the ceiling is absent
   from the results, not merely down-ranked. The default ceiling is
@@ -86,7 +87,7 @@ Atlas replaces the silos with one normalised store and one query surface:
 
 ## Who it serves
 
-- **Drew, at the command line.** The `atlas-search` binary is the owner's
+- **The user, at the command line.** The `atlas-search` binary is the owner's
   tool: standalone search and chunk fetch, the service's provisioning verbs
   (`init`, `fetch-model`), and the operator verbs for staging,
   classification, evaluation, and trace handling that the reference part of
@@ -101,12 +102,12 @@ Atlas replaces the silos with one normalised store and one query surface:
   [Consumers: fleet, agents, memory and ID](concepts/consumers.md) and
   [The Atlas MCP server](reference/mcp.md).
 - **The laptop service's named clients.** The service keeps a client table —
-  in version 1: Drew's CLI (ceiling cap `secret-bearing`), OpenChamber
+  in version 1: the user's CLI (ceiling cap `secret-bearing`), OpenChamber
   sessions (cap `personal`), fork/OpenCode agents (cap `personal`), and
   sandbox scripts (cap `personal`) — plus the Cloudflare Worker as the
   `cf-worker` client (cap `personal`). Each client presents its own token;
   the server clamps every request to that client's cap.
-- **ID, as a future consumer.** ID is Drew's identity and graph system. An
+- **ID, as a future consumer.** ID is the user's identity and graph system. An
   Atlas → ID publication format — corpus objects with their provenance and
   lineage relations, published as ID-graph objects — is designed, and the
   search-integration design work continues in this book's design part. ID is
@@ -120,14 +121,14 @@ Atlas is one engine with several surfaces. The map below is the whole system
 on one page; [The shape of the system](getting-started/shape.md) explains how
 the pieces fit together.
 
-| Surface | What it is | Where it is covered |
-| --- | --- | --- |
-| Engine crates | `atlas-core` (search semantics: filters, ceilings, both branches, fusion, the result envelope, the Turso and local backends), `atlas-embed` (the Snowflake embedder over a dynamically loaded ONNX Runtime), `atlas-proto` (the wire contract: job-protocol types and the versioned query-parameter defaults), `atlas-search` (the binary crate: CLI, service, and via-service client) | [The crates](library/crates.md), [atlas-core: the engine as a library](library/atlas-core.md) |
-| `atlas-search` binary and tools | Six installed binaries: `atlas-search` (search, `get-chunk`, `serve`, `init`, `fetch-model`, `traces`, `feedback`), `atlas-stage` (staging units and promotion), `atlas-classify` (the classification sweep), `atlas-eval` (the offline evaluation runner), `atlas-sweep` (the ingestion sweep runner), `atlas-github-comments` (the GitHub-comments extraction feed) | [atlas-search: search and get-chunk](reference/atlas-search.md) |
-| Laptop service | The same search semantics behind a loopback HTTP job protocol on `127.0.0.1:18760`, with one resident embedder shared by every client and per-client ceiling caps. The live unit runs it as `fleet serve search`; `atlas-search serve` is the same service and the kept rollback | [The service and the Worker](concepts/service-and-worker.md) |
-| Cloudflare Worker and MCP | A Worker at `https://atlas-search.developing-today.workers.dev` exposing gated REST search plus a stateless MCP endpoint with one `search` tool, a per-query Durable Object cache, and no Turso credentials of its own: it calls back to the laptop service for embeddings and fan-out | [The service and the Worker](concepts/service-and-worker.md), [The Atlas MCP server](reference/mcp.md) |
-| `fleet search` client | The fleet binary's search domain: the agent-facing client surface, with seat-dependent routing between the service and standalone delegation | [fleet search and fleet serve search](reference/fleet-search.md) |
-| Python reference | `atlas_search.py`, the original implementation, kept permanently as the parity oracle and evaluation instrument; it is also the only surface that still offers the dormant bge-small fallback embedder | [atlas_search.py: the Python reference implementation](reference/python-implementation.md) |
+| Surface                         | What it is                                                                                                                                                                                                                                                                                                                                                                             | Where it is covered                                                                                    |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Engine crates                   | `atlas-core` (search semantics: filters, ceilings, both branches, fusion, the result envelope, the Turso and local backends), `atlas-embed` (the Snowflake embedder over a dynamically loaded ONNX Runtime), `atlas-proto` (the wire contract: job-protocol types and the versioned query-parameter defaults), `atlas-search` (the binary crate: CLI, service, and via-service client) | [The crates](library/crates.md), [atlas-core: the engine as a library](library/atlas-core.md)          |
+| `atlas-search` binary and tools | Six installed binaries: `atlas-search` (search, `get-chunk`, `serve`, `init`, `fetch-model`, `traces`, `feedback`), `atlas-stage` (staging units and promotion), `atlas-classify` (the classification sweep), `atlas-eval` (the offline evaluation runner), `atlas-sweep` (the ingestion sweep runner), `atlas-github-comments` (the GitHub-comments extraction feed)                  | [atlas-search: search and get-chunk](reference/atlas-search.md)                                        |
+| Laptop service                  | The same search semantics behind a loopback HTTP job protocol on `127.0.0.1:18760`, with one resident embedder shared by every client and per-client ceiling caps. The live unit runs it as `fleet serve search`; `atlas-search serve` is the same service and the kept rollback                                                                                                       | [The service and the Worker](concepts/service-and-worker.md)                                           |
+| Cloudflare Worker and MCP       | A Worker at `https://atlas-search.developing-today.workers.dev` exposing gated REST search plus a stateless MCP endpoint with one `search` tool, a per-query Durable Object cache, and no Turso credentials of its own: it calls back to the laptop service for embeddings and fan-out                                                                                                 | [The service and the Worker](concepts/service-and-worker.md), [The Atlas MCP server](reference/mcp.md) |
+| `fleet search` client           | The fleet binary's search domain: the agent-facing client surface, with seat-dependent routing between the service and standalone delegation                                                                                                                                                                                                                                           | [fleet search and fleet serve search](reference/fleet-search.md)                                       |
+| Python reference                | `atlas_search.py`, the original implementation, kept permanently as the parity oracle and evaluation instrument; it is also the only surface that still offers the dormant bge-small fallback embedder                                                                                                                                                                                 | [atlas_search.py: the Python reference implementation](reference/python-implementation.md)             |
 
 ## How to read this book
 

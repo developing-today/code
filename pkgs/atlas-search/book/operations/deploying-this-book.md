@@ -6,14 +6,14 @@ This book is one of three books on **one** GitHub Pages site. That single fact d
 
 ## The pieces
 
-| Piece | What it is |
-|---|---|
-| `pkgs/atlas-search/book/` | The book sources — the Markdown chapters, in the layout the summary file names |
-| `pkgs/atlas-search/book.toml` | The mdBook configuration: title `atlas`, `src = "book"`, `create-missing = false` — a chapter named in the summary but missing on disk is a build failure, never a silently generated stub |
-| `pkgs/atlas-search/docs.nix` | The build: an mdBook build of the sources above, offline, with the book's checks |
-| `lib/default.nix` | Exposes that build to the flake as **`.#atlas-docs`** |
-| `.github/workflows/atlas-docs.yml` | The build-only workflow for this book (below) |
-| `.github/workflows/mcpx-docs.yml` | The combined deploy workflow for the whole Pages site (below) |
+| Piece                              | What it is                                                                                                                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pkgs/atlas-search/book/`          | The book sources — the Markdown chapters, in the layout the summary file names                                                                                                             |
+| `pkgs/atlas-search/book.toml`      | The mdBook configuration: title `atlas`, `src = "book"`, `create-missing = false` — a chapter named in the summary but missing on disk is a build failure, never a silently generated stub |
+| `pkgs/atlas-search/docs.nix`       | The build: an mdBook build of the sources above, offline, with the book's checks                                                                                                           |
+| `lib/default.nix`                  | Exposes that build to the flake as **`.#atlas-docs`**                                                                                                                                      |
+| `.github/workflows/atlas-docs.yml` | The build-only workflow for this book (below)                                                                                                                                              |
+| `.github/workflows/mcpx-docs.yml`  | The combined deploy workflow for the whole Pages site (below)                                                                                                                              |
 
 Build the book locally exactly as CI does:
 
@@ -31,11 +31,11 @@ This workflow builds `.#atlas-docs` and nothing more. It is the gate: a broken c
 
 This is the repository's one Pages deployment. It builds each book and stages them into **one site tree**, then deploys that tree as the site's single artifact:
 
-| Staged path | Book | Site URL |
-|---|---|---|
-| Site root (`site/`) | The mcpx book | `https://developing-today.github.io/code/` |
-| `site/fleet/` | The fleet book | `https://developing-today.github.io/code/fleet/` |
-| `site/atlas/` | This book | `https://developing-today.github.io/code/atlas/` |
+| Staged path         | Book           | Site URL                                         |
+| ------------------- | -------------- | ------------------------------------------------ |
+| Site root (`site/`) | The mcpx book  | `https://developing-today.github.io/code/`       |
+| `site/fleet/`       | The fleet book | `https://developing-today.github.io/code/fleet/` |
+| `site/atlas/`       | This book      | `https://developing-today.github.io/code/atlas/` |
 
 The Atlas staging step builds `.#atlas-docs` and copies the result into `site/atlas`, with the book's site URL configured as **`/code/atlas/`** — the path prefix the rendered links and assets must assume, because the book does not live at the site root. The deploy step then publishes the assembled `site/` tree once.
 

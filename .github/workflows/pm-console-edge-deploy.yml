@@ -86,9 +86,15 @@ jobs:
           fi
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
+      - name: Install the console's type-check tools
+        working-directory: pm-stack/console/edge
+        run: npm ci --no-audit --no-fund
+      - name: Type-check the console
+        working-directory: pm-stack/console/edge
+        run: npx tsc --noEmit -p ../tsconfig.json
       - name: Test the console and its edge
         working-directory: pm-stack/console
         run: bun test
@@ -109,7 +115,9 @@ jobs:
           # behaves differently there (a report that hung for twenty
           # seconds on first contact passed every bun test). This runs
           # the bundle in the Worker runtime itself, with a host on port
-          # 4898, and makes the checks that need no sign-in.
+          # 4898. The run signs its own sign-in token (a key it makes,
+          # served by the host on that port as the issuer's key set), so
+          # the checks cover what only the owner reaches as well.
           #
           # It is started as it runs when it does the core itself: the
           # switch on, and two made-up tokens that open nothing. The same
@@ -120,6 +128,8 @@ jobs:
             --var EDGE_DIRECT:on --var GITHUB_TOKEN:smoke-github --var QUEUE_TOKEN:smoke-queue \
             --var GITHUB_API_ORIGIN:http://127.0.0.1:4898/github \
             --var QUEUE_DB_ORIGIN:http://127.0.0.1:4898/queue \
+            --var OWN_CLOCK_MS:2000 \
+            --var KEYS_FROM:https://smoke.invalid/jwks --var KEYS_TO:http://127.0.0.1:4898/jwks \
             >"$RUNNER_TEMP/wrangler-dev.log" 2>&1 &)
           up=false
           for _ in $(seq 1 60); do

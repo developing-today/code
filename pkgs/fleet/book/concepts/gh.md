@@ -31,24 +31,26 @@ failover. It exists so callers that must pin one identity — and the
 `gh` → `fleet gh` PATH shim, whose escape hatch this is — never have to
 choose between the rotation and bypassing fleet entirely.
 
-## Token rotation: personal, then three Apps
+## Token rotation: three Apps, then personal
 
 The rotation order in source (the top-level help understates it as one
 App):
 
-1. **Personal** — the user's `gh` OAuth token, parsed out of the broker
-   secret named `github-cli.hosts-yml` (the hosts.yml file itself, stored
-   by name; the parser extracts its `oauth_token`).
-2. **Fleet App installations** — the "developing.today fleet" App, App ID
+1. **Fleet App installations** — the "developing.today fleet" App, App ID
    **5612056** (`FLEET_GH_APP_ID` may override). Private key by secret name
    `github-app.developing-today-fleet.private-key`. Default owners, in
    order: `developing-today`, `developing-today-forks`, `dezren39`.
-3. **developing.today App installations** — App ID and key both by name
+2. **developing.today App installations** — App ID and key both by name
    (`kaneo.github-app-id`, `kaneo.github-app-private-key`). Default owners:
    `developing-today`, `dezren39`.
-4. **developing-today-backup App installations** — by name
+3. **developing-today-backup App installations** — by name
    (`github-app.backup-app-id`, `github-app.backup-private-key`). Default
    owner: `developing-today`.
+4. **Personal** — the user's `gh` OAuth token, parsed out of the broker
+   secret named `github-cli.hosts-yml` (the hosts.yml file itself, stored
+   by name; the parser extracts its `oauth_token`). Tried **last** (the user,
+   2026-11-23): the personal credential is the final fallback, not the
+   first identity used.
 
 Per App leg: the private key is resolved by name; an RS256 JSON Web Token
 is signed with the system `openssl`, the key passed over an inherited file

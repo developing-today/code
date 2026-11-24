@@ -1,6 +1,6 @@
 # fleet queue: lifecycle verbs
 
-The lifecycle verbs move a claimed task through its life: attribution (`lane`, `bind`), lease care (`heartbeat`, `checkpoint`), waiting (`park`, `wake`, `block`, `unblock`, `dep-recheck`, `quarantine-recheck`), and the terminal/revival verbs (`cancel`, `revive`, `fail`, `complete`, `verify-disposition`).
+The lifecycle verbs move a claimed task through its life: attribution (`lane`, `bind`), lease care (`heartbeat`, `checkpoint`), waiting (`park`, `wake`, `block`, `unblock`, `dep-recheck`, `quarantine-recheck`, `repair`), and the terminal/revival verbs (`cancel`, `revive`, `fail`, `complete`, `verify-disposition`).
 
 Shared rules, stated in [fleet queue: core verbs](queue-core.md) and not repeated in full here: the global exit-code vocabulary (0 ok, 1 gate/not-found, 2 usage, 3 transport/401, 4 broker store failure, 5 no-claim/no-row, 6 fallback switch); the `--worker` default `repo-worker-code`; the `--lane` resolution (flag → env `REPO_QUEUE_LANE` → null, broker checks worker alone); and `--progress` / `--progress-file` mutual exclusion.
 
@@ -233,6 +233,8 @@ usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>] [--drop-de
 - **Without `--drop-dep`:** clears the task's blocked state entirely (deps discarded).
 - **With `--drop-dep <list>`:** surgical. Only the named entries are dropped from the task's `blocked_deps` record. **The task stays blocked on the remaining deps; dropping the last one releases it.**
 
+**Quarantined rows:** the full override refuses a row that is still quarantined by the claim path, naming the quarantine and pointing at `fleet queue repair <id>` — unblock cannot clear a packet defect; repair the packet first. The `--drop-dep` path is unchanged (it leaves the row blocked).
+
 Output: the row, exit 0.
 
 Exit codes: 0 unblocked (or last dep dropped) · 2 usage / bad `--drop-dep` ref · 3 transport · 4 broker store failure · 5 no blocked row matches.
@@ -280,6 +282,32 @@ Exit codes: 0 ok · 2 usage · 3 transport · 4 broker store failure.
 ```text
 $ fleet queue quarantine-recheck
 {"checked": 3, "requeued": 1, "still_quarantined": 2}
+```
+
+## fleet queue repair
+
+```text
+usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]
+```
+
+| Flag                     | Argument  | Default            | Meaning                                                    |
+| ------------------------ | --------- | ------------------ | ---------------------------------------------------------- |
+| `<task-id>` (positional) | task id   | required           | The quarantined / malformed task to repair in place.       |
+| `--worker`               | worker id | `repo-worker-code` | Caller identity; recorded as the repair's operator.        |
+| `--reason`               | text      | empty string       | Why the task is repaired; recorded with the repair.        |
+| `--dry-run`              | —         | off                | Report the defects and the planned repairs; write nothing. |
+
+**Behaviour.** Repairs a stored packet that is malformed, in place — the gap the neighbouring verbs leave: the claim path quarantines such a row on every claim, `quarantine-recheck` can only release a row whose error no longer reproduces, and `unblock` refuses to clear a packet defect. (Worked example: a `payload.dedupe` missing its `checked_at`/`basis` stamp.) The broker re-runs the packet validators — `validate_packet` plus the claim-guard reason — applies the deterministic repairs whose correct value can be re-derived, re-validates the repaired packet in memory, and only then writes: one status-guarded update clears the quarantine and restores the task claimable (`queued`, or `blocked` with its deps intact when dep-blocked). A `repaired` timeline entry names the verb, the operator, the defects and the repairs. Output: the repaired row.
+
+- **Eligible states:** `blocked`, `queued`, `parked`, `handed_off`. `claimed` is refused — repair never mutates a task a worker holds. `cancelled` / `failed` point at `revive` first; `done` is refused.
+- **The one repairable class today:** the dedupe-stamp defect. Repair re-performs the dedupe check live — no other live task may hold the same work identity `(repo, issue, kind)` or the same `dedupe_key` among claim-guard-clean rows — and stamps `checked_at` plus a `basis` stating the re-check. A live duplicate refuses the repair: the stamp cannot be honestly re-derived. A packet carrying neither identity nor key refuses too.
+- **Any other defect** is unrepairable today: the broker refuses with the defect list and changes nothing.
+
+Exit codes: 0 repaired (or the dry-run report) · 2 usage · 3 transport · 4 broker store failure · refusals exit non-zero with the reason and mutate nothing.
+
+```text
+$ fleet queue repair 19481 --dry-run
+{"task_id": 19481, "outcome": "dry_run", "defects": ["..."], "repairs": [{"field": "payload.dedupe", "action": "stamped checked_at/basis by re-performing the dedupe check live"}], "dry_run": true, "status": "blocked", "status_after": "queued"}
 ```
 
 ## fleet queue cancel

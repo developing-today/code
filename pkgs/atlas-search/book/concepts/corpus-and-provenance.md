@@ -2,8 +2,8 @@
 
 Source: https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/local.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/crates/atlas-core/src/stage.rs, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/test-vectors/content-hash-v1.json, https://github.com/developing-today/code/blob/main/pkgs/atlas-search/fixtures/fixture_corpus.sql
 
-Atlas exists to answer one question reliably: *where have I seen this
-before, and where did it come from?* The second half of that question is the
+Atlas exists to answer one question reliably: _where have I seen this
+before, and where did it come from?_ The second half of that question is the
 provenance half, and it shapes the corpus's data model. This chapter covers
 that model — sessions, messages, and chunks — the hash that identifies a
 chunk everywhere it appears, the content-addressed extracts programme that
@@ -32,7 +32,7 @@ Classification hangs off the session. A `session_labels` row per session
 records the scheme-1.0 classification: `kind`, `topics` and `projects` (each
 a JSON list), `sensitivity`, a confidence, and the scheme name. Sensitivity
 is also denormalized onto each chunk in the published store; a chunk's
-*effective* sensitivity is its own value, falling back to its session label's
+_effective_ sensitivity is its own value, falling back to its session label's
 when the chunk carries none. Two derived structures make the chunks
 searchable: a `chunks_fts` FTS5 table over chunk text (its rowid is the chunk
 id), and one vector table per embedding space, keyed by chunk id — the
@@ -72,14 +72,14 @@ So `content_hash` is the join key, everywhere:
 - A promotion's merge manifest records one, as the durable audit of what was
   promoted.
 
-One caveat a careful reader should know: the hash's *producer* is not yet
+One caveat a careful reader should know: the hash's _producer_ is not yet
 pinned. The shared test-vector file (`test-vectors/content-hash-v1.json`,
 #10147) records `chunk_content_hash` with status `producer_unavailable` —
 algorithm, producer, and profile all null, no known-answer vectors, and
 interop claims explicitly forbidden until a producer is pinned there. The
 same file does pin a different hash — the classification manifest's content
 hash, SHA-256 lowercase hex over the manifest's canonical form — and says in
-terms that it is *not* the chunk `content_hash`, recorded precisely to keep
+terms that it is _not_ the chunk `content_hash`, recorded precisely to keep
 the two apart. In practice the value is produced by the ingest pipelines and
 treated as opaque identity by everything downstream; treat any claim about
 how it is computed as unverified until the vector file says otherwise.
@@ -88,7 +88,7 @@ Deduplication follows from the same identity. Re-running an ingest adds only
 what is new, because a chunk whose hash is already present is the same chunk.
 But dedup has a known historical cost, and it is the reason the next section
 exists: the first ingest pipelines deduplicated by dropping repeated
-occurrences, silently losing roughly 127,000 records of *where* a chunk had
+occurrences, silently losing roughly 127,000 records of _where_ a chunk had
 been found — and 6,344 canonical sessions own zero chunks for exactly this
 reason. The bytes survived; the provenance did not.
 
@@ -96,9 +96,9 @@ reason. The bytes survived; the provenance did not.
 
 Issue #3125 — the provenance registry, content-addressed extracts, and
 multi-database vector resolution programme — is the corrective. Its rules,
-set by Drew on 2026-10-31, are: keep all data (only byte-identical duplicates
-are cleaned; backups are kept); keep backups *and* plain extracts for every
-corpus; and record, for every chunk, *every* place it was found. That last
+set by the user on 2026-10-31, are: keep all data (only byte-identical duplicates
+are cleaned; backups are kept); keep backups _and_ plain extracts for every
+corpus; and record, for every chunk, _every_ place it was found. That last
 rule is the `chunk_occurrences` table: one row per occurrence, mapping a
 chunk to a source locator with its byte span and the time it was observed
 (`observed_at`). Sources that are not files are pinned as
@@ -115,6 +115,15 @@ recording its canonical text hash, source locator, byte span, and staged
 observation time. That slice is explicitly not the full criterion —
 historical occurrence recovery, canonical dedup identity, and the
 CAS/source-root registry remain open work.
+A further slice landed the same day: the in-repo source registry
+('s module) — stable source-root and
+locator registration, where a root is a named origin (a pinned
+repository, an extracts corpus) and locators hang from it.
+Registration is idempotent and additive only: a repeat returns the
+first registration unchanged, re-pointing a root or registering a
+locator under an unknown root is refused, and registration never
+alters existing chunk or occurrence data — each property pinned by
+oracle tests.
 
 **Phase 2 — the extracts store and its backfill (landed 2026-11-23).** The
 extracts store lives on the laptop under `~/atlas/extracts/`. Objects are
@@ -133,11 +142,11 @@ restored copy.
 The 2026-11-23 backfill run interned the sources still on disk, starting
 that morning from zero objects and no `cas_registry` table:
 
-| Corpus | Files interned | Bytes |
-|---|---:|---:|
-| chatgpt-export (the export archive, one file) | 1 | 103,945,101 |
-| sandbox-agents | 12,091 | 2,492,957,497 |
-| **Total** | **12,092** | **~2.6 GB** |
+| Corpus                                        | Files interned |         Bytes |
+| --------------------------------------------- | -------------: | ------------: |
+| chatgpt-export (the export archive, one file) |              1 |   103,945,101 |
+| sandbox-agents                                |         12,091 | 2,492,957,497 |
+| **Total**                                     |     **12,092** |   **~2.6 GB** |
 
 The run recorded **zero dedupe collisions** — every interned file was unique
 content — and the full-store verification passed: `ATLAS-EXTRACTS VERIFY OK`.
@@ -172,12 +181,12 @@ them at query time, by `content_hash`, as described above. The local backend
 probes its known side-store pairs in a fixed order — a vector file plus the
 corpus file whose chunks map its ids:
 
-| Vector store | Mapping corpus |
-|---|---|
-| `~/atlas/v3/vec-bge-small.db` | `~/atlas/v3/corpus.db` |
-| `~/atlas/v3/vec-bge-small-topup.db` (the topup DB) | `~/atlas/v3/topup-chunks.db` |
-| `~/atlas/atlas-delta-chunks2.db` (the delta DB) | itself — vector file and mapping corpus are the same file |
-| `~/atlas/v3/vec-snowflake.db` | `~/atlas/v3/corpus.db` |
+| Vector store                                       | Mapping corpus                                            |
+| -------------------------------------------------- | --------------------------------------------------------- |
+| `~/atlas/v3/vec-bge-small.db`                      | `~/atlas/v3/corpus.db`                                    |
+| `~/atlas/v3/vec-bge-small-topup.db` (the topup DB) | `~/atlas/v3/topup-chunks.db`                              |
+| `~/atlas/atlas-delta-chunks2.db` (the delta DB)    | itself — vector file and mapping corpus are the same file |
+| `~/atlas/v3/vec-snowflake.db`                      | `~/atlas/v3/corpus.db`                                    |
 
 The topup store alone accounts for roughly 14,000 chunks. This query-time,
 hash-keyed resolution is the working-today form of multi-database vector
@@ -194,11 +203,11 @@ Every corpus number in this book traces to one verified count, and it is a
 snapshot, not a live figure. **The census of 2026-10-31** (recorded on
 #3125) counted the canonical store at:
 
-| Level | Count |
-|---|---:|
-| Sessions | 18,325 |
+| Level    |   Count |
+| -------- | ------: |
+| Sessions |  18,325 |
 | Messages | 122,124 |
-| Chunks | 107,639 |
+| Chunks   | 107,639 |
 
 The tier split of the same census agrees with the total: 107,001 chunks in
 28 internal shards and 638 chunks in 1 secret shard; there were no
@@ -212,8 +221,8 @@ and privacy moved to query-time classification filters instead.
 Since then the store has grown without a recount. Later records (2026-11-12)
 describe the Turso monolith as about **7.3 GB** over the same 107,639 chunks
 plus the 29 topic shards, and state in terms that the canonical counts are
-frozen at the 2026-10-31 publish while the monolith grew *without a verified
-recount*. Read every number in the table above as "true on 2026-10-31", not
+frozen at the 2026-10-31 publish while the monolith grew _without a verified
+recount_. Read every number in the table above as "true on 2026-10-31", not
 as today's count; a fresh verified census is an open deliverable of the
 Atlas programme. For scale, the laptop's `~/atlas/` directory overall was
 12 GB at the census date, hash-verified to contain no consequential

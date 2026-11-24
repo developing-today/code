@@ -17,20 +17,9 @@
 // fixture's declared outcomes (below). The script runs twice and
 // the traces must be identical (determinism).
 //
-// Expectations keyed per profile: the fixture keys divergent
-// expectations by resource_id for the two simulated profiles. A
-// keyed expectation names an outcome per *behavior class* — for a
-// definitive, retry-as-new-operation local profile the applicable
-// value is the `redb` entry (the Rust state machine documents
-// network faults as inert for a definitive profile, and
-// `resolve_outcome` is the identity there). IndexedDB is evaluated
-// as a member of that class, and its own trace must prove it.
-//
-// The fixture itself is NOT modified: its `indexeddb` report stays
-// `reserved`. The verdict this evaluation produces — the proposed
-// capability report, in the fixture's schema — is asserted below
-// and recorded on #10213. Flipping the fixture entry to `active`
-// is #9082's adoption decision, not this prototype's.
+// #9082 adopts the browser request-batch profile. A divergent step has
+// its own indexeddb expectation, checked against the real engine and
+// the independent model. The public browser app need not enable it.
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -145,18 +134,10 @@ function parseWrites(step: any): Write[] {
   ];
 }
 
-/** The expectation a step declares for the indexeddb profile: a
- * string is shared by every profile; an object keys the divergent
- * outcomes by behavior class — the definitive local class is the
- * `redb` entry (see the header comment). */
 function expectFor(step: any): string {
   if (typeof step.expect === "string") return step.expect;
-  const value = step.expect?.redb;
-  assert.equal(
-    typeof value,
-    "string",
-    `step ${JSON.stringify(step)} has no definitive-class expect`,
-  );
+  const value = step.expect?.indexeddb;
+  assert.equal(typeof value, "string", "missing indexeddb fixture expectation");
   return value;
 }
 
@@ -381,16 +362,11 @@ async function runInEngine(base: string): Promise<any> {
 
 // ----------------------------------------------------------------
 
-test("the shared fixture still reserves the indexeddb verdict", () => {
-  const report = FIXTURE.capability_reports.find(
+test("the shared fixture declares the adopted request-batch profile exactly once", () => {
+  const reports = FIXTURE.capability_reports.filter(
     (entry: any) => entry.resource_id === "indexeddb",
   );
-  assert.ok(report, "fixture carries an indexeddb report");
-  assert.equal(
-    report.status,
-    "reserved",
-    "adoption is #9082's decision; this evaluation must not flip the fixture",
-  );
+  assert.deepEqual(reports, [EXPECTED_REPORT]);
 });
 
 test(
@@ -491,7 +467,7 @@ test(
     }
 
     // The verdict: the adapter's emitted report is exactly the
-    // declaration under evaluation.
+    // adopted declaration independently pinned by the shared fixture.
     assert.deepEqual(result.report, EXPECTED_REPORT);
 
     // Engine probes (the issue's named evaluation areas).
@@ -500,6 +476,11 @@ test(
       "InvalidStateError",
       "a request placed after its transaction's task ends must be refused by the engine — the fact the request-batch shape is built on",
     );
+    assert.deepEqual(result.probes.abortedBatch, {
+      error: "ConstraintError",
+      afterAbort: [[], [["original", "taken"]]],
+      afterRetry: [[["note", "kept"]], [["new", "free"], ["original", "taken"]]],
+    });
     assert.equal(result.probes.reopenValue, "persisted-value");
     assert.deepEqual(result.probes.upgrade, {
       preserved: "v1-data",

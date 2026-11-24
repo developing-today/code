@@ -18,7 +18,9 @@ updates:
       github-actions:
         patterns: ["*"]
   - package-ecosystem: "npm"
-    directory: "/"
+    directories:
+      - "/"
+      - "/pkgs/supergateway"
     schedule:
       interval: "weekly"
     exclude-paths:

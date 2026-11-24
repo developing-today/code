@@ -77,7 +77,11 @@ function usageError(message: string): never {
   process.exit(2);
 }
 
-function parseArgs(argv: string[]): { values: Record<ValueOption, string | undefined>; openPrs: boolean; post: boolean } {
+function parseArgs(argv: string[]): {
+  values: Record<ValueOption, string | undefined>;
+  openPrs: boolean;
+  post: boolean;
+} {
   const values: Record<ValueOption, string | undefined> = {
     "--store-dir": undefined,
     "--route-config": undefined,
@@ -298,8 +302,10 @@ async function main(): Promise<void> {
   let weekStartMs = weekEndMs - WEEK_MS;
   if (values["--week-start"] !== undefined) {
     weekStartMs = Date.parse(values["--week-start"]);
-    if (!Number.isFinite(weekStartMs)) usageError(`--week-start '${values["--week-start"]}' is not a parseable instant`);
-    if (weekStartMs >= weekEndMs) usageError("--week-start must be before the week's end (--as-of or the store's last reading)");
+    if (!Number.isFinite(weekStartMs))
+      usageError(`--week-start '${values["--week-start"]}' is not a parseable instant`);
+    if (weekStartMs >= weekEndMs)
+      usageError("--week-start must be before the week's end (--as-of or the store's last reading)");
   }
 
   const { ledger, facts } = buildForecastAccuracyLedger(records, { asOfMs: weekEndMs });
@@ -372,7 +378,8 @@ async function main(): Promise<void> {
   });
   const report = renderWeeklyReview(review);
 
-  const reportPath = values["--report-out"] ?? (values["--out-dir"] ? join(values["--out-dir"], "weekly-review.md") : null);
+  const reportPath =
+    values["--report-out"] ?? (values["--out-dir"] ? join(values["--out-dir"], "weekly-review.md") : null);
   if (reportPath) {
     await mkdir(dirname(reportPath), { recursive: true });
     await writeFile(reportPath, report, "utf8");
@@ -392,7 +399,9 @@ async function main(): Promise<void> {
       { cwd: repoRoot },
     );
     if (res.code !== 0) {
-      console.error(`quota-weekly-review: posting the report to #${EPIC_ISSUE} failed (gh exit ${res.code}): ${res.stderr.trim()}`);
+      console.error(
+        `quota-weekly-review: posting the report to #${EPIC_ISSUE} failed (gh exit ${res.code}): ${res.stderr.trim()}`,
+      );
       process.exit(1);
     }
     console.log(`posted the weekly review to ${EPIC_REPO}#${EPIC_ISSUE}: ${res.stdout.trim()}`);
