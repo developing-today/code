@@ -398,7 +398,7 @@ mod tests {
         eligible_member(&mut pool, "successor", 50, 0);
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(30_000))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(30_000), 0)
             .unwrap();
 
         assert_eq!(
@@ -420,8 +420,8 @@ mod tests {
             ]
         );
         assert_eq!(plan.pre_grant_tip(), 50);
-        lease.apply_revoke("dead", 2, "term expired").unwrap();
-        lease.apply_grant("successor", 3, Some(60_000)).unwrap();
+        lease.apply_revoke("dead", 2, "term expired", 0).unwrap();
+        lease.apply_grant("successor", 3, Some(60_000), 0).unwrap();
         assert_eq!(lease.holder.as_deref(), Some("successor"));
         assert_eq!(lease.epoch, 3);
         assert!(lease.validate_history().is_ok());
@@ -432,7 +432,7 @@ mod tests {
         let pool = SpillPool::default();
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1), 0)
             .unwrap();
         assert_eq!(
             pool.plan_failover(&lease, 1, 50, 0).unwrap().actions(),
@@ -454,9 +454,9 @@ mod tests {
         let pool = SpillPool::default();
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "dead", 1, Some(1), 0)
             .unwrap();
-        lease.apply_revoke("dead", 2, "term expired").unwrap();
+        lease.apply_revoke("dead", 2, "term expired", 0).unwrap();
         assert_eq!(
             pool.plan_failover(&lease, 1, 50, 0).unwrap().actions(),
             vec![LeaseAction::Grant {
@@ -470,9 +470,9 @@ mod tests {
     fn writes_during_the_fence_window_are_retryable_holder_lost() {
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "old", 1, Some(10))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "old", 1, Some(10), 0)
             .unwrap();
-        lease.apply_revoke("old", 2, "term expired").unwrap();
+        lease.apply_revoke("old", 2, "term expired", 0).unwrap();
         assert_eq!(
             lease.check_writer("old", 1, 10),
             Err(LeaseRejectionReason::HolderLost)
@@ -483,10 +483,10 @@ mod tests {
     fn fenced_holder_reconnect_is_rejected_and_auditable() {
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "old", 1, Some(10))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "old", 1, Some(10), 0)
             .unwrap();
-        lease.apply_revoke("old", 2, "term expired").unwrap();
-        lease.apply_grant("new", 3, Some(30)).unwrap();
+        lease.apply_revoke("old", 2, "term expired", 0).unwrap();
+        lease.apply_grant("new", 3, Some(30), 0).unwrap();
         assert_eq!(
             lease.check_writer("old", 1, 11),
             Err(LeaseRejectionReason::NotHolder)
@@ -499,6 +499,7 @@ mod tests {
                 observed_epoch: 3,
                 reason: LeaseRejectionReason::NotHolder,
                 received_at_ms: 11,
+                position: 0,
             })
             .unwrap();
         assert_eq!(lease.rejections().count(), 1);
@@ -510,11 +511,11 @@ mod tests {
         // automatic failover from the old holder.
         let mut handback_first = WriteLease::bootstrap();
         handback_first
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native", 1, Some(30))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native", 1, Some(30), 0)
             .unwrap();
         assert!(handback_first.check_writer("native", 1, 29).is_ok());
         handback_first
-            .apply_handoff("native", DO_WRITE_LEASE_HOLDER, 2, None)
+            .apply_handoff("native", DO_WRITE_LEASE_HOLDER, 2, None, 0)
             .unwrap();
         assert_eq!(
             SpillPool::default().plan_failover(&handback_first, 30, 0, 0),
@@ -525,7 +526,7 @@ mod tests {
         // back; automatic recovery uses revoke then grant from that state.
         let mut failover_first = WriteLease::bootstrap();
         failover_first
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native", 1, Some(30))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native", 1, Some(30), 0)
             .unwrap();
         assert_eq!(
             failover_first.check_writer("native", 1, 30),
@@ -549,10 +550,10 @@ mod tests {
         let pool = SpillPool::default();
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "first", 1, Some(10))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "first", 1, Some(10), 0)
             .unwrap();
-        lease.apply_revoke("first", 2, "term expired").unwrap();
-        lease.apply_grant("second", 3, Some(40)).unwrap();
+        lease.apply_revoke("first", 2, "term expired", 0).unwrap();
+        lease.apply_grant("second", 3, Some(40), 0).unwrap();
         assert_eq!(
             pool.plan_failover(&lease, 39, 0, 0),
             Err(FailoverPlanError::TermStillLive)
@@ -576,7 +577,7 @@ mod tests {
             let mut holder = DO_WRITE_LEASE_HOLDER.to_owned();
             for epoch in 1..=base_epoch {
                 let next_holder = format!("holder-{epoch}");
-                lease.apply_handoff(&holder, &next_holder, epoch, Some(1)).unwrap();
+                lease.apply_handoff(&holder, &next_holder, epoch, Some(1), 0).unwrap();
                 holder = next_holder;
             }
 
@@ -594,8 +595,8 @@ mod tests {
             prop_assert_eq!(*revoke_epoch, base_epoch + 1);
             prop_assert_eq!(*grant_epoch, base_epoch + 2);
 
-            lease.apply_revoke(former_holder, *revoke_epoch, "expired").unwrap();
-            lease.apply_grant(successor, *grant_epoch, Some(2)).unwrap();
+            lease.apply_revoke(former_holder, *revoke_epoch, "expired", 0).unwrap();
+            lease.apply_grant(successor, *grant_epoch, Some(2), 0).unwrap();
             prop_assert!(lease.validate_history().is_ok());
         }
     }

@@ -169,6 +169,122 @@ describe("the edge's run: secrets and the laptop's verbs", () => {
   });
 });
 
+describe("the edge's run: the bridge through its binding", () => {
+  // The bridge Worker, standing in: every call recorded, its answer
+  // set by the test. The credential is a fixture, never a real one.
+  function bridgeHarness() {
+    const calls: { url: string; init: { method: string; headers: Record<string, string>; body?: string } }[] = [];
+    const answer: { ok: boolean; status: number; body: unknown } = {
+      ok: true,
+      status: 201,
+      body: { messages: [], fleet: [{ id: 7, agent: "felix-1" }] },
+    };
+    const bridgeFetch = (async (
+      url: string,
+      init: { method: string; headers: Record<string, string>; body?: string },
+    ) => {
+      calls.push({ url: String(url), init });
+      return { ok: answer.ok, status: answer.status, json: async () => answer.body };
+    }) as unknown as Fetch;
+    const seen: Outward[] = [];
+    const secrets = {
+      githubToken: "gh-test",
+      queueToken: "queue-test",
+      bridgeToken: "pm-cred-test",
+      bridgeFetch,
+      seen: (call: Outward) => seen.push(call),
+    };
+    const run = edgeRun(directConfig(edgeConfig), secrets, bridgeFetch);
+    return { calls, answer, run, seen, secrets, bridgeFetch };
+  }
+
+  test("a send becomes a POST to the bridge as pm-stack, the text on the body, never in the address", async () => {
+    const h = bridgeHarness();
+    const out = await h.run(["fleet", "bridge", "send", "--to", "felix-1,group:muse", "--command", "-"], {
+      stdin: "do the thing",
+    });
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(h.calls[0].init.method).toBe("POST");
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["felix-1", "group:muse"],
+      body: "do the thing",
+      kind: "command",
+    });
+    expect(out.code).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual({ messages: [], fleet: [{ id: 7, agent: "felix-1" }] });
+    expect(h.seen).toEqual([{ to: "bridge", write: true, status: 201 }]);
+  });
+
+  test("a send without --command is a message; agents and the log are reads of the same binding", async () => {
+    const h = bridgeHarness();
+    await h.run(["fleet", "bridge", "send", "--to", "all", "-"], { stdin: "hello" });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}").kind).toBe("message");
+    h.answer.status = 200;
+    h.answer.body = { agents: [{ name: "felix-1" }] };
+    const agents = await h.run(["fleet", "bridge", "agents"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/agents");
+    expect(h.calls[1].init.method).toBe("GET");
+    expect(JSON.parse(agents.stdout)).toEqual({ agents: [{ name: "felix-1" }] });
+    h.answer.body = { messages: [{ id: 3 }] };
+    const log = await h.run(["fleet", "bridge", "log", "--limit", "30", "--order", "desc"]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/messages?limit=30&order=desc");
+    expect(JSON.parse(log.stdout)).toEqual({ messages: [{ id: 3 }] });
+    expect(h.seen.map((c) => [c.to, c.write, c.status])).toEqual([
+      ["bridge", true, 201],
+      ["bridge", false, 200],
+      ["bridge", false, 200],
+    ]);
+  });
+
+  test("a credential the bridge no longer knows is said plainly, as a failed call", async () => {
+    const h = bridgeHarness();
+    h.answer.ok = false;
+    h.answer.status = 404;
+    h.answer.body = null;
+    const out = await h.run(["fleet", "bridge", "send", "--to", "felix-1", "-"], { stdin: "hi" });
+    expect(out.code).toBe(1);
+    expect(out.stderr).toContain("turned the PM credential away (unknown or revoked)");
+    expect(h.seen).toEqual([{ to: "bridge", write: true, status: 404 }]);
+  });
+
+  test("without the credential, or without the binding, the bridge is still a machine's", async () => {
+    const h = bridgeHarness();
+    const noToken = edgeRun(directConfig(edgeConfig), { bridgeFetch: h.bridgeFetch }, h.bridgeFetch);
+    await expect(noToken(["fleet", "bridge", "agents"])).rejects.toThrow(/needs a machine/);
+    const noBinding = edgeRun(directConfig(edgeConfig), { bridgeToken: "pm-cred-test" }, h.bridgeFetch);
+    await expect(noBinding(["fleet", "bridge", "agents"])).rejects.toThrow(/needs a machine/);
+    // And a bridge verb this side does not carry is a machine's too.
+    await expect(h.run(["fleet", "bridge", "inbox", "--agent", "felix-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  test("the classes send and read through the bridge unchanged", async () => {
+    const h = bridgeHarness();
+    const { ops } = directClasses(edgeConfig, h.secrets);
+    const sent = await ops.send(["agent:felix-1"], "hello there", true);
+    expect(sent).toEqual({ to: ["agent:felix-1"], command: true });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:felix-1"],
+      body: "hello there",
+      kind: "command",
+    });
+    h.answer.status = 200;
+    h.answer.body = { agents: [{ name: "felix-1", groups: [] }] };
+    expect(await ops.agents()).toEqual([{ name: "felix-1", groups: [] }]);
+    h.answer.body = { messages: [{ id: 1, body: "one" }] };
+    expect(await ops.messages(5)).toEqual([{ id: 1, body: "one" }]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/messages?limit=5&order=desc");
+  });
+
+  test("the agents section is read by the class that reads it on the laptop", async () => {
+    const ops = { agents: async () => [{ name: "felix-1" }] };
+    expect(await directRead("agents", ops as never, {} as never)).toEqual([{ name: "felix-1" }]);
+  });
+});
+
 describe("the direct classes", () => {
   test("the config the edge builds carries what the classes need and nothing it cannot use", () => {
     const config = directConfig(edgeConfig);
@@ -516,6 +632,7 @@ describe("what this side notes of each call it makes", () => {
       asks: ["github", "queue"],
       census: ["github"],
       done: ["queue", "github"],
+      agents: ["bridge"],
     });
   });
 });
@@ -632,6 +749,28 @@ describe("what the edge remembers of GitHub", () => {
     expect(g.seen.map((call) => call.status)).toEqual([200, 304, 200, 304]);
     // "Not modified" has no body, and none was asked for.
     expect(g.state.bodiless).toBe(0);
+  });
+
+  test("a question with a time in it is asked once and never the same again: its answer is not kept, and keeps nothing else out", async () => {
+    // The history behind the Trends screen asks "everything changed
+    // since <time>", a page at a time, each with a later time. Kept,
+    // a hundred such answers would push out the lists that are asked
+    // for again and again.
+    const g = tagging();
+    await g.api(PULLS);
+    const since = (time: string) =>
+      `repos/developing-today/code/issues?state=all&sort=updated&direction=asc&since=${time}&per_page=100`;
+    const first = await g.api(since("2026-11-01T00:00:00Z"));
+    expect(first.code).toBe(0);
+    await g.api(since("2026-11-02T00:00:00Z"));
+    // Asked the same again, it is asked in full: no tag was kept for it.
+    await g.api(since("2026-11-01T00:00:00Z"));
+    expect(g.calls.slice(1).map((call) => call.tag)).toEqual([null, null, null]);
+    // One answer is kept: the list that is asked for again.
+    expect((await g.memory?.said())?.kept).toBe(1);
+    expect(await g.memory?.get(at(since("2026-11-01T00:00:00Z")))).toBeUndefined();
+    await g.api(PULLS);
+    expect(g.calls[g.calls.length - 1].tag).toBe('W/"1"');
   });
 
   test("each address has its own answer, and a write is never asked for by a tag", async () => {

@@ -42,6 +42,7 @@ import { platformRead } from "./reads.ts";
 import { contact, Push } from "./push.ts";
 import { Named } from "./named.ts";
 import { EdgeLink } from "./sync.ts";
+import { memoryShelf, Trends } from "./trends.ts";
 import { Work } from "./work.ts";
 import appFiles from "../public/files.json";
 
@@ -105,6 +106,18 @@ function file(req: Request, name: string, type: string): Response {
 }
 
 export { assetLinks, type Phones };
+
+/** The history behind the Trends screen, for these dependencies: made
+ * once and kept (in memory: a machine reads it again when it starts). */
+const trendsKept = new WeakMap<Deps, Trends>();
+function trendsOf(deps: Deps): Trends {
+  let trends = trendsKept.get(deps);
+  if (!trends) {
+    trends = new Trends(deps.ops, memoryShelf());
+    trendsKept.set(deps, trends);
+  }
+  return trends;
+}
 
 /** The plan's reader for these dependencies: the one given, or one made
  * from the same `ops` and `work` and kept. */
@@ -317,7 +330,7 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
       }
       // What needs only GitHub and the queue store: the same code
       // answers these at the edge without this machine.
-      const read = await platformRead(seg, query, ops, planOf(deps));
+      const read = await platformRead(seg, query, ops, planOf(deps), trendsOf(deps));
       if (read !== undefined) return json(read);
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {
         return docResponse(req, await deps.docs.doc(seg[1] as DocName), gzipped);

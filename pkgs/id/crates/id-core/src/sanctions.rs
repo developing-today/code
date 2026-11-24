@@ -648,7 +648,7 @@ mod tests {
         let v1 = list(1, vec![]);
         let v2 = list(2, vec![SanctionsEntry::Country { code: "CU".into() }]);
         let before = find_matches(&v1, Some("CU"), &BTreeSet::new(), &BTreeSet::new());
-        assert!(before.is_empty());
+        assert_eq!(before, [] as [crate::sanctions::SubjectMatch; 0]);
         let after = find_matches(&v2, Some("CU"), &BTreeSet::new(), &BTreeSet::new());
         let d = evaluate(
             &boundary(),
