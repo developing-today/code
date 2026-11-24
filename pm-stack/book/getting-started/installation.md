@@ -6,16 +6,16 @@ Start from the system as a whole in [The shape of the system](shape.md), then re
 
 ## The deployed shape
 
-| Part | How it runs | Port |
-|---|---|---|
-| Aggregator | Bun app, systemd user unit `pm-aggregator` | 4870 (freshness IPC on 4871) |
-| Console | Bun app, systemd user unit `pm-console` | 4872 |
-| Projector | Bun service, Nix package `pkgs/pm-projector` | 7801 |
-| pm-dispatch | Bun intake service, public as `dispatch.security.cab` | 4879 |
-| Tunnel | systemd user unit `pm-tunnel`, the `amd-6-pm-stack` Cloudflare Tunnel | — |
-| Kaneo | Container, upstream image (D1), Postgres 16 sidecar | 5173, loopback |
-| Grist | Container | 8484, loopback and tailnet |
-| Pad | Container, Go binary and SQLite | 7777, loopback and tailnet |
+| Part            | How it runs                                                                         | Port                                        |
+| --------------- | ----------------------------------------------------------------------------------- | ------------------------------------------- |
+| Aggregator      | Bun app, systemd user unit `pm-aggregator`                                          | 4870 (freshness IPC on 4871)                |
+| Console         | Bun app, systemd user unit `pm-console`                                             | 4872                                        |
+| Projector       | Bun service, Nix package `pkgs/pm-projector`                                        | 7801                                        |
+| pm-dispatch     | Bun intake service, public as `dispatch.security.cab`                               | 4879                                        |
+| Tunnel          | systemd user unit `pm-tunnel`, the `amd-6-pm-stack` Cloudflare Tunnel               | —                                           |
+| Kaneo           | Container, upstream image (D1), Postgres 16 sidecar                                 | 5173, loopback                              |
+| Grist           | Container                                                                           | 8484, loopback and tailnet                  |
+| Pad             | Container, Go binary and SQLite                                                     | 7777, loopback and tailnet                  |
 | ready-for-agent | Upstream npm package `ready-for-agent@1.1.0`, systemd user unit, no container image | 6056, loopback and tailnet via socket proxy |
 
 Ports are registered in `pm-stack/PORTS.md`, audited 2026-11-05. The aggregator dashboard binds `127.0.0.1:4870` and the tailnet; in public it is reached only behind the console gate at `pm.security.cab`, where the console proxies non-`/console` requests to the dashboard for a signed-in owner.

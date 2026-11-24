@@ -19,12 +19,12 @@ On the aggregator side, the front door is `/`, the Overview page: needs-you, pro
 
 Open `#needs` in the console. Needs is segmented, and the console picks the default segment by counts — questions first, then hands, then reviews:
 
-| Segment | What waits there |
-|---|---|
-| Questions (`#needs/questions`) | Decision sets: batched questions with options, raised for Drew |
-| Hands (`#needs/hands`) | Items carrying a `hands:v1` marker: a physical action, an interactive login, a payment, or a signature — the four kinds the marker defines |
-| Reviews (`#needs/reviews`) | Open issues and pull requests labelled `user/review`, with no hands marker |
-| Other | Escalated items labelled `user/escalated` with no stated action — in the census wording, the fleet's to decide |
+| Segment                        | What waits there                                                                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Questions (`#needs/questions`) | Decision sets: batched questions with options, raised for Drew                                                                             |
+| Hands (`#needs/hands`)         | Items carrying a `hands:v1` marker: a physical action, an interactive login, a payment, or a signature — the four kinds the marker defines |
+| Reviews (`#needs/reviews`)     | Open issues and pull requests labelled `user/review`, with no hands marker                                                                 |
+| Other                          | Escalated items labelled `user/escalated` with no stated action — in the census wording, the fleet's to decide                             |
 
 Answer a question in the Questions segment:
 

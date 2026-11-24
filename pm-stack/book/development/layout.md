@@ -10,76 +10,76 @@ The 36 components the survey counted in `pm-stack/` are the layout guide for the
 
 ### Core services
 
-| Directory | What lives there |
-|---|---|
+| Directory              | What lives there                                                                                                                                                                                                                                                               |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `pm-stack/aggregator/` | The dashboard. A Bun app: about 180 modules in `src/` (pages, health, quota, decisions, prompts, alerts, sources), producer and maintenance scripts in `scripts/`, `opencode-tools/`, unit files in `systemd/`, and its test suite in `test/`. Port 4870, unit `pm-aggregator` |
-| `pm-stack/console/` | The phone and owner app. A Bun server in `src/`, the single-page app in `public/`, the edge Worker in `edge/`, the Android wrapper in `android/`, and its tests in `test/`. Port 4872, unit `pm-console`. No Nix package exists for the console; see the packages table below |
-| `pm-stack/projector/` | The projector and link registry. A Bun service: webhook intake, reconcile, the link registry, SQL schema in `schema.sql`, tests in `test/`. Port 7801. See [The projector and projections](../concepts/projector.md) |
-| `pm-stack/dispatch/` | pm-dispatch. A Bun intake service in `src/`, a worked caller example in `examples/`, tests in `test/`. Port 4879, public as `dispatch.security.cab` |
+| `pm-stack/console/`    | The phone and owner app. A Bun server in `src/`, the single-page app in `public/`, the edge Worker in `edge/`, the Android wrapper in `android/`, and its tests in `test/`. Port 4872, unit `pm-console`. No Nix package exists for the console; see the packages table below  |
+| `pm-stack/projector/`  | The projector and link registry. A Bun service: webhook intake, reconcile, the link registry, SQL schema in `schema.sql`, tests in `test/`. Port 7801. See [The projector and projections](../concepts/projector.md)                                                           |
+| `pm-stack/dispatch/`   | pm-dispatch. A Bun intake service in `src/`, a worked caller example in `examples/`, tests in `test/`. Port 4879, public as `dispatch.security.cab`                                                                                                                            |
 
 ### Integrated external apps
 
 Each integrated app keeps its own directory, with its own compose file, seed, and deploy script. The stack did not write these applications; it configures and reads them. See [The Kaneo sync and the other PM apps](../concepts/kaneo-sync.md).
 
-| Directory | App | Port |
-|---|---|---|
-| `pm-stack/` root: `compose.yml`, `kaneo-projects.json`, `connect-repo.sh` | Kaneo, the execution board, with its Postgres 16 sidecar. The compose file pins the upstream image v2.47.0 by digest; the fork is not the deployed image (D1) | 5173 |
-| `pm-stack/grist/` | Grist, the roadmap tables: `compose.yml`, `seed/`, `seed.sh`, `deploy.sh`, choice-option sync tooling. Its compose file pins by digest with no tag; the README's v1.7.21 for that digest is UNVERIFIED (D2) | 8484 |
-| `pm-stack/pad/` | Pad, the planning layer: `compose.yml`, seed plans in `seed/`. The aggregator reads no Pad planning data (D3) | 7777 |
-| `pm-stack/ready-for-agent/` | ready-for-agent, the dispatch UI layer: `config.json`, `install.sh`, `apply-config.sh`, unit files in `systemd/` | 6056 |
+| Directory                                                                 | App                                                                                                                                                                                                         | Port |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `pm-stack/` root: `compose.yml`, `kaneo-projects.json`, `connect-repo.sh` | Kaneo, the execution board, with its Postgres 16 sidecar. The compose file pins the upstream image v2.47.0 by digest; the fork is not the deployed image (D1)                                               | 5173 |
+| `pm-stack/grist/`                                                         | Grist, the roadmap tables: `compose.yml`, `seed/`, `seed.sh`, `deploy.sh`, choice-option sync tooling. Its compose file pins by digest with no tag; the README's v1.7.21 for that digest is UNVERIFIED (D2) | 8484 |
+| `pm-stack/pad/`                                                           | Pad, the planning layer: `compose.yml`, seed plans in `seed/`. The aggregator reads no Pad planning data (D3)                                                                                               | 7777 |
+| `pm-stack/ready-for-agent/`                                               | ready-for-agent, the dispatch UI layer: `config.json`, `install.sh`, `apply-config.sh`, unit files in `systemd/`                                                                                            | 6056 |
 
 ### Workers and the platform registry
 
-| Directory | What lives there |
-|---|---|
-| `pm-stack/decision-events-worker/` | The `decision-events` Worker: `src/`, `schema.sql`, `test/`, `wrangler.toml`. In service, deployed by hand |
-| `pm-stack/voice-line-worker/` | The `voice-line` Worker: `src/`, `test/`, `wrangler.toml`. In service |
-| `pm-stack/notify-relay/` | The `pm-notify` relay Worker: `src/`, `test/`, `wrangler.toml`. Recorded in the registry as not deployed, address null (D5) |
-| `pm-stack/console/edge/` | The `pm-console-edge` Worker, inside the console tree rather than at the top level. Deployed from Actions |
-| `pm-stack/platform/` | Not a service. The Workers registry: `workers.json` (20 Workers, checked 2026-11-23), its README, and `workers.test.ts`, which holds the list to the repository's wrangler files. The README's count of eighteen is stale (D6) |
+| Directory                          | What lives there                                                                                                                                                                                                               |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pm-stack/decision-events-worker/` | The `decision-events` Worker: `src/`, `schema.sql`, `test/`, `wrangler.toml`. In service, deployed by hand                                                                                                                     |
+| `pm-stack/voice-line-worker/`      | The `voice-line` Worker: `src/`, `test/`, `wrangler.toml`. In service                                                                                                                                                          |
+| `pm-stack/notify-relay/`           | The `pm-notify` relay Worker: `src/`, `test/`, `wrangler.toml`. Recorded in the registry as not deployed, address null (D5)                                                                                                    |
+| `pm-stack/console/edge/`           | The `pm-console-edge` Worker, inside the console tree rather than at the top level. Deployed from Actions                                                                                                                      |
+| `pm-stack/platform/`               | Not a service. The Workers registry: `workers.json` (20 Workers, checked 2026-11-23), its README, and `workers.test.ts`, which holds the list to the repository's wrangler files. The README's count of eighteen is stale (D6) |
 
 ### Execution, guards, and monitors
 
-| Directory or file | What lives there |
-|---|---|
-| `pm-stack/opencode-claimant/` | The OpenCode claimant lane: `claimant.py`, `launch_one.py`, `poll.py`, migrations, and a large test suite. See [The claimant: keeping sessions honest](../concepts/claimant.md) |
-| `pm-stack/opencode-scheduled-jobs/` | Scheduled OpenCode jobs: `jobs.json` and the one pilot job, `quota-freshness-summary` |
-| `pm-stack/opencode-usage-export/` | The usage exporter that reads the OpenCode session store |
-| `pm-stack/lane-guard/` | `lane_guard.py`: deterministic ownership and park-note checks for queue lanes, with tests |
-| `pm-stack/health-hooks/` | Failure-triggered, read-only troubleshoot-and-report hooks: `run.py` and its wrappers |
-| `pm-stack/fleet-monitor/` | Two report-only Python monitors, with tests |
-| `pm-stack/kaneo-sync-guard.py` | Loose script at the `pm-stack/` root: asserts and heals the Kaneo GitHub integration's status transitions |
-| `pm-stack/closure-watchdog.py` | Loose script: reopens automation closes that break the sub-issue invariant. Its scheduler is a Muse sandbox cron job, outside the laptop stack |
-| `pm-stack/invariant-sweeper.py` | Loose script: the slow-cadence sweep for closed-with-open-children, open-with-done-status, and Kaneo–GitHub mismatch |
-| `pm-stack/host-health-collector.py` | Loose script: writes the host-health snapshot the aggregator reads, on a 5-minute timer |
+| Directory or file                   | What lives there                                                                                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pm-stack/opencode-claimant/`       | The OpenCode claimant lane: `claimant.py`, `launch_one.py`, `poll.py`, migrations, and a large test suite. See [The claimant: keeping sessions honest](../concepts/claimant.md) |
+| `pm-stack/opencode-scheduled-jobs/` | Scheduled OpenCode jobs: `jobs.json` and the one pilot job, `quota-freshness-summary`                                                                                           |
+| `pm-stack/opencode-usage-export/`   | The usage exporter that reads the OpenCode session store                                                                                                                        |
+| `pm-stack/lane-guard/`              | `lane_guard.py`: deterministic ownership and park-note checks for queue lanes, with tests                                                                                       |
+| `pm-stack/health-hooks/`            | Failure-triggered, read-only troubleshoot-and-report hooks: `run.py` and its wrappers                                                                                           |
+| `pm-stack/fleet-monitor/`           | Two report-only Python monitors, with tests                                                                                                                                     |
+| `pm-stack/kaneo-sync-guard.py`      | Loose script at the `pm-stack/` root: asserts and heals the Kaneo GitHub integration's status transitions                                                                       |
+| `pm-stack/closure-watchdog.py`      | Loose script: reopens automation closes that break the sub-issue invariant. Its scheduler is a Muse sandbox cron job, outside the laptop stack                                  |
+| `pm-stack/invariant-sweeper.py`     | Loose script: the slow-cadence sweep for closed-with-open-children, open-with-done-status, and Kaneo–GitHub mismatch                                                            |
+| `pm-stack/host-health-collector.py` | Loose script: writes the host-health snapshot the aggregator reads, on a 5-minute timer                                                                                         |
 
 ### Quota, usage, and exporters
 
-| Directory | What lives there |
-|---|---|
-| `pm-stack/exporters/` | The browser-dependent quota watchdog core. The only adapter present is a synthetic fixture; live per-provider production use is UNVERIFIED |
-| `pm-stack/cloudflare-export/` | `cloudflare-quota-export.mjs` with service and timer units |
-| `pm-stack/meta-exporter/` | `meta-quota-export.mjs` with service and timer units |
-| `pm-stack/provider-usage/` | `check-usage.py` and `reconcile.py`: the provider and fleet snapshot a failover job consults |
-| `pm-stack/quota-check/` | One helper, `turso-mirror-read.py`: per-database libsql HTTP reads of the `fleet-platform` and `fleet-mirror` stores |
-| `pm-stack/scheduled-history/` | `collect.py` and `watchdog.py`: the reconciler for OpenChamber scheduled-task runs |
+| Directory                     | What lives there                                                                                                                           |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pm-stack/exporters/`         | The browser-dependent quota watchdog core. The only adapter present is a synthetic fixture; live per-provider production use is UNVERIFIED |
+| `pm-stack/cloudflare-export/` | `cloudflare-quota-export.mjs` with service and timer units                                                                                 |
+| `pm-stack/meta-exporter/`     | `meta-quota-export.mjs` with service and timer units                                                                                       |
+| `pm-stack/provider-usage/`    | `check-usage.py` and `reconcile.py`: the provider and fleet snapshot a failover job consults                                               |
+| `pm-stack/quota-check/`       | One helper, `turso-mirror-read.py`: per-database libsql HTTP reads of the `fleet-platform` and `fleet-mirror` stores                       |
+| `pm-stack/scheduled-history/` | `collect.py` and `watchdog.py`: the reconciler for OpenChamber scheduled-task runs                                                         |
 
 ### Contracts, ledgers, and shared state
 
-| Directory | What lives there |
-|---|---|
-| `pm-stack/shared-schema/` | The shared-store contract layer: `ORCHESTRATION.md`, the orchestration writer, `migrations/`, and its tests. See [The shared schema](../concepts/shared-schema.md) |
-| `pm-stack/external-comms/` | The external-comms ledger and pusher: SQL migrations, the record CLI, the pusher unit files, and its quarantine test |
+| Directory                  | What lives there                                                                                                                                                   |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pm-stack/shared-schema/`  | The shared-store contract layer: `ORCHESTRATION.md`, the orchestration writer, `migrations/`, and its tests. See [The shared schema](../concepts/shared-schema.md) |
+| `pm-stack/external-comms/` | The external-comms ledger and pusher: SQL migrations, the record CLI, the pusher unit files, and its quarantine test                                               |
 
 ### Operator scripts, units, and smoke tooling
 
-| Directory or file | What lives there |
-|---|---|
-| `pm-stack/scripts/` | Operator scripts: `pm-git-sync.sh`, `kaneo-cutover.sh`, `fence-check.sh`, `restore-rehearsal.sh`, and their shell test suites |
-| `pm-stack/systemd/` | Unit files for the aggregator, console, dispatch, and tunnel, plus timers for host health, the invariant sweeper, the Kaneo sync guard, the quota watchdog, and the console expose, redeploy, and Android-release jobs. Which of these copies are installed as-is and which the NixOS module renders is UNVERIFIED |
-| `pm-stack/private-laptop-bridge/` | Cloudflare-side bridge smoke tooling and its tests. The production surface it serves beyond smoke tests is UNVERIFIED |
-| `pm-stack/tests/` | The stack-level Python suites: `test_kaneo_sync_guard.py`, `test_closure_watchdog.py`, `test_host_health_collector.py`, `test_invariant_sweeper_timeouts.py` |
-| `pm-stack/docs/` | A directory the survey did not enumerate in detail; its last commit in the survey window is 2026-11-18, and its content is UNVERIFIED. The stack's design corpus lives at the repository root's `doc/` and as loose documents at the `pm-stack/` root, not here |
+| Directory or file                 | What lives there                                                                                                                                                                                                                                                                                                   |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pm-stack/scripts/`               | Operator scripts: `pm-git-sync.sh`, `kaneo-cutover.sh`, `fence-check.sh`, `restore-rehearsal.sh`, and their shell test suites                                                                                                                                                                                      |
+| `pm-stack/systemd/`               | Unit files for the aggregator, console, dispatch, and tunnel, plus timers for host health, the invariant sweeper, the Kaneo sync guard, the quota watchdog, and the console expose, redeploy, and Android-release jobs. Which of these copies are installed as-is and which the NixOS module renders is UNVERIFIED |
+| `pm-stack/private-laptop-bridge/` | Cloudflare-side bridge smoke tooling and its tests. The production surface it serves beyond smoke tests is UNVERIFIED                                                                                                                                                                                              |
+| `pm-stack/tests/`                 | The stack-level Python suites: `test_kaneo_sync_guard.py`, `test_closure_watchdog.py`, `test_host_health_collector.py`, `test_invariant_sweeper_timeouts.py`                                                                                                                                                       |
+| `pm-stack/docs/`                  | A directory the survey did not enumerate in detail; its last commit in the survey window is 2026-11-18, and its content is UNVERIFIED. The stack's design corpus lives at the repository root's `doc/` and as loose documents at the `pm-stack/` root, not here                                                    |
 
 ### Loose documents and configuration at the `pm-stack/` root
 
@@ -89,12 +89,12 @@ The root of `pm-stack/` carries the stack's own record: `README.md` (deployment 
 
 Four packages under `pkgs/` wrap `pm-stack/` sources as Nix derivations. Since the change recorded as #8171, every PM-stack app in this set is a Nix derivation; the units no longer run `bun run` out of the checkout.
 
-| Package | Wraps | Notes |
-|---|---|---|
-| `pkgs/pm-aggregator/package.nix` | `pm-stack/aggregator/` | One package, four entry points: the server plus the quota gatherer, the digest generator, and the Turso-store exporter. The fleet-feed collector is not wrapped here; its unit runs it from the checkout because it derives repository-root paths from its own file location. The package bundles `pm-stack/kaneo-projects.json` and `pm-stack/grist/seed/roadmap.json` |
-| `pkgs/pm-projector/package.nix` | `pm-stack/projector/` | The projector service |
-| `pkgs/pm-dispatch/package.nix` | `pm-stack/dispatch/` | The dispatch service |
-| `pkgs/pm-git-sync/package.nix` | `pm-stack/scripts/pm-git-sync.sh` | A script wrapper, version 0.3.0 in the surveyed tree |
+| Package                          | Wraps                             | Notes                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pkgs/pm-aggregator/package.nix` | `pm-stack/aggregator/`            | One package, four entry points: the server plus the quota gatherer, the digest generator, and the Turso-store exporter. The fleet-feed collector is not wrapped here; its unit runs it from the checkout because it derives repository-root paths from its own file location. The package bundles `pm-stack/kaneo-projects.json` and `pm-stack/grist/seed/roadmap.json` |
+| `pkgs/pm-projector/package.nix`  | `pm-stack/projector/`             | The projector service                                                                                                                                                                                                                                                                                                                                                   |
+| `pkgs/pm-dispatch/package.nix`   | `pm-stack/dispatch/`              | The dispatch service                                                                                                                                                                                                                                                                                                                                                    |
+| `pkgs/pm-git-sync/package.nix`   | `pm-stack/scripts/pm-git-sync.sh` | A script wrapper, version 0.3.0 in the surveyed tree                                                                                                                                                                                                                                                                                                                    |
 
 There is no `pkgs/pm-console`. The console deploys through `pm-stack/console/install.sh` and `redeploy.sh` and through its edge and Android release paths. Whether the NixOS module builds the console by another route is UNVERIFIED.
 
