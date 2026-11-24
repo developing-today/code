@@ -509,6 +509,20 @@ test("the claim guard quarantines a stored packet that no longer validates (#544
 // Lifecycle verbs
 // ---------------------------------------------------------------------------
 
+test("heartbeat preserves the later deadline on both the task and lease", () => {
+  const { store } = setup();
+  enqueue(store, nativeEnv(), fixPacket());
+  const claimed = claim(store, nativeEnv(), { lease_seconds: 14400 });
+  const id = (claimed["row"] as JsonObject)["id"] as number;
+  for (const [elapsed, expected] of [[300, 14400], [300, 14400], [14000, 14900]] as const) {
+    clock = T0 + elapsed;
+    const heartbeat = verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "worker-a" });
+    assert.equal((heartbeat["row"] as JsonObject)["lease_until"], iso(T0 + expected));
+    assert.equal(store.leaseRow(id)?.lease_until, iso(T0 + expected));
+    assert.equal(store.leaseRow(id)?.heartbeat_at, iso(clock));
+  }
+});
+
 test("heartbeat, checkpoint, park and wake round-trip a claim", () => {
   const { store } = setup();
   enqueue(store, nativeEnv(), fixPacket());
