@@ -28,8 +28,11 @@ the ID book at commit `1ccb4a19457` on 2026-11-23.
 
 - The platform core is built and in daily use locally; the build-out is the
   merged list's Tier 4 (items 16–23). The store abstraction's conformance
-  fixtures landed (#10191, PR #13194); the remaining foundational step is
-  #9082's adopt/defer/reject decision on the IndexedDB profile.
+  fixtures landed (#10191, PR #13194); the remaining foundational step at
+  census was #9082's adopt/defer/reject decision on the IndexedDB
+  profile. Correction (2026-11-23, re-verified against live state):
+  #9082 has since closed as completed on 2026-11-23, adopting the
+  IndexedDB request-batch profile.
 - Hosted worlds are in flight with the chain blocked at its head: #10693 to
   #10697 were all verified open with a blocked status at census, with the
   queue tasks recorded as blocked until 2026-11-26. The export/import halves
