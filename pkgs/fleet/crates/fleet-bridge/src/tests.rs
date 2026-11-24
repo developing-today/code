@@ -194,6 +194,7 @@ fn every_verb_has_its_own_help() {
         "inbox",
         "post",
         "ack",
+        "work",
         "health",
         "exchange",
         "notes",
@@ -243,6 +244,13 @@ fn usage_errors_exit_2_before_any_request() {
         ],
         vec!["ack", "--agent", "a"],
         vec!["ack", "--agent", "a", "0"],
+        vec!["work", "--agent", "a"],
+        vec!["work", "--agent", "a", "--state", "done"],
+        vec!["work", "--agent", "a", "--state", "sideways", "3"],
+        vec!["work", "--agent", "a", "--state", "received", "3"],
+        vec!["work", "--agent", "a", "--state", "queued", "3"],
+        vec!["work", "--agent", "a", "--state", "done", "0"],
+        vec!["work", "--agent", "a", "--state", "done", "--task", "x", "3"],
         vec!["log", "--limit", "many"],
         vec!["pipeline", "--limit", "many"],
         vec!["pipeline", "--bogus", "x"],
@@ -565,6 +573,57 @@ fn ack_log_and_agents_shapes() {
         seen[3].url,
         format!("/api/{OWNER}/fleet/messages?agent=muse%201&direction=outbound&limit=5")
     );
+}
+
+#[test]
+fn work_marks_the_agents_own_rows_and_names_the_queue_task() {
+    let (url, seen) = fake_bridge(|_, _, _| {
+        (200, r#"{"message":{"id":3,"work_state":"queued","work_task_id":23500}}"#.into())
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_FLEET_TOKEN_NAME, "f".repeat(40).as_str())]);
+    let out = run_with(
+        &url,
+        &s,
+        &["work", "--agent", "muse-1", "--state", "queued", "--task", "23500", "3"],
+        "",
+    )
+    .unwrap();
+    assert_eq!(out["message"]["work_state"], "queued");
+    run_with(
+        &url,
+        &s,
+        &["work", "--agent", "muse-1", "--state", "acted", "4", "5"],
+        "",
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].url, format!("/fleet/{}/work", "f".repeat(40)));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 3, "state": "queued", "task_id": 23500})
+    );
+    // Several ids are one request each, in order.
+    assert_eq!(seen.len(), 3);
+    assert_eq!(
+        seen[1].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 4, "state": "acted"})
+    );
+    assert_eq!(
+        seen[2].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 5, "state": "acted"})
+    );
+}
+
+#[test]
+fn work_help_carries_the_task_it_or_queue_it_rule() {
+    // #14372 acceptance: the help text and the book carry the same
+    // rule, verbatim. The book half is pinned by the text itself
+    // (pkgs/fleet/book/reference/bridge.md quotes WORK_RULE).
+    let text = verb_usage("work").unwrap();
+    assert!(text.contains(WORK_RULE), "{text}");
+    assert!(WORK_RULE.contains("repo-task/v1"), "{WORK_RULE}");
+    assert!(WORK_RULE.contains("context_refs"), "{WORK_RULE}");
 }
 
 #[test]

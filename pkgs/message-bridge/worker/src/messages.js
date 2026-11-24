@@ -178,8 +178,8 @@ export const OAUTH_REG_PER_SOURCE = 10;
  * kind and reply_to ride along so a reply can thread onto the row
  * without naming its sender.
  */
-export function noteForInbox({ id, sender, note, ts, kind, reply_to }) {
-  return { id, from: kind === "instruction" ? null : sender, note, ts, kind, reply_to: reply_to ?? null };
+export function noteForInbox({ id, sender, note, ts, kind, reply_to, work_state = null, work_task_id = null }) {
+  return { id, from: kind === "instruction" ? null : sender, note, ts, kind, reply_to: reply_to ?? null, work_state, work_task_id };
 }
 
 export class MemoryStore {
@@ -342,7 +342,7 @@ export class MemoryStore {
     const notes = [];
     for (const recipient of recipients) {
       if (!this.noteCounters.has(recipient)) continue;
-      const row = { id: this.noteNextId++, ts: this.now(), recipient, from, note, ack_at: null, kind, reply_to, batch };
+      const row = { id: this.noteNextId++, ts: this.now(), recipient, from, note, ack_at: null, kind, reply_to, batch, work_state: null, work_task_id: null };
       this.noteRows.push(row);
       this.noteCounters.set(recipient, this.noteCounters.get(recipient) + 1);
       notes.push({ id: row.id, recipient, from, note, ts: row.ts, kind, reply_to, batch });
@@ -407,7 +407,19 @@ export class MemoryStore {
   async noteInbox(identity) {
     return this.noteRows
       .filter((r) => r.recipient === identity && r.ack_at === null)
-      .map((r) => noteForInbox({ id: r.id, sender: r.from, note: r.note, ts: r.ts, kind: r.kind, reply_to: r.reply_to }));
+      .map((r) => noteForInbox({ id: r.id, sender: r.from, note: r.note, ts: r.ts, kind: r.kind, reply_to: r.reply_to, work_state: r.work_state, work_task_id: r.work_task_id }));
+  }
+  // Work-item lifecycle (design §4.6): the receiving identity moves its
+  // own note forward; another identity's note is simply not found.
+  // State-dependent refusals come back as { error }, like the fleet ops.
+  async noteWork(identity, { id, state, task_id }) {
+    const row = this.noteRows.find((r) => r.id === id && r.recipient === identity);
+    if (!row) return { error: `note ${id} is not in ${identity}'s inbox` };
+    const err = workTransitionError(row.work_state, state);
+    if (err) return { error: err };
+    row.work_state = state;
+    row.work_task_id = task_id ?? row.work_task_id ?? null;
+    return { id: row.id, work_state: row.work_state, work_task_id: row.work_task_id };
   }
   async noteAck(identity, { ids, up_to_id }) {
     const ts = this.now();
@@ -441,7 +453,7 @@ export class MemoryStore {
     rows = q.order === "desc" ? rows.slice().reverse() : rows;
     return rows
       .slice(0, q.limit ?? 50)
-      .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.from, body: r.note, ack_at: r.ack_at }));
+      .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.from, body: r.note, ack_at: r.ack_at, work_state: r.work_state, work_task_id: r.work_task_id }));
   }
   // Owner directory (pipeline.js): one row per registered identity,
   // scopes folded over its tokens (any token granting a scope grants
@@ -595,6 +607,68 @@ export class MemoryStore {
       last_id: rows.length ? rows[rows.length - 1].id : 0,
     };
   }
+}
+
+/**
+ * The instruction work-item lifecycle (design §4.6, #14372), shared by
+ * the fleet and notes surfaces. A received instruction is a work item:
+ * the receiving agent records that it acted on it in-session (`acted`),
+ * queued it as a named fleet-queue task (`queued`, with the task id),
+ * and later that the work is finished (`done`). States move only
+ * forward — `received` -> `acted` | `queued` -> `done` — and re-marking
+ * the current state is a no-op, so a retry never fails. Rows store null
+ * until first marked; null reads as `received`. Only the receiving
+ * agent may move its own copy: the store ops scope every update to the
+ * caller's own mailbox/inbox, so another agent's row is simply not
+ * found. Connector-channel instructions carry no stored state in this
+ * build-out; the pipeline derives `received`/`acted` from read state.
+ */
+export const WORK_STATES = ["received", "acted", "queued", "done"];
+export const WORK_SETTABLE_STATES = ["acted", "queued", "done"];
+
+/** The lifecycle state of a stored row: unmarked rows are at `received`. */
+export function workStateOf(row) {
+  return row?.work_state ?? "received";
+}
+
+/**
+ * Validates one work mark `{id, state, task_id?}` (the fleet verb body
+ * and the notes verb body share the shape); throws InputError.
+ * `queued` must name the queue task the instruction became.
+ */
+export function normalizeWorkMark(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
+  if (!Number.isInteger(data.id) || data.id < 1) throw new InputError("id must be a positive integer");
+  if (!WORK_SETTABLE_STATES.includes(data.state)) {
+    throw new InputError(`state must be one of ${WORK_SETTABLE_STATES.join(", ")}`);
+  }
+  const task_id = data.task_id === undefined || data.task_id === null ? null : data.task_id;
+  if (task_id !== null && (!Number.isInteger(task_id) || task_id < 1)) {
+    throw new InputError("task_id must be a positive integer");
+  }
+  if (data.state === "queued" && task_id === null) {
+    throw new InputError("state queued needs task_id: the fleet queue task the instruction became");
+  }
+  return { id: data.id, state: data.state, task_id };
+}
+
+/**
+ * The forward-only rule: null when `next` may follow `current`, else
+ * the refusal text. The graph is exactly the design's: from `received`
+ * an instruction is acted on or queued; from either it completes to
+ * `done`. Sideways steps (acted <-> queued), skipping the middle
+ * (received -> done) and every backward step are refused; re-marking
+ * the current state is a no-op, so a retry never fails.
+ */
+export function workTransitionError(current, next) {
+  const cur = current ?? "received";
+  if (next === cur) return null;
+  const forward =
+    (cur === "received" && (next === "acted" || next === "queued")) ||
+    ((cur === "acted" || cur === "queued") && next === "done");
+  return forward
+    ? null
+    : `work_state moves only forward (received -> acted | queued -> done); ${cur} -> ${next} is not a step forward`;
 }
 
 /** Builds the id predicate for ack; throws InputError on bad input. */
