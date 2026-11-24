@@ -9,7 +9,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **What it is:** The current board: in-progress and next work (`viewNow`).
 - **Inputs:** Data from `Work.board()` (`console/src/work.ts`): queue counts, claimed, queued, and blocked-reason groups.
 - **Defaults:** The fallback view: an unknown hash lands here.
-- **Behaviour:** The console's home view, drawn from the queue's current state.
+- **Behaviour:** The console's home view, drawn from the queue's current state. Counts are fleet queue tasks (queue-broker state: claimed is in progress, queued is next, blocked is blocked) — same words as the aggregator's board-derived work-item counts (`/queue`, Overview in-progress), different source; the page says so and cross-links the aggregator's wording (#14063). The need-you tile is the console's own set, not the aggregator's NEEDS USER intake queue.
 - **Failure shapes:** None recorded in the survey.
 
 ## `#next` — Next
@@ -24,7 +24,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 - **What it is:** Everything waiting on the owner (`viewNeeds`, extra `questions`), split into segmented sub-views: `questions`, `hands`, `reviews`, `other`.
 - **Inputs:** The aggregator's needs-Drew census, `GET /api/needs-drew.json`, split by `console/src/work.ts` (`Work.census()`): hands items carry a `hands:v1` marker, reviews carry the `user/review` label with no hands marker, and the rest are escalated items with no stated action. Session-derived waiting items come from `/api/attention.json` (`Work.sessions()`, tier `needs-drew`). Decision sets appear under `questions`, read from the decisions file by `Work.questions()`: open questions only, newest set first, context clipped to 280 characters in the list.
 - **Defaults:** The default segment is chosen by counts: questions first, then hands, then reviews.
-- **Behaviour:** Answers happen in place: Reply posts `act("need.comment")`; **I did it** on a hands item posts `act("hands.done")`. The full answer mechanics are in [The question sets, enumerated](question-sets.md). D13: the phone names the buckets Questions, Only you can do, Reviews, and Escalated; the census vocabulary in code is hands, reviews, and escalated/other.
+- **Behaviour:** Answers happen in place: Reply posts `act("need.comment")`; **I did it** on a hands item posts `act("hands.done")`. The full answer mechanics are in [The question sets, enumerated](question-sets.md). D13: the phone names the buckets Questions, Only you can do, Reviews, and Escalated; the census vocabulary in code is hands, reviews, and escalated/other. The view names its source (the console's need-you set: open questions plus hands, reviews, escalated) and cross-links the aggregator `/attention` NEEDS USER intake queue as the different count (#14063).
 - **Failure shapes:** None recorded in the survey.
 
 ## `#ask` and `#ask/say=&lt;text&gt;` — Ask
@@ -45,7 +45,7 @@ This chapter covers all 21 console hash views in the survey census, one entry ea
 
 - **What it is:** Queue tasks by status (`viewQueue`).
 - **Inputs:** Actions post to `POST /console/api/queue/&lt;task&gt;/&lt;action&gt;` (`console/src/server.ts`).
-- **Behaviour:** The console's working cut of the queue; the aggregator's cross-project cut is `/queue`.
+- **Behaviour:** The console's working cut of the queue; the aggregator's cross-project cut is `/queue` (board-derived work items, not live broker tasks).
 - **Failure shapes:** None recorded in the survey.
 
 ## `#more/prs` — Pull requests

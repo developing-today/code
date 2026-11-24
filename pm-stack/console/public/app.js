@@ -678,6 +678,15 @@ function viewNow() {
       stat(b.counts.blocked ?? 0, "blocked", "more/queue"),
       stat(finished ? finished.tiles[0].n : "–", "done in 24h", "now/done"),
     ),
+    h("p", { class: "meta" }, NOW_COUNTS_SOURCE, " ", h("a", { href: "/queue" }, "Aggregator /queue — what its counts mean"), "."),
+    h(
+      "p",
+      { class: "meta" },
+      NEEDS_SET_SOURCE,
+      " ",
+      h("a", { href: "/attention" }, "Aggregator Needs you — what its count means"),
+      ".",
+    ),
     ...notices(c),
     h("h2", {}, "In progress"),
     ...(sharedNow ? [h("p", { class: "meta" }, sharedGoalSaid(sharedNow, b.now.length))] : []),
@@ -1072,6 +1081,16 @@ export function recommendedSets(open) {
   return { sets, questions };
 }
 
+// Source definitions for the Now and Needs screens (#14063): what each
+// count on this page counts, and how it differs from the aggregator's
+// counts of the same name. Exported so tests pin the wording.
+export const NOW_COUNTS_SOURCE =
+  "Fleet queue tasks (queue-broker state): claimed is in progress, queued is next, blocked is blocked. " +
+  "Same words as the aggregator's board-derived work-item counts, different source.";
+export const NEEDS_SET_SOURCE =
+  "The console's need-you set: open decision questions plus hands, reviews, and escalated items from the needs-Drew census and waiting sessions. " +
+  "Different from the aggregator's NEEDS USER intake queue.";
+
 function needCounts() {
   const c = docs.core || {};
   const census = c.census || { hands: [], reviews: [], other: [] };
@@ -1422,6 +1441,14 @@ function viewNeeds(sub) {
       seg("reviews", "Reviews", counts.reviews),
       seg("questions", "Questions", counts.questions),
       seg("other", "Escalated", counts.other),
+    ),
+    h(
+      "p",
+      { class: "meta" },
+      NEEDS_SET_SOURCE,
+      " ",
+      h("a", { href: "/attention" }, "Aggregator Needs you — what its count means"),
+      ".",
     ),
     ...notices(docs.core).slice(0, 2),
   ];

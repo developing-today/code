@@ -6,6 +6,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   ASK_KINDS,
+  NEEDS_SET_SOURCE,
+  NOW_COUNTS_SOURCE,
   ago,
   askArgs,
   askKind,
@@ -19,8 +21,7 @@ import {
   doneSaid,
   doneTaskSaid,
   laneSaid,
-  mergedBySaid,
-  acceptAllSaid,
+  mergedBySaid,  acceptAllSaid,
   awayState,
   blockedSaid,
   band,
@@ -1635,4 +1636,20 @@ test("each list that could not be read is said on the screens that show it, with
     );
     expect([view, at > 0 && body.includes(`...notices(docs.ops, ["${list}"])`)]).toEqual([view, true]);
   }
+});
+
+// #14063: the Now and Needs screens each name their own need-you/count
+// source, so the same words as the aggregator are not read as the same
+// counts. The oracle is the exported wording plus the cross-links in
+// the rendered page source.
+test("the Now and Needs screens name their own source and cross-link the aggregator (#14063)", () => {
+  expect(NOW_COUNTS_SOURCE).toContain("queue-broker");
+  expect(NOW_COUNTS_SOURCE).toContain("Same words as the aggregator's board-derived work-item counts, different source");
+  expect(NEEDS_SET_SOURCE).toContain("console's need-you set");
+  expect(NEEDS_SET_SOURCE).toContain("Different from the aggregator's NEEDS USER intake queue");
+  const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  expect(source).toContain('href: "/queue"');
+  expect(source).toContain('href: "/attention"');
+  expect(source).toContain("Aggregator /queue");
+  expect(source).toContain("Aggregator Needs you");
 });
