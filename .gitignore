@@ -195,6 +195,8 @@ pm-stack/aggregator/events.json
 /zig-out/
 pkgs/id/examples/zig-sdk/.zig-cache/
 pkgs/id/examples/zig-sdk/zig-out/
+pkgs/id/examples/zig-counter/.zig-cache/
+pkgs/id/examples/zig-counter/zig-out/
 
 # mcpx tooling run from the checkout writes its schema cache in-tree
 # (.cache/mcpx/schemas-<hash>.json); untracked, it made pm-git-sync's
