@@ -154,7 +154,11 @@ class RehostPublishTests(unittest.TestCase):
         # Oracle: the pack alone reconstructs the head commit.
         scratch = os.path.join(self.root, "scratch.git")
         git("init", "--bare", scratch)
-        git("--git-dir", scratch, "index-pack", pack_path)
+        pack_dir = os.path.join(scratch, "objects", "pack")
+        os.makedirs(pack_dir, exist_ok=True)
+        local_pack = os.path.join(pack_dir, os.path.basename(pack_path))
+        shutil.copyfile(pack_path, local_pack)
+        git("--git-dir", scratch, "index-pack", local_pack)
         kind = git(
             "--git-dir", scratch, "cat-file", "-t", head
         ).stdout.strip()
