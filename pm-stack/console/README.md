@@ -307,6 +307,24 @@ asks GitHub and the queue's store itself (`src/trends.ts`).
 
 Days are UTC days, and today's column is drawn fainter: it is not over.
 
+### Reports
+
+**More → Reports** is the same history in words: a day, a week or thirty
+days, with what merged and how that stands against the time before,
+the features by project (the latest three of each to open), issues
+opened and closed and what that did to the backlog, bugs, and the
+queue's finished tasks (and, in a report that ends today, the queue as
+it stands). **Earlier** and **Later** step it back and forth by its own
+length, as far back as the history goes, so the report for a week gone
+by can be made at any time. **Copy** and **Share** give it as text.
+
+A report is made when it is asked for, on the device, from the Trends
+read (`public/pages/reports.js`; the read takes a day to end on). It
+needs no machine, and the service worker keeps each one asked for, so
+it opens again with no connection. A report says when its numbers are
+not whole yet. For anything these do not cover, a question on Ask is
+answered by an agent and stays there to read.
+
 ### Charts, and pages of their own
 
 `public/charts.js` is a small kit any screen can use: columns stacked by

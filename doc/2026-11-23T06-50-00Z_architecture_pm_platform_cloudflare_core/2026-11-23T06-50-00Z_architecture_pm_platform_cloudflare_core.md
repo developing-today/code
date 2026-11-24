@@ -1951,3 +1951,39 @@ without asking again. In Chromium on the laptop, on the real
 repository's numbers, in a dark theme and a light one: the charts draw,
 the series take the theme's colours, and arrowing to a day reads it
 out.
+
+## 2026-11-24T14:46:00Z Feature: reports, made when asked for
+
+**Asked for.** "To request reports which generate and are accessible
+through the app."
+
+**What was built.** More → Reports: a day, a week or thirty days in
+sentences. What merged and how that stands against the time before, the
+features by project with the latest three of each to open, issues
+opened and closed and what that did to the backlog, bugs, the queue's
+finished tasks, and, in a report that ends today, the queue as it
+stands. Earlier and Later step a report back and forth by its own
+length as far as the history goes. Copy and Share give it as text.
+
+**Decisions.**
+
+- _Made from the history, not written and stored._ The history behind
+  Trends is kept by day, so a report for any stretch of it can be made
+  at any time; the read was given a day to end on, and a single day as
+  a window. That leaves nothing to store, nothing to go stale, and no
+  machine in it. The second page written as a module of its own, it is
+  one file, a line in the list of pages and a line in the list of
+  files.
+- _It says what it cannot vouch for._ A total is set against the days
+  before only when those are whole; a report over days not yet read
+  says from which day on its numbers are whole; one that ends today
+  says the day is not over.
+- _What it does not cover goes to Ask._ A question there is answered by
+  an agent, with what the answer rests on. A kind of ask that is "a
+  report" with its own listing on this screen is not built: it needs
+  the queue task filed, which is still a machine's (#13490).
+
+**Checked.** 639 tests; every sentence of a report is worked out by
+hand from a small history written out in the test. Fourteen faults
+planted, the one survivor closed (every feature listed instead of the
+latest three).
