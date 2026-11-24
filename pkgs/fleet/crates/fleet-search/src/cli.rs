@@ -510,6 +510,7 @@ fn proto_request(parsed: &SearchArgs) -> Result<SearchRequest, CliError> {
             client: split_csv(parsed.client_filter.as_deref()),
             since: parsed.since.clone(),
             until: parsed.until.clone(),
+            dimensions: Default::default(),
         },
         // An unrecognized ceiling name is NOT silently clamped
         // here: atlas-search declines the via-service attempt and
