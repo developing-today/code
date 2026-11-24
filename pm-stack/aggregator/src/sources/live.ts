@@ -66,7 +66,7 @@ import {
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
-import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
+import { createNeedsDrewSweeper, needsDrewSweepTtlMs, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
 import {
@@ -861,20 +861,26 @@ export function liveSource(
   let laptopFailureAt = 0;
   let laptopInFlight: Promise<MappedSessions | null> | null = null;
   const LAPTOP_FAILURE_CACHE_MS = 15_000;
-  // #1226: the Needs-Drew label census hits the GitHub search API
-  // (8 queries per sweep). The sweeper caches for 5 minutes and shares
-  // one in-flight sweep between concurrent callers, so the three
-  // attention fragments rendering together do not each pay that cost or
-  // burn the search rate limit (#3970).
-  const needsDrewSweep = createNeedsDrewSweeper((url) => {
-    const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...(token ? { Authorization: "Bearer " + token } : {}),
-    };
-    return getJson(url, headers);
-  });
+  // #1226: the Needs-Drew label census asks each repository's list of
+  // open issues by label (8 requests per sweep; the search API until
+  // #14103, which GitHub came to refuse in the form it was asked). The
+  // sweeper caches for 5 minutes and shares one in-flight sweep between
+  // concurrent callers, so the three attention fragments rendering
+  // together do not each pay that cost (#3970).
+  const needsDrewSweep = createNeedsDrewSweeper(
+    (url) => {
+      const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      };
+      return getJson(url, headers);
+    },
+    {},
+    // Half as often with no token: see needsDrewSweepTtlMs.
+    { ttlMs: needsDrewSweepTtlMs(Boolean(process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN)) },
+  );
   // #9922: the Path to Phase 12 body feed — one GraphQL read of
   // #1235's body, cached for 5 minutes and shared in-flight (same
   // discipline as the Needs-Drew sweeper above), fail-soft to the

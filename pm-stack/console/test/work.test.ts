@@ -465,10 +465,10 @@ describe("what needs the owner's hands", () => {
   test("done means a comment and the label gone, only for a repository on the list", async () => {
     const w = world({});
     const work = new Work(w.ops);
-    await work.handsDone({ ref: "dezren39/nix#12", note: " the BMC is on " });
+    await work.handsDone({ ref: "dezren39/darwin-nix#12", note: " the BMC is on " });
     expect(w.gh()).toEqual([
-      ["-X", "POST", "repos/dezren39/nix/issues/12/comments", "--input", "-"],
-      ["-X", "DELETE", "repos/dezren39/nix/issues/12/labels/user%2Fescalated"],
+      ["-X", "POST", "repos/dezren39/darwin-nix/issues/12/comments", "--input", "-"],
+      ["-X", "DELETE", "repos/dezren39/darwin-nix/issues/12/labels/user%2Fescalated"],
     ]);
     expect(JSON.parse(w.calls[0].stdin ?? "").body).toContain("the BMC is on");
     await work.needComment({ ref: `${REPO}#5`, text: "go on" });

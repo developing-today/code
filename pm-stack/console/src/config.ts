@@ -263,11 +263,18 @@ export function readConfig(
     machineName: machineName(env.PM_CONSOLE_MACHINE),
     decisionsFile: env.PM_CONSOLE_DECISIONS_FILE ?? `${home}/.local/state/pm-aggregator/decisions.json`,
     promptLabel: env.PM_CONSOLE_PROMPT_LABEL ?? "owner/prompt",
+    // The repositories the dashboard's census covers (REPOS in
+    // pm-stack/aggregator/src/model.ts; a test holds the two lists to
+    // each other). By their present names: the two forks moved to
+    // another organisation and the third was renamed. GitHub still
+    // answers the old names with the present repositories, but an item
+    // named by an old name is not the item the dashboard names, and a
+    // reply is taken only for an item in a repository on this list.
     needsRepos: list(env, "PM_CONSOLE_NEEDS_REPOS", [
       "developing-today/code",
-      "developing-today/opencode",
-      "developing-today/openchamber",
-      "dezren39/nix",
+      "developing-today-forks/opencode",
+      "developing-today-forks/openchamber",
+      "dezren39/darwin-nix",
     ]),
   };
 }

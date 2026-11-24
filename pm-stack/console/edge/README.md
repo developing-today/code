@@ -228,20 +228,24 @@ it (the laptop's, the sign-in issuer's).
 - **What is labelled as needing the owner is read from each
   repository's own list.** Two labels say that something waits on him,
   `user/review` and `user/escalated`. The edge asks each repository
-  the configuration names (`needsRepos`) for its open issues carrying
-  each (`GET /repos/<repo>/issues?state=open&labels=<label>`; that list
-  has the pull requests too), and makes the three lists the app shows
+  the configuration names (`needsRepos`: unless told otherwise, the
+  ones the dashboard censuses, and a test holds the two lists to each
+  other; the edge is told the list by the laptop, which #14163 is to
+  end) for its open issues carrying each
+  (`GET /repos/<repo>/issues?state=open&labels=<label>`; that list has
+  the pull requests too), and makes the three lists the app shows
   with the same function the laptop's console uses on the dashboard's
   census: what only he can do (a hands mark in the body), reviews, and
   the rest. A test holds the two readings to each other on the same
   issues. The search is not used for this: it is counted by the minute,
   it lags, and it takes issues and pull requests in separate queries
   (asked for both at once it answers 422, which is what the dashboard's
-  own census does today: #14103). The lists are asked for by their
-  tags like any other, so the eight of them cost nothing while nothing
-  changes. A repository the token cannot see (404, or a 403 that is
-  not about calling too often) is named in what is shown, and the rest
-  is shown; the app says the list is not whole. Any other failure ends
+  own census did until #14103; it asks the same lists now, and a test
+  holds the two to asking for the same pages). The lists are asked for
+  by their tags like any other, so the eight of them cost nothing while
+  nothing changes. A repository the token cannot see (404, or a 403
+  that is not about calling too often) is named in what is shown, and
+  the rest is shown; the app says the list is not whole. Any other failure ends
   the read at once and nothing more is asked: being called too often
   or GitHub being out of reach would be no different for the next
   list. No repository readable at all is a failed read, never an empty
