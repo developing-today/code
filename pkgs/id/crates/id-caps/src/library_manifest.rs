@@ -725,7 +725,7 @@ library "pure-lib" version="0.1.0" {
 "#;
         let m = LibraryManifest::parse(text).unwrap();
         assert!(m.is_pure());
-        assert!(m.requirements.is_empty());
+        assert_eq!(m.requirements, [] as [library_manifest::PlatformRequirement; 0]);
     }
 
     #[test]

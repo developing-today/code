@@ -1175,7 +1175,7 @@ mod tests {
     #[test]
     fn test_decode_empty() {
         let vals = decode(&[]).unwrap();
-        assert!(vals.is_empty());
+        assert_eq!(vals, [] as [tuple::TupleValue; 0]);
     }
 
     #[test]

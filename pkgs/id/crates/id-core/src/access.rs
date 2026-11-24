@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn load_allowed_nodes_missing_file_is_empty() {
         let dir = tempfile::TempDir::new().unwrap();
-        assert!(load_allowed_nodes(dir.path()).is_empty());
+        assert_eq!(load_allowed_nodes(dir.path()), [] as [iroh_base::PublicKey; 0]);
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
     fn load_allowed_nodes_missing_file_is_empty_and_silent() {
         let dir = tempfile::TempDir::new().unwrap();
         let (loaded, lines) = captured_load(dir.path());
-        assert!(loaded.is_empty());
+        assert_eq!(loaded, [] as [iroh_base::PublicKey; 0]);
         assert!(lines.is_empty(), "missing file must not warn: {lines:?}");
     }
 

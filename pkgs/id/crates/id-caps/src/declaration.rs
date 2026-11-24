@@ -1250,7 +1250,7 @@ mod tests {
         let mut registry = DeclarationRegistry::new();
         let digest = registry.file_signed(&signed, 200).expect("filing succeeds");
         // Filed is discoverable by nobody and grantable by nobody (D6).
-        assert!(registry.declaration_view().is_empty());
+        assert_eq!(registry.declaration_view(), [] as [declaration::DeclarationCard; 0]);
         assert!(registry.resolve_tuple(&identity, "echo", 1).is_none());
         let admission = registry
             .admit(&digest, "registry-1", 210)
@@ -1349,7 +1349,7 @@ mod tests {
             registry.file_signed(&forged, 200),
             Err(DeclarationRefusal::BadSignature)
         );
-        assert!(registry.declaration_view().is_empty());
+        assert_eq!(registry.declaration_view(), [] as [declaration::DeclarationCard; 0]);
         // A tampered field after signing also fails verification.
         let mut tampered =
             SignedManifest::sign(declaration(&provider, "forged.provider", 1), &provider);
@@ -1469,7 +1469,7 @@ mod tests {
         assert_eq!(registry.declaration_view().len(), 1);
         let genuine = SignedWithdrawal::sign(identity, "main".to_owned(), 1, 1, &provider);
         registry.withdraw(&genuine).expect("withdrawal applies");
-        assert!(registry.declaration_view().is_empty());
+        assert_eq!(registry.declaration_view(), [] as [declaration::DeclarationCard; 0]);
         assert_eq!(
             registry
                 .fetch_by_digest(&digest)
@@ -1495,7 +1495,7 @@ mod tests {
         registry.tick(9_999);
         assert_eq!(registry.declaration_view().len(), 1);
         registry.tick(10_000);
-        assert!(registry.declaration_view().is_empty());
+        assert_eq!(registry.declaration_view(), [] as [declaration::DeclarationCard; 0]);
         assert_eq!(
             registry
                 .fetch_by_digest(&digest)
@@ -1562,7 +1562,7 @@ mod tests {
             .expect("admitted");
         registry.mark_live(&digest).expect("live");
         registry.suspend(&digest).expect("suspends");
-        assert!(registry.declaration_view().is_empty());
+        assert_eq!(registry.declaration_view(), [] as [declaration::DeclarationCard; 0]);
         registry.resume(&digest).expect("resumes");
         let view = registry.declaration_view();
         assert_eq!(view.len(), 1);

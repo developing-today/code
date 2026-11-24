@@ -76,7 +76,7 @@ fn edge(from: u8, to: u8) -> SucceedsEdge {
 fn dag_with(versions: &[u8], name: &str) -> VersionDag {
     let mut dag = VersionDag::new();
     for n in versions {
-        assert!(dag.add_version(version(*n, name)).unwrap().is_empty());
+        assert_eq!(dag.add_version(version(*n, name)).unwrap(), [] as [version::Resolution; 0]);
     }
     dag
 }
@@ -138,8 +138,8 @@ fn self_edge_cross_object_and_schema_mismatch_reject() {
         dag.admit(edge(1, 4)).unwrap_err().class(),
         "invalid_successor"
     );
-    assert!(dag.edges().is_empty());
-    assert!(dag.pending().is_empty());
+    assert_eq!(dag.edges(), [] as [version::SucceedsEdge; 0]);
+    assert_eq!(dag.pending(), []);
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn incomplete_ancestry_stays_pending_until_the_version_arrives() {
     assert_eq!(resolved[0].outcome, Ok(Admission::Accepted));
     assert_eq!(resolved[1].edge, edge(9, 1));
     assert_eq!(resolved[1].outcome, Err(VersionError::LineageCycle));
-    assert!(dag.pending().is_empty());
+    assert_eq!(dag.pending(), []);
     assert_eq!(dag.heads(&object("doc")), vec![vid(9)]);
 }
 
@@ -223,7 +223,7 @@ fn branches_keep_every_head_and_only_an_owner_selection_picks_one() {
 #[test]
 fn a_version_id_cannot_change_its_object_or_schema() {
     let mut dag = dag_with(&[1], "doc");
-    assert!(dag.add_version(version(1, "doc")).unwrap().is_empty());
+    assert_eq!(dag.add_version(version(1, "doc")).unwrap(), [] as [version::Resolution; 0]);
     assert_eq!(
         dag.add_version(version(1, "other")).unwrap_err().class(),
         "invalid_successor"

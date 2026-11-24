@@ -597,12 +597,10 @@ mod tests {
             server.submit(ATTR, b"hello", &hash, &public, &signature),
             Err(Refusal::NotOpened)
         );
-        assert!(server.read(ATTR, None, None).unwrap().is_empty());
-        assert!(
-            server
-                .pending(ATTR, &key(1).verifying_key())
-                .unwrap()
-                .is_empty()
+        assert_eq!(server.read(ATTR, None, None).unwrap(), []);
+        assert_eq!(
+            server.pending(ATTR, &key(1).verifying_key()).unwrap(),
+            [] as [&append_list::PendingSubmission; 0]
         );
         assert_eq!(server.own_state(ATTR, &public, &hash), Ok(None));
     }
@@ -619,13 +617,11 @@ mod tests {
             Err(Refusal::NotOpened)
         );
         server.open(ATTR, &key(1).verifying_key()).unwrap();
-        assert!(
-            server
-                .pending(ATTR, &key(1).verifying_key())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            server.pending(ATTR, &key(1).verifying_key()).unwrap(),
+            [] as [&append_list::PendingSubmission; 0]
         );
-        assert!(server.read(ATTR, None, None).unwrap().is_empty());
+        assert_eq!(server.read(ATTR, None, None).unwrap(), []);
     }
 
     #[test]
@@ -666,7 +662,7 @@ mod tests {
     fn pending_is_never_read_as_a_list_entry_and_only_approvers_see_the_queue() {
         let mut server = opened_server();
         submit(&mut server, &key(5), b"pending").unwrap();
-        assert!(server.read(ATTR, None, None).unwrap().is_empty());
+        assert_eq!(server.read(ATTR, None, None).unwrap(), []);
         assert_eq!(
             server.pending(ATTR, &key(1).verifying_key()).unwrap().len(),
             1
@@ -745,7 +741,7 @@ mod tests {
             server.approve(ATTR, &owner, id),
             Err(Refusal::NoSuchSubmission)
         );
-        assert!(server.read(ATTR, None, None).unwrap().is_empty());
+        assert_eq!(server.read(ATTR, None, None).unwrap(), []);
     }
 
     #[test]
@@ -823,8 +819,8 @@ mod tests {
         assert_eq!(seqs(None, Some(2)), vec![0, 1]);
         assert_eq!(seqs(Some(1), None), vec![2, 3]);
         assert_eq!(seqs(Some(1), Some(1)), vec![2]);
-        assert!(seqs(Some(3), None).is_empty());
-        assert!(seqs(Some(u64::MAX), None).is_empty());
+        assert_eq!(seqs(Some(3), None), [] as [u64; 0]);
+        assert_eq!(seqs(Some(u64::MAX), None), [] as [u64; 0]);
     }
 
     #[test]

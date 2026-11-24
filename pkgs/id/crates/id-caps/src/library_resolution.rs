@@ -460,7 +460,10 @@ mod tests {
             }
             other => panic!("expected a cycle refusal, got {other:?}"),
         }
-        assert!(record.transitive_requirements.is_empty());
+        assert_eq!(
+            record.transitive_requirements,
+            [] as [library_manifest::PlatformRequirement; 0]
+        );
     }
 
     /// Oracle (§1): a library that depends on itself is the smallest
@@ -538,7 +541,10 @@ mod tests {
         registry.add(manifest("leaf", "h-leaf", &[]), &[]);
         let record = resolve_import(&registry, &request("h-root"), None);
         assert_eq!(record.outcome, ResolutionOutcome::Resolved);
-        assert!(record.transitive_requirements.is_empty());
+        assert_eq!(
+            record.transitive_requirements,
+            [] as [library_manifest::PlatformRequirement; 0]
+        );
         assert!(!record.declared_only);
     }
 
