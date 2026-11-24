@@ -47,14 +47,6 @@ pub struct RecordsStore {
     author: AuthorId,
 }
 
-/// Convert an iroh-docs content hash to the blob-store type.
-///
-/// iroh-docs 0.101 pins iroh-blobs 0.103 while this crate uses 0.105; both
-/// wrap the same 32-byte BLAKE3 digest.
-fn blob_hash(hash: iroh_blobs_docs::Hash) -> Hash {
-    Hash::from_bytes(*hash.as_bytes())
-}
-
 fn doc_key(key: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(key.len() + 1);
     bytes.extend_from_slice(key.as_bytes());
@@ -174,7 +166,7 @@ impl RecordsStore {
         tokio::pin!(entries);
         while let Some(entry) = entries.try_next().await? {
             if let Some(key) = record_key(entry.key()) {
-                existing.insert(key.to_owned(), blob_hash(entry.content_hash()));
+                existing.insert(key.to_owned(), entry.content_hash());
             }
         }
         // Delete obsolete keys before writing additions (Codex review
@@ -271,7 +263,7 @@ pub async fn read_records(doc: &Doc, blobs: &Store) -> Result<Records> {
         );
         let bytes = blobs
             .blobs()
-            .get_bytes(blob_hash(entry.content_hash()))
+            .get_bytes(entry.content_hash())
             .await
             .with_context(|| format!("content of record {key:?} is not available yet"))?;
         // A duplicate key is a parse error (#6520, #6634): the cap below
@@ -331,7 +323,7 @@ pub async fn replicate(
         let mut missing = false;
         while let Some(entry) = entries.try_next().await? {
             announced += 1;
-            if !blobs.blobs().has(blob_hash(entry.content_hash())).await? {
+            if !blobs.blobs().has(entry.content_hash()).await? {
                 missing = true;
             }
         }

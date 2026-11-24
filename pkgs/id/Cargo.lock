@@ -745,25 +745,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bao-tree"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50d0e17303b78c9bb240014f3f401ecae5c0460438ace49a171e5f97e3ae57ba"
-dependencies = [
- "blake3",
- "bytes",
- "futures-lite",
- "genawaiter",
- "iroh-io",
- "positioned-io",
- "range-collections",
- "self_cell",
- "serde",
- "smallvec",
- "tokio",
-]
-
-[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3240,7 +3221,7 @@ dependencies = [
  "futures-lite",
  "getrandom 0.4.3",
  "iroh",
- "iroh-gossip 0.101.0",
+ "iroh-gossip",
  "mainline",
  "postcard",
  "rand 0.10.4",
@@ -4866,9 +4847,9 @@ dependencies = [
  "id-worlds",
  "iroh",
  "iroh-base",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "iroh-docs",
- "iroh-gossip 0.103.0",
+ "iroh-gossip",
  "iroh-mainline-address-lookup",
  "iroh-mdns-address-lookup",
  "iroh-tickets",
@@ -4946,9 +4927,9 @@ dependencies = [
  "id-worlds",
  "iroh",
  "iroh-base",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "iroh-docs",
- "iroh-gossip 0.103.0",
+ "iroh-gossip",
  "iroh-mdns-address-lookup",
  "libc",
  "p2panda-core",
@@ -5012,7 +4993,7 @@ dependencies = [
  "idna",
  "iroh",
  "iroh-base",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "p2panda-auth",
  "p2panda-core",
  "postcard",
@@ -5087,7 +5068,7 @@ dependencies = [
  "id-store",
  "iroh",
  "iroh-base",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "p2panda-auth",
  "p2panda-core",
  "proptest",
@@ -5111,7 +5092,7 @@ dependencies = [
  "id-events",
  "id-store",
  "iroh-base",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "p2panda-core",
  "p2panda-encryption",
  "postcard",
@@ -5156,7 +5137,7 @@ dependencies = [
  "id",
  "id-worlds",
  "iroh",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "libc",
  "serde_json",
  "tokio",
@@ -5192,10 +5173,9 @@ dependencies = [
  "id-core",
  "iroh",
  "iroh-base",
- "iroh-blobs 0.103.1",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "iroh-docs",
- "iroh-gossip 0.103.0",
+ "iroh-gossip",
  "p2panda-core",
  "p2panda-store",
  "postcard",
@@ -5228,9 +5208,9 @@ dependencies = [
  "id-store",
  "iroh",
  "iroh-base",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "iroh-docs",
- "iroh-gossip 0.103.0",
+ "iroh-gossip",
  "iroh-mainline-address-lookup",
  "iroh-tickets",
  "p2panda-auth",
@@ -5283,9 +5263,9 @@ dependencies = [
  "id-worlds",
  "iroh",
  "iroh-base",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "iroh-docs",
- "iroh-gossip 0.103.0",
+ "iroh-gossip",
  "mime_guess",
  "p2panda-core",
  "proptest",
@@ -5326,10 +5306,9 @@ dependencies = [
  "id-sync",
  "iroh",
  "iroh-base",
- "iroh-blobs 0.103.1",
- "iroh-blobs 0.105.0",
+ "iroh-blobs",
  "iroh-docs",
- "iroh-gossip 0.103.0",
+ "iroh-gossip",
  "libc",
  "p2panda-core",
  "postcard",
@@ -5558,7 +5537,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3148ad01585eb6b7cfb641e4100564f4f56db644f4cbed8c10ab2478663161f"
 dependencies = [
  "arrayvec",
- "bao-tree 0.16.1",
+ "bao-tree",
  "bytes",
  "cfg_aliases",
  "chrono",
@@ -5573,8 +5552,8 @@ dependencies = [
  "iroh-io",
  "iroh-metrics",
  "iroh-tickets",
- "iroh-util 0.6.0",
- "irpc 0.17.0",
+ "iroh-util",
+ "irpc",
  "n0-error",
  "n0-future",
  "nested_enum_utils",
@@ -5590,48 +5569,6 @@ dependencies = [
  "smallvec",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "iroh-blobs"
-version = "0.105.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9ef502f80b48a0d87bc6b4212a9140ecc2915e2683cb3f2606b9241fec4349a"
-dependencies = [
- "bao-tree 0.17.0",
- "bytes",
- "cfg_aliases",
- "chrono",
- "constant_time_eq",
- "data-encoding",
- "derive_more",
- "genawaiter",
- "getrandom 0.4.3",
- "hex",
- "iroh",
- "iroh-base",
- "iroh-io",
- "iroh-metrics",
- "iroh-tickets",
- "iroh-util 0.7.0",
- "irpc 1.0.0",
- "libc",
- "n0-error",
- "n0-future",
- "nested_enum_utils",
- "noq",
- "postcard",
- "rand 0.10.4",
- "range-collections",
- "redb 4.6.0",
- "ref-cast",
- "reflink-copy",
- "self_cell",
- "serde",
- "smallvec",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5672,11 +5609,11 @@ dependencies = [
  "futures-buffered",
  "hex",
  "iroh",
- "iroh-blobs 0.103.1",
- "iroh-gossip 0.101.0",
+ "iroh-blobs",
+ "iroh-gossip",
  "iroh-metrics",
  "iroh-tickets",
- "irpc 0.17.0",
+ "irpc",
  "n0-error",
  "n0-future",
  "noq",
@@ -5713,37 +5650,11 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-metrics",
- "irpc 0.17.0",
+ "irpc",
  "n0-error",
  "n0-future",
  "postcard",
  "rand 0.10.4",
- "serde",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "iroh-gossip"
-version = "0.103.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74c4170847b5603f489c4d7771f1e7b263fa63a2521dbbb747601931987aa777"
-dependencies = [
- "blake3",
- "bytes",
- "data-encoding",
- "derive_more",
- "hex",
- "indexmap",
- "iroh",
- "iroh-base",
- "iroh-metrics",
- "n0-error",
- "n0-future",
- "postcard",
- "rand 0.10.4",
- "rustc-hash 2.1.3",
  "serde",
  "tokio",
  "tokio-util",
@@ -5923,20 +5834,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iroh-util"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "889d5cc9da2eaac9f63657237c491db17d1fe9fffdc7c0f2f0e04c49d5d45053"
-dependencies = [
- "derive_more",
- "iroh",
- "n0-error",
- "n0-future",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "irpc"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5944,30 +5841,7 @@ checksum = "3623d6ff582b415904b29bbe6ebcb4a4f9a262ccdee05a45fdd003ef0950c386"
 dependencies = [
  "futures-buffered",
  "futures-util",
- "irpc-derive 0.17.0",
- "n0-error",
- "n0-future",
- "noq",
- "postcard",
- "rcgen",
- "rustls",
- "serde",
- "smallvec",
- "tokio",
- "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "irpc"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fecfcc2a6db86a2a0c1d8138fd58cd83e882e9923cb9e4faf5962ffa2b5a6f7e"
-dependencies = [
- "derive_more",
- "futures-buffered",
- "futures-util",
- "irpc-derive 1.0.0",
+ "irpc-derive",
  "n0-error",
  "n0-future",
  "noq",
@@ -5990,17 +5864,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "irpc-derive"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c29e19b1a86c662125cdaa33860723dc966c4f50cad207d21ea64b4a14b51aa"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.10",
 ]
 
 [[package]]
