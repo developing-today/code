@@ -11,6 +11,8 @@ import {
   awayNotice,
   censusSaid,
   differsSaid,
+  doneSaid,
+  doneTaskSaid,
   acceptAllSaid,
   awayState,
   blockedSaid,
@@ -1014,6 +1016,120 @@ test("why tasks are blocked is said by the kind of reason, and adds up to all of
   expect(blockedSaid([{ why: "waiting on native issue blockers", n: "7" }]).map((l) => `${l.n} ${l.text}`)).toEqual([
     "7 waiting on native issue blockers",
   ]);
+});
+
+// What was finished lately, as the app says it. The oracle is the
+// document's own numbers: what is said has to be them, with "at least"
+// where GitHub's page was full and there may be more than were counted.
+test("what was finished in the last day is said in numbers, with 'at least' where there may be more", () => {
+  const none = { day: 0, more: false, latest: [] };
+  expect(
+    doneSaid({
+      tasks: { day: 12, latest: [] },
+      merged: { day: 100, more: true, latest: [] },
+      closed: { day: 1, more: false, latest: [] },
+    }),
+  ).toEqual({
+    tiles: [
+      { n: "12", label: "tasks finished" },
+      { n: "100+", label: "pull requests merged" },
+      { n: "1", label: "issue closed" },
+    ],
+    line: "In the last day: 12 tasks finished, at least 100 pull requests merged, 1 issue closed.",
+  });
+  // One of each, and none of some: said as it is, the nothings left out of the line.
+  expect(doneSaid({ tasks: { day: 1, latest: [] }, merged: { ...none, day: 1 }, closed: none })).toEqual({
+    tiles: [
+      { n: "1", label: "task finished" },
+      { n: "1", label: "pull request merged" },
+      { n: "0", label: "issues closed" },
+    ],
+    line: "In the last day: 1 task finished, 1 pull request merged.",
+  });
+  expect(doneSaid({ tasks: { day: 0, latest: [] }, merged: none, closed: none })?.line).toBe(
+    "Nothing was finished in the last day.",
+  );
+  // None counted, but the page was full of older things: there may still be some.
+  expect(
+    doneSaid({ tasks: { day: 0, latest: [] }, merged: { ...none, more: true }, closed: { ...none, more: true } }),
+  ).toEqual({
+    tiles: [
+      { n: "0", label: "tasks finished" },
+      { n: "0+", label: "pull requests merged" },
+      { n: "0+", label: "issues closed" },
+    ],
+    line: "In the last day: nothing counted; pull requests merged and issues closed could not all be counted.",
+  });
+  // Not read yet, or a copy from a console that does not read it: nothing is said, not zeros.
+  expect(doneSaid(null)).toBeNull();
+  expect(doneSaid(undefined)).toBeNull();
+  expect(doneSaid({})).toBeNull();
+  expect(doneSaid({ tasks: { day: "many" }, merged: none, closed: none })).toBeNull();
+});
+
+// A finished task says what came of it. The oracle is the queue's own
+// list of verdicts (fleet-queue's disposition.rs: VERDICTS), each given
+// words here; one this app has no words for is said as it is named.
+test("a finished task says what came of it, where it goes, and who did it", () => {
+  const task = {
+    id: 21001,
+    title: "Fix the claim scan",
+    at: "2026-11-24T10:00:00",
+    lane: "code-a",
+    model: "m-1",
+    kind: "small_fix",
+    issue: 5,
+    pr: 77,
+    verdict: "merged_verified",
+    url: "https://github.com/o/r/issues/5",
+    prUrl: "https://github.com/o/r/pull/77",
+  };
+  const now = Date.parse("2026-11-24T12:00:00Z");
+  expect(doneTaskSaid(task, now)).toEqual({
+    chips: ["small fix", "merged"],
+    links: [
+      { text: "#77", url: "https://github.com/o/r/pull/77" },
+      { text: "issue #5", url: "https://github.com/o/r/issues/5" },
+    ],
+    meta: "task 21001 · code-a · m-1 · finished 2 h ago",
+  });
+  const said = (verdict: string | null) => doneTaskSaid({ ...task, verdict }, now).chips.slice(1);
+  expect(
+    ["merged_verified", "closed_verified", "open_draft_with_followup", "open_draft_superseded", "invalid_no_work"].map(
+      (v) => said(v)[0],
+    ),
+  ).toEqual([
+    "merged",
+    "issue closed",
+    "left as a draft, with a follow-up",
+    "its draft was superseded",
+    "no work came of it",
+  ]);
+  expect(said("something_new")).toEqual(["something new"]);
+  expect(said(null)).toEqual([]);
+  // With nothing known but that it was finished.
+  expect(
+    doneTaskSaid(
+      {
+        id: 7,
+        title: "Task 7",
+        at: "",
+        lane: null,
+        model: null,
+        kind: null,
+        issue: null,
+        pr: null,
+        verdict: null,
+        url: null,
+        prUrl: null,
+      },
+      now,
+    ),
+  ).toEqual({
+    chips: [],
+    links: [],
+    meta: "task 7",
+  });
 });
 
 // What needs the owner is what only he can do. Seen live: "394 need

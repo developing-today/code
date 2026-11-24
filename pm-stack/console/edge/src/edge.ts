@@ -109,6 +109,7 @@ const SECTIONS: Record<string, number> = {
   questions: 45_000,
   prs: 90_000,
   priorities: 180_000,
+  done: 120_000,
   agents: 75_000,
   services: 45_000,
   more: 2 * 60 * 60_000,

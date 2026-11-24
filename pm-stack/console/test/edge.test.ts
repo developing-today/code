@@ -39,6 +39,7 @@ import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
+import { DONE_COUNT_SQL, DONE_TASKS_SQL } from "../src/work.ts";
 import { asThePlatformFetch, browser, signer } from "./support.ts";
 
 const HOST = "pm.example";
@@ -62,6 +63,7 @@ const SECTION_NAMES = [
   "questions",
   "prs",
   "priorities",
+  "done",
   "agents",
   "services",
   "more",
@@ -236,6 +238,10 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
   /** Pull requests merged and workflows started through GitHub's API. */
   const ghMerged: { pr: number; body: unknown }[] = [];
   const ghStarted: { workflow: string; body: unknown }[] = [];
+  /** What GitHub lists as closed, most lately touched first. */
+  const ghClosed: Record<string, unknown>[] = [];
+  /** Tasks the queue's events say were finished, newest first, as its store answers for them. */
+  const queueDone: { id: number; title: string; at: string; issue: number | null; pr: number | null }[] = [];
   const queueTasks: {
     id: number;
     title: string;
@@ -332,6 +338,25 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
   const queueAnswer = (sql: string, args: (string | number)[]) => {
     const cols = (names: string[]) => names.map((name) => ({ name }));
     const rows = (rs: { value: string | number | null }[][]) => rs;
+    if (sql === DONE_TASKS_SQL) {
+      return {
+        cols: cols(["id", "title", "at", "lane", "model", "kind", "issue", "pr", "verdict"]),
+        rows: rows(
+          queueDone.map((t) => [
+            { value: t.id },
+            { value: t.title },
+            { value: t.at },
+            { value: null },
+            { value: null },
+            { value: null },
+            { value: t.issue },
+            { value: t.pr },
+            { value: null },
+          ]),
+        ),
+      };
+    }
+    if (sql === DONE_COUNT_SQL) return { cols: cols(["n"]), rows: rows([[{ value: queueDone.length }]]) };
     if (sql.includes("count(*) AS n") && sql.includes("GROUP BY status")) {
       const counts = new Map<string, number>();
       for (const t of queueTasks) counts.set(t.status, (counts.get(t.status) ?? 0) + 1);
@@ -358,10 +383,9 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     }
     if (sql.includes("status = 'blocked'")) {
       return {
-        cols: cols(["why", "n"]),
-        rows: rows([
-          [{ value: "waiting on the owner" }, { value: queueTasks.filter((t) => t.status === "blocked").length }],
-        ]),
+        // By the kind of reason, as the board asks: every one here has a reason written on it.
+        cols: cols(["kind", "n"]),
+        rows: rows([[{ value: "reason" }, { value: queueTasks.filter((t) => t.status === "blocked").length }]]),
       };
     }
     if (sql.includes("title LIKE ?")) {
@@ -438,6 +462,8 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     if (method === "GET" && path === "pulls") return ok(ghPrs);
     if (method === "GET" && u.pathname === "/search/issues")
       return ok({ items: ghSearch, total_count: ghSearch.length });
+    // What is closed is a list of its own.
+    if (method === "GET" && path === "issues" && u.searchParams.get("state") === "closed") return ok(ghClosed);
     if (method === "GET" && path === "issues") {
       // GitHub lists the issues that carry the label asked for.
       const label = u.searchParams.get("labels");
@@ -763,6 +789,11 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     questions: { open: [] },
     prs: [],
     priorities: { issues: [], truncated: false },
+    done: {
+      tasks: { day: 0, latest: [] },
+      merged: { day: 0, more: false, latest: [] },
+      closed: { day: 0, more: false, latest: [] },
+    },
     agents: [],
     services: [] as unknown[],
     more: [],
@@ -1165,6 +1196,8 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     ghComments,
     ghLabels,
     ghNeeds,
+    ghClosed,
+    queueDone,
     ghPrs,
     ghSearch,
     queueTasks,
@@ -3285,6 +3318,7 @@ describe("the app is told when something changes", () => {
     for (let look = 0; look < 2; look++) {
       await w.core();
       await w.browse("/console/api/doc/ops");
+      await w.browse("/console/api/doc/done");
       await Promise.all(w.behind.splice(0));
     }
   };
@@ -3853,7 +3887,7 @@ describe("the edge does the core itself", () => {
     expect(w.stored.has("m:board")).toBe(false);
     w.now.t += 1_000;
     const answer = await w.link.now.once();
-    expect(answer?.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
+    expect(answer?.owns).toEqual(["board", "prs", "priorities", "asks", "census", "done"]);
     expect(answer?.want).toEqual([]);
     // The laptop's own board changes. Its report carries neither the
     // board nor its word on how current the board is.
@@ -4141,7 +4175,7 @@ describe("the edge does the core itself", () => {
         "deploy.start",
         "intake.send",
       ],
-      sections: ["board", "prs", "priorities", "asks", "census"],
+      sections: ["board", "prs", "priorities", "asks", "census", "done"],
       refused: [],
     });
     expect(first.machines.map((m) => m.name)).toEqual(["nixos"]);
@@ -4425,7 +4459,7 @@ describe("the edge does the core itself", () => {
     w.now.t += 1_000;
     await w.hostReads();
     // It is told the list is not read here, sends its own, and that is what is shown.
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "done"]);
     w.now.t += 121_000;
     await w.hostReads();
     await w.link.now.once();
@@ -4453,7 +4487,7 @@ describe("the edge does the core itself", () => {
     ];
     w.now.t += 1_000;
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "done"]);
     w.now.t += 1_000;
     await w.link.now.once();
     expect((await w.core()).doc.census.hands.map((i: { title: string }) => i.title)).toEqual(["From the laptop"]);
@@ -4848,7 +4882,7 @@ describe("the edge does the core itself", () => {
     // Nothing of what this side reads is asked of it (it would send the
     // whole section every time, and it would never be taken).
     expect(answer.want).toEqual([]);
-    expect(answer.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
+    expect(answer.owns).toEqual(["board", "prs", "priorities", "asks", "census", "done"]);
     // Its word did not make this side read anything again ...
     expect(asked(w)).toBe(before);
     // ... nor is its trouble said of a section this side reads well.
@@ -5103,6 +5137,135 @@ describe("the edge does the core itself", () => {
     ).toEqual(["task.move", "read.board"]);
   });
 
+  // What was finished lately is read here like the rest of the core:
+  // the queue's own events and GitHub's list of what is closed. The
+  // oracle is the two stand-ins: what they hold is what is shown,
+  // whatever a machine's copy says.
+  describe("what was finished lately", () => {
+    type Done = {
+      done: {
+        tasks: { day: number; latest: Record<string, unknown>[] };
+        merged: { day: number; more: boolean; latest: { number: number; by: string }[] };
+        closed: { day: number; more: boolean; latest: { number: number; reason: string | null }[] };
+      };
+      health: Record<string, { ok: boolean; error: string | null }>;
+    };
+    const read = async (w: World) => (await (await w.browse("/console/api/doc/done")).json()) as Done;
+    const CLOSED_LIST =
+      "https://api.github.com/repos/developing-today/code/issues?state=closed&sort=updated&direction=desc&per_page=100";
+    const finish = (w: World) => {
+      w.queueDone.push({ id: 21001, title: "Fix the claim scan", at: "2026-11-22T11:00:00", issue: 5, pr: 77 });
+      w.ghClosed.push(
+        {
+          number: 77,
+          title: "fix: claim scan",
+          html_url: "https://github.com/developing-today/code/pull/77",
+          closed_at: "2026-11-22T11:00:00Z",
+          updated_at: "2026-11-22T11:00:00Z",
+          user: { login: "lane-a" },
+          pull_request: { merged_at: "2026-11-22T11:00:00Z" },
+        },
+        {
+          number: 5,
+          title: "Claim scan is slow",
+          html_url: "https://github.com/developing-today/code/issues/5",
+          closed_at: "2026-11-22T11:05:00Z",
+          updated_at: "2026-11-22T11:05:00Z",
+          state_reason: "completed",
+          user: { login: "owner" },
+        },
+      );
+    };
+
+    test("it comes from the queue store and GitHub, laptop or no laptop", async () => {
+      const w = await primary();
+      finish(w);
+      // The laptop is reporting, and its copy says nothing was finished.
+      const doc = await read(w);
+      expect(doc.done.tasks).toEqual({
+        day: 1,
+        latest: [
+          {
+            id: 21001,
+            title: "Fix the claim scan",
+            at: "2026-11-22T11:00:00",
+            lane: null,
+            model: null,
+            kind: null,
+            issue: 5,
+            pr: 77,
+            verdict: null,
+            url: "https://github.com/developing-today/code/issues/5",
+            prUrl: "https://github.com/developing-today/code/pull/77",
+          },
+        ],
+      });
+      expect([doc.done.merged.day, doc.done.merged.more, doc.done.merged.latest.map((m) => [m.number, m.by])]).toEqual([
+        1,
+        false,
+        [[77, "lane-a"]],
+      ]);
+      expect(doc.done.closed.latest.map((c) => [c.number, c.reason])).toEqual([[5, "completed"]]);
+      expect(doc.health.done).toEqual({ ok: true, error: null });
+      // Read from the two of them, by the platform's own settings and
+      // this side's own clock; the laptop was asked for nothing.
+      expect(onlyPokes(w)).toBe(true);
+      expect(w.githubCalls.map((c) => c.url)).toContain(CLOSED_LIST);
+      const stamp = (ms: number) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+      expect(w.queueCalls.filter((c) => c.sql === DONE_TASKS_SQL).map((c) => c.args)).toEqual([
+        [stamp(START - 7 * 24 * 3_600_000), platformSettings().queue],
+      ]);
+      expect(w.queueCalls.filter((c) => c.sql === DONE_COUNT_SQL).map((c) => c.args)).toEqual([
+        [stamp(START - 24 * 3_600_000), platformSettings().queue],
+      ]);
+      // And with the laptop gone for good, it is still read, and what is new is shown.
+      w.net.hostUp = false;
+      w.net.edgeUp = false;
+      w.queueDone.unshift({ id: 21002, title: "Another", at: "2026-11-22T12:01:00", issue: null, pr: null });
+      w.now.t += 121_000;
+      await read(w);
+      await settle(w);
+      expect((await read(w)).done.tasks.latest.map((t) => t.id)).toEqual([21002, 21001]);
+    });
+
+    test("turned away for GitHub's list, it is a machine's to read for the hour, and said so", async () => {
+      const w = await primary();
+      finish(w);
+      const refused = async () =>
+        ((await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] }).refused;
+      const lists = () => w.githubCalls.filter((c) => c.url === CLOSED_LIST).length;
+      expect((await read(w)).done.merged.latest.map((m) => m.number)).toEqual([77]);
+      await settle(w);
+      w.ghRefuses.push((method, url) => method === "GET" && url.includes("state=closed"));
+      w.now.t += 121_000;
+      await read(w);
+      await settle(w);
+      expect(await refused()).toEqual(["read.done"]);
+      // Until a machine's copy comes, the copy read here is shown as one
+      // that could not be read again; GitHub is not asked again for it
+      // within the hour, and it is said to have been turned away.
+      const waiting = await read(w);
+      expect(waiting.done.merged.latest.map((m) => m.number)).toEqual([77]);
+      expect(waiting.health.done.ok).toBe(false);
+      const asked = lists();
+      w.now.t += 121_000;
+      await read(w);
+      await settle(w);
+      const still = await read(w);
+      expect(lists()).toBe(asked);
+      expect(still.done.merged.latest.map((m) => m.number)).toEqual([77]);
+      expect(still.health.done).toEqual({ ok: false, error: expect.stringContaining("turned away") });
+      // The laptop is told it is not read here, and its next report brings its own.
+      w.now.t += 1_000;
+      expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
+      w.now.t += 1_000;
+      await w.link.now.once();
+      const theirs = await read(w);
+      expect(theirs.done).toEqual(w.data.done as never);
+      expect(theirs.health.done).toEqual({ ok: true, error: null });
+    });
+  });
+
   test("a section this side's token is refused for is the laptop's to read, as before, until the token is put right", async () => {
     const w = await primary();
     const health = async () =>
@@ -5140,7 +5303,7 @@ describe("the edge does the core itself", () => {
     expect(still.health.prs).toEqual({ ok: false, error: expect.stringContaining("turned away") });
     // The laptop is told the list is not read here any more ...
     w.now.t += 1_000;
-    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks", "census"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks", "census", "done"]);
     // ... so its next report brings its own copy, which is shown as it
     // was before this side read anything.
     w.now.t += 1_000;
@@ -5175,7 +5338,7 @@ describe("the edge does the core itself", () => {
     expect((await ops()).prs.map((p) => p.number)).toEqual([55]);
     expect(lists()).toBeGreaterThan(asked);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census", "done"]);
   });
 
   test("what this side is turned away for is remembered when the object starts again, and tried again when the owner says", async () => {
@@ -5214,7 +5377,7 @@ describe("the edge does the core itself", () => {
     expect((await ops()).prs).toEqual(w.data.prs as never);
     await settle(w);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks", "census"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "priorities", "asks", "census", "done"]);
     await w.act("pr.merge", { pr: 55 });
     expect([lists(), merges()]).toEqual(asked);
     expect(w.ran.map((r) => r.kind)).toEqual(["pr.merge", "pr.merge"]);
@@ -5634,14 +5797,14 @@ describe("the edge does the core itself", () => {
     await settle(w);
     expect(await health()).toEqual(["read.priorities"]);
     w.now.t += 1_000;
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "asks", "census"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "asks", "census", "done"]);
     w.ghLimits.length = 0;
     w.now.t += 4 * 60_000;
     expect(await health()).toEqual(["read.priorities"]);
     w.now.t += 61_000;
     expect(await health()).toEqual([]);
     await w.hostReads();
-    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census"]);
+    expect((await w.link.now.once())?.owns).toEqual(["board", "prs", "priorities", "asks", "census", "done"]);
   });
 
   test("a section is judged by its own sources: the queue refusing does not hand the laptop what is read from GitHub", async () => {
@@ -5755,7 +5918,7 @@ describe("the edge does the core itself", () => {
     expect(health.directReady).toBe(true);
     const selfCheck = health.selfCheck as { at: number; kinds: Record<string, { ok: boolean }> };
     expect(selfCheck.at).toBe(START);
-    expect(Object.keys(selfCheck.kinds).sort()).toEqual(["asks", "board", "census", "priorities", "prs"]);
+    expect(Object.keys(selfCheck.kinds).sort()).toEqual(["asks", "board", "census", "done", "priorities", "prs"]);
     expect(Object.values(selfCheck.kinds).every((k) => k.ok)).toBe(true);
     // A second health read reuses the stored self-check: no more reads.
     const calls = asked(w);

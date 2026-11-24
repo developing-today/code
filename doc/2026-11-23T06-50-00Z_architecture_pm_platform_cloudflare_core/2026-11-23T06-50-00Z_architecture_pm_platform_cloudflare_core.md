@@ -1576,3 +1576,37 @@ by character because that is what makes the search plainly right.)
 
 **Not seen.** A real phone showing the buttons: it takes a real push to
 a subscribed device, which is the owner's.
+
+## 2026-11-24T09:25Z Update: what was finished lately
+
+**Intent.** The app said what is happening, what is next and what needs
+the owner. It did not say what was done. He asked for that.
+
+**Done.** A `done` document, read by Cloudflare itself like the rest of
+the core: the tasks the queue says were finished, the pull requests
+merged and the issues closed, newest first, with how many of each in
+the last day. Now has a fifth tile for it; the Done screen lists each
+kind, with what came of a task (merged, issue closed, left as a draft
+with a follow-up, superseded, no work) and links to its pull request
+and issue.
+
+**How it is read.** The queue has some seventeen thousand finished
+tasks and keeps no order of when each was finished, so going through
+them would read every one, every time. The events that say a task was
+finished are kept in order of time: the read starts from those of the
+last week and looks each task up by its number. SQLite's own plan for
+the statements is checked in the tests (the events by their index, the
+tasks by their key, nothing gone through whole). GitHub is asked for
+one page of what is closed, most lately touched first, at one unchanging
+address, so an unchanged answer is "not modified" and costs nothing.
+
+**Checked.** The statements are run in SQLite on the queue's own tables
+with rows written the way the fleet writes them: finished once, twice,
+taken up again, another queue's, older than the week, written by
+something older. GitHub's list is given as GitHub documents it. In the
+Worker's real runtime the document is read with no machine. Thirty-eight
+faults planted one at a time across the read, the wiring and the app's
+words, all caught after three tests were tightened.
+
+**Not seen.** The screen as Cloudflare serves it to a signed-in owner.
+It was looked at on the machine, drawn from the live queue and GitHub.
