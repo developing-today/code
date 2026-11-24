@@ -157,6 +157,10 @@ What the hosted edition would hold for a bound user, once deployed, is one `User
 
 A second package, `pkgs/id/worker-poc`, is a proof of concept that runs one example world in a Worker isolate and proves journal equality against the native wasmtime host. It is not a production path and an operator has no reason to run it outside its own tests.
 
+## The mail Worker
+
+Confirmation mail has one production Worker of its own, separate from the hosted edition above: the Worker named `mail` in `nixos/services/id-mail/worker/`, reached at `https://mail.security.cab` (one of its four declared routes). On the live host, the NixOS module `services.id-mail` wires the primary instance's `--world-mail-command` to `id-cloudflare-mail` with the `worker` transport, so each confirmation message is POSTed to that Worker with the caller token, and the Worker — not the host — delivers it through its send-email binding, in template mode: only the two configured code messages, one recipient at a time, under its rate limits. Its routes, caller grants, configuration, failure shapes and publish/promote deployment are in [The mail Worker API](../reference/mail-worker.md). An operator debugging confirmation mail that never arrives should check, in order: the sink the node was started with (this section and [serve and publications](../reference/cli-serve.md)), the command's transport selection and environment, and then the Worker's response — its JSON error names the refusal, including `401` for a caller-token mismatch and `400` with error `template` when the message no longer matches a configured template.
+
 ## Exit behaviour for operators
 
 Serve has no special exit codes of its own. The `id` binary's contract, from [The id command line](../reference/cli.md), is:
