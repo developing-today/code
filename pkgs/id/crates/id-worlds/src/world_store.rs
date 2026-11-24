@@ -1462,6 +1462,24 @@ mod tests {
     }
 
     #[test]
+    fn partition_fence_unscoped_open_refuses_before_tail_repair() {
+        // Oracle: an assigned journal is inaccessible without trusted partition
+        // context, and refusal preserves even an unacknowledged torn tail.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        drop(FileJournal::open(&path, "w").unwrap());
+        std::fs::write(
+            dir.path().join("journal.jsonl.partition.json"),
+            br#"{"version":1,"world_id":"w","jurisdiction":"eu"}"#,
+        ).unwrap();
+        OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(b"{torn").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(FileJournal::open(&path, "w").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn journal_rejects_a_second_live_handle_and_reopens_after_drop() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("journal.jsonl");
