@@ -25,9 +25,9 @@ pub struct WorldName(pub String);
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct WorldPosition {
     /// Journaled x coordinate.
-    pub x: f32,
+    pub x: f64,
     /// Journaled y coordinate.
-    pub y: f32,
+    pub y: f64,
 }
 
 /// Bridge-owned mapping table: ID entity id ↔ Bevy entity, plus the

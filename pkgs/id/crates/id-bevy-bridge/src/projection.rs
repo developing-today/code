@@ -82,10 +82,7 @@ pub fn project_fixture(
                             else {
                                 return Err(ProjectionError::InvalidValue(predicate.clone()));
                             };
-                            world.entity_mut(entity).insert(WorldPosition {
-                                x: x as f32,
-                                y: y as f32,
-                            });
+                            world.entity_mut(entity).insert(WorldPosition { x, y });
                         }
                     }
                 }

@@ -52,7 +52,10 @@ fn fixture_projects_classified_world_state_and_fails_closed() {
             id: "world-1".to_string(),
             values: vec![
                 ("name".to_string(), serde_json::json!("Ada")),
-                ("position".to_string(), serde_json::json!([1.5, 2.0])),
+                (
+                    "position".to_string(),
+                    serde_json::json!([1.5000000000000002, 2.0]),
+                ),
                 (
                     "unclassified.predicate".to_string(),
                     serde_json::json!("secret"),
@@ -91,7 +94,10 @@ fn fixture_projects_classified_world_state_and_fails_closed() {
     );
     assert_eq!(
         world.get::<WorldPosition>(first),
-        Some(&WorldPosition { x: 1.5, y: 2.0 })
+        Some(&WorldPosition {
+            x: 1.5000000000000002,
+            y: 2.0
+        })
     );
     assert!(world.get::<WorldName>(second).is_some());
     assert!(world.get::<LocalOnly>(local).is_some());
