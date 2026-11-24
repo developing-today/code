@@ -258,7 +258,7 @@ These stay where they are, because scripts and other documents use their paths:
 - `doc/hardware` is a symlink to a `hardware-doc` checkout outside this repository. `doc/archive` and `doc/scratch` point into it, and so do the root `archive` and `scratch`. Where that checkout is missing, the links are broken.
 - `.opencode/plans/` holds the plans written before `planning/plans/` existed. [`planning/plans/README.md`](../planning/plans/README.md) lists them.
 - Undated notes in `doc/` are personal notes and hardware references. Examples: `openwrt.md`, `ventoy.md`, `xcp-ng.md`, `network-topology.md`, `talos-addresses.md`, `todo.md`, `TODO.md`, `doc/notes/`, `doc/inventory/`, the `database_structure*` diagrams and the PDFs. A new note that records a decision gets a dated folder instead. A source that several records cite goes in `doc/references/`.
-- Notes at the root: `TODO.md`, `TODO`, `stuff.todo`, `thoughts/`, `inspiration/` and `ANDROID-CONNECTIVITY.md`. [`ai-crawler-site-access-table.md`](../ai-crawler-site-access-table.md) is maintained, and `AGENTS.md` routes agents to it.
+- Notes at the root: `TODO.md`, `TODO`, `stuff.todo`, `thoughts/` and `ANDROID-CONNECTIVITY.md`. [`ai-crawler-site-access-table.md`](../ai-crawler-site-access-table.md) is maintained, and `AGENTS.md` routes agents to it.
 
 ## Legacy notes
 
