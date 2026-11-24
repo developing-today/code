@@ -34,6 +34,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   issuer   create | inspect | list
   leaf     issue | inspect | list
   revoke   leaf | issuer | root
+  crl      generate | inspect | verify
   chain    build | test
   bundle   inspect
   profile  list | show
@@ -51,6 +52,14 @@ Signing operations never discover keys ambiently: issuer/leaf
 creation requires the signer's key directory as an explicit
 argument (spec §24.3). Run `fleet cert explain signer-source`
 for the rule, `fleet cert doctor` for what is built vs not.
+
+CRLs:
+  crl generate --issuer <bundle> --issuer-key-dir <dir> --crl-number <n> --out <file>
+      [--issuer-algorithm <fingerprint|algorithm|subject-DN>] [--revocations <bundle>]...
+      [--at <rfc3339>] [--next-update <rfc3339>] [--previous-crl <file>] [--pem]
+  crl inspect <file> [--json]
+  crl verify --crl <file> --issuer <bundle> [--revocations <bundle>]... [--at <rfc3339>]
+  --previous-crl makes generation reject a CRL number that is not greater than its predecessor.
 ";
 
 pub fn run(args: &[String]) -> i32 {
@@ -227,6 +236,7 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "leaf" => leaf_cmd(rest, json_out),
         "chain" => chain_cmd(rest, json_out),
         "revoke" => revoke_cmd(rest, json_out),
+        "crl" => crl_cmd(rest, json_out),
         "bundle" => bundle_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
         "algorithms" => algorithms_cmd(rest, json_out),
@@ -668,6 +678,155 @@ fn revoke_cmd(args: &[String], json_out: bool) -> Result<i32> {
     Ok(emit(json_out, text, value))
 }
 
+fn crl_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "generate" => {
+            let p = parse_args(
+                rest,
+                &[
+                    "issuer",
+                    "issuer-algorithm",
+                    "issuer-key-dir",
+                    "out",
+                    "at",
+                    "next-update",
+                    "revocations",
+                    "crl-number",
+                    "previous-crl",
+                ],
+                &["pem", "json"],
+            )?;
+            let issuer = p.require("issuer", "crl generate")?;
+            let key_dir = p.require("issuer-key-dir", "crl generate")?;
+            let at = p
+                .get("at")
+                .map(Rfc3339::parse)
+                .transpose()?
+                .unwrap_or_else(Rfc3339::now);
+            let next = match p.get("next-update") {
+                Some(value) => Rfc3339::parse(value)?,
+                None => CalendarDuration::days(7).add_to(at)?,
+            };
+            let crl_number = p
+                .require("crl-number", "crl generate")?
+                .parse::<u64>()
+                .ok()
+                .filter(|n| *n > 0)
+                .ok_or_else(|| CertError::usage("--crl-number must be a positive integer"))?;
+            let req = crate::crl::GenerateRequest {
+                issuer_bundle: PathBuf::from(issuer),
+                signer: SignerSource {
+                    key_dir: PathBuf::from(key_dir),
+                },
+                revocation_bundles: p
+                    .all("revocations")
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .collect(),
+                this_update: at,
+                next_update: next,
+                crl_number,
+                previous_crl: p.get("previous-crl").map(PathBuf::from),
+            };
+            let der = crate::crl::generate(&req, p.get("issuer-algorithm"))?;
+            let out = p.require("out", "crl generate")?;
+            let bytes = if p.has("pem") {
+                crate::bundle::pem_encode("X509 CRL", &der).into_bytes()
+            } else {
+                der.clone()
+            };
+            std::fs::write(&out, &bytes)?;
+            Ok(emit(
+                json_out,
+                format!(
+                    "CRL written to {out} ({} bytes, {} revoked certificates)\n",
+                    bytes.len(),
+                    crate::crl::inspect(&der)?.revoked.len()
+                ),
+                json!({"out": out, "encoding": if p.has("pem") {"pem"} else {"der"}, "bytes": bytes.len(), "crl": crate::crl::inspect(&der)?}),
+            ))
+        }
+        "inspect" => {
+            let p = parse_args(rest, &["crl"], &["json"])?;
+            let path = p
+                .get("crl")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("crl inspect requires a CRL file"))?;
+            let der = read_crl(PathBuf::from(path).as_path())?;
+            let info = crate::crl::inspect(&der)?;
+            let entries = info
+                .revoked
+                .iter()
+                .map(|r| {
+                    format!(
+                        "    {} {} {}\n",
+                        r.serial_hex,
+                        r.revocation_time,
+                        r.reason.as_deref().unwrap_or("unspecified")
+                    )
+                })
+                .collect::<String>();
+            let text = format!(
+                "CRL: {}\n  number: {}\n  thisUpdate: {}\n  nextUpdate: {}\n  revoked: {}\n{}",
+                info.issuer,
+                info.crl_number.as_deref().unwrap_or("(missing)"),
+                info.this_update,
+                info.next_update.as_deref().unwrap_or("(missing)"),
+                info.revoked.len(),
+                entries
+            );
+            Ok(emit(
+                json_out,
+                text,
+                serde_json::to_value(info).unwrap_or_else(|_| json!({})),
+            ))
+        }
+        "verify" => {
+            let p = parse_args(rest, &["crl", "issuer", "at", "revocations"], &["json"])?;
+            let crl_path = p
+                .get("crl")
+                .or_else(|| p.positional(0))
+                .ok_or_else(|| CertError::usage("crl verify requires a CRL file (--crl)"))?;
+            let issuer = p.require("issuer", "crl verify")?;
+            let at = p
+                .get("at")
+                .map(Rfc3339::parse)
+                .transpose()?
+                .unwrap_or_else(Rfc3339::now);
+            let der = read_crl(PathBuf::from(crl_path).as_path())?;
+            let evidence = p
+                .all("revocations")
+                .into_iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            let report = crate::crl::verify(&der, &PathBuf::from(issuer), &evidence, at)?;
+            let code = emit(
+                json_out,
+                format!(
+                    "CRL verification: {}\n{}\n",
+                    if report.valid { "VALID" } else { "INVALID" },
+                    report
+                        .checks
+                        .iter()
+                        .map(|c| format!("  - {c}\n"))
+                        .collect::<String>()
+                ),
+                serde_json::to_value(&report).unwrap_or_else(|_| json!({})),
+            );
+            Ok(if report.valid { code } else { 1 })
+        }
+        other => Err(CertError::usage(format!(
+            "unknown crl verb '{other}' (generate | inspect | verify)"
+        ))),
+    }
+}
+
+fn read_crl(path: &std::path::Path) -> Result<Vec<u8>> {
+    crate::crl::read_crl(path)
+}
+
 // ---------------------------------------------------------------- bundle/profile inspect+list
 
 fn manifest_text(verb: &str, m: &crate::model::BundleManifest, dir: &str) -> String {
@@ -919,10 +1078,6 @@ fn algorithms_cmd(args: &[String], json_out: bool) -> Result<i32> {
 
 const NOT_BUILT: &[(&str, &str)] = &[
     (
-        "crl",
-        "signed CRLs over the revocation records (spec §13 phase F)",
-    ),
-    (
         "ocsp",
         "OCSP — only behind a functional responder (spec §4.3)",
     ),
@@ -964,11 +1119,19 @@ fn explain_cmd(args: &[String], json_out: bool) -> Result<i32> {
     let topic = args.first().map(|s| s.as_str()).unwrap_or("overview");
     let body = match topic {
         "overview" => "fleet cert implements the §6.1 command tree's core: root, issuer, leaf, \
-chain, bundle, profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
+chain, revoke, crl, bundle, profile, algorithms, explain, doctor. Signing is library-first (§6.4): \
 the CLI is a thin shell over the fleet-cert crate. Cross-signing is policy data \
 (§§3.2/24.2), time is Gregorian calendar arithmetic (§5.4), and ML-DSA-44 is a \
 first-class algorithm with RFC 9881 identifiers. Topics: signer-source, \
 cross-signing, pq-policy, time, profiles."
+            .to_string(),
+        "crl" => "CRLs are generated from checksum-verified revocation bundles and signed by \
+the selected primary CA certificate. `crl generate` requires an explicit --issuer-key-dir and \
+positive --crl-number; use --previous-crl to reject a non-increasing number. `--issuer-algorithm` \
+accepts an issuer fingerprint, algorithm, or subject DN and errors if that selector is ambiguous. \
+Only Ed25519, P-256, RSA-SHA256, and ML-DSA-44 signatures are supported. `crl inspect` parses \
+the CRL; `crl verify` checks issuer, signature, freshness, and supplied revocation evidence. \
+Output is local DER unless --pem is requested. This command does not publish a distribution point."
             .to_string(),
         "signer-source" => "Spec §24.3: a root private key is used only when the operator \
 explicitly provides an authorized root source. In this CLI that is --root-key-dir \
@@ -1004,7 +1167,7 @@ no EKU). See `fleet cert profile list`."
             .to_string(),
         other => {
             return Err(CertError::usage(format!(
-                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | profiles)"
+                "unknown explain topic '{other}' (overview | signer-source | cross-signing | pq-policy | time | profiles | crl)"
             )));
         }
     };
@@ -1046,7 +1209,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, chain, bundle (inspect), profile (list/show), algorithms (list/describe), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, chain, revoke, crl, bundle (inspect), profile (list/show), algorithms (list/describe), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -1054,7 +1217,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "chain", "bundle-inspect", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "chain", "revoke", "crl", "bundle-inspect", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);

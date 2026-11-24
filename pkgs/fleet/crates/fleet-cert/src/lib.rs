@@ -35,6 +35,7 @@ pub mod algorithm;
 pub mod bundle;
 pub mod chain;
 pub mod cli;
+pub mod crl;
 pub mod engine;
 pub mod error;
 pub mod graph;

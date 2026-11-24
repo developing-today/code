@@ -104,6 +104,15 @@ pub enum CaSigner {
     MlDsa(Box<MlDsa44Signer>),
 }
 
+impl CaSigner {
+    pub(crate) fn public_key_matches(&self, expected: &[u8]) -> bool {
+        match self {
+            CaSigner::Classical(key) => rcgen::PublicKeyData::der_bytes(key) == expected,
+            CaSigner::MlDsa(key) => rcgen::PublicKeyData::der_bytes(key.as_ref()) == expected,
+        }
+    }
+}
+
 /// Load a signing key from an explicit signer source: the PKCS#8
 /// file named `file_name` inside `source.key_dir`. This is the only
 /// key-loading path in the crate (§24.3).
@@ -153,7 +162,7 @@ fn random_serial() -> SerialNumber {
 /// everything else as UTF8String. Creation and later reconstruction
 /// (when a stored CA signs again) use this same function, so issuer
 /// names in children byte-match the CA's subject.
-fn distinguished_name(
+pub(crate) fn distinguished_name(
     organization: &str,
     country: &str,
     ou: Option<&str>,
