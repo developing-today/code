@@ -1199,6 +1199,19 @@
       "related_issues": [1411]
     },
     {
+      "id": "ci.root-status-files",
+      "paths": [".github/scripts/check-root-status-files.test.sh"],
+      "invocation": "bash .github/scripts/check-root-status-files.test.sh",
+      "venue": {
+        "workflow": ".github/workflows/root-status-guard.yml",
+        "job_step": "Guard contract tests (#12136)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12136]
+    },
+    {
       "id": "bin.node-tests",
       "paths": ["bin/*.test.mjs"],
       "invocation": "node --test bin/*.test.mjs",
