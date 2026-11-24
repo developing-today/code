@@ -1178,6 +1178,20 @@
       "role": "chapter-source",
       "lines": 201,
       "note": "MCPX issue map for program #13264"
+    },
+    {
+      "path": "docs/worker.md",
+      "chapter": "designs",
+      "role": "chapter-source",
+      "lines": 350,
+      "note": "the door Worker at mcpx.security.cab (#13657): the OAuth/bearer gate, the ns selector enforced at the JSON-RPC layer, the Access and tunnel chain to the laptop bridge, and the door's related work in order"
+    },
+    {
+      "path": "worker/README.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 171,
+      "note": "operational readme for the Worker package in pkgs/mcpx/worker; its book chapter is docs/worker.md, which carries the same surface in book form"
     }
   ]
 }
