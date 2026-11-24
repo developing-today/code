@@ -102,12 +102,33 @@ export function normalizeNoteRegister(data) {
   };
 }
 
-/** Validates a send body: `{to, note}`. */
+/** The note kinds (design §4.4): a plain note is input; an instruction is a work item. */
+export const NOTE_KINDS = ["note", "instruction"];
+
+/**
+ * Validates a send body: `{to, note, kind?, reply_to?}`. `to` may be
+ * omitted only when `reply_to` names a note in the sender's inbox —
+ * the reply then routes store-side to that note's real sender, whom
+ * the replier may never have seen (an instruction's sender is
+ * projected away in the inbox).
+ */
 export function normalizeNoteSend(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
   if (typeof data.note !== "string" || data.note.trim() === "") throw new InputError("note must be a non-empty string");
   if (data.note.length > MAX_BODY) throw new InputError(`note is longer than ${MAX_BODY} characters`);
-  return { to: normalizeNoteAddress(data.to), note: data.note };
+  const kind = data.kind === undefined || data.kind === null || data.kind === "" ? "note" : data.kind;
+  if (!NOTE_KINDS.includes(kind)) throw new InputError(`kind must be one of ${NOTE_KINDS.join(", ")}`);
+  let reply_to = null;
+  if (data.reply_to !== undefined && data.reply_to !== null) {
+    if (!Number.isInteger(data.reply_to) || data.reply_to < 1) throw new InputError("reply_to must be a positive integer");
+    reply_to = data.reply_to;
+  }
+  const to =
+    data.to === undefined || data.to === null || data.to === ""
+      ? null
+      : normalizeNoteAddress(data.to);
+  if (to === null && reply_to === null) throw new InputError("give to, or reply_to naming a note in your inbox");
+  return { to, note: data.note, kind, reply_to };
 }
 
 /** Validates an ack body: `{id}`, `{ids}` or `{up_to_id}`. */
@@ -201,7 +222,12 @@ async function readJson(request) {
 /**
  * Handles the authenticated note API:
  *   POST /notes/register  owner access token as Bearer; {identity, token, can_send?, can_inbox?}
- *   POST /notes/send      identity token; {to, note}
+ *   POST /notes/send      identity token; {to, note, kind?, reply_to?} —
+ *                         kind "instruction" lands sender-free in the
+ *                         recipient's inbox (the store keeps the
+ *                         sender); reply_to answers a note in the
+ *                         sender's own inbox, routed store-side to its
+ *                         real sender, and may replace `to`
  *   GET  /notes/inbox     identity token; pending notes for that identity
  *   POST /notes/ack       identity token; {id | ids | up_to_id}
  * Returns null when the path is not this API's.
@@ -236,9 +262,22 @@ export async function handleNotes(request, env, url, getStore) {
       if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
       if (!auth.can_send) return json({ error: "this token cannot send notes" }, 403);
       const data = normalizeNoteSend(await readJson(request));
-      const recipients = (await store.noteIdentities()).filter((identity) => noteAddressMatches(data.to, identity));
-      if (!recipients.length) throw new InputError(`no registered identity matches ${data.to}`);
-      return json(await store.noteDeliver({ from: auth.identity, recipients, note: data.note }), 201);
+      let recipients;
+      if (data.reply_to !== null) {
+        // A reply answers the original note's sender, resolved
+        // store-side; the replier names only the note's id, never
+        // the sender (who may be projected away in their inbox).
+        const origin = await store.noteOrigin(auth.identity, data.reply_to);
+        if (origin === null) throw new InputError(`reply_to ${data.reply_to} is not a note in your inbox`);
+        recipients = [origin];
+      } else {
+        recipients = (await store.noteIdentities()).filter((identity) => noteAddressMatches(data.to, identity));
+        if (!recipients.length) throw new InputError(`no registered identity matches ${data.to}`);
+      }
+      return json(
+        await store.noteDeliver({ from: auth.identity, recipients, note: data.note, kind: data.kind, reply_to: data.reply_to }),
+        201,
+      );
     }
     if (what === "inbox") {
       if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });

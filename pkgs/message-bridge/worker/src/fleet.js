@@ -41,7 +41,8 @@
 // notes-token model); it acts only as its own agent — hello/inbox/ack
 // for its own name (scope "inbox"), send with from_addr fixed to
 // agent:<its name> (scope "send") — and every refusal is the usual
-// plain 404. The owner mints single-use, expiring bootstrap tokens
+// plain 404. Its groups are the ones bound at mint time: a
+// credentialed hello or inbox call cannot change them (#14370). The owner mints single-use, expiring bootstrap tokens
 // bound at mint time to a name, kind and groups (enroll_token, hash
 // only):
 //
@@ -889,12 +890,19 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     if (request.method !== "POST") return notAllowed("POST");
     const d = await readJson(request);
     if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
-    return json(await store.fleet("hello", d));
+    // A credential's groups were bound at mint time and set by the
+    // exchange's hello; a credentialed hello refreshes last_seen
+    // only, so the caller cannot re-register its own name into
+    // arbitrary groups after the fact (#14370, Felix's S3 review
+    // note). The shared fleet token keeps caller-supplied groups.
+    return json(await store.fleet("hello", cred ? { agent: cred.agent } : d));
   }
   if (what === "inbox") {
     if (request.method !== "GET") return notAllowed("GET");
     if (cred && (!scoped("inbox") || credOwnName(url.searchParams.get("agent"), cred) === null)) return notFound();
-    const out = await store.fleet("inbox", query(url));
+    const q = query(url);
+    if (cred) delete q.groups; // groups are mint-bound; see hello above
+    const out = await store.fleet("inbox", q);
     return json({ ...out, messages: out.messages.map(commandForAgent) });
   }
   if (what === "ack") {
