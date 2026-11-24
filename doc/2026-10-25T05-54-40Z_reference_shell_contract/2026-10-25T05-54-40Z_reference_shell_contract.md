@@ -220,7 +220,6 @@ reports:
 The validator lives in `pkgs/id/src/shell_contract.rs`, with a TypeScript port
 for the browser tests in `pkgs/id/web/src/shell-contract.ts`.
 
-
 ## The conformance suite
 
 One shell's check is not the gate for a family of shells. The suite

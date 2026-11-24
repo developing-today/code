@@ -18,7 +18,7 @@
 import { createSign } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isTimeoutAbort, outboundTimeout } from "./fetchTimeout.ts";
+import { OUTBOUND_FETCH_TIMEOUT_MS, isTimeoutAbort, outboundTimeout } from "./fetchTimeout.ts";
 
 /** The packaged fleet binary the fallback's sync verbs run through:
  * PM_DISPATCH_FLEET_BIN overrides; the default is the packaged
@@ -26,6 +26,10 @@ import { isTimeoutAbort, outboundTimeout } from "./fetchTimeout.ts";
 const FLEET_BIN = process.env.PM_DISPATCH_FLEET_BIN ?? join(homedir(), ".local", "bin", "fleet");
 
 const GH_API = "https://api.github.com";
+
+/** Bound for one gh CLI fallback call (#6992): the same 15 s discipline
+ * the fetch routes carry (#10825), enforced on the subprocess. */
+export const GH_SUBPROCESS_TIMEOUT_MS = OUTBOUND_FETCH_TIMEOUT_MS;
 
 export class GitHubError extends Error {
   status = 502;
@@ -141,6 +145,9 @@ export class GitHubClient {
   constructor(
     private appId: string | null,
     private appPrivateKeyPem: string | null,
+    /** gh CLI fallback binary; a constructor seam so tests can point the
+     * fallback at a fake `gh` (Bun.spawn does not re-read a mutated PATH). */
+    private ghBinary = "gh",
   ) {}
 
   get appConfigured(): boolean {
@@ -214,7 +221,7 @@ export class GitHubClient {
   // token rotation, and its stdout is the underlying call's stdout,
   // byte-exact, so the parsers below keep their shapes.
 
-  private async fleetGh(args: string[]): Promise<string> {
+  private async fleetGh(args: string[], timeoutMs = GH_SUBPROCESS_TIMEOUT_MS): Promise<string> {
     let proc;
     try {
       proc = Bun.spawn([FLEET_BIN, "gh", ...args], {
@@ -227,13 +234,56 @@ export class GitHubClient {
         `fleet gh ${args[0]} failed to start: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
-    const [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    if (code !== 0) throw new GitHubError(`fleet gh ${args[0]} failed: ${err.trim().slice(0, 200)}`);
-    return out;
+    // The fetch routes are bounded (#10825) and so is the direct-gh
+    // fallback below: a subprocess parked on API rate-limit retries
+    // must never hold the launch handler open indefinitely (#6992).
+    // The fleet path carries the same bound.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        proc.kill();
+        reject(new GitHubError(`fleet gh ${args[0]} timed out after ${timeoutMs} ms — killed`));
+      }, timeoutMs);
+    });
+    try {
+      const [out, err, code] = await Promise.race([
+        Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]),
+        deadline,
+      ]);
+      if (code !== 0) throw new GitHubError(`fleet gh ${args[0]} failed: ${err.trim().slice(0, 200)}`);
+      return out;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async gh(args: string[], input?: string, timeoutMs = GH_SUBPROCESS_TIMEOUT_MS): Promise<string> {
+    const proc = Bun.spawn([this.ghBinary, ...args], {
+      stdin: input !== undefined ? new Blob([input]) : "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    // The fetch routes are bounded (#10825) but this subprocess was not:
+    // a gh call parked on API rate-limit retries held the launch handler
+    // open indefinitely (#6992). Kill the subprocess at the same bound
+    // and surface the timeout as a GitHubError, like any other gh failure.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        proc.kill();
+        reject(new GitHubError(`gh ${args[0]} ${args[1] ?? ""} timed out after ${timeoutMs} ms — killed`));
+      }, timeoutMs);
+    });
+    try {
+      const [out, err, code] = await Promise.race([
+        Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]),
+        deadline,
+      ]);
+      if (code !== 0) throw new GitHubError(`gh ${args[0]} ${args[1] ?? ""} failed: ${err.trim().slice(0, 200)}`);
+      return out;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   // --- public surface --------------------------------------------------------

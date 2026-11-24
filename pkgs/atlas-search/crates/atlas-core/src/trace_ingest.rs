@@ -1037,7 +1037,11 @@ mod tests {
             "retry query",
             "hashretry",
         );
-        let aged = write_file(&dir, "atlas-traces-2026-01-01.jsonl", &[line.clone()]);
+        let aged = write_file(
+            &dir,
+            "atlas-traces-2026-01-01.jsonl",
+            std::slice::from_ref(&line),
+        );
         let cold_dir = dir.join(COLD_DIR_NAME);
         std::fs::create_dir_all(&cold_dir).expect("cold dir");
         write_file(&cold_dir, "atlas-traces-2026-01-01.jsonl", &[line]);

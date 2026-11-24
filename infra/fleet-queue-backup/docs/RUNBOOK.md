@@ -104,6 +104,51 @@ because a silently wrong coordination store double-claims work.
    it. For a drill, destroy the scratch database instead:
    `turso db destroy fleet-queue-restore-drill`.
 
+## The D1 backup home (mesh class D, #13458)
+
+The D1 copy itself is backed up weekly (Sundays 03:40, plus up to
+30 min randomized delay, `fleet-queue-backup-d1-home.timer`) into a
+dedicated Turso database, `d1-backup-fleet-queue-backup` — its
+backup home under the mesh design (#9093 §6), giving the D1 side
+Turso PITR plus the home's own mesh coverage. The home is a backup
+target, never a live read path: each import replaces the previous
+one wholesale, staged so a failed import leaves the previous import
+intact, and the home's `_d1_backup_home_meta` row (key `import`)
+records the source database, the import time, and the per-table row
+counts of the copy it holds.
+
+Provisioning the home the first time is an explicit act (the live
+leg of #13458):
+
+```bash
+turso db create d1-backup-fleet-queue-backup
+turso db tokens create d1-backup-fleet-queue-backup  # a write token
+# store the token in Bitwarden as
+#   turso.d1-backup-fleet-queue-backup-rw-token
+systemd/install-units.sh   # installs + enables the weekly timer too
+systemctl --user start fleet-queue-backup-d1-home.service
+```
+
+A successful run ends with `read-back counts match`. Post the run's
+import record (the meta row above, or the service's summary line)
+on #13458.
+
+Restore verification for the home: rebuild the D1 database from the
+home into a local SQLite file and check the counts against the
+import record:
+
+```bash
+TURSO_HOME_TOKEN=<home token> \
+  python3 bin/restore_drill_d1_home.py \
+    --out ~/restore-drill/d1-home-rebuilt.db \
+    --d1-name fleet-queue-backup
+```
+
+It must end with `counts match the import record`. The rebuilt file
+is a faithful SQLite copy of the D1 database's content; loading it
+into a scratch D1 (via the D1 import API) is the disaster path if
+the D1 database itself is ever lost.
+
 ## Failure notes
 
 - Export fails at the D1 import step: D1 imports are whole-file;
@@ -117,3 +162,19 @@ because a silently wrong coordination store double-claims work.
   schema-agnostic — it copies whatever `sqlite_master` holds — so
   no change is needed here; the first export after a migration
   carries the new schema.
+- The D1 home export fails during the import: the new copy was only
+  staged; the previous import in the home is intact and still the
+  recorded one. The run names the failing table or the smear
+  (source counts moved mid-run — rerun when the daily export is not
+  running). Fix the cause and rerun.
+- The D1 home export fails during the swap, or the home shows
+  `_d1retire_`-prefixed tables: a swap was interrupted. Do not
+  delete them by hand — the next export run reads the swap marker
+  and the import record, rolls an uncommitted swap back to the
+  retiring tables, or drops the retiring tables of a committed one,
+  before importing. Run the export again and confirm it verifies.
+- The home's wrapper reports missing credentials: the home token
+  (`turso.d1-backup-fleet-queue-backup-rw-token`) is minted at
+  provisioning time (see the class-D section above); until it
+  exists in Bitwarden the weekly service fails with that message,
+  which is the visible unprovisioned state, not a fault.

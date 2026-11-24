@@ -13,17 +13,17 @@
 
 ## Decision summary
 
-| Question | Decision | Where |
-| --- | --- | --- |
-| Comparison baseline | The accepted baseline `B` of #5999 §6, stored client-side per (user, world), keyed by `baseline_key` over the #5958 **release identity** | §1 |
-| When the notice fires | During connect, after the release record is resolved and `N` computed, **before** the connection completes or any capability is exercised; fail-closed (`unknown`) when the comparison cannot be computed | §2 |
-| Notice content | Headline + one plain-language line per **new class only**, client table text, client-side and server-side lines in separate groups; the full current disclosure and the used-set view are one expansion away, never the headline | §3 |
-| User choices | **Connect once** / **Connect and remember this set** / **Don't connect** — no default button; per-class denial of new client-side classes composes with the first two | §4 |
-| Decrease asymmetry | Decreases never prompt; the baseline **narrows automatically** to the covered smaller set on a silent reconnect, so a later re-addition prompts as the expansion it is | §5 |
-| Re-baselining rule | `B` changes only by: an explicit remember-choice, first-connect decisions, an invite pin, automatic narrowing, or a grant-page edit. Never by connecting, by a server action, or by an update alone | §5 |
-| Other audiences | Server admins decide new **server-side** classes at serve time under #5960 §3 modes (users see disclosure only); authors get the declaration-defect channel at publish time, never a user prompt | §6 |
-| Invites | Accepting an invite **may pin** the capability baseline as issued: an optional pin in the invite terms records the release identity + table version; on first join, an uncovered expansion prompts exactly like a reconnect | §7 |
-| Grant-on-use | The notice does not cover it; where a world's policy is grant-on-use, the notice carries a standing honesty line saying so | §3.3 |
+| Question              | Decision                                                                                                                                                                                                                         | Where |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| Comparison baseline   | The accepted baseline `B` of #5999 §6, stored client-side per (user, world), keyed by `baseline_key` over the #5958 **release identity**                                                                                         | §1    |
+| When the notice fires | During connect, after the release record is resolved and `N` computed, **before** the connection completes or any capability is exercised; fail-closed (`unknown`) when the comparison cannot be computed                        | §2    |
+| Notice content        | Headline + one plain-language line per **new class only**, client table text, client-side and server-side lines in separate groups; the full current disclosure and the used-set view are one expansion away, never the headline | §3    |
+| User choices          | **Connect once** / **Connect and remember this set** / **Don't connect** — no default button; per-class denial of new client-side classes composes with the first two                                                            | §4    |
+| Decrease asymmetry    | Decreases never prompt; the baseline **narrows automatically** to the covered smaller set on a silent reconnect, so a later re-addition prompts as the expansion it is                                                           | §5    |
+| Re-baselining rule    | `B` changes only by: an explicit remember-choice, first-connect decisions, an invite pin, automatic narrowing, or a grant-page edit. Never by connecting, by a server action, or by an update alone                              | §5    |
+| Other audiences       | Server admins decide new **server-side** classes at serve time under #5960 §3 modes (users see disclosure only); authors get the declaration-defect channel at publish time, never a user prompt                                 | §6    |
+| Invites               | Accepting an invite **may pin** the capability baseline as issued: an optional pin in the invite terms records the release identity + table version; on first join, an uncovered expansion prompts exactly like a reconnect      | §7    |
+| Grant-on-use          | The notice does not cover it; where a world's policy is grant-on-use, the notice carries a standing honesty line saying so                                                                                                       | §3.3  |
 
 ## 1. The baseline, against the #5958 schema
 
@@ -60,7 +60,7 @@ The check is a stage of connecting, not a screen before it and not a badge after
 4. Otherwise the client compares `N` against `B`:
    - **Covered** (`∀ c ∈ N, ∃ b ∈ B : c ≼ b`): the connection proceeds with no prompt. If `N` is strictly smaller, the baseline narrows (§5) and the narrowing is written to history.
    - **Not covered**: the connection is **held** — no world code runs, no capability is exercised, no presence is announced — and the notice (§3) is presented with the choices of §4. Only a choice completes or aborts the connection.
-5. A first connect has no `B`: it follows the #5960 §1.2 flow (full disclosure, decision required for client-side lines), and the decisions taken there establish `B`. The notice of this record is the *returning*-user surface; §7 covers the one case where a first connect also produces a notice (an invite pin).
+5. A first connect has no `B`: it follows the #5960 §1.2 flow (full disclosure, decision required for client-side lines), and the decisions taken there establish `B`. The notice of this record is the _returning_-user surface; §7 covers the one case where a first connect also produces a notice (an invite pin).
 
 Drew's requirement is "a warning or notice **before the user connects** and has unexpected results" — step 4's hold is what makes that literal: the prompt is not advisory chrome around a connection that already happened, and declining it leaves the user exactly where they were (§4).
 
@@ -96,17 +96,17 @@ When the comparison cannot be computed (§1), the notice appears with the single
 
 ### 3.3 The grant-on-use honesty line
 
-Grant-on-use (`Decision::AllowAndGrant`) can grow the *granted* set during a connection; no reconnect notice can cover that, and #5999 §4 rule 9 assigns the seam to this record. Where the world's policy is grant-on-use (already a reported fact in `CapsReport.policy`), the notice — and the first-connect disclosure — carries one standing line: "This world may ask for more while you are connected; those requests are decided as they happen, not by this notice." The notice never claims a guarantee it does not provide.
+Grant-on-use (`Decision::AllowAndGrant`) can grow the _granted_ set during a connection; no reconnect notice can cover that, and #5999 §4 rule 9 assigns the seam to this record. Where the world's policy is grant-on-use (already a reported fact in `CapsReport.policy`), the notice — and the first-connect disclosure — carries one standing line: "This world may ask for more while you are connected; those requests are decided as they happen, not by this notice." The notice never claims a guarantee it does not provide.
 
 ## 4. The user's choices
 
 Exactly three primary choices, with the semantics #5999 §4.1 fixes and the controls this record settles:
 
-| Choice | Connects? | Effect on `B` | Precedent |
-| --- | --- | --- | --- |
-| **Connect once** | Yes, holding `N` | Unchanged — the same change prompts again next time | Android "Only this time" (#5961 §1.2) |
-| **Connect and remember this set** | Yes, holding `N` | `B := N` — the only notice path that raises the baseline, always an explicit act | Remembered per-scope grants (#5961 §4) |
-| **Don't connect** | No | Unchanged | Firefox: declining an update's new permissions blocks only that update (#5961 §1.5) |
+| Choice                            | Connects?        | Effect on `B`                                                                    | Precedent                                                                           |
+| --------------------------------- | ---------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| **Connect once**                  | Yes, holding `N` | Unchanged — the same change prompts again next time                              | Android "Only this time" (#5961 §1.2)                                               |
+| **Connect and remember this set** | Yes, holding `N` | `B := N` — the only notice path that raises the baseline, always an explicit act | Remembered per-scope grants (#5961 §4)                                              |
+| **Don't connect**                 | No               | Unchanged                                                                        | Firefox: declining an update's new permissions blocks only that update (#5961 §1.5) |
 
 Rules:
 
@@ -135,7 +135,7 @@ The issue asks whether there is a "remember for capability decreases only" asymm
 
 The notice is a per-user, client-side surface. Two other audiences have their own channels; neither is this prompt:
 
-- **Server admins — server-side classes are decided at serve time, not at someone else's connect.** When a release whose server-side message set is not covered by the admin's recorded decisions is first registered/served on a server, it appears on the admin surface as a pending item under the #5960 §3 grant modes: *approve generally* covers future releases silently; a per-permission or per-website *ignore* makes the class inert there; until decided, the world is served without the undecided server-side classes where they are optional, and not served where one is load-bearing (§5960 §4's server-side rule). Every such decision lands in the server's grant log with who/when/mode/scope. The connecting user's notice (§3) only discloses the outcome.
+- **Server admins — server-side classes are decided at serve time, not at someone else's connect.** When a release whose server-side message set is not covered by the admin's recorded decisions is first registered/served on a server, it appears on the admin surface as a pending item under the #5960 §3 grant modes: _approve generally_ covers future releases silently; a per-permission or per-website _ignore_ makes the class inert there; until decided, the world is served without the undecided server-side classes where they are optional, and not served where one is load-bearing (§5960 §4's server-side rule). Every such decision lands in the server's grant log with who/when/mode/scope. The connecting user's notice (§3) only discloses the outcome.
 - **World and library authors — the declaration-defect channel.** When a publish-time derivation shows a release's `discovered_used` exceeding its declaration, or a dependency's footprint change moving a dependent world's declared message set, the author is notified at publish time through the registry surface: the release record's `discovered_used.provenance` and analyzer fields name what changed and which dependency moved. The author's cure is a declaration change; the user-facing consequence, if any, then flows through §2's trigger as a real class with real wording. Authors are never notified via their users' prompts, and users are never prompted about a defect that is the author's to fix (#5999 §5).
 
 ## 7. Invites: accepting an invite pins the baseline as issued
@@ -148,11 +148,11 @@ The notice is a per-user, client-side surface. Two other audiences have their ow
 
 1. The redeeming client fetches the pinned release's record by identity and computes the pinned message set `P`. (If it cannot — the pinned release is unavailable — the pin is unusable and the join falls back to an ordinary first connect; an unusable pin is not an error and not a prompt.)
 2. It computes `N` for the release it would actually join.
-   - **`N` covered by `P`:** the pin seeds the baseline, `B := P` narrowed to `N` (§5 path 3 + narrowing). The first-connect disclosure still shows — it is a reading surface (#5960 §1) — and per-capability deny controls still work, narrowing `B` further; but no separate blocking capability decision is required for the covered classes. Accepting the invite *was* the decision, made with the inviter's vouch for the world as issued.
+   - **`N` covered by `P`:** the pin seeds the baseline, `B := P` narrowed to `N` (§5 path 3 + narrowing). The first-connect disclosure still shows — it is a reading surface (#5960 §1) — and per-capability deny controls still work, narrowing `B` further; but no separate blocking capability decision is required for the covered classes. Accepting the invite _was_ the decision, made with the inviter's vouch for the world as issued.
    - **`N` not covered by `P`:** the world grew between issuance and redemption. The notice of §3 fires **before the first connect completes**, worded for the situation ("Since this invite was created, <world> can now also:"), with the §4 choices unchanged. This is the case the pin exists for: without it, a first-join user has no "before" to compare against, and an expansion between issuance and redemption would be invisible — a silent upgrade delivered by a trusted link.
 3. **A pin never widens anything.** It can only seed a baseline at or below the current `N`; it grants nothing by itself, changes no server-side decision, and survives nothing about expiry or use caps — those remain the invite's own terms (#5751), enforced independently.
 
-Bearer public-distribution links will normally carry no pin — the inviter is not vouching for a capability set to strangers — and per-recipient links for sensitive worlds should carry one, the same recommendation shape as #5751's redeemer pin. The two pins compose: a redeemer pin says *who* may join; a capability pin says *what they were invited to*.
+Bearer public-distribution links will normally carry no pin — the inviter is not vouching for a capability set to strangers — and per-recipient links for sensitive worlds should carry one, the same recommendation shape as #5751's redeemer pin. The two pins compose: a redeemer pin says _who_ may join; a capability pin says _what they were invited to_.
 
 ## 8. Implementation shape
 

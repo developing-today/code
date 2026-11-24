@@ -205,11 +205,7 @@ export async function authenticate(req: Request, deps: AuthDeps): Promise<Caller
  * slices' business logic, not the plumbing). */
 export function authorizeRoute(ctx: CallerContext, doorId: string): void {
   if (ctx.kind === "service" && !(ctx.serviceRoutes ?? []).includes(doorId)) {
-    throw new FailClosed(
-      403,
-      "service_token_route_scope",
-      `service token is not scoped to the ${doorId} door`,
-    );
+    throw new FailClosed(403, "service_token_route_scope", `service token is not scoped to the ${doorId} door`);
   }
 }
 
@@ -220,11 +216,7 @@ export function assertCallerTenancy(req: Request, ctx: CallerContext): void {
   for (const name of ["x-binding-id", "x-tenancy-binding"]) {
     const asserted = req.headers.get(name);
     if (asserted !== null && asserted !== ctx.bindingId) {
-      throw new FailClosed(
-        403,
-        "cross_tenant_refused",
-        "request asserts a tenancy other than its credential's",
-      );
+      throw new FailClosed(403, "cross_tenant_refused", "request asserts a tenancy other than its credential's");
     }
   }
 }

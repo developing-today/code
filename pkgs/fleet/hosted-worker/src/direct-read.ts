@@ -124,9 +124,7 @@ export async function mintDirectReadToken(
     enc.encode(JSON.stringify(claims)),
   )}`;
   const key = await importSigningKey(config.signing.pkcs8);
-  const signature = new Uint8Array(
-    await crypto.subtle.sign({ name: "Ed25519" }, key, enc.encode(signingInput)),
-  );
+  const signature = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, enc.encode(signingInput)));
   return `${signingInput}.${bytesToB64url(signature)}`;
 }
 
@@ -180,12 +178,7 @@ export async function inspectDirectReadToken(
 
   const key = await importVerifyKey(rawKey);
   const valid = await crypto.subtle
-    .verify(
-      { name: "Ed25519" },
-      key,
-      parsed.signature as BufferSource,
-      new TextEncoder().encode(parsed.signingInput),
-    )
+    .verify({ name: "Ed25519" }, key, parsed.signature as BufferSource, new TextEncoder().encode(parsed.signingInput))
     .catch(() => false);
   if (!valid) return refused("bad_signature");
 

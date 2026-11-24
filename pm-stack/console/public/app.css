@@ -9,8 +9,11 @@
   --accent: #4c9aff;
   --accent-ink: #06121f;
   --good: #3fb950;
+  --good-ink: #04130a;
   --warn: #d29922;
   --bad: #f85149;
+  /* Text on that red: white on it was 3.4 to 1. */
+  --bad-ink: #1a0405;
   --tab-h: 62px;
   --top-h: 52px;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -31,8 +34,12 @@
        they are too faint to read (2.2 to 3.4 to 1). These are at least
        5 to 1 on every light surface here. */
     --good: #18753a;
+    /* Text on that darker green: the dark ink made for the dark page's
+       green was 3.3 to 1 on it. */
+    --good-ink: #ffffff;
     --warn: #8a5a00;
     --bad: #c5222c;
+    --bad-ink: #ffffff;
   }
 }
 * {
@@ -95,6 +102,26 @@ a.button {
 }
 .fresh.down {
   color: var(--bad);
+}
+/* The line under the header: no connection, and what is kept to send. */
+.kept {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  min-height: 44px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: left;
+}
+.kept.warn {
+  color: var(--warn);
 }
 main {
   max-width: 760px;
@@ -373,7 +400,7 @@ button.ghost {
 button.danger {
   background: var(--bad);
   border-color: var(--bad);
-  color: #fff;
+  color: var(--bad-ink);
 }
 button.small {
   min-height: 34px;
@@ -612,13 +639,19 @@ pre {
   padding: 12px 14px;
   border-radius: 12px;
   background: var(--good);
-  color: #04130a;
+  color: var(--good-ink);
   font-weight: 600;
   z-index: 20;
 }
 .toast.bad {
   background: var(--bad);
-  color: #fff;
+  color: var(--bad-ink);
+}
+/* A button on it (Undo) is written in the toast's own ink: the page's
+   text colour is made for the page, not for this green or red. */
+.toast button {
+  color: inherit;
+  border-color: currentColor;
 }
 dialog {
   width: min(92vw, 520px);

@@ -7,8 +7,8 @@ use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use id::groups::Role;
 use id::invites::{
-    AcceptSender, Invitation, InviteEvent, InviteSource, InviteTarget, InviteTerms, RouteStatus,
-    check_route, join,
+    AcceptSender, Invitation, InviteEvent, InviteSource, InviteTarget, InviteTerms,
+    MAX_SOURCE_DEPTH, RouteStatus, check_route, join,
 };
 use iroh_base::{EndpointAddr, SecretKey, TransportAddr};
 use iroh_tickets::endpoint::EndpointTicket;
@@ -387,6 +387,59 @@ fn an_invite_with_terms_round_trips_and_still_checks_the_route() {
     let status = join(&invitation, Some(&event), NOW, &mut sent, b"accept").unwrap();
     assert_eq!(status, RouteStatus::Verified);
     assert_eq!(sent.sent.len(), 1);
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn sign_terms_refuses_a_directly_built_child_over_the_depth_cap() {
+    // Oracle (#13217): `InviteTerms` is public, so a child invite's terms can
+    // be built directly with a parent digest and an over-cap depth, bypassing
+    // `InviteBody::child_terms` and its strict decrease. Signing must refuse
+    // them: the cap binds child terms too, not only source terms.
+    let ticket = ticket(7);
+    let over_cap = InviteTerms {
+        parent_digest: Some([0x42; 32]),
+        depth_remaining: u8::MAX,
+        ..InviteTerms::source(
+            InviteSource::OpenDelegation,
+            InviteTarget::Group([0xaa; 32]),
+            Role::Write,
+            EXPIRES,
+        )
+    };
+    let error = InviteEvent::sign_terms(&inviter(), &ticket, over_cap).unwrap_err();
+    assert!(format!("{error:#}").contains("over the cap"), "{error:#}");
+
+    // A valid child still signs: minted through `child_terms` from a source
+    // at the cap, its depth strictly decreases and stays under the cap.
+    let source = InviteEvent::sign_terms(
+        &inviter(),
+        &ticket,
+        InviteTerms::source(
+            InviteSource::OpenDelegation,
+            InviteTarget::Group([0xaa; 32]),
+            Role::Write,
+            EXPIRES,
+        )
+        .with_depth(MAX_SOURCE_DEPTH)
+        .unwrap(),
+    )
+    .unwrap();
+    let child = source
+        .body
+        .child_terms(
+            InviteTarget::Group([0xaa; 32]),
+            Role::Read,
+            EXPIRES,
+            MAX_SOURCE_DEPTH - 1,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let event = InviteEvent::sign_terms(&inviter(), &ticket, child).unwrap();
+    assert_eq!(event.body.depth_remaining, MAX_SOURCE_DEPTH - 1);
+    assert_eq!(event.body.parent_digest, Some(source.body.digest()));
 }
 
 #[test]

@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -17,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 
+use id_core::boundary::EnforcementPoint;
+use id_core::boundary_surfaces::FrameworkOutcome;
 use id_sync::artifact::{
     self, ArtifactLog, ArtifactSink, Document, FriendRemove, HomeDeclared, HomeServer, Kind,
     SignedArtifact, Stored, Tag,
@@ -325,6 +328,51 @@ pub enum Received {
     Duplicate,
 }
 
+/// The boundary gate for the signup/login surface (#7787, design
+/// `doc/2026-11-08_design_id5683.md` §8): the one seam through which
+/// account creation and login consult the shared boundary evaluator.
+///
+/// The directory owns no boundary semantics. An implementation runs the
+/// one shared adapter, [`id_core::boundary_surfaces::check_surface`],
+/// over the operator's enabled declarations and returns the
+/// [`FrameworkOutcome`] the surface renders; it also persists the
+/// decision-log entry a non-allow outcome carries before returning, so
+/// every deny / step-up / quarantine is on record with its evidence
+/// classes (§8 audit rule). With no gate installed, signup and login run
+/// exactly as they did before the surface was wired: boundaries are
+/// opt-in capabilities, and off is the only implicit default (§1).
+pub trait BoundaryGate: Send + Sync {
+    /// Check one signup/login action for `subject` (the account key the
+    /// action creates, or authenticates as) at enforcement `point`.
+    fn check(&self, point: EnforcementPoint, subject: &str) -> FrameworkOutcome;
+}
+
+/// The installed gate, held by identity: runtime wiring, not directory
+/// state, so two directories carry the same gate only when they share
+/// the one installed instance.
+#[derive(Clone)]
+struct BoundaryGateHandle(Arc<dyn BoundaryGate>);
+
+impl BoundaryGateHandle {
+    fn check(&self, point: EnforcementPoint, subject: &str) -> FrameworkOutcome {
+        self.0.check(point, subject)
+    }
+}
+
+impl std::fmt::Debug for BoundaryGateHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BoundaryGateHandle(..)")
+    }
+}
+
+impl PartialEq for BoundaryGateHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for BoundaryGateHandle {}
+
 /// The directory of accounts, groups, memberships and friends on one server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Directory {
@@ -353,6 +401,11 @@ pub struct Directory {
     /// never apply them against state formed after they were stored.
     /// Only replay fills this; it is not directory state.
     noted_removal_artifacts: Vec<String>,
+    /// The boundary gate the serving app installed for the signup/login
+    /// surface (#7787). Runtime wiring, not directory state: it is never
+    /// journaled, and a directory rebuilt by replay has none until the
+    /// app installs one again.
+    boundary_gate: Option<BoundaryGateHandle>,
 }
 
 impl Default for Directory {
@@ -389,6 +442,7 @@ impl Directory {
             journal: None,
             journaled_removals: Vec::new(),
             noted_removal_artifacts: Vec::new(),
+            boundary_gate: None,
         }
     }
 
@@ -604,6 +658,41 @@ impl Directory {
         Ok(())
     }
 
+    /// Install the boundary gate for the signup/login surface (#7787).
+    /// Until one is installed, account creation and login are unchecked:
+    /// no boundary is in force for this directory.
+    pub fn set_boundary_gate(&mut self, gate: Arc<dyn BoundaryGate>) {
+        self.boundary_gate = Some(BoundaryGateHandle(gate));
+    }
+
+    /// Run the installed gate for one signup/login action. `Allow` and
+    /// `Warn` proceed (a warning's decision is already logged by the
+    /// gate); `StepUp`, `Quarantine` and `Deny` refuse here, because
+    /// account creation and credential login cannot complete pending a
+    /// stronger authentication or a review — the surface renders the
+    /// outcome the gate recorded. The refusal names the outcome class
+    /// only, never an evidence value (§8).
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Refusal::Forbidden`] when the gate's outcome is not
+    /// an allow.
+    fn boundary_check(&self, point: EnforcementPoint, subject: &str) -> Result<()> {
+        let Some(gate) = &self.boundary_gate else {
+            return Ok(());
+        };
+        let outcome = gate.check(point, subject);
+        if outcome.is_allow() {
+            Ok(())
+        } else {
+            Err(Refusal::Forbidden(format!(
+                "boundary check refused this action (outcome: {})",
+                outcome.name()
+            ))
+            .into())
+        }
+    }
+
     /// Create an account. The returned credential is shown once; the server
     /// keeps only its digest.
     ///
@@ -619,14 +708,26 @@ impl Directory {
             name: name.to_owned(),
             digest: hex_encode(&Sha256::digest(secret)),
         };
+        self.boundary_check(EnforcementPoint::AccountCreation, &id)?;
         self.apply(&entry)?;
         Ok((format!("acct.{id}.{}", hex_encode(&secret)), entry))
     }
 
     /// The account a credential belongs to, if it is valid.
+    ///
+    /// This is the login check: when a boundary gate is installed
+    /// (#7787), a credential the gate refuses at the login point reads
+    /// exactly like an invalid one — the decision itself is on record
+    /// with the gate, with its evidence classes.
     #[must_use]
     pub fn account_for(&self, credential: &str) -> Option<String> {
-        self.authenticate(credential).ok().map(|(id, _)| id)
+        let (id, _) = self.authenticate(credential).ok()?;
+        if let Some(gate) = &self.boundary_gate
+            && !gate.check(EnforcementPoint::Login, &id).is_allow()
+        {
+            return None;
+        }
+        Some(id)
     }
 
     /// Mark an account as verified. Only the server may do this.
@@ -653,8 +754,10 @@ impl Directory {
     /// Fails if the key is not an Ed25519 public key, the name is invalid, or
     /// the key already belongs to an account.
     pub fn sign_up_keyed(&mut self, key: &str, name: &str) -> Result<DirectoryEntry> {
+        let id = normalize_key(key)?;
+        self.boundary_check(EnforcementPoint::AccountCreation, &id)?;
         let entry = DirectoryEntry::AccountKeyed {
-            id: normalize_key(key)?,
+            id,
             name: name.to_owned(),
         };
         self.apply(&entry)?;
@@ -4360,6 +4463,212 @@ mod tests {
 
     fn refusal(error: &anyhow::Error) -> &Refusal {
         error.downcast_ref::<Refusal>().unwrap()
+    }
+
+    /// A boundary gate whose outcome the test flips between calls, and
+    /// which records the enforcement points it was consulted at (#7787).
+    struct SwitchGate {
+        outcome: std::sync::Mutex<FrameworkOutcome>,
+        points: std::sync::Mutex<Vec<EnforcementPoint>>,
+    }
+
+    impl SwitchGate {
+        fn new(outcome: FrameworkOutcome) -> Arc<Self> {
+            Arc::new(Self {
+                outcome: std::sync::Mutex::new(outcome),
+                points: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn set(&self, outcome: FrameworkOutcome) {
+            *self.outcome.lock().unwrap() = outcome;
+        }
+
+        fn points(&self) -> Vec<EnforcementPoint> {
+            self.points.lock().unwrap().clone()
+        }
+    }
+
+    impl BoundaryGate for SwitchGate {
+        fn check(&self, point: EnforcementPoint, _subject: &str) -> FrameworkOutcome {
+            self.points.lock().unwrap().push(point);
+            self.outcome.lock().unwrap().clone()
+        }
+    }
+
+    fn deny_outcome() -> FrameworkOutcome {
+        FrameworkOutcome::Deny {
+            placement: Vec::new(),
+            assurance: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn boundary_gate_refuses_account_creation_and_creates_nothing() {
+        // Oracle (#7787): with a gate whose outcome is Deny, account
+        // creation through either signup path is refused as Forbidden
+        // and leaves no account behind — the same key signs up cleanly
+        // once the gate allows, which a created account would prevent.
+        let gate = SwitchGate::new(deny_outcome());
+        let mut directory = Directory::new();
+        directory.set_boundary_gate(gate.clone());
+
+        let key = public_key(7);
+        let error = directory.sign_up_keyed(&key, "Kay").unwrap_err();
+        assert!(
+            matches!(refusal(&error), Refusal::Forbidden(message) if message.contains("outcome: deny"))
+        );
+        let error = directory.sign_up("Kay").unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Forbidden(_)));
+        assert_eq!(
+            gate.points(),
+            vec![
+                EnforcementPoint::AccountCreation,
+                EnforcementPoint::AccountCreation
+            ]
+        );
+
+        gate.set(FrameworkOutcome::Allow);
+        directory.sign_up_keyed(&key, "Kay").unwrap();
+        assert_eq!(directory.account_for_key(&key), Some(key.clone()));
+    }
+
+    #[test]
+    fn boundary_gate_refuses_login_and_only_login_is_consulted() {
+        // Oracle (#7787): a refused login reads exactly like an invalid
+        // credential, and `account_for` consults the gate at the login
+        // point only.
+        let gate = SwitchGate::new(FrameworkOutcome::Allow);
+        let mut directory = Directory::new();
+        directory.set_boundary_gate(gate.clone());
+        let (credential, _) = directory.sign_up("Ada").unwrap();
+        let id = directory.account_for(&credential).unwrap();
+        assert_eq!(
+            gate.points(),
+            vec![EnforcementPoint::AccountCreation, EnforcementPoint::Login]
+        );
+
+        gate.set(deny_outcome());
+        assert_eq!(directory.account_for(&credential), None);
+        assert_eq!(gate.points().last(), Some(&EnforcementPoint::Login));
+
+        gate.set(FrameworkOutcome::Allow);
+        assert_eq!(directory.account_for(&credential), Some(id));
+    }
+
+    #[test]
+    fn boundary_gate_warn_outcome_proceeds() {
+        // Oracle (#7787): Warn allows the action (the user is told; the
+        // gate has logged the decision).
+        let gate = SwitchGate::new(FrameworkOutcome::Warn {
+            placement: Vec::new(),
+            assurance: Vec::new(),
+        });
+        let mut directory = Directory::new();
+        directory.set_boundary_gate(gate);
+        let (credential, _) = directory.sign_up("Ada").unwrap();
+        assert!(directory.account_for(&credential).is_some());
+    }
+
+    struct OkVerifier;
+
+    impl id_core::residency::EvidenceVerifier for OkVerifier {
+        fn signature_valid(&self, _evidence: &id_core::residency::Evidence) -> bool {
+            true
+        }
+
+        fn revoked(&self, _evidence: &id_core::residency::Evidence) -> bool {
+            false
+        }
+    }
+
+    /// A gate backed by the one shared adapter (#7787): it runs
+    /// `check_surface` itself, with no evaluation of its own, and offers
+    /// no subject evidence — so an enabled declaration denies.
+    struct SharedPathGate {
+        effective: id_core::boundary::EffectiveBoundary,
+        policy: id_core::residency::Policy,
+    }
+
+    impl BoundaryGate for SharedPathGate {
+        fn check(&self, point: EnforcementPoint, subject: &str) -> FrameworkOutcome {
+            id_core::boundary_surfaces::check_surface(
+                point,
+                &self.effective,
+                7,
+                &id_core::boundary::ScopeRef::Server("srv".to_owned()),
+                &id_core::boundary::ActorId("admin".to_owned()),
+                subject,
+                &id_core::residency::Scope::Scoped(self.policy.clone()),
+                &[],
+                50,
+                &OkVerifier,
+            )
+            .outcome
+        }
+    }
+
+    fn boundary_policy() -> id_core::residency::Policy {
+        let mut policy = id_core::residency::Policy::new(["root".to_string()]);
+        for plane in id_core::residency::Plane::ALL {
+            policy = policy
+                .allow(plane, &["eu"], &["r"])
+                .trust_evidence_source(plane, "control-plane");
+        }
+        policy
+    }
+
+    fn boundary_effective(
+        enforcement: &[EnforcementPoint],
+    ) -> id_core::boundary::EffectiveBoundary {
+        use id_core::boundary::{
+            BoundaryDeclaration, BoundaryDeclarationBody, CapabilityKind, EvidenceRequirement,
+            FailureBehaviour, ScopeRef, SubjectClass,
+        };
+        let declaration = BoundaryDeclaration::new(BoundaryDeclarationBody {
+            capability: CapabilityKind::Residency,
+            scope: ScopeRef::Server("srv".to_owned()),
+            subject_class: SubjectClass::User,
+            evidence_req: EvidenceRequirement {
+                minimum_assurance: id_core::boundary::AssuranceLevel::OrgAttested,
+                accepted_sources: BTreeSet::new(),
+            },
+            enforcement: enforcement.iter().copied().collect(),
+            failure: FailureBehaviour::Deny,
+            data_ref: None,
+            enabled: true,
+            version: 7,
+            declared_by: id_core::boundary::ActorId("admin".to_owned()),
+            declared_at: 1,
+        })
+        .unwrap();
+        id_core::boundary::effective(Some(&declaration), None, None).unwrap()
+    }
+
+    #[test]
+    fn shared_path_gate_covers_only_the_points_the_declaration_names() {
+        // Oracle (#7787 acceptance): the surface calls the shared path,
+        // and coverage is per enforcement point — a declaration naming
+        // only account creation refuses signup and leaves login alone;
+        // one naming only login does the reverse.
+        let mut directory = Directory::new();
+        let (credential, _) = directory.sign_up("Ada").unwrap();
+        let id = directory.account_for(&credential).unwrap();
+
+        directory.set_boundary_gate(Arc::new(SharedPathGate {
+            effective: boundary_effective(&[EnforcementPoint::AccountCreation]),
+            policy: boundary_policy(),
+        }));
+        let error = directory.sign_up("Bo").unwrap_err();
+        assert!(matches!(refusal(&error), Refusal::Forbidden(_)));
+        assert_eq!(directory.account_for(&credential), Some(id.clone()));
+
+        directory.set_boundary_gate(Arc::new(SharedPathGate {
+            effective: boundary_effective(&[EnforcementPoint::Login]),
+            policy: boundary_policy(),
+        }));
+        directory.sign_up("Bo").unwrap();
+        assert_eq!(directory.account_for(&credential), None);
     }
 
     #[test]

@@ -113,10 +113,7 @@ function filterString(raw: Record<string, unknown>, key: string): string | undef
  * the "owner/name#123" string form or the §12 object form
  * {repo, number} (extra keys, e.g. kind, are the block's own and
  * are not part of the match). */
-function filterItemRef(
-  raw: Record<string, unknown>,
-  key: string,
-): { repo: string; number: number } | undefined {
+function filterItemRef(raw: Record<string, unknown>, key: string): { repo: string; number: number } | undefined {
   const value = raw[key];
   if (value === undefined || value === null) return undefined;
   if (typeof value === "string") {
@@ -207,10 +204,7 @@ function stableStringify(value: unknown): string {
 
 /** The top-level Metadata keys whose values differ between the DB
  * row and the body block (present-on-one-side counts as differing). */
-export function divergenceFields(
-  dbMetadata: Record<string, unknown>,
-  bodyBlock: Record<string, unknown>,
-): string[] {
+export function divergenceFields(dbMetadata: Record<string, unknown>, bodyBlock: Record<string, unknown>): string[] {
   const keys = new Set([...Object.keys(dbMetadata), ...Object.keys(bodyBlock)]);
   const fields: string[] = [];
   for (const key of keys) {
@@ -350,9 +344,6 @@ export async function runMetadataQuery(
     }
   }
 
-  results.sort(
-    (a, b) =>
-      a.repo.localeCompare(b.repo) || a.kind.localeCompare(b.kind) || a.number - b.number,
-  );
+  results.sort((a, b) => a.repo.localeCompare(b.repo) || a.kind.localeCompare(b.kind) || a.number - b.number);
   return { filter, count: results.length, results };
 }

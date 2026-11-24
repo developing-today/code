@@ -207,6 +207,83 @@ CANDIDATE = {
 
 
 class TestLaunchStep(unittest.TestCase):
+    def test_live_mid_loop_cap_exhaustion_hands_back_next_candidate(self):
+        # The oracle is the real launch/hand-back subprocess boundary:
+        # with one launch slot and two candidates, the second task must
+        # be claimed, parked as executor-saturated and noted, not merely
+        # left as a cap_saturated fire-log skip.
+        binds = []
+        calls = empty_calls()
+        first = dict(
+            CANDIDATE,
+            id=777,
+            stage="launch_failed",
+            issue="#1187",
+            packet={"repo": "developing-today/code", "issue": {"number": 1187}},
+        )
+        second = dict(
+            first,
+            id=889,
+            issue="#1188",
+            packet={"repo": "developing-today/code", "issue": {"number": 1188}},
+        )
+        base_fake = make_fake_run(binds)
+        handback_fake = make_handback_run(calls)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and ("claim" in argv or "park" in argv):
+                return handback_fake(cmd, **kwargs)
+            if argv and argv[0] == "gh":
+                calls["gh"].append(argv)
+                if "view" in argv:
+                    return Result(0, "[]")
+                return Result(0, "")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(
+                claimant,
+                "run_poll",
+                return_value={"candidates": [first, second]},
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            hand_back = []
+            launched, skips = claimant.launch_step(
+                "live",
+                1,
+                fire_start_candidates=[first, second],
+                hand_back_out=hand_back,
+            )
+
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["task_id"], 777)
+        self.assertIn({"task_id": 889, "reason": "cap_saturated"}, skips)
+        self.assertEqual(len(calls["claim"]), 1)
+        claim_argv = calls["claim"][0]
+        self.assertEqual(claim_argv[claim_argv.index("--task") + 1], "889")
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertIn("executor-saturated", " ".join(calls["park"][0]))
+        self.assertTrue(
+            any(
+                "handed back" in argv[argv.index("--body") + 1]
+                for argv in calls["gh"]
+                if "--body" in argv
+            )
+        )
+        self.assertEqual(
+            hand_back,
+            [
+                {
+                    "task_id": 889,
+                    "parked": True,
+                    "noted": True,
+                    "reason": "executor-saturated",
+                }
+            ],
+        )
+
     def test_valid_candidate_launches_and_binds(self):
         binds = []
         with (
@@ -311,7 +388,7 @@ class TestLaunchStep(unittest.TestCase):
     def test_vanished_candidate_is_a_recorded_skip(self):
         calls = {"n": 0}
 
-        def poll_stub():
+        def poll_stub(**_kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
                 return {"candidates": [dict(CANDIDATE)]}
@@ -610,10 +687,15 @@ class TestSupervisionStep(unittest.TestCase):
     def test_error_stopped_recovery_deletes_then_compare_clears_binding(self):
         binds = []
         deletes = []
-        with patch.object(
-            claimant, "_delete_session", side_effect=lambda sid: deletes.append(sid) or True
-        ), patch.object(
-            claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+        with (
+            patch.object(
+                claimant,
+                "_delete_session",
+                side_effect=lambda sid: deletes.append(sid) or True,
+            ),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+            ),
         ):
             recovered = claimant._recover_error_stopped("ses_error", 4242, {})
         self.assertTrue(recovered)
@@ -635,13 +717,9 @@ class TestSupervisionStep(unittest.TestCase):
             stub_claimed_rows([BOUND_ROW]),
             patch.object(claimant, "_fetch_sessions", return_value=[]),
             patch.object(claimant, "_fetch_active_ids", return_value=set()),
-            patch.object(
-                claimant, "_get_session", return_value=("ok", error_session)
-            ),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
             patch.object(claimant, "_delete_session", return_value=True),
-            patch.object(
-                claimant.subprocess, "run", make_fake_run(binds)
-            ),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
         ):
             recovered = claimant.supervision_step("live")
         self.assertEqual(recovered[0]["reason"], "error_stopped")
@@ -800,7 +878,7 @@ class TestMainFireLog(unittest.TestCase):
     def test_main_records_launch_skips_in_fires_entry(self):
         calls = {"n": 0}
 
-        def poll_stub():
+        def poll_stub(**_kwargs):
             calls["n"] += 1
             # The gate (call 1) sees the candidate and main threads
             # it into launch_step as the fire-start snapshot (#8038);
@@ -1554,6 +1632,24 @@ class TestHandBackStep(unittest.TestCase):
         self.assertEqual(calls["park"], [])
         self.assertEqual(calls["gh"], [])
 
+    def test_handback_reuses_claim_already_collected_for_launch(self):
+        calls = empty_calls()
+        with patch.object(
+            claimant.subprocess,
+            "run",
+            make_handback_run(calls),
+        ):
+            record = claimant.hand_back_step(
+                "live",
+                [dict(HANDBACK_CANDIDATE)],
+                already_claimed_task_ids=[888],
+            )
+        self.assertEqual(record["parked"], True)
+        self.assertEqual(record["noted"], True)
+        self.assertEqual(calls["claim"], [])
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertEqual(len(calls["gh"]), 1)
+
     def test_mismatched_claim_parks_nothing(self):
         calls = empty_calls()
         with patch.object(
@@ -1589,6 +1685,129 @@ class TestHandBackStep(unittest.TestCase):
         self.assertEqual(calls, empty_calls())
 
 
+class TestBoundedPoll(unittest.TestCase):
+    def snapshot(self):
+        return {
+            "candidates": [],
+            "cap_room": 36,
+            "ledger_readable": True,
+            "queues": {q: {"read_ok": True} for q in claimant.QUEUES},
+        }
+
+    def poll(self, snapshot):
+        result = subprocess.CompletedProcess(
+            [], 0, json.dumps(snapshot), "claimant-poll-phase:snapshot\n"
+        )
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(claimant.subprocess, "run", return_value=result) as child,
+        ):
+            data = claimant.run_poll(timeout=12)
+        self.assertEqual(child.call_args.kwargs["timeout"], 12)
+        self.assertEqual(
+            child.call_args.kwargs["env"]["OPENCODE_CLAIMANT_POLL_SECONDS"], "12"
+        )
+        return data
+
+    def test_healthy_snapshot_keeps_decision(self):
+        snapshot = self.snapshot()
+        self.assertEqual(self.poll(snapshot), snapshot)
+        snapshot["candidates"] = [dict(CANDIDATE)]
+        self.assertEqual(self.poll(snapshot), snapshot)
+
+    def test_incomplete_snapshot_cannot_launch_even_with_candidate(self):
+        for field, bad, phase in (
+            ("cap_room", None, "session_census"),
+            ("ledger_readable", False, "ledger_read"),
+            ("queues", {}, "broker_reads"),
+            (
+                "queues",
+                {q: {"read_ok": False} for q in claimant.QUEUES},
+                "broker_reads",
+            ),
+        ):
+            with self.subTest(field=field, bad=bad):
+                snapshot = self.snapshot()
+                snapshot["candidates"] = [dict(CANDIDATE)]
+                snapshot[field] = bad
+                with self.assertRaises(claimant.PollFailure) as raised:
+                    self.poll(snapshot)
+                self.assertEqual(raised.exception.category, "incomplete_snapshot")
+                self.assertEqual(raised.exception.phase, phase)
+
+    def test_hard_timeout_reports_only_fixed_phase_not_stderr(self):
+        exc = subprocess.TimeoutExpired(
+            ["fixture"],
+            3,
+            stderr=b"private diagnostic\nclaimant-poll-phase:broker_reads\n",
+        )
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(claimant.subprocess, "run", side_effect=exc),
+        ):
+            with self.assertRaises(claimant.PollFailure) as raised:
+                claimant.run_poll(timeout=3)
+        self.assertEqual(str(raised.exception), "deadline during broker_reads")
+
+    def test_gate_spends_only_remaining_budget_and_records_fixed_category(self):
+        with (
+            patch.object(claimant.time, "monotonic", side_effect=[10.0, 27.0, 28.0]),
+            patch.object(claimant, "run_queue_health", return_value=None),
+            patch.object(
+                claimant,
+                "run_poll",
+                side_effect=claimant.PollFailure("deadline", "broker_reads"),
+            ) as read,
+        ):
+            self.assertIsNone(claimant.gate_step())
+        read.assert_called_once_with(timeout=298.0)
+        self.assertEqual(
+            claimant._gate_diagnostic,
+            {"category": "deadline", "phase": "broker_reads", "elapsed_ms": 18000},
+        )
+
+
+class TestSinkClaimDiagnostics(unittest.TestCase):
+    def test_fixed_categories_do_not_copy_cli_output_and_preserve_attempts(self):
+        fixtures = (
+            (subprocess.TimeoutExpired(["private"], 15, stderr=b"private"), "timeout"),
+            (OSError("private"), "spawn_error"),
+            (Result(13, "private"), "cli_nonzero"),
+            (Result(0, "private"), "invalid_json"),
+            (Result(0, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(0, '{"ignored":"private"}'), "missing_claim_row"),
+        )
+        for fixture, category in fixtures:
+            with (
+                self.subTest(category=category),
+                patch.object(claimant.subprocess, "run", side_effect=[fixture]) as run,
+                patch.object(claimant.time, "monotonic", side_effect=[10.0, 10.25]),
+            ):
+                diagnostic = {}
+                self.assertEqual(
+                    claimant._collect_handed_offs("fixture", 3, diagnostic=diagnostic),
+                    {},
+                )
+                self.assertEqual(diagnostic, {"category": category, "elapsed_ms": 250})
+                run.assert_called_once()
+                self.assertIn("--handoff", run.call_args.args[0])
+                self.assertNotIn("--task", run.call_args.args[0])
+                self.assertEqual(run.call_args.kwargs["timeout"], 15)
+
+    def test_diagnostic_does_not_change_preexisting_acceptance_of_returned_row(self):
+        row = {"id": 42, "private": "not surfaced"}
+        with patch.object(
+            claimant.subprocess, "run", return_value=Result(1, json.dumps(row))
+        ):
+            diagnostic = {}
+            self.assertEqual(
+                claimant._collect_handed_offs("fixture", 1, diagnostic=diagnostic),
+                {42: row},
+            )
+        self.assertEqual(diagnostic["category"], "row_returned")
+        self.assertEqual(set(diagnostic), {"category", "elapsed_ms"})
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -1606,36 +1825,20 @@ class TestCodeSourceFireLog(unittest.TestCase):
         claimant._code_source = None
 
     def _make_clone(self, tmp: str) -> Path:
+        # A static .git layout written with plain file writes (#13135):
+        # the hermetic suite's audit guard forbids subprocess spawns,
+        # so the fixture cannot run `git init` — and read_code_source()
+        # reads .git directly, so no git binary is needed for the read
+        # either. The commit sha is a fixed 40-hex placeholder; the
+        # tests assert shape (branch, 40-char commit), not history.
         clone = Path(tmp) / "clone"
-        clone.mkdir()
-        env = dict(os.environ)
-        env.update(
-            {
-                "GIT_AUTHOR_NAME": "test",
-                "GIT_AUTHOR_EMAIL": "test@example.invalid",
-                "GIT_COMMITTER_NAME": "test",
-                "GIT_COMMITTER_EMAIL": "test@example.invalid",
-            }
-        )
-        subprocess.run(
-            ["git", "init", "-b", "main", str(clone)],
-            check=True,
-            capture_output=True,
-            env=env,
+        git_dir = clone / ".git"
+        (git_dir / "refs" / "heads").mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_dir / "refs" / "heads" / "main").write_text(
+            "0123456789abcdef0123456789abcdef01234567\n"
         )
         (clone / "f.txt").write_text("x")
-        subprocess.run(
-            ["git", "-C", str(clone), "add", "f.txt"],
-            check=True,
-            capture_output=True,
-            env=env,
-        )
-        subprocess.run(
-            ["git", "-C", str(clone), "commit", "-m", "init"],
-            check=True,
-            capture_output=True,
-            env=env,
-        )
         return clone
 
     def test_reads_branch_and_commit(self):

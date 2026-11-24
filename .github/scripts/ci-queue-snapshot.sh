@@ -30,7 +30,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --queued-json=*)
-    [[ -n "${1#*=}" ]] || {
+    [[ -n ${1#*=} ]] || {
       echo "ci-queue-snapshot: --queued-json requires a value" >&2
       usage
       exit 2
@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
     shift
     ;;
   --queued-json)
-    [[ $# -ge 2 && -n "${2:-}" && "$2" != --* ]] || {
+    [[ $# -ge 2 && -n ${2:-} && $2 != --* ]] || {
       echo "ci-queue-snapshot: --queued-json requires a value" >&2
       usage
       exit 2
@@ -48,7 +48,7 @@ while [[ $# -gt 0 ]]; do
     shift 2
     ;;
   --in-progress-json=*)
-    [[ -n "${1#*=}" ]] || {
+    [[ -n ${1#*=} ]] || {
       echo "ci-queue-snapshot: --in-progress-json requires a value" >&2
       usage
       exit 2
@@ -57,7 +57,7 @@ while [[ $# -gt 0 ]]; do
     shift
     ;;
   --in-progress-json)
-    [[ $# -ge 2 && -n "${2:-}" && "$2" != --* ]] || {
+    [[ $# -ge 2 && -n ${2:-} && $2 != --* ]] || {
       echo "ci-queue-snapshot: --in-progress-json requires a value" >&2
       usage
       exit 2
@@ -66,7 +66,7 @@ while [[ $# -gt 0 ]]; do
     shift 2
     ;;
   --now=*)
-    [[ -n "${1#*=}" ]] || {
+    [[ -n ${1#*=} ]] || {
       echo "ci-queue-snapshot: --now requires a value" >&2
       usage
       exit 2
@@ -75,7 +75,7 @@ while [[ $# -gt 0 ]]; do
     shift
     ;;
   --now)
-    [[ $# -ge 2 && -n "${2:-}" && "$2" != --* ]] || {
+    [[ $# -ge 2 && -n ${2:-} && $2 != --* ]] || {
       echo "ci-queue-snapshot: --now requires a value" >&2
       usage
       exit 2
@@ -84,7 +84,7 @@ while [[ $# -gt 0 ]]; do
     shift 2
     ;;
   --repo=*)
-    [[ -n "${1#*=}" ]] || {
+    [[ -n ${1#*=} ]] || {
       echo "ci-queue-snapshot: --repo requires a value" >&2
       usage
       exit 2
@@ -93,7 +93,7 @@ while [[ $# -gt 0 ]]; do
     shift
     ;;
   --repo)
-    [[ $# -ge 2 && -n "${2:-}" && "$2" != --* ]] || {
+    [[ $# -ge 2 && -n ${2:-} && $2 != --* ]] || {
       echo "ci-queue-snapshot: --repo requires a value" >&2
       usage
       exit 2
@@ -124,31 +124,31 @@ done
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-if [[ -z "$NOW" ]]; then
+if [[ -z $NOW ]]; then
   NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
 now_epoch="$(date -u -d "$NOW" +%s)"
 
-if [[ -n "$QUEUED_JSON" ]]; then
-  [[ -f "$QUEUED_JSON" ]] || {
+if [[ -n $QUEUED_JSON ]]; then
+  [[ -f $QUEUED_JSON ]] || {
     echo "ci-queue-snapshot: queued file not found: $QUEUED_JSON" >&2
     exit 1
   }
   cp "$QUEUED_JSON" "$TMP/queued.json"
 else
-  [[ -n "$REPO" ]] || REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+  [[ -n $REPO ]] || REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
   gh api "repos/$REPO/actions/runs?status=queued&per_page=100" --paginate \
     --jq '{total_count: ([.workflow_runs] | length), workflow_runs: ([.workflow_runs] | add // [])}' >"$TMP/queued.json"
 fi
 
-if [[ -n "$INPROGRESS_JSON" ]]; then
-  [[ -f "$INPROGRESS_JSON" ]] || {
+if [[ -n $INPROGRESS_JSON ]]; then
+  [[ -f $INPROGRESS_JSON ]] || {
     echo "ci-queue-snapshot: in-progress file not found: $INPROGRESS_JSON" >&2
     exit 1
   }
   cp "$INPROGRESS_JSON" "$TMP/in_progress.json"
 else
-  [[ -n "$REPO" ]] || REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+  [[ -n $REPO ]] || REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
   gh api "repos/$REPO/actions/runs?status=in_progress&per_page=100" --paginate \
     --jq '{total_count: ([.workflow_runs] | length), workflow_runs: ([.workflow_runs] | add // [])}' >"$TMP/in_progress.json"
 fi
@@ -159,36 +159,36 @@ inprogress_total="$(jq -r '.workflow_runs | length' "$TMP/in_progress.json")"
 
 # Queued by event (stable sort for golden output).
 queued_by_event="$(jq -r '.workflow_runs | group_by(.event) | map("\(.[0].event)=\(length)") | sort | join(" ")' "$TMP/queued.json")"
-[[ -n "$queued_by_event" ]] || queued_by_event="(none)"
+[[ -n $queued_by_event ]] || queued_by_event="(none)"
 
 oldest_line="$(jq -r '.workflow_runs | sort_by(.created_at) | .[0] | "\(.id) \(.created_at)"' "$TMP/queued.json")"
-if [[ "$oldest_line" == "null null" || -z "$oldest_line" ]]; then
+if [[ $oldest_line == "null null" || -z $oldest_line ]]; then
   oldest_line="none"
 fi
 
 fresh_in_progress=0
 while IFS= read -r created; do
-  [[ -n "$created" ]] || continue
+  [[ -n $created ]] || continue
   created_epoch="$(date -u -d "$created" +%s)"
   age=$((now_epoch - created_epoch))
-  if [[ "$age" -lt 7200 ]]; then
+  if [[ $age -lt 7200 ]]; then
     fresh_in_progress=$((fresh_in_progress + 1))
   fi
 done < <(jq -r '.workflow_runs[].created_at' "$TMP/in_progress.json")
 
 stale_queued=0
 while IFS= read -r created; do
-  [[ -n "$created" ]] || continue
+  [[ -n $created ]] || continue
   created_epoch="$(date -u -d "$created" +%s)"
   age=$((now_epoch - created_epoch))
-  if [[ "$age" -gt 86400 ]]; then
+  if [[ $age -gt 86400 ]]; then
     stale_queued=$((stale_queued + 1))
   fi
 done < <(jq -r '.workflow_runs[].created_at' "$TMP/queued.json")
 
 echo "ci-queue-snapshot: queued_total=$queued_total in_progress_total=$inprogress_total"
 echo "ci-queue-snapshot: queued_by_event $queued_by_event"
-if [[ "$oldest_line" == "none" ]]; then
+if [[ $oldest_line == "none" ]]; then
   echo "ci-queue-snapshot: oldest_queued none"
 else
   # shellcheck disable=SC2086

@@ -241,9 +241,7 @@ test("getItem reads an issue and a PR through the rotation, kinds from the pull_
 });
 
 test("listItems follows the next link and stops at the page cap", async () => {
-  const page = (n: number) => [
-    { number: n, html_url: `https://github.com/o/r/issues/${n}`, body: `b${n}` },
-  ];
+  const page = (n: number) => [{ number: n, html_url: `https://github.com/o/r/issues/${n}`, body: `b${n}` }];
   const { fetchFn, calls } = fakeGitHubReads((_installation, url) => {
     if (url.includes("page=2")) {
       return jsonResponse(200, page(2), {
@@ -259,7 +257,10 @@ test("listItems follows the next link and stops at the page cap", async () => {
   });
   const reader = new AppRotationGitHubWriter(config, fetchFn, () => NOW_MS);
   const items = await reader.listItems("o/r");
-  assert.deepEqual(items.map((i) => i.number), [1, 2, 3]);
+  assert.deepEqual(
+    items.map((i) => i.number),
+    [1, 2, 3],
+  );
   assert.equal(calls.filter((c) => c.url.includes("/issues?")).length, 3);
 });
 
@@ -280,19 +281,15 @@ interface FakeProjectItem {
  * model unless the supplied behaviour intercepts (per
  * installation + query). successfulAdds counts mutations GitHub
  * actually executed — the no-duplicate-writes oracle. */
-function fakeGraphQL(behaviour?: (
-  installation: number,
-  query: string,
-  variables: Record<string, unknown>,
-) => Response | null): {
+function fakeGraphQL(
+  behaviour?: (installation: number, query: string, variables: Record<string, unknown>) => Response | null,
+): {
   fetchFn: FetchFn;
   items: FakeProjectItem[];
   successfulAdds: () => number;
 } {
   const tokenToInstallation = new Map<string, number>();
-  const items: FakeProjectItem[] = [
-    { itemId: "PVTI_gql_1", number: 7, values: { Status: "Todo" } },
-  ];
+  const items: FakeProjectItem[] = [{ itemId: "PVTI_gql_1", number: 7, values: { Status: "Todo" } }];
   let adds = 0;
   let itemCounter = 1;
   const projectPayload = () => ({

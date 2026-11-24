@@ -342,7 +342,9 @@
         # Development shell: nix develop
         devShells.default = pkgs.mkShell {
           inherit buildInputs;
-          inherit nativeBuildInputs;
+          # Pristine bun for the shell (#13337); the shared set carries
+          # the patchelf'd nixpkgs bun for the sandbox (#13751).
+          nativeBuildInputs = nixCommon.shellNativeBuildInputs;
           inherit (nixCommon) shellHook TREEFMT_TREE_ROOT_CMD;
 
           inherit (opensslEnv) OPENSSL_DIR;
@@ -382,6 +384,7 @@
           test-unit = mkCheck "test-unit" "test-unit";
           test-crate-integration = mkCheck "test-crate-integration" "test-crate-integration";
           test-native-shell = mkCheck "test-native-shell" "test-native-shell";
+          test-hw-shell = mkCheck "test-hw-shell" "test-hw-shell";
           # Rust example guests (#7904): plaza-sdk (examples/rust-world)
           # and rust-counter (examples/rust-counter) are standalone
           # crates outside the pkgs/id workspace, so no workspace test
@@ -392,7 +395,7 @@
           # roc-examples pattern. Wasm bytes are not reproducible
           # across rustc builds or build paths (the producers/code
           # sections differ between the rustup and rust-overlay
-          # builds of the same pinned 1.99.0), so a byte drift gate
+          # builds of the same pinned 1.99.1), so a byte drift gate
           # would be permanently red; what CI must prove is that the
           # module built from current source passes the conformance
           # tests that load it (src/sandbox.rs include_bytes!).

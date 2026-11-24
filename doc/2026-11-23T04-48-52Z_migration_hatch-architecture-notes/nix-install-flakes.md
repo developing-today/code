@@ -40,6 +40,7 @@ nix run nixpkgs#hello
    "install into default profile" step fails here because new files get
    `user.hatch_tainted*` xattrs and the sandbox denies `removexattr`.
    The script builds the profile symlinks manually:
+
    ```
    /nix/var/nix/profiles/per-user/root/profile-1-link -> /nix/store/*-nix-2.*/
    /nix/var/nix/profiles/per-user/root/profile      -> profile-1-link
@@ -116,15 +117,15 @@ sets `NIX_REPAIR_GUARD` (children inherit; `BASH_ENV` unset; runs via
 
 ## What breaks, and why
 
-| Problem | Cause | Fix |
-|---|---|---|
-| Installer profile step fails | `user.hatch_tainted*` xattrs, sandbox denies `removexattr` | Manual profile symlinks (in `nix-install.sh`) |
-| `nix: the Nix store is not allowed...` symlink error | nix refuses a symlinked `/nix` | `LD_PRELOAD` taint-shim hides the symlink via lstat/stat interposition |
-| `nix` missing after `nix profile install` | Flake install replaces profile generation | Profile nix + wrapper self-heal (2026-09-30) |
-| Slow first `nix run` after recycle (~2 min) | Store must be re-fetched | `nix-snapshot.sh` tarball restores it with zero download |
-| `nix run` wants to build from source | Missing binary cache | omnibin cachix substituter baked into `nix.conf` |
-| Sandboxed builds fail (Permission denied) | `nixbld` users can't traverse `/home/hatch` | Traverse-only ACLs for nixbld on `/home/hatch`, nix-persist, taint-shim; `build-users-group = nixbld` (2026-09-30) |
-| `allow-symlinked-store` doesn't fully work | Only bypasses the store-open guard; build sandbox + `assertNoSymlinks` still reject symlinked `/nix` | Taint-shim stat/lstat interception kept (also masks mode 0777→0755) |
+| Problem                                              | Cause                                                                                                | Fix                                                                                                                |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Installer profile step fails                         | `user.hatch_tainted*` xattrs, sandbox denies `removexattr`                                           | Manual profile symlinks (in `nix-install.sh`)                                                                      |
+| `nix: the Nix store is not allowed...` symlink error | nix refuses a symlinked `/nix`                                                                       | `LD_PRELOAD` taint-shim hides the symlink via lstat/stat interposition                                             |
+| `nix` missing after `nix profile install`            | Flake install replaces profile generation                                                            | Profile nix + wrapper self-heal (2026-09-30)                                                                       |
+| Slow first `nix run` after recycle (~2 min)          | Store must be re-fetched                                                                             | `nix-snapshot.sh` tarball restores it with zero download                                                           |
+| `nix run` wants to build from source                 | Missing binary cache                                                                                 | omnibin cachix substituter baked into `nix.conf`                                                                   |
+| Sandboxed builds fail (Permission denied)            | `nixbld` users can't traverse `/home/hatch`                                                          | Traverse-only ACLs for nixbld on `/home/hatch`, nix-persist, taint-shim; `build-users-group = nixbld` (2026-09-30) |
+| `allow-symlinked-store` doesn't fully work           | Only bypasses the store-open guard; build sandbox + `assertNoSymlinks` still reject symlinked `/nix` | Taint-shim stat/lstat interception kept (also masks mode 0777→0755)                                                |
 
 ## References
 

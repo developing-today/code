@@ -13,9 +13,4 @@ leptos_router = "0.8"
 [features]
 csr = ["leptos/csr"]
 hydrate = ["leptos/hydrate"]
-ssr = [
-  "dep:actix-web",
-  "dep:leptos_actix",
-  "leptos/ssr",
-  "leptos_router/ssr",
-]
+ssr = ["dep:actix-web", "dep:leptos_actix", "leptos/ssr", "leptos_router/ssr"]

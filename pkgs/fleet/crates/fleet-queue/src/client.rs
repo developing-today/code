@@ -27,6 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
+pub mod actions_exec;
 mod commands_lifecycle;
 mod commands_query;
 mod fallback_stack;
@@ -76,6 +77,7 @@ pub fn run(args: &[String]) -> i32 {
         "unblock" => cmd_unblock(rest),
         "dep-recheck" => cmd_dep_recheck(rest),
         "quarantine-recheck" => cmd_quarantine_recheck(rest),
+        "repair" => cmd_repair(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
@@ -579,12 +581,12 @@ mod tests {
         assert_eq!(batch_count_flag(Some(1)), Ok(1));
         assert_eq!(batch_count_flag(Some(2)), Ok(2));
         assert_eq!(
-            batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX)),
-            Ok(crate::turso_queue::BATCH_CLAIM_MAX)
+            batch_count_flag(Some(crate::BATCH_CLAIM_MAX)),
+            Ok(crate::BATCH_CLAIM_MAX)
         );
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
-        assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+        assert!(batch_count_flag(Some(crate::BATCH_CLAIM_MAX + 1)).is_err());
     }
 
     #[test]
@@ -1342,6 +1344,172 @@ mod tests {
         assert_eq!(unknown["truncated"], json!(false));
         assert_eq!(list_total(&limited), Some(5));
         assert_eq!(list_total(&json!({"rows": []})), None);
+    }
+
+    #[test]
+    fn exact_status_found_on_the_exact_match() {
+        // #8581 pilot oracle: the authoritative reply carrying
+        // the exact task is `found`; the row rides attributed to
+        // the cloud source with the row's own timestamp, and the
+        // mode/route are the contract's served values.
+        let resp = Ok(json!({
+            "ok": true, "total": 1, "truncated": false,
+            "rows": [{"id": 7, "queue": "repo-health", "status": "claimed",
+                      "updated_at": "2026-11-23T12:00:00Z"}],
+        }));
+        let (rec, code) = exact_task_status("repo-health", 7, resp, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 0);
+        assert_eq!(rec["verb"], json!("list"));
+        assert_eq!(rec["mode"], json!("normal"));
+        assert_eq!(rec["route"], json!("cloud"));
+        assert_eq!(rec["result"], json!("found"));
+        assert_eq!(rec["source"], json!("cloud"));
+        assert_eq!(rec["as_of"], json!("2026-11-23T12:05:00Z"));
+        assert_eq!(rec["task"]["status"], json!("claimed"));
+        assert_eq!(rec["task_as_of"], json!("2026-11-23T12:00:00Z"));
+    }
+
+    #[test]
+    fn exact_status_not_found_only_on_a_complete_authoritative_zero() {
+        // #8581 pilot oracle: `not_found` is reserved for the
+        // certified zero — ok reply, empty rows, total reported
+        // as 0, no truncation.
+        let resp = Ok(json!({"ok": true, "total": 0, "truncated": false, "rows": []}));
+        let (rec, code) = exact_task_status("repo-health", 7, resp, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 1);
+        assert_eq!(rec["result"], json!("not_found"));
+        assert_eq!(rec["mode"], json!("normal"));
+        assert_eq!(rec["route"], json!("cloud"));
+        assert!(rec.get("task").is_none());
+    }
+
+    #[test]
+    fn exact_status_zero_without_a_total_is_partial() {
+        // A zero the broker never certified (pre-#10376 reply, no
+        // total) cannot be told apart from an unread window:
+        // partial, never absence.
+        let resp = Ok(json!({"ok": true, "rows": []}));
+        let (rec, code) = exact_task_status("repo-health", 7, resp, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("partial"));
+        assert_eq!(rec["detail"], json!("total_unreported"));
+    }
+
+    #[test]
+    fn exact_status_truncated_window_is_partial_never_absence() {
+        // The matching set is larger than the window — the task
+        // may sit beyond it, flagged or merely implied by total.
+        let flagged = Ok(json!({"ok": true, "total": 5, "truncated": true, "rows": []}));
+        let (rec, code) = exact_task_status("repo-health", 7, flagged, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("partial"));
+        assert_eq!(rec["detail"], json!("truncated_reply"));
+        let implied = Ok(json!({
+            "ok": true, "total": 9, "truncated": false,
+            "rows": [{"id": 8, "queue": "repo-health"}],
+        }));
+        let (rec, code) = exact_task_status("repo-health", 7, implied, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("partial"));
+        assert_eq!(rec["detail"], json!("truncated_reply"));
+    }
+
+    #[test]
+    fn exact_status_complete_reply_naming_other_tasks_is_partial() {
+        // A complete, certified reply that names a different task
+        // means the broker did not scope the read; its silence
+        // about our task certifies nothing.
+        let resp = Ok(json!({
+            "ok": true, "total": 1, "truncated": false,
+            "rows": [{"id": 8, "queue": "repo-health"}],
+        }));
+        let (rec, code) = exact_task_status("repo-health", 7, resp, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("partial"));
+        assert_eq!(rec["detail"], json!("unscoped_reply"));
+    }
+
+    #[test]
+    fn exact_status_row_for_a_different_queue_is_unknown() {
+        // Identity mismatch: the matching id arrived wearing a
+        // different queue than the one asked about — the answer
+        // is not about the task this seat scoped, so the state
+        // is unknown, not found.
+        let resp = Ok(json!({
+            "ok": true, "total": 1, "truncated": false,
+            "rows": [{"id": 7, "queue": "someone-elses", "status": "claimed"}],
+        }));
+        let (rec, code) = exact_task_status("repo-health", 7, resp, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("unknown"));
+        assert_eq!(rec["detail"], json!("identity_mismatch"));
+        assert!(rec.get("task").is_none());
+    }
+
+    #[test]
+    fn exact_status_malformed_reply_is_unknown() {
+        // No rows array, or no ok flag at all: nothing readable
+        // was learned, and neither shape may read as absence.
+        let no_rows = Ok(json!({"ok": true, "total": 0}));
+        let (rec, code) = exact_task_status("repo-health", 7, no_rows, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("unknown"));
+        assert_eq!(rec["detail"], json!("malformed_reply"));
+        let no_ok = Ok(json!({"rows": [], "total": 0, "truncated": false}));
+        let (rec, code) = exact_task_status("repo-health", 7, no_ok, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("unknown"));
+        assert_eq!(rec["detail"], json!("malformed_reply"));
+    }
+
+    #[test]
+    fn exact_status_transport_failure_is_unknown_unavailable() {
+        // No envelope at all: the record names the attempted
+        // route family as unavailable and claims no fallback —
+        // this slice attempts none.
+        let resp = Err((3, "queue-broker socket missing".to_string()));
+        let (rec, code) = exact_task_status("repo-health", 7, resp, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("unknown"));
+        assert_eq!(rec["detail"], json!("unavailable"));
+        assert_eq!(rec["mode"], json!("db-degraded"));
+        assert_eq!(rec["route"], json!("unavailable"));
+        assert!(rec.get("source").is_none());
+    }
+
+    #[test]
+    fn exact_status_denial_is_unknown_denied_and_never_absence() {
+        // Denied at the transport leg and denied by envelope are
+        // the same outcome class, distinct from unavailable —
+        // and a denial is never retried under another identity.
+        let at_transport = Err((3, "session proxy: unauthorized token".to_string()));
+        let (rec, code) = exact_task_status("repo-health", 7, at_transport, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 3);
+        assert_eq!(rec["result"], json!("unknown"));
+        assert_eq!(rec["detail"], json!("denied"));
+        let by_envelope =
+            Ok(json!({"ok": false, "error": "permission denied for this queue", "exit": 4}));
+        let (rec, code) = exact_task_status("repo-health", 7, by_envelope, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 4);
+        assert_eq!(rec["result"], json!("unknown"));
+        assert_eq!(rec["detail"], json!("denied"));
+    }
+
+    #[test]
+    fn exact_status_broker_error_envelope_is_unknown_with_its_exit() {
+        // {ok:false} without its own exit defaults to 4, the
+        // unwrap parity of the text verbs; an envelope exit is
+        // carried through untouched.
+        let plain = Ok(json!({"ok": false, "error": "store exploded"}));
+        let (rec, code) = exact_task_status("repo-health", 7, plain, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 4);
+        assert_eq!(rec["result"], json!("unknown"));
+        assert_eq!(rec["detail"], json!("broker_error"));
+        assert_eq!(rec["error"], json!("store exploded"));
+        let exited = Ok(json!({"ok": false, "error": "store exploded", "exit": 9}));
+        let (rec, code) = exact_task_status("repo-health", 7, exited, "2026-11-23T12:05:00Z");
+        assert_eq!(code, 9);
+        assert_eq!(rec["detail"], json!("broker_error"));
     }
 
     #[test]
@@ -2477,9 +2645,106 @@ esac
                     .count();
                 assert_eq!(positionals, n, "usage for {verb:?} positionals: {synopsis}");
             }
+            // Required-vs-optional is part of the contract (#13174): a
+            // flag the handler dies without must be written bare in the
+            // synopsis, and a flag written bare must be one the handler
+            // dies without. The requirement is read from the handlers'
+            // own die(2, ...) messages — "<verb>: --<flag> ... is
+            // required" and the "<verb> requires --<flag>" form — so a
+            // requirement added without its usage (or the reverse)
+            // fails here. Conditional requirements are phrased
+            // differently in the source (claim --bind's --session-id,
+            // lane's --limit-reason) and stay out of this set.
+            let mut source_required: Vec<String> = want
+                .iter()
+                .filter(|flag| {
+                    let colon_form = format!("{verb}: --{flag}");
+                    let requires_form = format!("{verb} requires --{flag}");
+                    if src.contains(&requires_form) {
+                        return true;
+                    }
+                    src.match_indices(&colon_form).any(|(at, _)| {
+                        let rest = &src[at + colon_form.len()..];
+                        let literal = &rest[..rest.find('"').unwrap_or(rest.len())];
+                        literal.contains("is required")
+                    })
+                })
+                .cloned()
+                .collect();
+            source_required.sort();
+            // Flags written outside any [...] group in the synopsis.
+            let mut depth = 0i32;
+            let mut documented_required: Vec<String> = Vec::new();
+            let mut chars = synopsis.chars().peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    '[' => depth += 1,
+                    ']' => depth -= 1,
+                    '-' if depth == 0 && chars.peek() == Some(&'-') => {
+                        chars.next();
+                        let name: String = chars
+                            .by_ref()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                            .collect();
+                        if !name.is_empty() {
+                            documented_required.push(name);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            documented_required.sort();
+            documented_required.dedup();
+            assert_eq!(
+                documented_required, source_required,
+                "usage for {verb:?} must write required flags bare and optional flags bracketed: {synopsis}"
+            );
             checked += 1;
         }
         assert!(checked >= 30, "scanned only {checked} verbs");
+    }
+
+    /// #13175: the parity test above cross-checks the per-verb
+    /// usages against the parsers, but TOP_USAGE — the text a cold
+    /// session reads first — drifted on its own (its fallback line
+    /// omitted `complete`; its lifecycle lines omitted `[--lane
+    /// <id>]`). Every single-verb TOP_USAGE line must list exactly
+    /// the flags of that verb's own usage synopsis. Group lines
+    /// (ending in `...`) summarize multi-verb surfaces whose own
+    /// usages carry the flags, and stay out of this check.
+    #[test]
+    fn top_usage_lines_match_per_verb_usage() {
+        let flags = |text: &str| -> Vec<String> {
+            let mut out: Vec<String> = text
+                .split(|c: char| c == ' ' || c == '[' || c == ']' || c == '|')
+                .filter_map(|w| w.strip_prefix("--"))
+                .map(|w| w.split('=').next().unwrap().to_string())
+                .collect();
+            out.sort();
+            out.dedup();
+            out
+        };
+        let mut checked = 0;
+        for line in TOP_USAGE.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.ends_with("...") {
+                continue;
+            }
+            let verb = line.split_whitespace().next().unwrap_or("");
+            let text = usage(verb);
+            if text == TOP_USAGE {
+                // Not a verb with its own usage (header lines).
+                continue;
+            }
+            let synopsis = text.lines().next().unwrap();
+            assert_eq!(
+                flags(line),
+                flags(synopsis),
+                "TOP_USAGE line for {verb:?} must list exactly the flags of its usage: {line}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 25, "checked only {checked} TOP_USAGE lines");
     }
 
     #[test]

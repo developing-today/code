@@ -53,6 +53,12 @@ const API = process.env.PM_RELEASE_API ?? "https://api.cloudflare.com/client/v4"
 // there answers a new version within seconds.
 const HEALTH_TRIES = Number(process.env.PM_RELEASE_HEALTH_TRIES ?? 40);
 const HEALTH_WAIT_MS = Number(process.env.PM_RELEASE_HEALTH_WAIT_MS ?? 6_000);
+// Standing a Worker up from nothing is tried more than once. Cloudflare
+// is sometimes not done making a new Worker when wrangler, having
+// uploaded it, goes on to ask about it, and answers "This Worker does
+// not exist" (code 10007); a moment later it does.
+const STAND_UP_TRIES = Number(process.env.PM_RELEASE_STAND_UP_TRIES ?? 4);
+const STAND_UP_WAIT_MS = Number(process.env.PM_RELEASE_STAND_UP_WAIT_MS ?? 5_000);
 
 /** Stop before anything has been done: a bad argument, a missing setting. */
 function fail(message) {
@@ -115,6 +121,23 @@ function wrangler(argv, outputFile) {
     env: { ...process.env, ...(outputFile ? { WRANGLER_OUTPUT_FILE_PATH: outputFile } : {}) },
   });
   if (done.status !== 0) throw new Error(`wrangler ${argv.slice(0, 2).join(" ")} failed`);
+}
+
+/** Stand an empty Worker up under this name. The command is the same
+ * each time and leaves the same thing, an empty Worker, whether or not
+ * an earlier try got as far as uploading it: so a try that fails is
+ * simply made again, a few times, before the run is failed for it. */
+async function standUp() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      wrangler(["deploy", "--config", "init/wrangler.jsonc", "--name", worker, "--message", `empty Worker, stood up by ${run}`]);
+      return;
+    } catch (error) {
+      if (attempt >= STAND_UP_TRIES) throw error;
+      say(`standing ${worker} up did not go through (try ${attempt} of ${STAND_UP_TRIES}); trying again`);
+      await sleep(STAND_UP_WAIT_MS);
+    }
+  }
 }
 
 async function serving() {
@@ -190,7 +213,7 @@ async function release() {
   );
 
   if (steps.includes("stand-up")) {
-    wrangler(["deploy", "--config", "init/wrangler.jsonc", "--name", worker, "--message", `empty Worker, stood up by ${run}`]);
+    await standUp();
     say(`stood up ${worker} empty`);
     // On the scratch Worker the empty one is waited for: that it answers
     // as empty is part of what the run is there to show.

@@ -87,14 +87,8 @@ async function query(req: Request, ctx: CallerContext | null, deps: AuthDeps): P
   const store = storeFrom(deps);
   const raw = req.method === "GET" ? paramsFilter(req) : await jsonBody(req);
   const filter = parseQueryFilter(raw);
-  const verifyKeys = deps.config.stamp.verifyKeys
-    ? await importStampVerifyKeys(deps.config.stamp.verifyKeys)
-    : null;
-  const response = await runMetadataQuery(
-    { store, githubItems: deps.githubItems, verifyKeys },
-    me.bindingId,
-    filter,
-  );
+  const verifyKeys = deps.config.stamp.verifyKeys ? await importStampVerifyKeys(deps.config.stamp.verifyKeys) : null;
+  const response = await runMetadataQuery({ store, githubItems: deps.githubItems, verifyKeys }, me.bindingId, filter);
   return json(response);
 }
 

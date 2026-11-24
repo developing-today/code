@@ -20,6 +20,13 @@
 //!   atlas-classify --db CORPUS.db schema-apply
 //!       --review REVIEW.json --dispositions DISPOSITIONS.json
 //!       [--now TS] [--manifest-out PATH]
+//!   atlas-classify --help | --version
+//!
+//! Defaults: --window-days 90, --actor
+//! `atlas-classify/remainder-sweep`, --schema-version 1,
+//! --reviewer-model `atlas-classify`, --reviewer-model-version
+//! the crate version, --now the current time, --max-decisions
+//! unbounded.
 //!
 //! `run` is a dry-run unless `--commit` is given: it enumerates
 //! only unclassified/default-state/unresolved embeds, prints the
@@ -51,15 +58,19 @@ fn fail(msg: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-fn usage() -> ExitCode {
-    eprintln!(
-        "usage:\n  atlas-classify --db CORPUS run [--commit] [--window-days N] [--actor A] \
+const USAGE: &str = "usage:\n  atlas-classify --db CORPUS run [--commit] [--window-days N] [--actor A] \
          [--now TS] [--schema-version N] [--max-decisions N] [--manifest-out PATH]\n  \
          atlas-classify --db CORPUS schema-review --old-schema F --new-schema F \
          [--reviewer-model M] [--reviewer-model-version V] [--manifest-out PATH]\n  \
          atlas-classify --db CORPUS schema-apply --review F --dispositions F \
-         [--now TS] [--manifest-out PATH]"
-    );
+         [--now TS] [--manifest-out PATH]\n  \
+         defaults: --window-days 90; --actor atlas-classify/remainder-sweep; \
+         --schema-version 1; --reviewer-model atlas-classify; \
+         --reviewer-model-version the crate version; --now the current time; \
+         --max-decisions unbounded";
+
+fn usage() -> ExitCode {
+    eprintln!("{USAGE}");
     ExitCode::from(2)
 }
 
@@ -257,6 +268,14 @@ fn action_schema_apply(db: &Path, args: &[String]) -> Result<Json, String> {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("atlas-classify {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     // Global flags: exactly one --db, then the action and its args.
     let mut db: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::new();

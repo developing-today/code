@@ -289,10 +289,20 @@ fn resolve_named(config: &Config, name: &str) -> Result<SecretValue> {
 }
 
 fn agent() -> ureq::Agent {
+    // Platform root store, not webpki-roots alone: hosts
+    // behind a TLS-intercepting egress proxy present the
+    // proxy's CA, which only the platform store carries (the
+    // sandbox seat's scan died with UnknownIssuer before this
+    // — code#13122; same fix as fleet's gh.rs App leg).
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(60)))
         .timeout_connect(Some(Duration::from_secs(10)))
         .http_status_as_error(false)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
         .build()
         .into()
 }

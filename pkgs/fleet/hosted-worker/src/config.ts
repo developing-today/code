@@ -170,11 +170,7 @@ function parseStampConfig(env: HostedEnv): StampConfig {
   let signing: StampSigningMaterial | null = null;
   if (env.STAMP_SIGNING_KEY_PKCS8 && env.STAMP_SIGNING_KEY_ID) {
     const pkcs8 = b64urlToBytesOrNull(env.STAMP_SIGNING_KEY_PKCS8);
-    if (
-      pkcs8 !== null &&
-      pkcs8.length === ED25519_PKCS8_BYTES &&
-      isValidStampKeyId(env.STAMP_SIGNING_KEY_ID)
-    ) {
+    if (pkcs8 !== null && pkcs8.length === ED25519_PKCS8_BYTES && isValidStampKeyId(env.STAMP_SIGNING_KEY_ID)) {
       signing = { keyId: env.STAMP_SIGNING_KEY_ID, pkcs8 };
     }
     // Malformed signing material stays null: signing fails closed.
@@ -257,10 +253,7 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     authConfigured: rp !== null && tenancy !== null,
     stamp: parseStampConfig(env),
     github: parseGitHubAppConfig(env),
-    webhookSecret:
-      env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== ""
-        ? env.GITHUB_WEBHOOK_SECRET
-        : null,
+    webhookSecret: env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== "" ? env.GITHUB_WEBHOOK_SECRET : null,
     ingestionRepos: parseIngestionRepos(env.INGESTION_REPOS),
     directRead: parseDirectReadConfig(env),
   };

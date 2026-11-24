@@ -264,6 +264,23 @@ export class BridgeStore {
       .filter((e): e is HeldEvent => e !== null);
   }
 
+  /** The applied chain events — the graph itself, in (author, seq)
+   * order. The §6 export set (export.ts) is exactly these: waiting
+   * events are not yet graph objects (their dependencies are unmet)
+   * and fork-proof headers are evidence about the graph, not part
+   * of it, so neither is enumerated here. */
+  appliedEvents(): HeldEvent[] {
+    return this.sql
+      .exec("SELECT author, seq, id, bytes FROM bridge_events ORDER BY author, seq")
+      .toArray()
+      .map((r) => ({
+        author: r.author as string,
+        seq: Number(r.seq),
+        id: r.id as string,
+        bytes: blobBytes(r.bytes),
+      }));
+  }
+
   /** Bytes stored by this store, for the storage ceiling. */
   storedBytes(): number {
     const rows = this.sql.exec(

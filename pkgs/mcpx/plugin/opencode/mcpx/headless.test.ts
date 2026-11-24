@@ -114,10 +114,7 @@ type ToastCall = { body?: { title?: string; message?: string; variant?: string }
  * time); `options` are the plugin options. Returns every showToast
  * call the stub client received.
  */
-const loadWithAmbiguousBoot = async (
-  setEnv: () => void,
-  options: Record<string, unknown>,
-): Promise<ToastCall[]> => {
+const loadWithAmbiguousBoot = async (setEnv: () => void, options: Record<string, unknown>): Promise<ToastCall[]> => {
   const root = tempRoot();
   const state = join(root, "state");
   mkdirSync(state);
@@ -176,16 +173,22 @@ describe("plugin.headless and the boot toast", () => {
   });
 
   test("the headless option suppresses the boot warning toast", async () => {
-    const toasts = await loadWithAmbiguousBoot(() => {
-      delete process.env.MCPX_PLUGIN_HEADLESS;
-    }, { headless: true });
+    const toasts = await loadWithAmbiguousBoot(
+      () => {
+        delete process.env.MCPX_PLUGIN_HEADLESS;
+      },
+      { headless: true },
+    );
     expect(toasts).toHaveLength(0);
   });
 
   test("headless cleared by option lets the boot warning toast through", async () => {
-    const toasts = await loadWithAmbiguousBoot(() => {
-      delete process.env.MCPX_PLUGIN_HEADLESS;
-    }, { headless: false });
+    const toasts = await loadWithAmbiguousBoot(
+      () => {
+        delete process.env.MCPX_PLUGIN_HEADLESS;
+      },
+      { headless: false },
+    );
     expect(toasts.length).toBeGreaterThanOrEqual(1);
     expect(toasts[0].body?.message).toContain("2 daemons");
   });
