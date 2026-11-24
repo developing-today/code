@@ -175,12 +175,13 @@ struct RepoCounts {
 
 fn extract_repo(
     repo: &str,
-    state: &mut CommentWatermarks,
+    baseline: &CommentWatermarks,
+    pending: &mut CommentWatermarks,
     skip_reviews: bool,
     observed_date: &str,
     out: &mut fs::File,
 ) -> Result<RepoCounts, String> {
-    let since = state.since_for(repo).map(str::to_string);
+    let since = baseline.since_for(repo).map(str::to_string);
     let since_q = since
         .as_deref()
         .map(|s| format!("&since={s}"))
@@ -248,17 +249,16 @@ fn extract_repo(
             })
         })
         .collect();
-    for c in state.select_delta(repo, &comments) {
+    for c in baseline.select_delta(repo, &comments) {
         let thread = raw
             .iter()
             .find(|r| r.get("id").and_then(Json::as_u64) == Some(c.id))
             .and_then(|r| thread_number(r, "issue_url"))
             .and_then(|n| threads.get(&n));
-        if let Some(thread) = thread {
-            emit(thread, c, &mut counts)?;
-            counts.issue_comments += 1;
-        }
-        state.observe(repo, &c.updated_at);
+        let thread = thread.ok_or("missing thread context for issue comment")?;
+        emit(thread, c, &mut counts)?;
+        counts.issue_comments += 1;
+        pending.observe(repo, &c.updated_at);
     }
 
     // Review comments (repo-wide stream, watermark-bounded).
@@ -279,17 +279,16 @@ fn extract_repo(
             })
         })
         .collect();
-    for c in state.select_delta(repo, &comments) {
+    for c in baseline.select_delta(repo, &comments) {
         let thread = raw
             .iter()
             .find(|r| r.get("id").and_then(Json::as_u64) == Some(c.id))
             .and_then(|r| thread_number(r, "pull_request_url"))
             .and_then(|n| threads.get(&n));
-        if let Some(thread) = thread {
-            emit(thread, c, &mut counts)?;
-            counts.review_comments += 1;
-        }
-        state.observe(repo, &c.updated_at);
+        let thread = thread.ok_or("missing thread context for review comment")?;
+        emit(thread, c, &mut counts)?;
+        counts.review_comments += 1;
+        pending.observe(repo, &c.updated_at);
     }
 
     // Reviews: no repo-wide stream exists, so walk the PR
@@ -318,12 +317,18 @@ fn extract_repo(
                     })
                 })
                 .collect();
-            for c in state.select_delta(repo, &reviews) {
+            for c in &reviews {
+                if baseline
+                    .reviews_since_for(repo)
+                    .is_some_and(|since| c.updated_at.as_str() <= since)
+                {
+                    continue;
+                }
                 if let Some(thread) = threads.get(&number) {
                     emit(thread, c, &mut counts)?;
                     counts.reviews += 1;
                 }
-                state.observe(repo, &c.updated_at);
+                pending.observe_review(repo, &c.updated_at);
             }
         }
     }
@@ -348,6 +353,16 @@ fn run() -> Result<(), String> {
     } else {
         args.repos.clone()
     };
+    let mut lock_name = args.state.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_name)
+        .map_err(|e| format!("open watermark lock: {e}"))?;
+    lock.try_lock()
+        .map_err(|e| format!("lock watermarks: {e}"))?;
     let mut state = load_watermarks(&args.state);
     let mut out = fs::OpenOptions::new()
         .create(true)
@@ -355,19 +370,41 @@ fn run() -> Result<(), String> {
         .open(&args.out)
         .map_err(|e| format!("open {}: {e}", args.out.display()))?;
 
+    out.try_lock().map_err(|e| format!("lock records: {e}"))?;
     println!("estate: {} repos", repos.len());
     let mut totals = (0usize, 0usize, 0usize, 0usize);
     let mut skipped = 0usize;
     for repo in &repos {
-        match extract_repo(
+        // Filter all streams against completed checkpoints. Rows discovered
+        // in an earlier branch must never hide a later branch in this pass.
+        let start = out
+            .metadata()
+            .map_err(|e| format!("stat records: {e}"))?
+            .len();
+        let mut pending = state.clone();
+        let result = extract_repo(
             repo,
-            &mut state,
+            &state,
+            &mut pending,
             args.skip_reviews,
             &observed_date,
             &mut out,
-        ) {
+        )
+        .and_then(|counts| {
+            out.sync_data().map_err(|e| format!("sync records: {e}"))?;
+            save_watermarks(&args.state, &pending)?;
+            Ok(counts)
+        });
+        if result.is_err() {
+            // Roll back only our incomplete repository while holding the
+            // output lock. Other completed repositories remain committed.
+            out.set_len(start)
+                .and_then(|()| out.sync_data())
+                .map_err(|e| format!("restore records after failed extraction: {e}"))?;
+        }
+        match result {
             Ok(counts) => {
-                save_watermarks(&args.state, &state)?;
+                state = pending;
                 println!(
                     "{repo}: issue_comments={} review_comments={} reviews={} documents={}",
                     counts.issue_comments, counts.review_comments, counts.reviews, counts.documents
@@ -383,12 +420,10 @@ fn run() -> Result<(), String> {
                 // the skip and continue; the watermark is left
                 // unadvanced, so if the block is ever lifted a
                 // later run extracts the repo in full.
-                save_watermarks(&args.state, &state)?;
                 println!("{repo}: skipped — repository access blocked (HTTP 451)");
                 skipped += 1;
             }
             Err(e) => {
-                save_watermarks(&args.state, &state)?;
                 println!(
                     "totals: issue_comments={} review_comments={} reviews={} documents={}",
                     totals.0, totals.1, totals.2, totals.3
