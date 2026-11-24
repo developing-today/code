@@ -22,7 +22,7 @@ Coverage / gaps per book:
 
 | Book | Workers covered | Worker gaps assigned | Turso DBs covered | Turso gaps assigned |
 |---|---:|---:|---:|---:|
-| PM book (new, `pkgs/pm-stack/docs/`) | 0 | ~~12~~ 14 (D17 correction, 2026-11-23) | 0 | 15 |
+| PM book (new, ~~`pkgs/pm-stack/docs/`~~ `pm-stack/book/` — D15 placement correction, coordinator ruling on #13900 comment 7118251406: the book mirrors pkgs/fleet's layout, `pm-stack/book/` + `pm-stack/book.toml`) | 0 | ~~12~~ 14 (D17 correction, 2026-11-23) | 0 | 15 |
 | fleet (`pkgs/fleet/book/`) | 1 | 3 | 1 | 1 |
 | atlas (`pkgs/atlas-search/book/`) | 1 | 0 | 33 | 0 |
 | id (`pkgs/id/book/`) | 1 | 3 | 0 | 0 |
