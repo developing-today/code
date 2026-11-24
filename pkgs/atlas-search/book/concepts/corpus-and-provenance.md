@@ -124,6 +124,16 @@ first registration unchanged, re-pointing a root or registering a
 locator under an unknown root is refused, and registration never
 alters existing chunk or occurrence data — each property pinned by
 oracle tests.
+Three read-side slices followed on 2026-11-23/24 and closed the
+loop from occurrence rows back to roots: `lookup_by_hash` fans out
+over the shards the caller's ceiling admits (keyed by canonical
+hash, per-row sensitivity enforced, pre-registry shards skipped)
+and `get-chunk` attaches the rows as an `occurrences` array;
+`resolve_source` answers exact-match, read-only root lookups; and
+the lookup takes an optional registry connection so each
+occurrence carries its `root_id` when registered — unregistered
+locators stay unattributed, and the no-registry wire shape is
+unchanged. Serving-side wiring of the catalog path remains open.
 
 **Phase 2 — the extracts store and its backfill (landed 2026-11-23).** The
 extracts store lives on the laptop under `~/atlas/extracts/`. Objects are
