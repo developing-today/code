@@ -2071,11 +2071,6 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 // Otherwise net/http can reject the response as unsolicited on an idle channel
 // before its roundTrip has registered the request (observed on macOS).
 func serveReconnectEvent(conn io.ReadWriter, attempt int) error {
-	body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
-	_, err := fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
-	if err != nil {
-		return err
-	}
 	req, err := http.ReadRequest(bufio.NewReader(conn))
 	if err != nil {
 		return err
@@ -2089,7 +2084,9 @@ func serveReconnectEvent(conn io.ReadWriter, attempt int) error {
 		req.Header.Get("Accept") != "text/event-stream" || req.URL.Query().Get("since") != wantSince {
 		return fmt.Errorf("unexpected event request on attempt %d: %s %s Accept=%q", attempt, req.Method, req.URL, req.Header.Get("Accept"))
 	}
-	return nil
+	body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
+	_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+	return err
 }
 
 // Oracle: an incomplete HTTP request must never receive response bytes, even
