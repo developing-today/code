@@ -1180,6 +1180,13 @@
       "note": "MCPX issue map for program #13264"
     },
     {
+      "path": "docs/program/high-level-roadmap.md",
+      "chapter": "research-program",
+      "role": "chapter-source",
+      "lines": 27,
+      "note": "High-level roadmap for the Code Book programme #13905"
+    },
+    {
       "path": "docs/worker.md",
       "chapter": "designs",
       "role": "chapter-source",
