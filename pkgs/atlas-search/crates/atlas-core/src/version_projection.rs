@@ -3,8 +3,8 @@
 //! Projects immutable rows to `document.put` and version/batch claims, with a
 //! separate complete-head-history replay that adds `note.create`/`note.revise`
 //! descriptors and explicit selection that leaves non-head backfills document-only.
-//! References remain symbolic until signing. Runtime publication,
-//! lineage, tombstones, and correction clears
+//! Explicit row-key lineage claims remain symbolic until signing.
+//! Runtime publication, tombstones, and correction clears
 //! remain later slices of the #6062 follow-on.
 
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
@@ -633,6 +633,69 @@ mod tests {
             .unwrap();
         assert!(specialization.value_json(|_| None).is_err());
         assert!(specialization.value_json(|_| Some("A".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn lineage_wire_values_match_typed_id_and_byte_limit_oracles() {
+        // Oracle: ID tag JSON, with distinct note/document IDs to detect
+        // namespace substitution, and exact serialized UTF-8 byte boundaries.
+        let (bindings, edges) = lineage_fixture();
+        let claims = project_lineage_claims(&fixture_rows(), &bindings, &edges).unwrap();
+        for claim in claims {
+            let value: serde_json::Value = serde_json::from_str(
+                &claim
+                    .value_json(|reference| {
+                        Some(match reference {
+                            ProjectedLineageRef::NoteCreate(_) => "a".repeat(64),
+                            ProjectedLineageRef::DocumentPut(_) => "b".repeat(64),
+                        })
+                    })
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(value["projection_version"], "v1");
+            match claim.value {
+                ProjectedLineageValue::File {
+                    file_id,
+                    source_anchor,
+                } => {
+                    assert_eq!(value["file_id"], file_id);
+                    assert_eq!(
+                        value.get("source_anchor").and_then(|v| v.as_str()),
+                        source_anchor.as_deref()
+                    );
+                }
+                ProjectedLineageValue::Specialization { .. } => {
+                    assert_eq!(value["note"], "a".repeat(64))
+                }
+                ProjectedLineageValue::Revision {
+                    edge_kind,
+                    confidence,
+                    ..
+                } => {
+                    assert_eq!(value["document"], "b".repeat(64));
+                    assert_eq!(value["edge_kind"], serde_json::to_value(edge_kind).unwrap());
+                    assert_eq!(value["confidence"], confidence);
+                }
+            }
+        }
+        let mut claim = ProjectedLineageClaim {
+            subject: ProjectedLineageRef::NoteCreate(bindings[0].note_create.clone()),
+            name: "atlas.fileId".into(),
+            value: ProjectedLineageValue::File {
+                file_id: "f".into(),
+                source_anchor: Some(String::new()),
+            },
+        };
+        let overhead = claim.value_json(|_| None).unwrap().len();
+        if let ProjectedLineageValue::File { source_anchor, .. } = &mut claim.value {
+            *source_anchor = Some("x".repeat(512 - overhead));
+        }
+        assert_eq!(claim.value_json(|_| None).unwrap().len(), 512);
+        if let ProjectedLineageValue::File { source_anchor, .. } = &mut claim.value {
+            source_anchor.as_mut().unwrap().push('x');
+        }
+        assert!(claim.value_json(|_| None).is_err());
     }
 
     proptest! {
