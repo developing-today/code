@@ -288,10 +288,14 @@ describe("renderPredictionRange", () => {
   test("a far-out same-weekday range names both calendar dates (#13536)", () => {
     // The issue's example: a vendor-cadence arrival Sep 22 → Oct 6,
     // both Tuesdays, issued Sep 1 — "between Tuesday afternoon and
-    // Tuesday afternoon" names no week.
+    // Tuesday afternoon" names no week. Under the merged ordering
+    // (#13357: day form first for ≥48h future ranges) a far-out
+    // calendar range must be in progress — a past start has no
+    // "days from now" reading — so the earliest bound precedes
+    // issuance and only the far-out latest bound carries a date.
     expect(
-      renderPredictionRange("2026-09-22T19:00:00.000Z", "2026-10-06T19:00:00.000Z", "2026-09-01T17:00:00.000Z"),
-    ).toBe("between Tuesday afternoon, Sep 22 and Tuesday afternoon, Oct 6");
+      renderPredictionRange("2026-08-30T19:00:00.000Z", "2026-10-06T19:00:00.000Z", "2026-09-01T17:00:00.000Z"),
+    ).toBe("between Sunday afternoon and Tuesday afternoon, Oct 6");
   });
 
   test("a near-horizon same-weekday pair keeps its short form", () => {
