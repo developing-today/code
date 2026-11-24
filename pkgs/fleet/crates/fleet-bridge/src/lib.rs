@@ -916,7 +916,7 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                 payload["kind"] = json!(kind);
             }
             if let Some(groups) = a.last("--groups") {
-                payload["groups"] = json!(split_list(groups));
+                payload["groups"] = json!(split_list(&groups));
             }
             if let Some(identity) = a.last("--notes-identity") {
                 payload["notes_identity"] = json!(identity);
@@ -968,7 +968,7 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                 .ok_or_else(|| usage("mint-credential needs --agent NAME"))?;
             let mut payload = json!({ "agent": agent });
             if let Some(scopes) = a.last("--scopes") {
-                payload["scopes"] = json!(split_list(scopes));
+                payload["scopes"] = json!(split_list(&scopes));
             }
             if let Some(addr) = a.last("--addr") {
                 payload["addr"] = json!(addr);
