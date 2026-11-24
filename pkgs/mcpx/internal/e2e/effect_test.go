@@ -1950,6 +1950,8 @@ func TestEventsHistoryBoundsTheReplay(t *testing.T) {
 // restart or a network service.
 func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 	const delay = 200 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	recordSettingProbes(t)
 	t.Setenv("MCPX_EVENTS_RECONNECT", delay.String())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1968,17 +1970,25 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 				return
 			}
 			accepted <- time.Now()
-			body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
-			_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+			// Bound reads as well as delivery waits on assertion failures.
+			_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+			err = serveReconnectEvent(conn, attempt)
 			if err != nil {
+				_ = conn.Close()
 				serveErr <- err
+				return
 			}
 			if attempt == 0 {
 				// Do not drop the first stream until the client has parsed
 				// its event. Otherwise the transport can observe a close
 				// before the callback runs, making the reconnect test depend
 				// on when the goroutine gets scheduled.
-				<-firstDelivered
+				select {
+				case <-firstDelivered:
+				case <-ctx.Done():
+					_ = conn.Close()
+					return
+				}
 			}
 			_ = conn.Close()
 		}
@@ -1999,8 +2009,6 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 		t.Fatalf("resolved events.reconnect = %s, want environment value %s", got, delay)
 	}
 	c := cli.NewClientAt(paths, configPath, "http://"+ln.Addr().String())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	eventsSeen := make(chan events.Event, 1)
 	streamDone := make(chan error, 1)
 	go func() {
@@ -2056,6 +2064,51 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("event stream did not stop after cancellation")
+	}
+}
+
+// serveReconnectEvent must consume the request before sending response bytes.
+// Otherwise net/http can reject the response as unsolicited on an idle channel
+// before its roundTrip has registered the request (observed on macOS).
+func serveReconnectEvent(conn io.ReadWriter, attempt int) error {
+	body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
+	_, err := fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+	if err != nil {
+		return err
+	}
+	req, err := http.ReadRequest(bufio.NewReader(conn))
+	if err != nil {
+		return err
+	}
+	_ = req.Body.Close()
+	wantSince := ""
+	if attempt > 0 {
+		wantSince = strconv.Itoa(attempt)
+	}
+	if req.Method != http.MethodGet || req.URL.Path != "/v1/events" ||
+		req.Header.Get("Accept") != "text/event-stream" || req.URL.Query().Get("since") != wantSince {
+		return fmt.Errorf("unexpected event request on attempt %d: %s %s Accept=%q", attempt, req.Method, req.URL, req.Header.Get("Accept"))
+	}
+	return nil
+}
+
+// Oracle: an incomplete HTTP request must never receive response bytes, even
+// if the reader ends before the request line or headers have been completed.
+func TestReconnectFixtureRequiresCompleteRequest(t *testing.T) {
+	for _, request := range []string{"", "GET /v1/events", "GET /v1/events HTTP/1.1\r\nAccept: text/event-stream\r\n"} {
+		t.Run(fmt.Sprintf("bytes=%d", len(request)), func(t *testing.T) {
+			var response strings.Builder
+			conn := struct {
+				io.Reader
+				io.Writer
+			}{strings.NewReader(request), &response}
+			if err := serveReconnectEvent(conn, 0); err == nil {
+				t.Fatal("incomplete request accepted")
+			}
+			if response.Len() != 0 {
+				t.Fatalf("response written before receiving a complete request: %q", response.String())
+			}
+		})
 	}
 }
 
