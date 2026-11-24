@@ -1243,6 +1243,20 @@
       "reason": "The registered scripts-test workflow is disabled_manually."
     },
     {
+      "id": "scripts.nix-dep-gate",
+      "paths": ["scripts/tests/test_check_nix_dep_gate.py"],
+      "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_nix_dep_gate.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/nix-dep-gate.yml",
+        "job_step": "Run gate contract tests (#14195)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [14195],
+      "reason": "Wired by #14195 slice 1: the gate script and its contract tests run in the dedicated nix-dep-gate workflow (nightly + workflow_dispatch)."
+    },
+    {
       "id": "scripts.provider-retirement-gate",
       "paths": ["scripts/tests/test_check_provider_retirement_gate.py"],
       "invocation": "python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v",
