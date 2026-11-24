@@ -277,7 +277,7 @@ fn chain_and_authorization_rejections_carry_their_classes() {
 
     // None of the rejections moved the chain.
     assert_eq!(stream.descriptor().current_seq, 0);
-    assert!(stream.chain().is_empty());
+    assert_eq!(stream.chain(), []);
 }
 
 #[test]

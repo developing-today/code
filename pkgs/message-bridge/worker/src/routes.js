@@ -43,6 +43,16 @@
 //                                     the token is the shared fleet token
 //                                     or one agent's own credential
 //                                     (#14368), which acts only as itself
+//   POST /api/<token>/fleet/offer     owner: post an offer (claim-style
+//                                     distribution, fleet.js): {body, to,
+//                                     kind?, slots, sender?, ttl_seconds?}
+//   GET  /api/<token>/fleet/offers    owner: every offer with its claims
+//   POST /fleet/<token>/offer         an agent posts an offer
+//   GET  /fleet/<token>/offers        the open offers one agent may claim
+//                                     (also the inbox response's section)
+//   POST /fleet/<token>/claim         {agent, offer_id}: claim an offer;
+//                                     the first N claimants are delivered
+//                                     the row, the rest get "filled"
 //   POST /api/<token>/enroll-tokens   owner: mint a bootstrap enroll
 //                                     token bound to a name/kind/groups;
 //                                     the value is returned once
