@@ -750,12 +750,27 @@
       "invocation": "cd pm-stack/pm-service && bun test",
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",
-        "job_step": "Test pm-service tenant-store suite",
+        "job_step": "Test pm-service suites",
         "state": "active",
         "dispatchable": true
       },
       "status": "mapped",
       "related_issues": [12825]
+    },
+    {
+      "id": "pm-service.collector",
+      "paths": [
+        "pm-stack/pm-service/test/collector.test.ts"
+      ],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12826]
     },
     {
       "id": "opencode-claimant.install",

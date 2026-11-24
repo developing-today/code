@@ -51,3 +51,46 @@ Run the suite:
 bun test        # from this directory
 bun run typecheck
 ```
+
+## Slice 2 — Hosted collector (#12826)
+
+`src/collector/` is the registry-driven multi-board ingest of
+design §3, running on Workers Cron Triggers:
+
+- `pool.ts` — the same GraphQL pool query the laptop collector runs
+  (fields, views, `parent`, `blockedBy`/`blocking`, labels,
+  milestones, `subIssuesSummary`) and the parser that maps it to the
+  `ProjectPoolItem` / `ProjectAudit` shapes slice 1's schema is
+  pinned against. A port, not an import — this package deploys as
+  one Worker bundle; the dual-edition conformance suite (design §8
+  slice 8) pins the two implementations to identical output.
+- `fetch.ts` — one board's paginated snapshot fetch. The board's
+  stored ETag rides the first page as `If-None-Match`; a 304 ends
+  the run with no page fetches and no writes. GitHub rate-budget
+  headers are captured per response.
+- `ingest-do.ts` — `IngestDO`, one per board: serializes the board's
+  runs and holds its ingest cursors (ETag / last-snapshot watermark)
+  and rate-budget state. Derived and rebuildable (design §7
+  invariant 6) — losing it costs one full re-fetch, never data.
+- `store.ts` — the tenant-DB writes: registry reads, snapshot
+  landing (header + pool replacement per board, so a failed board
+  keeps its previous pool), Metadata-copy upserts (§12), and
+  ingest findings.
+- `collector.ts` — `runHostedCollector`: per board, mint a per-org
+  App installation token through the injected tenancy seam, fetch,
+  and collect; then resolve epic/spawn ancestry over the **merged**
+  pool (cross-board chains resolve) and land each board's snapshot.
+  Fail-soft per board throughout: a failure records an
+  `ingest-failure` finding and never empties another board's pool;
+  a board whose rate budget is spent defers with an
+  `ingest-deferred` finding.
+
+Invariants pinned by `test/collector.test.ts`:
+
+- **No token persists.** Tokens are minted per run, used for one
+  board's fetch, and dropped; the suite scans every tenant-DB
+  table, the DO state, and the run report for the token value.
+- **Incremental second runs.** With a stored ETag, a 304 board does
+  exactly one conditional request and writes nothing.
+- **Writer provenance.** Landed snapshots record `writer='hosted'`
+  and the board's writer-lease epoch (design §5/§7).
