@@ -483,7 +483,6 @@ export class MemoryStore {
  */
 export const WORK_STATES = ["received", "acted", "queued", "done"];
 export const WORK_SETTABLE_STATES = ["acted", "queued", "done"];
-const WORK_RANK = { received: 0, acted: 1, queued: 1, done: 2 };
 
 /** The lifecycle state of a stored row: unmarked rows are at `received`. */
 export function workStateOf(row) {
@@ -512,14 +511,22 @@ export function normalizeWorkMark(data) {
 }
 
 /**
- * The forward-only rule: null when `next` may follow `current` (a step
- * forward, or the same state again), else the refusal text. Sideways
- * steps (acted <-> queued) and every backward step are refused.
+ * The forward-only rule: null when `next` may follow `current`, else
+ * the refusal text. The graph is exactly the design's: from `received`
+ * an instruction is acted on or queued; from either it completes to
+ * `done`. Sideways steps (acted <-> queued), skipping the middle
+ * (received -> done) and every backward step are refused; re-marking
+ * the current state is a no-op, so a retry never fails.
  */
 export function workTransitionError(current, next) {
   const cur = current ?? "received";
-  if (next === cur || WORK_RANK[next] > WORK_RANK[cur]) return null;
-  return `work_state moves only forward (received -> acted | queued -> done); ${cur} -> ${next} is not a step forward`;
+  if (next === cur) return null;
+  const forward =
+    (cur === "received" && (next === "acted" || next === "queued")) ||
+    ((cur === "acted" || cur === "queued") && next === "done");
+  return forward
+    ? null
+    : `work_state moves only forward (received -> acted | queued -> done); ${cur} -> ${next} is not a step forward`;
 }
 
 /** Builds the id predicate for ack; throws InputError on bad input. */

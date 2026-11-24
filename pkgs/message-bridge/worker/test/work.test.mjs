@@ -102,7 +102,7 @@ test("work: a fleet instruction moves received -> queued (with its task id) -> d
 
   // The receiving agent queues it, naming the queue task it became.
   const marked = await h.fleetWork({ agent: "felix", id, state: "queued", task_id: 23500 });
-  assert.equal(marked.status, 200, await marked.text().catch(() => ""));
+  assert.equal(marked.status, 200);
   const markedBody = await marked.json();
   assert.equal(markedBody.message.work_state, "queued");
   assert.equal(markedBody.message.work_task_id, 23500);
@@ -242,7 +242,7 @@ test("work: notes instructions reuse the lifecycle on the notes surface", async 
 
   // The receiving identity queues it with its task id, then finishes.
   const marked = await h.noteWork(FELIX, { id, state: "queued", task_id: 777 });
-  assert.equal(marked.status, 200, await marked.text().catch(() => ""));
+  assert.equal(marked.status, 200);
   assert.deepEqual(await marked.json(), { id, work_state: "queued", work_task_id: 777 });
   row = await pipelineRow(h, "note instruction");
   assert.equal(row.work_state, "queued");
