@@ -45,6 +45,11 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   admission, per-tenant quotas (tier weights 1:4:16, 5% floor),
   entry size cap, negative-result TTL, and the LRU eviction sweep.
   Pure policy, not yet wired into the read path (follow-on 4).
+- `src/freshness.ts` — the D1 hot-cache freshness evaluator
+  (#13101; design #9134 §1): pure per-class watermark/TTL rules
+  with fail-safe degradation, plus the tenant watermark read seam.
+  Not wired into a read path yet — the D1 store is #13100 and
+  read-path integration is follow-on 4 under #9134.
 
 ## Endpoints
 
