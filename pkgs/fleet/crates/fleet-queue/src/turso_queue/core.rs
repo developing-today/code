@@ -541,6 +541,11 @@ pub struct TursoBackend {
     /// #10626: the claim-time staleness check's cache and failure
     /// stand-down (see staleness.rs).
     pub(crate) staleness: StalenessState,
+    /// #13579: when set, every statement runs on one Hrana stream,
+    /// identified by the baton the server returned last. The stream
+    /// stays open across requests until `end_stream` commits or
+    /// rolls it back; the baton never leaves this process.
+    pub(crate) stream: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
 }
 
 pub(crate) type TErr = String;
@@ -676,7 +681,38 @@ impl TursoBackend {
             agent,
             gh_probe: None,
             staleness: StalenessState::default(),
+            stream: None,
         }
+    }
+
+    /// #13579: a copy of this backend whose statements all run on
+    /// one Hrana stream. Open it with `BEGIN IMMEDIATE`, run the
+    /// work through the returned backend, then `end_stream`.
+    pub(crate) fn begin_stream(&self) -> Result<TursoBackend, TErr> {
+        let tx = TursoBackend {
+            url: self.url.clone(),
+            token: self.token.clone(),
+            agent: self.agent.clone(),
+            gh_probe: self.gh_probe.clone(),
+            staleness: StalenessState::default(),
+            stream: Some(std::sync::Arc::new(std::sync::Mutex::new(None))),
+        };
+        tx.exec("BEGIN IMMEDIATE", &[])?;
+        Ok(tx)
+    }
+
+    /// #13579: COMMIT or ROLLBACK the stream, then close it. A
+    /// failed COMMIT is returned as an error; the caller must
+    /// reconcile what the store actually committed.
+    pub(crate) fn end_stream(&self, commit: bool) -> Result<(), TErr> {
+        let sql = if commit { "COMMIT" } else { "ROLLBACK" };
+        let r = self.pipeline_with(&[(sql, Vec::new())], true);
+        if let Some(cell) = &self.stream {
+            *cell
+                .lock()
+                .map_err(|_| "stream lock poisoned".to_string())? = None;
+        }
+        r.map(|_| ())
     }
 
     /// #8276: install the GitHub dep probe used by the dep
@@ -694,6 +730,14 @@ impl TursoBackend {
     }
 
     fn pipeline(&self, stmts: &[(&str, Vec<Arg>)]) -> Result<Vec<StmtResult>, TErr> {
+        self.pipeline_with(stmts, self.stream.is_none())
+    }
+
+    fn pipeline_with(
+        &self,
+        stmts: &[(&str, Vec<Arg>)],
+        close: bool,
+    ) -> Result<Vec<StmtResult>, TErr> {
         let mut requests: Vec<Value> = stmts
             .iter()
             .map(|(sql, args)| {
@@ -706,8 +750,18 @@ impl TursoBackend {
                 })
             })
             .collect();
-        requests.push(json!({"type": "close"}));
-        let body = json!({"requests": requests});
+        if close {
+            requests.push(json!({"type": "close"}));
+        }
+        let mut body = json!({"requests": requests});
+        if let Some(cell) = &self.stream {
+            let guard = cell
+                .lock()
+                .map_err(|_| "stream lock poisoned".to_string())?;
+            if let Some(baton) = guard.as_ref() {
+                body["baton"] = json!(baton);
+            }
+        }
         let auth = format!("Bearer {}", self.token);
         let mut resp = self
             .agent
@@ -727,6 +781,14 @@ impl TursoBackend {
         }
         let parsed: Value = serde_json::from_str(&text)
             .map_err(|e| format!("turso answered a non-JSON body: {e}"))?;
+        if let Some(cell) = &self.stream {
+            *cell
+                .lock()
+                .map_err(|_| "stream lock poisoned".to_string())? = parsed
+                .get("baton")
+                .and_then(|b| b.as_str())
+                .map(str::to_string);
+        }
         if let Some(err) = parsed.get("error") {
             let msg = match err {
                 Value::String(s) => s.clone(),
