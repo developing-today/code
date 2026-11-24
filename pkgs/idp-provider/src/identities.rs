@@ -43,7 +43,7 @@ pub struct IdentityEvent {
     pub provider: String,
     pub subject: String,
     pub account_id: String,
-    pub actor: String, // "config-seed" | "door-login" | "operator-cli"
+    pub actor: String, // e.g. config-seed, door-login, operator-cli, established-session
 }
 
 pub struct IdentityStore {
@@ -197,7 +197,7 @@ impl IdentityStore {
     }
 
     /// Current link status of an identity: `Some("active")`,
-    /// `Some("unlinked")`, or `None` if the store has never seen it.
+    /// `Some("pending")`, `Some("unlinked")`, or `None` if unseen.
     pub fn status(&self, provider: &str, subject: &str) -> Result<Option<String>, String> {
         let conn = self.conn.lock().map_err(|_| "identity lock poisoned")?;
         let mut stmt = conn
