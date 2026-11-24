@@ -31,6 +31,7 @@ When making a significant design or architecture decision—whether modifying an
    - What was requested or identified as needed
    - Initial design approach
    - Key decisions and their rationale
+   - **Verified when:** For every new design record, state the observable result that would satisfy the design and the test, comparison, or evidence that will establish it.
 
 4. **Append updates during rollout** as new sections:
    - Add a page break (`---`) before each appended section
