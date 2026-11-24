@@ -61,6 +61,12 @@ export async function platformRead(
         return ops.pipelineFeed(query);
       case "directory":
         return ops.directory();
+      // Every offer with its claims (#14375), for the composer's
+      // offer rows on the Messages surface. Same bridge story as the
+      // pipeline: the PM credential's read scope opens it at the
+      // edge, a machine reads it with the owner token.
+      case "offers":
+        return ops.offers();
       // The minted enroll tokens' state (#14376): the provisioning
       // half of the Agents screen. Same story again — state only,
       // never a hash or a value.

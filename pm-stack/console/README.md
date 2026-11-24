@@ -132,7 +132,7 @@ late.
 
 ### Phones
 
-The Android app's home-screen widget reads a short summary (three counts
+The Android app's home-screen widget reads a short summary (four counts
 and the top line of each list) with a token of its own, since it cannot
 use the browser's sign-in. Linking passes no secret through an address:
 the phone shows the signed-in owner a hash, the owner approves it under

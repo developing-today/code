@@ -256,24 +256,22 @@ test("'all' with no agents registered still reaches the other connector", async 
   assert.match((await chatgpt(h, { body: "x", to: "agents" })).error, /no agents/);
 });
 
-test("the page sets and removes a hook with the form, and shows peer rows", async () => {
+test("wake hooks are set and removed through the API (#14378: the page form is retired)", async () => {
   const h = await harness();
-  const form = (fields) =>
-    h.call(`/p/${TOKEN}`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams(fields).toString(),
-    });
-  assert.equal((await form({ action: "wake_hook", address: "channel:claude", url: FIRE, token: ROUTINE_TOKEN })).status, 303);
+  assert.equal((await h.setHook({ address: "channel:claude", url: FIRE, token: ROUTINE_TOKEN })).status, 200);
   assert.equal((await h.store.wakeHooks()).length, 1);
   await chatgpt(h, { body: "peer row", to: "claude" });
-  const html = await (await h.call(`/p/${TOKEN}`)).text();
-  assert.match(html, /ChatGPT → Claude/);
-  assert.match(html, /channel:claude: claude-routine at api\.anthropic\.com \(token set\)/);
-  assert.ok(!html.includes(ROUTINE_TOKEN) && !html.includes("trig_01"));
-  assert.equal((await form({ action: "wake_hook", address: "channel:claude", remove: "1" })).status, 303);
+  const { hooks } = await (await h.call(`/api/${TOKEN}/wake-hooks`)).json();
+  assert.equal(hooks.length, 1);
+  assert.equal(hooks[0].address, "channel:claude");
+  assert.equal(hooks[0].kind, "claude-routine");
+  assert.equal(hooks[0].host, "api.anthropic.com");
+  assert.equal(hooks[0].has_token, true);
+  const listed = JSON.stringify(hooks);
+  assert.ok(!listed.includes(ROUTINE_TOKEN) && !listed.includes("trig_01"), "token and path stay hidden");
+  assert.equal((await h.setHook({ address: "channel:claude", url: null })).status, 200);
   assert.equal((await h.store.wakeHooks()).length, 0);
-  assert.equal((await form({ action: "wake_hook", address: "channel:claude", url: "http://insecure.example" })).status, 400);
+  assert.equal((await h.setHook({ address: "channel:claude", url: "http://insecure.example" })).status, 400);
 });
 
 test("the wake text names ids and message senders, an instruction as Drew's, never bodies", () => {

@@ -178,6 +178,8 @@ fn every_verb_has_its_own_help() {
     // whole-domain USAGE text.
     for verb in [
         "send",
+        "offer",
+        "offers",
         "agents",
         "log",
         "pipeline",
@@ -192,6 +194,7 @@ fn every_verb_has_its_own_help() {
         "inbox",
         "post",
         "ack",
+        "work",
         "health",
         "exchange",
         "notes",
@@ -221,6 +224,12 @@ fn usage_errors_exit_2_before_any_request() {
         vec!["send", "--to", "all"],
         vec!["send", "--to"],
         vec!["send", "--nope", "x"],
+        vec!["send", "--broaden", "b1", "leftover text"],
+        vec!["send", "--limit", "many", "--to", "all", "x"],
+        vec!["offer", "--to", "all", "x"],
+        vec!["offer", "--slots", "2", "x"],
+        vec!["offer", "--to", "all", "--slots", "many", "x"],
+        vec!["offers", "extra"],
         vec!["agents", "extra"],
         vec!["inbox"],
         vec!["inbox", "--agent", "a", "--commands", "--messages"],
@@ -235,6 +244,13 @@ fn usage_errors_exit_2_before_any_request() {
         ],
         vec!["ack", "--agent", "a"],
         vec!["ack", "--agent", "a", "0"],
+        vec!["work", "--agent", "a"],
+        vec!["work", "--agent", "a", "--state", "done"],
+        vec!["work", "--agent", "a", "--state", "sideways", "3"],
+        vec!["work", "--agent", "a", "--state", "received", "3"],
+        vec!["work", "--agent", "a", "--state", "queued", "3"],
+        vec!["work", "--agent", "a", "--state", "done", "0"],
+        vec!["work", "--agent", "a", "--state", "done", "--task", "x", "3"],
         vec!["log", "--limit", "many"],
         vec!["pipeline", "--limit", "many"],
         vec!["pipeline", "--bogus", "x"],
@@ -314,6 +330,94 @@ fn central_send_uses_the_owner_token_and_shapes_the_body() {
             "sender": "drew"
         })
     );
+}
+
+#[test]
+fn a_pattern_send_with_a_limit_carries_both_and_returns_the_match_report() {
+    // #14375: the console composer sends agent:f* with a limit and
+    // shows the bridge's match report; the CLI carries the limit
+    // through and hands the report back untouched.
+    let (url, seen) = fake_bridge(|_, _, _| {
+        (
+            201,
+            r#"{"batch":"b9","messages":[],"unregistered":[],"matched":2,"delivered":1,"recipients":["felix-1"],"remaining":1}"#
+                .into(),
+        )
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    let out = run_with(
+        &url,
+        &s,
+        &["send", "--to", "agent:f*", "--limit", "1", "--command", "-"],
+        "do the thing",
+    )
+    .unwrap();
+    assert_eq!(out["matched"], 2);
+    assert_eq!(out["delivered"], 1);
+    assert_eq!(out["recipients"], json!(["felix-1"]));
+    assert_eq!(out["remaining"], 1);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/fleet/send"));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({ "body": "do the thing", "to": ["agent:f*"], "kind": "command", "limit": 1 })
+    );
+}
+
+#[test]
+fn broaden_carries_the_batch_and_no_text() {
+    let (url, seen) = fake_bridge(|_, _, _| {
+        (
+            201,
+            r#"{"batch":"b9","messages":[],"unregistered":[],"matched":2,"delivered":1,"recipients":["felix-2"],"remaining":0}"#
+                .into(),
+        )
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    let out = run_with(&url, &s, &["send", "--broaden", "b9"], "").unwrap();
+    assert_eq!(out["remaining"], 0);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/fleet/send"));
+    assert_eq!(seen[0].body.as_ref().unwrap(), &json!({ "broaden": "b9" }));
+}
+
+#[test]
+fn offer_posts_its_slots_and_ttl_and_offers_lists() {
+    let (url, seen) = fake_bridge(|_, _, body| {
+        if body.is_some() {
+            (201, r#"{"offer":{"id":7,"state":"open","claimed":0,"remaining":2}}"#.into())
+        } else {
+            (200, r#"{"offers":[{"id":7,"state":"open","claims":[]}]}"#.into())
+        }
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    let out = run_with(
+        &url,
+        &s,
+        &[
+            "offer", "--to", "agent:f*", "--slots", "2", "--ttl", "3600", "--command", "-",
+        ],
+        "take the next task",
+    )
+    .unwrap();
+    assert_eq!(out["offer"]["state"], "open");
+    let out = run_with(&url, &s, &["offers"], "").unwrap();
+    assert_eq!(out["offers"][0]["id"], 7);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/fleet/offer"));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({
+            "body": "take the next task",
+            "to": ["agent:f*"],
+            "kind": "command",
+            "slots": 2,
+            "ttl_seconds": 3600
+        })
+    );
+    assert_eq!(seen[1].method, "GET");
+    assert_eq!(seen[1].url, format!("/api/{OWNER}/fleet/offers"));
 }
 
 #[test]
@@ -469,6 +573,57 @@ fn ack_log_and_agents_shapes() {
         seen[3].url,
         format!("/api/{OWNER}/fleet/messages?agent=muse%201&direction=outbound&limit=5")
     );
+}
+
+#[test]
+fn work_marks_the_agents_own_rows_and_names_the_queue_task() {
+    let (url, seen) = fake_bridge(|_, _, _| {
+        (200, r#"{"message":{"id":3,"work_state":"queued","work_task_id":23500}}"#.into())
+    });
+    let s = secrets(&[(DEFAULT_BRIDGE_FLEET_TOKEN_NAME, "f".repeat(40).as_str())]);
+    let out = run_with(
+        &url,
+        &s,
+        &["work", "--agent", "muse-1", "--state", "queued", "--task", "23500", "3"],
+        "",
+    )
+    .unwrap();
+    assert_eq!(out["message"]["work_state"], "queued");
+    run_with(
+        &url,
+        &s,
+        &["work", "--agent", "muse-1", "--state", "acted", "4", "5"],
+        "",
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].url, format!("/fleet/{}/work", "f".repeat(40)));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 3, "state": "queued", "task_id": 23500})
+    );
+    // Several ids are one request each, in order.
+    assert_eq!(seen.len(), 3);
+    assert_eq!(
+        seen[1].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 4, "state": "acted"})
+    );
+    assert_eq!(
+        seen[2].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "id": 5, "state": "acted"})
+    );
+}
+
+#[test]
+fn work_help_carries_the_task_it_or_queue_it_rule() {
+    // #14372 acceptance: the help text and the book carry the same
+    // rule, verbatim. The book half is pinned by the text itself
+    // (pkgs/fleet/book/reference/bridge.md quotes WORK_RULE).
+    let text = verb_usage("work").unwrap();
+    assert!(text.contains(WORK_RULE), "{text}");
+    assert!(WORK_RULE.contains("repo-task/v1"), "{WORK_RULE}");
+    assert!(WORK_RULE.contains("context_refs"), "{WORK_RULE}");
 }
 
 #[test]

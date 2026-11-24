@@ -284,6 +284,12 @@ export const HOLDABLE = new Set([
   "issue.rank",
   "task.move",
   "message.send",
+  // The composer's broaden and offer (#14375) are the owner's words
+  // too: a broaden done late still delivers the send's own remainder
+  // (and nothing, once none is left), and an offer posted late
+  // stands open until its ttl or its slots fill.
+  "message.broaden",
+  "message.offer",
   // A revocation is the owner's kill switch (#14374): done late it is
   // still the right act — a credential revoked an hour late is revoked,
   // and one already revoked answers so — so it is held for a machine
@@ -342,6 +348,10 @@ export function subjectOf(kind: string, args: Record<string, unknown> | null | u
       const name = typeof a.name === "string" ? a.name : "";
       return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
     }
+    case "message.broaden":
+      // A batch's broadenings keep the owner's order, like a
+      // revocation's: each delivers what the ones before it left.
+      return of("batch", a.batch);
     case "agent.revoke-enroll":
       // One agent's enroll tokens: a later mint for the same agent
       // does not queue behind this (a mint is never held), but two

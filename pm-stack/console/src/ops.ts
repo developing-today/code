@@ -197,6 +197,51 @@ function id(value: unknown, name: string): number {
   return Number(s);
 }
 
+/** The bridge's target grammar (#14375): `all`, a bare name or glob, or
+ * `agent:`/`group:` before either — the segment characters are the
+ * bridge's own (names plus `*`), so a pattern the bridge would refuse
+ * is refused here first, before anything runs. */
+function bridgeTargets(to: unknown): string[] {
+  if (!Array.isArray(to) || to.length === 0 || to.length > 50) throw new OpError(400, "to: one to fifty targets");
+  return to.map((t) => {
+    if (typeof t !== "string" || !/^(all|(agent:|group:)?[A-Za-z0-9*][A-Za-z0-9._*-]{0,63})$/.test(t))
+      throw new OpError(400, `to: not a target: ${JSON.stringify(t).slice(0, 80)}`);
+    return t;
+  });
+}
+
+/** An optional whole-number count (a send limit, an offer's ttl):
+ * absent is null; present must be a positive number within the cap. */
+function optionalCount(value: unknown, name: string, max: number): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const n = id(value, name);
+  if (n > max) throw new OpError(400, `${name}: at most ${max}`);
+  return n;
+}
+
+/** A send's answer, as the composer shows it: the bridge's match
+ * report, field for field. An answer without the report's numbers is
+ * not a report at all — the send's outcome is unknown, and saying so
+ * beats inventing counts. */
+function matchReport(out: Record<string, unknown> | null, to: string[], command: boolean) {
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const matched = num(out?.matched);
+  const delivered = num(out?.delivered);
+  if (!out || matched === null || delivered === null) {
+    throw new OpError(502, "the bridge did not say who that reached");
+  }
+  return {
+    to,
+    command,
+    batch: typeof out.batch === "string" ? out.batch : null,
+    matched,
+    delivered,
+    recipients: Array.isArray(out.recipients) ? out.recipients.filter((r): r is string => typeof r === "string") : [],
+    remaining: num(out.remaining) ?? Math.max(0, matched - delivered),
+    unregistered: Array.isArray(out.unregistered) ? out.unregistered : [],
+  };
+}
+
 export class Ops {
   private queueToken: string | null = null;
 
@@ -567,6 +612,27 @@ export class Ops {
     return Array.isArray(rows) ? rows : [];
   }
 
+  /**
+   * The one count the phone's widget adds to its summary (#14377,
+   * design §4.10): how many instructions in the owner's pipeline are
+   * unread — connector instructions and fleet commands under the
+   * pipeline's own unread rule (inbound, not yet read), counted from
+   * the same feed the Messages screen shows, so the widget's number
+   * is the screen's. The feed is read at its own largest page: a
+   * backlog past the page counts as the page, as it does on the
+   * screen. This is the `pipeline` document section's whole data;
+   * the phone's token stays read-only and summary-scoped — it is
+   * handed this count by the summary, never the feed.
+   */
+  async unreadInstructions() {
+    const rows = await this.pipelineFeed(new URLSearchParams({ unread: "1", limit: "200" }));
+    const instructions = rows.filter((r) => {
+      const kind = (r as { kind?: unknown } | null)?.kind;
+      return kind === "instruction" || kind === "command";
+    }).length;
+    return { unreadInstructions: instructions };
+  }
+
   /** Per-agent credential state on the bridge (#14374): active or
    * revoked, the scopes the live credentials carry. State only — the
    * bridge never returns a hash, and neither does this. */
@@ -806,20 +872,67 @@ export class Ops {
     };
   }
 
-  /** Send a message or a command to agents, groups, or everyone. */
-  async send(to: unknown, body: unknown, command: unknown) {
-    if (!Array.isArray(to) || to.length === 0 || to.length > 50) throw new OpError(400, "to: one to fifty targets");
-    const targets = to.map((t) => {
-      if (typeof t !== "string" || !/^(all|(agent:|group:)?[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/.test(t))
-        throw new OpError(400, `to: not a target: ${JSON.stringify(t).slice(0, 80)}`);
-      return t;
-    });
+  /** Send a message or a command to agents, groups, or everyone.
+   * Targets are the bridge's whole grammar (#14375, design §4.1): a
+   * name, a glob (agent:f*), a group, or all. `limit` caps how many
+   * of the matched agents receive it. The answer is the bridge's own
+   * match report — matched, delivered, the recipients by name, and
+   * how many matched agents remain — never a console-side recount. */
+  async send(to: unknown, body: unknown, command: unknown, limit?: unknown) {
+    const targets = bridgeTargets(to);
     const argv = [this.cfg.fleetBin, "bridge", "send", "--to", targets.join(",")];
     if (command === true) argv.push("--command");
+    const n = optionalCount(limit, "limit", 1000);
+    if (n !== null) argv.push("--limit", String(n));
     // The text goes on stdin, so nothing in it is read as an option.
     argv.push("-");
-    await this.must(argv, { stdin: text(body, "text", 16_000) });
-    return { to: targets, command: command === true };
+    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as Record<string, unknown> | null;
+    return matchReport(out, targets, command === true);
+  }
+
+  /** Broaden a pattern send (#14375, design §4.1): deliver its
+   * original text to the matched agents its limit left over. One
+   * bridge call with the send's batch — a follow-up send, never a
+   * fresh fan-out, so nobody is delivered to twice. The answer is
+   * the same match report, updated: delivered counts this call,
+   * remaining what is still left. */
+  async broaden(batch: unknown, limit?: unknown) {
+    const b = text(batch, "batch", 128);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(b)) {
+      throw new OpError(400, `batch: not a batch id: ${JSON.stringify(b).slice(0, 80)}`);
+    }
+    const argv = [this.cfg.fleetBin, "bridge", "send", "--broaden", b];
+    const n = optionalCount(limit, "limit", 1000);
+    if (n !== null) argv.push("--limit", String(n));
+    const out = JSON.parse(await this.must(argv)) as Record<string, unknown> | null;
+    return matchReport(out, [], false);
+  }
+
+  /** Post the text as a claim offer instead of delivering it
+   * (#14375, design §4.2): the next `slots` eligible agents to claim
+   * it are delivered a row on the offer's batch, and their replies
+   * thread onto that batch. The answer is the bridge's offer row. */
+  async offer(to: unknown, body: unknown, command: unknown, slots: unknown, ttlSeconds?: unknown) {
+    const targets = bridgeTargets(to);
+    const argv = [this.cfg.fleetBin, "bridge", "offer", "--to", targets.join(","), "--slots", String(id(slots, "slots"))];
+    if (command === true) argv.push("--command");
+    const ttl = optionalCount(ttlSeconds, "ttl", 7 * 24 * 3600);
+    if (ttl !== null) argv.push("--ttl", String(ttl));
+    argv.push("-");
+    const out = JSON.parse(await this.must(argv, { stdin: text(body, "text", 16_000) })) as { offer?: unknown } | null;
+    if (!out || typeof out !== "object" || !out.offer || typeof out.offer !== "object") {
+      throw new OpError(502, "the bridge did not say what became of the offer");
+    }
+    return out.offer as Record<string, unknown>;
+  }
+
+  /** Every offer with its claims (#14375): the composer's offer rows
+   * read through `fleet bridge offers` — who claimed, when, and the
+   * row each claim delivered. Claimants' replies are pipeline rows
+   * on the offer's batch, read with the feed. */
+  async offers() {
+    const out = JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "offers"])) as { offers?: unknown } | null;
+    return Array.isArray(out?.offers) ? out.offers : [];
   }
 
   // ---- sign-in ------------------------------------------------------------

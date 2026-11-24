@@ -1,14 +1,15 @@
 // Message bridge Worker: a remote MCP server Claude can add as a custom
 // connector, the same MCP server for the ChatGPT connector (reached
-// through its private Site with a token of its own), plus a page where
-// Drew sends a message to either or both and sees the history. Every
+// through its private Site with a token of its own). Drew sends and
+// reads through the PM Stack console; this Worker is transport only
+// (its standalone page was retired, #14378). Every
 // message sent or received is stored in one SQLite-backed Durable
 // Object, so writes never race; each row names its channel.
 //
 // Routes and auth: see routes.js and auth.js. The access token is the
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
-import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery, noteForInbox } from "./messages.js";
+import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery, noteForInbox, workTransitionError } from "./messages.js";
 import {
   enrollTokenClaimSql,
   enrollTokenGetSql,
@@ -133,6 +134,15 @@ export class MessageStore extends DurableObject {
       this.sql.exec("ALTER TABLE note_message ADD COLUMN batch TEXT");
     }
     this.sql.exec("CREATE INDEX IF NOT EXISTS note_message_inbox ON note_message (recipient, ack_at, id)");
+    // The instruction work-item lifecycle (#14372, design §4.6): null
+    // until the receiving identity marks the note; null reads as
+    // "received".
+    if (!noteCols.some((c) => c.name === "work_state")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN work_state TEXT");
+    }
+    if (!noteCols.some((c) => c.name === "work_task_id")) {
+      this.sql.exec("ALTER TABLE note_message ADD COLUMN work_task_id INTEGER");
+    }
   }
 
   /** One fleet mailbox operation over arguments fleetCall validated. */
@@ -406,11 +416,29 @@ export class MessageStore extends DurableObject {
   noteInbox(identity) {
     return this.sql
       .exec(
-        "SELECT id, sender, body AS note, ts, kind, reply_to FROM note_message WHERE recipient = ? AND ack_at IS NULL ORDER BY id ASC",
+        "SELECT id, sender, body AS note, ts, kind, reply_to, work_state, work_task_id FROM note_message WHERE recipient = ? AND ack_at IS NULL ORDER BY id ASC",
         identity,
       )
       .toArray()
       .map((r) => noteForInbox(r));
+  }
+
+  /**
+   * Work-item lifecycle (design §4.6): the receiving identity moves
+   * its own note forward; another identity's note is simply not
+   * found. State-dependent refusals come back as { error }, like the
+   * fleet ops (an InputError doesn't survive the RPC hop).
+   */
+  noteWork(identity, { id, state, task_id }) {
+    const row = this.sql
+      .exec("SELECT id, work_state, work_task_id FROM note_message WHERE id = ? AND recipient = ?", id, identity)
+      .toArray()[0];
+    if (!row) return { error: `note ${id} is not in ${identity}'s inbox` };
+    const err = workTransitionError(row.work_state, state);
+    if (err) return { error: err };
+    const taskId = task_id ?? row.work_task_id ?? null;
+    this.sql.exec("UPDATE note_message SET work_state = ?, work_task_id = ? WHERE id = ?", state, taskId, id);
+    return { id, work_state: state, work_task_id: taskId };
   }
 
   noteAck(identity, { ids, up_to_id }) {
@@ -466,7 +494,7 @@ export class MessageStore extends DurableObject {
     const order = q.order === "desc" ? "DESC" : "ASC";
     return this.sql
       .exec(
-        `SELECT id, ts, recipient, sender, body, ack_at FROM note_message WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT ?`,
+        `SELECT id, ts, recipient, sender, body, ack_at, work_state, work_task_id FROM note_message WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT ?`,
         ...args,
         q.limit ?? 50,
       )
@@ -679,6 +707,7 @@ function storeFor(env) {
     noteOrigin: (identity, id) => stub.noteOrigin(identity, id),
     noteInbox: (identity) => stub.noteInbox(identity),
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
+    noteWork: (identity, mark) => stub.noteWork(identity, mark),
     noteSignal: (identity) => stub.noteSignal(identity),
     // Owner reads (pipeline.js): the query is validated in the Worker
     // by normalizePipelineQuery before these are called, like fleet.

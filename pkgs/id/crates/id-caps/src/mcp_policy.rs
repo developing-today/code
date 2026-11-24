@@ -36,6 +36,14 @@
 //! `chat.post` is the spam-prone surface the design names — and a
 //! call past the cap is refused and audited, charged nothing.
 //!
+//! A park is not a life sentence for the session (#14559): once
+//! a replenishment tick has elapsed and the ledger could admit
+//! an action's charge again, the park lifts and the action runs
+//! through the normal order — the agent does not have to leave
+//! and rejoin to spend a replenished budget. A role whose budget
+//! never replenishes has no tick to wait for: its park holds
+//! until rejoin, as before.
+//!
 //! This module is the one surviving policy point for the spike.
 //! Spike step 4 landed twice (#7916); #13202 reconciled the two
 //! implementations into this one, porting the standalone policy
@@ -59,7 +67,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, Verifying
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::agent_quota_ledger::{AgentQuotaLedger, QuotaLedgerStore};
+use crate::agent_quota_ledger::{AgentQuotaLedger, LedgerCheckedOut, QuotaLedgerStore};
 use crate::mcp_bridge::{BridgeError, BridgeSession, ToolAction, ToolDefinition};
 use crate::role_config::QuotaClass;
 
@@ -629,6 +637,11 @@ pub struct PolicySession {
     audit: AuditLog,
     ledger: AgentQuotaLedger,
     parked: bool,
+    /// When the current park's budget next replenishes, as named
+    /// by the exhaustion that parked the session (#14559); `None`
+    /// when the session is not parked, or when the budget never
+    /// replenishes and the park holds until rejoin.
+    parked_replenishes_at: Option<u64>,
     object_classes: BTreeMap<String, String>,
     admitted_at: BTreeMap<String, VecDeque<u64>>,
 }
@@ -655,6 +668,7 @@ impl PolicySession {
             audit: AuditLog::new(host_key),
             ledger,
             parked: false,
+            parked_replenishes_at: None,
             object_classes: BTreeMap::new(),
             admitted_at: BTreeMap::new(),
         }
@@ -665,29 +679,37 @@ impl PolicySession {
     /// for an agent grants the role's budget; a rejoin reopens the
     /// persisted ledger with its spend intact, so rejoining never
     /// resets a budget (#8301).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LedgerCheckedOut`] when the agent's ledger for
+    /// the grant's world is already checked out by a live session
+    /// (#14526): one ledger backs at most one live session, so a
+    /// duplicate open is refused instead of doubling the budget.
     pub fn open_stored(
         grant: RoleGrant,
         bridge: BridgeSession,
         host_key: SigningKey,
         store: &mut QuotaLedgerStore,
         now: u64,
-    ) -> Self {
+    ) -> Result<Self, LedgerCheckedOut> {
         let ledger = store.open(
             grant.agent_key,
             grant.world.clone(),
             grant.role.clone(),
             grant.quota_class,
             now,
-        );
-        Self {
+        )?;
+        Ok(Self {
             grant,
             bridge,
             audit: AuditLog::new(host_key),
             ledger,
             parked: false,
+            parked_replenishes_at: None,
             object_classes: BTreeMap::new(),
             admitted_at: BTreeMap::new(),
-        }
+        })
     }
 
     /// End the session, handing its quota ledger back to the host's
@@ -858,18 +880,33 @@ impl PolicySession {
             return self.execute(name, arguments, object, Quota::zero());
         }
         if self.parked {
-            self.audit.append(
-                &self.grant,
-                name,
-                object,
-                Quota::zero(),
-                AuditOutcome::RefusedParked,
-            );
-            return PolicyOutcome::Refused(PolicyRefusal {
-                kind: RefusalKind::Parked,
-                detail: QUOTA_PARK_EVENT.to_owned(),
-                park_event: None,
-            });
+            // Auto-lift (#14559): the park recorded when the ledger
+            // next replenishes. Once that tick has elapsed and the
+            // ledger could admit this action's charge, the park
+            // lifts and the action continues through the normal
+            // ceiling/rate/quota order below — no leave and rejoin
+            // needed. A park whose budget never replenishes has no
+            // tick to wait for and holds until rejoin.
+            let lift = match self.parked_replenishes_at {
+                Some(at) => now >= at && self.ledger.can_admit(now, charge_for(name)),
+                None => false,
+            };
+            if !lift {
+                self.audit.append(
+                    &self.grant,
+                    name,
+                    object,
+                    Quota::zero(),
+                    AuditOutcome::RefusedParked,
+                );
+                return PolicyOutcome::Refused(PolicyRefusal {
+                    kind: RefusalKind::Parked,
+                    detail: QUOTA_PARK_EVENT.to_owned(),
+                    park_event: None,
+                });
+            }
+            self.parked = false;
+            self.parked_replenishes_at = None;
         }
         if let Some(detail) = self.ceiling_refusal(name, arguments) {
             self.audit.append(
@@ -934,6 +971,7 @@ impl PolicySession {
             self.parked = true;
             let axis = exhaustion.axis;
             let replenishes_at = exhaustion.replenishes_at;
+            self.parked_replenishes_at = replenishes_at;
             self.audit.append(
                 &self.grant,
                 name,
@@ -1236,6 +1274,137 @@ mod tests {
         assert_eq!(park.quota_budget.tool_calls, 2);
         assert!(refusal.detail.contains(&(TEST_NOW + 60).to_string()));
         assert_eq!(session.spend(TEST_NOW + 60).tool_calls, 1);
+    }
+
+    #[test]
+    fn park_lifts_once_a_replenishment_tick_lets_the_ledger_admit() {
+        let mut grant = grant();
+        grant.quota_class = QuotaClass {
+            budget: Quota {
+                frames: 8,
+                tool_calls: 2,
+                program_invocations: 1,
+            },
+            replenishment: Some(crate::role_config::Replenishment {
+                every_secs: 60,
+                amount: Quota {
+                    frames: 0,
+                    tool_calls: 1,
+                    program_invocations: 0,
+                },
+            }),
+        };
+        let mut session = joined(grant);
+        session.act("screen.read", &json!({}), TEST_NOW);
+        // The budget is spent; the next action parks the agent,
+        // naming the tick at TEST_NOW + 60.
+        let outcome = session.act("screen.read", &json!({}), TEST_NOW + 10);
+        assert!(matches!(
+            outcome,
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Quota,
+                ..
+            })
+        ));
+        assert!(session.is_parked());
+        // Before the tick the park holds, charged nothing.
+        let spend_before = session.spend(TEST_NOW + 30);
+        let outcome = session.act("screen.read", &json!({}), TEST_NOW + 30);
+        assert!(matches!(
+            outcome,
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Parked,
+                ..
+            })
+        ));
+        assert!(session.is_parked());
+        assert_eq!(session.spend(TEST_NOW + 30), spend_before);
+        // At the tick the ledger can admit again: the same session
+        // acts without leaving and rejoining, charged through the
+        // normal order.
+        let outcome = session.act("screen.read", &json!({}), TEST_NOW + 60);
+        assert!(matches!(outcome, PolicyOutcome::Executed(_)), "{outcome:?}");
+        assert!(!session.is_parked());
+        assert!(matches!(last_outcome(&session), AuditOutcome::Executed));
+        assert_eq!(session.spend(TEST_NOW + 60).tool_calls, 2);
+    }
+
+    #[test]
+    fn never_replenishing_park_holds_until_rejoin() {
+        let mut grant = grant();
+        grant.quota_class.budget.tool_calls = 2; // replenishment stays None
+        let mut session = joined(grant);
+        session.act("screen.read", &json!({}), TEST_NOW);
+        let outcome = session.act("screen.read", &json!({}), TEST_NOW);
+        let PolicyOutcome::Refused(refusal) = outcome else {
+            panic!("quota refusal expected, got {outcome:?}");
+        };
+        assert_eq!(
+            refusal
+                .park_event
+                .expect("park event present")
+                .replenishes_at,
+            None
+        );
+        // No tick exists to wait for: a day later the park still
+        // holds, and only the exit remains.
+        let outcome = session.act("screen.read", &json!({}), TEST_NOW + 86_400);
+        assert!(matches!(
+            outcome,
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Parked,
+                ..
+            })
+        ));
+        assert!(session.is_parked());
+        assert_eq!(
+            session.act("world.leave", &json!({}), TEST_NOW + 86_400),
+            PolicyOutcome::Executed(ToolAction::Close)
+        );
+    }
+
+    #[test]
+    fn park_holds_when_elapsed_ticks_do_not_regain_the_exhausted_axis() {
+        let mut grant = grant();
+        grant.quota_class = QuotaClass {
+            budget: Quota {
+                frames: 1,
+                tool_calls: 32,
+                program_invocations: 1,
+            },
+            replenishment: Some(crate::role_config::Replenishment {
+                every_secs: 60,
+                amount: Quota {
+                    frames: 0,
+                    tool_calls: 1,
+                    program_invocations: 0,
+                },
+            }),
+        };
+        let mut session = joined(grant); // the join spends the only frame
+        let outcome = session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
+        let PolicyOutcome::Refused(refusal) = outcome else {
+            panic!("quota refusal expected, got {outcome:?}");
+        };
+        assert_eq!(refusal.kind, RefusalKind::Quota);
+        assert_eq!(
+            refusal
+                .park_event
+                .expect("park event present")
+                .replenishes_at,
+            Some(TEST_NOW + 60)
+        );
+        // Ticks elapse and tool calls replenish, but the frames
+        // axis never regains budget: the park holds.
+        let outcome = session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW + 600);
+        assert!(matches!(
+            outcome,
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Parked,
+                ..
+            })
+        ));
+        assert!(session.is_parked());
     }
 
     #[test]
@@ -1560,7 +1729,8 @@ mod tests {
             host_key(),
             &mut store,
             TEST_NOW,
-        );
+        )
+        .unwrap();
         assert!(matches!(
             first.act("world.join", &json!({ "capability": "cap-1" }), TEST_NOW),
             PolicyOutcome::Executed(_)
@@ -1587,7 +1757,8 @@ mod tests {
             host_key(),
             &mut store,
             TEST_NOW + 1,
-        );
+        )
+        .unwrap();
         assert_eq!(second.spend(TEST_NOW + 1), spent_after_leave);
         second.act(
             "world.join",
@@ -1596,6 +1767,46 @@ mod tests {
         );
         second.act("screen.read", &json!({}), TEST_NOW + 1);
         assert!(second.spend(TEST_NOW + 1).tool_calls > spent_after_leave.tool_calls);
+    }
+
+    #[test]
+    fn stored_session_refuses_a_second_live_open_for_the_same_pair() {
+        let mut store = QuotaLedgerStore::new();
+        let first = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW,
+        )
+        .unwrap();
+
+        // A duplicate grant opening a second live session for the
+        // same (agent, world) pair is refused (#14526): two live
+        // sessions would each hold a clone of one ledger and
+        // double its budget.
+        let refusal = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW,
+        )
+        .err()
+        .expect("second live open must be refused");
+        assert_eq!(refusal.agent_key, grant().agent_key);
+        assert_eq!(refusal.world, grant().world);
+
+        // Once the first session is handed back, a rejoin opens.
+        first.close(&mut store);
+        let rejoined = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW + 1,
+        );
+        assert!(rejoined.is_ok());
     }
 
     /// The #8301 acceptance against the #1067 (F12.10) consumed

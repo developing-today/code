@@ -63,16 +63,43 @@ const FLEET_TOKEN_LABEL: &str = "message-bridge/fleet-token/v1";
 const DEFAULT_INTERVAL_SECS: u64 = 15;
 const MAX_WAIT_SECS: u64 = 24 * 3600;
 
+/// The task-it-or-queue-it rule for instructions (design §4.6,
+/// #14372). This exact text is carried in three places that must stay
+/// verbatim-consistent: here (the work verb's help), the fleet book
+/// (pkgs/fleet/book/reference/bridge.md), and the woken-agent text the
+/// intake ladder hands out with a pushed command
+/// (fleet-agent/src/next.rs). Edit all three together.
+pub const WORK_RULE: &str = "\
+Task it or queue it. An instruction is a work item: do the work now, in \
+this session, and reply — or queue it as a repo-task/v1 packet whose \
+context_refs carry the bridge surface, the message id and the batch, and \
+reply with the task id. Record the outcome with fleet bridge work: \
+--state acted for work done in-session, --state queued --task <id> for \
+queued work, --state done when the work is finished. An instruction \
+that is neither acted on nor queued is a defect: it stays at received, \
+where the owner can see it stuck in the pipeline.";
+
 pub const USAGE: &str = "\
 usage: fleet bridge <verb> [options]
 
 Send and receive through the message bridge's fleet mailboxes.
 
 central (owner token):
-  send --to <targets> [--command] [--sender NAME] <text | ->
+  send --to <targets> [--command] [--sender NAME] [--limit N] <text | ->
         targets: agent:<name> (or a bare name), group:<name>, all;
-        repeat --to or separate with commas. --command marks it a
-        command (default: a plain message). '-' reads the text from stdin.
+        repeat --to or separate with commas. A name may be a glob
+        (agent:f*); --limit caps how many of the matches receive it.
+        The answer is the match report: matched, delivered, the
+        recipients, and how many matched agents remain.
+  send --broaden <batch> [--limit N]
+        deliver a pattern send's original text to the matched agents
+        its limit left over — the same batch, never a duplicate.
+  offer --to <targets> --slots N [--command] [--sender NAME]
+        [--ttl SECS] <text | ->
+        post the text as a claim offer instead of delivering it: the
+        next N eligible agents to claim it are delivered a row on the
+        offer's batch (#14371).
+  offers                       every offer with its claims
   agents                       registered agents, groups, unread counts
   log [--agent A] [--direction inbound|outbound] [--kind message|command]
       [--since-id N] [--before-id N] [--limit N] [--order asc|desc]
@@ -118,6 +145,10 @@ agent (fleet token):
         --instruction (or --kind instruction) makes it an instruction,
         which needs --to.
   ack [--agent A] (--up-to ID | ID...)        mark messages read
+  work [--agent A] --state acted|queued|done [--task ID] ID...
+        record the work-item lifecycle of your own instructions:
+        acted (handled in-session), queued (became queue task --task),
+        done. States move only forward, from received.
 
 provisioning (single-use bootstrap token, minted by the owner):
   exchange --agent A --bootstrap TOKEN
@@ -162,12 +193,35 @@ pub fn verb_usage(verb: &str) -> Option<String> {
     let section = match verb {
         "send" => {
             "\
-usage: fleet bridge send --to <targets> [--command] [--sender NAME] <text | ->
+usage: fleet bridge send --to <targets> [--command] [--sender NAME] [--limit N] <text | ->
+       fleet bridge send --broaden <batch> [--limit N]
 
 central (owner token). targets: agent:<name> (or a bare name),
-group:<name>, all; repeat --to or separate with commas. --command
+group:<name>, all; repeat --to or separate with commas. A name may be
+a glob (agent:f*); --limit caps how many of the matches receive it,
+and the answer is the match report (matched, delivered, recipients,
+remaining). --broaden delivers a pattern send's original text to the
+matched agents its limit left over, on the same batch. --command
 marks it a command (default: a plain message). '-' reads the text
 from stdin."
+        }
+        "offer" => {
+            "\
+usage: fleet bridge offer --to <targets> --slots N [--command] [--sender NAME] [--ttl SECS] <text | ->
+
+central (owner token). Post the text as a claim offer (#14371)
+instead of delivering it: the next N eligible agents to claim it are
+delivered a row on the offer's batch, and their replies thread onto
+it. targets are the send grammar (names, globs, groups, all);
+--slots is how many claims land. --ttl bounds how long the offer
+stands open, in seconds."
+        }
+        "offers" => {
+            "\
+usage: fleet bridge offers
+
+central (owner token). Every offer with its claims: who claimed,
+when, and the row each claim delivered."
         }
         "agents" => {
             "\
@@ -297,6 +351,22 @@ needs --to."
 usage: fleet bridge ack [--agent A] (--up-to ID | ID...)
 
 agent (fleet token). Mark messages read."
+        }
+        "work" => {
+            return Some(format!(
+                "\
+usage: fleet bridge work [--agent A] --state acted|queued|done [--task ID] ID...
+
+agent (fleet token). Record the work-item lifecycle of instructions in
+your own mailbox: acted for work handled in-session, queued for work
+that became a fleet queue task (give its id with --task), done when the
+work is finished. States move only forward, from received; a row can
+only be marked by the agent it was sent to.
+
+{WORK_RULE}
+
+{USAGE_FOOTER}"
+            ));
         }
         "exchange" => {
             "\
@@ -753,9 +823,13 @@ const VALUE_FLAGS: &[&str] = &[
     "--interval",
     "--reply-to",
     "--up-to",
+    "--broaden",
+    "--slots",
+    "--state",
+    "--task",
     "--bootstrap",
-    "--scopes",
     "--ttl",
+    "--scopes",
     "--notes-identity",
     "--token-hash",
     "--addr",
@@ -1087,7 +1161,28 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
     };
     match verb.as_str() {
         "send" => {
-            let a = parse(rest, &["--command"], &["--to", "--sender", "--kind"])?;
+            let a = parse(
+                rest,
+                &["--command"],
+                &["--to", "--sender", "--kind", "--limit", "--broaden"],
+            )?;
+            let limit = a.uint("--limit")?;
+            // A broaden names the pattern send's batch and carries no
+            // text or targets of its own: the bridge re-delivers the
+            // original body to the matched agents the limit left over.
+            if let Some(batch) = a.last("--broaden") {
+                a.no_positional("send --broaden")?;
+                let token = owner_token(ctx)?;
+                let mut payload = json!({ "broaden": batch });
+                if let Some(n) = limit {
+                    payload["limit"] = json!(n);
+                }
+                return client_with(ctx, &token).call(
+                    "POST",
+                    &format!("/api/{token}/fleet/send"),
+                    Some(&payload),
+                );
+            }
             let to: Vec<String> = a.all("--to").iter().flat_map(|t| split_list(t)).collect();
             if to.is_empty() {
                 return Err(usage(
@@ -1105,11 +1200,55 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             if let Some(s) = a.last("--sender") {
                 payload["sender"] = json!(s);
             }
+            if let Some(n) = limit {
+                payload["limit"] = json!(n);
+            }
             client_with(ctx, &token).call(
                 "POST",
                 &format!("/api/{token}/fleet/send"),
                 Some(&payload),
             )
+        }
+        "offer" => {
+            let a = parse(
+                rest,
+                &["--command"],
+                &["--to", "--sender", "--kind", "--slots", "--ttl"],
+            )?;
+            let to: Vec<String> = a.all("--to").iter().flat_map(|t| split_list(t)).collect();
+            if to.is_empty() {
+                return Err(usage(
+                    "offer needs --to (agent:NAME, group:NAME or all)",
+                ));
+            }
+            let Some(slots) = a.uint("--slots")? else {
+                return Err(usage("offer needs --slots N (how many claims land)"));
+            };
+            let kind = if a.has("--command") {
+                "command".to_string()
+            } else {
+                a.last("--kind").unwrap_or_else(|| "message".to_string())
+            };
+            let body = text_of(&a, ctx.stdin)?;
+            let token = owner_token(ctx)?;
+            let mut payload = json!({ "body": body, "to": to, "kind": kind, "slots": slots });
+            if let Some(s) = a.last("--sender") {
+                payload["sender"] = json!(s);
+            }
+            if let Some(ttl) = a.uint("--ttl")? {
+                payload["ttl_seconds"] = json!(ttl);
+            }
+            client_with(ctx, &token).call(
+                "POST",
+                &format!("/api/{token}/fleet/offer"),
+                Some(&payload),
+            )
+        }
+        "offers" => {
+            let a = parse(rest, &[], &[])?;
+            a.no_positional("offers")?;
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call("GET", &format!("/api/{token}/fleet/offers"), None)
         }
         "agents" => {
             let a = parse(rest, &[], &[])?;
@@ -1431,6 +1570,55 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             }
             let token = fleet_token(ctx)?;
             client_with(ctx, &token).call("POST", &format!("/fleet/{token}/ack"), Some(&payload))
+        }
+        "work" => {
+            let a = parse(rest, &[], &["--agent", "--state", "--task"])?;
+            let agent = agent_of(&a, &ctx.settings)?;
+            let state = a
+                .last("--state")
+                .ok_or_else(|| usage("work needs --state acted, queued or done"))?;
+            if !matches!(state.as_str(), "acted" | "queued" | "done") {
+                return Err(usage(format!(
+                    "--state is acted, queued or done, not '{state}'"
+                )));
+            }
+            let task = a.uint("--task")?;
+            if state == "queued" && task.is_none() {
+                return Err(usage(
+                    "queued work needs --task: the fleet queue task id it became",
+                ));
+            }
+            let ids: Vec<u64> =
+                a.positional
+                    .iter()
+                    .map(|p| {
+                        p.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                            usage(format!("message id '{p}' is not a positive number"))
+                        })
+                    })
+                    .collect::<R<_>>()?;
+            if ids.is_empty() {
+                return Err(usage("work needs at least one message ID"));
+            }
+            let token = fleet_token(ctx)?;
+            let client = client_with(ctx, &token);
+            let mut marked = Vec::new();
+            for id in &ids {
+                let mut payload = json!({ "agent": &agent, "id": id, "state": &state });
+                if let Some(t) = task {
+                    payload["task_id"] = json!(t);
+                }
+                marked.push(client.call(
+                    "POST",
+                    &format!("/fleet/{token}/work"),
+                    Some(&payload),
+                )?);
+            }
+            if marked.len() == 1 {
+                Ok(marked.pop().unwrap())
+            } else {
+                Ok(json!({ "marked": marked }))
+            }
         }
         "exchange" => verb_exchange(ctx, rest),
         "notes" => verb_notes(ctx, rest),

@@ -18,8 +18,9 @@ import org.json.JSONObject;
 
 /**
  * The home-screen widget: how many tasks are in progress, how many are
- * queued, how many things need the owner, and what is being worked on
- * now. Each number opens its screen; the microphone starts dictation.
+ * queued, how many things need the owner, how many instructions are
+ * unread, and what is being worked on now. Each number opens its
+ * screen; the microphone starts dictation.
  *
  * <p>It is drawn from the last summary read, then the summary is read
  * again: every half hour, whenever the app is opened, and on a tap of
@@ -115,11 +116,13 @@ public class StatusWidget extends AppWidgetProvider {
             views.setTextViewText(R.id.widget_now_n, count(summary, "now", "count"));
             views.setTextViewText(R.id.widget_next_n, count(summary, "next", "count"));
             views.setTextViewText(R.id.widget_needs_n, count(summary, "needs", "total"));
+            views.setTextViewText(R.id.widget_messages_n, count(summary, "messages", "unreadInstructions"));
             views.setTextViewText(R.id.widget_line, line(context, summary));
             views.setTextViewText(R.id.widget_asof, asOf(context, summary));
             views.setOnClickPendingIntent(R.id.widget_now, PendingIntent.getActivity(context, 1, Links.open(context, "now"), flags));
             views.setOnClickPendingIntent(R.id.widget_next, PendingIntent.getActivity(context, 2, Links.open(context, "next"), flags));
             views.setOnClickPendingIntent(R.id.widget_needs, PendingIntent.getActivity(context, 3, Links.open(context, "needs"), flags));
+            views.setOnClickPendingIntent(R.id.widget_messages, PendingIntent.getActivity(context, 8, Links.open(context, "more/messages"), flags));
             views.setOnClickPendingIntent(R.id.widget_root, PendingIntent.getActivity(context, 4, Links.open(context, "now"), flags));
         } else {
             views.setViewVisibility(R.id.widget_counts, View.GONE);

@@ -18,6 +18,13 @@
 //                                      &unread_only=&mark_read=&limit=: the
 //                                      agent's inbound rows, oldest first
 //   POST /fleet/<fleet token>/ack      {agent, up_to_id | ids}: mark read
+//   POST /fleet/<fleet token>/work     {agent, id, state, task_id?}:
+//                                      record the work-item lifecycle of
+//                                      one of the agent's own inbound
+//                                      rows (design §4.6): state is
+//                                      acted | queued | done, moving
+//                                      only forward from received;
+//                                      queued names its queue task id
 //   POST /fleet/<fleet token>/send     {agent, body, to?, kind?, reply_to?}:
 //                                      a message from the agent. With no
 //                                      to it goes to central (or, with
@@ -128,6 +135,11 @@
 //                                      (active / revoked; never a
 //                                      hash), as the owner's own
 //                                      GET /api/<owner>/fleet/credentials
+//   GET  /fleet/<credential>/offers   every offer with its claims,
+//                                      as the owner's own
+//                                      GET /api/<owner>/fleet/offers
+//                                      (#14375: the console composer's
+//                                      offer rows read through this)
 //
 // Enroll-minted agent credentials never carry "read" (the exchange
 // mints CREDENTIAL_SCOPES only): the pipeline stays the owner's and
@@ -166,7 +178,7 @@
 
 import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./auth.js";
 import { GLOB_SEGMENT, globMatch, isGlob } from "./glob.js";
-import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
+import { InputError, MAX_BODY, MAX_SENDER, normalizeWorkMark, workTransitionError } from "./messages.js";
 import { normalizeNoteIdentity, noteTokenHash } from "./notes.js";
 import { pipelineFeed, unifiedAgents } from "./pipeline.js";
 import { relay, replyAddress } from "./relay.js";
@@ -373,6 +385,8 @@ export function normalizeFleetOp(op, a = {}) {
       };
     case "ack":
       return { agent: normalizeName(a.agent), ...ackArgs(a) };
+    case "work":
+      return { agent: normalizeName(a.agent), ...normalizeWorkMark(a) };
     case "post":
       return {
         agent: normalizeName(a.agent),
@@ -485,6 +499,10 @@ export function fleetSchema(sql) {
   // Rows from before connectors and agents could message agents all came from central.
   const cols = sql.exec("PRAGMA table_info(fleet_message)").toArray();
   if (!cols.some((c) => c.name === "from_addr")) sql.exec("ALTER TABLE fleet_message ADD COLUMN from_addr TEXT");
+  // The instruction work-item lifecycle (#14372, design §4.6): null
+  // until the receiving agent marks the row; null reads as "received".
+  if (!cols.some((c) => c.name === "work_state")) sql.exec("ALTER TABLE fleet_message ADD COLUMN work_state TEXT");
+  if (!cols.some((c) => c.name === "work_task_id")) sql.exec("ALTER TABLE fleet_message ADD COLUMN work_task_id INTEGER");
   sql.exec("CREATE INDEX IF NOT EXISTS fleet_message_mailbox ON fleet_message (agent, direction, read_at)");
   // Per-agent credentials (#14368): only the SHA-256 hash of a credential
   // is stored, never the value. scopes is a JSON array drawn from
@@ -798,6 +816,33 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
       }
       touch(sql, a.agent, null, now);
       return { acked, stats: mailboxStats(sql, a.agent) };
+    }
+    case "work": {
+      // Only the receiving agent's own inbound rows can be marked: the
+      // lookup is scoped to this mailbox, so another agent's row (or a
+      // row this agent sent) is simply not found. Transitions are
+      // forward-only (messages.js workTransitionError); a queued mark
+      // already named its task id at validation time, and a later mark
+      // without one keeps the recorded id.
+      const row = sql
+        .exec(
+          "SELECT id, work_state, work_task_id FROM fleet_message WHERE id = ? AND agent = ? AND direction = 'inbound'",
+          a.id,
+          a.agent,
+        )
+        .toArray()[0];
+      if (!row) return { error: `message ${a.id} is not in ${a.agent}'s mailbox` };
+      const err = workTransitionError(row.work_state, a.state);
+      if (err) return { error: err };
+      sql.exec(
+        "UPDATE fleet_message SET work_state = ?, work_task_id = ? WHERE id = ?",
+        a.state,
+        a.task_id ?? row.work_task_id ?? null,
+        a.id,
+      );
+      touch(sql, a.agent, null, now);
+      const message = { ...sql.exec("SELECT * FROM fleet_message WHERE id = ?", a.id).toArray()[0] };
+      return { message, stats: mailboxStats(sql, a.agent) };
     }
     case "post": {
       let batch = null;
@@ -1634,6 +1679,20 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
     return json(await store.fleet("ack", d));
   }
+  if (what === "work") {
+    if (request.method !== "POST") return notAllowed("POST");
+    const d = await readJson(request);
+    if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
+    try {
+      return json(await store.fleet("work", d));
+    } catch (e) {
+      // With a credential every work refusal is the plain 404, like
+      // every other credential refusal: the caller learns nothing
+      // about rows that are not its own.
+      if (cred && e instanceof InputError) return notFound();
+      throw e;
+    }
+  }
   if (what === "send") {
     if (request.method !== "POST") return notAllowed("POST");
     const d = await readJson(request);
@@ -1649,6 +1708,14 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
   }
   if (what === "offers") {
     if (request.method !== "GET") return notAllowed("GET");
+    // A read-scope credential naming no agent reads the owner's list
+    // — every offer with its claims (#14375, the console composer's
+    // offer rows), the same projection as GET /api/<owner>/fleet/offers.
+    // Naming an agent (or holding no read scope) is the agent's own
+    // eligible-offers view below, as before.
+    if (cred && scoped("read") && !url.searchParams.get("agent")) {
+      return json(await store.fleet("offer-list", {}));
+    }
     if (cred && (!scoped("inbox") || credOwnName(url.searchParams.get("agent"), cred) === null)) return notFound();
     return json(await store.fleet("offers", query(url)));
   }
@@ -1690,8 +1757,11 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
   // answer, nothing more. #14374 adds the unified projections the
   // console's Messages and Agents surfaces read — the pipeline feed,
   // the unified agents list and per-agent credential state — the very
-  // functions the owner's /api routes answer with. #14376 adds the
-  // minted enroll tokens' state the same way. All are reads; no
+  // functions the owner's /api routes answer with. (The offers list
+  // is the sixth such view, #14375; it is answered in the offers
+  // branch above, where the agent's own eligible-offers view lives.)
+  // #14376 adds the minted enroll tokens' state the same way.
+  // All are reads; no
   // credential value or hash is in any of them, and revoking stays an
   // owner-token route: a service credential can see that a credential
   // stands revoked, never revoke one. Enroll-minted agent credentials
