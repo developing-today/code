@@ -9,13 +9,13 @@ Lane PM-CENSUS (coordinator: PM-BOOK) has built the coverage ledger — the prog
 **Workers: 22 censused — 3 covered, 19 gap.**
 **Turso DBs: 50 (audit counting) — 34 covered, 16 gap.**
 
-| Book | Workers covered | Worker gaps | Turso covered | Turso gaps |
-|---|---:|---:|---:|---:|
-| PM book (new) | 0 | 12 | 0 | 15 |
-| fleet | 1 | 3 | 1 | 1 |
-| atlas | 1 | 0 | 33 | 0 |
-| id | 1 | 3 | 0 | 0 |
-| mcpx | 0 | 1 | 0 | 0 |
+| Book          | Workers covered | Worker gaps | Turso covered | Turso gaps |
+| ------------- | --------------: | ----------: | ------------: | ---------: |
+| PM book (new) |               0 |          12 |             0 |         15 |
+| fleet         |               1 |           3 |             1 |          1 |
+| atlas         |               1 |           0 |            33 |          0 |
+| id            |               1 |           3 |             0 |          0 |
+| mcpx          |               0 |           1 |             0 |          0 |
 
 Covered workers: `atlas-search` (atlas book, service-and-worker/worker-api), `id-hosted-worker` (id book, hosted/hosted-worker), `message-bridge` (fleet book, bridge chapters — Worker deployment detail remains the fleet sideline extension).
 

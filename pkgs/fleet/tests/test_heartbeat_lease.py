@@ -25,9 +25,10 @@ class HeartbeatLeaseTest(unittest.TestCase):
         self.db.execute(MIRROR)
 
     def beat(self, proposed, now="2026-01-01T00:05:00Z"):
-        return self.db.execute(HEARTBEAT, (
-            proposed, '{"step":"review"}', now, 1, "worker", "start", "lane", 2
-        )).rowcount
+        return self.db.execute(
+            HEARTBEAT,
+            (proposed, '{"step":"review"}', now, 1, "worker", "start", "lane", 2),
+        ).rowcount
 
     def deadline(self):
         return self.db.execute("SELECT lease_until FROM tasks").fetchone()[0]
@@ -44,14 +45,20 @@ class HeartbeatLeaseTest(unittest.TestCase):
             with self.subTest(proposed=proposed, now=now):
                 self.assertEqual(self.beat(proposed, now), 1)
                 self.assertEqual(self.deadline(), expected)
-                self.assertEqual(self.db.execute(
-                    "SELECT worker_id, lease_until, heartbeat_at FROM leases"
-                ).fetchone(), ("worker", expected, now))
+                self.assertEqual(
+                    self.db.execute(
+                        "SELECT worker_id, lease_until, heartbeat_at FROM leases"
+                    ).fetchone(),
+                    ("worker", expected, now),
+                )
 
     def test_changed_claim_cannot_be_renewed(self):
         for column, value in [
-            ("status", "parked"), ("worker_id", "other"), ("lane_id", None),
-            ("claimed_at", "next claim"), ("attempts", 3),
+            ("status", "parked"),
+            ("worker_id", "other"),
+            ("lane_id", None),
+            ("claimed_at", "next claim"),
+            ("attempts", 3),
         ]:
             with self.subTest(column=column):
                 self.db.execute("SAVEPOINT replacement")
@@ -68,7 +75,9 @@ class HeartbeatLeaseTest(unittest.TestCase):
         with self.assertRaisesRegex(sqlite3.IntegrityError, "injected mirror failure"):
             self.beat("2026-01-01T09:00:00Z")
         self.assertEqual(self.deadline(), "2026-01-01T04:00:00Z")
-        self.assertEqual(self.db.execute("SELECT progress FROM tasks").fetchone(), ("{}",))
+        self.assertEqual(
+            self.db.execute("SELECT progress FROM tasks").fetchone(), ("{}",)
+        )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 Roc is a functional programming language built around a distinctive bargain:
 pure functional code with full type inference, compiled to fast native
 binaries via opportunistic in-place mutation and static reference counting,
-with all side effects supplied by a *platform* — a host program (written in
+with all side effects supplied by a _platform_ — a host program (written in
 Rust, Zig, Go, …) that provides files, network, UI, and so on. The language
 grew out of Elm's lineage (Richard Feldman created Roc after years as a core
 Elm figure), and its design bet is that a language can be both friendly and

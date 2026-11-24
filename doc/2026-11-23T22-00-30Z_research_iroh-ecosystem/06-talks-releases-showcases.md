@@ -1,12 +1,12 @@
 # Talks, releases and showcases
 
-*Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).
+_Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).
 Researched 2026-11-23 from primary sources: n0's blog, FOSDEM and
 conference archives, YouTube, podcast archives, Delta Chat, Raspberry
 Pi, Pubky. Dates are as published by the venue or poster; where a date
 could not be verified it is marked as such rather than guessed.
 People showing off is brought to the forefront: demos and production
-show-and-tell get their own section.*
+show-and-tell get their own section._
 
 **Counts: 9 talks/videos · 8 written announcements/releases · 6
 demos/showcases — 23 items.**
@@ -14,6 +14,7 @@ demos/showcases — 23 items.**
 ## Talks and videos
 
 ### 1. "Iroh: syncing terabytes of data, peer-to-peer" — Local-First Conf 2026
+
 - **Who:** Brendan O'Brien (n0 co-founder)
 - **Venue/date:** Local-First Conf 2026, 2026-07-13
 - **What's shown:** The iroh 1.0 story told as organisational lessons
@@ -23,12 +24,13 @@ demos/showcases — 23 items.**
   roughly 30 billion observable relay connections in six months.
   Delta Chat is presented as the first production partner, and an
   experimental SSH-over-iroh is announced at the end.
-- **Why it matters:** The best single talk for understanding *why*
+- **Why it matters:** The best single talk for understanding _why_
   iroh 1.0 looks the way it does, and the clearest public evidence of
   production scale.
 - **Link:** https://app-2026.localfirstconf.com/schedule/day-2/1330-iroh-syncing-terabytes-of-data-peer-to-peer
 
 ### 2. "iroh p2p connections" — FOSDEM 2026
+
 - **Who:** Floris Bruynooghe (n0)
 - **Venue/date:** FOSDEM 2026, Decentralized Internet and Privacy
   devroom, Brussels, 2026-02-01
@@ -43,6 +45,7 @@ demos/showcases — 23 items.**
 - **Link:** https://fosdem.org/2026/schedule/speaker/floris_bruynooghe/
 
 ### 3. "Building Peer-to-Peer QUIC" — FOSDEM 2025
+
 - **Who:** Floris Bruynooghe (n0)
 - **Venue/date:** FOSDEM 2025, Network track, Brussels, 2025-02-02
 - **What's shown:** How the pieces compose into a working p2p
@@ -56,6 +59,7 @@ demos/showcases — 23 items.**
 - **Link:** https://fosdem.org/2025/schedule/event/fosdem-2025-6053-building-peer-to-peer-quic/
 
 ### 4. "iroh: you can just connect things" — RustConf 2026 sponsored demo
+
 - **Who:** Brendan O'Brien
 - **Venue/date:** RustConf 2026, Montréal, 2026-09-10 (10-minute demo
   slot)
@@ -70,6 +74,7 @@ demos/showcases — 23 items.**
 - **Link:** https://rustconf2026.sched.com/event/2U3Ff/sponsored-demo-iroh-you-can-just-connect-things
 
 ### 5. Workshop: "iroh p2p chat over gossip" — 39C3
+
 - **Who:** Hosted at the Delta Chat assembly, 39th Chaos
   Communication Congress (39C3), December 2025
 - **What's shown:** A two-hour hands-on workshop: participants build
@@ -81,6 +86,7 @@ demos/showcases — 23 items.**
 - **Link:** https://delta.chat/39c3.html
 
 ### 6. "Hands-on Introduction to Iroh" — Rawkode Live
+
 - **Who:** Brendan O'Brien with host David (Rawkode)
 - **Venue/date:** Rawkode Live / Rawkode Academy, 2026 (the episode
   page does not carry a firm air date)
@@ -94,10 +100,11 @@ demos/showcases — 23 items.**
 - **Link:** https://rawkode.academy/watch/hands-on-introduction-to-iroh
 
 ### 7. devtools.fm podcast — n0, Iroh and the future of peer to peer
+
 - **Who:** Brendan O'Brien
 - **Venue/date:** devtools.fm podcast, 2025-07-07
 - **What's shown:** A long-form interview on pragmatic p2p: why iroh
-  deliberately does *only* transport, what running it in production
+  deliberately does _only_ transport, what running it in production
   on hundreds of thousands of devices taught the team, and where the
   local-first ecosystem is heading.
 - **Why it matters:** The best audio introduction to n0's philosophy —
@@ -105,9 +112,10 @@ demos/showcases — 23 items.**
 - **Link:** https://podcast.app/brendan-obrien-n0-iroh-and-the-future-of-peer-to-peer-e419358449
 
 ### 8. Fedimint 0.7 and iroh — Stephan Livera Podcast
+
 - **Who:** Eric Sirion and Joschi (Fedimint)
 - **Venue/date:** Stephan Livera Podcast, 2025-04-24
-- **What's shown:** A *builder's* talk, not an n0 one: Fedimint 0.7
+- **What's shown:** A _builder's_ talk, not an n0 one: Fedimint 0.7
   replaced domain names and port-forwarding for federation guardians
   with iroh networking, so a guardian node behind home NAT just
   works. The episode walks through what that changed for people
@@ -118,6 +126,7 @@ demos/showcases — 23 items.**
 - **Link:** https://www.murrayrudd.pro/one-click-federated-custody-with-fedimint-0-7/
 
 ### 9. n0's intro videos — "Introducing iroh" and "A tour of iroh"
+
 - **Who:** n0 (YouTube channel)
 - **Venue/date:** YouTube; early project videos from the pre-1.0 era
   (exact upload dates not verified)
@@ -135,6 +144,7 @@ demos/showcases — 23 items.**
 ## Written announcements and releases
 
 ### 1. Iroh 1.0 — "Dial Keys, not IPs"
+
 - **Who/where:** n0 blog, 2026-06-15
 - **What's announced:** The first stable release, after 65 pre-1.0
   versions: a wire- and API-stability guarantee, official
@@ -148,6 +158,7 @@ demos/showcases — 23 items.**
 - **Link:** https://www.iroh.computer/blog/v1
 
 ### 2. "The road to iroh 1.0"
+
 - **Who/where:** n0 blog, 2026-07-09
 - **What's announced:** A four-year retrospective: the
   IPFS-implementation origin, Delta Chat's backup transfer as the
@@ -161,6 +172,7 @@ demos/showcases — 23 items.**
 - **Link:** https://www.iroh.computer/blog/the-road-to-iroh-1-0
 
 ### 3. "Iroh language support"
+
 - **Who/where:** n0 blog, 2026-06-18
 - **What's announced:** First-party bindings for Swift, Kotlin,
   Python and JavaScript graduate to official status alongside the
@@ -172,6 +184,7 @@ demos/showcases — 23 items.**
 - **Link:** https://www.iroh.computer/blog/iroh-language-support
 
 ### 4. "noq, noq, who's there?" — n0's own QUIC implementation
+
 - **Who/where:** n0 blog, 2026-03-19
 - **What's announced:** noq, n0's hard fork of the quinn QUIC library,
   as a project in its own right: QUIC Multipath, QUIC NAT Traversal
@@ -184,6 +197,7 @@ demos/showcases — 23 items.**
 - **Link:** https://www.iroh.computer/blog/noq-announcement
 
 ### 5. "irpc 1.0 — Stable RPC for the iroh ecosystem"
+
 - **Who/where:** n0 blog, 2026-11-10
 - **What's announced:** irpc reaches 1.0 with a stable wire format
   and cancellation-safe streaming RPC. Because iroh-blobs and
@@ -195,6 +209,7 @@ demos/showcases — 23 items.**
 - **Link:** https://www.iroh.computer/blog/irpc-1-0
 
 ### 6. "Delta Chat introduces realtime Peer-to-Peer networking"
+
 - **Who/where:** Delta Chat team, delta.chat blog, 2024-11-20
 - **What's announced:** Delta Chat 1.48 ships iroh-based realtime
   networking on all platforms after almost two years of collaboration
@@ -209,6 +224,7 @@ demos/showcases — 23 items.**
 - **Link:** https://delta.chat/en/2024-11-20-webxdc-realtime
 
 ### 7. "iroh comes to our RP2350 microcontroller" — Raspberry Pi
+
 - **Who/where:** Raspberry Pi official news, 2026-11-06
 - **What's announced:** Iroh ported to the RP2350 microcontroller,
   demoed running on a Pimoroni Presto (over Wi-Fi) and a Pico 2, with
@@ -221,6 +237,7 @@ demos/showcases — 23 items.**
 - **Link:** https://www.raspberrypi.com/news/iroh-comes-to-our-rp2350-microcontroller/
 
 ### 8. "Pubky is Now Open!" — the pkarr public launch
+
 - **Who/where:** Pubky / Synonym, Medium, public launch late 2024
 - **What's announced:** Pubky's public opening, built on **pkarr**:
   signed DNS-like records published to the BitTorrent Mainline DHT,
@@ -232,7 +249,7 @@ demos/showcases — 23 items.**
   [pkarr page](03-pkarr-and-discovery.md).
 - **Link:** https://medium.com/pubky/opening-pubky-4bdca7dc4c77
 
-*Release cadence note:* the 1.0 line kept moving after June — the n0
+_Release cadence note:_ the 1.0 line kept moving after June — the n0
 blog index lists iroh 1.4.2 (security fixes, 2026-11-18) and iroh
 1.5.0 "Stream Affinity, Then Heads Down" (2026-11-19) as the latest
 release posts: https://www.iroh.computer/blog
@@ -240,6 +257,7 @@ release posts: https://www.iroh.computer/blog
 ## Demos and showcases
 
 ### 1. Strada — direct file transfer for film and media production
+
 - **Who/where:** Strada case study, n0 blog, 2026-11-02
 - **What's shown:** A media-workflow company moving production files
   peer-to-peer with iroh instead of through central cloud storage.
@@ -253,6 +271,7 @@ release posts: https://www.iroh.computer/blog
 - **Link:** https://www.iroh.computer/blog/strada-direct-file-transfer
 
 ### 2. Mesh LLM — distributed AI computing on iroh
+
 - **Who/where:** Mesh LLM project, featured on n0 blog, 2026-07-11
 - **What's shown:** Pooling GPUs across ordinary machines into one
   OpenAI-compatible API: requests run locally, route to a peer that
@@ -266,6 +285,7 @@ release posts: https://www.iroh.computer/blog
 - **Link:** https://www.iroh.computer/blog/mesh-llm
 
 ### 3. Buzz — Block shares spare compute over iroh
+
 - **Who/where:** Block (Buzz + MeshLLM), featured on n0 blog,
   2026-09-22
 - **What's shown:** Block's agent workspace lets community members
@@ -282,6 +302,7 @@ release posts: https://www.iroh.computer/blog
 - **Link:** https://www.iroh.computer/blog/buzz-agent-workspaces
 
 ### 4. Paycode — iroh for payments at highway toll booths
+
 - **Who/where:** Paycode (Mexico), featured on n0 blog, 2026-03-26
 - **What's shown:** Payment terminals and point-of-sale systems at
   highway toll booths talking directly over iroh — no added servers —
@@ -296,6 +317,7 @@ release posts: https://www.iroh.computer/blog
 - **Link:** https://www.iroh.computer/blog/paycode
 
 ### 5. sendme and dumbpipe — the demo tools that grew an ecosystem
+
 - **Who/where:** n0 (recounted in "The road to iroh 1.0",
   2026-07-09)
 - **What's shown:** n0's two minimal file-transfer/pipe demos became
@@ -310,6 +332,7 @@ release posts: https://www.iroh.computer/blog
 - **Link:** https://www.iroh.computer/blog/the-road-to-iroh-1-0
 
 ### 6. DashBeam — third-party product overview video
+
 - **Who/where:** DashBeam (independent project), YouTube
 - **What's shown:** A product overview video for a cross-platform
   p2p file-transfer app built on iroh — desktop, mobile, web and

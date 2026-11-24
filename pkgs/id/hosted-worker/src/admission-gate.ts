@@ -24,12 +24,7 @@
 // node whose dispatch excludes the profile refuses it; the Rust
 // core remains the authority for blake3 admissions.
 
-import {
-  CborError,
-  decodeCanonical,
-  encodeCanonical,
-  type CborValue,
-} from "./canonical-cbor.ts";
+import { CborError, decodeCanonical, encodeCanonical, type CborValue } from "./canonical-cbor.ts";
 
 /** The stable failure class of a rejection (mirrors the Rust `class()`). */
 export type AdmissionRejectionClass =
@@ -79,11 +74,7 @@ function checkContextField(field: string, text: string): void {
 }
 
 /** A validated admission context; throws `malformed` on a bad field. */
-export function admissionContext(
-  principal: string,
-  tenantScope: string,
-  authorizationScope: string,
-): AdmissionContext {
+export function admissionContext(principal: string, tenantScope: string, authorizationScope: string): AdmissionContext {
   checkContextField("principal", principal);
   checkContextField("tenant_scope", tenantScope);
   checkContextField("authorization_scope", authorizationScope);
@@ -296,9 +287,7 @@ function parseEnvelope(decoded: CborValue): ParsedEnvelope {
 function signaturePreimage(bodyValue: CborValue, domain: string): Uint8Array {
   const encoded = encodeCanonical(bodyValue);
   const domainBytes = new TextEncoder().encode(domain);
-  const out = new Uint8Array(
-    SIGNATURE_DOMAIN_PREFIX.length + 4 + domainBytes.length + encoded.length,
-  );
+  const out = new Uint8Array(SIGNATURE_DOMAIN_PREFIX.length + 4 + domainBytes.length + encoded.length);
   let pos = 0;
   out.set(SIGNATURE_DOMAIN_PREFIX, pos);
   pos += SIGNATURE_DOMAIN_PREFIX.length;
@@ -316,11 +305,7 @@ export class AdmissionGate {
   readonly #directory: SignerDirectory;
   readonly #authorizer: AdmissionAuthorizer;
 
-  constructor(
-    policy: GatePolicy,
-    directory: SignerDirectory,
-    authorizer: AdmissionAuthorizer,
-  ) {
+  constructor(policy: GatePolicy, directory: SignerDirectory, authorizer: AdmissionAuthorizer) {
     this.#policy = policy;
     this.#directory = directory;
     this.#authorizer = authorizer;
@@ -331,10 +316,7 @@ export class AdmissionGate {
    * bytes. Resolves with the receipt on acceptance; rejects with
    * an {@link AdmissionRejection} naming the failing stage.
    */
-  async admitCanonical(
-    bytes: Uint8Array,
-    context: AdmissionContext,
-  ): Promise<AdmissionReceipt> {
+  async admitCanonical(bytes: Uint8Array, context: AdmissionContext): Promise<AdmissionReceipt> {
     // Stage 1 — semantic validation: canonical decode, strict
     // field sets, label bounds, canonical round trip.
     let decoded: CborValue;
@@ -402,10 +384,7 @@ export class AdmissionGate {
     // Stage 5 — policy: admitted domain and payload budget.
     const admitted = this.#policy.admittedDomains;
     if (admitted !== undefined && admitted.size > 0 && !admitted.has(parsed.domain)) {
-      throw new AdmissionRejection(
-        "policy",
-        `domain ${JSON.stringify(parsed.domain)} is not admitted by policy`,
-      );
+      throw new AdmissionRejection("policy", `domain ${JSON.stringify(parsed.domain)} is not admitted by policy`);
     }
     const maxPayload = this.#policy.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
     if (parsed.payloadLength > BigInt(maxPayload)) {
@@ -415,9 +394,7 @@ export class AdmissionGate {
       );
     }
 
-    const envelopeDigest = new Uint8Array(
-      await crypto.subtle.digest("SHA-256", bytes as BufferSource),
-    );
+    const envelopeDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as BufferSource));
     return {
       signerId: parsed.signerId,
       tenantScope: parsed.context,
@@ -434,14 +411,9 @@ export class AdmissionGate {
       try {
         new TextDecoder("utf-8", { fatal: true }).decode(parsed.payload);
       } catch {
-        throw new AdmissionRejection(
-          "payload",
-          "atlas-chunk-sha256-utf8 is defined over UTF-8 text",
-        );
+        throw new AdmissionRejection("payload", "atlas-chunk-sha256-utf8 is defined over UTF-8 text");
       }
-      const digest = new Uint8Array(
-        await crypto.subtle.digest("SHA-256", parsed.payload as BufferSource),
-      );
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", parsed.payload as BufferSource));
       if (!bytesEqual(digest, parsed.payloadDigest)) {
         throw new AdmissionRejection("payload", "payload digest does not match the payload ID");
       }
@@ -449,22 +421,13 @@ export class AdmissionGate {
     }
     // raw-blake3-256 has no compiled verifier in this build; an
     // unknown profile is unsupported on any build.
-    throw new AdmissionRejection(
-      "unsupported",
-      `unsupported content profile ${JSON.stringify(parsed.payloadProfile)}`,
-    );
+    throw new AdmissionRejection("unsupported", `unsupported content profile ${JSON.stringify(parsed.payloadProfile)}`);
   }
 
   async #verifySignature(parsed: ParsedEnvelope): Promise<void> {
     let key: CryptoKey;
     try {
-      key = await crypto.subtle.importKey(
-        "raw",
-        parsed.key as BufferSource,
-        "Ed25519",
-        false,
-        ["verify"],
-      );
+      key = await crypto.subtle.importKey("raw", parsed.key as BufferSource, "Ed25519", false, ["verify"]);
     } catch {
       throw new AdmissionRejection(
         "signer_binding",

@@ -172,7 +172,7 @@ func addRemoteServer(t *testing.T, name string, body map[string]any) string {
 	if err != nil {
 		t.Fatalf("add remote server %s: %v", full, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		t.Fatalf("add remote server %s: %s: %s", full, resp.Status, strings.TrimSpace(string(msg)))
@@ -187,7 +187,7 @@ func addRemoteServer(t *testing.T, name string, body map[string]any) string {
 			t.Logf("cleanup: remove remote server %s: %v", full, err)
 			return
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	})
 	return full
 }

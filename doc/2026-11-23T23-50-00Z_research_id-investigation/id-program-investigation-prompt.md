@@ -67,15 +67,15 @@ a hosted instance is a backstop, never a requirement.**
 
 - **Falcor / BLAS further development** — Falcor's virtual JSON Graph, path addressing
   (`get`/`set`/`call`), normalized cache. The library is dormant (v2.x, years without releases):
-  steal the *model* for native graph navigation, add typed querying as a view layer, do not adopt
+  steal the _model_ for native graph navigation, add typed querying as a view layer, do not adopt
   the library. BLAS-class numerics belong host-side: faer (decompositions), nalgebra
   (game/geometry), ndarray (interchange), fastembed-rs/lancedb for embeddings — exposed to apps
   as capabilities, never linked into pure app definitions.
 - **App platforms; new interfaces and I/O equivalencies across platforms** — define what an "app"
   is on each tier (CLI, TUI, GUI, web, Android, embedded/ESP32) and the equivalency rules that let
   one app definition render/interact on all of them.
-- **Roc** — the platform model is an unusually exact fit: *the platform supplies all I/O, so a
-  platform literally is a capability set.* Define the Roc-side API once; implement hosts per
+- **Roc** — the platform model is an unusually exact fit: _the platform supplies all I/O, so a
+  platform literally is a capability set._ Define the Roc-side API once; implement hosts per
   target; the same pure app runs everywhere; purity is syntactic (effectful hosted functions carry
   `!` in the new compiler); hosts can meter/refuse each hosted call — a natural fuel hook.
   Read all of Luke Boswell's work:
@@ -127,7 +127,7 @@ a hosted instance is a backstop, never a requirement.**
 - **Cleaner server/client capability separation** — one node binary, capability profiles:
   what a pure rendering client holds vs a storage/signing node vs a hosted backstop.
 - **Full OCapN and CRDT support** — OCapN (Spritely: CapTP, Syrup, `ocapn://` sturdyrefs,
-  netlayers) is *pre-standardization and protocol-unstable*, with Guile/Racket reference
+  netlayers) is _pre-standardization and protocol-unstable_, with Guile/Racket reference
   implementations and no production Rust implementation found: adopt the **semantics** (promise
   pipelining, distributed GC, certified third-party handoffs) into ID's Rust cap layer; track the
   standard, don't block on it. CRDTs (Loro — Fugue text, MovableTree, full history DAG, closest
@@ -143,7 +143,7 @@ a hosted instance is a backstop, never a requirement.**
 - **Text/property objects as structured data; binary formats (images/video)** — object model
   completion: typed properties, schemas, migrations; media objects with streaming, thumbnails,
   and capability-gated decode.
-- **MCP, and using each part as a library in other apps** — MCP servers sit *behind* ID's
+- **MCP, and using each part as a library in other apps** — MCP servers sit _behind_ ID's
   capability layer (MCP's own auth is young; tool hints are untrusted; calls arrive holding a
   capability). Every major component ships as a library with a stable API; the binary is one
   composition of them.
@@ -168,7 +168,7 @@ a hosted instance is a backstop, never a requirement.**
   pure/impure formalism; fuel metering per capability.
 - **D. Data, graph & search** — object/property model completion; graph visualization &
   navigation (Falcor-model path API); Atlas integration design (#6062 + projectors #11182–#11186
-  + #9109 Part C) with the derived-index pattern; CRDT-per-content-class decisions.
+  - #9109 Part C) with the derived-index pattern; CRDT-per-content-class decisions.
 - **E. Tokens & fuel economy** — ERTP/Zoe-shaped asset design on Wasmtime fuel metering;
   market/trading mechanics; in-app items; budgets as capabilities; abuse/Spam economics.
 - **F. Clients, games & simulations** — mockups/sketches (ASCII + rendered) of how the system

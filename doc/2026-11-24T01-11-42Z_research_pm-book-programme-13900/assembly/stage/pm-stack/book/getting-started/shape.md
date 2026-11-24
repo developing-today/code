@@ -4,14 +4,14 @@ The PM stack has six parts. One reads, one links, one launches, one set does the
 
 ## The six parts
 
-| Part | What it is | Where it runs |
-|---|---|---|
-| Aggregator | The dashboard service. It reads every source, publishes one state as pages and machine twins, raises questions, and records answers and actions | Laptop host `amd`, port 4870 |
-| Projector | The link registry and projection service. It records which items in different sources are the same work, and serves links and latest comments per subject | Laptop, port 7801 |
-| Dispatch | pm-dispatch, the intake service. An authenticated request launches a session now or enqueues it as a queue task with a tracking issue | Laptop, port 4879, public as `dispatch.security.cab` |
-| Workers | The things that do and watch the work: OpenCode sessions claimed by the claimant, the fleet queue's lanes, Cloudflare Workers at the edge, and the guard and exporter jobs on timers | Laptop, GitHub Actions, and Cloudflare |
-| Website | Two first-party web apps: the aggregator dashboard (29 routes) and the PM console (21 hash views) | Laptop, with the console also served at the edge |
-| Phone | The console as an Android app, plus Web Push to subscribed devices. The phone reads the same state and answers through the same action table | Drew's phone |
+| Part       | What it is                                                                                                                                                                           | Where it runs                                        |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| Aggregator | The dashboard service. It reads every source, publishes one state as pages and machine twins, raises questions, and records answers and actions                                      | Laptop host `amd`, port 4870                         |
+| Projector  | The link registry and projection service. It records which items in different sources are the same work, and serves links and latest comments per subject                            | Laptop, port 7801                                    |
+| Dispatch   | pm-dispatch, the intake service. An authenticated request launches a session now or enqueues it as a queue task with a tracking issue                                                | Laptop, port 4879, public as `dispatch.security.cab` |
+| Workers    | The things that do and watch the work: OpenCode sessions claimed by the claimant, the fleet queue's lanes, Cloudflare Workers at the edge, and the guard and exporter jobs on timers | Laptop, GitHub Actions, and Cloudflare               |
+| Website    | Two first-party web apps: the aggregator dashboard (29 routes) and the PM console (21 hash views)                                                                                    | Laptop, with the console also served at the edge     |
+| Phone      | The console as an Android app, plus Web Push to subscribed devices. The phone reads the same state and answers through the same action table                                         | Drew's phone                                         |
 
 ## How a piece of work moves through the shape
 

@@ -30,7 +30,7 @@ on the laptop is the daily backup timer. Canonical counts are frozen at the
 while the Turso monolith has since grown to ~7.3 GB without a verified recount.
 The staging tier and promote gate exist in code; the aggregator/embedder and
 session-close hook slices are not built. Everything in §2 below is therefore
-mostly *designed or filed*, not running.
+mostly _designed or filed_, not running.
 
 ---
 
@@ -53,10 +53,10 @@ Per the operational README (`dezren39/hatch-personal:workspace/turso-atlas/READM
    idempotent for already-recorded occurrences. **This file is the durable
    asset**; everything else rebuilds from it + the sources.
 3. **Index** — built locally from the chunks: FTS5 keyword index (in atlas.db)
-   + per-model vector sets (~768-dim embeddings). Vectors are explicitly
-   *derived and disposable*; a better model means building a second vector set
-   beside the first from the same chunk text, never re-collecting.
-4. **Publish** — a *copy* of the hot index (keyword + current-best vectors over
+   - per-model vector sets (~768-dim embeddings). Vectors are explicitly
+     _derived and disposable_; a better model means building a second vector set
+     beside the first from the same chunk text, never re-collecting.
+4. **Publish** — a _copy_ of the hot index (keyword + current-best vectors over
    the most valuable chunks) is pushed to Turso, plus coordination/session
    DBs. Turso is distribution only; the full store stays on the laptop and
    Turso never holds the only copy of anything.
@@ -72,14 +72,14 @@ Turso scaler $24.92/mo yearly is the plan ceiling.
 
 ### 1.2 Source classes actually feeding the corpus
 
-| Source | Evidence | Volume signal | Ingest path today | Freshness |
-|---|---|---|---|---|
-| **AI chat/session corpora** — the founding corpus. Client adapters read on-disk conversation stores; the session-logs class in the ingestion-operations design names **OpenCode session store** and **Muse session transcripts** explicitly (`doc/2026-11-09T05-12-00Z_design_atlas_ingestion_operations`, §2 table) | turso-atlas README step 1; #6019 design doc §2 | The whole canonical count: 18,325 sessions / 107,639 chunks (2026-10-31) | Manual/script-driven runs of `atlas-ingest.py` per machine; designed trigger is event-driven (session end / file close stages finalized sessions only) — the session-close hook is **not built** ([#9097](https://github.com/developing-today/code/issues/9097)) | Frozen at 2026-10-31 publish; no verified recount since |
-| **ChatGPT export** | [#3125](https://github.com/developing-today/code/issues/3125) phase-2 backfill records (2026-11-23): the ChatGPT export's CAS hash matches the October design record; the backfill interned 12,092 files (~2.6 GB) into the Atlas CAS with `ATLAS-EXTRACTS VERIFY OK` | Part of the 12,092-file backfill | One-shot export file, interned content-addressed under #3125 phase 2 (hatch-personal PR #67 added `--files-from` interning) | Point-in-time export; no automatic refresh path |
-| **GitHub issue/PR comments — all own repos** | [#6023](https://github.com/developing-today/code/issues/6023) **CLOSED**: "extract the GitHub corpus — all issue/PR comments from all our repos; external set gated on licensing"; writer landed: [#10688](https://github.com/developing-today/code/issues/10688) **CLOSED** "GitHub comments ingestion writer + extraction feed"; atlas-core ships an `atlas-github-comments` binary (`pkgs/atlas-search/crates/atlas-core/src/bin/atlas-github-comments.rs`) | All comments across Drew's repos (org census: 102 admin orgs — count from fleet program records) | Extraction feed + ingestion writer exist; *continuous* re-extraction is part of open [#9097](https://github.com/developing-today/code/issues/9097) item 2, not a running schedule | First pass done; continuous updates not running |
-| **Code / config artifacts** | [#10788](https://github.com/developing-today/code/issues/10788) **CLOSED**: "stage code/config artifacts as embedding entries — item writer + atlas-stage ingest"; [#6025](https://github.com/developing-today/code/issues/6025) **OPEN**: first-pass corpus — all code repos, all findable docs, dezren39/cairn | All code repos (first pass still open) | Staged via `atlas-stage`; the full first-pass corpus task (#6025) remains open | Partial |
-| **Query traces / statistics & reports class** | [#8246](https://github.com/developing-today/code/issues/8246) / [#10364](https://github.com/developing-today/code/issues/10364) **CLOSED**: trace ingestion + retention as statistics-and-reports corpus; [#10418](https://github.com/developing-today/code/issues/10418) **CLOSED**: statistics aggregation + weekly report from traces; atlas-core has `trace_ingest.rs` / `trace_stats.rs` | Atlas's own query traces | Built into atlas-core | Landed |
-| **Boot / reboot records, statistics snapshots, generated reports** | Designed source classes with triggers and inclusion tests in the #6019 operations design (`doc/2026-11-09T05-12-00Z_design_atlas_ingestion_operations` §2): boot records from `~/logs/init.jsonl` + init-status records per fleet host (event-driven on boot-completion); statistics = quota/statistical reports, provider usage snapshots, fleet health rollups (sweep on the report's own cadence, final version only); reports = generated briefs/sweep reports/design records outside the repo (event-driven on file close) | Per-host, per-period | **Design only** — the recurring sweep runner is [#7969](https://github.com/developing-today/code/issues/7969) OPEN (runner core landed via [#11210](https://github.com/developing-today/code/issues/11210), closed) | Not running as a schedule |
+| Source                                                                                                                                                                                                                                                                                                               | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Volume signal                                                                                    | Ingest path today                                                                                                                                                                                                                                                | Freshness                                               |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| **AI chat/session corpora** — the founding corpus. Client adapters read on-disk conversation stores; the session-logs class in the ingestion-operations design names **OpenCode session store** and **Muse session transcripts** explicitly (`doc/2026-11-09T05-12-00Z_design_atlas_ingestion_operations`, §2 table) | turso-atlas README step 1; #6019 design doc §2                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | The whole canonical count: 18,325 sessions / 107,639 chunks (2026-10-31)                         | Manual/script-driven runs of `atlas-ingest.py` per machine; designed trigger is event-driven (session end / file close stages finalized sessions only) — the session-close hook is **not built** ([#9097](https://github.com/developing-today/code/issues/9097)) | Frozen at 2026-10-31 publish; no verified recount since |
+| **ChatGPT export**                                                                                                                                                                                                                                                                                                   | [#3125](https://github.com/developing-today/code/issues/3125) phase-2 backfill records (2026-11-23): the ChatGPT export's CAS hash matches the October design record; the backfill interned 12,092 files (~2.6 GB) into the Atlas CAS with `ATLAS-EXTRACTS VERIFY OK`                                                                                                                                                                                                                                                           | Part of the 12,092-file backfill                                                                 | One-shot export file, interned content-addressed under #3125 phase 2 (hatch-personal PR #67 added `--files-from` interning)                                                                                                                                      | Point-in-time export; no automatic refresh path         |
+| **GitHub issue/PR comments — all own repos**                                                                                                                                                                                                                                                                         | [#6023](https://github.com/developing-today/code/issues/6023) **CLOSED**: "extract the GitHub corpus — all issue/PR comments from all our repos; external set gated on licensing"; writer landed: [#10688](https://github.com/developing-today/code/issues/10688) **CLOSED** "GitHub comments ingestion writer + extraction feed"; atlas-core ships an `atlas-github-comments` binary (`pkgs/atlas-search/crates/atlas-core/src/bin/atlas-github-comments.rs`)                                                                  | All comments across Drew's repos (org census: 102 admin orgs — count from fleet program records) | Extraction feed + ingestion writer exist; _continuous_ re-extraction is part of open [#9097](https://github.com/developing-today/code/issues/9097) item 2, not a running schedule                                                                                | First pass done; continuous updates not running         |
+| **Code / config artifacts**                                                                                                                                                                                                                                                                                          | [#10788](https://github.com/developing-today/code/issues/10788) **CLOSED**: "stage code/config artifacts as embedding entries — item writer + atlas-stage ingest"; [#6025](https://github.com/developing-today/code/issues/6025) **OPEN**: first-pass corpus — all code repos, all findable docs, dezren39/cairn                                                                                                                                                                                                                | All code repos (first pass still open)                                                           | Staged via `atlas-stage`; the full first-pass corpus task (#6025) remains open                                                                                                                                                                                   | Partial                                                 |
+| **Query traces / statistics & reports class**                                                                                                                                                                                                                                                                        | [#8246](https://github.com/developing-today/code/issues/8246) / [#10364](https://github.com/developing-today/code/issues/10364) **CLOSED**: trace ingestion + retention as statistics-and-reports corpus; [#10418](https://github.com/developing-today/code/issues/10418) **CLOSED**: statistics aggregation + weekly report from traces; atlas-core has `trace_ingest.rs` / `trace_stats.rs`                                                                                                                                   | Atlas's own query traces                                                                         | Built into atlas-core                                                                                                                                                                                                                                            | Landed                                                  |
+| **Boot / reboot records, statistics snapshots, generated reports**                                                                                                                                                                                                                                                   | Designed source classes with triggers and inclusion tests in the #6019 operations design (`doc/2026-11-09T05-12-00Z_design_atlas_ingestion_operations` §2): boot records from `~/logs/init.jsonl` + init-status records per fleet host (event-driven on boot-completion); statistics = quota/statistical reports, provider usage snapshots, fleet health rollups (sweep on the report's own cadence, final version only); reports = generated briefs/sweep reports/design records outside the repo (event-driven on file close) | Per-host, per-period                                                                             | **Design only** — the recurring sweep runner is [#7969](https://github.com/developing-today/code/issues/7969) OPEN (runner core landed via [#11210](https://github.com/developing-today/code/issues/11210), closed)                                              | Not running as a schedule                               |
 
 ### 1.3 The semi-automated ingest design that governs all of the above
 
@@ -90,19 +90,20 @@ unattended; adding a source class, loosening an inclusion test, bulk backfills,
 and plan changes are always human decisions. Every class must answer a stated
 question ("what question would this ever answer?"); rejects are logged with the
 same manifest shape as accepts (`no-question`, `duplicate-content`, `oversize`
->256 MiB, `secret-tier-held`, `superseded-version`). Pipeline: delta-only
-discovery ([#6028](https://github.com/developing-today/code/issues/6028),
-span-anchored offset matching) → usefulness + classification-manifest filter →
-content-addressed landing in the **staging shard** ([#3125](https://github.com/developing-today/code/issues/3125))
-→ promotion through the ingest gate ([#6057](https://github.com/developing-today/code/issues/6057):
-write → classify → dedup → provenance-check → publish; merge-on-close per
-[#5669](https://github.com/developing-today/code/issues/5669)) → per-batch
-in-toto-shaped attestation ([#6045](https://github.com/developing-today/code/issues/6045)).
-Disk/IO guardrails and the Turso plan ceiling are part of the same design.
-**Status: designed and partially built (gate + staging + runner core landed);
-the continuous runner ([#7969](https://github.com/developing-today/code/issues/7969))
-and continuous-ingestion program ([#9097](https://github.com/developing-today/code/issues/9097),
-`status/blocked`) are still open.**
+
+> 256 MiB, `secret-tier-held`, `superseded-version`). Pipeline: delta-only
+> discovery ([#6028](https://github.com/developing-today/code/issues/6028),
+> span-anchored offset matching) → usefulness + classification-manifest filter →
+> content-addressed landing in the **staging shard** ([#3125](https://github.com/developing-today/code/issues/3125))
+> → promotion through the ingest gate ([#6057](https://github.com/developing-today/code/issues/6057):
+> write → classify → dedup → provenance-check → publish; merge-on-close per
+> [#5669](https://github.com/developing-today/code/issues/5669)) → per-batch
+> in-toto-shaped attestation ([#6045](https://github.com/developing-today/code/issues/6045)).
+> Disk/IO guardrails and the Turso plan ceiling are part of the same design.
+> **Status: designed and partially built (gate + staging + runner core landed);
+> the continuous runner ([#7969](https://github.com/developing-today/code/issues/7969))
+> and continuous-ingestion program ([#9097](https://github.com/developing-today/code/issues/9097),
+> `status/blocked`) are still open.**
 
 ---
 
@@ -177,11 +178,11 @@ Its six items, plus the surrounding connector issues:
 - **Holder:** ID's own stores — laptop redb, Turso ID DBs, hosted stores as
   they arrive.
 - **Automatic ingest shape:** the reverse direction is the designed one today:
-  Atlas objects publish *into* the ID graph —
+  Atlas objects publish _into_ the ID graph —
   [#6062](https://github.com/developing-today/code/issues/6062) (publication
   format design, OPEN) + projector set
   [#11182](https://github.com/developing-today/code/issues/11182)–[#11186](https://github.com/developing-today/code/issues/11186)
-  (all OPEN, unstarted). #9097 item 5 asks for ID objects *into* Atlas search
+  (all OPEN, unstarted). #9097 item 5 asks for ID objects _into_ Atlas search
   as well; [#9109](https://github.com/developing-today/code/issues/9109) Part C
   states the end state: "automatic vectorization of ID content (Snowflake +
   the second embedder from Atlas
@@ -255,7 +256,7 @@ yet dispositioned — **no ingest issue exists for any of these** (searched
 - **External content** waits on #6024/#6052 (§2.2).
 - **Keep-all rule** ([#3125](https://github.com/developing-today/code/issues/3125)):
   keep ALL data; only byte-identical duplicates are cleaned; backups AND
-  plain extracts for every corpus; every chunk records *every* place it was
+  plain extracts for every corpus; every chunk records _every_ place it was
   found (`chunk_occurrences`) — dedup must never silently drop provenance
   (it had dropped ~127K occurrences before #3125).
 - **Plan ceiling:** Turso scaler $24.92/mo is a hard envelope; sweeps carry
@@ -325,7 +326,7 @@ MCP for cross-agent access; native library access stays Atlas-internal only.
 [#9106](https://github.com/developing-today/code/issues/9106) epic) is the
 program-level statement that ID search and recommendations are Atlas-facing:
 
-- **Query shape:** search *over the ID object graph* — automatic vectorization
+- **Query shape:** search _over the ID object graph_ — automatic vectorization
   of ID content (Snowflake + the second embedder from
   [#9092](https://github.com/developing-today/code/issues/9092)) feeding
   built-in ID search; plus **recommendation surfaces**: one fan-out worker, a
@@ -367,7 +368,7 @@ contract beyond the CLI/Worker surface and the MCP namespace — the
 [#8567](https://github.com/developing-today/code/issues/8567)'s corpora —
 OpenClaw's memory-lancedb content, zettelkasten/Emanote notes, repo docs,
 prior research reports — are consumed by agents (OpenClaw, OpenCode sessions,
-OpenChamber, Muse lanes) as *memory*: recall-shaped queries ("what do we
+OpenChamber, Muse lanes) as _memory_: recall-shaped queries ("what do we
 know about X", prior decisions) rather than document search. Slices:
 [#8622](https://github.com/developing-today/code/issues/8622) (registry +
 connector), [#8625](https://github.com/developing-today/code/issues/8625)
@@ -428,7 +429,7 @@ v2–v4 baseline inventory (`doc/2026-11-11T03-45-00Z_design_atlas_v2_v4/researc
   (CLOSED) revalidated the whole corpus — sweep the internal tier for
   secret-class content (credential-shaped strings, keys/tokens,
   personal/financial/medical details), including internal chunks that embed
-  *close to* secret chunks; verify the converse (secret tier holds only
+  _close to_ secret chunks; verify the converse (secret tier holds only
   secret-class content) and that secret material exists nowhere else,
   including the production monolith and local replicas/caches.
 - **The Layer 1 secret-tier review**: [#10412](https://github.com/developing-today/code/issues/10412)
@@ -488,7 +489,7 @@ tier boundary holds.**
   investigation, undecided); Gmail anything (§2.7 — connector disconnected +
   Drew's pause order).
 - **Not a gate but a rule:** sweeps never delete. Retention/retirement is a
-  *report* a sweep surfaces; erasure happens only through the
+  _report_ a sweep surfaces; erasure happens only through the
   deletion-propagation process or a human decision. Feedback/usefulness
   signals can propose movement or retirement, never authorize erasure
   (v2–v4 baseline inventory V1-D06/D13).

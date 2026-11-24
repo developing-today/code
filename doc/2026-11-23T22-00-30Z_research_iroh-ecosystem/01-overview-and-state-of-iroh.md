@@ -1,6 +1,6 @@
 # Overview and state of iroh
 
-*Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).*
+_Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md)._
 
 ## Where core stands: 1.0 shipped, now at 1.5.0
 
@@ -24,16 +24,16 @@ The post-1.0 cadence has been fast — roughly monthly minors, 4.68M
 all-time downloads at census time
 ([crates.io record for `iroh`](https://crates.io/api/v1/crates/iroh)):
 
-| Version | Date | Headline changes |
-|---|---|---|
-| 1.0.0 | 2026-06-15 | Stable wire + API; FFI bindings; QUIC multipath; QUIC NAT traversal; custom transports |
-| 1.1.0 | 2026-08-25 | Minor release |
-| 1.2.0 | 2026-09-09 | Minor release |
-| 1.3.0 | 2026-09-28 | Minor release |
-| 1.4.0 | 2026-10-20 | rustls security fixes; relay sends an endpoint-ID header (the old NodeId header is deprecated); faster relay startup; better local-only networking ([release notes](https://github.com/n0-computer/iroh/releases/tag/v1.4.0)) |
-| 1.4.1 | 2026-10-21 | Test/CI timeout fixes; dependency updates |
-| 1.4.2 | 2026-11-19 | Security fixes for relays and endpoints |
-| **1.5.0** | **2026-11-19** | Stream affinity (pin streams to paths), path wait helpers, a relay handshake connection-leak fix; the release post is titled "Stream Affinity, Then Heads Down" ([blog](https://www.iroh.computer/blog)) |
+| Version   | Date           | Headline changes                                                                                                                                                                                                              |
+| --------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.0.0     | 2026-06-15     | Stable wire + API; FFI bindings; QUIC multipath; QUIC NAT traversal; custom transports                                                                                                                                        |
+| 1.1.0     | 2026-08-25     | Minor release                                                                                                                                                                                                                 |
+| 1.2.0     | 2026-09-09     | Minor release                                                                                                                                                                                                                 |
+| 1.3.0     | 2026-09-28     | Minor release                                                                                                                                                                                                                 |
+| 1.4.0     | 2026-10-20     | rustls security fixes; relay sends an endpoint-ID header (the old NodeId header is deprecated); faster relay startup; better local-only networking ([release notes](https://github.com/n0-computer/iroh/releases/tag/v1.4.0)) |
+| 1.4.1     | 2026-10-21     | Test/CI timeout fixes; dependency updates                                                                                                                                                                                     |
+| 1.4.2     | 2026-11-19     | Security fixes for relays and endpoints                                                                                                                                                                                       |
+| **1.5.0** | **2026-11-19** | Stream affinity (pin streams to paths), path wait helpers, a relay handshake connection-leak fix; the release post is titled "Stream Affinity, Then Heads Down" ([blog](https://www.iroh.computer/blog))                      |
 
 ## How 1.0 was built: the 0.9x canary line
 
@@ -78,7 +78,7 @@ into their own crate.
   of quinn extended with QUIC Multipath, QUIC Address Discovery and an
   in-QUIC NAT-traversal protocol. It versions alongside iroh (noq
   1.5.0 shipped with iroh 1.5.0), and it replaced the old side-protocol
-  + external STUN design with QUIC-native machinery.
+  - external STUN design with QUIC-native machinery.
 - **Relays.** The `iroh-relay` crate is the relay server implementation
   — the code n0 runs in production, and anyone can run it. Relays are
   a fallback path and a hole-punch coordination point, not a data

@@ -639,6 +639,9 @@ export default (async ({ directory, worktree, project, client }, options) => {
       // silently degrades to a single shared instance, which is the failure
       // this whole file exists to prevent.
       put(e, "MCPX_SESSION_ID", input.sessionID);
+      // Fleet consumes the same harness identity to persist per-worktree
+      // provenance and pass it to the child processes it starts.
+      put(e, "FLEET_SESSION_ID", input.sessionID);
       if (level === "minimal") return;
 
       // Both of the other fields the hook is given. cwd is the directory the

@@ -1,8 +1,8 @@
 # Community and where discussion lives
 
-*Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).
+_Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).
 Everything from the community below is paraphrased in substance —
-follow the links to read the originals.*
+follow the links to read the originals._
 
 ## The two main venues, plus satellites
 
@@ -17,7 +17,7 @@ resolves to two main venues:
    ([CONTRIBUTING.md](https://raw.githubusercontent.com/n0-computer/iroh/main/CONTRIBUTING.md)),
    and the canonical short link is **https://iroh.computer/discord**.
    **Access reality:** Discord requires an account and joining the
-   server; the channels are *not publicly readable* from the open
+   server; the channels are _not publicly readable_ from the open
    web. This research did not join or read it — nothing behind that
    login is summarised here. Joining is a step only the account holder
    can take.
@@ -39,8 +39,8 @@ resolves to two main venues:
    Discussions + socials; day-to-day developer socialising is
    Discord.
 
-**Bottom line:** the substantive *public* record is GitHub
-Discussions + the blog; the substantive *social* record is the
+**Bottom line:** the substantive _public_ record is GitHub
+Discussions + the blog; the substantive _social_ record is the
 login-gated Discord.
 
 ## Recent important conversations (public board, paraphrased)
@@ -51,7 +51,7 @@ login-gated Discord.
   endpoint IDs are Ed25519 keys, a future fault-tolerant quantum
   computer could forge identities, and that migration across a
   deployed identity system takes years — so the proposal is to make
-  iroh crypto-agile and define a post-quantum migration path *now*
+  iroh crypto-agile and define a post-quantum migration path _now_
   while keeping Ed25519 today. The thread drew sustained maintainer
   engagement.
   [Discussion #4532](https://github.com/n0-computer/iroh/discussions/4532)
@@ -104,13 +104,13 @@ login-gated Discord.
   model.
   [Discussions board, General](https://github.com/n0-computer/iroh/discussions)
 
-## What is *not* publicly visible
+## What is _not_ publicly visible
 
 The Discord's content — help channels, working discussion, any
 decision-making that happens socially — is not readable without
 joining, and this research deliberately did not join under anyone's
 identity. The public surfaces above (Discussions, the blog, release
-notes, awesome-iroh) are a faithful record of *what shipped and what
-was proposed*, but the community's live pulse is in the Discord at
+notes, awesome-iroh) are a faithful record of _what shipped and what
+was proposed_, but the community's live pulse is in the Discord at
 https://iroh.computer/discord, and joining it is a one-click step
 from one's own account.

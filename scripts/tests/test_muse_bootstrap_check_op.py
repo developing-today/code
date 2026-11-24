@@ -208,7 +208,6 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
             "ln",
             "cp",
             "stat",
-            "timeout",
         ):
             resolved = shutil.which(name)
             if resolved:
@@ -280,9 +279,7 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
     def test_bridge_hello_failure_fails_check_when_restore_skipped(self) -> None:
         # The bridge leg still gates the check even when restore is
         # skipped: a genuine bridge-hello failure must hard-fail (#13674).
-        result = self.run_bootstrap(
-            SKIP_ALL_BUT_CHECK, {"FAKE_BRIDGE_HELLO_RC": "1"}
-        )
+        result = self.run_bootstrap(SKIP_ALL_BUT_CHECK, {"FAKE_BRIDGE_HELLO_RC": "1"})
         self.assertIn("bridge hello failed", result.stderr)
         self.assertIn(WARNING, result.stderr)
         self.assertNotIn(HARD_FAILURE, result.stderr)

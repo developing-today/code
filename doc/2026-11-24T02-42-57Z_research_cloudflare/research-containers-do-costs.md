@@ -22,11 +22,11 @@ Containers have **no Free-plan allocation** (Free column is "N/A"); the included
 come with the $5/month Workers Paid plan. Billing is metered **every 10 ms** that an instance is
 actively running.
 
-| Meter | Included / month (Workers Paid) | Overage rate | Equivalent |
-|---|---|---|---|
-| Memory | 25 GiB-hours | $0.0000025 per GiB-second | $0.009 per GiB-hour |
-| CPU (vCPU) | 375 vCPU-minutes | $0.000020 per vCPU-second | $0.072 per vCPU-hour |
-| Disk | 200 GB-hours | $0.00000007 per GB-second | $0.000252 per GB-hour |
+| Meter      | Included / month (Workers Paid) | Overage rate              | Equivalent            |
+| ---------- | ------------------------------- | ------------------------- | --------------------- |
+| Memory     | 25 GiB-hours                    | $0.0000025 per GiB-second | $0.009 per GiB-hour   |
+| CPU (vCPU) | 375 vCPU-minutes                | $0.000020 per vCPU-second | $0.072 per vCPU-hour  |
+| Disk       | 200 GB-hours                    | $0.00000007 per GB-second | $0.000252 per GB-hour |
 
 Source: https://developers.cloudflare.com/containers/platform/pricing/
 
@@ -105,12 +105,12 @@ All three meters bind at the same point, by design:
 
 **One lite instance running continuously for a 30-day month (720 h = 2,592,000 s):**
 
-| Meter | Usage | Included | Overage qty | Overage cost |
-|---|---|---|---|---|
-| Memory | 0.25 GiB × 720 h = 180 GiB-h | 25 GiB-h | 155 GiB-h = 558,000 GiB-s | 558,000 × $0.0000025 = **$1.40** |
-| Disk | 2 GB × 720 h = 1,440 GB-h | 200 GB-h | 1,240 GB-h = 4,464,000 GB-s | 4,464,000 × $0.00000007 = **$0.31** |
-| CPU (worst case: pegged at 1/16 vCPU 24/7) | 2,592,000 s × 1/16 = 162,000 vCPU-s | 22,500 vCPU-s | 139,500 vCPU-s | 139,500 × $0.00002 = **$2.79** |
-| CPU (typical: mostly idle) | ~0 active vCPU-s | — | ~0 | **~$0** |
+| Meter                                      | Usage                               | Included      | Overage qty                 | Overage cost                        |
+| ------------------------------------------ | ----------------------------------- | ------------- | --------------------------- | ----------------------------------- |
+| Memory                                     | 0.25 GiB × 720 h = 180 GiB-h        | 25 GiB-h      | 155 GiB-h = 558,000 GiB-s   | 558,000 × $0.0000025 = **$1.40**    |
+| Disk                                       | 2 GB × 720 h = 1,440 GB-h           | 200 GB-h      | 1,240 GB-h = 4,464,000 GB-s | 4,464,000 × $0.00000007 = **$0.31** |
+| CPU (worst case: pegged at 1/16 vCPU 24/7) | 2,592,000 s × 1/16 = 162,000 vCPU-s | 22,500 vCPU-s | 139,500 vCPU-s              | 139,500 × $0.00002 = **$2.79**      |
+| CPU (typical: mostly idle)                 | ~0 active vCPU-s                    | —             | ~0                          | **~$0**                             |
 
 - Always-on lite, CPU pegged the whole month: **≈ $4.50/month in overage** on top of the
   $5 plan (plus the small Worker/DO charges for the container's own Durable Object).
@@ -118,11 +118,11 @@ All three meters bind at the same point, by design:
 
 **Container network egress** (separate meter, per month):
 
-| Region | Included allotment | Price per GB after |
-|---|---|---|
-| North America & Europe | 1 TB | $0.025 |
-| Oceania, Korea, Taiwan | 500 GB | $0.05 |
-| Everywhere else | 500 GB | $0.04 |
+| Region                 | Included allotment | Price per GB after |
+| ---------------------- | ------------------ | ------------------ |
+| North America & Europe | 1 TB               | $0.025             |
+| Oceania, Korea, Taiwan | 500 GB             | $0.05              |
+| Everywhere else        | 500 GB             | $0.04              |
 
 Source: https://developers.cloudflare.com/containers/platform/pricing/
 (Note the contrast: Workers/R2 egress is free; container egress is the exception — see B1.)
@@ -152,10 +152,10 @@ https://developers.cloudflare.com/workers/platform/pricing/)
 
 **Compute**
 
-| Meter | Workers Free | Workers Paid — included | Workers Paid — overage |
-|---|---|---|---|
-| Requests | 100,000 / day | 1 million / month | **$0.15 / million** |
-| Duration | 13,000 GB-s / day | 400,000 GB-s / month | **$12.50 / million GB-s** |
+| Meter    | Workers Free      | Workers Paid — included | Workers Paid — overage    |
+| -------- | ----------------- | ----------------------- | ------------------------- |
+| Requests | 100,000 / day     | 1 million / month       | **$0.15 / million**       |
+| Duration | 13,000 GB-s / day | 400,000 GB-s / month    | **$12.50 / million GB-s** |
 
 - "Requests" includes HTTP requests, RPC sessions, WebSocket messages, and **alarm
   invocations**. Each RPC method call on a stub is its own RPC session = 1 billed request
@@ -168,16 +168,16 @@ https://developers.cloudflare.com/workers/platform/pricing/)
   128 MB, each is billed as if allocated the full 128 MB.
 - **Rounding gotcha:** billable usage above the included amount is **rounded up to the next
   billable unit** before pricing — the docs' own example rounds 500,000 billable GB-s up to
-  1,000,000 GB-s. In practice, *any* duration overage costs a minimum of $12.50, and any
+  1,000,000 GB-s. In practice, _any_ duration overage costs a minimum of $12.50, and any
   request overage a minimum of $0.15, per month.
 
 **Storage — SQLite backend (recommended; the only backend on Free)**
 
-| Meter | Workers Free | Workers Paid — included | Workers Paid — overage |
-|---|---|---|---|
-| Rows read | 5 million / day | 25 billion / month | **$0.001 / million rows** |
-| Rows written | 100,000 / day | 50 million / month | **$1.00 / million rows** |
-| SQL stored data | 5 GB total | 5 GB-month | **$0.20 / GB-month** |
+| Meter           | Workers Free    | Workers Paid — included | Workers Paid — overage    |
+| --------------- | --------------- | ----------------------- | ------------------------- |
+| Rows read       | 5 million / day | 25 billion / month      | **$0.001 / million rows** |
+| Rows written    | 100,000 / day   | 50 million / month      | **$1.00 / million rows**  |
+| SQL stored data | 5 GB total      | 5 GB-month              | **$0.20 / GB-month**      |
 
 - Rates match D1. The key-value-style methods (`get`/`put`/`delete`/`list`) run against a
   hidden SQLite table and are billed as rows read/written.
@@ -188,12 +188,12 @@ https://developers.cloudflare.com/workers/platform/pricing/)
 
 **Storage — legacy key-value backend (Paid only)**
 
-| Meter | Included | Overage |
-|---|---|---|
-| Read request units (4 KB = 1 unit) | 1 million | $0.20 / million |
-| Write request units | 1 million | $1.00 / million |
-| Delete requests | 1 million | $1.00 / million (deletes unmetered by size: one charge per delete call) |
-| Stored data | 1 GB | $0.20 / GB-month |
+| Meter                              | Included  | Overage                                                                 |
+| ---------------------------------- | --------- | ----------------------------------------------------------------------- |
+| Read request units (4 KB = 1 unit) | 1 million | $0.20 / million                                                         |
+| Write request units                | 1 million | $1.00 / million                                                         |
+| Delete requests                    | 1 million | $1.00 / million (deletes unmetered by size: one charge per delete call) |
+| Stored data                        | 1 GB      | $0.20 / GB-month                                                        |
 
 List operations are billed as read units by data examined; cache hits and multi-key
 `get`/`put`/`delete` are billed as if each key were an individual request. `setAlarm` =
@@ -214,7 +214,7 @@ Source: https://developers.cloudflare.com/workers/platform/pricing/
 - Requests: only whatever traffic keeps it awake — e.g. a 1-request/minute heartbeat =
   43,200 requests, inside the 1M included → $0.
 - **Total: $0 on top of the $5 plan minimum.** What dominates: duration is the only
-  meaningful meter, and one always-on object consumes ~81% of the account's *entire*
+  meaningful meter, and one always-on object consumes ~81% of the account's _entire_
   included duration pool. A **second** always-on object pushes the account to ~648,000
   GB-s → 248,000 billable → rounded up to 1,000,000 GB-s → **+$12.50/month**. Always-on
   objects are effectively "first one free, each additional ≈ $12.50" (before rounding
@@ -262,8 +262,8 @@ Sources: https://developers.cloudflare.com/durable-objects/platform/pricing/ (Co
 billing + footnotes + FAQ) unless noted.
 
 - **What stops the duration meter:** duration is billed for wall-clock time while the
-  object is *actively executing JavaScript* (handling a request or running event handlers)
-  **or** *idle in memory but unable to hibernate*. An idle object that is **eligible** for
+  object is _actively executing JavaScript_ (handling a request or running event handlers)
+  **or** _idle in memory but unable to hibernate_. An idle object that is **eligible** for
   hibernation is **not billed for duration, even before the runtime actually hibernates
   it**. Inactive objects receiving no requests incur no duration charges at all.
 - **The WebSocket trap:** calling `accept()` on a WebSocket "will incur duration charges
