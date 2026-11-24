@@ -702,7 +702,12 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
     bridgeCalls.push({ method, url: u, body: init?.body });
     if (bridgeRefuses.on) return { ok: false, status: 404, json: async () => JSON.parse("") };
     if (method === "POST" && u.endsWith("/send")) {
-      return { ok: true, status: 201, json: async () => ({ messages: [], fleet: [{ id: 9, agent: "lane-1" }] }) };
+      // A send's answer is its match report (#14375).
+      return {
+        ok: true,
+        status: 201,
+        json: async () => ({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 }),
+      };
     }
     if (method === "GET" && u.endsWith("/agents")) {
       return { ok: true, status: 200, json: async () => ({ agents: bridgeAgents }) };
@@ -3837,7 +3842,10 @@ describe("the edge does the core itself", () => {
     // Every machine goes away: nothing can be relayed or held for one.
     w.net.hostUp = false;
     const sent = await w.act("message.send", { to: ["lane-1"], text: "from the edge" });
-    expect(await sent.json()).toEqual({ ok: true, result: { to: ["lane-1"], command: false } });
+    expect(await sent.json()).toEqual({
+      ok: true,
+      result: { to: ["lane-1"], command: false, batch: "b1", matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0, unregistered: [] },
+    });
     // The bridge was asked once, over its binding, as the PM stack.
     expect(w.bridgeCalls).toHaveLength(1);
     expect(w.bridgeCalls[0].method).toBe("POST");

@@ -1942,7 +1942,12 @@ describe("HTTP surface", () => {
 
   test("each write route reaches its operation", async () => {
     const r = recorder((argv) =>
-      argv[1] === "gh" ? JSON.stringify({ number: 1, html_url: "u", merged: true, sha: "s", labels: [] }) : "",
+      argv[1] === "gh"
+        ? JSON.stringify({ number: 1, html_url: "u", merged: true, sha: "s", labels: [] })
+        : argv[1] === "bridge" && argv[2] === "send"
+          ? // A send's answer is its match report (#14375).
+            JSON.stringify({ batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["lane-1"], remaining: 0 })
+          : "",
     );
     const d = deps("owner", r);
     const run = async (path: string, body: unknown) => (await handle(post(path, body), d)).status;
