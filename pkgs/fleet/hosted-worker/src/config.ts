@@ -78,6 +78,12 @@ export interface HostedEnv {
   /** Direct-read TTL cap in seconds (#12592): a token's requested
    * lifetime may not exceed it. Defaults to 3600 when unset. */
   DIRECT_READ_MAX_TTL_SECONDS?: string;
+  /** Queue libSQL file (#12589 follow-on): path of the file-backed
+   * local libSQL DB holding the shared fleet-queue schema (#6741).
+   * Empty/unset → the fixture store (tests/local-dev default). A
+   * remote Turso DB needs an async Hrana opener this sync interface
+   * cannot serve — documented follow-up, not a second schema. */
+  QUEUE_LIBSQL_FILE?: string;
   /** The message bridge, by service binding (#14373): the bridge
    * door calls it with the PM credential below. A binding, not a
    * value: present when the deployed shape carries it (wrangler.toml
@@ -152,6 +158,13 @@ export interface HostedConfig {
    * (valid) DB ids / mint material are set. Independent of auth,
    * like the stamp material. */
   directRead: DirectReadConfig | null;
+  /** File-backed queue DB path (#12589 follow-on task 23569), or
+   * null when unset — the Worker then wires the fixture store
+   * (local/dev semantics). Named in configuration so the choice is
+   * explicit; the opener that turns the path into a connection is
+   * injected at the worker seam (tests inject node:sqlite — the
+   * Worker bundle itself stays runtime-agnostic). */
+  queueLibsqlFile: string | null;
   /** The PM bridge credential (#14373), or null when unset or too
    * short to be one — the bridge door then fails closed (503). The
    * value is held only to be presented to the bridge; it is never
@@ -272,9 +285,19 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     webhookSecret: env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== "" ? env.GITHUB_WEBHOOK_SECRET : null,
     ingestionRepos: parseIngestionRepos(env.INGESTION_REPOS),
     directRead: parseDirectReadConfig(env),
+    queueLibsqlFile: parseQueueLibsqlFile(env.QUEUE_LIBSQL_FILE),
     bridge: parseBridgeConfig(env),
   };
 }
+
+/** The queue libSQL file (#12589 follow-on): a trimmed path, or
+ * null when unset/blank — the fixture default. Whitespace-only is
+ * unconfigured, not a file. */
+function parseQueueLibsqlFile(raw: string | undefined): string | null {
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
+}
+
 
 /** The PM bridge credential (#14373): present only when the secret
  * is set and long enough to be a bridge credential (the bridge's own
