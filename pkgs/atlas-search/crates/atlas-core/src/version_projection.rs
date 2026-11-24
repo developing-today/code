@@ -1,12 +1,12 @@
 //! Deterministic Atlas immutable-version projection primitives (#11182).
 //!
-//! This first slice projects each Atlas version row to a content-addressed
-//! `document.put` descriptor and the version/batch claims that let a verifier
-//! recompute the publication from the row. It does not publish ID events or
-//! create file notes; head tracking, note revisions, lineage relations, and
-//! correction clears remain later slices of the #6062 follow-on.
+//! Projects immutable rows to `document.put` and version/batch claims, with a
+//! separate complete-head-history replay that adds `note.create`/`note.revise`
+//! descriptors. References remain symbolic until signing. Runtime publication,
+//! non-head/backfill selection, lineage, tombstones, and correction clears
+//! remain later slices of the #6062 follow-on.
 
-use std::collections::BTreeSet;
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
@@ -199,6 +199,10 @@ pub fn project_head_versions(rows: &[AtlasVersionRow]) -> Result<Vec<ProjectedHe
     let documents = project_versions(rows)?;
     let mut ordered = rows.iter().collect::<Vec<_>>();
     ordered.sort_by(|a, b| (&a.file_id, a.version_seq).cmp(&(&b.file_id, b.version_seq)));
+    // The stable create reference and changing prior-head reference are distinct.
+    // Neither the path nor content hash determines logical-file identity.
+    let mut heads: BTreeMap<String, (ProjectedNoteEventRef, ProjectedNoteEventRef)> =
+        BTreeMap::new();
     Ok(ordered
         .into_iter()
         .zip(documents)
@@ -212,10 +216,26 @@ pub fn project_head_versions(rows: &[AtlasVersionRow]) -> Result<Vec<ProjectedHe
                 media_type: document.media_type.clone(),
                 size: document.size,
             };
+            let note = match heads.entry(row.file_id.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert((event_ref.clone(), event_ref.clone()));
+                    ProjectedNote::Create { content }
+                }
+                Entry::Occupied(mut entry) => {
+                    let (create, prior_head) = entry.get_mut();
+                    let note = ProjectedNote::Revise {
+                        note: create.clone(),
+                        content,
+                        parents: vec![prior_head.clone()],
+                    };
+                    *prior_head = event_ref.clone();
+                    note
+                }
+            };
             ProjectedHeadVersion {
                 event_ref,
                 document,
-                note: ProjectedNote::Create { content },
+                note,
             }
         })
         .collect())
@@ -339,6 +359,15 @@ mod tests {
             }
         };
         assert_eq!(output.note, expected);
+        let wire = serde_json::to_value(&output.note).unwrap();
+        match expected {
+            ProjectedNote::Create { .. } => {
+                assert_eq!(wire["kind"], "note.create");
+                assert!(wire.get("parents").is_none());
+                assert!(wire.get("note").is_none());
+            }
+            ProjectedNote::Revise { .. } => assert_eq!(wire["kind"], "note.revise"),
+        }
     }
 
     #[test]
@@ -373,6 +402,30 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn head_histories_match_row_model_despite_gaps_and_shared_content(
+            keys in prop::collection::vec((0u8..4, 1u64..100), 0..32),
+        ) {
+            // Oracle: independent row-key predecessor/minimum recomputation.
+            // All files share bytes deliberately: blob identity is not note identity.
+            let keys: BTreeSet<_> = keys.into_iter().collect();
+            let rows: Vec<_> = keys.into_iter().map(|(file, version_seq)| {
+                let mut row = fixture_rows()[0].clone();
+                row.file_id = format!("file-{file}");
+                row.version_seq = version_seq;
+                row.path = format!("renamed-{file}-{version_seq}.md");
+                row
+            }).collect();
+            let projected = project_head_versions(&rows).unwrap();
+            prop_assert_eq!(projected.len(), rows.len());
+            for output in &projected {
+                assert_head_recomputes(&rows, output);
+            }
+            let mut permuted = rows.clone();
+            permuted.reverse();
+            prop_assert_eq!(project_head_versions(&permuted).unwrap(), projected);
+        }
+
         #[test]
         fn arbitrary_utf8_content_recomputes_to_its_document_hash(
             content in "[ -~]{0,128}",
