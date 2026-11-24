@@ -264,6 +264,7 @@ pub use id_store::issuer_rotation;
 pub use id_sync::chained_message;
 pub use id_sync::log_sync;
 pub mod serve_proxy;
+pub mod serve_proxy_mux;
 pub use id_core::membership;
 pub use id_core::migration_control;
 #[cfg(feature = "world")]
