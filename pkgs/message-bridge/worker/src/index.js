@@ -9,7 +9,18 @@
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
 import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
-import { fleetCall, fleetOp, fleetSchema } from "./fleet.js";
+import {
+  enrollTokenClaimSql,
+  enrollTokenGetSql,
+  enrollTokenMintSql,
+  enrollTokenRevokeSql,
+  fleetCall,
+  fleetCredentialAuthSql,
+  fleetCredentialPutSql,
+  fleetCredentialRevokeSql,
+  fleetOp,
+  fleetSchema,
+} from "./fleet.js";
 import { route } from "./routes.js";
 
 export class MessageStore extends DurableObject {
@@ -106,6 +117,42 @@ export class MessageStore extends DurableObject {
   /** One fleet mailbox operation over arguments fleetCall validated. */
   fleet(op, args) {
     return fleetOp(this.sql, op, args);
+  }
+
+  // Per-agent credentials and bootstrap enroll tokens (#14368): the
+  // store only ever sees SHA-256 hashes, never a token value.
+
+  fleetCredentialAuth(token_hash) {
+    return fleetCredentialAuthSql(this.sql, token_hash);
+  }
+
+  fleetCredentialPut(rec) {
+    return fleetCredentialPutSql(this.sql, rec);
+  }
+
+  fleetCredentialRevoke(agent) {
+    return fleetCredentialRevokeSql(this.sql, agent, new Date().toISOString());
+  }
+
+  enrollTokenMint(row) {
+    return enrollTokenMintSql(this.sql, row);
+  }
+
+  enrollTokenGet(token_hash) {
+    return enrollTokenGetSql(this.sql, token_hash);
+  }
+
+  enrollTokenClaim(token_hash, agent, now) {
+    return enrollTokenClaimSql(this.sql, token_hash, agent, now);
+  }
+
+  enrollTokenRevoke(token_hash) {
+    return enrollTokenRevokeSql(this.sql, token_hash, new Date().toISOString());
+  }
+
+  /** Deletes an identity's notes token(s); returns how many were revoked. */
+  noteRevoke(identity) {
+    return this.sql.exec("DELETE FROM note_token WHERE identity = ? RETURNING token_hash", identity).toArray().length;
   }
 
   /** Stores a new client; false when the table is full of clients worth keeping. */
@@ -452,6 +499,7 @@ function storeFor(env) {
     wakeHooks: () => stub.wakeHooks(),
     wakeClaim: (address, now, max) => stub.wakeClaim(address, now, max),
     noteRegister: (reg) => stub.noteRegister(reg),
+    noteRevoke: (identity) => stub.noteRevoke(identity),
     noteAuth: (token_hash) => stub.noteAuth(token_hash),
     noteIdentities: () => stub.noteIdentities(),
     noteDeliver: (delivery) => stub.noteDeliver(delivery),
@@ -459,6 +507,13 @@ function storeFor(env) {
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
     noteSignal: (identity) => stub.noteSignal(identity),
     fleet: (op, args) => fleetCall(stub, op, args),
+    fleetCredentialAuth: (token_hash) => stub.fleetCredentialAuth(token_hash),
+    fleetCredentialPut: (rec) => stub.fleetCredentialPut(rec),
+    fleetCredentialRevoke: (agent) => stub.fleetCredentialRevoke(agent),
+    enrollTokenMint: (row) => stub.enrollTokenMint(row),
+    enrollTokenGet: (token_hash) => stub.enrollTokenGet(token_hash),
+    enrollTokenClaim: (token_hash, agent, now) => stub.enrollTokenClaim(token_hash, agent, now),
+    enrollTokenRevoke: (token_hash) => stub.enrollTokenRevoke(token_hash),
   };
 }
 
