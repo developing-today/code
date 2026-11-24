@@ -467,8 +467,12 @@ async fn main() -> Result<()> {
         }
         Some(Command::Publications) => id::commands::cmd_publications().await,
         Some(Command::Gallery(args)) => id::commands::cmd_gallery(args),
+        Some(Command::Petname { json, command }) => id::commands::cmd_petname(command, json),
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
+        #[cfg(not(feature = "sandbox"))]
+        Some(Command::MatchAudit(_)) => anyhow::bail!("this build has no sandbox support"),
+        Some(Command::Walk(command)) => id::commands::cmd_walk(command).await,
         #[cfg(feature = "world")]
         Some(Command::World(world_cmd)) => id::commands::cmd_world(*world_cmd).await,
         #[cfg(not(feature = "world"))]

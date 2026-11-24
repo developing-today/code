@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
-import { changes, NOTHING_SEEN, Notifier, type Seen } from "../src/notify.ts";
+import { changes, NOTHING_SEEN, Notifier, type Seen, SUSTAINED_MS } from "../src/notify.ts";
 import { contact, encrypt, endpointMark, Push, validSubscription } from "../src/push.ts";
 import { b64u, browser, raw } from "./support.ts";
 
@@ -93,7 +93,16 @@ describe("the message a phone receives", () => {
       }));
       // It still holds both devices, each known by its mark and not by its address.
       const marks = [await endpointMark(a.subscription.endpoint), await endpointMark(m.subscription.endpoint)];
-      expect(await again.status()).toEqual({ ...status, devices: 2, known: marks });
+      // And what came of the send above, which a restart does not lose.
+      const last = {
+        at: new Date(NOW).toISOString(),
+        class: "replies" as const,
+        sent: 2,
+        gone: 0,
+        failed: 0,
+        refused: [],
+      };
+      expect(await again.status()).toEqual({ ...status, devices: 2, known: marks, last });
       expect(status.known).toEqual([]);
       expect(marks[0]).toMatch(/^[A-Za-z0-9_-]{16}$/);
       expect(marks[0]).not.toBe(marks[1]);
@@ -110,16 +119,29 @@ describe("the message a phone receives", () => {
     try {
       const a = await browser();
       const b = await browser("web.push.apple.com");
-      let answer = (url: string) => (url === a.subscription.endpoint ? 410 : 201);
+      let answer: (url: string) => number = (url: string) => (url === a.subscription.endpoint ? 410 : 201);
       let posts = 0;
-      const push = new Push(
-        fileStore(join(dir, "push.json")),
-        "mailto:o@example.com",
-        async (url) => (posts++, { status: answer(url) }),
-      );
+      // What a push service answers has a body nobody reads, and each send has a deadline.
+      let letGo = 0;
+      const deadlines: (AbortSignal | undefined)[] = [];
+      const push = new Push(fileStore(join(dir, "push.json")), "mailto:o@example.com", async (url, init) => {
+        posts++;
+        deadlines.push(init.signal);
+        const answered = {
+          status: answer(url),
+          body: {
+            cancel: async () => {
+              letGo++;
+            },
+          },
+        };
+        return answered;
+      });
       await push.subscribe(a.subscription, "");
       await push.subscribe(b.subscription, "");
       expect(await push.send("needs", { title: "t", body: "b", url: "/" })).toEqual({ sent: 1, gone: 1, failed: 0 });
+      // Each was sent under a deadline that had not run out, and its answer's body let go of.
+      expect([deadlines.map((signal) => signal?.aborted), letGo]).toEqual([[false, false], 2]);
       expect((await push.status()).devices).toBe(1);
       expect(await push.setClass("needs", false)).toEqual({
         replies: true,
@@ -142,10 +164,94 @@ describe("the message a phone receives", () => {
     }
   });
 
+  test("what came of the last send is kept: how many it was taken for, and which push service refused", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pm-push-"));
+    try {
+      const a = await browser(); // Google's
+      const m = await browser("updates.push.services.mozilla.com");
+      const w = await browser("web.push.apple.com");
+      const MSG = { title: "t", body: "b", url: "/console/" };
+      let answer: (url: string) => number = () => 201;
+      let now = Date.parse("2026-11-23T05:00:00Z");
+      const file = join(dir, "push.json");
+      const make = () =>
+        new Push(
+          fileStore(file),
+          "mailto:o@example.com",
+          async (url) => {
+            const status = answer(url);
+            if (status < 0) throw new Error("no route to the push service");
+            return { status };
+          },
+          () => now,
+        );
+      const push = make();
+      expect((await push.status()).last).toBeNull(); // nothing has been sent
+      await push.send("replies", MSG);
+      expect((await push.status()).last).toBeNull(); // with nobody to send to, nothing was
+      for (const b of [a, m, w]) await push.subscribe(b.subscription, "");
+      await push.send("replies", MSG);
+      expect((await push.status()).last).toEqual({
+        at: "2026-11-23T05:00:00.000Z",
+        class: "replies",
+        sent: 3,
+        gone: 0,
+        failed: 0,
+        refused: [],
+      });
+      // One service refuses, one cannot be reached, one says the device is gone.
+      answer = (url) => (url === a.subscription.endpoint ? 403 : url === m.subscription.endpoint ? -1 : 410);
+      now += 60_000;
+      await push.send("test", MSG);
+      const last = (await make().status()).last; // as a restarted service reads it back
+      expect(last).toEqual({
+        at: "2026-11-23T05:01:00.000Z",
+        class: "test",
+        sent: 0,
+        gone: 1,
+        failed: 2,
+        refused: [
+          { host: "fcm.googleapis.com", status: 403 },
+          { host: "updates.push.services.mozilla.com", status: 0 },
+        ],
+      });
+      // It names the service, never the device: no address, no key.
+      for (const secret of ["abc123", a.subscription.keys.auth, a.subscription.keys.p256dh]) {
+        expect(JSON.stringify(await push.status())).not.toContain(secret);
+      }
+      // A class that is switched off sends nothing, and the account stays as it was.
+      await push.setClass("needs", false);
+      now += 60_000;
+      await push.send("needs", MSG);
+      expect((await push.status()).last?.at).toBe("2026-11-23T05:01:00.000Z");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("the server only posts to push services", async () => {
     const good = (await browser()).subscription;
     expect(validSubscription(good)).toEqual(good);
+    // What browsers really name. The second Google host is the one a
+    // Chrome off the stable channel gives (a real Chrome 153 did, when
+    // this was checked against Google's service); both are in Chromium's
+    // push_messaging_constants.cc.
     for (const endpoint of [
+      "https://fcm.googleapis.com/fcm/send/dQw:APA91b",
+      "https://fcm.googleapis.com/wp/dQw:APA91b",
+      "https://jmt17.google.com/fcm/send/dQw:APA91b",
+      "https://updates.push.services.mozilla.com/wpush/v2/gAAAA",
+      "https://web.push.apple.com/QGx",
+      "https://wns2-by3p.notify.windows.com/w/?token=AwYAAAB",
+    ]) {
+      expect(validSubscription({ ...good, endpoint })?.endpoint).toBe(endpoint);
+    }
+    for (const endpoint of [
+      "https://jmt17.google.com.evil.example/fcm/send/x",
+      "https://x.jmt17.google.com/fcm/send/x",
+      "https://jmt18.google.com/fcm/send/x",
+      "https://www.google.com/fcm/send/x",
+      "https://google.com/fcm/send/x",
       "http://fcm.googleapis.com/fcm/send/x", // not https
       "https://127.0.0.1:4870/api/alerts", // this machine
       "https://fcm.googleapis.com.evil.example/x",
@@ -192,7 +298,7 @@ describe("when a notification is owed", () => {
   });
 
   test("turning notifications on takes stock and says nothing", () => {
-    const first = changes(NOTHING_SEEN, state());
+    const first = changes(NOTHING_SEEN, state(), 1_800_000_000_000);
     expect(first.messages).toEqual([]);
     expect(first.seen).toEqual({
       primed: true,
@@ -200,6 +306,8 @@ describe("when a notification is owed", () => {
       hands: ["o/r#1"],
       questions: 360,
       failed: ["b.service"],
+      // Already failed when notifications were turned on: counted as told.
+      failing: { "b.service": { since: 1_800_000_000_000, told: true, last: 1_800_000_000_000 } },
     });
     expect(changes(first.seen, state()).messages).toEqual([]); // and nothing is said twice
   });
@@ -288,4 +396,171 @@ describe("when a notification is owed", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+test("a unit on a timer is reported once it keeps failing, not for one bad run, and again when it mends", () => {
+  const T0 = 1_800_000_000_000;
+  const primed: Seen = { ...NOTHING_SEEN, primed: true };
+  const sync = (active: string) => ({
+    services: [
+      { unit: "pm-git-sync.service", active, description: "pm-git-sync — keep ~/git/code on clean main" },
+      { unit: "pm-git-sync.timer", active: "active" },
+      { unit: "pm-console.service", active: "active" },
+    ],
+  });
+  // One failed run: nothing is said.
+  let step = changes(primed, sync("failed"), T0);
+  expect(step.messages).toEqual([]);
+  // The next run mends it: forgotten, and still nothing said.
+  step = changes(step.seen, sync("inactive"), T0 + 60_000);
+  expect(step.messages).toEqual([]);
+  expect(step.seen.failing).toEqual({});
+  // Now it fails run after run. Being caught in the middle of a run is not a recovery.
+  step = changes(step.seen, sync("failed"), T0 + 120_000);
+  step = changes(step.seen, sync("activating"), T0 + 180_000);
+  expect(step.messages).toEqual([]);
+  step = changes(step.seen, sync("failed"), T0 + 120_000 + SUSTAINED_MS - 1);
+  expect(step.messages).toEqual([]);
+  step = changes(step.seen, sync("failed"), T0 + 120_000 + SUSTAINED_MS);
+  expect(step.messages.map((m) => [m.cls, m.title, m.body, m.url, m.tag])).toEqual([
+    [
+      "trouble",
+      "A unit keeps failing",
+      "pm-git-sync.service, every run for 5 minutes. pm-git-sync — keep ~/git/code on clean main",
+      "/console/#more/services",
+      "unit-pm-git-sync.service",
+    ],
+  ]);
+  // Said once, however long it goes on.
+  for (const active of ["failed", "activating", "failed"]) {
+    step = changes(step.seen, sync(active), T0 + 20 * 60_000);
+    expect(step.messages).toEqual([]);
+  }
+  // Mended: that is said once too.
+  step = changes(step.seen, sync("inactive"), T0 + 21 * 60_000);
+  expect(step.messages.map((m) => `${m.title}: ${m.body}`)).toEqual(["A unit is working again: pm-git-sync.service"]);
+  expect(changes(step.seen, sync("inactive"), T0 + 22 * 60_000).messages).toEqual([]);
+  // And if it starts failing again later, the count starts again.
+  step = changes(step.seen, sync("failed"), T0 + 30 * 60_000);
+  expect(step.messages).toEqual([]);
+  expect(changes(step.seen, sync("failed"), T0 + 30 * 60_000 + SUSTAINED_MS).messages).toHaveLength(1);
+
+  // A service with no timer is still reported the moment it is seen failed, and its recovery is not news.
+  const console_ = (active: string) => ({ services: [{ unit: "pm-console.service", active }] });
+  step = changes(primed, console_("failed"), T0);
+  expect(step.messages.map((m) => [m.title, m.body])).toEqual([["A unit failed", "pm-console.service"]]);
+  expect(changes(step.seen, console_("failed"), T0 + SUSTAINED_MS * 3).messages).toEqual([]);
+  expect(changes(step.seen, console_("active"), T0 + 1_000).messages).toEqual([]);
+  // A timer by another name does not make a service periodic.
+  const other = {
+    services: [
+      { unit: "pm-console.service", active: "failed" },
+      { unit: "pm-console-expose.timer", active: "active" },
+    ],
+  };
+  expect(changes(primed, other, T0).messages.map((m) => m.title)).toEqual(["A unit failed"]);
+
+  // A state kept from before units on timers were told apart: what was reported is not reported again.
+  const older: Seen = { ...NOTHING_SEEN, primed: true, failed: ["pm-git-sync.service"] };
+  step = changes(older, sync("failed"), T0);
+  expect(step.messages).toEqual([]);
+  expect(changes(step.seen, sync("failed"), T0 + SUSTAINED_MS * 2).messages).toEqual([]);
+  // Seen failed, then not looked at for longer than the wait: what happened in between is
+  // not known, so the count starts again from the next sighting.
+  step = changes(primed, sync("failed"), T0);
+  step = changes(step.seen, sync("failed"), T0 + SUSTAINED_MS + 1);
+  expect(step.messages).toEqual([]);
+  step = changes(step.seen, sync("failed"), T0 + SUSTAINED_MS * 2);
+  expect(step.messages).toEqual([]);
+  step = changes(step.seen, sync("failed"), T0 + SUSTAINED_MS * 2 + 1);
+  expect(step.messages.map((m) => m.body)).toEqual([
+    "pm-git-sync.service, every run for 5 minutes. pm-git-sync — keep ~/git/code on clean main",
+  ]);
+  // Caught in the middle of a run is still a sighting of the unit not being well: it joins
+  // two failed sightings that would otherwise be too far apart to count as one failing.
+  step = changes(primed, sync("failed"), T0);
+  step = changes(step.seen, sync("activating"), T0 + 4 * 60_000);
+  step = changes(step.seen, sync("failed"), T0 + 8 * 60_000);
+  expect(step.messages.map((m) => m.title)).toEqual(["A unit keeps failing"]);
+  // A unit that is no longer listed is forgotten, not remembered as failing.
+  step = changes(primed, sync("failed"), T0);
+  step = changes(step.seen, { services: [{ unit: "pm-console.service", active: "active" }] }, T0 + 1_000);
+  expect(step.seen.failing).toEqual({});
+  // The services could not be read: nothing changes and nothing is said.
+  step = changes(primed, sync("failed"), T0);
+  const blind = changes(step.seen, { services: null }, T0 + SUSTAINED_MS * 2);
+  expect(blind.messages).toEqual([]);
+  expect(blind.seen.failing).toEqual(step.seen.failing);
+});
+
+test("a list of units that has stopped being read cannot make one failed run look sustained", async () => {
+  const now = { t: 1_800_000_000_000 };
+  const units = {
+    readable: true,
+    list: [
+      { unit: "pm-git-sync.service", active: "failed", description: "keep the checkout on main" },
+      { unit: "pm-git-sync.timer", active: "active" },
+    ],
+  };
+  const empty = { ttlMs: 1_000, load: async () => null };
+  const docs = new Docs(
+    {
+      ...Object.fromEntries(
+        [
+          "board",
+          "sessions",
+          "census",
+          "asks",
+          "questionCount",
+          "questions",
+          "prs",
+          "priorities",
+          "agents",
+          "more",
+        ].map((name) => [name, empty]),
+      ),
+      services: {
+        ttlMs: 1_000,
+        load: async () => {
+          if (!units.readable) throw new Error("systemctl did not answer");
+          return structuredClone(units.list);
+        },
+      },
+    },
+    () => now.t,
+  );
+  const sent: string[] = [];
+  const push = {
+    status: async () => ({ devices: 1 }),
+    send: async (_cls: string, m: { title: string }) => void sent.push(m.title),
+  };
+  const kept = { text: null as string | null };
+  const notifier = new Notifier(
+    docs,
+    push as never,
+    { read: async () => kept.text, write: async (text) => void (kept.text = text) },
+    () => now.t,
+  );
+  const pass = async (ms: number) => {
+    now.t += ms;
+    await notifier.tick();
+  };
+  await pass(0); // takes stock: the unit is already failed, and that is not news
+  units.list[0].active = "inactive";
+  await pass(30_000);
+  // One failed run is seen, and then the units cannot be read for half an hour.
+  units.list[0].active = "failed";
+  await pass(30_000);
+  expect(await notifier.pending()).toBe(true);
+  units.readable = false;
+  for (let i = 0; i < 60; i++) await pass(30_000);
+  // Nothing was observed in that time, so nothing is claimed about it.
+  expect(sent).toEqual([]);
+  // Read again and still failing: the count goes on from what was seen, and is reported when it has been seen for five minutes.
+  units.readable = true;
+  await pass(30_000);
+  expect(sent).toEqual([]);
+  for (let i = 0; i < 10; i++) await pass(30_000);
+  expect(sent).toEqual(["A unit keeps failing"]);
+  expect(await notifier.pending()).toBe(false);
 });

@@ -102,7 +102,7 @@ buildMcpxGoModule {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-WixeikMvYYYvvOssmUiVqlglEprQjP2p1pMXpkOLTME=";
+  vendorHash = "sha256-gNz9/Jj8zJt8o9cscqgLIhtpR3+bXo7EvPhP6I8j40A=";
 
   subPackages = [ "cmd/mcpx" ];
 
@@ -195,12 +195,6 @@ buildMcpxGoModule {
         # OS deploy is not the gate for that desync; it runs in CI on
         # main, which is where the fix lands.
         "internal/conformance"
-        # internal/defaults fails on main itself right now:
-        # TestNoPackageRedeclaresADefault flags a const added in
-        # internal/execsvc without a defaults.json entry (#2686). Same
-        # reasoning as internal/conformance above: interim exclusion,
-        # tracked in CI on main.
-        "internal/defaults"
       ];
       # The Linux-only takeover/handoff tests (#418): they exercise
       # /proc and systemd-mainpid mechanics that do not exist on

@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 
 use crate::shortlist::{self, Entry, rank_of};
 use crate::{
-    DEFAULT_REPO, EXIT_NO_WORK, EXIT_OK, R, World, argv, check_name, check_repo, parse, usage,
+    DEFAULT_REPO, EXIT_NO_WORK, EXIT_OK, Out, R, World, argv, check_name, check_repo, parse, usage,
 };
 
 /// Labels that hold an issue (FDR-0012): a person set them on purpose.
@@ -59,6 +59,17 @@ pub const RANKED_LABELS: [&str; 5] = [
     "priority/high",
     "next",
 ];
+
+/// The lease, in seconds, that a queue claim taken by `next`
+/// carries. Agent work runs one to three hours between the claim
+/// and its completion, and nothing in this flow heartbeats, so the
+/// queue's 45-minute default lease (2700s) lapses mid-task: the
+/// claim evaporates, the task returns to the queue to be handed to
+/// the next caller, and the worker's `complete` is refused
+/// (#12618). Four hours covers the observed range with headroom
+/// and stays inside the queue's one-day maximum; the hand-out
+/// names the lease, so the deadline is visible instead of silent.
+pub const AGENT_CLAIM_LEASE_SECONDS: u64 = 14_400;
 
 fn encode_label(label: &str) -> String {
     label.replace('/', "%2F").replace(':', "%3A")
@@ -341,6 +352,57 @@ fn tried(list: &mut Vec<Value>, rung: &str, result: &str, why: impl Into<String>
     list.push(json!({"rung": rung, "result": result, "why": why.into()}));
 }
 
+/// How the broker spells a lane verdict: every refusal that is about
+/// the lane itself — it belongs to another worker, it is disabled, it
+/// is bound to another queue, its registration did not land — is a
+/// `claim_repo_task: lane ...` error (fleet-queue's claim path).
+const LANE_VERDICT_MARKER: &str = "claim_repo_task: lane ";
+
+/// The lane verdict in a failed claim's answer, when the failure is
+/// one (#6853, criterion 2). A verdict means the claim reached the
+/// broker and the broker refused this lane: the queue rung is
+/// `rejected`, not `down`, so a reader does not mistake a healthy
+/// broker's refusal for a store outage and go fix the wrong thing.
+///
+/// The verdict reaches this process in two spellings of the same
+/// answer: the queue verb's fallback switch puts it in the JSON
+/// envelope's `error` field on stdout (and repeats it inside its
+/// stderr wrapper line), while the plain die-on-error path carries
+/// it as the error text itself. Both are searched.
+fn lane_verdict(out: &Out) -> Option<String> {
+    let envelope = out
+        .json()
+        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned));
+    let texts: Vec<&str> = envelope
+        .iter()
+        .map(String::as_str)
+        .chain([out.stderr.as_str(), out.stdout.as_str()])
+        .collect();
+    for text in texts {
+        let Some(at) = text.find(LANE_VERDICT_MARKER) else {
+            continue;
+        };
+        // The verdict runs to the end of its line; the fallback
+        // wrapper appends its own sentence after a `;`, and a raw
+        // envelope would continue with more JSON — stop at either.
+        let verdict: String = text[at..]
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split([';', '"'])
+            .next()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(200)
+            .collect();
+        if !verdict.is_empty() {
+            return Some(verdict);
+        }
+    }
+    None
+}
+
 /// The queue validates lane IDs as a known family plus a lowercase
 /// alphabetic suffix. Preserve a full lane ID supplied as the agent
 /// name; otherwise give a standalone agent an unfiltered `any-*` lane.
@@ -382,6 +444,41 @@ pub(super) fn default_lane(agent: &str) -> String {
     )
 }
 
+/// The broker binds registered lanes to workers. Agent names identify
+/// the mailbox, but a known lane may belong to a shared queue worker
+/// (for example `code-i` belongs to `repo-worker-code`).
+fn registered_lane_worker(lane: &str) -> Option<&'static str> {
+    if matches!(lane, "not-code-a" | "not-code-g") {
+        return Some("repo-worker-nix");
+    }
+    if matches!(lane, "not-code-b" | "not-code-e") {
+        return Some("repo-worker-opencode");
+    }
+    if lane == "not-code-d" {
+        return Some("repo-worker-openchamber");
+    }
+    // The constant OpenChamber lanes (`oc-code-01` .. `oc-code-08`)
+    // belong to the code worker; their suffix is a number, not the
+    // single letter the family split below expects (#6853).
+    if let Some(suffix) = lane.strip_prefix("oc-code-") {
+        if !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) {
+            return Some("repo-worker-code");
+        }
+    }
+
+    let (family, suffix) = lane.rsplit_once('-')?;
+    if suffix.len() != 1 || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    match family {
+        "code" | "any" | "not-code" => Some("repo-worker-code"),
+        "opencode" => Some("repo-worker-opencode"),
+        "openchamber" => Some("repo-worker-openchamber"),
+        "nix" => Some("repo-worker-nix"),
+        _ => None,
+    }
+}
+
 /// How many listed entries in a row may turn out stale in one run
 /// before the shortlist rung gives way to the priority rung.
 const MAX_STALE_ENTRIES: usize = 5;
@@ -409,6 +506,9 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             "--remaining-budget-minutes",
             "--filter",
             "--queue",
+            "--model-provider",
+            "--model-id",
+            "--model-variant",
         ],
     )?;
     a.no_positional("next")?;
@@ -495,13 +595,27 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     if a.has("--no-queue") {
         tried(&mut log, "queue", "skipped", "--no-queue");
     } else {
-        let mut claim = argv(&["queue", "claim", "--worker", &agent, "--lane", &lane]);
+        let lease = AGENT_CLAIM_LEASE_SECONDS.to_string();
+        let worker = registered_lane_worker(&lane).unwrap_or(&agent);
+        let mut claim = argv(&[
+            "queue",
+            "claim",
+            "--worker",
+            worker,
+            "--lane",
+            &lane,
+            "--lease-seconds",
+            &lease,
+        ]);
         for flag in [
             "--platform",
             "--pool",
             "--remaining-budget-minutes",
             "--filter",
             "--queue",
+            "--model-provider",
+            "--model-id",
+            "--model-variant",
         ] {
             if let Some(v) = a.last(flag) {
                 claim.push(flag.to_string());
@@ -520,17 +634,27 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                     "queue_task_id": id,
                     "title": row.get("title").cloned().unwrap_or(Value::Null),
                     "row": row,
-                    "instructions": "Work the packet as it says. Checkpoint as you go; finish with \
-                                     complete, or park with a resume condition that is not a person.",
+                    "lease_seconds": AGENT_CLAIM_LEASE_SECONDS,
+                    "instructions": format!(
+                        "Work the packet as it says. Checkpoint as you go; finish with \
+                         complete, or park with a resume condition that is not a person. \
+                         Your claim lease is {} seconds (4 hours) from the claim: \
+                         complete or park before it lapses, or the task returns to the \
+                         queue and your completion will be refused.",
+                        AGENT_CLAIM_LEASE_SECONDS
+                    ),
                 });
                 let then = vec![
-                    format!("fleet queue checkpoint {id} --worker {agent} --lane {lane} ..."),
-                    format!("fleet queue complete {id} --worker {agent} --lane {lane} ..."),
+                    format!("fleet queue checkpoint {id} --worker {worker} --lane {lane} ..."),
+                    format!("fleet queue complete {id} --worker {worker} --lane {lane} ..."),
                 ];
                 return Ok(answer("queue", task, then, log));
             }
             (0, None) | (EXIT_NO_WORK, _) => tried(&mut log, "queue", "empty", "no task claimable"),
-            _ => tried(&mut log, "queue", "down", out.why()),
+            _ => match lane_verdict(&out) {
+                Some(verdict) => tried(&mut log, "queue", "rejected", verdict),
+                None => tried(&mut log, "queue", "down", out.why()),
+            },
         }
     }
 

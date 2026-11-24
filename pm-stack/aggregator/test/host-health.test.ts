@@ -42,7 +42,17 @@ function healthyUnit(over: Record<string, unknown> = {}) {
 function healthySnapshot(over: Partial<HostHealthSnapshot> = {}): HostHealthSnapshot {
   return {
     generatedAt: iso(NOW - 60_000),
+    host: "amd",
     claimantMode: { state: "live", detail: "mode file content: live" },
+    backup: {
+      date: "2026-11-22",
+      startedAt: "2026-11-22T10:30:00Z",
+      finishedAt: iso(NOW - 6 * 3600_000),
+      result: "complete",
+      failingStep: null,
+      archiveSha256: "8f4cec6c",
+      destinations: { local: "ok", r2: "ok", drive: "ok" },
+    },
     units: {
       "pm-git-sync": healthyUnit(),
       "pm-projector-reconcile": healthyUnit(),
@@ -163,6 +173,32 @@ describe("host-health watchdog derivation (#10141)", () => {
     expect(items[0]!.state).toContain("stale");
   });
 
+  test("a failed backup generation breaches with its failing step, and recovery clears it", () => {
+    const snap = healthySnapshot({
+      backup: {
+        date: "2026-11-22",
+        startedAt: "2026-11-22T10:30:00Z",
+        finishedAt: iso(NOW - 60_000),
+        result: "failed",
+        failingStep: "r2-upload",
+        archiveSha256: null,
+        destinations: { local: "ok", r2: "failed", drive: "not-attempted" },
+      },
+    });
+    const items = watchdogTierItems(inputs(snap));
+    expect(items.map((i) => i.id)).toEqual(["watchdog:backup-generation"]);
+    expect(items[0]!.title).toContain("r2-upload");
+    expect(items[0]!.title).toContain("2026-11-22");
+    expect(watchdogTierItems(inputs(healthySnapshot()))).toEqual([]);
+  });
+
+  test("missing backup record produces a visible unknown restore-point item", () => {
+    const snap = healthySnapshot({ backup: null });
+    const items = watchdogTierItems(inputs(snap));
+    expect(items.map((i) => i.id)).toEqual(["watchdog:backup-restore-point"]);
+    expect(items[0]!.reason).toContain("no generation date");
+  });
+
   test("an inactive unit timer breaches", () => {
     const snap = healthySnapshot();
     snap.timers["pm-git-sync.timer"] = { active: false, activeState: "inactive" };
@@ -178,6 +214,41 @@ describe("host-health snapshot normalization (#10141)", () => {
     expect(snap).not.toBeNull();
     expect(snap!.claimantMode.state).toBe("live");
     expect(snap!.units["pm-git-sync"]!.result).toBe("success");
+  });
+
+  test("host and backup restore-point fields round-trip; pre-slice snapshots without them still normalize", () => {
+    // The collector envelopes the host like claimantMode; the
+    // fixture above holds the normalized string form.
+    const raw = JSON.parse(JSON.stringify(healthySnapshot()));
+    raw.host = { host: "amd" };
+    const snap = normalizeHostHealthSnapshot(raw);
+    expect(snap!.host).toBe("amd");
+    expect(snap!.backup?.result).toBe("complete");
+    expect(snap!.backup?.date).toBe("2026-11-22");
+    expect(snap!.backup?.archiveSha256).toBe("8f4cec6c");
+    expect(snap!.backup?.destinations).toEqual({ local: "ok", r2: "ok", drive: "ok" });
+    const legacy = JSON.parse(JSON.stringify(healthySnapshot()));
+    delete legacy.host;
+    delete legacy.backup;
+    const normed = normalizeHostHealthSnapshot(legacy);
+    expect(normed).not.toBeNull();
+    expect(normed!.host).toBeNull();
+    expect(normed!.backup).toBeNull();
+  });
+
+  test("a shapeless backup section reads as null, never as a restore point", () => {
+    const bad = JSON.parse(JSON.stringify(healthySnapshot()));
+    bad.backup = { result: "complete-ish", date: 42 };
+    expect(normalizeHostHealthSnapshot(bad)!.backup).toBeNull();
+  });
+
+  test("an empty or unverified complete generation is not a restore point", () => {
+    const empty = JSON.parse(JSON.stringify(healthySnapshot()));
+    empty.backup.archiveSha256 = null;
+    expect(normalizeHostHealthSnapshot(empty)!.backup).toBeNull();
+    const missingLeg = JSON.parse(JSON.stringify(healthySnapshot()));
+    missingLeg.backup.destinations.r2 = "failed";
+    expect(normalizeHostHealthSnapshot(missingLeg)!.backup).toBeNull();
   });
 
   test("absent, corrupt, or shapeless input reads as null, never as health", () => {

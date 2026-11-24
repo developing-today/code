@@ -545,6 +545,57 @@ let
               };
               # Import shared configuration (same as shell.nix)
               nixCommon = import ../nix-common.nix { inherit pkgs; };
+
+              # Bun pinned to the pristine official 1.4.5 build
+              # (#13337) — the upstream release binary, installed
+              # untouched. The nixpkgs package is a patchelf repack,
+              # and the repacked binary crashes vitest workers at
+              # startup on the fleet runner hosts (both x86_64 flavors,
+              # at 1.4.2 and 1.4.5), while the pristine 1.4.5 binary
+              # passes the same suite in the same runner; the evidence
+              # table is recorded on #13337. 1.4.5 is also the
+              # fleet-build Containerfile's pin. The pristine binary
+              # needs the system loader at runtime (/lib64/ld-linux or
+              # nix-ld, both present on the fleet's machines and in the
+              # fleet-build container); shells only. Bump version +
+              # hashes together, deliberately.
+              bunPinned =
+                let
+                  zips = {
+                    "x86_64-linux" = {
+                      file = "bun-linux-x64.zip";
+                      hash = "sha256-WCYOHQDhVan4VY5fXl1miwZQ3hNxCUnMeutJdXx0kFY=";
+                    };
+                    "aarch64-linux" = {
+                      file = "bun-linux-aarch64.zip";
+                      hash = "sha256-EkeG+qsv7hosvxqyHtkjizI8eDF5TW5hFYvHbw4SFpQ=";
+                    };
+                    "aarch64-darwin" = {
+                      file = "bun-darwin-aarch64.zip";
+                      hash = "sha256-mNY87B6ZYhDS4b8MDp+pR/7fnXvLes4A0kUdokvavwk=";
+                    };
+                  };
+                  zip = zips.${pkgs.stdenv.hostPlatform.system};
+                in
+                pkgs.stdenvNoCC.mkDerivation {
+                  pname = "bun";
+                  version = "1.4.5";
+                  src = pkgs.fetchzip {
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/${zip.file}";
+                    inherit (zip) hash;
+                  };
+                  installPhase = ''
+                    runHook preInstall
+                    install -Dm 755 bun $out/bin/bun
+                    ln -s bun $out/bin/bunx
+                    runHook postInstall
+                  '';
+                  meta = {
+                    description = "Incredibly fast JavaScript runtime, bundler, test runner, and package manager (pristine upstream binary)";
+                    homepage = "https://bun.sh";
+                    license = pkgs.lib.licenses.mit;
+                  };
+                };
             in
             {
               default = pkgs.mkShell {
@@ -589,6 +640,32 @@ let
                 ];
               };
 
+              # The mcpx development shell (#1983): the local test
+              # environment at the flake's versions, so a suite run on
+              # a laptop tests what the nix package ships. package.nix
+              # builds with go_1_27 and wraps deno, bun-bin and nodejs
+              # from this same nixpkgs; the host CI legs instead take
+              # deno/bun/node from setup-* actions at unrelated
+              # versions, and only the nix-e2e leg covers the wrapped
+              # set. This shell is that set plus the tools a local
+              # e2e run needs (git, python3 for the sqlite3 seed) and
+              # the linters. Like mcpx-lint above, it is deliberately
+              # lean: the default shell is the whole monorepo
+              # environment, which is the "impractical setup" #1983
+              # set out to remove for mcpx work.
+              mcpx = pkgs.mkShell {
+                packages = with pkgs; [
+                  go_1_27
+                  gopls
+                  deno
+                  bunPinned
+                  nodejs
+                  git
+                  python3
+                  golangci-lint
+                ];
+              };
+
               # Lean shell for the fleet build container and GHA job
               # containers (dezren39/fleet, containers/fleet-build).
               # Same motivation as mcpx-lint above: `default` is the
@@ -609,7 +686,7 @@ let
                   jq
                   ripgrep
                   go_1_27
-                  bun
+                  bunPinned
                   nodejs
                   zig
                 ]);
@@ -737,6 +814,12 @@ let
       genericJsRuntime = pkgs.callPackage ../pkgs/generic-containers/js-runtime.nix { };
       genericPythonRuntime = pkgs.callPackage ../pkgs/generic-containers/python-runtime.nix { };
       mcpxDocs = pkgs.callPackage ../pkgs/mcpx/docs.nix { };
+      fleetDocs = pkgs.callPackage ../pkgs/fleet/docs.nix { };
+      atlasDocs = pkgs.callPackage ../pkgs/atlas-search/docs.nix { };
+      idDocs = pkgs.callPackage ../pkgs/id/docs.nix { };
+      pmDocs = pkgs.callPackage ../pm-stack/docs.nix { };
+      codeDocs = pkgs.callPackage ../pkgs/code-book/docs.nix { };
+      labDocs = pkgs.callPackage ../pkgs/lab/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
       pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
@@ -789,6 +872,12 @@ let
           messageBridgeDeploy
           ;
         mcpx-docs = mcpxDocs;
+        fleet-docs = fleetDocs;
+        atlas-docs = atlasDocs;
+        id-docs = idDocs;
+        pm-docs = pmDocs;
+        code-docs = codeDocs;
+        lab-docs = labDocs;
         mcpx-real-servers = mcpxRealServers;
         mcpx-container = mcpxContainer;
         identity-image = identityImage;
@@ -1419,7 +1508,9 @@ let
   # dispatch, and git-sync as Nix derivations built from this repo's
   # pm-stack source. The nixos pm-stack module callPackages the same
   # files into its units; these outputs make `nix build .#pm-<app>`
-  # the package-level check.
+  # the package-level check. ready-for-agent joins them from
+  # pkgs/ready-for-agent — the one pm-stack app packaged from its
+  # pinned upstream npm release rather than repo source (#12909).
   make-pm-stack = inputs.flake-utils.lib.eachDefaultSystem (
     system:
     let
@@ -1429,6 +1520,7 @@ let
         pm-aggregator = pkgs.callPackage ../pkgs/pm-aggregator/package.nix { };
         pm-dispatch = pkgs.callPackage ../pkgs/pm-dispatch/package.nix { };
         pm-git-sync = pkgs.callPackage ../pkgs/pm-git-sync/package.nix { };
+        ready-for-agent = pkgs.callPackage ../pkgs/ready-for-agent/package.nix { };
       };
       mkApp = pkg: program: {
         type = "app";
@@ -1448,6 +1540,28 @@ let
         pm-aggregator-generate-digest = mkApp pmPackages.pm-aggregator "pm-aggregator-generate-digest";
         pm-dispatch = mkApp pmPackages.pm-dispatch "pm-dispatch";
         pm-git-sync = mkApp pmPackages.pm-git-sync "pm-git-sync";
+        ready-for-agent = mkApp pmPackages.ready-for-agent "ready-for-agent";
+      };
+    }
+  );
+
+  # Archer Slack collector (pkgs/fleet/archer-slack/collector;
+  # code#2137 S2): the Socket Mode listener the laptop's
+  # archer-slack-collector user service runs (nixos/services/
+  # archer-slack callPackages the same file); this output makes
+  # `nix build .#archer-slack-collector` the package-level check,
+  # per the #8171 app + derivation + service surface.
+  make-archer-slack = inputs.flake-utils.lib.eachDefaultSystem (
+    system:
+    let
+      pkgs = import inputs.nixpkgs-unstable { inherit system; };
+      archerSlackCollector = pkgs.callPackage ../pkgs/fleet/archer-slack/collector/package.nix { };
+    in
+    {
+      packages.archer-slack-collector = archerSlackCollector;
+      apps.archer-slack-collector = {
+        type = "app";
+        program = "${archerSlackCollector}/bin/archer-slack-collector";
       };
     }
   );
@@ -1586,6 +1700,11 @@ let
               grep -q "queue-transport-alert" list.txt
               grep -q "message-bridge" list.txt
               grep -q "secrets-broker" list.txt
+              grep -q "pm-aggregator" list.txt
+              grep -q "pm-projector" list.txt
+              grep -q "pm-tunnel" list.txt
+              grep -q "ready-for-agent" list.txt
+              grep -q "quota-recorder" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt
               grep -q "laptop" list.txt
@@ -1628,6 +1747,15 @@ let
               python3 ${../pkgs/deploy/test_deploy_slice3.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
+        deploy-slice4-tests =
+          pkgs.runCommandLocal "check-deploy-slice4-tests"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_slice4.py} ${../pkgs/deploy/deploy.py} ${../pkgs/deploy/restore.py}
+              mkdir -p $out
+            '';
         deploy-argv =
           pkgs.runCommandLocal "check-deploy-argv"
             {
@@ -1635,6 +1763,15 @@ let
             }
             ''
               python3 ${../pkgs/deploy/test_argv.py} ${../pkgs/deploy/deploy.py}
+              mkdir -p $out
+            '';
+        deploy-lazy-targets =
+          pkgs.runCommandLocal "check-deploy-lazy-targets"
+            {
+              nativeBuildInputs = [ pkgs.python3 ];
+            }
+            ''
+              python3 ${../pkgs/deploy/test_deploy_lazy_targets.py} ${../pkgs/deploy/deploy.py}
               mkdir -p $out
             '';
         deploy-argv-property =
@@ -1803,6 +1940,7 @@ let
         make-mcpx-overlay
         make-mcpx-modules
         make-pm-stack
+        make-archer-slack
         make-laptop-backups-checks
         make-fleet
         make-deploy

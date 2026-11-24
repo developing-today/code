@@ -8,9 +8,11 @@ import {
   buildQueueTaskWrapper,
   EscalationPartialError,
   ESCALATION_NEEDS_DREW_AFTER_MS,
+  ESCALATION_REPEAT_AFTER_MS,
   planEscalation,
   planRecovery,
   recordEscalation,
+  recordReEscalation,
   surfacingLine,
   type EscalationContext,
   type EscalationEffectors,
@@ -263,7 +265,7 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
 
     const actions = planRecovery(second, "2026-11-10T06:00:00Z");
     expect(actions.map((a) => a.type)).toEqual(["comment_issue", "comment_issue"]);
-    expect(actions.map((a) => a.type === "comment_issue" ? a.issueNumber : null)).toEqual([222, 111]);
+    expect(actions.map((a) => (a.type === "comment_issue" ? a.issueNumber : null))).toEqual([222, 111]);
 
     const backAgain: SourceHealth = { ...second, currentClass: "session-expired" };
     const plan = planEscalation(backAgain, CTX);
@@ -317,5 +319,88 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
     const back = coerceHealth("mistral", JSON.parse(JSON.stringify(second)));
     expect(back.incident?.escalation?.previous).toHaveLength(1);
     expect(back.incident?.escalation?.previous?.[0].queueTaskId).toBe("task-a");
+  });
+});
+describe("re-escalation at the second threshold (#10630 acceptance 3)", () => {
+  // T0 + ESCALATION_REPEAT_AFTER_MS (24h): the second threshold.
+  const T1 = "2026-11-11T00:00:00Z";
+
+  test("a confirmed hand-off still dedupes before the repeat window", () => {
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
+    const plan = planEscalation(recorded, CTX, Date.parse(T0) + ESCALATION_REPEAT_AFTER_MS - 1);
+    expect(plan.deduped).toBe(true);
+    expect(plan.actions).toEqual([]);
+  });
+
+  test("at the second threshold the plan re-fires as ONE comment on the existing issue — no new issue, no new task", async () => {
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
+    const plan = planEscalation(recorded, CTX, Date.parse(T1));
+    expect(plan.deduped).toBe(false);
+    expect(plan.reEscalated).toBe(true);
+    expect(plan.actions).toHaveLength(1);
+    const action = plan.actions[0];
+    expect(action.type).toBe("comment_issue");
+    if (action.type === "comment_issue") {
+      expect(action.repo).toBe(CTX.issueRepo);
+      expect(action.issueNumber).toBe(777);
+      expect(action.body).toContain("Still unresolved");
+      expect(action.body).toContain("task-4242");
+      expect(action.body).toContain("24h");
+    }
+    const { calls, effectors } = countingEffectors();
+    await applyEscalationActions(plan.actions, effectors);
+    expect(calls).toEqual(["comment"]);
+  });
+
+  test("the stamp restarts the window: one re-escalation per window, never one per tick", () => {
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
+    const stamped = recordReEscalation(recorded, T1);
+    expect(stamped.incident?.escalation?.lastReEscalatedAt).toBe(T1);
+    // A tick later in the same window dedupes again...
+    expect(planEscalation(stamped, CTX, Date.parse(T1) + 60_000).actions).toEqual([]);
+    expect(planEscalation(stamped, CTX, Date.parse(T1) + ESCALATION_REPEAT_AFTER_MS - 1).deduped).toBe(true);
+    // ...and the next window re-fires again — silence stays impossible.
+    const next = planEscalation(stamped, CTX, Date.parse(T1) + ESCALATION_REPEAT_AFTER_MS);
+    expect(next.reEscalated).toBe(true);
+    expect(next.actions.map((a) => a.type)).toEqual(["comment_issue"]);
+  });
+
+  test("without a clock the planner keeps the old dedupe behavior", () => {
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
+    const plan = planEscalation(recorded, CTX);
+    expect(plan.deduped).toBe(true);
+    expect(plan.actions).toEqual([]);
+  });
+
+  test("a partial hand-off still plans only its missing creations, even past the window", () => {
+    const partial = recordEscalation(escalatingHealth(), CTX, { queueTaskId: null, issueNumber: 777 }, T0);
+    const plan = planEscalation(partial, CTX, Date.parse(T1));
+    expect(plan.reEscalated).toBeUndefined();
+    expect(plan.actions.map((a) => a.type)).toEqual(["enqueue_task"]);
+  });
+
+  test("the stamp lands on the displaced record when the class changed away and back", () => {
+    const first = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-a", issueNumber: 111 }, T0);
+    const changed: SourceHealth = { ...first, currentClass: "endpoint-changed" };
+    const second = recordEscalation(changed, CTX, { queueTaskId: "task-b", issueNumber: 222 }, T0);
+    const backAgain: SourceHealth = { ...second, currentClass: "session-expired" };
+    const plan = planEscalation(backAgain, CTX, Date.parse(T1));
+    expect(plan.reEscalated).toBe(true);
+    expect(plan.actions[0]).toMatchObject({ type: "comment_issue", issueNumber: 111 });
+    const stamped = recordReEscalation(backAgain, T1);
+    expect(stamped.incident?.escalation?.previous?.[0].lastReEscalatedAt).toBe(T1);
+    expect(stamped.incident?.escalation?.lastReEscalatedAt).toBeUndefined();
+  });
+
+  test("coerceHealth round-trips the re-escalation stamp and drops a malformed one", () => {
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
+    const stamped = recordReEscalation(recorded, T1);
+    const back = coerceHealth("mistral", JSON.parse(JSON.stringify(stamped)));
+    expect(back.incident?.escalation?.lastReEscalatedAt).toBe(T1);
+
+    const corrupt = JSON.parse(JSON.stringify(stamped));
+    corrupt.incident.escalation.lastReEscalatedAt = 42;
+    const dropped = coerceHealth("mistral", corrupt);
+    expect(dropped.incident?.escalation?.lastReEscalatedAt).toBeUndefined();
   });
 });

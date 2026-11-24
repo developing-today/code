@@ -15,7 +15,8 @@ use rusqlite::{Connection, OpenFlags};
 use crate::backend::SearchBackend;
 use crate::error::{Error, Result};
 use crate::filters::{
-    Filters, LOCAL_SHAPE, MESSAGE_SQL, NEIGHBORS_SQL, details_sql, fts_stmt, local_allowed_stmt,
+    Filters, LOCAL_SHAPE, MESSAGE_CHUNKS_SQL, MESSAGE_SQL, NEIGHBORS_SQL, details_sql, fts_stmt,
+    local_allowed_stmt,
 };
 use crate::types::{
     BranchHit, BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow, Row, Stmt, Value,
@@ -382,11 +383,7 @@ impl LocalBackend {
         let mut prepared = con
             .prepare(&stmt.sql)
             .map_err(|e| Error::backend(e.to_string()))?;
-        let col_names: Vec<String> = prepared
-            .column_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let col_names: Vec<String> = prepared.column_names().map(str::to_string).collect();
         let params: Vec<RValue> = stmt.args.iter().map(to_rvalue).collect();
         let mut rows = prepared
             .query(rusqlite::params_from_iter(params.iter()))
@@ -671,6 +668,23 @@ impl SearchBackend for LocalBackend {
                 Value::Integer(chunk_idx - n),
                 Value::Integer(chunk_idx + n),
             ],
+        ))?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                Some(NeighborRow {
+                    chunk_id: r.get_i64("id")?,
+                    chunk_idx: r.get_i64("chunk_idx")?,
+                    text: r.get_text("text")?.to_string(),
+                })
+            })
+            .collect())
+    }
+
+    fn message_chunks(&self, message_id: &str) -> Result<Vec<NeighborRow>> {
+        let rows = self.execute(&Stmt::new(
+            MESSAGE_CHUNKS_SQL,
+            vec![Value::text(message_id)],
         ))?;
         Ok(rows
             .iter()

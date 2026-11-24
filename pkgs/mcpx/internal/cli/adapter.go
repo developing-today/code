@@ -24,7 +24,14 @@ type AdapterFile struct {
 
 // loadAdapters reads declarations from the configured paths.
 func (a *App) loadAdapters() ([]adapter.Spec, error) {
-	return loadAdapterFiles(splitPathList(a.Settings().String("paths.adapters")))
+	specs, err := loadAdapterFiles(splitPathList(a.Settings().String("paths.adapters")))
+	if err != nil {
+		return nil, err
+	}
+	if err := adapter.CheckBareAllowed(specs, a.Settings().Bool("adapters.allowBare")); err != nil {
+		return nil, err
+	}
+	return specs, nil
 }
 
 // loadAdapterFiles reads and validates declarations from these files.
@@ -212,6 +219,12 @@ func (a *App) CmdAdapter(ctx context.Context, args []string) error {
 			if specs, err = loadAdapterFiles(fs.Args()[1:]); err != nil {
 				return err
 			}
+			// The explicit files bypass loadAdapters, so the gate is
+			// applied here too: naming a file directly is not a way
+			// around adapters.allowBare.
+			if err := adapter.CheckBareAllowed(specs, a.Settings().Bool("adapters.allowBare")); err != nil {
+				return err
+			}
 		}
 		for _, s := range specs {
 			if s.Name != fs.Arg(0) {
@@ -341,6 +354,17 @@ func (a *App) augmentAdapters(cfg *config.Config) error {
 		if _, dup := cfg.MCPServers[s.Name]; dup {
 			return fmt.Errorf("adapter %q has the same name as a configured server; rename one", s.Name)
 		}
+		env := map[string]string{"MCPX_ADAPTER_DECLARATION_SHA256": adapterDeclarationFingerprint(s)}
+		if a.Settings().Bool("adapters.allowBare") {
+			// The permission this process resolved rides along: the
+			// child re-resolves its own settings, and a grant made
+			// only by this process's flag (or a runtime override) is
+			// invisible there, so the child would refuse the very
+			// declaration this process accepted and the adapter could
+			// never start (Codex review, PR #13118). The environment
+			// form is the one route every child reads identically.
+			env["MCPX_ADAPTERS_ALLOW_BARE"] = "true"
+		}
 		cfg.MCPServers[s.Name] = &config.Server{
 			Name:    s.Name,
 			Command: self,
@@ -352,7 +376,7 @@ func (a *App) augmentAdapters(cfg *config.Config) error {
 			// the child that captured the old declaration at startup
 			// (Codex review, PR #2565; the same shape augmentAPIs uses
 			// for APIs since PR #2514).
-			Env: map[string]string{"MCPX_ADAPTER_DECLARATION_SHA256": adapterDeclarationFingerprint(s)},
+			Env: env,
 			// Instructions arrive from initialize, as a real server's do.
 			Mcpx: &config.Extras{Description: s.Description},
 		}

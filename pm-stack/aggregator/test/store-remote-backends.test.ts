@@ -20,12 +20,16 @@ import {
 } from "../src/activity.ts";
 import { AaLastGoodStore, type DocumentRemote } from "../src/aa-last-good.ts";
 import { SnapshotStore, snapshotKey, type SnapshotsRemote } from "../src/snapshots.ts";
-import type { SnapshotRecord } from "../src/model.ts";
+import type { DashComment, SnapshotRecord } from "../src/model.ts";
+import { CommentsStore, type CommentsRemote } from "../src/comments.ts";
 import { AA_LAST_GOOD_DOCUMENT, parseStoreBackend } from "../src/store-backend.ts";
 import {
   actionFromRow,
   actionRowValues,
+  commentFromRow,
+  commentRowValues,
   createTursoActionsRemote,
+  createTursoCommentsRemote,
   createTursoDocumentRemote,
   createTursoSnapshotsRemote,
   snapshotFromRow,
@@ -411,6 +415,129 @@ describe("remote store row mapping", () => {
 
   test("turso mode without a client fails closed instead of using a local file", async () => {
     const remote = createTursoActionsRemote(async () => null);
+    await expect(remote.loadAll()).rejects.toThrow(/refusing to fall back/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1744 Move 1, step 2: dashboard comments -> public.shared_comments.
+// The oracle is the same one-backend contract as #6815: the fake remote
+// is the canonical copy, so a store in turso mode must reconstruct from
+// it alone and never create the local file; the row-mapping oracle is
+// the DashComment record shape itself (every field round-trips).
+// ---------------------------------------------------------------------------
+
+class FakeCommentsRemote implements CommentsRemote {
+  rows: DashComment[] = [];
+  saves = 0;
+  async loadAll(): Promise<DashComment[]> {
+    return structuredClone(this.rows);
+  }
+  async saveAll(comments: readonly DashComment[]): Promise<void> {
+    this.saves++;
+    this.rows = structuredClone([...comments]);
+  }
+}
+
+function comment(over: Partial<DashComment> = {}): DashComment {
+  return {
+    id: "dc-test-1",
+    objectRef: "orch:item-1",
+    kind: "note",
+    author: drew,
+    authorVerified: false,
+    provenance: "asserted-legacy",
+    body: "hello",
+    createdAt: "2026-11-01T00:00:00.000Z",
+    ...over,
+  };
+}
+
+describe("CommentsStore remote backend (#1744)", () => {
+  test("turso mode reconstructs from the remote and never creates the file", async () => {
+    const dir = tmp("comments-remote");
+    const file = join(dir, "comments.json");
+    const remote = new FakeCommentsRemote();
+    remote.rows = [comment({ id: "dc-seed" })];
+    const store = new CommentsStore(file, undefined, remote);
+    expect((await store.all()).map((c) => c.id)).toEqual(["dc-seed"]);
+    expect(existsSync(file)).toBe(false);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  test("add, triage and github-result transitions persist through the remote only", async () => {
+    const dir = tmp("comments-remote-write");
+    const file = join(dir, "comments.json");
+    const remote = new FakeCommentsRemote();
+    const store = new CommentsStore(file, undefined, remote);
+    const msg = await store.add({ objectRef: "orch:item-2", kind: "message", author: drew, body: "ping" });
+    expect(remote.rows.map((c) => c.id)).toContain(msg.id);
+    expect(await store.markTriaged([msg.id])).toBe(1);
+    const gh = await store.add({
+      objectRef: "orch:item-3",
+      kind: "github",
+      author: drew,
+      body: "post me",
+      githubRef: "developing-today/code#1" as DashComment["githubRef"],
+    });
+    await store.markGithubResult(gh.id, {
+      url: "https://github.com/developing-today/code/issues/1#issuecomment-1",
+    });
+    const fresh = new CommentsStore(file, undefined, remote);
+    const all = await fresh.all();
+    expect(all.find((c) => c.id === msg.id)?.triageState).toBe("triaged");
+    expect(all.find((c) => c.id === gh.id)?.githubState).toBe("posted");
+    expect(all.find((c) => c.id === gh.id)?.githubUrl).toContain("issuecomment-1");
+    expect(remote.saves).toBeGreaterThan(0);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  test("comment rows round-trip every DashComment field", () => {
+    const full = comment({
+      kind: "github",
+      authorVerified: true,
+      provenance: "verified",
+      linkedIdentity: { source: "cron", id: "job-1" },
+      githubRef: "developing-today/code#7" as DashComment["githubRef"],
+      githubState: "failed",
+      githubError: "boom",
+      githubFailedAt: "2026-11-01T01:00:00.000Z",
+    });
+    const values = commentRowValues(full);
+    expect(values).toContain("'dc-test-1'");
+    expect(values).toContain("'2026-11-01T00:00:00.000Z'::timestamptz");
+    const row = {
+      id: full.id,
+      object_ref: full.objectRef,
+      kind: full.kind,
+      author: full.author,
+      author_verified: true,
+      provenance: "verified",
+      linked_identity: full.linkedIdentity,
+      body: full.body,
+      created_at: full.createdAt,
+      triage_state: null,
+      github_ref: full.githubRef,
+      github_state: "failed",
+      github_url: null,
+      github_error: "boom",
+      github_failed_at: full.githubFailedAt,
+    };
+    expect(commentFromRow(row)).toEqual(full);
+  });
+
+  test("comments remote upserts by id into public.shared_comments", async () => {
+    const rec = recordingClient(() => []);
+    const remote = createTursoCommentsRemote(async () => rec.client);
+    await remote.saveAll([comment()]);
+    expect(rec.seen).toHaveLength(1);
+    expect(rec.seen[0]).toContain("insert into public.shared_comments");
+    expect(rec.seen[0]).toContain("on conflict (id) do update");
+    expect(rec.seen[0]).toContain("triage_state = excluded.triage_state");
+  });
+
+  test("comments remote without a client fails closed instead of using a local file", async () => {
+    const remote = createTursoCommentsRemote(async () => null);
     await expect(remote.loadAll()).rejects.toThrow(/refusing to fall back/);
   });
 });

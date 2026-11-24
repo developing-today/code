@@ -2,14 +2,19 @@
 // server code answers, only the sources are canned, and every action
 // succeeds. demo.ts serves it directly; edge-demo.ts puts the edge in
 // front of it.
+import { appendFileSync } from "node:fs";
 import { actions as realActions } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
-import { Ops, type Run } from "../src/ops.ts";
+import { Named } from "../src/named.ts";
+import { type Fetch, Ops, type Run } from "../src/ops.ts";
+import { Plan } from "../src/plan.ts";
 import { Push } from "../src/push.ts";
 import type { Deps } from "../src/server.ts";
+import { memoryStore } from "../src/store.ts";
+import { Work } from "../src/work.ts";
 
 const iso = (minutesAgo: number) => new Date(Date.now() - minutesAgo * 60_000).toISOString().slice(0, 19);
 const task = (id: number, title: string, extra: Record<string, unknown>) => ({
@@ -255,6 +260,7 @@ const state = {
       created: iso(60 * 20),
       author: "dezren39",
       branch: "task/suite-registry",
+      head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     },
     {
       number: 12241,
@@ -264,6 +270,7 @@ const state = {
       created: iso(60 * 19),
       author: "dezren39",
       branch: "task/f12-11-frames",
+      head: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     },
     {
       number: 12390,
@@ -273,6 +280,7 @@ const state = {
       created: iso(60 * 3),
       author: "dezren39",
       branch: "wip/talos",
+      head: "cccccccccccccccccccccccccccccccccccccccc",
     },
   ],
   priorities: {
@@ -353,23 +361,312 @@ const demoRun: Run = async (argv) => {
       stderr: "",
     };
   }
+  // The Releases screen: GitHub's record of the site's deploys and the
+  // app's builds, and a start that is taken and does nothing here.
+  const path = argv.find((a) => a.startsWith("repos/")) ?? "";
+  if (path.includes("/actions/workflows/") && path.includes("/runs")) {
+    const site = path.includes("pm-console-edge-deploy.yml");
+    const run = (
+      id: number,
+      sha: string,
+      status: string,
+      conclusion: string | null,
+      event: string,
+      minutes: number,
+    ) => ({
+      id,
+      head_sha: sha,
+      status,
+      conclusion,
+      event,
+      created_at: iso(minutes),
+      html_url: `https://github.com/developing-today/code/actions/runs/${id}`,
+    });
+    const runs = site
+      ? [
+          run(45120541236, "ca5c04493289cde76fa0d7f287bbd46e0395c491", "completed", "success", "push", 9),
+          run(45119509023, "326ac803beddb586530c6e48b76ce1db630e8aca", "completed", "success", "push", 18),
+          run(
+            45098200037,
+            "2bec21c17fae00000000000000000000000000aa",
+            "completed",
+            "success",
+            "workflow_dispatch",
+            235,
+          ),
+        ]
+      : [run(45118133709, "0f311ae99323955fbe908d8db814dc8de41d56f0", "completed", "success", "push", 31)];
+    return { code: 0, stdout: JSON.stringify({ workflow_runs: runs }), stderr: "" };
+  }
+  if (path.endsWith("/dispatches")) return { code: 0, stdout: "", stderr: "" };
+  // The plan's screens: the roadmap files are the repository's own, read
+  // from this checkout; the issues under them are made up.
+  const answer = (out: unknown) => ({ code: 0, stdout: JSON.stringify(out), stderr: "" });
+  // So is the list of Workers the Platform screen is drawn from.
+  const contents = /\/contents\/(planning\/roadmaps\/[a-z-]+\.md|pm-stack\/platform\/workers\.json)$/.exec(path);
+  if (contents) {
+    const text = await Bun.file(`${import.meta.dir}/../../../${contents[1]}`).text();
+    return answer({ content: Buffer.from(text, "utf8").toString("base64") });
+  }
+  const planIssue = (number: number, title: string, labels: string[], state = "open", minutes = 90) => ({
+    number,
+    title,
+    html_url: `https://github.com/developing-today/code/issues/${number}`,
+    state,
+    updated_at: iso(minutes),
+    comments: number % 5,
+    labels: labels.map((name) => ({ name })),
+  });
+  const q = argv.find((a) => a.startsWith("q="));
+  if (argv.includes("search/issues") && q) {
+    if (q.includes("kind/bug")) {
+      return answer({
+        total_count: q.includes("is:closed") ? 516 : 3,
+        items: q.includes("is:closed")
+          ? [
+              planIssue(
+                12931,
+                "The Android release tracked an older build",
+                ["kind/bug", "app/pm-stack"],
+                "closed",
+                600,
+              ),
+            ]
+          : [
+              planIssue(12520, "flake.lock diverges after a rebuild marker commit", ["kind/bug", "next"], "open", 2000),
+              planIssue(12980, "Deploy again does nothing on a phone with no signal", [
+                "kind/bug",
+                "app/pm-stack",
+                "now",
+              ]),
+              planIssue(12811, "A claimed task shows as queued for a minute", ["kind/bug", "app/fleet"], "open", 300),
+            ],
+      });
+    }
+    const of = /"(app\/[a-z-]+|area\/[a-z-]+|roadmap\/[a-z-]+)"/.exec(q)?.[1] ?? "app/id";
+    const n = 12000 + (of.length % 7) * 100;
+    if (q.includes("is:closed")) {
+      return answer({
+        total_count: 146,
+        items: [planIssue(n + 1, "The piece that shipped last week", [of], "closed", 3000)],
+      });
+    }
+    return answer({
+      total_count: 4,
+      items: [
+        planIssue(n + 2, "The piece being built now", [of, "queue/claimed", "now"], "open", 12),
+        planIssue(n + 3, "The piece that is up next", [of, "now"], "open", 240),
+        planIssue(n + 4, "A piece for the coming weeks", [of, "next"], "open", 900),
+        planIssue(n + 5, "epic: the long road for this capability", [of, "meta/epic"], "open", 5000),
+      ],
+    });
+  }
+  if (path.includes("/issues?labels=owner%2Fintake")) {
+    return answer([
+      planIssue(
+        12980,
+        "Bug (PM stack): Deploy again does nothing on a phone with no signal",
+        ["kind/bug", "owner/intake", "app/pm-stack", "now", "queue/claimed"],
+        "open",
+        20,
+      ),
+      {
+        ...planIssue(
+          12975,
+          'id roadmap: move "Native TUI client" to "Planned: short term"',
+          ["owner/intake", "app/id", "next"],
+          "open",
+          200,
+        ),
+        body: 'sooner than later\n\n---\n<!-- pm-intake {"v":1,"id":null,"kind":"change","area":"id","mode":"issue"} -->',
+      },
+      planIssue(
+        12960,
+        "Owner: make lanes pick up owner notes first",
+        ["owner/prompt", "owner/intake", "app/fleet", "expedite"],
+        "closed",
+        700,
+      ),
+    ]);
+  }
+  if (argv.includes("POST")) {
+    if (path.endsWith("/comments")) {
+      return answer({ html_url: "https://github.com/developing-today/code/issues/12980#issuecomment-1" });
+    }
+    if (path.endsWith("/issues")) {
+      return answer({
+        number: 13050,
+        html_url: "https://github.com/developing-today/code/issues/13050",
+        title: "Filed from the demo",
+      });
+    }
+  }
   return { code: 0, stdout: "[]", stderr: "" };
+};
+
+/** The queue store, standing in for the real one, so that the Queue
+ * screen has something to read and nothing here goes out to the
+ * network. It answers the two reads that screen makes; a task that was
+ * unblocked or cancelled stays as it was, since nothing here changes. */
+const queueTasks = [
+  {
+    id: 21043,
+    status: "blocked",
+    priority: 20,
+    title: "Fix #12538: modeline verbs agree with the queue's states",
+    dedupe_key: "issue-12538",
+    updated: iso(14),
+    why: "waiting on #12530 to merge",
+  },
+  {
+    id: 20977,
+    status: "blocked",
+    priority: 30,
+    title: "Fix #12279: every test file sits in a registry row",
+    dedupe_key: "issue-12279",
+    updated: iso(95),
+    why: "36 test files are in no registry row; the lint this slice's pull request runs fails on them",
+  },
+  {
+    id: 20412,
+    status: "blocked",
+    priority: 50,
+    title: "Review #12403: quota forecast accuracy ledger",
+    dedupe_key: "review-12403",
+    updated: iso(400),
+    why: "the author's session ended before answering the review",
+  },
+  {
+    id: 19850,
+    status: "blocked",
+    priority: null,
+    title: "Fix #11871: watchdog registry row for the new claimant",
+    dedupe_key: "issue-11871",
+    updated: iso(2900),
+    why: "",
+  },
+  {
+    id: 21101,
+    status: "queued",
+    priority: 10,
+    title: "Fix #12600: the session id reaches the resume path",
+    dedupe_key: "issue-12600",
+    updated: iso(3),
+    why: "",
+  },
+  {
+    id: 21099,
+    status: "queued",
+    priority: 30,
+    title: "Fix #12588: stale claims are released after a restart",
+    dedupe_key: "issue-12588",
+    updated: iso(22),
+    why: "",
+  },
+  {
+    id: 21050,
+    status: "claimed",
+    priority: 20,
+    title: "Fix #9075: session state — session id in env and a resume path",
+    dedupe_key: "issue-9075",
+    updated: iso(1),
+    why: "",
+  },
+  {
+    id: 18002,
+    status: "parked",
+    priority: 70,
+    title: "Fix #10210: tidy the exporter's flags",
+    dedupe_key: "issue-10210",
+    updated: iso(9000),
+    why: "parked until the exporter is rewritten",
+  },
+];
+const demoQueue: Fetch = async (_url, init) => {
+  const requests =
+    (
+      JSON.parse(init.body ?? "{}") as {
+        requests?: { type: string; stmt?: { sql: string; args: { value: string }[] } }[];
+      }
+    ).requests ?? [];
+  const cell = (value: string | number | null) =>
+    value === null ? { type: "null" } : { type: typeof value === "number" ? "integer" : "text", value };
+  const results = requests
+    .filter((r) => r.type === "execute")
+    .map((r) => {
+      const sql = r.stmt?.sql ?? "";
+      const args = (r.stmt?.args ?? []).map((a) => a.value);
+      let cols: string[] = [];
+      let rows: (string | number | null)[][] = [];
+      if (/count\(\*\) AS n FROM tasks/.test(sql)) {
+        cols = ["status", "n"];
+        rows = Object.entries(state.board.counts);
+      } else if (/^SELECT id, status, priority, title/.test(sql)) {
+        const [, status, like] = args;
+        const want = String(like ?? "%%")
+          .slice(1, -1)
+          .replace(/\\([\\%_])/g, "$1")
+          .toLowerCase();
+        cols = ["id", "status", "priority", "title", "dedupe_key", "updated", "why"];
+        rows = queueTasks
+          .filter((t) => t.status === status && t.title.toLowerCase().includes(want))
+          .map((t) => [t.id, t.status, t.priority, t.title, t.dedupe_key, t.updated.slice(0, 16), t.why]);
+      }
+      return {
+        type: "ok",
+        response: {
+          type: "execute",
+          result: {
+            cols: cols.map((name) => ({ name })),
+            rows: rows.map((row) => row.map(cell)),
+            affected_row_count: 0,
+          },
+        },
+      };
+    });
+  return { ok: true, status: 200, json: async () => ({ results }) };
 };
 
 const cfg = readConfig({ HOME: "/tmp", PM_CONSOLE_DASHBOARD_URL: "" });
 const docs = new Docs(
   Object.fromEntries(Object.entries(state).map(([name, data]) => [name, { ttlMs: 3_600_000, load: async () => data }])),
 );
-const done = (result: unknown) => ({ run: async () => result, touch: [] as string[], audit: () => ({}) });
+// The offline check's witness: when PM_CONSOLE_DEMO_ACT_LOG names a
+// file, every canned action the demo host runs is appended there as one
+// JSON line (kind, args, time), so a driver outside the browser can
+// count what arrived and when. Unset, the demo writes nothing. A log
+// that cannot be written is reported on stderr and the action still
+// runs: the check then fails at its own count, not inside the demo.
+const done = (kind: string, result: unknown) => ({
+  run: async (args: unknown) => {
+    const actLog = process.env.PM_CONSOLE_DEMO_ACT_LOG;
+    if (actLog) {
+      try {
+        appendFileSync(actLog, `${JSON.stringify({ at: new Date().toISOString(), kind, args })}\n`);
+      } catch (error) {
+        console.error(`demo act log ${actLog} not writable: ${error}`);
+      }
+    }
+    return result;
+  },
+  touch: [] as string[],
+  audit: () => ({}),
+});
 // Linking a phone is the real thing, kept in a file under /tmp.
 const devices = new Devices(fileStore("/tmp/pm-console-demo-devices.json"));
 const phones = { devices, link: new Limiter(30, 60_000), refused: new Limiter(60, 60_000) };
-const real = realActions(new Ops(cfg, demoRun), undefined as never, undefined, devices);
+// The plan (roadmaps, bugs, intake) is the real thing too, over the
+// stand-in for GitHub above: what the demo shows is what the code does.
+const demoOps = new Ops(cfg, demoRun, demoQueue);
+const demoWork = new Work(demoOps);
+const demoPlan = new Plan(demoOps, demoWork);
+const real = realActions(demoOps, demoWork, undefined, devices, demoPlan);
 const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
   get: (_t, kind) =>
-    typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google")
+    typeof kind === "string" && (kind.startsWith("device.") || kind === "sso.google" || kind === "intake.send")
       ? real[kind]
       : done(
+          typeof kind === "string" ? kind : String(kind),
           kind === "ask.send"
             ? { issue: 12503, queued: true }
             : kind === "questions.accept"
@@ -377,19 +674,27 @@ const table = new Proxy({} as Record<string, ReturnType<typeof done>>, {
               : { ok: true },
         ),
   has: () => true,
-  getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: done({}) }),
+  // The kinds a real machine has, for where what it can do is listed.
+  ownKeys: () => Object.keys(real),
+  getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true, value: done("?", {}) }),
 });
 
 /** The made-up host: canned state, and actions that all succeed. */
 export const demoDeps: Deps = {
   cfg,
-  ops: new Ops(cfg, demoRun),
+  ops: demoOps,
+  plan: demoPlan,
   docs,
   phones,
   push: new Push(fileStore("/tmp/pm-console-demo-push.json"), "mailto:you@example.com", async () => ({
     status: 201,
   })),
   actions: table,
+  // What was done under each name, as the real host keeps it: an action
+  // a device sends twice is done once here too.
+  named: new Named(memoryStore()),
+  // What this machine is called where machines are listed.
+  self: { name: "framework", version: "0123abcd4567" },
   identify: async () => ({ via: "demo", email: "you@example.com" }),
   audit: async () => {},
 };

@@ -39,6 +39,7 @@ export const NOTIFICATION_CLASS_DEFAULTS: Record<string, boolean> = {
   "section-risk": true,
   "stack-health": true,
   "blocked-age": true,
+  prompt: true,
 };
 
 /** Notification preference classes (#3318, slice (d) of the #1254
@@ -91,6 +92,12 @@ export const NOTIFICATION_CLASSES: NotificationClassMeta[] = [
     blurb:
       "A needs-Drew item stays unacted for 24/48 hours, then weekly (digest-only except the 48-hour breakthrough).",
   },
+  {
+    id: "prompt",
+    label: "Prompt answers",
+    blurb:
+      "A prompt submitted with notifications on (#10035) reaches an answer or fails. The per-submission opt-in still applies — this class is the subscription-side gate.",
+  },
 ];
 
 /** Classes a per-class test send accepts: every preference class,
@@ -139,6 +146,8 @@ export function notificationTestLanding(
       return `${origin}/attention#test-needs-drew`;
     case "blocked-age":
       return `${origin}/attention#test-blocked-age`;
+    case "prompt":
+      return `${origin}/chat`;
     default:
       return `${origin}/alerts`;
   }
@@ -225,16 +234,28 @@ interface LocalClock {
   minute: number;
 }
 
+// ⚡ Bolt: formatter construction (~29µs) dominated repeated digest clock
+// conversions. Reuse the immutable formatter for each timezone.
+const LOCAL_CLOCK_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
+function localClockFormatter(timeZone: string): Intl.DateTimeFormat {
+  let fmt = LOCAL_CLOCK_FORMATTERS.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    });
+    LOCAL_CLOCK_FORMATTERS.set(timeZone, fmt);
+  }
+  return fmt;
+}
+
 function localClock(at: number, timeZone: string): LocalClock {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date(at));
+  const parts = localClockFormatter(timeZone).formatToParts(new Date(at));
   const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value);
   return {
     year: value("year"),

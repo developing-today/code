@@ -10,6 +10,7 @@ Modes:
 
 Usage: capture_server.py <mode> <port> <workdir>
 """
+
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -35,7 +36,10 @@ class Handler(BaseHTTPRequestHandler):
                 status = int((workdir / "board_status").read_text().strip())
             except Exception:
                 status = 200
-            self._send(status, b'{"board":"drill"}' if status == 200 else b'{"error":"drill down"}')
+            self._send(
+                status,
+                b'{"board":"drill"}' if status == 200 else b'{"error":"drill down"}',
+            )
         elif mode == "opencode" and self.path == "/global/health":
             self._send(200, b'{"healthy": true, "version": "slice-d-drill"}')
         else:

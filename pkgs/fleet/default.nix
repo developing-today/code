@@ -40,6 +40,8 @@
   pkgsStatic,
   binutils,
   python3,
+  bash,
+  util-linux,
   callPackage,
   craneLib ? null,
   doCheck ? true,
@@ -58,6 +60,15 @@ let
   # the search serve role's baked library must be the release the
   # corpus and the Gate A fixtures are certified under (code#6765).
   onnxruntime = callPackage ../atlas-search/onnxruntime { };
+
+  # Tools the workspace test suite needs in the check phase: Python's
+  # sqlite3 for the concurrency regressions, and bash plus util-linux
+  # (setsid) for the fleet-agent shell tests.
+  checkTools = [
+    python3
+    bash
+    util-linux
+  ];
 
   # The search serve role (#5604) consumes atlas-core / atlas-embed /
   # atlas-proto by relative path (../atlas-search/crates/*, untouched),
@@ -109,6 +120,13 @@ let
       # role there needs ATLAS_ORT_LIB).
       envAttrs = {
         FLEET_SOURCE_REV = sourceRev;
+        # #13617: the gh_metadata conformance test reads the
+        # pm-metadata v1 fixture set from doc/ at the repository root,
+        # which the fleetSrc fileset does not carry; point the test at
+        # this store copy of the fixture instead.
+        PM_METADATA_V1_FIXTURE = "${
+          ../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json
+        }";
         # #8566: the binary's Derived version channel. An explicit
         # derivedVersion wins; otherwise a real sourceRev yields a
         # unique prerelease form (0.1.0-dev+g<rev7>) instead of the
@@ -176,7 +194,7 @@ let
           cargoExtraArgs = "--locked " + lib.concatStringsSep " " cargoFlags;
           # buildDepsOnly also builds test targets unless this is forwarded.
           # Runtime NixOS packages skip those; checked package outputs keep them.
-          doCheck = doCheck;
+          inherit doCheck;
           env = envAttrs;
         };
 
@@ -202,8 +220,11 @@ let
           # run; the build keeps the -p fleet scope via
           # cargoExtraArgs.
           # SQLite concurrency regressions use Python's stdlib sqlite3.
-          nativeCheckInputs = [ python3 ];
-          doCheck = doCheck;
+          # The fleet-agent shell tests run bash scripts and the
+          # target-lease plan's setsid; the build sandbox has neither
+          # /bin/bash nor util-linux on PATH unless listed here.
+          nativeCheckInputs = checkTools;
+          inherit doCheck;
           checkPhaseCargoCommand = "cargoWithProfile test --locked";
 
           # The atlas-search server tests (#9973) write trace and
@@ -229,9 +250,9 @@ let
         sourceRoot = "${fleetSrc.name}/fleet";
         cargoLock.lockFile = ./Cargo.lock;
 
-        nativeCheckInputs = [ python3 ];
+        nativeCheckInputs = checkTools;
         cargoBuildFlags = cargoFlags;
-        doCheck = doCheck;
+        inherit doCheck;
 
         # Same check-phase HOME fix as the crane path above (#6400).
         preCheck = ''
@@ -276,7 +297,7 @@ in
   # one of these; they retire only at the epic's close, not before.
   fleet-brokers = rustPlatform.buildRustPackage {
     pname = "fleet-brokers";
-    nativeCheckInputs = [ python3 ];
+    nativeCheckInputs = checkTools;
     version = "0.1.0";
     src = fleetSrc;
     sourceRoot = "${fleetSrc.name}/fleet";

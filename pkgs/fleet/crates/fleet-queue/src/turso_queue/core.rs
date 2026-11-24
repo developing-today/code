@@ -318,6 +318,136 @@ pub fn dep_block_active(row: &Value) -> bool {
     !deps_of(row).is_empty()
 }
 
+/// A human label for one dep identity, used in drop errors and
+/// audit records: `issue owner/repo#12`, `pr owner/repo#3`,
+/// `ci owner/repo#456`, `task 789`.
+pub fn dep_label(dep: &Value) -> String {
+    let kind = dep.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+    let repo = dep.get("repo").and_then(|v| v.as_str()).unwrap_or("?");
+    match kind {
+        "task" => format!(
+            "task {}",
+            dep.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+        "ci" => format!(
+            "ci {repo}#{}",
+            dep.get("run_id").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+        _ => format!(
+            "{kind} {repo}#{}",
+            dep.get("number").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+    }
+}
+
+/// Identity match between a stored dep record and a drop spec
+/// (#12777): same kind, and the same identity fields — repo +
+/// number for pr/issue, repo + run_id for ci, task_id for task.
+/// State, reason and bookkeeping fields never take part, so a
+/// spec written from the block-time ref alone always matches
+/// the record the broker stored for it.
+pub fn dep_spec_matches(dep: &Value, spec: &Value) -> bool {
+    let kind = spec.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if dep.get("kind").and_then(|v| v.as_str()) != Some(kind) {
+        return false;
+    }
+    let same = |k: &str| dep.get(k) == spec.get(k);
+    match kind {
+        "pr" | "issue" => same("repo") && same("number"),
+        "ci" => same("repo") && same("run_id"),
+        "task" => same("task_id"),
+        _ => false,
+    }
+}
+
+/// Remove the dropped dep entries from a blocked task's record
+/// (#12777). Ok((remaining, dropped)) preserves record order;
+/// Err carries every drop spec that matched nothing — the
+/// caller refuses the whole correction, so a mistyped ref can
+/// never silently drop a different dep, or none at all.
+pub fn remove_deps(
+    deps: &[Value],
+    drops: &[Value],
+) -> Result<(Vec<Value>, Vec<Value>), Vec<Value>> {
+    let mut remaining: Vec<Value> = deps.to_vec();
+    let mut dropped = Vec::new();
+    let mut unmatched = Vec::new();
+    for spec in drops {
+        if let Some(pos) = remaining.iter().position(|d| dep_spec_matches(d, spec)) {
+            dropped.push(remaining.remove(pos));
+        } else {
+            unmatched.push(spec.clone());
+        }
+    }
+    if unmatched.is_empty() {
+        Ok((remaining, dropped))
+    } else {
+        Err(unmatched)
+    }
+}
+
+/// Validate the drop specs of an unblock request (#12777): the
+/// surgical form of /unblock. Ok(None) when the request carries
+/// no drop list — the classic full override, unchanged. Specs
+/// are identity-only and held to the same strictness as
+/// parse_block_deps: a ref the broker cannot name is a usage
+/// error here, never a silent no-match at drop time.
+pub fn parse_drop_deps(req: &Value) -> Result<Option<Vec<Value>>, String> {
+    let Some(raw) = req.get("drop_deps") else {
+        return Ok(None);
+    };
+    let Some(arr) = raw.as_array() else {
+        return Err("unblock: drop_deps must be an array".to_string());
+    };
+    if arr.is_empty() {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    for d in arr {
+        let kind = d.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let mut spec = json!({ "kind": kind });
+        let obj = spec.as_object_mut().expect("spec object");
+        match kind {
+            "pr" | "issue" | "ci" => {
+                let repo = d.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+                if !valid_dep_repo(repo) {
+                    return Err(format!(
+                        "unblock: drop dep repo must be owner/name, got '{repo}'"
+                    ));
+                }
+                obj.insert("repo".to_string(), json!(repo));
+                if kind == "ci" {
+                    let run_id = d.get("run_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if run_id <= 0 {
+                        return Err("unblock: ci drop dep needs a positive run_id".to_string());
+                    }
+                    obj.insert("run_id".to_string(), json!(run_id));
+                } else {
+                    let number = d.get("number").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if number <= 0 {
+                        return Err(format!("unblock: {kind} drop dep needs a positive number"));
+                    }
+                    obj.insert("number".to_string(), json!(number));
+                }
+            }
+            "task" => {
+                let task_id = d.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                if task_id <= 0 {
+                    return Err("unblock: task drop dep needs a positive task_id".to_string());
+                }
+                obj.insert("task_id".to_string(), json!(task_id));
+            }
+            _ => {
+                return Err(format!(
+                    "unblock: unknown drop dep kind '{kind}' (pr|issue|task|ci)"
+                ));
+            }
+        }
+        out.push(spec);
+    }
+    Ok(Some(out))
+}
+
 pub(crate) fn valid_dep_repo(repo: &str) -> bool {
     let mut parts = repo.split('/');
     matches!(
@@ -689,6 +819,13 @@ impl TursoBackend {
             .unwrap())
     }
 
+    /// #13146: several statements in one pipeline request (the
+    /// placement-sync batch insert). Same per-statement results as
+    /// repeated `exec` calls, one round trip.
+    pub(crate) fn exec_batch(&self, stmts: &[(&str, Vec<Arg>)]) -> Result<Vec<StmtResult>, TErr> {
+        self.pipeline(stmts)
+    }
+
     /// Rows of one SELECT as JSON objects, with the given TEXT
     /// columns parsed back into JSON values.
     pub(crate) fn query_objs(
@@ -811,6 +948,38 @@ impl TursoBackend {
                 &[],
             )?;
         }
+        // #13774 (ACTIONS-EXEC-3): the tiered-extension columns
+        // (ext_count / ext_total_s / ext_tier / ext_decide_after /
+        // ext_reason) and the session context land the same
+        // additive way for actions_exec_sessions tables created
+        // before them. No backfill: existing rows read the column
+        // default / NULL, which the verbs read as "no extensions
+        // yet, no context recorded".
+        let aecols = self.query_objs(
+            "SELECT name FROM pragma_table_info('actions_exec_sessions')",
+            &[],
+            &[],
+        )?;
+        if !aecols.is_empty() {
+            for (col, ty) in [
+                ("ext_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("ext_total_s", "INTEGER NOT NULL DEFAULT 0"),
+                ("ext_tier", "INTEGER"),
+                ("ext_decide_after", "TEXT"),
+                ("ext_reason", "TEXT"),
+                ("context", "TEXT"),
+            ] {
+                let has = aecols
+                    .iter()
+                    .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
+                if !has {
+                    self.exec(
+                        &format!("ALTER TABLE actions_exec_sessions ADD COLUMN {col} {ty}"),
+                        &[],
+                    )?;
+                }
+            }
+        }
         // #8210: the ledger's platform-limitation columns (a
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
@@ -846,7 +1015,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 17] = [
+pub(crate) const SCHEMA: [&str; 25] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -874,6 +1043,7 @@ pub(crate) const SCHEMA: [&str; 17] = [
     "CREATE TABLE IF NOT EXISTS leases (\
         task_id INTEGER PRIMARY KEY, worker_id TEXT NOT NULL, \
         lease_until TEXT NOT NULL, heartbeat_at TEXT NOT NULL)",
+    include_str!("heartbeat_lease_mirror.sql"),
     "CREATE TABLE IF NOT EXISTS lanes (\
         lane_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, \
         queue TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)",
@@ -920,6 +1090,25 @@ pub(crate) const SCHEMA: [&str; 17] = [
     // #8582 increment 2: the merge-intent table, DDL of record in
     // the pure core module.
     crate::merge_intent::MERGE_INTENT_DDL,
+    // #13146: placement session records — the designed home for the
+    // fleet-place session store (intake DDL in
+    // doc/placement-intake/placement.md, carried into the Turso
+    // backend). `record` holds the full session JSON — the client
+    // record shape is the contract; the scalar columns are
+    // extractions for list/filter queries.
+    "CREATE TABLE IF NOT EXISTS placement_sessions (\
+        handle TEXT PRIMARY KEY, record TEXT NOT NULL DEFAULT '{}', \
+        state TEXT, surface TEXT, submitted_by TEXT, run_id INTEGER, \
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS placement_sessions_created \
+        ON placement_sessions(created_at)",
+    // #13774: actions exec sessions — DDL of record in the
+    // actions_exec module.
+    crate::turso_queue::ACTIONS_EXEC_DDL_SESSIONS,
+    crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS,
+    crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS_IDX,
+    crate::turso_queue::ACTIONS_EXEC_DDL_IO,
+    crate::turso_queue::ACTIONS_EXEC_DDL_IO_IDX,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1511,7 +1700,38 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         if let Some(s) = quarantine_summary {
             out["quarantine_recheck"] = s;
         }
-        if expired > 0 || do_revalidate || do_prune || dep_checked > 0 || quarantine_checked > 0 {
+        // #9177: the closed-bound detective rides the sweep too —
+        // the same minutely timer already POSTs /sweep, so every
+        // bound (session-stamped claimed|parked) task gets its
+        // issue read on GitHub once per cycle and crossed with the
+        // closure log; a closed issue without the bound task's
+        // completion record raises one throat alert. Opt out per
+        // call: closed_bound=false. The detective never fails the
+        // sweep: its errors (store, unreadable log) are reported
+        // inside its own summary and the cycle continues.
+        let closed_bound_summary = if req_bool(req, "closed_bound").unwrap_or(true) {
+            match run_closed_bound_checks(t, req_i64(req, "closed_bound_limit").unwrap_or(200)) {
+                Ok(s) => Some(s),
+                Err(e) => Some(json!({"error": e})),
+            }
+        } else {
+            None
+        };
+        let closed_bound_missing = closed_bound_summary
+            .as_ref()
+            .and_then(|s| s.get("missing_record"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(s) = closed_bound_summary {
+            out["closed_bound"] = s;
+        }
+        if expired > 0
+            || do_revalidate
+            || do_prune
+            || dep_checked > 0
+            || quarantine_checked > 0
+            || closed_bound_missing > 0
+        {
             event(t, Some("fleet-sweeper"), None, "sweep", &out)?;
         }
         Ok(out)
@@ -1532,6 +1752,12 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
 /// (Drew's doctrine, 2026-11-07: a done task means triage or a slice, not
 /// a resolved issue), and neither is a task in another queue.
 ///
+/// The caller may also supply `pulls` (`[{"number": 123}]`, #12280): the
+/// answer then carries `covered_pulls` / `uncovered_pulls` under the same
+/// live-task rule, matched on the PR dedupe-key classes (the warden's
+/// `pr` key and the reconciliation's `merge-watch` key). Callers that do
+/// not send `pulls` get the issue-only answer, unchanged.
+///
 /// Read-only by construction: it never writes tasks or events, so it is
 /// safe to run on a schedule and safe to run in observe mode. The caller
 /// decides what to enqueue; the dedupe key makes that idempotent.
@@ -1548,6 +1774,13 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
         Some(a) => a.clone(),
         None => return fail(2, "coverage: issues must be an array".to_string()),
     };
+    let pulls: Option<Vec<Value>> = match req.get("pulls") {
+        None => None,
+        Some(v) => match v.as_array() {
+            Some(a) => Some(a.clone()),
+            None => return fail(2, "coverage: pulls must be an array".to_string()),
+        },
+    };
     let work = (|| -> Result<Value, TErr> {
         // One query for every live task in the queue that carries an
         // issue dedupe key; the match is done in Rust so both the
@@ -1561,6 +1794,8 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
         )?;
         let mut live: std::collections::HashMap<i64, (i64, String)> =
             std::collections::HashMap::new();
+        let mut live_prs: std::collections::HashMap<i64, (i64, String)> =
+            std::collections::HashMap::new();
         for r in &rows {
             let id = r.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
             let status = r
@@ -1572,7 +1807,10 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
                 continue;
             };
             if let Some(n) = issue_number_for_repo(key, &repo) {
-                live.entry(n).or_insert((id, status));
+                live.entry(n).or_insert((id, status.clone()));
+            }
+            if let Some(n) = pr_number_for_repo(key, &repo) {
+                live_prs.entry(n).or_insert((id, status));
             }
         }
         let mut uncovered: Vec<Value> = Vec::new();
@@ -1595,7 +1833,7 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
                 })),
             }
         }
-        Ok(json!({
+        let mut out = json!({
             "queue": queue,
             "repo": repo,
             "open_issues": issues.len(),
@@ -1603,12 +1841,50 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
             "uncovered": uncovered.len(),
             "uncovered_issues": uncovered,
             "covered_issues": covered,
-        }))
+        });
+        if let Some(pulls) = &pulls {
+            let mut covered_pulls: Vec<Value> = Vec::new();
+            let mut uncovered_pulls: Vec<Value> = Vec::new();
+            for pr in pulls {
+                let Some(n) = pr.get("number").and_then(|v| v.as_i64()) else {
+                    continue;
+                };
+                match live_prs.get(&n) {
+                    Some((id, status)) => covered_pulls.push(json!({
+                        "number": n,
+                        "task": id,
+                        "status": status,
+                    })),
+                    None => uncovered_pulls.push(json!({ "number": n })),
+                }
+            }
+            out["covered_pulls"] = json!(covered_pulls);
+            out["uncovered_pulls"] = json!(uncovered_pulls);
+        }
+        Ok(out)
     })();
     match work {
         Ok(v) => ok(v),
         Err(e) => terr(e),
     }
+}
+
+/// The number after a `:<repo>:<class>:` marker in a dedupe key, with
+/// the shared tail rule: what follows the digits must be empty or a
+/// further `:`-separated suffix (e.g. `:dispatch:<x>`), so a malformed
+/// key like `…:issue:12abc` cannot silently claim coverage for 12.
+fn number_after_marker(key: &str, marker: &str) -> Option<i64> {
+    let start = key.find(marker)? + marker.len();
+    let rest = &key[start..];
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let tail = &rest[digits.len()..];
+    if !(tail.is_empty() || tail.starts_with(':')) {
+        return None;
+    }
+    digits.parse::<i64>().ok()
 }
 
 /// Extract the issue number from a repo-health dedupe key for `repo`.
@@ -1618,20 +1894,18 @@ pub(crate) fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
 /// variants (`…:issue:<n>:dispatch:<x>`) and the legacy repo-name aliases
 /// the reconciliation run of 2026-11-07 had to match by hand.
 pub(crate) fn issue_number_from_dedupe(key: &str, repo: &str) -> Option<i64> {
-    let marker = format!(":{repo}:issue:");
-    let start = key.find(&marker)? + marker.len();
-    let rest = &key[start..];
-    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    // Reject `:issue:12abc` style tails only when the tail is not a
-    // known suffix separator.
-    let tail = &rest[digits.len()..];
-    if !(tail.is_empty() || tail.starts_with(':')) {
-        return None;
-    }
-    digits.parse::<i64>().ok()
+    number_after_marker(key, &format!(":{repo}:issue:"))
+}
+
+/// Extract the PR number from a repo-health dedupe key for `repo`.
+///
+/// Both PR-naming key classes carry the same `:<repo>:pr:<n>` segment:
+/// the stale-PR warden's shepherd key `repo-health:v1:pr:<repo>:pr:<n>`
+/// and the coverage reconciliation's merge-watch key
+/// `repo-health:v1:merge-watch:<repo>:pr:<n>` (#4951). One marker parse
+/// covers both, so a live task of either family is PR coverage (#12280).
+pub(crate) fn pr_number_from_dedupe(key: &str, repo: &str) -> Option<i64> {
+    number_after_marker(key, &format!(":{repo}:pr:"))
 }
 
 /// The other name a repository's issue dedupe keys may carry.
@@ -1658,6 +1932,12 @@ pub(crate) fn legacy_alias(repo: &str) -> Option<&'static str> {
 pub(crate) fn issue_number_for_repo(key: &str, repo: &str) -> Option<i64> {
     issue_number_from_dedupe(key, repo)
         .or_else(|| legacy_alias(repo).and_then(|alias| issue_number_from_dedupe(key, alias)))
+}
+
+/// PR number from a key under `repo` or any legacy alias of it.
+pub(crate) fn pr_number_for_repo(key: &str, repo: &str) -> Option<i64> {
+    pr_number_from_dedupe(key, repo)
+        .or_else(|| legacy_alias(repo).and_then(|alias| pr_number_from_dedupe(key, alias)))
 }
 
 pub(crate) fn touch_worker(

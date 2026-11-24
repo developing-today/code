@@ -1,0 +1,177 @@
+[
+ {
+  "evidence": "Edge-served PM console with laptop relay + stale-state behavior (43 files, +6317/-693). No closing ref; judged on intent.",
+  "gap": null,
+  "issue": null,
+  "pr": 12505,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Dependabot: sharp/wrangler manifests + lockfile (2 files). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12506,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Dependabot: undici/wrangler manifests + lockfile (2 files). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12507,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Edge cutover + fixes from #12505 review (18 files, +640/-81). No closing ref; judged on intent.",
+  "gap": null,
+  "issue": null,
+  "pr": 12511,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Marker-recovery logic + tests (4 files, +225/-1); refuses unsafe local commits before tagging/refs. No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12515,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "ID gate runner evaluates batches inside candidate nix develop shell + runner tests (2 files, +65/-8). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12516,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "In-app Google sign-in setup flow with validation + secret-safe handling (13 files, +565/-37). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12517,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Dated plan update: edge migration, deploy stall fix, Sign-in screen, follow-ups (1 file, +3). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12522,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Retryable quiet + recovery push transitions, failed-delivery handling, regression tests for both paths (2 files, +67/-9); issue closed.",
+  "gap": null,
+  "issue": 12513,
+  "pr": 12523,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Whole-startup refusal + configured-compiler control tests for inventory item 9-7 (1 test file, +103); #796 scope.",
+  "gap": null,
+  "issue": 796,
+  "pr": 12524,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "KV journal JSON validation during replay + malformed in-bounds JSON coverage (2 files, +11); targeted test passed per body.",
+  "gap": null,
+  "issue": 12495,
+  "pr": 12525,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Nightly timeout 90->300 min (1 workflow file). #1372/#1374 referenced as beneficiaries, not spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12526,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Bidirectional linked-phone metadata sync, tombstone propagation, stale/malformed snapshot + token exclusion coverage (9 files, +193/-3).",
+  "gap": null,
+  "issue": 12519,
+  "pr": 12528,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Blob provider: bounded content-addressed storage, journaling/replay validation, checkpoint handling + tests (13 files, +1013/-17); planned second slice of #1062.",
+  "gap": null,
+  "issue": 1062,
+  "pr": 12529,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Portable Fleet run IDs, artifact reuse for follow-ups, verified remote-build handoff guide (3 files, +227/-19). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12530,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Build-lane perf: shared target leases for compile commands with verification + safeguards (15 files, +1408/-65). No unfiled remainder evidenced.",
+  "gap": null,
+  "issue": 557,
+  "pr": 12540,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Implements F2a only (2 files, +634/-9); F2b/F2c left for decision-record-backed steps. Completed-later by #12565 (F2b) and #12570 (F2c), same batch.",
+  "gap": null,
+  "issue": 12233,
+  "pr": 12543,
+  "verdict": "audit:completed-later"
+ },
+ {
+  "evidence": "Fleet gh cache-daemon findings + write-path defect/fix doc (1 file, +90). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12545,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Protected manual publisher workflow + tests (6 files, +2382); cutover prerequisites documented. No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12549,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Trusted manual GitHub Actions deploy path with provenance + baseline checks (6 files, +315/-6). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12550,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Fleet command inventories + docs aligned; fleet-operations skill added; remote-build guidance (6 files, +372/-113). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12551,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Second-pass perf: inline journal write optimization + benchmark evidence (2 files, +72/-105); remaining audited seams described, no unfiled gap.",
+  "gap": null,
+  "issue": 557,
+  "pr": 12552,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Tailnet cold-start/logging/poll-budget port fixes + bash syntax validation (1 script, +20/-1). No spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12556,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Unknown-lane auto-registration, unknown-lane error path removed, tests pinning new behavior (3 files, +107/-55).",
+  "gap": null,
+  "issue": 12544,
+  "pr": 12558,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "http.fetch provider with host allowlist, bounds, off-by-default, unlisted-host refusal tests (11 files, +1132). Planned slice of #1062.",
+  "gap": null,
+  "issue": 1062,
+  "pr": 12559,
+  "verdict": "audit:complete"
+ }
+]

@@ -4,7 +4,7 @@
   "spec_verified": "2026-11-02",
   "design": "doc/2026-11-01_design_id787.md",
   "implementation": "pkgs/id/examples/roc-world/Key.roc (Key.parse_events, Key.to_legacy)",
-  "note": "Language-neutral mirror of the Key.roc expect corpus. Slices C/D must decode with the actual Roc parse_events, never a re-implemented decoder. Inputs use JSON \\u001b for ESC.",
+  "note": "Language-neutral mirror of the Key.roc expect corpus. Slices C/D must decode with the actual Roc parse_events, never a re-implemented decoder. Inputs use JSON \\u001b for ESC. Slice D (#787): cases with a `browser` field name the browser key event for the same keystroke and the exact bytes the rich encoder (web/src/world-keyboard.ts) must emit; scripts/key-parity-test.sh decodes both the terminal input and the browser bytes with the compiled Roc parse_events and compares against the shared `expected` events, and web/src/world-keyboard.parity.test.ts pins the encoder to the same corpus.",
   "cases": [
     {
       "name": "escape",
@@ -19,7 +19,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "Escape",
+        "bytes": "\u001b[27u"
+      }
     },
     {
       "name": "alt-x",
@@ -34,7 +38,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "x",
+        "altKey": true,
+        "bytes": "\u001b[120;3u"
+      }
     },
     {
       "name": "tab-byte",
@@ -49,7 +58,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "Tab",
+        "bytes": "\t"
+      }
     },
     {
       "name": "ctrl-i",
@@ -64,7 +77,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "i",
+        "ctrlKey": true,
+        "bytes": "\u001b[105;5u"
+      }
     },
     {
       "name": "enter-byte",
@@ -79,7 +97,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "Enter",
+        "bytes": "\r"
+      }
     },
     {
       "name": "ctrl-m",
@@ -94,7 +116,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "m",
+        "ctrlKey": true,
+        "bytes": "\u001b[109;5u"
+      }
     },
     {
       "name": "ctrl-right",
@@ -109,7 +136,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "ArrowRight",
+        "ctrlKey": true,
+        "bytes": "\u001b[1;5C"
+      }
     },
     {
       "name": "up-letter",
@@ -124,7 +156,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "ArrowUp",
+        "bytes": "\u001b[A"
+      }
     },
     {
       "name": "up-letter-explicit-1",
@@ -139,7 +175,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "ArrowUp",
+        "bytes": "\u001b[A"
+      }
     },
     {
       "name": "shift-tab-canonical",
@@ -154,7 +194,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "Tab",
+        "shiftKey": true,
+        "bytes": "\u001b[9;2u"
+      }
     },
     {
       "name": "shift-tab-btab",
@@ -184,7 +229,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "Escape",
+        "altKey": true,
+        "bytes": "\u001b[27;3u"
+      }
     },
     {
       "name": "ctrl-alt-delete",
@@ -199,7 +249,13 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "Delete",
+        "ctrlKey": true,
+        "altKey": true,
+        "bytes": "\u001b[3;7~"
+      }
     },
     {
       "name": "super-c",
@@ -253,7 +309,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "é",
+        "bytes": "é"
+      }
     },
     {
       "name": "emoji",
@@ -268,7 +328,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "😀",
+        "bytes": "😀"
+      }
     },
     {
       "name": "shifted-text-plain",
@@ -283,7 +347,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "A",
+        "shiftKey": true,
+        "bytes": "A"
+      }
     },
     {
       "name": "altgr-a-ogonek",
@@ -298,7 +367,13 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "ą",
+        "ctrlKey": true,
+        "altKey": true,
+        "bytes": "ą"
+      }
     },
     {
       "name": "shift-a-csi",
@@ -313,7 +388,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "A",
+        "shiftKey": true,
+        "bytes": "A"
+      }
     },
     {
       "name": "ctrl-shift-a",
@@ -328,7 +408,13 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "A",
+        "ctrlKey": true,
+        "shiftKey": true,
+        "bytes": "\u001b[97;6u"
+      }
     },
     {
       "name": "f5",
@@ -343,7 +429,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "F5",
+        "bytes": "\u001b[15~"
+      }
     },
     {
       "name": "shift-f5",
@@ -358,7 +448,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "F5",
+        "shiftKey": true,
+        "bytes": "\u001b[15;2~"
+      }
     },
     {
       "name": "f1-letter",
@@ -373,7 +468,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "F1",
+        "bytes": "\u001b[11~"
+      }
     },
     {
       "name": "ctrl-f1",
@@ -388,7 +487,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "F1",
+        "ctrlKey": true,
+        "bytes": "\u001b[11;5~"
+      }
     },
     {
       "name": "insert-tilde",
@@ -403,7 +507,11 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "Insert",
+        "bytes": "\u001b[2~"
+      }
     },
     {
       "name": "mixed-text-and-escape",
@@ -532,7 +640,12 @@
             "kind": "Press"
           }
         }
-      ]
+      ],
+      "browser": {
+        "key": "!",
+        "shiftKey": true,
+        "bytes": "!"
+      }
     },
     {
       "name": "shifted-non-ascii-retains-shift",

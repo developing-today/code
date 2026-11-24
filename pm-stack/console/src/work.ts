@@ -5,8 +5,8 @@
 // Every write is something the fleet already understands: an answer to a
 // decision set through the dashboard's own endpoint, an issue and a
 // queue task, a comment, a label.
-import { readFile } from "node:fs/promises";
-import { OpError, type Ops, PRIORITY_SCALE, type Row } from "./ops.ts";
+import { OpError, type Ops, PRIORITY_SCALE, type Row, type RunResult } from "./ops.ts";
+import { timed } from "./timed.ts";
 
 const P = "CASE WHEN json_valid(payload) THEN payload ELSE '{}' END";
 const G = "CASE WHEN json_valid(progress) THEN progress ELSE '{}' END";
@@ -127,12 +127,14 @@ export function promptPacket(repo: string, queue: string, number: number, text: 
 }
 
 export class Work {
-  private labelReady = false;
   private replies = new Map<number, { updated: string; replies: { you: boolean; at: string; text: string }[] }>();
 
   constructor(
     private ops: Ops,
-    private read: (path: string) => Promise<string> = (path) => readFile(path, "utf8"),
+    // The decisions file lives on the laptop: the import is lazy so the
+    // edge Worker, which never reads it, can import this module.
+    private read: (path: string) => Promise<string> = async (path) =>
+      (await import("node:fs/promises")).readFile(path, "utf8"),
     private clock: () => Date = () => new Date(),
   ) {}
 
@@ -140,7 +142,7 @@ export class Work {
     return this.ops.cfg.repo;
   }
 
-  private task = (r: Row) => ({
+  private task = (r: Row): Row & { url: string | null } => ({
     ...r,
     url: r.issue ? `https://github.com/${this.repo}/issues/${r.issue}` : null,
   });
@@ -177,13 +179,15 @@ export class Work {
   private async dash(path: string, body?: unknown): Promise<unknown> {
     const base = this.ops.cfg.dashboardUrl;
     if (base === null) throw new OpError(502, "no dashboard is configured");
-    const res = await this.ops.fetchImpl(`${base}${path}`, {
-      method: body === undefined ? "GET" : "POST",
-      headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(20_000),
+    const { res, data } = await timed(20_000, async (signal) => {
+      const res = await this.ops.fetchImpl(`${base}${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal,
+      });
+      return { res, data: await res.json().catch(() => null) };
     });
-    const data = await res.json().catch(() => null);
     if (!res.ok) {
       const why = (data as { error?: string } | null)?.error ?? `http ${res.status}`;
       throw new OpError(
@@ -420,6 +424,27 @@ export class Work {
 
   // ---- asks: what the owner has told the fleet to do, in his words ------
 
+  /** Take a list of prompts read before as what is known of each
+   * thread, so that a prompt which has not changed since is not fetched
+   * again. For a holder that was restarted and kept its last list (the
+   * edge): without this every restart reads every thread anew. Anything
+   * that is not such a list is passed over. */
+  recall(asks: unknown): void {
+    if (!Array.isArray(asks)) return;
+    for (const ask of asks as { issue?: unknown; updated?: unknown; replies?: unknown }[]) {
+      if (!ask || !Number.isSafeInteger(ask.issue) || typeof ask.updated !== "string" || !Array.isArray(ask.replies)) {
+        continue;
+      }
+      const replies = (ask.replies as { you?: unknown; at?: unknown; text?: unknown }[]).filter(
+        (r) => r && typeof r.you === "boolean" && typeof r.at === "string" && typeof r.text === "string",
+      ) as { you: boolean; at: string; text: string }[];
+      if (replies.length !== ask.replies.length) continue;
+      if (!this.replies.has(ask.issue as number)) {
+        this.replies.set(ask.issue as number, { updated: ask.updated, replies });
+      }
+    }
+  }
+
   async asks() {
     const label = this.ops.cfg.promptLabel;
     // The issue list, not the search index: a prompt sent a second ago
@@ -454,7 +479,7 @@ export class Work {
     const out = [];
     for (const i of found.items) {
       let thread = this.replies.get(i.number);
-      if (i.comments > 0 && thread?.updated !== i.updated_at) {
+      if (i.comments > 0 && thread?.updated !== i.updated_at.slice(0, 19)) {
         // The newest comments are on the last page. Bots that only link the
         // issue elsewhere (the board sync) are not the fleet answering.
         // Read back from the last page until the replies shown are in
@@ -470,7 +495,7 @@ export class Work {
           comments = [...got.filter((c) => c.user?.type !== "Bot"), ...comments];
         }
         thread = {
-          updated: i.updated_at,
+          updated: i.updated_at.slice(0, 19),
           replies: comments.slice(-REPLIES_SHOWN).map((c) => ({
             you: (c.body ?? "").includes(OWNER_REPLY_MARK),
             at: c.created_at.slice(0, 19),
@@ -507,26 +532,21 @@ export class Work {
   }
 
   private async ensureLabel() {
-    if (this.labelReady) return;
-    const made = await this.ops.run(
-      [this.ops.cfg.fleetBin, "gh", "api", "-X", "POST", `repos/${this.repo}/labels`, "--input", "-"],
-      {
-        stdin: JSON.stringify({
-          name: this.ops.cfg.promptLabel,
-          color: "5319e7",
-          description: "An instruction from the owner, in his words (PM console)",
-        }),
-      },
+    await this.ops.ensureLabel(
+      this.ops.cfg.promptLabel,
+      "5319e7",
+      "An instruction from the owner, in his words (PM console)",
     );
-    // Exit 0: created. "already_exists": it was there. Anything else is a real failure.
-    if (made.code !== 0 && !/already_exists/.test(made.stdout + made.stderr)) {
-      throw new OpError(502, `could not prepare the ${this.ops.cfg.promptLabel} label`);
-    }
-    this.labelReady = true;
   }
 
-  /** Turn the owner's words into an issue and a top-band task, in one pass. */
-  async ask(args: Record<string, unknown>) {
+  /** Turn the owner's words into an issue and a top-band task, in one pass.
+   * `enqueue` is a stand-in point: the edge files the issue itself and
+   * holds the enqueue for the laptop's return instead of running the
+   * fleet binary, which is not there. */
+  async ask(
+    args: Record<string, unknown>,
+    enqueue: (packet: unknown) => Promise<RunResult> = (p) => this.ops.enqueue(p),
+  ) {
     const text = words(args.text, "text", 8000);
     await this.ensureLabel();
     const first = text.split("\n")[0].trim();
@@ -535,7 +555,7 @@ export class Work {
       body: `${text}\n\n---\n${ASK_NOTE}\n${OWNER_PROMPT_MARK}`,
       labels: [this.ops.cfg.promptLabel, "expedite"],
     })) as { number: number; html_url: string };
-    const queued = await this.ops.enqueue(
+    const queued = await enqueue(
       promptPacket(this.repo, this.ops.cfg.queue, made.number, text, this.clock().toISOString()),
     );
     return {
@@ -548,8 +568,13 @@ export class Work {
     };
   }
 
-  /** The owner answers back on one of his prompts; the fleet is woken for it. */
-  async askReply(args: Record<string, unknown>) {
+  /** The owner answers back on one of his prompts; the fleet is woken for it.
+   * `enqueue` is a stand-in point, as in ask(): the edge posts the reply
+   * itself and holds the enqueue for the laptop's return. */
+  async askReply(
+    args: Record<string, unknown>,
+    enqueue: (packet: unknown) => Promise<RunResult> = (p) => this.ops.enqueue(p),
+  ) {
     const issue = Number(args.issue);
     if (!Number.isSafeInteger(issue) || issue <= 0) throw new OpError(400, "issue: a positive whole number");
     const text = words(args.text, "text", 8000);
@@ -566,9 +591,7 @@ export class Work {
     if (current.state === "closed") {
       await this.ops.gh(["-X", "PATCH", `repos/${this.repo}/issues/${issue}`], { state: "open" });
     }
-    const queued = await this.ops.enqueue(
-      promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString()),
-    );
+    const queued = await enqueue(promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString()));
     return { issue, queued: queued.code === 0 };
   }
 

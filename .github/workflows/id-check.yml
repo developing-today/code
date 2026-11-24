@@ -38,6 +38,19 @@
 # checks (crash-gate-sampled/-sweep/-control/-ingest in
 # id-pr-checks.txt); the aggregate still runs nightly via the full
 # flake check.
+#
+# Shape (2026-11, #12658): the full tier's job timeout was 90 minutes
+# while the full flake check itself measures ~4h43m of step time
+# (id e2e nightly scheduled run 45038327413, 2026-11-22) — so every
+# scheduled run was killed by the job timeout at ~90 minutes and
+# concluded `cancelled` with no verdict, five days running. The job
+# timeout is now 360 (the GitHub-hosted maximum) and the check step
+# carries its own 330-minute timeout, so an overrun concludes as a
+# named failure instead of a silent cancellation; the step also runs
+# under a watchdog heartbeat with the log tee'd to an artifact, the
+# same shape as id-e2e-nightly.yml (#1372). Scheduled runs are keyed
+# by run_id in the concurrency group below, so nothing can cancel the
+# nightly backstop's verdict.
 
 name: id
 
@@ -55,11 +68,13 @@ permissions:
 # Push-to-main runs each get their own group (keyed by run_id), so a
 # later merge can never cancel — or displace a pending — verification
 # run for an earlier merge: every merged tree gets its own completed
-# run. Non-push runs share a per-ref group, so a newer run on that ref
-# supersedes the older one. Push runs are keyed by run_id here, matching
-# dezren39/nix PR #495.
+# run. Scheduled runs are keyed by run_id too (#12658): the nightly
+# full-tier run is the backstop verdict for main, and a manual dispatch
+# must never cancel it silently. Manual dispatch runs share a per-ref
+# group, so a newer dispatch on that ref supersedes the older one.
+# Push runs are keyed by run_id here, matching dezren39/nix PR #495.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.run_id || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -274,12 +289,14 @@ jobs:
   # schedule and manual dispatch. Pushes use the guard plus the affected-
   # check matrix from id-pr-checks.txt instead. The full check includes
   # the heavy checks excluded from that matrix; id-e2e-nightly.yml remains
-  # an independent nightly backstop.
+  # an independent nightly backstop. Timeouts sized in #12658: the check
+  # step measured ~4h43m on the sibling nightly (run 45038327413), so
+  # the job allows 360 and the step 330 (see the step comment below).
   full-flake-check:
     name: "full (main tier): nix flake check"
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v7
       # Source-snapshot integrity guard (#1569): see check_each above.
@@ -318,5 +335,41 @@ jobs:
             exit 2
           fi
           .github/scripts/check-id-source-snapshot.sh verify "$GITHUB_WORKSPACE" "$RUNNER_TEMP/id-source-manifest.txt" "$src"
+      # Watchdog + log capture (#12658, mirroring id-e2e-nightly.yml's
+      # #1372 shape): heartbeat every 5 minutes naming the phase,
+      # output tee'd to flake-check.log (uploaded below even when the
+      # job is cancelled), step timeout 330 < job timeout 360 so the
+      # always() upload still runs and an overrun concludes as a named
+      # failure of this step, not a silent job cancellation.
       - name: Run full nix flake check
-        run: nix flake check ./pkgs/id/ -L --keep-going
+        timeout-minutes: 330
+        run: |
+          set -uo pipefail
+          set +e
+          PHASE_FILE="$RUNNER_TEMP/id-check-phase"
+          echo "full flake check" > "$PHASE_FILE"
+          # setsid + process-group kill: a plain kill of the loop would
+          # orphan its current `sleep`, which inherits the step's stdout
+          # pipe and can hold the step open until the sleep expires.
+          setsid bash -c '
+            while true; do
+              sleep 300
+              echo "[id-check-watchdog] still running: phase=$(cat "$1" 2>/dev/null || echo unknown), watchdog elapsed ${SECONDS}s"
+            done
+          ' _ "$PHASE_FILE" &
+          WATCHDOG=$!
+          trap 'kill -TERM -"$WATCHDOG" 2>/dev/null || true' EXIT
+
+          nix flake check ./pkgs/id/ -L --keep-going 2>&1 | tee flake-check.log
+          exit "${PIPESTATUS[0]}"
+
+      # The tee'd check log as a downloadable artifact (#12658): it
+      # survives job cancellation/timeout, so the evidence for a stall
+      # or a named failure is attachable to the issue, not scrollback.
+      - name: Upload flake check log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: id-check-flake-check-log
+          path: flake-check.log
+          if-no-files-found: ignore

@@ -1,3 +1,18 @@
+//! Per-item classification records and their composition into an
+//! effective classification.
+//!
+//! A [`ClassificationRecord`] is the persisted,
+//! provenance-carrying judgement about one staged item: its
+//! sensitivity on the [`Sensitivity`] ladder, an optional
+//! exclusion disposition, and who decided it, when, and by what
+//! method. Staging persists the records beside the item (see
+//! [`crate::stage::chunk_classifications`]).
+//! [`EffectiveClassification::compose`] folds an item's records
+//! into the single value disclosure and search enforce — the
+//! strictest sensitivity wins, and any personal-life exclusion
+//! excludes — and [`crate::disclosure`] and [`crate::classify`]
+//! build on these types.
+
 use serde_json::{Map, Value as Json};
 
 use crate::filters::Sensitivity;
@@ -170,6 +185,18 @@ pub struct EffectiveClassification {
 }
 
 impl EffectiveClassification {
+    /// Build directly from a resolved sensitivity and exclusion
+    /// flag, for surfaces whose store carries the legacy label
+    /// string rather than full classification records (the search
+    /// detail rows). Composition from records ([`Self::compose`])
+    /// remains the rule wherever records exist.
+    pub fn from_parts(sensitivity: Sensitivity, excluded: bool) -> Self {
+        Self {
+            sensitivity,
+            excluded,
+        }
+    }
+
     pub fn compose<'a>(records: impl IntoIterator<Item = &'a ClassificationRecord>) -> Self {
         let mut result = Self {
             sensitivity: Sensitivity::Shareable,

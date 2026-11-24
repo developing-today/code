@@ -6,12 +6,17 @@ the PRs whose individual verdict is red; the planner's halving walk
 must return that same set. For planning, batches must partition the
 input in order. For the log, every record must carry the batch's
 command and result, because issue #12229's second acceptance
-criterion reads them back.
+criterion reads them back. The count toward ten consecutive green
+batches is the criterion's reader: a landed record names its
+consecutive-green count, bisect probes carry none, and ``status``
+reports the count against the target.
 """
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -105,10 +110,18 @@ class BatchLogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "gate-log.jsonl"
             gate.append_log(
-                path, gate.log_record(1, [101, 102], "cargo check --workspace", "green")
+                path,
+                gate.log_record(
+                    1, [101, 102], "cargo check --workspace", "green",
+                    consecutive_green=1,
+                ),
             )
             gate.append_log(
-                path, gate.log_record(2, [103], "cargo check --workspace", "red")
+                path,
+                gate.log_record(
+                    2, [103], "cargo check --workspace", "red",
+                    consecutive_green=0,
+                ),
             )
             records = gate.read_log(path)
         self.assertEqual(len(records), 2)
@@ -116,17 +129,92 @@ class BatchLogTests(unittest.TestCase):
         self.assertEqual(records[0]["prs"], [101, 102])
         self.assertEqual(records[0]["command"], "cargo check --workspace")
         self.assertEqual(records[0]["result"], "green")
+        self.assertEqual(records[0]["consecutive_green"], 1)
+        self.assertEqual(records[0]["probe"], False)
         self.assertEqual(records[1]["result"], "red")
+        self.assertEqual(records[1]["consecutive_green"], 0)
         for record in records:
             self.assertIn("ts", record)
 
     def test_log_round_trips_through_json_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "gate-log.jsonl"
-            gate.append_log(path, gate.log_record(1, [101], "cmd", "green"))
+            gate.append_log(
+                path,
+                gate.log_record(1, [101], "cmd", "green", consecutive_green=1),
+            )
             raw = path.read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(len(raw), 1)
         self.assertEqual(json.loads(raw[0])["prs"], [101])
+
+    def test_probe_records_carry_no_green_count(self) -> None:
+        record = gate.log_record(
+            1, [101], "cmd", "green", probe=True, consecutive_green=None
+        )
+        self.assertEqual(record["probe"], True)
+        self.assertIsNone(record["consecutive_green"])
+        with self.assertRaises(ValueError):
+            gate.log_record(
+                1, [101], "cmd", "green", probe=True, consecutive_green=1
+            )
+
+    def test_landed_record_without_a_count_is_a_usage_error(self) -> None:
+        with self.assertRaises(ValueError):
+            gate.log_record(1, [101], "cmd", "green")
+
+    def test_appended_records_advance_and_reset_the_green_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gate-log.jsonl"
+            first = gate.append_batch_record(path, 1, [101], "cmd", "green")
+            second = gate.append_batch_record(path, 2, [102], "cmd", "green")
+            probe = gate.append_batch_record(
+                path, 3, [103], "cmd", "green", probe=True
+            )
+            third = gate.append_batch_record(path, 3, [103, 104], "cmd", "red")
+            fourth = gate.append_batch_record(path, 4, [105], "cmd", "green")
+            # The probe never counted as a landed batch; read the count
+            # back from the file while the temp dir still exists.
+            filed = gate.consecutive_green(gate.read_log(path))
+        self.assertEqual(first["consecutive_green"], 1)
+        self.assertEqual(second["consecutive_green"], 2)
+        self.assertIsNone(probe["consecutive_green"])
+        self.assertEqual(third["consecutive_green"], 0)
+        self.assertEqual(fourth["consecutive_green"], 1)
+        self.assertEqual(filed, 1)
+
+    def test_status_reports_the_count_against_ten(self) -> None:
+        records = [
+            gate.log_record(1, [101], "cmd", "green", consecutive_green=1),
+            gate.log_record(2, [102], "cmd", "green", consecutive_green=2),
+            gate.log_record(
+                3, [103], "cmd", "red", probe=True, consecutive_green=None
+            ),
+            gate.log_record(3, [103], "cmd", "red", consecutive_green=0),
+        ]
+        status = gate.gate_status(records)
+        self.assertEqual(status["consecutive_green"], 0)
+        self.assertEqual(status["target"], 10)
+        self.assertEqual(status["batches"], 3)
+        self.assertEqual(status["complete"], False)
+
+        done = [
+            gate.log_record(
+                b, [100 + b], "cmd", "green", consecutive_green=b
+            )
+            for b in range(1, 11)
+        ]
+        self.assertEqual(gate.gate_status(done)["complete"], True)
+        self.assertEqual(gate.gate_status(done)["consecutive_green"], 10)
+
+    def test_status_reads_records_written_before_the_count_existed(self) -> None:
+        # Old records have no probe/consecutive_green keys; read by result.
+        records = [
+            {"batch": 1, "prs": [101], "command": "cmd", "result": "green"},
+            {"batch": 2, "prs": [102], "command": "cmd", "result": "green"},
+            {"batch": 3, "prs": [103], "command": "cmd", "result": "red"},
+        ]
+        self.assertEqual(gate.consecutive_green(records), 0)
+        self.assertEqual(gate.gate_status(records)["batches"], 3)
 
 
 class RunBatchTests(unittest.TestCase):
@@ -151,16 +239,26 @@ class RunBatchTests(unittest.TestCase):
                 return ""
 
             result = gate.run_batch(
-                [12470], 1, affected={12470: ["id-core"]},
-                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
-                git=git, shell=shell, gh=gh,
+                [12470],
+                1,
+                affected={12470: ["id-core"]},
+                log_path=Path(tmp) / "gate.jsonl",
+                repo=Path(tmp),
+                git=git,
+                shell=shell,
+                gh=gh,
             )
             self.assertEqual(result, "green")
             self.assertTrue(any(name == "shell" for name, _ in events))
-            self.assertTrue(any(name == "gh" and "merge" in args for name, args in events))
-            record, = gate.read_log(Path(tmp) / "gate.jsonl")
+            self.assertTrue(
+                any(name == "gh" and "merge" in args for name, args in events)
+            )
+            (record,) = gate.read_log(Path(tmp) / "gate.jsonl")
             self.assertEqual(record["result"], "green")
             self.assertEqual(record["prs"], [12470])
+            # A landed batch names its green count; it is not a probe.
+            self.assertEqual(record["probe"], False)
+            self.assertEqual(record["consecutive_green"], 1)
 
     def test_red_batch_bisects_merges_green_and_logs_all_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -184,22 +282,40 @@ class RunBatchTests(unittest.TestCase):
                 return int(2 in prs)
 
             result = gate.run_batch(
-                [1, 2], 7, affected={1: ["a"], 2: ["b"]},
-                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
-                git=git, shell=verdict, gh=gh,
+                [1, 2],
+                7,
+                affected={1: ["a"], 2: ["b"]},
+                log_path=Path(tmp) / "gate.jsonl",
+                repo=Path(tmp),
+                git=git,
+                shell=verdict,
+                gh=gh,
             )
             self.assertEqual(result, "red")
             records = gate.read_log(Path(tmp) / "gate.jsonl")
-            self.assertEqual([(r["prs"], r["result"]) for r in records],
-                             [([1, 2], "red"), ([1], "green"), ([2], "red")])
+            self.assertEqual(
+                [(r["prs"], r["result"]) for r in records],
+                [([1, 2], "red"), ([1], "green"), ([2], "red")],
+            )
+            # Only the whole-batch verdict counts: the root red resets the
+            # count to 0, and the bisect probes carry no count at all.
+            self.assertEqual(
+                [(r["probe"], r["consecutive_green"]) for r in records],
+                [(False, 0), (True, None), (True, None)],
+            )
+            self.assertEqual(gate.consecutive_green(records), 0)
             self.assertTrue(any("merge" in args and "1" in args for args in gh_calls))
             self.assertFalse(any("merge" in args and "2" in args for args in gh_calls))
 
     def test_gate_off_runs_nothing(self) -> None:
         with mock.patch.dict(os.environ, {"ID_GATE_OFF": "1"}):
             result = gate.run_batch(
-                [1], 1, affected={}, log_path=Path("unused.jsonl"),
-                repo=Path("."), git=lambda *a, **k: self.fail("git ran"),
+                [1],
+                1,
+                affected={},
+                log_path=Path("unused.jsonl"),
+                repo=Path("."),
+                git=lambda *a, **k: self.fail("git ran"),
                 shell=lambda *a, **k: self.fail("shell ran"),
                 gh=lambda *a, **k: self.fail("gh ran"),
             )
@@ -219,9 +335,14 @@ class RunBatchTests(unittest.TestCase):
                 return ""
 
             result = gate.run_batch(
-                [1, 2], 8, affected={1: [], 2: []},
-                log_path=Path(tmp) / "gate.jsonl", repo=Path(tmp),
-                git=lambda *args, **kwargs: "", shell=shell, gh=gh,
+                [1, 2],
+                8,
+                affected={1: [], 2: []},
+                log_path=Path(tmp) / "gate.jsonl",
+                repo=Path(tmp),
+                git=lambda *args, **kwargs: "",
+                shell=shell,
+                gh=gh,
             )
             self.assertEqual(result, "red")
             self.assertEqual(merges, [])
@@ -265,8 +386,49 @@ class DevShellRunnerTests(unittest.TestCase):
         self.assertEqual(argv[-3:], ["bash", "-c", command])
 
     def test_runner_propagates_the_exit_code(self) -> None:
-        argv = self.invoke("cargo check --workspace", Path("/candidate"), returncode=101)
+        argv = self.invoke(
+            "cargo check --workspace", Path("/candidate"), returncode=101
+        )
         self.assertEqual(argv[0], "nix")
+
+
+class StatusCommandTests(unittest.TestCase):
+    def test_status_command_prints_the_count_as_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gate.jsonl"
+            gate.append_batch_record(path, 1, [101], "cmd", "green")
+            gate.append_batch_record(path, 2, [102], "cmd", "green")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = gate.main(["status", "--file", str(path)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            {
+                "consecutive_green": 2,
+                "target": 10,
+                "batches": 2,
+                "complete": False,
+            },
+        )
+
+    def test_log_command_appends_a_counted_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gate.jsonl"
+            rc = gate.main(
+                [
+                    "log",
+                    "--file", str(path),
+                    "--batch", "1",
+                    "--prs", "101",
+                    "--command", "cmd",
+                    "--result", "green",
+                ]
+            )
+            (record,) = gate.read_log(path)
+        self.assertEqual(rc, 0)
+        self.assertEqual(record["consecutive_green"], 1)
+        self.assertEqual(record["probe"], False)
 
 
 if __name__ == "__main__":

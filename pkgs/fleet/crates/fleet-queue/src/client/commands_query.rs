@@ -255,10 +255,16 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
             "worker",
             "task",
         ],
-        &[],
+        &["json"],
     );
     reject_extra_pos("list", &args, 0);
     let queue = opt_queue_scoped(&args);
+    // #8581 exact-task status pilot: --json with --queue + --task
+    // is a different read, not a rendering of this listing — one
+    // scoped broker read, one JSON record, no paging.
+    if args.has("json") {
+        return cmd_list_exact_status(&args, queue);
+    }
     if let Some(note) = bare_list_note(&args, queue.as_deref()) {
         eprintln!("repo-queue: {note}");
     }
@@ -1371,4 +1377,223 @@ pub(super) fn cmd_models(rest: &[String]) -> i32 {
         );
     }
     0
+}
+
+/// Whether a broker/transport error message names an access
+/// denial, as opposed to an unavailable or failing store (#8581
+/// pilot: a denial is reported as its own detail — it is never
+/// retried under another identity and never reads as absence).
+fn denial_shaped(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    ["unauthorized", "denied", "forbidden", "permission"]
+        .iter()
+        .any(|w| m.contains(w))
+}
+
+/// Stamp the outcome triple (mode, route, result) on the pilot
+/// record.
+fn exact_outcome(record: &mut Value, mode: &str, route: &str, result: &str) {
+    record["mode"] = json!(mode);
+    record["route"] = json!(route);
+    record["result"] = json!(result);
+}
+
+/// #8581 exact-task status pilot (read-only first slice): the
+/// dispatcher for `list --json`. Both selectors are required —
+/// the JSON form is defined as the exact read, never as a
+/// rendering of the bulk listing — and the bulk narrowing flags
+/// do not apply to it: the one scoped read is named by queue +
+/// task alone, and a silently ignored flag would misstate what
+/// was asked. Exactly one broker read follows; the verb prints
+/// the single record [`exact_task_status`] builds and returns
+/// its exit code. Nothing here writes.
+fn cmd_list_exact_status(args: &Args, queue: Option<String>) -> i32 {
+    let Some(queue) = queue else {
+        usage_error(
+            "list",
+            "--json exact status requires --queue <name> and --task <id>",
+        );
+    };
+    let Some(task_id) = args.get_i64("task") else {
+        usage_error(
+            "list",
+            "--json exact status requires --queue <name> and --task <id>",
+        );
+    };
+    for flag in ["status", "limit", "not-before", "lane", "worker"] {
+        if args.get(flag).is_some() {
+            usage_error(
+                "list",
+                &format!(
+                    "--json exact status takes only --queue and --task; --{flag} does not apply"
+                ),
+            );
+        }
+    }
+    let resp = call_result(
+        "/list",
+        &json!({"rich": true, "queue": queue, "task": task_id, "limit": 1}),
+    );
+    let (record, code) = exact_task_status(&queue, task_id, resp, &utcnow_iso());
+    print_json(&record);
+    code
+}
+
+/// Pure core of the #8581 exact-task status pilot: fold the one
+/// scoped /list result into the single emitted record and the
+/// verb's exit code.
+///
+/// The record names the verb, the mode and the route actually
+/// used (the #8581 contract vocabulary, via the mode adapter),
+/// and one of four results:
+///
+/// - `found` — the authoritative reply carries the exact task;
+///   its broker row rides under `task`, attributed to `source`
+///   with the row's own `task_as_of` when the row carries a
+///   timestamp. Exit 0.
+/// - `not_found` — ONLY a complete authoritative zero: an ok
+///   reply with an empty rows array, a reported total of 0, and
+///   no truncation. Exit 1 (the client's not-found class, the
+///   one `show` uses).
+/// - `partial` — a reply arrived but cannot certify the answer:
+///   a window smaller than the matching set (`truncated_reply`),
+///   a zero whose total was never reported
+///   (`total_unreported`), or a complete reply naming other
+///   tasks — the broker did not scope the read
+///   (`unscoped_reply`). Exit 3.
+/// - `unknown` — nothing trustworthy was learned: the transport
+///   never produced an envelope (`unavailable`), access was
+///   denied (`denied`), the broker returned an error envelope
+///   (`broker_error`), the reply was malformed
+///   (`malformed_reply`), or the matching row names a different
+///   queue than the one asked about (`identity_mismatch`).
+///   Exit 3, or the broker envelope's own exit for
+///   `broker_error` (the unwrap parity the text verbs use).
+///
+/// No outcome other than the certified zero is ever reported as
+/// absence. When no route served, the record says so plainly:
+/// mode `db-degraded`, route `unavailable` — this slice attempts
+/// no replica or marker fallback, so it names none.
+pub(crate) fn exact_task_status(
+    queue: &str,
+    task_id: i64,
+    resp: Result<Value, (i32, String)>,
+    observed_at: &str,
+) -> (Value, i32) {
+    let mut record = json!({
+        "verb": "list",
+        "queue": queue,
+        "task_id": task_id,
+        "as_of": observed_at,
+    });
+    match resp {
+        Err((_code, msg)) => {
+            // The transport produced no envelope: the broker path
+            // is unavailable, or the token was rejected at the
+            // proxy leg. Nothing was read.
+            let detail = if denial_shaped(&msg) {
+                "denied"
+            } else {
+                "unavailable"
+            };
+            exact_outcome(
+                &mut record,
+                crate::work::degraded::Mode::DbDegraded.label(),
+                "unavailable",
+                "unknown",
+            );
+            record["detail"] = json!(detail);
+            record["error"] = json!(msg);
+            (record, 3)
+        }
+        Ok(env) if env.get("ok").and_then(Value::as_bool) == Some(false) => {
+            let msg = env
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("queue-broker error")
+                .to_string();
+            let code = env.get("exit").and_then(Value::as_i64).unwrap_or(4) as i32;
+            let detail = if denial_shaped(&msg) {
+                "denied"
+            } else {
+                "broker_error"
+            };
+            exact_outcome(
+                &mut record,
+                crate::work::degraded::Mode::DbDegraded.label(),
+                "unavailable",
+                "unknown",
+            );
+            record["detail"] = json!(detail);
+            record["error"] = json!(msg);
+            (record, code)
+        }
+        Ok(env) => {
+            // The broker answered: the cloud route served.
+            let line = mode_line_for("list", legs_served(true, true));
+            let (mode, route) = (line.mode.label(), line.route);
+            record["source"] = json!("cloud");
+            if env.get("ok").and_then(Value::as_bool) != Some(true) {
+                exact_outcome(&mut record, mode, route, "unknown");
+                record["detail"] = json!("malformed_reply");
+                record["error"] = json!(
+                    "queue-broker /list reply carried no ok flag — refusing to read it as an answer"
+                );
+                return (record, 3);
+            }
+            let rows = match list_rows(&env) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    exact_outcome(&mut record, mode, route, "unknown");
+                    record["detail"] = json!("malformed_reply");
+                    record["error"] = json!(e);
+                    return (record, 3);
+                }
+            };
+            if let Some(row) = rows
+                .iter()
+                .find(|r| r.get("id").and_then(Value::as_i64) == Some(task_id))
+            {
+                if let Some(row_queue) = row.get("queue").and_then(Value::as_str) {
+                    if row_queue != queue {
+                        exact_outcome(&mut record, mode, route, "unknown");
+                        record["detail"] = json!("identity_mismatch");
+                        record["error"] = json!(format!(
+                            "the matching row names queue {row_queue:?}, not the requested {queue:?}"
+                        ));
+                        return (record, 3);
+                    }
+                }
+                exact_outcome(&mut record, mode, route, "found");
+                if let Some(ts) = row
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .or_else(|| row.get("created_at").and_then(Value::as_str))
+                {
+                    record["task_as_of"] = json!(ts);
+                }
+                record["task"] = row.clone();
+                return (record, 0);
+            }
+            let total = list_total(&env);
+            let truncated = env
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if rows.is_empty() && total == Some(0) && !truncated {
+                exact_outcome(&mut record, mode, route, "not_found");
+                return (record, 1);
+            }
+            let detail = if truncated || total.map(|t| t > rows.len() as i64).unwrap_or(false) {
+                "truncated_reply"
+            } else if rows.is_empty() && total.is_none() {
+                "total_unreported"
+            } else {
+                "unscoped_reply"
+            };
+            exact_outcome(&mut record, mode, route, "partial");
+            record["detail"] = json!(detail);
+            (record, 3)
+        }
+    }
 }

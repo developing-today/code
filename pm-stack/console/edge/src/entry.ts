@@ -7,7 +7,7 @@
 // file of the app, fetch the host's key, or pass the request to the host
 // behind the tunnel. If the host cannot be reached, an action that may
 // be done late is handed back to the state to hold.
-import { SECURITY } from "../../src/http.ts";
+import { SECURITY, sameEntity } from "../../src/http.ts";
 
 export interface Io {
   /** The object with the state (edge.ts). */
@@ -100,7 +100,7 @@ export async function route(request: Request, io: Io): Promise<Response> {
     });
   }
 
-  const forHost = request.clone();
+  const forHost = request.clone() as Request;
   let res = await io.state(request);
   let what = res.headers.get("x-pm-next");
 
@@ -134,9 +134,21 @@ export async function route(request: Request, io: Io): Promise<Response> {
   if (what === "asset") {
     const file = await io.asset(String(detail.path));
     if (!file.ok) return new Response("not found", { status: 404, headers: SECURITY });
-    return new Response(request.method === "HEAD" ? null : file.body, {
-      headers: { "Content-Type": String(detail.type), "Cache-Control": "no-cache", ...SECURITY },
-    });
+    // "no-cache" is "ask before using your copy". The file's tag is what
+    // the browser asks with; when its copy is still the file, the answer
+    // is that and nothing else, so a visit does not download the app again.
+    const headers: Record<string, string> = {
+      "Content-Type": String(detail.type),
+      "Cache-Control": "no-cache",
+      ...SECURITY,
+    };
+    const etag = file.headers.get("etag");
+    if (etag) headers.ETag = etag;
+    if (sameEntity(request.headers.get("if-none-match"), etag)) {
+      await file.body?.cancel();
+      return new Response(null, { status: 304, headers });
+    }
+    return new Response(request.method === "HEAD" ? null : file.body, { headers });
   }
 
   // Everything below is for the host. Away from the routed hostname
@@ -156,7 +168,9 @@ export async function route(request: Request, io: Io): Promise<Response> {
     const body = (await answer.json().catch(() => null)) as Record<string, unknown> | null;
     if (body === null) return offline("the host's answer could not be read");
     const { sections, acts, ...rest } = body;
-    if (sections !== undefined || acts !== undefined) await tell("/internal/relayed", { sections, acts });
+    // The relayed name is settled even when the host read nothing new:
+    // a hold left behind by a lost answer for the same name is dropped.
+    await tell("/internal/relayed", { sections, acts, id: detail.id });
     const headers = new Headers(answer.headers);
     headers.delete("content-length");
     headers.delete("content-encoding");

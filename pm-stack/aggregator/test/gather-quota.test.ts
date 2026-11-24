@@ -917,3 +917,111 @@ test("a persistent Claude 429 retains the last good row marked rate_limited, nev
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the tick publishes the Stage-3 forecast product beside quota-current.json (#12695)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gather-quota-forecast-"));
+
+  try {
+    const currentPath = join(dir, "quota-current.json");
+    const heartbeatPath = join(dir, "quota-gatherer-heartbeat.json");
+    const statePath = join(dir, "quota-gatherer-state.json");
+    const snapshotsDir = join(dir, "snapshots");
+    const subcommandPath = join(dir, "quota-subcommand.mjs");
+    const now = Date.now();
+    const HOUR = 3_600_000;
+    const resetMs = now + 10 * HOUR;
+    const resetIso = new Date(resetMs).toISOString();
+
+    // Seed the snapshot store with a clean 10 pts/h burn for
+    // cline-pass/weekly in the same reset period: 40/50/60 at
+    // 3/2/1 h ago. The tick's own read (70) completes the series.
+    await mkdir(snapshotsDir, { recursive: true });
+    const month = new Date(now).toISOString().slice(0, 7);
+    const seed = [3, 2, 1]
+      .map((h) =>
+        JSON.stringify({
+          ts: new Date(now - h * HOUR).toISOString(),
+          serviceId: "cline-pass",
+          metricId: "weekly",
+          value: 70 - h * 10,
+          unit: "pct",
+          limit: 100,
+          resetsAt: resetIso,
+          source: "api",
+          observedBy: "quota-gatherer",
+        }),
+      )
+      .join("\n");
+    await writeFile(join(snapshotsDir, `usage-${month}.jsonl`), `${seed}\n`, "utf8");
+
+    const providerResult = {
+      providerId: "cline-pass",
+      providerName: "ClinePass",
+      ok: true,
+      configured: true,
+      fetchedAt: now,
+      usage: { windows: { weekly: { usedPercent: 70, windowSeconds: 604_800, resetAt: resetMs } } },
+    };
+    await writeFile(subcommandPath, `console.log(${JSON.stringify(JSON.stringify([providerResult]))});\n`, "utf8");
+
+    const result = spawnSync(process.execPath, [GATHERER_SCRIPT], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 30_000,
+      env: {
+        PATH: process.env.PATH ?? "",
+        HOME: dir,
+        QUOTA_CURRENT_PATH: currentPath,
+        QUOTA_HEARTBEAT_PATH: heartbeatPath,
+        QUOTA_GATHERER_STATE_PATH: statePath,
+        QUOTA_SNAPSHOTS_DIR: snapshotsDir,
+        QUOTA_SUBCOMMAND: `${process.execPath} ${subcommandPath}`,
+        QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
+        OPENDESIGN_RENEWAL_DISABLED: "1",
+        META_RENEWAL_DISABLED: "1",
+        TURSO_QUOTA_SINK: "0",
+      },
+    });
+
+    if (result.error || result.status !== 0) {
+      throw new Error(`gatherer failed: ${result.error?.message ?? result.stderr}\n${result.stdout}`);
+    }
+    expect(result.stdout).toContain("forecast wrote");
+
+    const forecast = JSON.parse(await readFile(join(dir, "quota-forecast.json"), "utf8"));
+    expect(forecast.version).toBe(1);
+    expect(forecast.source).toBe("gather-quota");
+    const pool = forecast.pools["cline-pass"]?.find((p: { serviceId: string }) => p.serviceId === "cline-pass");
+    expect(pool).toBeDefined();
+    const weekly = pool.windows.find((w: { name: string }) => w.name === "weekly");
+    // The oracle's verdict on this series: 10 pts/h from 70% walls
+    // in ~3 h, before the reset 10 h out.
+    expect(weekly.state).toBe("projected");
+    expect(weekly.samples).toBeGreaterThanOrEqual(3);
+    expect(weekly.ratePtsPerHour).toBeGreaterThan(5);
+    expect(weekly.pctNow).toBe(70);
+    expect(weekly.resetsAt).toBe(resetIso);
+    expect(weekly.projectedWallAt).toBeGreaterThan(now - 60_000);
+    expect(weekly.projectedWallAt).toBeLessThan(resetMs);
+    expect(weekly.wallsBeforeReset).toBe(true);
+
+    // C4.1 (#13257): the same tick appends the complete-downtime
+    // prediction record to the C4 log beside the forecast product.
+    // The fixture's single pool walls before its reset, so the
+    // all-pools-walled interval is that pool's own wall interval.
+    const predictions = (await readFile(join(dir, "quota-predictions.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const downtime = predictions.filter((r: { kind: string }) => r.kind === "downtime_window");
+    expect(downtime).toHaveLength(1);
+    expect(downtime[0].subject.pools).toEqual(["cline-pass"]);
+    expect(downtime[0].state).toBe("predicted");
+    expect(downtime[0].basis.name).toBe("since_last_reset");
+    expect(downtime[0].prediction.earliest).toBe(new Date(weekly.projectedWallAt).toISOString());
+    expect(downtime[0].prediction.latest).toBe(resetIso);
+    expect(typeof downtime[0].prediction.rendered).toBe("string");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

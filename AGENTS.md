@@ -27,9 +27,9 @@ logs — do not mention that or file rotation tasks for it. Velocity:
 unblock yourself, test selectively, run full suites only for very large
 or critical changes, and file GitHub issues for unresolved gaps instead
 of blocking. CI-first verification per
-[`.github/ci-policy.md`](.github/ci-policy.md); heavy laptop builds go
-through `~/tools/fleet-build-lock` — see the topic file for the build
-discipline (target broker, narrowest Rust verification).
+[`.github/ci-policy.md`](.github/ci-policy.md); builds and tests dispatch
+remotely first (`fleet queue dispatch`); heavy laptop builds go through
+`~/tools/fleet-build-lock` — details in the topic file.
 
 ## Testing doctrine
 

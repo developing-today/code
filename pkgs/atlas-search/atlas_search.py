@@ -21,6 +21,16 @@ cut the scan. The bge-small set remains in the publish as a dormant
 fallback (--model BAAI/bge-small-en-v1.5 --vec-table
 vec_bge_small_384_f32 --embedder fastembed).
 
+Recorded-row note (#13283): the #5733 gate's verdict record
+(eval/gate-5733-results.md) records a different golden-311 row —
+recall@10 183/311, MRR 0.3640 — under the same "production hybrid"
+label. That row belongs to the Python eval lineage's configuration
+(branch depth 30, RRF k=60, vectors truncated to 384 dimensions),
+not to this production shape (k=10, pool 100 per branch, full 768
+dimensions). The two rows are different configurations, not a
+measurement error; a golden-311 number cited without its
+configuration is incomplete.
+
 Privacy model (docs/atlas-provenance-and-scale-design-2026-10-31.md):
 sensitivity is a caller ceiling, not a display hint. The default ceiling
 is `personal` — local-only and secret-bearing chunks are excluded
@@ -87,12 +97,14 @@ A/B modes; scan remains the default.
 
 import argparse
 import base64
+import concurrent.futures
 import json
 import os
 import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -107,9 +119,38 @@ QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 VEC_TABLE = "vec_snowflake_m_v2_768_f32"
 RRF_K = 10
 SENS_ORDER = ["shareable", "personal", "local-only", "secret-bearing"]
+DISCLOSURE_CONTEXT_CEILINGS = {
+    "fleet-internal": "local-only",
+    "hosted-per-user": "personal",
+    "public-surface": "shareable",
+    "local-owner": "secret-bearing",
+}
+EXCLUDED_DISPOSITION = "excluded_personal_life"
 BWS_TOKEN_NAMES = ["turso.atlas-ro-token", "turso.atlas-read-only-token", "atlas-ro"]
 TOKEN_CACHE = os.path.expanduser("~/.cache/atlas-search/turso-token.json")
 MESSAGE_TEXT_CAP = 50000
+
+
+def effective_sensitivity_ceiling(context, caller_ceiling):
+    """Intersect the caller grant with the destination context.
+
+    Unknown contexts fail closed to the public-surface ceiling, matching
+    atlas-core's outbound default.
+    """
+    context_ceiling = DISCLOSURE_CONTEXT_CEILINGS.get(context, "shareable")
+    if caller_ceiling not in SENS_ORDER:
+        return "shareable"
+    return min((context_ceiling, caller_ceiling), key=SENS_ORDER.index)
+
+
+def disclosure_allows(classification, ceiling):
+    """Return whether a raw classification may cross this disclosure boundary."""
+    if classification == EXCLUDED_DISPOSITION or classification not in SENS_ORDER:
+        return False
+    return ceiling in SENS_ORDER and SENS_ORDER.index(
+        classification
+    ) <= SENS_ORDER.index(ceiling)
+
 
 for _k in ("NO_PROXY", "no_proxy"):
     if "[" in os.environ.get(_k, ""):
@@ -338,12 +379,39 @@ class LocalBackend:
         self.db_path = db_path
         self.vec_table = vec_table
         self.trunc = trunc
-        self.con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        self.con.row_factory = sqlite3.Row
         self.notes = []
+        # One sqlite connection per thread (the con property below):
+        # the TEMP views of _setup_views and the ATTACHes of
+        # load_matrix are per-connection state, and hybrid search runs
+        # its branches on worker threads (#12900 thread 1), which must
+        # never share a connection.
+        self._tls = threading.local()
+        self._home_thread = threading.current_thread()
+        _ = self.con  # the home thread's connection, built eagerly
         self._setup_views()
         self._vec_sources = self._find_vec_sources(vecdb_arg)
         self._matrix = None  # (ids list, numpy matrix, id->row index)
+
+    @property
+    def con(self):
+        """The calling thread's sqlite connection. First touch on a
+        new thread opens a fresh connection and replays _setup_views
+        on it (TEMP views/tables and the aux ATTACH do not cross
+        connections). Setup notes can therefore append once per
+        connection; run_search folds backend notes with dedup, so the
+        repeats never surface."""
+        con = getattr(self._tls, "con", None)
+        if con is None:
+            con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+            con.row_factory = sqlite3.Row
+            self._tls.con = con
+            if threading.current_thread() is not self._home_thread:
+                self._setup_views()
+        return con
+
+    @con.setter
+    def con(self, value):
+        self._tls.con = value
 
     # -- schema normalization: temp views give the queries one shape
     #    whether the file is a publish copy (labels+sensitivity+vecs) or
@@ -592,30 +660,36 @@ class LocalBackend:
 # ------------------------------------------------------------ filters -----
 class Filters:
     def __init__(self, args):
-        self.kinds = split_csv(args.kind)
-        self.topics = split_csv(args.topic)
-        self.projects = split_csv(args.project)
-        self.clients = split_csv(args.client)
-        if args.max_sensitivity not in SENS_ORDER:
+        self.kinds = split_csv(getattr(args, "kind", None))
+        self.topics = split_csv(getattr(args, "topic", None))
+        self.projects = split_csv(getattr(args, "project", None))
+        self.clients = split_csv(getattr(args, "client", None))
+        self.context = getattr(args, "context", "local-owner")
+        caller_ceiling = getattr(args, "max_sensitivity", "secret-bearing")
+        if caller_ceiling not in SENS_ORDER:
             die(f"--max-sensitivity must be one of {SENS_ORDER}")
-        self.max_sensitivity = args.max_sensitivity
-        self.allowed_sens = SENS_ORDER[: SENS_ORDER.index(args.max_sensitivity) + 1]
-        self.since = args.since
+        self.max_sensitivity = caller_ceiling
+        self.effective_ceiling = effective_sensitivity_ceiling(
+            self.context, caller_ceiling
+        )
+        self.allowed_sens = SENS_ORDER[: SENS_ORDER.index(self.effective_ceiling) + 1]
+        self.since = getattr(args, "since", None)
         self.until = None
-        if args.until:
+        until = getattr(args, "until", None)
+        if until:
             try:
-                d = date.fromisoformat(args.until)
+                d = date.fromisoformat(until)
             except ValueError:
-                die(f"--until must be YYYY-MM-DD, got {args.until}")
+                die(f"--until must be YYYY-MM-DD, got {until}")
             self.until_exclusive = (d + timedelta(days=1)).isoformat()
-            self.until = args.until
+            self.until = until
         else:
             self.until_exclusive = None
-        if args.since:
+        if self.since:
             try:
-                date.fromisoformat(args.since)
+                date.fromisoformat(self.since)
             except ValueError:
-                die(f"--since must be YYYY-MM-DD, got {args.since}")
+                die(f"--since must be YYYY-MM-DD, got {self.since}")
 
     def where(self, be):
         """SQL fragment + params, assuming aliases c/m/s/l and the
@@ -886,6 +960,51 @@ def turso_index_branch(be, filters, qvec_json, pool, vbackend):
     return [(cid, dist.get(cid)) for cid in survivors]
 
 
+class _BranchExit(Exception):
+    """A branch's die() (SystemExit), ferried to the calling thread."""
+
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def run_branches(named):
+    """Run a search's branch callables; return {name: ranked list}.
+
+    A hybrid query's branches are independent and join only at RRF
+    fusion (#12900 thread 1), so with two or more branches they run
+    concurrently on a thread pool and are collected by name — fusion
+    order, and therefore the output envelope, is unchanged. A single
+    branch runs inline, keeping the fts-only / vector-only shapes
+    exactly as before. die() in a branch raises SystemExit in the
+    worker thread; it is ferried back and re-raised here, on the
+    calling thread, so a branch failure exits the same way the serial
+    shape's did."""
+
+    def guarded(fn):
+        def call():
+            try:
+                return fn()
+            except SystemExit as e:
+                raise _BranchExit(e.code) from None
+
+        return call
+
+    if len(named) < 2:
+        return {name: guarded(fn)() for name, fn in named.items()}
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(named))
+    try:
+        futures = {ex.submit(guarded(fn)): name for name, fn in named.items()}
+        out = {}
+        for fut in concurrent.futures.as_completed(futures):
+            out[futures[fut]] = fut.result()
+        return out
+    except _BranchExit as e:
+        raise SystemExit(e.code) from None
+    finally:
+        ex.shutdown(wait=False)
+
+
 def run_search(be, args):
     vbackend = getattr(args, "vector_backend", "scan")
     if (
@@ -923,23 +1042,53 @@ def run_search(be, args):
         )
     if isinstance(be, TursoBackend):
         if vbackend == "scan" or qvec_json is None:
-            stmts = branch_queries(be, filters, match_expr, qvec_json, args.pool)
-            results = be.pipeline(stmts)
-            i = 0
+            # One pipeline per branch, run concurrently: a single
+            # pipeline executes its statements sequentially
+            # server-side, so the batched shape serialized the two
+            # branches against each other (#12900 thread 1).
+
+            def turso_scan_fts():
+                stmts = branch_queries(be, filters, match_expr, None, args.pool)
+                if not stmts:
+                    return []
+                return [(r["cid"], None) for r in be.pipeline(stmts)[0]]
+
+            def turso_scan_vec():
+                stmts = branch_queries(be, filters, None, qvec_json, args.pool)
+                if not stmts:
+                    return []
+                return [(r["cid"], r["dist"]) for r in be.pipeline(stmts)[0]]
+
+            branches = {}
             if match_expr is not None:
-                fts_ranked = [(r["cid"], None) for r in results[i]]
-                i += 1
+                branches["fts"] = turso_scan_fts
             if qvec_json is not None:
-                vec_ranked = [(r["cid"], r["dist"]) for r in results[i]]
+                branches["vec"] = turso_scan_vec
+            got = run_branches(branches)
+            fts_ranked = got.get("fts", [])
+            vec_ranked = got.get("vec", [])
         else:
-            fts_stmts = branch_queries(be, filters, match_expr, None, args.pool)
-            if fts_stmts:
-                fts_ranked = [(r["cid"], None) for r in be.pipeline(fts_stmts)[0]]
-            vec_ranked = turso_index_branch(be, filters, qvec_json, args.pool, vbackend)
+
+            def turso_index_fts():
+                fts_stmts = branch_queries(be, filters, match_expr, None, args.pool)
+                if not fts_stmts:
+                    return []
+                return [(r["cid"], None) for r in be.pipeline(fts_stmts)[0]]
+
+            branches = {}
+            if match_expr is not None:
+                branches["fts"] = turso_index_fts
+            branches["vec"] = lambda: turso_index_branch(
+                be, filters, qvec_json, args.pool, vbackend
+            )
+            got = run_branches(branches)
+            fts_ranked = got.get("fts", [])
+            vec_ranked = got.get("vec", [])
     else:
         where, params = filters.where(be)
         joins = filters.joins(be)
-        if match_expr is not None:
+
+        def local_fts():
             rows = be.execute(
                 "SELECT c.id AS cid FROM chunks c "
                 "JOIN chunks_fts f ON f.rowid = c.id "
@@ -948,18 +1097,28 @@ def run_search(be, args):
                 "ORDER BY bm25(chunks_fts) LIMIT ?",
                 [match_expr, *params, args.pool],
             )
-            fts_ranked = [(r["cid"], None) for r in rows]
-        if qvec is not None:
+            return [(r["cid"], None) for r in rows]
+
+        def local_vec():
             allowed = {
                 r["cid"]
                 for r in be.execute(
                     f"SELECT c.id AS cid FROM chunks c {joins} WHERE {where}", params
                 )
             }
-            vec_ranked = [
+            return [
                 (cid, 1.0 - sim)
                 for cid, sim in be.vector_search(qvec, allowed, args.pool)
             ]
+
+        branches = {}
+        if match_expr is not None:
+            branches["fts"] = local_fts
+        if qvec is not None:
+            branches["vec"] = local_vec
+        got = run_branches(branches)
+        fts_ranked = got.get("fts", [])
+        vec_ranked = got.get("vec", [])
 
     # Reciprocal rank fusion, k=10 (production shape, decided 2026-10-31).
     fused = {}
@@ -1021,10 +1180,14 @@ def result_entry(be, args, fused_entry, d, vec_dist):
     }
     if cid in vec_dist and vec_dist[cid] is not None:
         entry["vector_distance"] = round(vec_dist[cid], 6)
+    ceiling = effective_sensitivity_ceiling(
+        getattr(args, "context", "local-owner"),
+        getattr(args, "max_sensitivity", "secret-bearing"),
+    )
     if args.expand:
-        entry["context"] = neighbor_map(be, d, args.expand)
+        entry["context"] = neighbor_map(be, d, args.expand, ceiling)
     if args.with_message:
-        entry["message"] = message_obj(be, d)
+        entry["message"] = message_obj(be, d, ceiling)
     return entry
 
 
@@ -1090,9 +1253,17 @@ def grouped_output(be, args, filters, ranked, vec_dist, notes):
             if e["chunk_id"] in vec_dist and vec_dist[e["chunk_id"]] is not None:
                 ce["vector_distance"] = round(vec_dist[e["chunk_id"]], 6)
             if args.expand:
-                ce["context"] = neighbor_map(be, d, args.expand)
+                ceiling = effective_sensitivity_ceiling(
+                    getattr(args, "context", "local-owner"),
+                    getattr(args, "max_sensitivity", "secret-bearing"),
+                )
+                ce["context"] = neighbor_map(be, d, args.expand, ceiling)
             if args.with_message:
-                ce["message"] = message_obj(be, d)
+                ceiling = effective_sensitivity_ceiling(
+                    getattr(args, "context", "local-owner"),
+                    getattr(args, "max_sensitivity", "secret-bearing"),
+                )
+                ce["message"] = message_obj(be, d, ceiling)
             chunks.append(ce)
         results.append(
             {
@@ -1143,31 +1314,59 @@ def fetch_details(be, chunk_ids):
     rows = be.execute(sql, list(chunk_ids))
     out = {}
     for r in rows:
-        r["eff_sensitivity"] = r.get("chunk_sensitivity") or r.get("l_sensitivity")
+        chunk_sensitivity = r.get("chunk_sensitivity")
+        r["eff_sensitivity"] = (
+            r.get("l_sensitivity") if chunk_sensitivity is None else chunk_sensitivity
+        )
         out[r["chunk_id"]] = r
     return out
 
 
-def neighbor_map(be, d, n):
+def neighbor_map(be, d, n, ceiling="secret-bearing"):
     rows = be.execute(
         "SELECT id, chunk_idx, text FROM chunks WHERE message_id = ? "
         "AND chunk_idx BETWEEN ? AND ? ORDER BY chunk_idx",
         [d["message_id"], d["chunk_idx"] - n, d["chunk_idx"] + n],
     )
+    details = fetch_details(be, [r["id"] for r in rows])
+    allowed = {
+        r["id"]
+        for r in rows
+        if (detail := details.get(r["id"]))
+        # Output authorization is based on the chunk's own classification.
+        # Session labels are metadata, not a fallback grant for an unclassified
+        # chunk at a destination boundary.
+        and disclosure_allows(detail.get("chunk_sensitivity"), ceiling)
+    }
     before = [
         {"chunk_id": r["id"], "text": r["text"]}
         for r in rows
-        if r["chunk_idx"] < d["chunk_idx"]
+        if r["chunk_idx"] < d["chunk_idx"] and r["id"] in allowed
     ]
     after = [
         {"chunk_id": r["id"], "text": r["text"]}
         for r in rows
-        if r["chunk_idx"] > d["chunk_idx"]
+        if r["chunk_idx"] > d["chunk_idx"] and r["id"] in allowed
     ]
     return {"before": before, "after": after}
 
 
-def message_obj(be, d):
+def message_obj(be, d, ceiling="secret-bearing"):
+    # A full message is indivisible: withhold it if any chunk in it is
+    # excluded or cannot be proven to fit the same output boundary.
+    classifications = be.execute(
+        "SELECT " + be.sens_expr + " AS sensitivity FROM chunks c "
+        "JOIN messages m ON m.id = c.message_id "
+        "JOIN sessions s ON s.id = m.session_id "
+        + f"LEFT JOIN {be.labels_table} l ON l.session_id = s.id "
+        + be.sens_join
+        + " WHERE c.message_id = ?",
+        [d["message_id"]],
+    )
+    if not classifications or any(
+        not disclosure_allows(r.get("sensitivity"), ceiling) for r in classifications
+    ):
+        return None
     rows = be.execute(
         "SELECT id, role, text FROM messages WHERE id = ?", [d["message_id"]]
     )
@@ -1186,9 +1385,12 @@ def message_obj(be, d):
 
 # ------------------------------------------------------------ get-chunk ---
 def run_get_chunk(be, args):
+    filters = Filters(args)
     details = fetch_details(be, [args.chunk_id])
     d = details.get(args.chunk_id)
-    if d is None:
+    if d is None or not disclosure_allows(
+        d.get("chunk_sensitivity"), filters.effective_ceiling
+    ):
         die(f"chunk {args.chunk_id} not found", code=1)
     out = {
         "chunk_id": d["chunk_id"],
@@ -1203,7 +1405,7 @@ def run_get_chunk(be, args):
         "session_id": d["session_id"],
     }
     if args.neighbors:
-        out["context"] = neighbor_map(be, d, args.neighbors)
+        out["context"] = neighbor_map(be, d, args.neighbors, filters.effective_ceiling)
     notes = list(getattr(be, "notes", []))
     if notes:
         out["notes"] = notes
@@ -1320,6 +1522,20 @@ def add_backend_args(p):
     )
 
 
+def add_disclosure_args(p, max_sensitivity_default):
+    p.add_argument(
+        "--context",
+        default="local-owner",
+        help="destination disclosure context (default local-owner; unknown values fail closed)",
+    )
+    p.add_argument(
+        "--max-sensitivity",
+        choices=SENS_ORDER,
+        default=max_sensitivity_default,
+        help=f"caller clearance ceiling in {'<'.join(SENS_ORDER)} (default {max_sensitivity_default})",
+    )
+
+
 def add_vector_args(p):
     p.add_argument(
         "--model",
@@ -1377,12 +1593,7 @@ def main():
     ps.add_argument("--client")
     ps.add_argument("--since", help="YYYY-MM-DD, on sessions.created_at (inclusive)")
     ps.add_argument("--until", help="YYYY-MM-DD, on sessions.created_at (inclusive)")
-    ps.add_argument(
-        "--max-sensitivity",
-        default="personal",
-        help="ceiling in shareable<personal<local-only<secret-bearing "
-        "(default personal; secret-bearing must be spelled out)",
-    )
+    add_disclosure_args(ps, "personal")
     ps.add_argument(
         "--group-by-session",
         action="store_true",
@@ -1409,6 +1620,7 @@ def main():
     pg.add_argument("chunk_id", type=int)
     pg.add_argument("--neighbors", type=int, default=0)
     pg.add_argument("--text", action="store_true")
+    add_disclosure_args(pg, "secret-bearing")
     add_backend_args(pg)
 
     args = ap.parse_args()

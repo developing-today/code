@@ -171,7 +171,11 @@ environment only):
   never starves the steps after it — every step is attempted, each
   prints an outcome line (`ok` / `FAILED` / `skipped`), the status
   summary always prints, and the script exits non-zero at the end if
-  any step failed (guarded skips are not failures). Requires
+  any step failed (guarded skips are not failures). The whole run's
+  output is tee'd to a durable log at
+  `$COLD_STORE_HOME/logs/nightly-<timestamp>.log` (`nightly-latest.log`
+  symlinks the newest), so a failed night names its failing step from
+  the file alone (#13115). Requires
   `CLOUDFLARE_API_TOKEN` in the environment
   (materialize from Bitwarden into the cron env);
   `TURSO_PLATFORM_API_TOKEN` is optional (it gates the Turso step).
@@ -186,7 +190,12 @@ environment only):
   passed 10 GB of SQL by 2026-11-20) and gets retries on transport
   failure. The whole step keeps inside
   `TURSO_EXPORT_DEADLINE_SECONDS` (default 10800): no database starts
-  once it is spent, so the nightly's later steps still run. The
+  once it is spent, so the nightly's later steps still run. Databases
+  that fail get a second pass, and download-stage failures keep
+  being retried in further passes — with a growing wait between
+  them — while the deadline still leaves room, so a transient
+  mid-transfer cut-off window can pass instead of failing the step
+  (#13115). The
   databases named in `TURSO_EXPORT_LAST` (default `atlas`) go last,
   so a slow one cannot keep the others from being filed. When
   `TURSO_PLATFORM_API_TOKEN` is

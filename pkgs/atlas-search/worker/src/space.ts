@@ -24,6 +24,21 @@ export const VEC_TABLE = "vec_snowflake_m_v2_768_f32";
 /** The one ceiling this surface may ever search under. */
 export const CEILING = "personal";
 
+/** The disclosure contexts a cached answer may be bound for (PR #12627 type layer). */
+export type DisclosureContext = "fleet-internal" | "hosted-per-user" | "public-surface" | "local-owner";
+/**
+ * The one disclosure context this surface serves (#9096 §4/§10,
+ * #12622): the hosted per-user surface, whose design ceiling is
+ * `personal` — exactly the CEILING pin above, so stating the
+ * context changes no behaviour today. It removes the silent
+ * dependence on the search service's own default for unstated
+ * contexts (an absent context is resolved per the receiving
+ * surface's rule, never to this one), and it is part of the
+ * result-cache key (key.ts), so a payload filtered for one
+ * destination can never be served to another from cache.
+ */
+export const CONTEXT: DisclosureContext = "hosted-per-user";
+
 export interface EmbedResponse {
   model: string;
   dims: number;

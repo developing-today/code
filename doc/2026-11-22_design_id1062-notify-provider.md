@@ -35,7 +35,7 @@ A notification is therefore a new committed event kind,
 `WorldEventKind::Notification { text }`, committed by the host
 with `participant_id` 0 on the program's behalf — the
 `prepare_system_chat` mould — and broadcast like any committed
-event. It is deliberately *not* a chat line wearing a flag:
+event. It is deliberately _not_ a chat line wearing a flag:
 
 - it does not enter chat history (`chat.history` reads `Chat`
   events; a notification is not conversation and must not
@@ -80,7 +80,7 @@ default ceiling, neither the server's `server_caps` nor a fresh
 world's `caps_ceiling` — so a use before an operator enables it
 is refused `outside_ceiling` by the ordinary ledger decision,
 before any provider code runs. Enabling it is the operator's
-explicit act: name `notify` in the server caps *and* the world's
+explicit act: name `notify` in the server caps _and_ the world's
 ceiling, plus the usual grant.
 
 There is no second, allowlist-style gate: `http.fetch` needs one
@@ -134,7 +134,7 @@ and journaling it would not make replay a pure function of the
 entries. A notification sits between those poles, and the
 `chat.say` precedent decides it: a notification, once sent, is
 a fact about the world's history that users may already have
-seen, so it is journaled *before* its result is delivered, as
+seen, so it is journaled _before_ its result is delivered, as
 the ordinary `JournalEntry::Committed` carrying the
 `Notification` event — no new journal entry kind, and replay
 applies nothing for it beyond rebuilding the event log it is
@@ -179,7 +179,7 @@ on what the host will commit, as `chat_bytes` is for chat
 lines, and the journal's own entry-size cap bounds what a
 journal can carry. Replay rebuilds history verbatim; it does
 not re-derive it. (The `kv`/`blob` replay re-checks exist
-because replay *rebuilds state* from those entries; an event
+because replay _rebuilds state_ from those entries; an event
 log is not rebuilt state.)
 
 ## Registry

@@ -75,6 +75,22 @@ export interface Config {
    * (PM_DISPATCH_WORKTREE_ROOT, default ~/git/fleet; "off" runs in the
    * requested directory as before). code#12213. */
   worktreeRoot: string | null;
+  /** Registry file holding the worktree <-> task/session association
+   * the cleanup lifecycle retires trees from (code#12217). Only
+   * meaningful when worktreeRoot is set. */
+  worktreeRegistryFile: string;
+  /** Seconds between worktree cleanup sweeps (PM_DISPATCH_WORKTREE_
+   * SWEEP_SECONDS, default 900; "off" disables the timer — the
+   * failure-path cleanup still runs). code#12217. */
+  worktreeSweepSeconds: number | null;
+  /** Whether session launch checks the monthly placement guard (#2732). */
+  placementGuardEnabled: boolean;
+  /** The packaged placement-record executable. */
+  placementRecordExecutable: string;
+  /** Policy-of-record YAML passed to placement-record. */
+  placementPolicyFile: string;
+  /** Quota gatherer's latest quota-current.json snapshot. */
+  quotaCurrentFile: string;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -123,5 +139,26 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_DISPATCH_WORKTREE_ROOT?.trim().toLowerCase() === "off"
         ? null
         : s(env.PM_DISPATCH_WORKTREE_ROOT, join(homedir(), "git", "fleet")),
+    worktreeRegistryFile: s(
+      env.PM_DISPATCH_WORKTREE_REGISTRY,
+      join(homedir(), ".local", "state", "pm-dispatch", "worktree-registry.json"),
+    ),
+    worktreeSweepSeconds: (() => {
+      const v = s(env.PM_DISPATCH_WORKTREE_SWEEP_SECONDS, "900");
+      if (v.toLowerCase() === "off") return null;
+      if (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 2_147_483) {
+        throw new Error(
+          `Invalid PM_DISPATCH_WORKTREE_SWEEP_SECONDS "${v}": expected a positive integer from 1 to 2147483, or "off"`,
+        );
+      }
+      return Number(v);
+    })(),
+    placementGuardEnabled: /^(1|true|yes)$/i.test(env.PM_DISPATCH_PLACEMENT_GUARD?.trim() ?? ""),
+    placementRecordExecutable: s(env.PM_DISPATCH_PLACEMENT_RECORD, "placement-record"),
+    placementPolicyFile: s(env.PM_DISPATCH_PLACEMENT_POLICY, ""),
+    quotaCurrentFile: s(
+      env.QUOTA_CURRENT_PATH,
+      join(homedir(), ".local", "state", "pm-aggregator", "quota-current.json"),
+    ),
   };
 }

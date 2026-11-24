@@ -21,6 +21,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -238,6 +239,42 @@ class IssueSectionTest(unittest.TestCase):
         )
 
 
+class ReadyPrAgeTest(unittest.TestCase):
+    """#12280's soak metric: open ready (non-draft) PRs older than
+    24 hours, counted against the report time. Oracle: hand-counted —
+    at NOW (2026-11-21T08:00Z) exactly two of the five PRs below are
+    open, ready, and at least 24 hours old."""
+
+    def rows(self):
+        old_ready = pull(30, "feat: old and ready", "2026-11-19T08:00:00Z")
+        boundary = pull(31, "feat: exactly a day old", "2026-11-20T08:00:00Z")
+        young = pull(32, "feat: just under a day", "2026-11-20T08:00:01Z")
+        draft = pull(33, "feat: old but draft", "2026-11-18T08:00:00Z")
+        draft["d"] = True
+        merged = pull(
+            34,
+            "feat: old but merged",
+            "2026-11-18T08:00:00Z",
+            merged="2026-11-19T08:00:00Z",
+        )
+        return [old_ready, boundary, young, draft, merged]
+
+    def test_open_ready_prs_over_24h(self):
+        report = fr.issue_section(self.rows(), REPO, NOW)
+        # Positive control: the fixture really holds 5 PRs, 4 open.
+        self.assertEqual(report["prs"], 5)
+        self.assertEqual(report["prs_open_ready_over_24h"], 2)
+
+    def test_the_count_moves_with_the_report_time(self):
+        earlier = fr.issue_section(
+            self.rows(),
+            REPO,
+            dt.datetime(2026, 11, 20, 8, 0, tzinfo=dt.timezone.utc),
+        )
+        # A day earlier only PR 30 (then exactly 24h old) qualifies.
+        self.assertEqual(earlier["prs_open_ready_over_24h"], 1)
+
+
 class AreaTest(unittest.TestCase):
     def test_first_matching_prefix_wins(self):
         self.assertEqual(fr.area_of("pkgs/id/crates/id-core/src/lib.rs"), "id")
@@ -348,6 +385,37 @@ class CommandLineTest(unittest.TestCase):
         path.write_text("".join(json.dumps(row) + "\n" for row in FIXTURE))
         return path
 
+    def test_fetch_clock_survives_reporting_with_a_different_reference_time(self):
+        returned = subprocess.CompletedProcess(
+            [], 0, "\n".join(json.dumps(row) for row in FIXTURE), ""
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "issues.jsonl"
+            before_fetch = dt.datetime.now(dt.timezone.utc)
+            with patch.object(fr.subprocess, "run", return_value=returned):
+                self.assertEqual(self.run_main(["fetch", "--repo", REPO, "--out", str(path)])[0], 0)
+            after_fetch = dt.datetime.now(dt.timezone.utc)
+            stamps = {row["fetch_started_at"] for row in fr.load_rows(path)}
+            self.assertEqual(len(stamps), 1)
+            observed = fr.parse_time(stamps.pop())
+            self.assertLessEqual(before_fetch, observed)
+            self.assertLessEqual(observed, after_fetch)
+            code, out, _ = self.run_main([
+                "report", "--repo", REPO, "--issues", str(path),
+                "--now", NOW.isoformat(), "--format", "json",
+            ])
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["inputs"]["issues_fetch_started_at"], observed.isoformat())
+        self.assertEqual(report["issues"]["as_of"], NOW.isoformat())
+
+    def test_snapshot_needs_one_shared_timezone_aware_collection_time(self):
+        stamped = {"fetch_started_at": "2026-11-21T08:00:00Z"}
+        for other in ({}, {"fetch_started_at": "2026-11-20T08:00:00Z"}):
+            self.assertIsNone(fr.issue_fetch_started_at([stamped, other]))
+        for invalid in ({}, {"fetch_started_at": "yesterday"}, {"fetch_started_at": "2026-11-21"}):
+            self.assertIsNone(fr.issue_fetch_started_at([invalid]))
+
     def test_unknown_flag_is_a_usage_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = self.write_fixture(tmp)
@@ -397,6 +465,7 @@ class CommandLineTest(unittest.TestCase):
                 ]
             )
         self.assertEqual(code, 0)
+        self.assertIn("Issue collection started: unknown.", out)
         self.assertIn("Not measured: no `--git-dir` given.", out)
         self.assertIn("| `effort/l` | 3 | 2 | 33.3% |", out)
 
