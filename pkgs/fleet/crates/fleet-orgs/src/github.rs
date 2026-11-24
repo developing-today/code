@@ -231,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn app_jwt_installation_listing_follows_pages_not_oauth_org_reads() {
+    fn regression_2026_11_12_app_jwt_listing_recovers_33_oauth_false_negatives() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::thread;
@@ -280,10 +280,13 @@ mod tests {
         let github = HttpGitHub::new(&format!("http://{addr}"));
         let installations = github.installations("app-jwt").unwrap();
         server.join().unwrap();
+        // The 2026-11-12 incident had 33 installations omitted by the OAuth
+        // organization-installation path. This fixture models that oracle:
+        // the App-JWT endpoint returns all 33 across pages; OAuth is never used.
         assert_eq!(
             installations.len(),
             33,
-            "oracle: all 33 fixture org installations are covered"
+            "oracle: all 33 installations absent from the OAuth false-negative result are covered"
         );
         assert_eq!(installations[32].account_login, "org33");
     }
