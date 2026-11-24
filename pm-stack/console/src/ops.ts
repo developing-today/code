@@ -534,6 +534,128 @@ export class Ops {
     return Array.isArray(log) ? log : [];
   }
 
+  /**
+   * The owner's unified pipeline (#14374, design §4.9): one feed over
+   * connector messages, fleet mailboxes and notes, read through
+   * `fleet bridge pipeline`. The owner's view is never sender-stripped
+   * — an instruction shows who really sent it here; anonymity is what
+   * agents see, never this console. Filters are the bridge's own
+   * (kind / sender / receiver / surface / batch / unread / work
+   * state); each value is validated here and travels as its own
+   * argument.
+   */
+  async pipeline(query: URLSearchParams) {
+    const argv = [this.cfg.fleetBin, "bridge", "pipeline", "--order", "desc"];
+    const one = (param: string, flag: string, name: string, ok: RegExp) => {
+      const v = query.get(param);
+      if (v === null || v === "") return;
+      const value = text(v, name, 200);
+      if (!ok.test(value)) throw new OpError(400, `${name}: not a ${name}: ${JSON.stringify(value).slice(0, 80)}`);
+      argv.push(flag, value);
+    };
+    one("kind", "--kind", "kind", /^(message|instruction|command|note)$/);
+    one("surface", "--surface", "surface", /^(connector|fleet|notes)$/);
+    one("sender", "--sender", "sender", /^[A-Za-z0-9][A-Za-z0-9@:._/-]{0,127}$/);
+    one("receiver", "--receiver", "receiver", /^[A-Za-z0-9][A-Za-z0-9@:._/-]{0,127}$/);
+    one("batch", "--batch", "batch", /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+    one("work_state", "--work-state", "work state", /^[a-z][a-z0-9_-]{0,63}$/);
+    if (query.get("unread") === "1" || query.get("unread_only") === "true") argv.push("--unread");
+    const limit = query.get("limit");
+    argv.push("--limit", String(limit === null || limit === "" ? 100 : Math.min(id(limit, "limit"), 200)));
+    const rows = (
+      JSON.parse(await this.must(argv)) as { messages?: unknown } | null
+    )?.messages;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** Per-agent credential state on the bridge (#14374): active or
+   * revoked, the scopes the live credentials carry. State only — the
+   * bridge never returns a hash, and neither does this. */
+  async credentials() {
+    const rows = (
+      JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "credentials"])) as { credentials?: unknown } | null
+    )?.credentials;
+    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  }
+
+  /**
+   * The unified agents list for the Agents screen (#14374, design
+   * §4.9): the bridge's directory (`fleet bridge directory` — fleet
+   * registry rows and notes identities, each marked by surface) with
+   * each row's credential state merged in. A fleet row's state comes
+   * from the credential view under the agent's own name; a notes
+   * row's from its identity's token scopes — an identity whose tokens
+   * were revoked keeps its directory place with both scopes off,
+   * which is the revoked state the screen shows. Notes identities
+   * have no presence: the bridge says `presence: "none"` and this
+   * merge invents nothing.
+   */
+  async directory() {
+    const [dir, creds] = await Promise.all([
+      this.must([this.cfg.fleetBin, "bridge", "directory"]).then(
+        (out) => (JSON.parse(out) as { agents?: unknown } | null)?.agents,
+      ),
+      this.credentials().catch(() => [] as Record<string, unknown>[]),
+    ]);
+    const rows = Array.isArray(dir) ? (dir as Record<string, unknown>[]) : [];
+    const byAgent = new Map(creds.map((c) => [String(c.agent), c]));
+    return rows.map((row) => {
+      if (row.surface === "fleet") {
+        const c = byAgent.get(String(row.name));
+        return {
+          ...row,
+          credential: c
+            ? {
+                state: c.state,
+                scopes: Array.isArray(c.scopes) ? c.scopes : [],
+                credentials: typeof c.credentials === "number" ? c.credentials : 0,
+                created: c.created ?? null,
+                revoked_at: c.revoked_at ?? null,
+              }
+            : null,
+        };
+      }
+      const scopes = (row.scopes ?? {}) as { can_send?: unknown; can_inbox?: unknown };
+      const live = scopes.can_send === true || scopes.can_inbox === true;
+      return {
+        ...row,
+        credential: {
+          state: live ? "active" : "revoked",
+          scopes: [
+            ...(scopes.can_send === true ? ["send"] : []),
+            ...(scopes.can_inbox === true ? ["inbox"] : []),
+          ],
+          credentials: null,
+          created: row.first_seen ?? null,
+          revoked_at: null,
+        },
+      };
+    });
+  }
+
+  /**
+   * Revoke an agent's bridge credentials from the Agents screen
+   * (#14374): the owner's kill switch, per surface — a fleet agent's
+   * credentials, or a notes identity's tokens. Revoking is the
+   * owner's act: on the laptop it runs here; at the edge the action
+   * is held for a machine (edge-proto.ts), never performed by the
+   * edge's read-scope credential.
+   */
+  async revokeCredential(surface: unknown, name: unknown) {
+    const s = text(surface, "surface", 20);
+    if (s !== "fleet" && s !== "notes") throw new OpError(400, `surface: not a surface: ${JSON.stringify(s)}`);
+    const n = text(name, "name", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+      throw new OpError(400, `name: not an agent name: ${JSON.stringify(n).slice(0, 80)}`);
+    }
+    const argv =
+      s === "fleet"
+        ? [this.cfg.fleetBin, "bridge", "revoke", "--agent", n]
+        : [this.cfg.fleetBin, "bridge", "revoke", "--identity", n];
+    const out = JSON.parse(await this.must(argv)) as { revoked?: unknown };
+    return { surface: s, name: n, revoked: typeof out.revoked === "number" ? out.revoked : 0 };
+  }
+
   /** Send a message or a command to agents, groups, or everyone. */
   async send(to: unknown, body: unknown, command: unknown) {
     if (!Array.isArray(to) || to.length === 0 || to.length > 50) throw new OpError(400, "to: one to fifty targets");

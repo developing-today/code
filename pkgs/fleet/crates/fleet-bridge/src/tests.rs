@@ -158,7 +158,18 @@ fn every_verb_has_its_own_help() {
     // usage — its own usage line, the shared footer, and never the
     // whole-domain USAGE text.
     for verb in [
-        "send", "agents", "log", "hello", "inbox", "post", "ack", "health",
+        "send",
+        "agents",
+        "log",
+        "pipeline",
+        "directory",
+        "credentials",
+        "revoke",
+        "hello",
+        "inbox",
+        "post",
+        "ack",
+        "health",
     ] {
         let text = verb_usage(verb).unwrap_or_else(|| panic!("no per-verb help for {verb}"));
         assert!(
@@ -200,6 +211,13 @@ fn usage_errors_exit_2_before_any_request() {
         vec!["ack", "--agent", "a"],
         vec!["ack", "--agent", "a", "0"],
         vec!["log", "--limit", "many"],
+        vec!["pipeline", "--limit", "many"],
+        vec!["pipeline", "--bogus", "x"],
+        vec!["directory", "extra"],
+        vec!["credentials", "extra"],
+        vec!["revoke"],
+        vec!["revoke", "--agent", "a", "--identity", "muse/a"],
+        vec!["revoke", "felix"],
     ] {
         let e = run_with(url, &s, &args, "").unwrap_err();
         assert_eq!(e.exit_code(), EXIT_USAGE, "{args:?}: {e}");
@@ -418,6 +436,56 @@ fn ack_log_and_agents_shapes() {
     assert_eq!(
         seen[3].url,
         format!("/api/{OWNER}/fleet/messages?agent=muse%201&direction=outbound&limit=5")
+    );
+}
+
+#[test]
+fn pipeline_directory_credentials_and_revoke_shapes() {
+    // #14374: the console's unified views and its revoke control, as
+    // owner-token calls on the bridge's own routes.
+    let (url, seen) = fake_bridge(|_, _, _| (200, r#"{"ok":true}"#.into()));
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    run_with(
+        &url,
+        &s,
+        &[
+            "pipeline",
+            "--kind",
+            "command",
+            "--sender",
+            "felix",
+            "--unread",
+            "--limit",
+            "25",
+            "--order",
+            "desc",
+        ],
+        "",
+    )
+    .unwrap();
+    run_with(&url, &s, &["directory"], "").unwrap();
+    run_with(&url, &s, &["credentials"], "").unwrap();
+    run_with(&url, &s, &["revoke", "--agent", "felix"], "").unwrap();
+    run_with(&url, &s, &["revoke", "--identity", "muse/felix"], "").unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen[0].url,
+        format!("/api/{OWNER}/pipeline?kind=command&sender=felix&unread_only=true&limit=25&order=desc")
+    );
+    assert_eq!(seen[1].url, format!("/api/{OWNER}/agents"));
+    assert_eq!(seen[2].url, format!("/api/{OWNER}/fleet/credentials"));
+    assert_eq!(
+        seen[3].url,
+        format!("/api/{OWNER}/fleet/credentials/revoke")
+    );
+    assert_eq!(
+        seen[3].body.as_ref().unwrap(),
+        &json!({"agent": "felix"})
+    );
+    assert_eq!(seen[4].url, format!("/api/{OWNER}/notes-tokens/revoke"));
+    assert_eq!(
+        seen[4].body.as_ref().unwrap(),
+        &json!({"identity": "muse/felix"})
     );
 }
 

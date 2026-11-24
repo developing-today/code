@@ -18,6 +18,7 @@ import {
   fleetCredentialAuthSql,
   fleetCredentialPutSql,
   fleetCredentialRevokeSql,
+  fleetCredentialStateSql,
   fleetOp,
   fleetSchema,
   getDistribution,
@@ -138,6 +139,10 @@ export class MessageStore extends DurableObject {
 
   fleetCredentialRevoke(agent) {
     return fleetCredentialRevokeSql(this.sql, agent, new Date().toISOString());
+  }
+
+  fleetCredentialState() {
+    return fleetCredentialStateSql(this.sql);
   }
 
   enrollTokenMint(row) {
@@ -637,6 +642,7 @@ function storeFor(env) {
     fleetCredentialAuth: (token_hash) => stub.fleetCredentialAuth(token_hash),
     fleetCredentialPut: (rec) => stub.fleetCredentialPut(rec),
     fleetCredentialRevoke: (agent) => stub.fleetCredentialRevoke(agent),
+    fleetCredentialState: () => stub.fleetCredentialState(),
     enrollTokenMint: (row) => stub.enrollTokenMint(row),
     enrollTokenGet: (token_hash) => stub.enrollTokenGet(token_hash),
     enrollTokenClaim: (token_hash, agent, now) => stub.enrollTokenClaim(token_hash, agent, now),

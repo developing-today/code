@@ -742,6 +742,92 @@ describe("operations", () => {
     expect(r.calls.length).toBe(2);
   });
 
+  test("the pipeline read carries the owner's filters as the bridge's own flags, and checks them first", async () => {
+    const rows = [{ surface: "fleet", kind: "command", sender_addr: "agent:felix", receiver: "agent:archer", body: "do it" }];
+    const r = recorder(() => JSON.stringify({ messages: rows }));
+    const ops = new Ops(CFG, r.run);
+    const got = await ops.pipeline(
+      new URLSearchParams({ kind: "command", sender: "felix", surface: "fleet", unread: "1", limit: "25" }),
+    );
+    expect(got).toEqual(rows);
+    expect(r.calls[0].argv).toEqual([
+      "fleet", "bridge", "pipeline", "--order", "desc",
+      "--kind", "command", "--surface", "fleet", "--sender", "felix", "--unread", "--limit", "25",
+    ]);
+    // A filter the bridge has no such value for is refused here, and
+    // nothing is run for it.
+    await expect(ops.pipeline(new URLSearchParams({ kind: "shout" }))).rejects.toThrow(OpError);
+    await expect(ops.pipeline(new URLSearchParams({ surface: "smoke-signal" }))).rejects.toThrow(OpError);
+    await expect(ops.pipeline(new URLSearchParams({ sender: "a b" }))).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(1);
+  });
+
+  test("the directory merges credential state in, and a revocation shows on the next read", async () => {
+    // The bridge's answers, as they stand: felix's credential live.
+    let credentialState = [
+      { agent: "felix", state: "active", scopes: ["inbox", "send"], addr: null, credentials: 1, live: 1, created: "2026-11-24T00:00:00Z", revoked_at: null },
+    ];
+    const r = recorder((argv) => {
+      if (argv[2] === "directory") {
+        return JSON.stringify({
+          agents: [
+            { surface: "fleet", name: "felix", groups: ["muse"], presence: "last_seen", last_seen: "2026-11-24T01:00:00Z", unread: 3 },
+            { surface: "notes", name: "muse/scout", identity: "muse/scout", scopes: { can_send: true, can_inbox: false }, presence: "none", first_seen: "2026-11-24T00:00:00Z", last_seen: null },
+          ],
+        });
+      }
+      if (argv[2] === "credentials") return JSON.stringify({ credentials: credentialState });
+      if (argv[2] === "revoke") return JSON.stringify({ ok: true, revoked: 1 });
+      return "";
+    });
+    const ops = new Ops(CFG, r.run);
+    const before = (await ops.directory()) as {
+      name: string;
+      presence: string;
+      last_seen: string | null;
+      credential: { state: string; scopes: string[] } | null;
+    }[];
+    const felix = before.find((a) => a.name === "felix");
+    expect(felix?.credential).toEqual({
+      state: "active",
+      scopes: ["inbox", "send"],
+      credentials: 1,
+      created: "2026-11-24T00:00:00Z",
+      revoked_at: null,
+    });
+    // A notes-only identity is in the list, marked notes-only: no
+    // presence is invented for it, and its live token scopes are its
+    // credential state.
+    const scout = before.find((a) => a.name === "muse/scout");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("active");
+    expect(scout?.credential?.scopes).toEqual(["send"]);
+
+    // The revoke action runs the bridge's own verb, audits only the
+    // surface and the name, and the next directory read shows it.
+    const table = actions(ops, {} as never);
+    expect(table["agent.revoke"].audit({ surface: "fleet", name: "felix", secret: "x" })).toEqual({
+      surface: "fleet",
+      name: "felix",
+    });
+    const done = (await table["agent.revoke"].run({ surface: "fleet", name: "felix" })) as { revoked: number };
+    expect(done.revoked).toBe(1);
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke", "--agent", "felix"]);
+    credentialState = [
+      { agent: "felix", state: "revoked", scopes: [], addr: null, credentials: 1, live: 0, created: "2026-11-24T00:00:00Z", revoked_at: "2026-11-24T02:00:00Z" },
+    ];
+    const after = (await ops.directory()) as { name: string; credential: { state: string } | null }[];
+    expect(after.find((a) => a.name === "felix")?.credential?.state).toBe("revoked");
+    // A notes identity is revoked by its identity, and a surface that
+    // is neither is refused before anything runs.
+    await table["agent.revoke"].run({ surface: "notes", name: "muse/scout" });
+    expect(r.calls.at(-1)?.argv).toEqual(["fleet", "bridge", "revoke", "--identity", "muse/scout"]);
+    const calls = r.calls.length;
+    await expect(table["agent.revoke"].run({ surface: "smoke-signal", name: "felix" })).rejects.toThrow(OpError);
+    expect(r.calls.length).toBe(calls);
+  });
+
   test("ranking an issue adds the new rank before it removes the others", async () => {
     const r = recorder((argv) =>
       argv.includes("repos/developing-today/code/issues/12279")

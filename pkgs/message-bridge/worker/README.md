@@ -110,6 +110,10 @@ their mailbox, mark what they handled, and post replies and reports back
 | `POST /api/<token>/fleet/credentials/mint` | owner | `{agent, scopes?, addr?}`: mint a credential for an agent or a service (below); the value is returned once, only its hash stored |
 | `GET /fleet/<credential>/agents`  | credential (`read`) | the agents list, as the owner's                                                          |
 | `GET /fleet/<credential>/messages` | credential (`read`) | the fleet message log, as the owner's (`agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`) |
+| `GET /api/<token>/fleet/credentials` | owner | per-agent credential state: active or revoked, live scopes, service addr, mint and revocation times — never a hash |
+| `GET /fleet/<credential>/pipeline` | credential (`read`) | the unified pipeline feed, as the owner's `/api/<token>/pipeline` (#14374) |
+| `GET /fleet/<credential>/directory` | credential (`read`) | the unified agents list, as the owner's `/api/<token>/agents` (#14374) |
+| `GET /fleet/<credential>/credentials` | credential (`read`) | per-agent credential state, as the owner's (state only: a credential can see a revocation, never make one) |
 
 The **fleet token** opens only `/fleet/...`. It is derived from the access
 token (HMAC-SHA256 of `ACCESS_TOKEN` over the label

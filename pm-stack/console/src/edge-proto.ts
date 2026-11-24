@@ -284,6 +284,12 @@ export const HOLDABLE = new Set([
   "issue.rank",
   "task.move",
   "message.send",
+  // A revocation is the owner's kill switch (#14374): done late it is
+  // still the right act — a credential revoked an hour late is revoked,
+  // and one already revoked answers so — so it is held for a machine
+  // rather than refused while the laptop is away. The edge itself
+  // never revokes: its bridge credential holds the read scope only.
+  "agent.revoke",
   "prompt.enqueue",
   // What the owner says is never lost for want of a machine: it is
   // kept and filed when one is back (or filed here, when the edge can).
@@ -322,6 +328,13 @@ export function subjectOf(kind: string, args: Record<string, unknown> | null | u
       return of("questions", a.set);
     case "pr.merge":
       return of("pr", a.pr);
+    case "agent.revoke": {
+      // One agent's credentials on one surface: two revocations of
+      // the same agent keep the owner's order.
+      const surface = typeof a.surface === "string" ? a.surface : "";
+      const name = typeof a.name === "string" ? a.name : "";
+      return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
+    }
     case "unit.act":
       return of("unit", a.unit);
     default:
