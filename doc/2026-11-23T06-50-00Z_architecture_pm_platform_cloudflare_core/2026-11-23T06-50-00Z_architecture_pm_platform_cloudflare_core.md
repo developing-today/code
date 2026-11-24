@@ -1723,3 +1723,44 @@ other console code than it does: each says a commit, and two commits
 can hold the same console. A release now records its console's tree
 beside its commit, which is what the two sides would compare (#13833's
 third point).
+
+## 2026-11-24T10:36Z Seen in service: the laptop follows main by itself
+
+**The move.** At 10:19Z on 2026-11-24 the new `redeploy.sh` was run once
+by hand on `amd`. It made the console's own copy of main, checked it
+with the service's settings, and put it into service:
+`redeploy: e16c2459a649 is in service`, with the service's working
+directory a release under `~/.local/share/pm-console`. The unit files
+from before are kept on that machine at
+`/tmp/pm-review-claude/units-backup`. It had first been run there
+against GitHub with a made-up home directory and stand-ins for
+`systemctl` and the health check, which took 23 seconds and passed.
+
+**By itself.** Two merges later the same morning were followed with
+nobody at the machine: `6dfb0637a5bb` at 10:23:27Z, about a minute after
+it merged, and `4a7a5161e257` at 10:33:32Z, before Cloudflare's own
+deploy of the same commit had finished. Read from outside at 10:35Z,
+`version` and `hostVersion` were both `4a7a5161e257`. The console's
+other two timers (the public address, the Android release) have each
+run from the new place and finished.
+
+**What else it settled.** `machineSettingsDiffer` on the Worker's health
+went from `["needsRepos"]` to empty: the laptop had been telling the
+list of repositories that its old code held, and main's console takes
+the platform's.
+
+**What stopped a deploy on the way.** The console's deploy for the
+change itself (`e87bfb92c726`) failed at its tests, on a test that had
+nothing to do with it: the repository's list of Workers had changed on
+main hours before (`1ea1346348`), a console test said how many Workers
+and reads to expect, and nothing had run the console's tests for that
+change. The test now takes what it expects from the list (#14290). The
+gap is #14297: the console's tests run only when the console deploys.
+The laptop took `e87bfb92c726`'s console regardless, since it follows
+main and not the Worker's deploy.
+
+**The same fault elsewhere.** The Services screen, looked at on the
+machine, listed `fleet-queue-backup-export.service` as failed: last
+night's export of the queue store did not run, because its unit points
+into a lane's worktree that has been removed (#14302). A service on the
+laptop running out of a directory someone works in is what #13833 was.
