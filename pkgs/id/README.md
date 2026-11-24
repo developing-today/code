@@ -302,7 +302,7 @@ it is — a valid world capability, minted by the host's admin with
 | `migrate-tags` | `migrate`                      | Add name/file auto-tags to existing files               |
 | `id`           |                                | Print local node public ID                              |
 | `key`          |                                | Export or import a passphrase-wrapped identity key      |
-| `keyset`       |                                | Show or change the identity's admin and device keys    |
+| `keyset`       |                                | Show or change the identity's admin and device keys     |
 | `peers`        |                                | Discover and list known peers                           |
 | `world`        |                                | Mint invites for, and join, multiplayer worlds          |
 | `gallery`      |                                | Administer a program gallery directory                  |
