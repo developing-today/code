@@ -8,6 +8,8 @@ const std = @import("std");
 
 pub const json = @import("json.zig");
 pub const grid = @import("grid.zig");
+pub const screen = @import("screen.zig");
+pub const cap = @import("cap.zig");
 
 test {
     std.testing.refAllDecls(@This());

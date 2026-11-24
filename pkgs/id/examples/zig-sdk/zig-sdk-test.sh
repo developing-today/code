@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Tests for the Zig guest SDK (#12596): the json + grid helpers with
-# `zig test`, plus a wasm32-freestanding build proving the SDK compiles
-# for the guest target. Run from anywhere; the pinned Zig version is
-# enforced by zig-toolchain.sh before anything builds.
+# Tests for the Zig guest SDK (#12596): the json, grid, screen, and cap
+# helpers with `zig test`, plus a wasm32-freestanding build proving the
+# SDK compiles for the guest target. Run from anywhere; the pinned Zig
+# version is enforced by zig-toolchain.sh before anything builds.
 #
 # Usage: zig-sdk-test.sh
 #   Accepts no positional arguments.
@@ -32,4 +32,4 @@ bash zig-toolchain.sh
 "$ID_ZIG_BIN" fmt --check src build.zig
 "$ID_ZIG_BIN" build test
 "$ID_ZIG_BIN" build -Dtarget=wasm32-freestanding
-echo "✓ Zig SDK tests passed (json + grid; wasm32-freestanding build OK)"
+echo "✓ Zig SDK tests passed (json + grid + screen + cap; wasm32-freestanding build OK)"

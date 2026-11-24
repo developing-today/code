@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(lib);
 
     const test_step = b.step("test", "Run the Zig SDK unit tests");
-    for ([_][]const u8{ "src/root.zig", "src/json.zig", "src/grid.zig" }) |path| {
+    for ([_][]const u8{ "src/root.zig", "src/json.zig", "src/grid.zig", "src/screen.zig", "src/cap.zig" }) |path| {
         const unit_tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path(path),
