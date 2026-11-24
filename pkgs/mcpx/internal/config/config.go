@@ -1586,7 +1586,11 @@ func parse(b []byte) (*Config, error) {
 			return nil, fmt.Errorf("server %q: needs command, url, aliasOf or toolViews", name)
 		}
 		if s.URL != "" && s.Transport == "" {
-			s.Transport = "http"
+			if strings.HasPrefix(s.URL, "unix://") {
+				s.Transport = "unix"
+			} else {
+				s.Transport = "http"
+			}
 		}
 		// Supervised stdio is opt-in again ("supervised": true). #9963
 		// made it the default, but the supervisor socket is keyed by
