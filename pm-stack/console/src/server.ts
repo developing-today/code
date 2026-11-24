@@ -229,7 +229,10 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
 
   // Public, unauthenticated: nothing here says anything about the fleet.
   if (path === "/.well-known/assetlinks.json" && method === "GET") return json(assetLinks(deps.cfg));
-  if (path === `${BASE}/health` && method === "GET") return json({ ok: true });
+  // Which commit this console was started from, where it knows:
+  // install.sh waits for the console to answer as the release it has
+  // just put into service.
+  if (path === `${BASE}/health` && method === "GET") return json({ ok: true, version: deps.self?.version ?? null });
   if (path === "/manifest.webmanifest" && method === "GET") return manifest();
   // Not behind the sign-in, and checked here instead: a linked phone.
   if (deps.phones && deps.docs) {
@@ -665,10 +668,27 @@ export function androidBuild(path: string) {
   };
 }
 
+/** What a release laid out by redeploy.sh says of itself, in the file
+ * beside its code: the commit of main it is, and its console's tree.
+ * Null for anything that is not such a file. */
+export function releaseSaid(text: string): { commit: string; tree: string | null } | null {
+  const commit = /^commit=([0-9a-f]{40})$/m.exec(text)?.[1];
+  if (!commit) return null;
+  return { commit, tree: /^tree=([0-9a-f]{40})$/m.exec(text)?.[1] ?? null };
+}
+
 /** The commit this console was started from, or nothing if it cannot
- * be told (not a checkout, no git). The service is restarted when a
- * merge is put into service, so this is the code that is running. */
+ * be told. In service it runs from a release, which says; started from
+ * a checkout (by hand, or in a test), the checkout is asked. The
+ * service is restarted when a release is put into service, so this is
+ * the code that is running. */
 async function runningCommit(): Promise<string | undefined> {
+  try {
+    const said = releaseSaid(readFileSync(join(import.meta.dir, "..", ".release"), "utf8"));
+    if (said) return said.commit.slice(0, 12);
+  } catch {
+    // Not a release: a checkout.
+  }
   try {
     const git = Bun.spawn(["git", "-C", import.meta.dir, "rev-parse", "--short=12", "HEAD"], {
       stdout: "pipe",

@@ -29,7 +29,7 @@ import {
 import { type Config, ConfigError, type Issuer, readConfig } from "../src/config.ts";
 import { HOLDABLE } from "../src/edge-proto.ts";
 import { manageable, OpError, Ops, parseUnitFiles, parseUnits, type Run, triagePacket } from "../src/ops.ts";
-import { assetLinks, type Deps, handle } from "../src/server.ts";
+import { assetLinks, type Deps, handle, releaseSaid } from "../src/server.ts";
 
 const NOW = 1_800_000_000_000;
 const ACCESS: Issuer = {
@@ -1115,6 +1115,26 @@ describe("HTTP surface", () => {
       headers: { host: "pm.security.cab", "content-type": "application/json", ...headers },
     });
 
+  // A release laid out by redeploy.sh says which commit it is in a
+  // file beside the code. The oracle is that file's two lines as the
+  // script writes them (test/redeploy.test.ts reads the same file back).
+  test("a release says which commit it is, and anything that is not such a file says nothing", () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const tree = "89abcdef0123456789abcdef0123456789abcdef";
+    expect(releaseSaid(`commit=${commit}\ntree=${tree}\n`)).toEqual({ commit, tree });
+    expect(releaseSaid(`commit=${commit}\n`)).toEqual({ commit, tree: null });
+    for (const text of [
+      "",
+      "commit=abc\n",
+      `tree=${tree}\n`,
+      `commit=${commit}0\n`,
+      `  commit=${commit}\n`,
+      `COMMIT=${commit}\n`,
+    ]) {
+      expect([text, releaseSaid(text)]).toEqual([text, null]);
+    }
+  });
+
   test("only the asset links and the health check answer without sign-in", async () => {
     const d = deps(401);
     const links = await handle(get("/.well-known/assetlinks.json"), d);
@@ -1122,7 +1142,13 @@ describe("HTTP surface", () => {
     expect(await links.json()).toEqual(assetLinks(CFG));
     expect(assetLinks(CFG)[0]).toMatchObject({ target: { package_name: "today.developing.pmconsole" } });
     expect(assetLinks({ androidPackage: "p", androidFingerprints: [] })).toEqual([]);
-    expect(await (await handle(get("/console/health"), d)).json()).toEqual({ ok: true });
+    // The health check says which commit this console was started from,
+    // where it knows: install.sh waits for it to answer as the release
+    // it has just put into service.
+    expect(await (await handle(get("/console/health"), d)).json()).toEqual({ ok: true, version: null });
+    expect(
+      await (await handle(get("/console/health"), { ...d, self: { name: "amd", version: "0123456789ab" } })).json(),
+    ).toEqual({ ok: true, version: "0123456789ab" });
     for (const path of [
       "/console/",
       "/console/app.js",
