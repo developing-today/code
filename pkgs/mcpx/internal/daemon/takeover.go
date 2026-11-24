@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,17 +35,20 @@ const (
 )
 
 const (
-	kindHello    = "hello"
-	kindListener = "listener"
-	kindState    = "state"
-	kindPools    = "pools"
-	kindPipe     = "pipe"
-	kindConn     = "conn"
-	kindEnd      = "end"
-	kindAck      = "ack"
-	kindNack     = "nack"
-	kindCommit   = "commit"
+	kindHello     = "hello"
+	kindListener  = "listener"
+	kindState     = "state"
+	kindPools     = "pools"
+	kindPipe      = "pipe"
+	kindConn      = "conn"
+	kindEnd       = "end"
+	kindAck       = "ack"
+	kindNack      = "nack"
+	kindCommit    = "commit"
+	kindCommitAck = "commit-ack"
 )
+
+const takeoverFeaturesHeader = "X-MCPX-Takeover-Features"
 
 type takeoverFrame struct {
 	Kind  string          `json:"kind"`
@@ -53,8 +57,9 @@ type takeoverFrame struct {
 }
 
 type takeoverHello struct {
-	Version int `json:"version"`
-	PID     int `json:"pid"`
+	Version   int  `json:"version"`
+	PID       int  `json:"pid"`
+	CommitAck bool `json:"commitAck,omitempty"`
 }
 
 type takeoverListener struct {
@@ -223,7 +228,7 @@ func (s *Server) handleTakeover(w http.ResponseWriter, r *http.Request) {
 	if !ok || rw.Reader.Buffered() > 0 {
 		return
 	}
-	if _, err := io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: "+takeoverMediaType+"\r\nContent-Length: 0\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: "+takeoverMediaType+"\r\n"+takeoverFeaturesHeader+": "+kindCommitAck+"\r\nContent-Length: 0\r\n\r\n"); err != nil {
 		return
 	}
 	s.logger.Printf("takeover requested by a successor")
@@ -340,6 +345,14 @@ func (s *Server) handOver(c *net.UnixConn) error {
 	s.settleUpgrade(nil)
 	// The successor has every connection and its own copy of each socket.
 	s.releasePassed(passing)
+	if h.CommitAck {
+		// The successor must not scan for supervised children until this
+		// process has detached from their supervisors. The HTTP header
+		// advertises this reply to new successors; old successors ignore it.
+		if err := send(c, kindCommitAck, nil, nil); err != nil {
+			s.logger.Printf("takeover: sending detach acknowledgement: %v", err)
+		}
+	}
 	s.logger.Printf("takeover committed; handing over to the successor")
 	_ = c.SetReadDeadline(time.Now().Add(s.set.Duration("daemon.takeoverTimeout")))
 	_, _ = io.Copy(io.Discard, c)
@@ -556,6 +569,7 @@ type takeoverIn struct {
 	leases    map[string]leaseRecord
 	pipes     map[takeoverPipe]*os.File
 	conns     []net.Conn
+	commitAck bool
 }
 
 func (in *takeoverIn) close() {
@@ -624,11 +638,12 @@ func (s *Server) TakeOver() (*Handover, error) {
 	if br.Buffered() > 0 {
 		return fail(errors.New("unexpected data after takeover headers"))
 	}
-	if err := send(uc, kindHello, takeoverHello{Version: takeoverVersion, PID: os.Getpid()}, nil); err != nil {
+	commitAck := strings.Contains(resp.Header.Get(takeoverFeaturesHeader), kindCommitAck)
+	if err := send(uc, kindHello, takeoverHello{Version: takeoverVersion, PID: os.Getpid(), CommitAck: commitAck}, nil); err != nil {
 		return fail(err)
 	}
 
-	in := &takeoverIn{listeners: map[string]*os.File{}, pipes: map[takeoverPipe]*os.File{}}
+	in := &takeoverIn{listeners: map[string]*os.File{}, pipes: map[takeoverPipe]*os.File{}, commitAck: commitAck}
 	for {
 		f, fd, err := recvFrame(uc)
 		if err != nil {
@@ -759,6 +774,24 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 		_ = uc.Close()
 		return nil, err
 	}
+	detachAcknowledged := !in.commitAck
+	if in.commitAck {
+		ack, fd, err := recvFrame(uc)
+		closeFile(fd)
+		if err == nil && ack.Kind == kindCommitAck {
+			detachAcknowledged = true
+		} else {
+			// The predecessor has already committed, so the successor cannot
+			// roll back. Log a broken acknowledgement and continue serving,
+			// but do not scan for supervised children until their first use;
+			// that path can attach once the predecessor releases its lease.
+			if err != nil {
+				s.logger.Printf("takeover: waiting for detach acknowledgement: %v", err)
+			} else {
+				s.logger.Printf("takeover: unexpected detach acknowledgement %q", ack.Kind)
+			}
+		}
+	}
 	_ = uc.SetDeadline(time.Time{})
 
 	// The connections are served before any new one is accepted, so a client
@@ -775,7 +808,9 @@ func (s *Server) commitTakeover(uc *net.UnixConn, in *takeoverIn, endFd *os.File
 	// Supervised instances were not handed off; adopt them now that
 	// the predecessor's commit has detached it from their supervisors
 	// (#9962).
-	s.reg.AdoptSupervised(context.Background())
+	if detachAcknowledged {
+		s.reg.AdoptSupervised(context.Background())
+	}
 	// Keep the adoption so an orderly exit can wait for the background
 	// orphan terminations Attach just started (#298). Only the committed
 	// path reaches here; the abort path above sends no DELETEs.

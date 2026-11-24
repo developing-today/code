@@ -1959,6 +1959,7 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 	t.Cleanup(func() { _ = ln.Close() })
 	accepted := make(chan time.Time, 2)
 	serveErr := make(chan error, 1)
+	firstDelivered := make(chan struct{}, 1)
 	go func() {
 		for attempt := 0; attempt < 2; attempt++ {
 			conn, err := ln.Accept()
@@ -1969,10 +1970,17 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 			accepted <- time.Now()
 			body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
 			_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
-			_ = conn.Close()
 			if err != nil {
 				serveErr <- err
 			}
+			if attempt == 0 {
+				// Do not drop the first stream until the client has parsed
+				// its event. Otherwise the transport can observe a close
+				// before the callback runs, making the reconnect test depend
+				// on when the goroutine gets scheduled.
+				<-firstDelivered
+			}
+			_ = conn.Close()
 		}
 	}()
 
@@ -1998,6 +2006,9 @@ func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
 	go func() {
 		streamDone <- c.Stream(ctx, events.Filter{}, func(event events.Event) {
 			eventsSeen <- event
+			if event.Seq == 1 {
+				firstDelivered <- struct{}{}
+			}
 			if event.Seq == 2 {
 				cancel()
 			}

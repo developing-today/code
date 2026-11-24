@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -13,5 +14,20 @@ import (
 // fails the run.
 func TestMain(m *testing.M) {
 	testsupport.SuperviseReExec()
-	os.Exit(testsupport.MainWithSweep(m))
+	stateDir, err := os.MkdirTemp("", "mcpx-daemon-state-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "daemon tests: making an isolated state dir: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("XDG_STATE_HOME", stateDir); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon tests: isolating XDG_STATE_HOME: %v\n", err)
+		_ = os.RemoveAll(stateDir)
+		os.Exit(1)
+	}
+	code := testsupport.MainWithSweep(m)
+	if err := os.RemoveAll(stateDir); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon tests: removing isolated state dir: %v\n", err)
+		code = 1
+	}
+	os.Exit(code)
 }
