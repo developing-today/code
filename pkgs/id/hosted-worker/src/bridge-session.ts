@@ -426,10 +426,7 @@ export class BridgeSessionServer {
       batchBytes = 0;
     };
     for (const event of events) {
-      if (
-        batch.length >= this.limits.maxBatchEvents ||
-        batchBytes + event.length > this.limits.maxBatchBytes
-      ) {
+      if (batch.length >= this.limits.maxBatchEvents || batchBytes + event.length > this.limits.maxBatchBytes) {
         flush();
       }
       batch.push(event);
@@ -531,7 +528,10 @@ export class BridgeClient {
   }
 
   private async next(): Promise<Uint8Array> {
-    const data = this.inbox.length > 0 ? (this.inbox.shift() as Uint8Array | null) : await new Promise<Uint8Array | null>((resolve) => this.waiters.push(resolve));
+    const data =
+      this.inbox.length > 0
+        ? (this.inbox.shift() as Uint8Array | null)
+        : await new Promise<Uint8Array | null>((resolve) => this.waiters.push(resolve));
     if (data === null) throw new Error("the transport closed mid-session");
     return data;
   }
@@ -553,16 +553,9 @@ export class BridgeClient {
     // AUTH: answer the server's challenge with the ID-key proof.
     const challenge = await this.nextTag(TAG.challenge);
     const nonce = new TextDecoder().decode(challenge);
-    const transcriptBytes = authTranscript(
-      this.opts.bindingId,
-      nonce,
-      "ws",
-      bodyHashHex(new Uint8Array(0)),
-    );
+    const transcriptBytes = authTranscript(this.opts.bindingId, nonce, "ws", bodyHashHex(new Uint8Array(0)));
     const signature = await this.opts.key.sign(transcriptBytes);
-    this.transport.send(
-      jsonFrame(TAG.auth, { nonce, signature: bytesToHex(signature) }),
-    );
+    this.transport.send(jsonFrame(TAG.auth, { nonce, signature: bytesToHex(signature) }));
 
     // HELLO or RESUME.
     let serverHeads: Head[];
@@ -653,7 +646,8 @@ export class BridgeClient {
       batchBytes = 0;
     };
     for (const eventBytes of answer) {
-      if (batch.length >= this.limits.maxBatchEvents || batchBytes + eventBytes.length > this.limits.maxBatchBytes) flush();
+      if (batch.length >= this.limits.maxBatchEvents || batchBytes + eventBytes.length > this.limits.maxBatchBytes)
+        flush();
       batch.push(eventBytes);
       batchBytes += eventBytes.length;
     }

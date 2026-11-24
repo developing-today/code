@@ -52,6 +52,7 @@ WEEKDAYS = set(mod.WEEKDAYS)
 # Planner
 # ---------------------------------------------------------------------------
 
+
 class PlannerProperties(unittest.TestCase):
     def run_case(self, names):
         plan = mod.plan_class_a_week(names)
@@ -103,6 +104,7 @@ class PlannerProperties(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Manifest — generated-database properties
 # ---------------------------------------------------------------------------
+
 
 def create_database(path, tables, rng, insertion_order=True):
     """Create a SQLite database from a generated schema+content spec.
@@ -165,12 +167,12 @@ class ManifestProperties(unittest.TestCase):
             path = os.path.join(self.tmp, "gen-%d.sqlite" % case)
             create_database(path, tables, self.rng)
             dump = b"BEGIN;\n" + b"generated-%d\n" % case + b"COMMIT;\n"
-            manifest = mod.build_manifest("db-%d" % case, path, dump, "2026-11-23T16:00:00Z")
+            manifest = mod.build_manifest(
+                "db-%d" % case, path, dump, "2026-11-23T16:00:00Z"
+            )
             self.assertEqual(manifest["database"], "db-%d" % case)
             self.assertEqual(manifest["exported_at"], "2026-11-23T16:00:00Z")
-            self.assertEqual(
-                manifest["dump_sha256"], hashlib.sha256(dump).hexdigest()
-            )
+            self.assertEqual(manifest["dump_sha256"], hashlib.sha256(dump).hexdigest())
             conn = sqlite3.connect(path)
             try:
                 by_name = {e["name"]: e for e in manifest["tables"]}
@@ -178,9 +180,9 @@ class ManifestProperties(unittest.TestCase):
                 for name, _columns, rows in tables:
                     self.assertIn(name, by_name)
                     self.assertEqual(by_name[name]["rows"], len(rows))
-                    recount = conn.execute(
-                        "SELECT count(*) FROM %s" % name
-                    ).fetchone()[0]
+                    recount = conn.execute("SELECT count(*) FROM %s" % name).fetchone()[
+                        0
+                    ]
                     self.assertEqual(by_name[name]["rows"], recount)
                 sqlite_tables = {
                     r[0]
@@ -263,6 +265,7 @@ class ManifestProperties(unittest.TestCase):
 # CLI example tests
 # ---------------------------------------------------------------------------
 
+
 class CliExamples(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="mesh-a-cli-")
@@ -322,7 +325,9 @@ class CliExamples(unittest.TestCase):
             manifest = json.load(fh)
         self.assertEqual(manifest["database"], "fleet-queue")
         self.assertEqual(manifest["exported_at"], "2026-11-23T16:00:00Z")
-        self.assertEqual(manifest["dump_sha256"], hashlib.sha256(dump_bytes).hexdigest())
+        self.assertEqual(
+            manifest["dump_sha256"], hashlib.sha256(dump_bytes).hexdigest()
+        )
         by_name = {e["name"]: e for e in manifest["tables"]}
         self.assertEqual(by_name["t"]["rows"], 3)
         self.assertEqual(by_name["empty"]["rows"], 0)

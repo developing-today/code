@@ -3,6 +3,7 @@
 Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merge/launch keywords. Raw working extract for Census A; the census report cites the underlying daily files, not this extract.
 
 ## 2026-09-30
+
 - Sol's nix plan — implementation COMPLETE (2026-09-30 ~05:40–05:58 CDT)
 - 07:16–07:18 CDT — nix/mcpx program phase 2 COMPLETE (coordinator final report); Drewry notified
 - Gmail labels built (15:45 CDT, at Drewry's request)
@@ -11,6 +12,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - 21:08 CDT — Guard caught a REAL desync on its first run
 
 ## 2026-10-01
+
 - 01:15 — nix-mcpx-15min-check: #301 merged, build break root-caused + fixed
 - 01:26 — nix-mcpx-15min-check: #303 merged (test-only), PR #305 rebased
 - 04:41 CDT — nix-mcpx-15min-check: MILESTONE REBUILD on upstream #308
@@ -18,30 +20,37 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - 20:11 CDT — nix-mcpx-15min-check (MILESTONE REBUILD)
 
 ## 2026-10-02
+
 - 01:14 CDT — Airthings monitor built and live (new project state)
 - 02:56 CDT — Airthings export COMPLETE: Wave Enhance lab CSV landed, all 6 devices on Drive (supersedes 01:35 "blocked" entry)
 - 05:26 CDT — nix-mcpx-15min-check: upstream #351 merged → rebuilt mcpx
 
 ## 2026-10-03
+
 - 19:41 — boot-init-todo-check (merged driver)
 
 ## 2026-10-04
+
 - Job restructure: boot-init + mcpx check merged (Drew directives, Oct 3 ~19:21–22:46 CDT)
 - 19:06 CDT — pre-compaction flush: merged routine task architecture (Drew's Oct 3–4 directives)
 
 ## 2026-10-05
+
 - 06:12 CDT — nix/mcpx merged-driver check (run #208)
 - ~12:10–12:14 CDT — Cloudflare credential verification COMPLETED (supersedes the ~12:05 "PENDING" note)
 - ~13:30–16:25 CDT — nix-cache: Nix binary cache on Cloudflare, built and verified end-to-end
 
 ## 2026-10-09
+
 - 18:47–18:52 CDT — Five Idea activations accepted ("Let's do it" clicks), all built
 
 ## 2026-10-17
+
 - 09:00 CDT — issue-sweep-devtoday-code: PR #245 merged, #193 closed
 - 15:00 CDT issue sweep — developing-today/code (#238 landed)
 
 ## 2026-10-18
+
 - 04:00 CDT issue-sweep-devtoday-openchamber — #46 triage/rescope + docs PR #50 merged
 - 07:00 CDT new-issue-creator — code #282 filed + solved (PR #283 merged)
 - Concurrency rollout COMPLETE (2026-10-18 ~08:50 CDT) — supersedes the "2 of 4 merged" status update above
@@ -51,6 +60,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - 16:13–16:33 CDT — Jules OAuth login COMPLETED (was blocked since 05:21 CDT)
 
 ## 2026-10-19
+
 - 03:30 CDT — issue-sweep-devtoday-opencode: fixed opencode #54, PR #107 merged
 - 05:00 CDT issue-sweep-devtoday-code — #345 fixed & merged
 - new-issue-creator 08:00 CDT run — code #355 filed + solved (PR #356 merged)
@@ -59,6 +69,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Issue sweep (rotating) — dezren39/nix — #476 fixed & merged
 
 ## 2026-10-20
+
 - 01:18 CDT — issue-sweep-rotating: opencode #62 fixed/merged, #159 filed
 - 03:00 CDT issue-sweep-devtoday-code — #393 fixed, PR #400 merged
 - Fleet usefulness audit — COMPLETED and delivered (~06:14 CDT Oct 20) — supersedes the "IN PROGRESS" entry above
@@ -82,6 +93,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - issue-sweep-devtoday-code 21:00 CDT — #344 goreleaser repair, PR #452 merged
 
 ## 2026-10-21
+
 - Supabase setup + builds (2026-10-20 evening/late, this side chat) — COMPLETE
 - issue-sweep-rotating 03:38 CDT — opencode (random pick 1): #171 fixed & merged
 - Muse proxy — built 2026-10-21 ~08:18 CDT (main chat, subagent)
@@ -95,6 +107,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - issue-sweep-rotating — developing-today/opencode (random pick 1) — #257 fixed & merged
 
 ## 2026-10-22
+
 - issue-sweep-devtoday-code 01:00 CDT — fixed code#529 via PR #533 (merged)
 - issue-sweep-devtoday-code 07:00 CDT — fixed code #580, PR #584 merged
 - Side chat (laptop remote access), 2026-10-21 afternoon CDT — Claude Remote Control LIVE on amd; web-side check inconclusive, parked
@@ -103,6 +116,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - new-issue-creator 13:15 CDT — code #605 filed + solved (PR #606 merged)
 
 ## 2026-10-23
+
 - Issue sweep devtoday-code 03:00 CDT — fixed #647 via PR #657 (merged)
 - Issue sweep rotating 02:58 CDT — opencode #115 fixed via PR #321 (merged)
 - new-issue-creator 04:55 CDT — openchamber #344 filed + solved (PR #345 merged)
@@ -121,6 +135,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Issue sweep (rotating) — opencode #240 bulk fix merged
 
 ## 2026-10-24
+
 - Reflective event COMPLETED — 2026-10-24 ~02:31 CDT (UPDATE superseding the IN PROGRESS entry above)
 - Laptop unmerged-work cleanup pass — 2026-10-24 ~03:06–03:18 CDT (side chat, Drew instruction)
 - Laptop unmerged-work cleanup, round 1 (2026-10-24 ~03:06–03:55 CDT, Drew via Android side message)
@@ -133,6 +148,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - issue-sweep-devtoday-code 23:00 CDT — 5 items, 2 PRs merged
 
 ## 2026-10-25
+
 - Side chat — Slack agent design DELIVERED (2026-10-25, after 03:46 CDT; Drew asked, no decision made)
 - SaaS pricing chat — evidence baseline + standing task (relayed 2026-10-21, built in this chat)
 - LS-proxy tool-call fix — filed, implemented, merged, deployed, verified (this side chat, 2026-10-25 ~05:28–05:52 CDT)
@@ -157,6 +173,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Main chat — dependency-job wording audit COMPLETE (2026-10-25 evening)
 
 ## 2026-10-26
+
 - new-issue-creator run (2026-10-26 00:15 CDT) — developing-today/opencode, 2 filed, both solved+merged
 - Delete-guardrail rollout — COMPLETE via shared files (2026-10-26 ~05:20 CDT)
 - Main-chat workspace-deletion recheck — COMPLETE, nothing new lost (2026-10-26 ~06:31 CDT)
@@ -182,6 +199,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Turso delta publish — COMPLETE (2026-10-26 ~23:09 CDT)
 
 ## 2026-10-27
+
 - Cluster seeding COMPLETED (2026-10-26 ~21:58–22:29 CDT; verified)
 - Gatherer v1 LIVE on laptop + PRs merged (2026-10-27 ~01:56 CDT) — code#1151
 - Meta Phase-1 exporter BUILT + LIVE on laptop; PR MERGED (2026-10-27 ~00:48–00:54 CDT) — code#1301
@@ -214,6 +232,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - openchamber PR #540 rebased + MERGED, #523 CLOSED (Drew tapped the option)
 
 ## 2026-10-28
+
 - issue-sweep-rotating 03:24 CDT — dezren39/nix (random pick 3), 5 items, 1 PR merged
 - Project reconcile fix COMPLETED + verified (supersedes the slow/timeout reconcile status)
 - Power guard — Drew approved, built + tested, flake PR open (activation rides the switch)
@@ -243,6 +262,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Side chat 09acaedc — `nix run .#adopt` (PR #1073, merged 2026-10-29T04:25Z / 23:25 CDT)
 
 ## 2026-10-29
+
 - Pool quota steward 03:17 CDT run (08:22Z, 2nd snapshot-first run per #2135)
 - Pool quota steward 09:21Z (3rd snapshot-first run, #2135) — no-change
 - Memory-size rule LIVE (Drew's shape, directed 2026-10-29 01:09 CDT; executed ~01:2x)
@@ -268,6 +288,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Post-compaction main-chat segment (~22:47–23:30 CDT) — merges landed, queue removed, switch + merge-all in flight
 
 ## 2026-10-30
+
 - Pool quota steward — 2026-10-30T05:24Z (first run of the day, DAILY PASS done)
 - Pool quota steward — 2026-10-30T06:21Z (24th snapshot-first run, non-daily)
 - Post-01:58 additions (flush) — routes fix merged, one-process DONE, switch blocked on NEW mcpx break (#2609)
@@ -291,6 +312,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Pool quota steward 20:24 CDT (01:24Z, 43rd #2135 snapshot-first run) — no-change
 
 ## 2026-10-31
+
 - Pool quota steward — 2026-10-31T05:24Z (47th snapshot-first run, #2135; FIRST run of the day — daily impact pass done)
 - Pool quota steward — 2026-10-31T06:24Z (48th snapshot-first run, #2135)
 - Pool quota steward — 2026-10-31T07:24Z (49th snapshot-first run, #2135)
@@ -307,6 +329,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - GitHub App developing-today-backup — CREATED + LIVE (2026-10-31 ~22:34 CDT close-out)
 
 ## 2026-11-01
+
 - Updates after the 00:17 CDT flush — AA color fix deployed; #3332 implementation committed in a worktree, not yet merged
 - Updates after the 00:40 CDT flush — #3349 merged and live-verified; phantom feed writer; board/today staleness diagnosed
 - Merges / closures landed late Oct 31 – early Nov 1 (not in entries above)
@@ -316,6 +339,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Supabase muse-dev outage → muse-dev2 cutover (events of Fri 2026-10-30, recorded at this flush)
 
 ## 2026-11-02
+
 - Supabase incident + muse-dev2 cutover (2026-10-30, recorded at flush 2026-11-02)
 - Pre-compaction flush 2026-11-02 ~06:15 CST — cold-store final state (supersedes earlier "Turso filing not built" notes)
 - ESCALATION delivered to Drew ~06:37 CST — PR #4099 merged with a failing id-core test (UNRESOLVED)
@@ -338,6 +362,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Main chat — id-core fix merged + switch superseded by another session (post-20:26 flush, 2026-11-02 evening)
 
 ## 2026-11-03
+
 - UPDATE — auto-format variable investigation COMPLETED (supersedes the "IN PROGRESS (~01:40 CST)" entry above)
 - Full-coverage pass — nix wave COMPLETE (supersedes the PENDING note above)
 - Full-coverage pass — openchamber wave COMPLETE (supersedes the IN FLIGHT note above)
@@ -361,6 +386,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - openai-codex re-seat + removal DONE (2026-11-03 ~13:42 CST, PR #5094 merged ae4bb713)
 
 ## 2026-11-04
+
 - laptop-agent designed + built (Drew directive, 2026-11-04 ~01:53 CST)
 - Repo-queue + secrets brokers ordered and built (Drew, 2026-11-04 ~02:22 CST; code#5362)
 - Kaneo sign-in 500 — code#5398 FIXED + CLOSED 2026-11-04 ~05:22 CST (comment 6629308834)
@@ -393,6 +419,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - WS-H versioning COMPLETE (19:49 CST) — code#5790 filed
 
 ## 2026-11-05
+
 - Sunshine/Moonlight GUI verdict (code#5924) — implemented, merged, activation STAGED-READY (reported 2026-11-05 ~00:32 CST)
 - Mistral lane — COMPLETE after Drew's restart order (reported 2026-11-05 00:56 CST) — supersedes the "restart dispatched, outcome PENDING" entry above
 - External-comms audit (Drew's order, 2026-11-05 ~00:51 CST) — COMPLETE
@@ -405,6 +432,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Lane B (openchamber) shift 2026-11-05 ~15:33 CST — 15 tasks, 13 complete, 9 PRs merged
 
 ## 2026-11-06
+
 - Provider alignment lane — COMPLETE 2026-11-06 ~04:07 CST (lane c9ad1715)
 - Claude unblock lane — COMPLETE 2026-11-06 ~04:13 CST (lane 69fb88f5)
 - Lane status at flush 2026-11-06 04:35 CST (all still RUNNING, nothing landed yet)
@@ -436,6 +464,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - After the queue cutover — remaining Postgres + delete gate (21:47 CST)
 
 ## 2026-11-07
+
 - Lane S fallback shift — 4 merges landed (snapshot 2026-11-07T05:55Z)
 - Nix hook worker — FALLBACK MODE bundle 2026-11-07 ~06:14–06:21Z, 4th task INCOMPLETE
 - Pending-questions hourly run (2026-11-07 11:28 CST): NO message sent — 0 items pending, 19 items / 30 questions asked-unanswered. Re-ask check: no asked item >24h old (oldest, census-openclaw-telegram
@@ -450,6 +479,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Overnight lane 3 — Turso remainder builds (#6803 + #6925) — COMPLETE ~18:15 CST
 
 ## 2026-11-08
+
 - Lane E repo-queue shift 2026-11-08 ~00:12 CST (first run, bundle cap 20)
 - Lane A (nix) shift 2026-11-08 ~00:11 CST — #1660 fixed/merged
 - Lane B shift 2026-11-08 ~00:46 CST — 20 tasks, run-switch merged
@@ -468,6 +498,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - wvkbd permanent install — merged, then deployed after the id fix (evening 2026-11-08)
 
 ## 2026-11-09
+
 - Fleet-minder quota freshness guard LIVE (2026-11-08 ~22:06 CST)
 - opencode#2212 failover defect — root cause + fix built (2026-11-08 ~22:18 CST)
 - Builder's Advocate first run + absorbed-cron deletions COMPLETE (2026-11-08 22:30–22:42 CST)
@@ -482,15 +513,18 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Weekly binary wire check — dedicated chat + first run (2026-11-09)
 
 ## 2026-11-10
+
 - Workhorse pool — LIVE config read 2026-11-09 ~20:40 CST (laptop ~/.config/opencode/opencode.jsonc, mtime 20:33)
 - Main chat — seat changes COMPLETED + Fable seating order + pm-git-sync fix (2026-11-10 08:56–09:03 CST)
 
 ## 2026-11-11
+
 - Post-flush additions 2026-11-11 ~01:22 CST — wire-check results, OpenAI landed, cleanup lanes completed, #7089 rollback verified, real-push design completed
 - nixpkgs-update-amd 2026-11-11 run — INCOMPLETE / build still pending
 - STATE CHANGE — board fix program: code all merged, switch still NOT landed as of 2026-11-11 ~12:53 CST
 
 ## 2026-11-22
+
 - Lane A4 COMPLETED — #557 Slice 2 stop-finding: zero same-journal queueing (2026-11-22)
 - #12229 manual evaluation — PR #12470 GREEN and merged; world_dos flake filed as #12512 (2026-11-22)
 - Lane G COMPLETED — #12229 gate driver dev-shell fix merged as PR #12516 (2026-11-22)
@@ -513,6 +547,7 @@ Generated 2026-11-23 from ~/memory/2026-*.md headings containing completion/merg
 - Lane AH complete — #1187 CLOSED on evidence closeout (2026-11-22 ~14:48 CST)
 
 ## 2026-11-23
+
 - 10:37 CST — Desktop Commander self-hosted endpoint built (Drew-ordered, main chat)
 - 10:52 CST — Desktop Commander pipeline proof COMPLETE (updates the 10:37 entry's PENDING item)
 - ~11:12–11:17 CST — Post-flush update: OAuth front door COMPLETE; wave-1 landings OA1/OA3/OA4/OA5/OA7; ZW #13401 slice; OA11 sensitivity sweep; NEW flag hold #13444 (supersedes the "still in flight / p

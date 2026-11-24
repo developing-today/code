@@ -1,10 +1,14 @@
 import json, os
-BASE="/home/hatch/workspace/lane4-audit7"
-NAME="2026-11-24T00-47-16Z_audit_merged-pr-audit-lane4"
-ledger=json.load(open(f"{BASE}/ledger-fleet.json"))
-brief=open(f"{BASE}/brief-verbatim.md").read()
-rows="\n".join(f"| [#{r['number']}]({r['url']}) | {r['title'].replace('|','/')} | {r['spawning_issue']} | {r['verdict']} | {r['label']} | {r['note']} |" for r in ledger)
-report=f"""# AUDIT-7 Lane 4 — MERGED-PR-AUDIT: merged PRs since 2026-10-23 vs their spawning issues
+
+BASE = "/home/hatch/workspace/lane4-audit7"
+NAME = "2026-11-24T00-47-16Z_audit_merged-pr-audit-lane4"
+ledger = json.load(open(f"{BASE}/ledger-fleet.json"))
+brief = open(f"{BASE}/brief-verbatim.md").read()
+rows = "\n".join(
+    f"| [#{r['number']}]({r['url']}) | {r['title'].replace('|', '/')} | {r['spawning_issue']} | {r['verdict']} | {r['label']} | {r['note']} |"
+    for r in ledger
+)
+report = f"""# AUDIT-7 Lane 4 — MERGED-PR-AUDIT: merged PRs since 2026-10-23 vs their spawning issues
 
 - **Programme:** AUDIT-7 (Drew's directive, 2026-11-23 ~17:56 CST)
 - **Lane:** 4 — MERGED-PR-AUDIT
@@ -110,6 +114,6 @@ One loss, recorded honestly: the first copy of the fleet per-PR dataset and the 
 - Enqueued for exhaustive completion: **5,483** PRs across 24 verified queue tasks (code >= 3,335 + opencode 1,122 + openchamber 1,026)
 - Labels applied: **92/92** fleet PRs; label set created in code + fleet
 """
-os.makedirs(f"{BASE}/record",exist_ok=True)
-open(f"{BASE}/record/{NAME}.md","w").write(report)
+os.makedirs(f"{BASE}/record", exist_ok=True)
+open(f"{BASE}/record/{NAME}.md", "w").write(report)
 print("report bytes", len(report))

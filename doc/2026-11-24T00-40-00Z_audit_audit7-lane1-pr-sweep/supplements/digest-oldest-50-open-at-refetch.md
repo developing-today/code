@@ -1,11 +1,10 @@
-
 ===== code#9245 draft=True mergeable=UNKNOWN state=UNKNOWN files=152 +97365/-0 created=2026-11-13T03:52:37Z updated=2026-11-23T20:32:14Z
 TITLE: design(fleet-ca): v0.3 design-mill build-out, traceability and granular backlog
 BODY: Summary
 Related program: #9155. Draft: the design mission is still in progress; do not close the implementation epic.
 source package → statement inventory → additive V1/V2/V3/V4 designs
-              → independent challenge/re-review → granular issue packets
-              → verified publication receipts and source/test traceability
+→ independent challenge/re-review → granular issue packets
+→ verified publication receipts and source/test traceability
 
 The branch preserves the stopped run and adds reviewed architecture, custody/freshness/revocation gates, provider/format and future/MTC research. An immutable original-source snapshot is protected from upstream formatting; the formatted upstream files remain unchanged.
 Evidence
@@ -17,26 +16,18 @@ COMMENT by coderabbitai at 2026-11-13T03:52:45Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -71,33 +62,23 @@ Verification
 Remaining acceptance work
 This is an initial slice, not completion of #7919. The corpus does not yet cover every element kind or assertion role, and target goldens currently exercise only one shared case. The #5850 assertion-role vocabulary is still unsettled; do not invent its inventory. Extend vocabulary/target coverage once that contract is settled. No pixel/screenshot expectations are used.
 
-
-
 Open in [code]smith · Need help on
 COMMENT by coderabbitai at 2026-11-19T09:53:50Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -119,26 +100,18 @@ COMMENT by coderabbitai at 2026-11-22T02:17:15Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -149,10 +122,11 @@ FILES: pkgs/atlas-search/Cargo.lock, pkgs/atlas-search/crates/atlas-core/Cargo.t
 ===== code#12312 draft=True mergeable=UNKNOWN state=UNKNOWN files=1 +22/-0 created=2026-11-22T02:26:26Z updated=2026-11-22T02:26:33Z
 TITLE: docs(mcpx): show fleet laptop SSH invocation
 BODY: Summary
- pkgs/mcpx/docs/remote.md
-+  Fleet NixOS laptop command reaches this VM through mcpx `ssh://`
-+  transport using existing SSH authorization; no token or daemon port.
-Evidence
+pkgs/mcpx/docs/remote.md
+
+- Fleet NixOS laptop command reaches this VM through mcpx `ssh://`
+- transport using existing SSH authorization; no token or daemon port.
+  Evidence
 
 Before: remote transport docs covered ssh:// generically but had no fleet-laptop invocation.
 After: docs show one-command discovery and MCP-call examples plus an SSH preflight. git diff --check passes.
@@ -162,33 +136,23 @@ Merge Danger
 Door: two-way.
 Blast Radius: documentation only.
 
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
 COMMENT by coderabbitai at 2026-11-22T02:26:33Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -208,26 +172,18 @@ COMMENT by coderabbitai at 2026-11-22T03:14:57Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -240,31 +196,23 @@ TITLE: id(world): shared sync epochs for journal appends (#557) — DRAFT, negat
 BODY: Summary
 DRAFT — DO NOT MERGE. This is a negative result, recorded as a PR so the evidence is reviewable.
 One slice attempt for the #557 F12.12 p99 criterion, aimed at the input/ack cost in felix's 2026-11-22 profile (PR #12471): after group commit (#8239), durability-before-ack still costs one sync_data per journal append, and at 100 worlds × 20 inputs/s the filesystem's aggregate sync rate was the suspected cap.
-This branch routes FileJournal appends through a per-filesystem SyncGate (crates/id-worlds/src/world_store.rs): the writer writes its bytes, registers the next epoch, and waits until a syncfs that started after its registration completes; a failed or unavailable gate sync falls back to the writer's own sync_data, which decides the append exactly as before. The mechanism is correct — the measurements below say syncfs is the wrong primitive on every filesystem measurable from the 
+This branch routes FileJournal appends through a per-filesystem SyncGate (crates/id-worlds/src/world_store.rs): the writer writes its bytes, registers the next epoch, and waits until a syncfs that started after its registration completes; a failed or unavailable gate sync falls back to the writer's own sync_data, which decides the append exactly as before. The mechanism is correct — the measurements below say syncfs is the wrong primitive on every filesystem measurable from the
 COMMENT by coderabbitai at 2026-11-22T10:20:33Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -281,26 +229,18 @@ COMMENT by coderabbitai at 2026-11-22T11:46:27Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -325,16 +265,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -343,24 +278,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-22T12:39:32Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-22T15:58:32.974663Z
 18ef0c0
 New commits
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -386,26 +314,18 @@ COMMENT by coderabbitai at 2026-11-22T13:18:34Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -434,8 +354,6 @@ Low: direct reads are disabled unless GITHUB_READ_ENABLED=on and GITHUB_TOKEN ar
 
 Refs #12518
 
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
 COMMENT by coderabbitai at 2026-11-22T13:19:05Z: Warning
 Review limit reached
@@ -445,16 +363,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -463,24 +376,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-22T13:19:09Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T00:06:47.171570Z
 18d9220
 New commits
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -504,26 +410,18 @@ COMMENT by coderabbitai at 2026-11-22T13:27:53Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -543,26 +441,18 @@ COMMENT by coderabbitai at 2026-11-22T13:30:13Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -585,10 +475,7 @@ Review skipped
 Auto reviews are disabled on base/target branches other than the default branch.
 Please check the settings in the CodeRabbit UI or the .coderabbit.yaml file in this repository. To trigger a single review, invoke the @coderabbitai review command.
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -602,24 +489,17 @@ Run ID: ba42
 COMMENT by chatgpt-codex-connector at 2026-11-22T13:31:48Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-22T18:41:10.357816Z
 d233bb2
 New commits
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -643,26 +523,18 @@ COMMENT by coderabbitai at 2026-11-22T13:35:47Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -688,26 +560,18 @@ COMMENT by coderabbitai at 2026-11-22T13:38:53Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -736,26 +600,18 @@ COMMENT by coderabbitai at 2026-11-22T13:41:31Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -778,26 +634,18 @@ COMMENT by coderabbitai at 2026-11-22T13:42:08Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -820,26 +668,18 @@ COMMENT by coderabbitai at 2026-11-22T13:42:39Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -860,26 +700,18 @@ COMMENT by coderabbitai at 2026-11-22T13:42:35Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -898,26 +730,18 @@ COMMENT by coderabbitai at 2026-11-22T14:14:51Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -938,24 +762,17 @@ Turn test, test-int, and test-
 COMMENT by chatgpt-codex-connector at 2026-11-22T15:24:02Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T06:15:42.401612Z
 234db53
 New commits
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -966,20 +783,13 @@ Comment "@codex review" or "@codex security review".
 Codex reacts with 👀 while any review is r
 COMMENT by coderabbitai at 2026-11-22T15:24:12Z: Walkthrough
 
-
-
 The ID flake now receives an optional Crane input and can use separate Cargo dependency artifacts for runtime builds. Check derivations select setup stages by check type, and integration-test and E2E derivations declare native tools explicitly.
 Changes: ID flake builds and checks
-
-
 
 Layer / File(s)
 Summary
 
-
-
-
-Crane runtime build support  lib/default.nix, pkgs/id/flake.nix
+Crane runtime build support lib/default.nix, pkgs/id/flake.nix
 The root flake passes Crane to the ID flake. The ID flake creates a Crane library and adds a helper that buil
 FILES: lib/default.nix, pkgs/id/flake.nix
 
@@ -987,10 +797,9 @@ FILES: lib/default.nix, pkgs/id/flake.nix
 TITLE: atlas(worker): key hosted search cache by disclosure context
 BODY: Summary
 POST /search
-  pins context = hosted-per-user
-  cache key = query + context + existing config
-  forwards context to atlas-search service
-
+pins context = hosted-per-user
+cache key = query + context + existing config
+forwards context to atlas-search service
 
 Bump the Worker cache-key schema and include disclosure context in its canonical hash material.
 Thread the hosted-per-user context through the Durable Object and search service request.
@@ -1006,35 +815,23 @@ Merge Danger
 Door: Two-way.
 Blast Radius: Worker-only. Cache key schema changes invalidate reuse of existing Durable Object entries; subsequent searches repopulate them.
 
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
-
-
-
 
 Summary by CodeR
 COMMENT by chatgpt-codex-connector at 2026-11-22T16:33:23Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
-
-
 
 Review
 Status
 Commit
 Review trigger
 
-
-
-
 📝 Code Review
 ✅ Completed 2026-11-22T18:38:38.837162Z
 60b6bd9
 New commits
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -1051,16 +848,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1085,30 +877,21 @@ systemd-analyze --user verify, bash -n, py_compile, and git diff --check passed.
 
 Refs #8584. This does not complete #8584: D1 restore, Cloudflare rehost, unified freshness/lag status, and automatic lag issue filing remain.
 
-
-
 Open in [code]smith · Need help on this PR? Tag
 COMMENT by chatgpt-codex-connector at 2026-11-22T20:00:32Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
-
-
 
 Review
 Status
 Commit
 Review trigger
 
-
-
-
 📝 Code Review
 ✅ Completed 2026-11-22T20:02:39.533140Z
 cda55ce
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -1125,16 +908,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1146,9 +924,9 @@ FILES: doc/fleet-schedule-registry.md, infra/github-backup/bin/plain_mirror_all.
 TITLE: docs(roadmap): program-tending drift fix (landed forward items)
 BODY: Program-tending roadmap drift fix (tracking: #1352). Each removed item is a forward-looking roadmap entry whose referenced issues are all closed; per ROADMAP.md, completed work is recorded in GitHub, not in a Done row. No Done rows were edited.
 
-planning/roadmaps/id.md line 15: | Validate the delivered work                         | in-progress | Phases 9 and 10 were delivered faster than they were verified. The remaining verification-debt inventory gets a proving test or it (refs: #796:closed)
-planning/roadmaps/id.md line 17: | Fair scheduling and quotas                          | planned     | A world that spins on fuel cannot raise another world's p99 latency by more than 10 percent; per-account quotas for worlds, storag (refs: #1067:closed)
-planning/roadmaps/id.md line 19: | First new providers                                 | planned     | A bounded key-value store, content-address
+planning/roadmaps/id.md line 15: | Validate the delivered work | in-progress | Phases 9 and 10 were delivered faster than they were verified. The remaining verification-debt inventory gets a proving test or it (refs: #796:closed)
+planning/roadmaps/id.md line 17: | Fair scheduling and quotas | planned | A world that spins on fuel cannot raise another world's p99 latency by more than 10 percent; per-account quotas for worlds, storag (refs: #1067:closed)
+planning/roadmaps/id.md line 19: | First new providers | planned | A bounded key-value store, content-address
 COMMENT by coderabbitai at 2026-11-22T20:10:38Z: Warning
 Review limit reached
 You've used all free OSS reviews for now. Wait for the free limit to reset to keep reviewing this public repository.
@@ -1157,16 +935,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1175,24 +948,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-22T20:10:39Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-22T20:13:01.025785Z
 80c138b
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -1216,16 +982,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1234,24 +995,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-22T20:17:00Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T00:12:28.644317Z
 8ce87d8
 New commits
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -1269,42 +1023,28 @@ fleet queue health lumped failed terminal events into terminal_events_24h/7d tog
 After this PR, fleet queue health shows failed_events_7d per queue; 0 means the criterion holds over the window. The live broker serves the new columns once this lands and deploys; the instrument, not the measuremen
 COMMENT by coderabbitai at 2026-11-22T21:07:38Z: Walkthrough
 
-
-
 Queue health entries now include 24-hour and 7-day failed-event counts. The health query counts lease-expiry-at-cap events as terminal failures and applies failure classification to failed events. Tests cover initialization, aggregation, and classification.
 Changes: Queue health metrics
-
-
 
 Layer / File(s)
 Summary
 
-
-
-
-Calculate and fold terminal-event metrics  pkgs/fleet/crates/fleet-queue/src/turso_queue/admin.rs, pkgs/fleet/crates/fleet-queue/src/turso_queue.rs
+Calculate and fold terminal-event metrics pkgs/fleet/crates/fleet-queue/src/turso_queue/admin.rs, pkgs/fleet/crates/fleet-queue/src/turso_queue.rs
 Health entries ini
 COMMENT by chatgpt-codex-connector at 2026-11-22T21:07:47Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
-
-
 
 Review
 Status
 Commit
 Review trigger
 
-
-
-
 📝 Code Review
 ✅ Completed 2026-11-22T23:57:59.317340Z
 f68e5df
 New commits
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -1323,33 +1063,23 @@ Tests: 6 passing (roundtrip none + zstd, checksum corruption, idempotent re-pack
 Remaining for full acceptance: lineage grouping enforcement, proptest coverage, integration with standalone verifier (#8230) once it lands. Parked for capacity; resume recipe in issue comment.
 Refs #8227
 
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
 COMMENT by coderabbitai at 2026-11-23T00:11:20Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -1370,9 +1100,6 @@ Verification
 Not built locally: the foreground nix build .#id-crane exceeded the lane's time budget. CI is the verification path for this PR (see .github/ci-policy.md).
 Mirrors the proven pkgs/atlas-search crane wiring (#8560).
 
-
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
 COMMENT by coderabbitai at 2026-11-23T00:18:00Z: Warning
 Review limit reached
@@ -1382,16 +1109,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1417,16 +1139,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1452,33 +1169,23 @@ Package typecheck not run; no local tsc binary is installed.
 
 Related to #12536.
 
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
 COMMENT by coderabbitai at 2026-11-23T00:41:37Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -1506,26 +1213,18 @@ COMMENT by coderabbitai at 2026-11-23T00:50:52Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -1547,16 +1246,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1579,16 +1273,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1605,7 +1294,7 @@ Job id: fleet-work-loop-hourly, owner goal:developing-today-code-issue-resolutio
 Every hour (America/Chicago) the xaltha seat checks the fleet legs (repairing via init-ensure if down), checks in-flight work and open PRs, takes the next item via fleet agent next, refills the shortlist below 4 entries, works blockers rather than re-triaging, and reports briefly to the main chat.
 Definition file: /home/hatch/workspace/goals/developing-today-code-issue-resolution/crons/hourly/fleet-work-loop-hourly__interval@1h.md.
 
-This PR adds the job's row to the Surface 1 registry (mirroring the openclaw-gateway-death-watch row format from #12705) plus a Surface 
+This PR adds the job's row to the Surface 1 registry (mirroring the openclaw-gateway-death-watch row format from #12705) plus a Surface
 COMMENT by coderabbitai at 2026-11-23T03:42:07Z: Warning
 Review limit reached
 You've used all free OSS reviews for now. Wait for the free limit to reset to keep reviewing this public repository.
@@ -1614,16 +1303,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1635,18 +1319,13 @@ FILES: doc/fleet-schedule-registry.md
 TITLE: chore(mcpx): collected run seeds [skip ci]
 BODY: Seed records collected by the mcpx-seed-collector workflow (#1953) from test-seed run artifacts (#1949). One file per seed under pkgs/mcpx/testdata/seeds/v1; the seedstore guard test validates every record. Data only — no code changes.
 
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
 COMMENT by coderabbitai at 2026-11-23T05:37:52Z: Important
 Review skipped
 Bot user detected.
 To trigger a single review, invoke the @coderabbitai review command.
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1658,9 +1337,6 @@ Review profile: CHILL
 Plan: Advanced
 Run ID: d9106ab8-fef0-44f4-923a-fce9819e9aa1
 
-
-
-
 You can disable this status message by setting the reviews.review_status to false in the CodeRabbit configuration file.
 U
 FILES: pkgs/mcpx/testdata/seeds/v1/2026/11/01a2030d-92a0-7c11-98ac-20d2f2e0fe96.json, pkgs/mcpx/testdata/seeds/v1/2026/11/01a20887-0cc2-7cd3-ab93-223dcc0b5c72.json, pkgs/mcpx/testdata/seeds/v1/2026/11/01a2094a-eb83-7e2d-aeec-266f0b5bba5e.json, pkgs/mcpx/testdata/seeds/v1/2026/11/01a20a10-1b2e-721f-9c04-4e7689e4c465.json
@@ -1669,33 +1345,23 @@ FILES: pkgs/mcpx/testdata/seeds/v1/2026/11/01a2030d-92a0-7c11-98ac-20d2f2e0fe96.
 TITLE: cold-store: record dump size and checksum for atlas diagnostics
 BODY: Adds non-sensitive dump byte count and SHA-256 to export logs to correlate atlas reconstruction failures with downloaded artifacts. Existing repair/dedupe/vector-index diagnostics are retained. No change to backup data or export ordering. Not run against live backups; validation and deployment pending laptop access. Related #12000 and #12112.
 
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
 COMMENT by coderabbitai at 2026-11-23T05:57:51Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -1716,34 +1382,23 @@ Verification
 Existing-dependency offline tsc --noEmit; 32 Bun tests in the transport/store suites. Fixtures cover request/response equivalence, malformed and missing values, diagnostic failure, zero versus unknown, and exact operation/chunk attribution.
 No tests against live Turso, no live activation, and no change to deploy settings.
 
-
-
-
 Open in [code]smith · Need help on this PR? Tag @codesmith-bot with what you need.
 COMMENT by coderabbitai at 2026-11-23T06:12:28Z: Important
 Draft PR not reviewed
 Draft PRs are not automatically reviewed by default.
 
-  Trigger a manual review
+Trigger a manual review
 
 To automatically review draft PRs, update your CodeRabbit configuration:
 reviews:
-  auto_review:
-    drafts: true
+auto_review:
+drafts: true
 
-
-
-
-  Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
-
-
+Autofix · Keep fixing CodeRabbit findings and required CI, and resolving merge conflicts
 
 Thanks for using CodeRabbit! It's free for OSS, and your support helps us grow. If you like it, consider giving us a shout-out.
 
 Share
-
-
-
 
 X
 Mastodon
@@ -1755,12 +1410,12 @@ FILES: pm-stack/aggregator/README.md, pm-stack/aggregator/src/remote-stores.ts, 
 TITLE: id: model fenced migration transitions
 BODY: Summary
 beginMigration(directory, request)
-  keep source active; create pending state at epoch E+1
+keep source active; create pending state at epoch E+1
 
 transitionMigration(state, event)
-  freeze acknowledgement -> verified snapshot -> switch at E+2 -> activate target
-  pre-switch abort -> source at fresh epoch
-  post-switch abort -> rejected
+freeze acknowledgement -> verified snapshot -> switch at E+2 -> activate target
+pre-switch abort -> source at fresh epoch
+post-switch abort -> rejected
 
 Adds a pure transition model and invariant tests. It does not persist state, perform CAS/lease/fencing, or enable production migration; those remain gated on the directory, routing, storage, and hosted mutation interfaces.
 Evidence
@@ -1780,16 +1435,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1798,24 +1448,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T07:24:47Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T07:26:42.149310Z
 f9910e2
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -1834,7 +1477,7 @@ What
 
 tenancy/migrations/0001_tenancy_baseline.sql — the §2.1 schema as a Turso/SQLite migration: account (identity registry), binding (account→identity/tenant pointer), tenant_db (database registry), role_grant (#1253 vocabulary), peer_policy (#9106/B31 classes as configuration, not a parallel trust model), publish_record, credential (metadata only), plus a meta table carrying schema_version (the user-do.ts bootstrap pattern).
 tenancy/README.md — the plane rules, the invariant, and the migration discipline (numbered, append-only; E2/E4/E5 add files here).
-test/tenancy-schema.test.ts — guard suite (below), wired into npm test 
+test/tenancy-schema.test.ts — guard suite (below), wired into npm test
 COMMENT by coderabbitai at 2026-11-23T07:34:55Z: Warning
 Review limit reached
 You've used all free OSS reviews for now. Wait for the free limit to reset to keep reviewing this public repository.
@@ -1843,16 +1486,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1861,24 +1499,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T07:34:59Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T07:37:35.300762Z
 511c3a2
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -1893,7 +1524,7 @@ FILES: .github/test-suite-registry.json, pkgs/id/hosted-worker/README.md, pkgs/i
 
 ===== code#13047 draft=False mergeable=UNKNOWN state=UNKNOWN files=29 +0/-23451 created=2026-11-23T07:36:53Z updated=2026-11-23T07:39:15Z
 TITLE: chore(repo-root): remove stale slice-1 status files and committed session transcript (#12136)
-BODY: Refs #12136 — the removal slice. The issue's third fix bullet (a guard check rejecting new root *COMPLETE* / *SUMMARY* files) is not in this PR, so this does not close the issue.
+BODY: Refs #12136 — the removal slice. The issue's third fix bullet (a guard check rejecting new root _COMPLETE_ / _SUMMARY_ files) is not in this PR, so this does not close the issue.
 What was removed (29 files, 23,451 lines, all at the repo root)
 26 stale slice-1 status documents:
 FINAL_SLICE1_COMPLETION_REPORT.md, IMPLEMENTATION_COMPLETE.md, IMPLEMENTATION_COMPLETE_SLICE1.md, IMPLEMENTATION_COMPLETE.txt, IMPLEMENTATION_STATUS.md, IMPLEMENTATION_SUMMARY.md, OPENCODE_CLAIMANT_SLICE1_COMPLETE.md, OPENCODE_CLAIMANT_SLICE1_SUMMARY.md, OPENCODE_SLICE1_COMPLETE.md, README_SLICE1_COMPLETION.md, SLICE1_COMPLETE.txt, SLICE1_COMPLETION_CONFIRMATION.md, SLICE_1_COMPLETION_REPORT.md, SLICE1_COMPLETION_REPORT.md, SLICE1_COMPLETION_SUMMARY.md, SLICE1_COMPLETION_SUMMARY.txt, SLICE1_FINAL_SUMMARY.md, slice1_final_verification.md, SLICE1_IMPLEMENTATION_COMPLETE.md, SLICE1_IMPLEMENTATION_CONFIRMATION.md, SLIC
@@ -1905,16 +1536,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1923,24 +1549,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T07:37:05Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T07:39:14.966888Z
 bbee41f
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -1952,7 +1571,7 @@ Codex reacts with 👀 while any review is run
 FILES: FINAL_SLICE1_COMPLETION_REPORT.md, IMPLEMENTATION_COMPLETE.md, IMPLEMENTATION_COMPLETE.txt, IMPLEMENTATION_COMPLETE_SLICE1.md, IMPLEMENTATION_STATUS.md, IMPLEMENTATION_SUMMARY.md, OPENCODE_CLAIMANT_SLICE1_COMPLETE.md, OPENCODE_CLAIMANT_SLICE1_SUMMARY.md, OPENCODE_SLICE1_COMPLETE.md, README_SLICE1_COMPLETION.md, SLICE1_COMPLETE.txt, SLICE1_COMPLETION_CONFIRMATION.md, SLICE1_COMPLETION_REPORT.md, SLICE1_COMPLETION_SUMMARY.md, SLICE1_COMPLETION_SUMMARY.txt, SLICE1_FINAL_SUMMARY.md, SLICE1_IMPLEMENT
 
 ===== code#13060 draft=False mergeable=MERGEABLE state=CLEAN files=6 +210/-0 created=2026-11-23T07:43:40Z updated=2026-11-23T17:19:51Z
-TITLE: feat(ci): guard against new root *COMPLETE* / *SUMMARY* status files (#12136)
+TITLE: feat(ci): guard against new root _COMPLETE_ / _SUMMARY_ status files (#12136)
 BODY: Refs #12136 — the guard slice, stacked on PR #13047 (the removal slice). Lands after #13047: this PR's base is xaltha/12136-root-cleanup, and the guard is green only on a tree where the stale root files are gone. Once #13047 merges and this PR's base retargets to main, #12136's third fix bullet is done and the issue can close.
 What this adds
 
@@ -1964,10 +1583,7 @@ Review skipped
 Auto reviews are disabled on base/target branches other than the default branch.
 Please check the settings in the CodeRabbit UI or the .coderabbit.yaml file in this repository. To trigger a single review, invoke the @coderabbitai review command.
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -1981,24 +1597,17 @@ Run ID: 5e8e
 COMMENT by chatgpt-codex-connector at 2026-11-23T07:43:53Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T07:45:52.471535Z
 3cf36fb
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2016,10 +1625,10 @@ Unresolved review finding: the Codex review at head 3cf36fb reports unresolved f
 FILES: .github/ci-policy.md, .github/scripts/check-ci-policy-agreement.sh, .github/scripts/check-root-status-files.sh, .github/scripts/check-root-status-files.test.sh, .github/test-suite-registry.json, .github/workflows/root-status-guard.yml
 
 ===== code#13089 draft=False mergeable=UNKNOWN state=UNKNOWN files=18 +8895/-8527 created=2026-11-23T08:03:58Z updated=2026-11-23T08:06:27Z
-TITLE: pm-stack: split render.ts (8,515 lines) into render-*.ts view modules (#13051)
+TITLE: pm-stack: split render.ts (8,515 lines) into render-_.ts view modules (#13051)
 BODY: What
 Split pm-stack/aggregator/src/render.ts (8,515 lines) by view into ten
-render-*.ts modules, each under the 2,500-line production limit, and remove
+render-_.ts modules, each under the 2,500-line production limit, and remove
 render.ts's grandfather entry from .github/scripts/check-production-line-limit.sh
 in the same PR, per the guard's convention.
 render.ts is now a barrel that re-exports every public name, so all existing
@@ -2031,14 +1640,9 @@ their home module. Module bodies verified verbatim against the original file
 (line-multiset identical modulo export prefixes).
 Module map
 
-
-
 module
 lines
 contents
-
-
-
 
 render-core.ts
 1,461
@@ -2051,16 +1655,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2069,24 +1668,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T08:04:11Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T08:06:26.768432Z
 fc08943
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2104,34 +1696,25 @@ What
 pm-stack/aggregator/src/server.ts was 5,299 lines and grandfathered in .github/scripts/check-production-line-limit.sh. This PR splits it along its existing seams (wiring, contexts, pages, routes) with no behaviour change, and removes the server.ts grandfather entry from the guard in the same PR, per the guard's convention.
 Module map
 
-
-
 Module
 Lines
 Contents
-
-
-
 
 server.ts
 1,813
 Read routes, the dispatch, fetchHandler, bootstrap + timers
 
-
 server-wiring.ts
 412
 Config, stores, source selection, consumers, source-side sinks, fail-soft facet fallbacks
-
 
 server-contexts.ts
 809
 Cached page/API assemblies (board, roadmap, today, overview, attention, program) + health assembly, provenance priming, SLO summaries
 
-
 server-pages.ts
 716
 Standalone token pages: Needs-Drew answer page (#8568), decision-set pages (#8766), PWA manifest
-
 
 server-write-routes.ts
 744
@@ -2144,16 +1727,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2162,24 +1740,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T08:06:19Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T08:08:17.059445Z
 2f9a5b8
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2197,16 +1768,13 @@ Base: stacked on xaltha/12826-hosted-collector (slice 2, PR pending). The API re
 Endpoints (read-only; the store layer issues SELECTs only; no token is read, minted, or persisted on this path — E §2.3):
 
 GET /api/projects.json — projects[]: every registry board with its latest snapshot audit, plus the merged pool as items. A board with no landed snapshot serves snapshot: null, audit: null — honest absence, never fabricated.
-GET /api/item/<id>.json — one pool item by ref, with ancestors[] + release + the 
+GET /api/item/<id>.json — one pool item by ref, with ancestors[] + release + the
 COMMENT by coderabbitai at 2026-11-23T08:10:12Z: Important
 Review skipped
 Auto reviews are disabled on base/target branches other than the default branch.
 Please check the settings in the CodeRabbit UI or the .coderabbit.yaml file in this repository. To trigger a single review, invoke the @coderabbitai review command.
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2220,24 +1788,17 @@ Run ID: 09c1
 COMMENT by chatgpt-codex-connector at 2026-11-23T08:10:18Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T08:16:30.370156Z
 5ddfc6e
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2269,16 +1830,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2287,24 +1843,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T08:16:48Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T08:18:38.530331Z
 7b58cdf
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2333,16 +1882,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2351,24 +1895,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T08:24:01Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T08:25:46.994903Z
 38b1d6f
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2400,16 +1937,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2418,24 +1950,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T08:41:17Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T08:42:46.840883Z
 f47ed4a
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2462,16 +1987,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2480,24 +2000,17 @@ File: No configuration file from this repository ap
 COMMENT by chatgpt-codex-connector at 2026-11-23T08:55:27Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T08:57:44.689050Z
 8a9c431
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2526,16 +2039,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2544,24 +2052,17 @@ File: No configuration file from this repository ap
 COMMENT by chatgpt-codex-connector at 2026-11-23T08:55:26Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T08:56:51.005140Z
 52315ba
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 
@@ -2578,21 +2079,14 @@ BODY: Step 2.2 of #9016 — the Queue/GitHub sync verbs. Refs #10973.
 What landed
 Eight typed fleet gh sync-* shadow verbs (new module pkgs/fleet/crates/fleet/src/gh_sync.rs): each declares its whole command line, validates it strictly (the #3352 contract — undeclared arguments are usage errors), and rewrites to the canonical gh call. The rewrite is applied in gh::run before the close guard, the closure layer and the metadata create path parse the arguments, so a sync call inherits the step-1 token rotation, the retry-safety rule, value-free errors and the audit trail exactly as the hand-written passthrough call it replaces — and the caller's stdout contract stays gh's own output, byte-exact.
 
-
-
 Verb
 Canonical call
-
-
-
 
 sync-labels --repo R <issue|pr> N
 <kind> view N --json labels --jq [.labels[].name]
 
-
 sync-view --repo R <issue|pr> N
 <kind> view N --json labels,state,title
-
 
 sync-comment --repo
 COMMENT by coderabbitai at 2026-11-23T09:23:54Z: Warning
@@ -2603,16 +2097,11 @@ Check out review usage here.
 
 View limit details
 
-
-
 Limit details: You’ve used the included review currently available.
 Learn how review limits work.
 Review configuration:
 
- Run configuration
-
-
-
+Run configuration
 
 Source mode: Auto
 Repository: Unavailable
@@ -2621,24 +2110,17 @@ File: No configuration file from this repository a
 COMMENT by chatgpt-codex-connector at 2026-11-23T09:23:57Z: Codex Review Summary: ✅ Completed
 This comment shows the latest Codex review activity on this pull request.
 
-
-
 Review
 Status
 Commit
 Review trigger
-
-
-
 
 📝 Code Review
 ✅ Completed 2026-11-23T09:29:44.907471Z
 d142839
 PR opened
 
-
-
- ℹ️ About Codex in GitHub
+ℹ️ About Codex in GitHub
 
 Your team has set up Codex to review pull requests in this repo. Reviews are triggered when you
 

@@ -1,38 +1,38 @@
 {
- "title": "AUDIT-7 Lane 7 slice C: forks + fleet open items stray-work pass (80 items)",
- "body": "Open items at AUDIT-7 census (2026-11-23): developing-today-forks/opencode 39, developing-today-forks/openchamber 32, dezren39/fleet 9. Labels stray-work / stray/needs-parent / audit-7 already created in all three repos. For each item, one by one, read in full incl. comments (per_page=100; lane claim = hard stop - lanes 2-4 own fork PR scopes; where another lane owns the item, record the linkage finding as a pointer comment on umbrella code#13871 instead of editing). Label stray items; link each to its parent in developing-today/code where one exists (opencode-platform epic, epic(openchamber) code#1234, fleet maintenance epic code#12460) via a comment on the item naming the parent, and a pointer comment on the parent. dezren39/fleet has only 15 labels and 106/113 window items unlabeled: apply the code-repo label taxonomy subset (kind/*, stray-work) to its 19 window issues.",
- "priority": 60,
- "dedupe_key": "audit7:lane7:feature_slice:code:13874:C",
- "payload": {
-  "schema": "repo-health/v1",
-  "kind": "feature_slice",
-  "repo": "developing-today/code",
-  "max_attempts": 2,
-  "timebox_minutes": 120,
-  "risk": "low: label + sub-issue metadata only, no code changes, no closes",
-  "tests": [
-   "readback via fleet gh api: parent sub_issues list contains child; child labels contain stray-work + primary-parent/*"
-  ],
-  "slice": "C",
-  "issue": 13874,
-  "problem": "Open items at AUDIT-7 census (2026-11-23): developing-today-forks/opencode 39, developing-today-forks/openchamber 32, dezren39/fleet 9. Labels stray-work / stray/needs-parent / audit-7 already created in all three repos. For each item, one by one, read in full incl. comments (per_page=100; lane claim = hard stop - lanes 2-4 own fork PR scopes; where another lane owns the item, record the linkage finding as a pointer comment on umbrella code#13871 instead of editing). Label stray items; link each to its parent in developing-today/code where one exists (opencode-platform epic, epic(openchamber) code#1234, fleet maintenance epic code#12460) via a comment on the item naming the parent, and a pointer comment on the parent. dezren39/fleet has only 15 labels and 106/113 window items unlabeled: apply the code-repo label taxonomy subset (kind/*, stray-work) to its 19 window issues.",
-  "scope": "Open items at AUDIT-7 census (2026-11-23): developing-today-forks/opencode 39, developing-today-forks/openchamber 32, dezren39/fleet 9. Labels stray-work / stray/needs-parent / audit-7 already created in all three repos. For each item, one by one, read in full incl. comments (per_page=100; lane claim = hard stop - lanes 2-4 own fork PR scopes; where another lane owns the item, record the linkage finding as a pointer comment on umbrella code#13871 instead of editing). Label stray items; link each to its parent in developing-today/code where one exists (opencode-platform epic, epic(openchamber) code#1234, fleet maintenance epic code#12460) via a comment on the item naming the parent, and a pointer comment on the parent. dezren39/fleet has only 15 labels and 106/113 window items unlabeled: apply the code-repo label taxonomy subset (kind/*, stray-work) to its 19 window issues.",
-  "acceptance": [
-   "all 80 open fork/fleet items read and dispositioned",
-   "cross-repo parent links recorded on both item and parent",
-   "progress on code#13874"
-  ],
-  "context_refs": [
-   "https://github.com/developing-today/code/issues/13874",
-   "https://github.com/developing-today/code/issues/13871"
-  ],
-  "priority_reason": "AUDIT-7 Lane 7 continuation slices ordered by the lane brief; exhaustive stray-work hygiene for the four repos",
-  "dedupe": {
-   "basis": "Singular ownership: Lane 7 tracking issue code#13874 is the only stray-work audit; batches 1-2 done by Lane 7 session 2026-11-23; these slices cover disjoint remaining sets (A: text-linked, B: orphans, C: forks/fleet)",
-   "checked_at": "2026-11-24T00:40:00Z"
-  },
-  "evidence": [
-   "Lane 7 census on code#13874 slice-1 comment: 18,594 items in window; 1,405 open; code open issues 587 parent-labelled / 521 text-linked / 91 orphaned"
-  ]
- }
+  "title": "AUDIT-7 Lane 7 slice C: forks + fleet open items stray-work pass (80 items)",
+  "body": "Open items at AUDIT-7 census (2026-11-23): developing-today-forks/opencode 39, developing-today-forks/openchamber 32, dezren39/fleet 9. Labels stray-work / stray/needs-parent / audit-7 already created in all three repos. For each item, one by one, read in full incl. comments (per_page=100; lane claim = hard stop - lanes 2-4 own fork PR scopes; where another lane owns the item, record the linkage finding as a pointer comment on umbrella code#13871 instead of editing). Label stray items; link each to its parent in developing-today/code where one exists (opencode-platform epic, epic(openchamber) code#1234, fleet maintenance epic code#12460) via a comment on the item naming the parent, and a pointer comment on the parent. dezren39/fleet has only 15 labels and 106/113 window items unlabeled: apply the code-repo label taxonomy subset (kind/*, stray-work) to its 19 window issues.",
+  "priority": 60,
+  "dedupe_key": "audit7:lane7:feature_slice:code:13874:C",
+  "payload": {
+    "schema": "repo-health/v1",
+    "kind": "feature_slice",
+    "repo": "developing-today/code",
+    "max_attempts": 2,
+    "timebox_minutes": 120,
+    "risk": "low: label + sub-issue metadata only, no code changes, no closes",
+    "tests": [
+      "readback via fleet gh api: parent sub_issues list contains child; child labels contain stray-work + primary-parent/*"
+    ],
+    "slice": "C",
+    "issue": 13874,
+    "problem": "Open items at AUDIT-7 census (2026-11-23): developing-today-forks/opencode 39, developing-today-forks/openchamber 32, dezren39/fleet 9. Labels stray-work / stray/needs-parent / audit-7 already created in all three repos. For each item, one by one, read in full incl. comments (per_page=100; lane claim = hard stop - lanes 2-4 own fork PR scopes; where another lane owns the item, record the linkage finding as a pointer comment on umbrella code#13871 instead of editing). Label stray items; link each to its parent in developing-today/code where one exists (opencode-platform epic, epic(openchamber) code#1234, fleet maintenance epic code#12460) via a comment on the item naming the parent, and a pointer comment on the parent. dezren39/fleet has only 15 labels and 106/113 window items unlabeled: apply the code-repo label taxonomy subset (kind/*, stray-work) to its 19 window issues.",
+    "scope": "Open items at AUDIT-7 census (2026-11-23): developing-today-forks/opencode 39, developing-today-forks/openchamber 32, dezren39/fleet 9. Labels stray-work / stray/needs-parent / audit-7 already created in all three repos. For each item, one by one, read in full incl. comments (per_page=100; lane claim = hard stop - lanes 2-4 own fork PR scopes; where another lane owns the item, record the linkage finding as a pointer comment on umbrella code#13871 instead of editing). Label stray items; link each to its parent in developing-today/code where one exists (opencode-platform epic, epic(openchamber) code#1234, fleet maintenance epic code#12460) via a comment on the item naming the parent, and a pointer comment on the parent. dezren39/fleet has only 15 labels and 106/113 window items unlabeled: apply the code-repo label taxonomy subset (kind/*, stray-work) to its 19 window issues.",
+    "acceptance": [
+      "all 80 open fork/fleet items read and dispositioned",
+      "cross-repo parent links recorded on both item and parent",
+      "progress on code#13874"
+    ],
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/13874",
+      "https://github.com/developing-today/code/issues/13871"
+    ],
+    "priority_reason": "AUDIT-7 Lane 7 continuation slices ordered by the lane brief; exhaustive stray-work hygiene for the four repos",
+    "dedupe": {
+      "basis": "Singular ownership: Lane 7 tracking issue code#13874 is the only stray-work audit; batches 1-2 done by Lane 7 session 2026-11-23; these slices cover disjoint remaining sets (A: text-linked, B: orphans, C: forks/fleet)",
+      "checked_at": "2026-11-24T00:40:00Z"
+    },
+    "evidence": [
+      "Lane 7 census on code#13874 slice-1 comment: 18,594 items in window; 1,405 open; code open issues 587 parent-labelled / 521 text-linked / 91 orphaned"
+    ]
+  }
 }

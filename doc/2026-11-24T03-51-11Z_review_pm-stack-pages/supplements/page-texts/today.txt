@@ -1,0 +1,590 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+orchestration · live · 18m old
+quota · live · 4m old
+attention · live · 4m old
+Today
+stack 7/7 up
+feed 2m
+orchestrator 16m
+quota errors 11
+
+From the orchestration job's goal measurements (section written 2026-11-24 03:13:18Z). Machine-first: /api/today.json · /api/orchestration.json.
+
+2 items in the user queue — review them
+Quota action: OpenAI — ChatGPT (Alternate — popesdrew) is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: OpenAI — ChatGPT (Main — drewrypope) is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: ClinePass — Cline Pass (Annual) is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: Mistral AI — API + Vibe (monthly credits) is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: OpenCode Go — 0x111dev account is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: OpenCode Go — developing-today-0 account is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: OpenCode Go — drewrypope account is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: OpenCode Go — popesdrew account is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: Open Design — Go is walled — Walled with no lift date recorded — check the pool before starting sessions quota
+Quota action: OpenCode Go — 0x111dev account at 100% — weekly window 100% used · resets 2026-11-30 — burn it down or hold new sessions quota
+Quota action: Mistral AI — API + Vibe (monthly credits) at 100% — api window 100% used · resets 2026-12-01 — burn it down or hold new sessions quota
+Quota action: OpenCode Go — drewrypope account at 100% — monthly window 100% used · resets 2026-12-03 — burn it down or hold new sessions quota
+Quota action: OpenCode Go — popesdrew account at 100% — monthly window 100% used · resets 2026-12-03 — burn it down or hold new sessions quota
+Quota action: ClinePass — Cline Pass (Annual) at 100% — monthly window 100% used · resets 2026-12-06 — burn it down or hold new sessions quota
+Quota action: OpenCode Go — developing-today-0 account at 100% — monthly window 100% used · resets 2026-12-08 — burn it down or hold new sessions quota
+WIP cap violations: in-review 366/10; project https://github.com/orgs/developing-today/projects/4 · in-review 110/10 — board. Informational only; work is not blocked.
+Top objectives
+1
+developing-today/code #13619 / task 21424 — main-CI failure fix is claimed; checkpoint noted in backlog-devtoday-code.md orchestrator · today · Keep the four repos healthy
+in-progress — Latest live backlog entry says task claimed and checkpoint verified at 2026-11-23T19:17Z.
+gh:developing-today/code#13619
+2
+developing-today-forks/openchamber #2577 / task 21429 — stale OpenChamber update hash fix is claimed orchestrator · today · Keep the four repos healthy
+in-progress — Latest live backlog entry identifies the claimed fix for the latest above-watermark main failure.
+gh:developing-today-forks/openchamber#2577
+3
+OpenAI — ChatGPT (Alternate — popesdrew) is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+4
+OpenAI — ChatGPT (Main — drewrypope) is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+5
+ClinePass — Cline Pass (Annual) is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+6
+Mistral AI — API + Vibe (monthly credits) is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+7
+OpenCode Go — 0x111dev account is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+8
+OpenCode Go — developing-today-0 account is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+9
+OpenCode Go — drewrypope account is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+10
+OpenCode Go — popesdrew account is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+11
+Open Design — Go is walled quota · action
+Walled with no lift date recorded — check the pool before starting sessions
+12
+OpenCode Go — 0x111dev account at 100% quota · action
+weekly window 100% used · resets 2026-11-30 — burn it down or hold new sessions
+13
+Mistral AI — API + Vibe (monthly credits) at 100% quota · action
+api window 100% used · resets 2026-12-01 — burn it down or hold new sessions
+14
+OpenCode Go — drewrypope account at 100% quota · action
+monthly window 100% used · resets 2026-12-03 — burn it down or hold new sessions
+15
+OpenCode Go — popesdrew account at 100% quota · action
+monthly window 100% used · resets 2026-12-03 — burn it down or hold new sessions
+16
+ClinePass — Cline Pass (Annual) at 100% quota · action
+monthly window 100% used · resets 2026-12-06 — burn it down or hold new sessions
+17
+OpenCode Go — developing-today-0 account at 100% quota · action
+monthly window 100% used · resets 2026-12-08 — burn it down or hold new sessions
+Project momentum
+Keep the four repos healthy
+moving
+
+
+Four-repo health activity is continuing. Current attention: 5 errored, 44 needs-poke, 11 in-motion; session supervision belongs to the Fleet conductor. Fresh backlog evidence lines up active CI fixes in code #13619/task 21424 and OpenChamber #2577/task 21429. Laptop does not provide tracking.list, user_goal.list or goal timeline entries.
+Next up 5
+
+The next queued work, in the published horizon order.
+
+pm-dashboard · developing-today/code
+Todo · Week
+
+
+blocked(usage-hub): Open Design quota instrumentation — laptop sign-in, cookie capture, parser verification
+
+
+developing-today/code#1054
+
+
+4d since update · project-pool
+
+
+Project horizon: Week
+cloud-program · developing-today/code
+Todo · Week
+
+
+chore(usage-hub): close master-tracker open checks (ChatGPT tier, Go exact %, Claude reset, Wispr, Bitwarden, Muse plan)
+
+
+developing-today/code#1055
+
+
+1d since update · project-pool
+
+
+Epic: epic(usage-hub): SaaS/cloud services completion — v2 live collectors, daily console reads, v3 reconciliation
+
+
+Project horizon: Week
+pm-dashboard · developing-today/code
+Todo · Week
+
+
+feat(quota-plane): daily model + route audit — latest models incorporated, route rules cover all needs
+
+
+developing-today/code#1173
+
+
+updated today · project-pool
+
+
+Project horizon: Week
+pm-dashboard · developing-today/code
+Todo · Week
+
+
+chore(fleet): align opencode build revs across laptop service, laptop CLI, sandbox CLI
+
+
+developing-today/code#1362
+
+
+1d since update · project-pool
+
+
+Project horizon: Week
+pm-dashboard · developing-today/code
+Todo · Week
+
+
+chore(fleet): scope tailnet policy for the laptop opencode serve endpoint (amd-6:443)
+
+
+developing-today/code#1377
+
+
+2d since update · project-pool
+
+
+Project horizon: Week
+Pushed back into motion
+orchestrator-pass
+orchestration
+
+Republished 2 needs-Drew and 19 needs-orchestrator items; no session prompts or dispatches (conductor owns).
+
+2026-11-24 03:13:18Z
+Session coverage
+✓ OpenCode · sandbox server — wired · via fleet feed (4m old, collected 2026-11-24T03:27:08.701Z)
+✓ OpenCode · laptop server — wired · live from the OpenChamber-managed server (45 s cache)
+⚠ Muse — not wired · no launch records in the feed yet — Muse sessions register by appending a launch record (scripts/record-claude-launch.ts, #906 §3); the runtime exposes no session list to scrape
+Questions
+
+91 open sets · 347 open questions
+
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 3 questions · Raised Nov 16, 2026, 11:54 PM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 11:14 PM CST
+Pending questions — 2026-11-16 (2)
+
+
+3 open questions · 3 items · 3 questions · Raised Nov 16, 2026, 11:02 PM CST
+Pending questions — 2026-11-16
+
+
+6 open questions · 5 items · 6 questions · Raised Nov 16, 2026, 11:00 PM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 10:03 PM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 8:50 PM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 8:00 PM CST
+Pending questions — 2026-11-16
+
+
+1 open question · 1 item · 1 question · Raised Nov 16, 2026, 2:57 PM CST
+Pending questions — 2026-11-16
+
+
+1 open question · 1 item · 1 question · Raised Nov 16, 2026, 1:42 PM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 12:31 PM CST
+Pending questions — 2026-11-16
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 16, 2026, 11:36 AM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 10:33 AM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 9:48 AM CST
+Decisions — with the information you requested
+
+
+1 open question · 1 item · 1 question · Raised Nov 16, 2026, 9:48 AM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 6:40 AM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 5:32 AM CST
+Pending questions — 2026-11-16
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 16, 2026, 4:31 AM CST
+Pending questions — 2026-11-16
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 16, 2026, 3:38 AM CST
+Decisions — with the information you requested
+
+
+1 open question · 1 item · 1 question · Raised Nov 16, 2026, 3:38 AM CST
+Pending questions — 2026-11-16
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 16, 2026, 1:33 AM CST
+Pending questions — 2026-11-16
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 16, 2026, 12:32 AM CST
+Pending questions — 2026-11-15
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 15, 2026, 11:33 PM CST
+Pending questions — 2026-11-15
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 15, 2026, 10:32 PM CST
+Pending questions — 2026-11-15
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 15, 2026, 9:33 PM CST
+Pending questions — 2026-11-15
+
+
+9 open questions · 2 items · 9 questions · Raised Nov 15, 2026, 8:32 PM CST
+Pending questions — 2026-11-15
+
+
+5 open questions · 2 items · 5 questions · Raised Nov 15, 2026, 7:35 PM CST
+Pending questions — 2026-11-15
+
+
+5 open questions · 2 items · 5 questions · Raised Nov 15, 2026, 6:31 PM CST
+Pending questions — 2026-11-15
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 15, 2026, 5:32 PM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 4:34 PM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 3:32 PM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 2:33 PM CST
+Pending questions — 2026-11-15
+
+
+5 open questions · 2 items · 5 questions · Raised Nov 15, 2026, 1:32 PM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 12:34 PM CST
+Pending questions — 2026-11-15
+
+
+5 open questions · 2 items · 5 questions · Raised Nov 15, 2026, 11:33 AM CST
+Pending questions — 2026-11-15
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 15, 2026, 10:34 AM CST
+Pending questions — 2026-11-15
+
+
+9 open questions · 2 items · 9 questions · Raised Nov 15, 2026, 9:33 AM CST
+Pending questions — 2026-11-15
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 15, 2026, 8:32 AM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 7:32 AM CST
+Pending questions — 2026-11-15
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 15, 2026, 6:31 AM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 5:30 AM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 4:31 AM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 3:34 AM CST
+Pending questions — 2026-11-15
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 15, 2026, 2:30 AM CST
+Pending questions — 2026-11-15
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 15, 2026, 1:33 AM CST
+Pending questions — 2026-11-15
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 15, 2026, 12:33 AM CST
+Pending questions — 2026-11-14
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 14, 2026, 11:32 PM CST
+Pending questions — 2026-11-14
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 14, 2026, 9:32 PM CST
+Pending questions — 2026-11-14
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 14, 2026, 8:32 PM CST
+Pending questions — 2026-11-14
+
+
+9 open questions · 2 items · 9 questions · Raised Nov 14, 2026, 7:33 PM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 6:32 PM CST
+Pending questions — 2026-11-14
+
+
+5 open questions · 2 items · 5 questions · Raised Nov 14, 2026, 5:31 PM CST
+Pending questions — 2026-11-14
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 14, 2026, 4:32 PM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 3:32 PM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 2:33 PM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 1:33 PM CST
+Pending questions — 2026-11-14
+
+
+5 open questions · 2 items · 5 questions · Raised Nov 14, 2026, 12:33 PM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 11:37 AM CST
+Decisions — with the information you requested
+
+
+4 open questions · 1 item · 4 questions · Raised Nov 14, 2026, 11:36 AM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 9:34 AM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 4 questions · Raised Nov 14, 2026, 8:33 AM CST
+Pending questions — 2026-11-14
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 14, 2026, 7:31 AM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 6:36 AM CST
+Pending questions — 2026-11-14
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 14, 2026, 5:37 AM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 4:34 AM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 3:32 AM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 2:34 AM CST
+Pending questions — 2026-11-14
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 14, 2026, 1:55 AM CST
+Pending questions — 2026-11-13
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 13, 2026, 10:33 PM CST
+Pending questions — 2026-11-13
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 13, 2026, 9:33 PM CST
+Pending questions — 2026-11-13
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 13, 2026, 3:37 PM CST
+Pending questions — 2026-11-13
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 13, 2026, 2:32 PM CST
+Pending questions — 2026-11-13
+
+
+1 open question · 2 items · 2 questions · Raised Nov 13, 2026, 1:37 PM CST
+Pending questions — 2026-11-13
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 13, 2026, 12:34 PM CST
+Pending questions — 2026-11-13
+
+
+5 open questions · 2 items · 5 questions · Raised Nov 13, 2026, 11:34 AM CST
+Pending questions — 2026-11-13
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 13, 2026, 10:33 AM CST
+Pending questions — 2026-11-13
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 13, 2026, 9:35 AM CST
+Pending questions — 2026-11-13
+
+
+1 open question · 2 items · 2 questions · Raised Nov 13, 2026, 8:32 AM CST
+Pending questions — 2026-11-13
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 13, 2026, 7:39 AM CST
+Pending questions — 2026-11-13
+
+
+4 open questions · 2 items · 4 questions · Raised Nov 13, 2026, 6:32 AM CST
+Pending questions — 2026-11-13
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 13, 2026, 5:34 AM CST
+Pending questions — 2026-11-13
+
+
+3 open questions · 2 items · 3 questions · Raised Nov 13, 2026, 4:33 AM CST
+Pending questions — 2026-11-13
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 13, 2026, 3:34 AM CST
+Pending questions — 2026-11-13
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 13, 2026, 2:33 AM CST
+Pending questions — 2026-11-13
+
+
+2 open questions · 2 items · 3 questions · Raised Nov 13, 2026, 1:35 AM CST
+Open questions — pending decisions (auto-maintained from the ledger)
+
+
+56 open questions · 39 items · 56 questions · Raised Nov 13, 2026, 1:35 AM CST
+Pending questions — 2026-11-13
+
+
+1 open question · 2 items · 2 questions · Raised Nov 13, 2026, 12:33 AM CST
+Decision Sets v2 verification — link system improvements ruling
+
+
+1 open question · 1 item · 1 question · Raised Nov 12, 2026, 11:37 PM CST
+Decisions — with the information you requested
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 12, 2026, 2:37 PM CST
+All open questions — full backlog
+
+
+30 open questions · 40 items · 42 questions · Raised Nov 12, 2026, 1:11 AM CST
+Blocked design questions — your rulings
+
+
+8 open questions · 11 items · 11 questions · Raised Nov 11, 2026, 8:17 PM CST
+Decisions — with the information you requested
+
+
+2 open questions · 2 items · 2 questions · Raised Nov 11, 2026, 5:34 PM CST
+
+All decision sets
+
+Live from the decision-set store at page load.
+
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870

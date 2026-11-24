@@ -83,13 +83,11 @@ class TestCohortRule(unittest.TestCase):
                 "--date", "2026-11-24", "--all", stdin_text="\n".join(inventory)
             ).stdout.decode()
         )
-        by_cohort = {
-            entry["cohort"]: entry["databases"] for entry in got["cohorts"]
-        }
+        by_cohort = {entry["cohort"]: entry["databases"] for entry in got["cohorts"]}
         for name in ("alpha-db", "beta-db", "gamma-db"):
-            expected = int.from_bytes(
-                hashlib.sha256(name.encode()).digest()[:8], "big"
-            ) % 14
+            expected = (
+                int.from_bytes(hashlib.sha256(name.encode()).digest()[:8], "big") % 14
+            )
             self.assertIn(name, by_cohort[expected])
 
     def test_due_cohort_databases_are_that_cohorts_members(self):
@@ -97,10 +95,14 @@ class TestCohortRule(unittest.TestCase):
         day = date(2026, 11, 24)
         due = plan_for(inventory, day)
         full = json.loads(
-            run_cli("--date", day.isoformat(), "--all", stdin_text="\n".join(inventory)).stdout.decode()
+            run_cli(
+                "--date", day.isoformat(), "--all", stdin_text="\n".join(inventory)
+            ).stdout.decode()
         )
         members = next(
-            entry["databases"] for entry in full["cohorts"] if entry["cohort"] == due["cohort"]
+            entry["databases"]
+            for entry in full["cohorts"]
+            if entry["cohort"] == due["cohort"]
         )
         self.assertEqual(due["databases"], members)
 
@@ -128,10 +130,14 @@ class TestCohortRule(unittest.TestCase):
     def test_cohort_flag_selects_one_cohort(self):
         inventory = ["alpha-db", "beta-db", "gamma-db"]
         got = json.loads(
-            run_cli("--date", "2026-11-24", "--cohort", "5", stdin_text="\n".join(inventory)).stdout.decode()
+            run_cli(
+                "--date", "2026-11-24", "--cohort", "5", stdin_text="\n".join(inventory)
+            ).stdout.decode()
         )
         full = json.loads(
-            run_cli("--date", "2026-11-24", "--all", stdin_text="\n".join(inventory)).stdout.decode()
+            run_cli(
+                "--date", "2026-11-24", "--all", stdin_text="\n".join(inventory)
+            ).stdout.decode()
         )
         members = next(
             entry["databases"] for entry in full["cohorts"] if entry["cohort"] == 5
@@ -182,7 +188,9 @@ class TestCohortInvariants(unittest.TestCase):
                 got = plan_for(inventory, day)
                 full = json.loads(
                     run_cli(
-                        "--date", day.isoformat(), "--all",
+                        "--date",
+                        day.isoformat(),
+                        "--all",
                         stdin_text="\n".join(inventory),
                     ).stdout.decode()
                 )
@@ -193,7 +201,9 @@ class TestCohortInvariants(unittest.TestCase):
             held = [name for entry in full["cohorts"] for name in entry["databases"]]
             # In range: 14 cohorts, indices 0..13.
             self.assertEqual(len(full["cohorts"]), 14)
-            self.assertEqual([entry["cohort"] for entry in full["cohorts"]], list(range(14)))
+            self.assertEqual(
+                [entry["cohort"] for entry in full["cohorts"]], list(range(14))
+            )
             # Unique: every class-B database in exactly one cohort.
             self.assertEqual(sorted(held), class_b)
             self.assertEqual(len(held), len(set(held)))

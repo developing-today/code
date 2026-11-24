@@ -1,18 +1,18 @@
 # Agent Substrate and the agent-sandbox field — full analysis
 
-*Lane AGENT-SANDBOX-SURVEY, 2026-11-23. Companion research to the CNCF
+_Lane AGENT-SANDBOX-SURVEY, 2026-11-23. Companion research to the CNCF
 landscape investigation (`doc/` research records, platform & GitOps and
 runtimes lanes). Drew's questions, verbatim in substance: tell me more about
 Agent Substrate and comparable alternatives; what does it mean to decouple
 agent state from a warm pool of sandbox workers with snapshot/restore; how
 does it compare to boat.dev, "chai systems", Boxer.dev, Freestyle.sh; are
-there other competitors to consider?*
+there other competitors to consider?_
 
-*Method: three parallel research lanes (Agent Substrate primary sources;
+_Method: three parallel research lanes (Agent Substrate primary sources;
 the four named products; the wider field), cross-checked against Google's
 announcement posts and the project's own architecture doc. Vendor numbers
 are labelled vendor claims throughout. Full lane notes are supplements in
-this folder.*
+this folder._
 
 ---
 
@@ -30,7 +30,7 @@ cncf/sandbox#523; CNCF's project page dates acceptance 28 September 2026,
 secondary trackers put the application close at 20 October — the safe
 statement is "accepted Sept–Oct 2026, donation announced 5 Nov 2026").
 A managed form, **Agent Substrate on GKE**, went GA the same day. It is
-*not* an agent SDK, and it is *not* the separate
+_not_ an agent SDK, and it is _not_ the separate
 `kubernetes-sigs/agent-sandbox` project (Sandbox CRD + warm pools, no
 memory multiplexing) — secondary coverage conflates them constantly.
 
@@ -43,7 +43,7 @@ contradict current ones (Redis vs PostgreSQL state store; older, better
 headline numbers — see below); no external security audit found; **no
 independent, named, direct production deployment verified** — Nous
 Research and SPIRITT are "building on it" per Google, and kagent (Solo.io)
-runs on it. Anthropic/OpenAI/Modal/Snowflake are *gVisor* users, not
+runs on it. Anthropic/OpenAI/Modal/Snowflake are _gVisor_ users, not
 Substrate users, despite secondary articles misattributing them.
 
 ### Architecture in brief
@@ -71,7 +71,7 @@ limitation.
 
 ### The decoupling, in plain words (the section Drew asked for)
 
-An agent session spends most of its life *waiting*: it runs code for a few
+An agent session spends most of its life _waiting_: it runs code for a few
 seconds, then pauses for a model turn, a tool call, or a human. Google's
 own figure is that agents are idle 90–95% of the time. The conventional
 setup gives every session its own container or Pod for its whole lifetime —
@@ -80,11 +80,11 @@ given moment, almost all asleep.
 
 Substrate splits the session into two things that are usually fused:
 
-- **The Actor** — everything that makes the session *itself*: its running
+- **The Actor** — everything that makes the session _itself_: its running
   processes and RAM, its files, its environment, and its identity. This is
   "agent state."
 - **The Worker** — an anonymous, reusable sandbox (a warm Pod with a
-  gVisor or microVM runtime inside) that merely *hosts* an Actor while the
+  gVisor or microVM runtime inside) that merely _hosts_ an Actor while the
   Actor is awake. Workers hold no identity and no state worth keeping.
 
 **The warm pool** is a set of Workers kept running and empty, so that
@@ -94,7 +94,7 @@ scheduling. Think hotel rooms kept made-up, not houses built per guest.
 **Snapshot/restore** is the mechanism that lets the two halves separate.
 When an Actor suspends, the runtime freezes its process tree and writes
 its memory and filesystem to storage (gVisor's native checkpoint/restore
-on the default class — *not* CRIU; VM memory snapshots with demand paging
+on the default class — _not_ CRIU; VM memory snapshots with demand paging
 on the microVM class). The Worker is wiped and returned to the pool for
 someone else. When the next request for that Actor arrives, the router
 holds the request, the control plane claims any free Worker, the snapshot
@@ -142,7 +142,7 @@ and RAM — the full "it never stopped" illusion).
   snapshot/restore system this is a genuine open question, not a detail.
 
 The one-sentence version: **Substrate turns an agent session from a
-*place* (a container that must stay alive) into a *file* (a snapshot that
+_place_ (a container that must stay alive) into a _file_ (a snapshot that
 can sleep in storage and wake on any warm worker) — and charges you disk
 bandwidth, reconnect logic, and a small durability window for the
 privilege.**
@@ -151,19 +151,19 @@ privilege.**
 
 ## Part 2 — The four names Drew dictated
 
-| Name as dictated | Verdict |
-|---|---|
-| Freestyle.sh | **Identified, real, exactly in this space.** |
-| boat.dev | **Identified, literal — not a misdictation.** |
-| "chai systems" | **Not pinned in this space.** |
-| Boxer.dev | **Identified literally, but the domain is probably not the sandbox product; two namesakes untangled below.** |
+| Name as dictated | Verdict                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------ |
+| Freestyle.sh     | **Identified, real, exactly in this space.**                                                                 |
+| boat.dev         | **Identified, literal — not a misdictation.**                                                                |
+| "chai systems"   | **Not pinned in this space.**                                                                                |
+| Boxer.dev        | **Identified literally, but the domain is probably not the sandbox product; two namesakes untangled below.** |
 
 **Freestyle** (freestyle.sh) — hosted full Linux VMs for AI agents: root,
 SSH, systemd, nested virtualisation, default-deny networking, on its own
 bare metal. YC Summer 2024, ex-Apple founders, pivoted twice to land on
 agent VMs (Launch HN April 2026). Its differentiator is state handling:
 memory-preserving suspend/resume (vendor claim <100 ms resume), live
-forking of a running VM *including memory*, immutable snapshot layers.
+forking of a running VM _including memory_, immutable snapshot layers.
 Per-second usage pricing ($0.04032/vCPU-hr, $0.0129/GiB-hr RAM) over
 monthly minimums ($0 free tier / $50 / $500 / enterprise). Not
 self-hostable; proprietary hosted service, very small team.
@@ -171,8 +171,7 @@ self-hostable; proprietary hosted service, very small team.
 **boat** (boat.dev) — cloud sandboxes for AI agents: full Ubuntu VMs with
 own kernel, root, Docker, /dev/kvm, a public URL per port, and a
 streamable desktop; seven built-in agent harnesses (Claude Code, Codex,
-OpenCode, Pi, and others) behind one API. Paris-based, 3 people, YC Fall
-2026. **It was previously ASCII's "Box" (box.ascii.dev), renamed Box →
+OpenCode, Pi, and others) behind one API. Paris-based, 3 people, YC Fall 2026. **It was previously ASCII's "Box" (box.ascii.dev), renamed Box →
 boat in September 2026** — which matters for the Boxer question below.
 Disk (not memory) snapshots every minute while running and at stop;
 stopped disks kept ≥14 days; resume is effectively a reboot unless within
@@ -184,7 +183,7 @@ space that research could find. The literal namesakes are all something
 else: chai-systems.dev is a one-founder "personal/founder operating
 system" (agent-adjacent philosophy, no infrastructure product);
 chai-systems.ai is an AI consultancy; CHAI by CloudHedge is enterprise
-app-modernisation. The closest *spoken* in-space match is **shai**
+app-modernisation. The closest _spoken_ in-space match is **shai**
 (shai.run) — an open-source CLI that sandboxes coding agents in Docker
 with restrictive resource sets. If Drew saw "CHAI Systems" written, it's
 the founder-OS company and doesn't belong in a sandbox comparison; if he
@@ -199,7 +198,7 @@ sandbox-adjacent research, pre-release, not a hosted agent environment.
 one sandbox per git worktree (microVM or Docker), local/self-hosted,
 Apache-2.0 — if the mention was about parallel local coding agents, this
 is the fit; it does not own boxer.dev. (c) **BoxLite** (boxlite-ai) is a
-separate, real, self-hostable *embeddable* microVM runtime for agents —
+separate, real, self-hostable _embeddable_ microVM runtime for agents —
 a library, not a service — and arguably the most interesting of the three
 for us (Part 3). Near-names also found: Boxes.dev (YC F26, per-agent
 cloud computers on E2B) and DevBoxer (hosted background coding agents).
@@ -222,23 +221,23 @@ Vercel 0.67 s, Modal 0.88 s, Runloop 0.89 s, E2B 1.61 s — a useful
 antidote to every vendor's headline number, Daytona's "sub-90 ms"
 included.
 
-| System | Isolation | State / snapshot model | Self-host | Pricing shape | One-line verdict |
-|---|---|---|---|---|---|
-| **E2B** | Firecracker | Pause/resume keeps FS+memory; FS snapshots; fork from snapshot | Yes (Apache-2.0; real work; BYOC enterprise) | Per-sec vCPU+RAM; $150/mo Pro | The default hosted choice; deepest agent ecosystem |
-| **Modal** | gVisor (or VM) | FS/dir snapshots; memory snapshots alpha; Volumes | No | Per-sec, ~3× E2B CPU rate for sandboxes; GPU strength | Best if GPUs + Python are the centre; managed only |
-| **Daytona** | Containers; VMs on VM tier | Persistent workspaces; pause/fork only on VM tier | Partial — OSS repo unmaintained since core went private Jun 2026 | Per-sec, no platform fee | Fast and capable, but the self-host story regressed |
-| **Fly.io Sprites** | Firecracker | CoW FS checkpoints; memory only on warm suspend | No | Actual-use per-sec; idle free | Best persistence story (100 GB disk, no lifetime limit) |
-| **Vercel Sandbox** | Firecracker | FS auto-snapshot on stop, resume by name | No | Active-CPU + provisioned-mem + per-creation | Fastest in the independent burst test; Vercel gravity |
-| **Cloudflare Sandbox/Containers** | MicroVM per container + Durable Object | Container snapshots, R2 backups; DO hibernation for agent state | No | Workers Paid + 10 ms-billed container usage | Interesting because our doors already live on Cloudflare; TS-only SDK |
-| **Runloop** | MicroVM | Disk snapshots, suspend/resume (disk only) | VPC on enterprise | Per-sec + platform tiers | **Winding down — do not adopt** |
-| **Morph** | Full VMs | **Infinibranch**: branch running VMs (memory+disk) in <250 ms (vendor) | No | "Compute units" bundles | The branching specialist — evals/RL/search trees |
-| **CodeSandbox → Together** | Firecracker | Memory+FS hibernation, live forking | No | Two pricing shapes in sources — unreconciled | Solid tech, ownership/pricing in transition |
-| **Ona (ex-Gitpod)** | Not published | Ephemeral environments from devcontainer | Vendor-run single-tenant only; community self-host gone | Subscription compute units | Now an agent *orchestration* layer (and inside OpenAI since Aug 2026), not a sandbox API |
-| **Blaxel → Baseten** | MicroVM | Standby snapshots memory+FS, indefinite at $0 compute | BYOC enterprise | Per-GB-RAM-second — cheapest standby math | Tech lives on under Baseten; evaluate Baseten Sandboxes, not Blaxel-the-company |
-| **Northflank** | Kata+Cloud Hypervisor, Firecracker, gVisor | Volumes/services; no memory-snapshot semantics found | **Strongest BYOC** (your VPC, their control plane) | Cheapest list CPU here | A full app platform that also does sandboxes well |
-| **microsandbox** | libkrun microVM | Snapshots (semantics thin in docs) | **Yes — local-first, Apache-2.0** | Self-host $0; cloud beta | The embeddable/local end of the spectrum |
-| **BoxLite** | KVM/HVF microVM | Persistent boxes, CoW disks, .boxlite archives | **Yes — embeddable library by design** | Self-host $0; cloud per-hour | A runtime you link, not a service you rent |
-| **Agent Substrate** | gVisor or Kata/Cloud Hypervisor | Tiered snapshots (VOLUMES/ROOTFS/MEMORY), warm-pool multiplexing | **Yes — OSS on any K8s** | Infra cost only (+ GKE managed option) | The only entry whose *unit of design* is 10⁴–10⁶ mostly-idle sessions per cluster |
+| System                            | Isolation                                  | State / snapshot model                                                 | Self-host                                                        | Pricing shape                                         | One-line verdict                                                                         |
+| --------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| **E2B**                           | Firecracker                                | Pause/resume keeps FS+memory; FS snapshots; fork from snapshot         | Yes (Apache-2.0; real work; BYOC enterprise)                     | Per-sec vCPU+RAM; $150/mo Pro                         | The default hosted choice; deepest agent ecosystem                                       |
+| **Modal**                         | gVisor (or VM)                             | FS/dir snapshots; memory snapshots alpha; Volumes                      | No                                                               | Per-sec, ~3× E2B CPU rate for sandboxes; GPU strength | Best if GPUs + Python are the centre; managed only                                       |
+| **Daytona**                       | Containers; VMs on VM tier                 | Persistent workspaces; pause/fork only on VM tier                      | Partial — OSS repo unmaintained since core went private Jun 2026 | Per-sec, no platform fee                              | Fast and capable, but the self-host story regressed                                      |
+| **Fly.io Sprites**                | Firecracker                                | CoW FS checkpoints; memory only on warm suspend                        | No                                                               | Actual-use per-sec; idle free                         | Best persistence story (100 GB disk, no lifetime limit)                                  |
+| **Vercel Sandbox**                | Firecracker                                | FS auto-snapshot on stop, resume by name                               | No                                                               | Active-CPU + provisioned-mem + per-creation           | Fastest in the independent burst test; Vercel gravity                                    |
+| **Cloudflare Sandbox/Containers** | MicroVM per container + Durable Object     | Container snapshots, R2 backups; DO hibernation for agent state        | No                                                               | Workers Paid + 10 ms-billed container usage           | Interesting because our doors already live on Cloudflare; TS-only SDK                    |
+| **Runloop**                       | MicroVM                                    | Disk snapshots, suspend/resume (disk only)                             | VPC on enterprise                                                | Per-sec + platform tiers                              | **Winding down — do not adopt**                                                          |
+| **Morph**                         | Full VMs                                   | **Infinibranch**: branch running VMs (memory+disk) in <250 ms (vendor) | No                                                               | "Compute units" bundles                               | The branching specialist — evals/RL/search trees                                         |
+| **CodeSandbox → Together**        | Firecracker                                | Memory+FS hibernation, live forking                                    | No                                                               | Two pricing shapes in sources — unreconciled          | Solid tech, ownership/pricing in transition                                              |
+| **Ona (ex-Gitpod)**               | Not published                              | Ephemeral environments from devcontainer                               | Vendor-run single-tenant only; community self-host gone          | Subscription compute units                            | Now an agent _orchestration_ layer (and inside OpenAI since Aug 2026), not a sandbox API |
+| **Blaxel → Baseten**              | MicroVM                                    | Standby snapshots memory+FS, indefinite at $0 compute                  | BYOC enterprise                                                  | Per-GB-RAM-second — cheapest standby math             | Tech lives on under Baseten; evaluate Baseten Sandboxes, not Blaxel-the-company          |
+| **Northflank**                    | Kata+Cloud Hypervisor, Firecracker, gVisor | Volumes/services; no memory-snapshot semantics found                   | **Strongest BYOC** (your VPC, their control plane)               | Cheapest list CPU here                                | A full app platform that also does sandboxes well                                        |
+| **microsandbox**                  | libkrun microVM                            | Snapshots (semantics thin in docs)                                     | **Yes — local-first, Apache-2.0**                                | Self-host $0; cloud beta                              | The embeddable/local end of the spectrum                                                 |
+| **BoxLite**                       | KVM/HVF microVM                            | Persistent boxes, CoW disks, .boxlite archives                         | **Yes — embeddable library by design**                           | Self-host $0; cloud per-hour                          | A runtime you link, not a service you rent                                               |
+| **Agent Substrate**               | gVisor or Kata/Cloud Hypervisor            | Tiered snapshots (VOLUMES/ROOTFS/MEMORY), warm-pool multiplexing       | **Yes — OSS on any K8s**                                         | Infra cost only (+ GKE managed option)                | The only entry whose _unit of design_ is 10⁴–10⁶ mostly-idle sessions per cluster        |
 
 Also credible, one line each (details in supplement 3): Tensorlake
 (memory snapshots, warm pools, BYOC; a named Runloop migration target),
@@ -261,14 +260,14 @@ code, and egress control matters as much as the isolation tier.
 
 ## Part 3.5 — Per-connection ephemeral shells: ContainerSSH vs an Agent-Substrate-style front door
 
-*Added question from Drew (2026-11-23 ~19:34 CST): "We might not use
+_Added question from Drew (2026-11-23 ~19:34 CST): "We might not use
 ContainerSSH. We might have a load balancer use something like Agent
 Substrate to make one per connection, or would we use ContainerSSH?" —
 for the specific job of giving a human or an agent a shell, one ephemeral
-environment per connection.*
+environment per connection._
 
-The two shapes differ in *where the per-connection environment comes
-from*:
+The two shapes differ in _where the per-connection environment comes
+from_:
 
 - **ContainerSSH** is purpose-built for exactly this job. It is an SSH
   server that, on each incoming connection, launches a fresh container
@@ -280,32 +279,32 @@ from*:
 - **Agent-Substrate-style** puts a request router (a load balancer in
   the general shape Drew describes) in front of a warm pool: the
   connection is routed to a sandbox that is either claimed fresh from the
-  pool or *restored from a snapshot*, and on disconnect the environment
+  pool or _restored from a snapshot_, and on disconnect the environment
   can be snapshotted rather than destroyed — so the "per connection"
-  environment can be the *same* environment across many connections.
+  environment can be the _same_ environment across many connections.
 
-| Axis | ContainerSSH | Agent-Substrate-style |
-|---|---|---|
-| **Connection latency** | Pays a container start per connection (sub-second to a few seconds depending on image warmth and runtime; it can pre-pull images but the container itself is created on connect) | Warm-pool claim is milliseconds of scheduling; a snapshot restore is the <500 ms vendor-claim path (measured: <1 s local, 5–30 s if the snapshot has to cross nodes — see Part 1). Fresh-from-golden starts are comparable to a container start |
-| **Statefulness across reconnects** | **None, by design.** Disconnect destroys the environment; reconnect is a brand-new container. Any persistence must be bolted on (home-directory volumes) and is filesystem-only, never processes | **The whole point.** Disconnect can suspend; reconnect restores memory + filesystem, processes intact. A dropped SSH session resumes *mid-work*, not at a fresh login |
-| **Audit / recording** | **Built in and mature:** full session recording (asciinema-style) to S3, audit logs, designed for regulated bastion use | Not a feature. Substrate records actor lifecycle and identity, but terminal session recording would be ours to build (or record at the gateway layer) |
-| **Identity binding per connection** | Per-connection auth via pluggable auth server (password/public-key via HTTP callback), mapped to a per-connection container config; identity is a *connection* property | Identity is a property of the **Actor**, not the connection — SPIFFE identity that persists across suspend/resume and across workers. Stronger session identity, weaker notion of "this specific connection was authenticated just now" unless the router layer adds it |
-| **Operational weight** | One focused service + a container runtime/Kubernetes to launch into. Small, single-purpose, CNCF Sandbox, but a comparatively small project/community | A whole control plane (Postgres state store, per-node agents, gateways, object storage for snapshots) whose design centre is millions of mostly-idle actors — vastly more machinery than shell access alone justifies |
-| **Protocol fit** | Speaks SSH natively — it *is* the SSH server | **Does not speak SSH today.** Substrate's ingress is HTTP(S)-only; arbitrary raw-TCP ports are a stated limitation (Part 1). A shell front door would need an SSH-terminating router in front that then tunnels into the sandbox — i.e. we'd build the ContainerSSH-shaped piece anyway, minus its maturity |
+| Axis                                | ContainerSSH                                                                                                                                                                                     | Agent-Substrate-style                                                                                                                                                                                                                                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Connection latency**              | Pays a container start per connection (sub-second to a few seconds depending on image warmth and runtime; it can pre-pull images but the container itself is created on connect)                 | Warm-pool claim is milliseconds of scheduling; a snapshot restore is the <500 ms vendor-claim path (measured: <1 s local, 5–30 s if the snapshot has to cross nodes — see Part 1). Fresh-from-golden starts are comparable to a container start                                                             |
+| **Statefulness across reconnects**  | **None, by design.** Disconnect destroys the environment; reconnect is a brand-new container. Any persistence must be bolted on (home-directory volumes) and is filesystem-only, never processes | **The whole point.** Disconnect can suspend; reconnect restores memory + filesystem, processes intact. A dropped SSH session resumes _mid-work_, not at a fresh login                                                                                                                                       |
+| **Audit / recording**               | **Built in and mature:** full session recording (asciinema-style) to S3, audit logs, designed for regulated bastion use                                                                          | Not a feature. Substrate records actor lifecycle and identity, but terminal session recording would be ours to build (or record at the gateway layer)                                                                                                                                                       |
+| **Identity binding per connection** | Per-connection auth via pluggable auth server (password/public-key via HTTP callback), mapped to a per-connection container config; identity is a _connection_ property                          | Identity is a property of the **Actor**, not the connection — SPIFFE identity that persists across suspend/resume and across workers. Stronger session identity, weaker notion of "this specific connection was authenticated just now" unless the router layer adds it                                     |
+| **Operational weight**              | One focused service + a container runtime/Kubernetes to launch into. Small, single-purpose, CNCF Sandbox, but a comparatively small project/community                                            | A whole control plane (Postgres state store, per-node agents, gateways, object storage for snapshots) whose design centre is millions of mostly-idle actors — vastly more machinery than shell access alone justifies                                                                                       |
+| **Protocol fit**                    | Speaks SSH natively — it _is_ the SSH server                                                                                                                                                     | **Does not speak SSH today.** Substrate's ingress is HTTP(S)-only; arbitrary raw-TCP ports are a stated limitation (Part 1). A shell front door would need an SSH-terminating router in front that then tunnels into the sandbox — i.e. we'd build the ContainerSSH-shaped piece anyway, minus its maturity |
 
 **Verdict: ContainerSSH for shells; Substrate's model for agent
 sessions — and they compose rather than compete.** For the shell job
 specifically, ContainerSSH wins on every axis that matters for a bastion:
 it terminates SSH itself, records sessions out of the box, and its
-statelessness is a *feature* for human shell access (a fresh, known-good
+statelessness is a _feature_ for human shell access (a fresh, known-good
 environment per connection, nothing weird left running between logins).
 The Substrate shape's one decisive advantage — state surviving
 disconnect — is worth little for an interactive shell and everything for
-an *agent* session, which is precisely the split we already have: our
+an _agent_ session, which is precisely the split we already have: our
 fleet's temporary sessions (Actions exec today) are agent sessions with
 leases and identity, not shells. If shell-into-the-cluster is ever
 wanted, the honest architecture is ContainerSSH as the SSH front door,
-optionally launching *into* whatever sandbox tier sits behind it —
+optionally launching _into_ whatever sandbox tier sits behind it —
 ContainerSSH's backend is pluggable (any Kubernetes pod it can create),
 so "ContainerSSH in front, warm/snapshot sandboxes behind" is available
 later without re-deciding. What we should not do is stretch Agent
@@ -321,12 +320,12 @@ What we already have: **fleet Actions exec** — temporary GitHub Actions
 runner sessions with broker-issued handles, enforced timeouts, tiered
 lease extensions, R2/artifact egress — plus the fleet queue's session and
 placement model, on a stated trajectory toward our own Talos + KubeVirt +
-Cozystack cluster. In other words, we already built the *control* slice of
-this problem (identity, leases, dispatch, audit) and rent the *compute*
+Cozystack cluster. In other words, we already built the _control_ slice of
+this problem (identity, leases, dispatch, audit) and rent the _compute_
 slice from GitHub's runners.
 
 **What an external substrate would give us that we don't have:**
-(1) snapshot/resume of a *live* session — our Actions sessions are
+(1) snapshot/resume of a _live_ session — our Actions sessions are
 start-from-scratch per lease; nothing today can freeze a running agent
 environment and wake it later; (2) density — idle sessions costing disk
 instead of a runner slot; (3) a self-hosted sandbox tier on our own
@@ -391,6 +390,6 @@ spike before any vendor commitment.
   agentsandboxes.org, sandbox.watch, seminal.ai; ComputeSDK burst
   benchmark (2026-08-21) as cited therein
 
-*Unverified / flagged items are listed at the end of each supplement.
+_Unverified / flagged items are listed at the end of each supplement.
 Nothing in this record relies on a single aggregator for a load-bearing
-claim about Agent Substrate itself.*
+claim about Agent Substrate itself._

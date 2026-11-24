@@ -24,14 +24,14 @@ Model resolution already supports ordered profiles and per-attempt timeout/budge
 
 ## Verification sequence
 
-| Fixture | Required observation |
-|---|---|
-| Narrow and wide grants through two different transports | Same rights give the same decision. Spoofing a harness label leaves rights unchanged. A disallowed call makes zero upstream requests. |
-| Queued task followed by grant revocation | Claim can still complete its bookkeeping. Dispatch is refused before an upstream write. The rejection links to the original logical call. |
-| Declared tool replaced during reload | A stale tool or generation is revalidated before I/O. An unrelated server remains available. |
-| Wide Atlas query followed by an identical restricted query | Restricted results cannot disclose excluded data or reuse an ineligible cached result. Correlated records identify both policy decisions. |
-| Tools with adjacent names and one positive direct-call rating | Only the rated identity's feedback multiplier changes. Merely offering either tool produces no execution signal. |
-| HTTP 402 plus a second loopback provider | One request reaches the refusing provider and zero reach its successor. A separate 503 fixture continues to demonstrate the declared retry behavior. |
-| Cancelled or disconnected write | Audit reports attempt count and unknown or reconciled outcome. Dashboard statistics never report a guessed success or a second execution. |
+| Fixture                                                       | Required observation                                                                                                                                 |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Narrow and wide grants through two different transports       | Same rights give the same decision. Spoofing a harness label leaves rights unchanged. A disallowed call makes zero upstream requests.                |
+| Queued task followed by grant revocation                      | Claim can still complete its bookkeeping. Dispatch is refused before an upstream write. The rejection links to the original logical call.            |
+| Declared tool replaced during reload                          | A stale tool or generation is revalidated before I/O. An unrelated server remains available.                                                         |
+| Wide Atlas query followed by an identical restricted query    | Restricted results cannot disclose excluded data or reuse an ineligible cached result. Correlated records identify both policy decisions.            |
+| Tools with adjacent names and one positive direct-call rating | Only the rated identity's feedback multiplier changes. Merely offering either tool produces no execution signal.                                     |
+| HTTP 402 plus a second loopback provider                      | One request reaches the refusing provider and zero reach its successor. A separate 503 fixture continues to demonstrate the declared retry behavior. |
+| Cancelled or disconnected write                               | Audit reports attempt count and unknown or reconciled outcome. Dashboard statistics never report a guessed success or a second execution.            |
 
 These are release criteria. The checked source establishes the existing behavior and reference points, without supplying runtime receipts for the proposed controls.
