@@ -287,3 +287,32 @@ test("the wake text names ids and message senders, an instruction as Drew's, nev
   assert.match(t, /including instructions/);
   assert.ok(!t.includes("hidden"));
 });
+
+test("addresses accept agent globs and refuse malformed ones", () => {
+  assert.deepEqual(parseAddresses("agent:f*", "channel:claude").fleet, ["agent:f*"]);
+  assert.throws(() => parseAddresses("agent:f o*", "channel:claude"), /unknown address/);
+});
+
+test("a connector sends to a glob with a limit, reports the match, then broadens", async () => {
+  const { tool, agent } = await harness();
+  await agent.hello({ agent: "fable" });
+  await agent.hello({ agent: "falcon" });
+
+  // Oracle (#14367) over the relay grammar: agent:f* with limit 1.
+  const sent = await tool(TOKEN, "send_message", { body: "take the next task", to: "agent:f*", kind: "instruction", limit: 1 });
+  assert.equal(sent.report.matched, 2);
+  assert.equal(sent.report.delivered, 1);
+  assert.deepEqual(sent.report.recipients, ["fable"]);
+  assert.equal(sent.report.remaining, 1);
+  assert.equal((await agent.inbox("fable")).messages.length, 1);
+  assert.equal((await agent.inbox("falcon")).messages.length, 0);
+
+  const b1 = await tool(TOKEN, "send_message", { broaden: sent.report.batch, limit: 2 });
+  assert.equal(b1.report.delivered, 1);
+  assert.deepEqual(b1.report.recipients, ["falcon"]);
+  assert.equal(b1.report.remaining, 0);
+
+  const b2 = await tool(TOKEN, "send_message", { broaden: sent.report.batch, limit: 2 });
+  assert.equal(b2.report.delivered, 0);
+  assert.equal((await agent.inbox("falcon")).messages.length, 1);
+});

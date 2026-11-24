@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  plainWords,
   ASK_KINDS,
   ago,
   askArgs,
@@ -1635,4 +1636,24 @@ test("each list that could not be read is said on the screens that show it, with
     );
     expect([view, at > 0 && body.includes(`...notices(docs.ops, ["${list}"])`)]).toEqual([view, true]);
   }
+});
+
+test("words written for a Markdown file are shown as plain words", () => {
+  // A row of the PM stack's roadmap, as its file has it (seen raw on the Roadmap screen on 2026-11-24).
+  expect(
+    plainWords(
+      "The app managed from Cloudflare. Design record: [`doc/2026-11-23T06-50-00Z_architecture_pm_platform_cloudflare_core/`](../../doc/2026-11-23T06-50-00Z_architecture_pm_platform_cloudflare_core/). What is left is tracked in one place.",
+    ),
+  ).toBe(
+    "The app managed from Cloudflare. Design record: doc/2026-11-23T06-50-00Z_architecture_pm_platform_cloudflare_core/. What is left is tracked in one place.",
+  );
+  expect(plainWords("See [the plan](https://example.com/a_b) and **this** and `fleet queue list`.")).toBe(
+    "See the plan and this and fleet queue list.",
+  );
+  // Brackets that are not a link, an issue number, and nothing at all are left as they are.
+  expect(plainWords("Done [x] for #13497 (see the file)")).toBe("Done [x] for #13497 (see the file)");
+  expect(plainWords("a * b * c")).toBe("a * b * c");
+  expect([plainWords(""), plainWords(null), plainWords(undefined)]).toEqual(["", "", ""]);
+  // And a roadmap row's words are shown that way.
+  expect(readFileSync(new URL("../public/app.js", import.meta.url), "utf8")).toContain('h("p", {}, plainWords(r.intent))');
 });

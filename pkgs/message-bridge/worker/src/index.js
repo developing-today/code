@@ -20,6 +20,8 @@ import {
   fleetCredentialRevokeSql,
   fleetOp,
   fleetSchema,
+  getDistribution,
+  recordDistribution,
 } from "./fleet.js";
 import { route } from "./routes.js";
 
@@ -111,6 +113,10 @@ export class MessageStore extends DurableObject {
       body TEXT NOT NULL,
       ack_at TEXT
     )`);
+    // Sends carry their distribution batch (design §4.1); rows from
+    // before pattern addressing have none.
+    const noteCols = this.sql.exec("PRAGMA table_info(note_message)").toArray();
+    if (!noteCols.some((c) => c.name === "batch")) this.sql.exec("ALTER TABLE note_message ADD COLUMN batch TEXT");
     this.sql.exec("CREATE INDEX IF NOT EXISTS note_message_inbox ON note_message (recipient, ack_at, id)");
   }
 
@@ -257,7 +263,7 @@ export class MessageStore extends DurableObject {
     return this.sql.exec("SELECT identity FROM note_identity ORDER BY identity").toArray().map((r) => r.identity);
   }
 
-  noteDeliver({ from, recipients, note }) {
+  noteDeliver({ from, recipients, note, batch = null, pattern = null, limit_n = null, matched = null }) {
     const ts = new Date().toISOString();
     const notes = [];
     for (const recipient of recipients) {
@@ -265,17 +271,86 @@ export class MessageStore extends DurableObject {
       if (!known) continue;
       const row = this.sql
         .exec(
-          "INSERT INTO note_message (ts, recipient, sender, body) VALUES (?, ?, ?, ?) RETURNING id, ts, recipient, sender, body",
+          "INSERT INTO note_message (ts, recipient, sender, body, batch) VALUES (?, ?, ?, ?, ?) RETURNING id, ts, recipient, sender, body, batch",
           ts,
           recipient,
           from,
           note,
+          batch,
         )
         .one();
       this.sql.exec("UPDATE note_identity SET signal_counter = signal_counter + 1 WHERE identity = ?", recipient);
-      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts });
+      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts, batch: row.batch });
+    }
+    if (batch) {
+      recordDistribution(this.sql, {
+        batch,
+        sender_addr: from,
+        pattern,
+        limit_n,
+        matched: matched ?? notes.map((n) => n.recipient),
+        delivered: notes.map((n) => n.recipient),
+        ts,
+      });
     }
     return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
+  }
+
+  /**
+   * Broadening a notes distribution: only the original sender, only
+   * the matched-but-undelivered remainder (widened by extra_matched,
+   * which the caller resolved from the call's new address). State
+   * refusals come back as { error }, like fleet ops.
+   */
+  noteBroaden({ from, batch, extra_matched = [], pattern = null, limit = null }) {
+    const dist = getDistribution(this.sql, batch);
+    if (!dist) return { error: `no distribution recorded for batch ${batch}` };
+    if (dist.sender_addr !== from) return { error: "only the original sender can broaden this distribution" };
+    const sample = this.sql
+      .exec("SELECT sender, body FROM note_message WHERE batch = ? ORDER BY id ASC LIMIT 1", batch)
+      .toArray()[0];
+    if (!sample) return { error: `batch ${batch} has no notes to broaden` };
+    const matched = [...new Set([...dist.matched, ...extra_matched])].sort();
+    const deliveredSet = new Set(dist.delivered);
+    const pending = matched.filter((n) => !deliveredSet.has(n));
+    const recipients = limit ? pending.slice(0, limit) : pending;
+    const ts = new Date().toISOString();
+    const notes = [];
+    for (const recipient of recipients) {
+      const known = this.sql.exec("SELECT 1 FROM note_identity WHERE identity = ?", recipient).toArray().length > 0;
+      if (!known) continue;
+      const row = this.sql
+        .exec(
+          "INSERT INTO note_message (ts, recipient, sender, body, batch) VALUES (?, ?, ?, ?, ?) RETURNING id, ts, recipient, sender, body, batch",
+          ts,
+          recipient,
+          sample.sender,
+          sample.body,
+          batch,
+        )
+        .one();
+      this.sql.exec("UPDATE note_identity SET signal_counter = signal_counter + 1 WHERE identity = ?", recipient);
+      deliveredSet.add(recipient);
+      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts, batch: row.batch });
+    }
+    const delivered = [...deliveredSet].sort();
+    recordDistribution(this.sql, {
+      batch,
+      sender_addr: dist.sender_addr,
+      pattern: pattern ?? dist.pattern,
+      limit_n: limit ?? dist.limit_n,
+      matched,
+      delivered,
+      ts,
+    });
+    return {
+      batch,
+      matched: matched.length,
+      delivered: notes.length,
+      recipients: notes.map((n) => n.recipient),
+      remaining: matched.length - delivered.length,
+      notes,
+    };
   }
 
   noteInbox(identity) {
@@ -550,6 +625,7 @@ function storeFor(env) {
     noteAuth: (token_hash) => stub.noteAuth(token_hash),
     noteIdentities: () => stub.noteIdentities(),
     noteDeliver: (delivery) => stub.noteDeliver(delivery),
+    noteBroaden: (broaden) => stub.noteBroaden(broaden),
     noteInbox: (identity) => stub.noteInbox(identity),
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
     noteSignal: (identity) => stub.noteSignal(identity),

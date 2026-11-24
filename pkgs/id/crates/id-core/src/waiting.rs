@@ -634,7 +634,7 @@ mod tests {
             pool.insert(author(1), 3, [10], "c", 0),
             Err(WaitRefusal::AuthorFull)
         );
-        assert!(pool.expire(999).is_empty());
+        assert_eq!(pool.expire(999), [] as [([u8; 32], &str); 0]);
         assert_eq!(pool.expire(1_000).len(), 2);
     }
 
@@ -669,7 +669,10 @@ mod tests {
     fn test_expiry_is_inclusive_at_max_age_and_exclusive_one_ms_before() {
         let mut pool = pool();
         pool.insert(author(1), 1, [9], "e1", 1_000).unwrap();
-        assert!(pool.expire(1_000 + WEEK_MS - 1).is_empty());
+        assert_eq!(
+            pool.expire(1_000 + WEEK_MS - 1),
+            [] as [([u8; 32], &str); 0]
+        );
         assert_eq!(pool.len(), 1);
         assert_eq!(pool.expire(1_000 + WEEK_MS), vec![(author(1), "e1")]);
         assert_eq!(pool.waiting_count(author(1)), 0);
@@ -681,7 +684,7 @@ mod tests {
     fn test_an_expired_event_is_not_released_by_its_dependency() {
         let mut pool = pool();
         pool.insert(author(1), 1, [9], "e1", 0).unwrap();
-        assert!(pool.arrived(9, WEEK_MS).is_empty());
+        assert_eq!(pool.arrived(9, WEEK_MS), [] as [&str; 0]);
         assert_eq!(pool.expire(WEEK_MS), vec![(author(1), "e1")]);
     }
 
@@ -711,13 +714,13 @@ mod tests {
     fn test_an_event_with_two_deps_waits_for_both() {
         let mut pool = pool();
         pool.insert(author(1), 1, [10, 11], "e", 0).unwrap();
-        assert!(pool.arrived(10, 0).is_empty());
+        assert_eq!(pool.arrived(10, 0), [] as [&str; 0]);
         assert_eq!(pool.waiting_count(author(1)), 1);
         assert_eq!(pool.arrived(11, 0), vec!["e"]);
         assert_eq!(pool.waiting_count(author(1)), 0);
 
         pool.insert(author(1), 2, [20, 21], "f", 0).unwrap();
-        assert!(pool.arrived(21, 0).is_empty());
+        assert_eq!(pool.arrived(21, 0), [] as [&str; 0]);
         assert_eq!(pool.arrived(20, 0), vec!["f"]);
     }
 
@@ -736,7 +739,7 @@ mod tests {
         assert_eq!(pool.take_ready(), vec!["ready"]);
         assert_eq!(pool.waiting_count(author(1)), 0);
         assert!(pool.is_empty());
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
     }
 
     #[test]
@@ -766,7 +769,7 @@ mod tests {
         let mut pool = pool();
         pool.arrived(10, 0);
         pool.insert(author(1), 1, [10, 11], "e", 0).unwrap();
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
         assert_eq!(pool.arrived(11, 0), vec!["e"]);
     }
 
@@ -780,7 +783,7 @@ mod tests {
 
         pool.arrived(1, 0);
         pool.insert(author(1), 1, [10], "again", 0).unwrap();
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
         assert!(pool.is_empty());
     }
 
@@ -813,9 +816,9 @@ mod tests {
     fn test_arrival_of_a_held_event_drops_the_held_copy_without_releasing_it() {
         let mut pool = pool();
         pool.insert(author(1), 1, [10], "held", 0).unwrap();
-        assert!(pool.arrived(1, 0).is_empty());
+        assert_eq!(pool.arrived(1, 0), [] as [&str; 0]);
         assert_eq!(pool.waiting_count(author(1)), 0);
-        assert!(pool.arrived(10, 0).is_empty());
+        assert_eq!(pool.arrived(10, 0), [] as [&str; 0]);
     }
 
     #[test]
@@ -826,15 +829,15 @@ mod tests {
         let mut pool = pool();
         pool.insert(author(1), 1, [10], "ready-after-dep", 0)
             .unwrap();
-        assert!(pool.arrived(1, 0).is_empty());
+        assert_eq!(pool.arrived(1, 0), [] as [&str; 0]);
         assert!(
             pool.take_ready().is_empty(),
             "a ready copy the pool has applied is not handed out again"
         );
 
         pool.insert(author(1), 2, [], "ready-at-once", 0).unwrap();
-        assert!(pool.arrived(2, 0).is_empty());
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.arrived(2, 0), [] as [&str; 0]);
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
     }
 
     #[test]
@@ -843,7 +846,7 @@ mod tests {
         pool.insert(author(1), 1, [], "a", 0).unwrap();
         pool.insert(author(1), 2, [], "b", 0).unwrap();
         pool.insert(author(1), 3, [], "c", 0).unwrap();
-        assert!(pool.arrived(2, 0).is_empty());
+        assert_eq!(pool.arrived(2, 0), [] as [&str; 0]);
         assert_eq!(
             pool.take_ready(),
             vec!["a", "c"],
@@ -884,7 +887,7 @@ mod tests {
         );
         assert!(pool.contains(&1));
         assert_eq!(pool.waiting_count(author(1)), 1);
-        assert!(pool.expire(500 + WEEK_MS - 1).is_empty());
+        assert_eq!(pool.expire(500 + WEEK_MS - 1), [] as [([u8; 32], &str); 0]);
         assert_eq!(pool.expire(500 + WEEK_MS), vec![(author(1), "parked")]);
     }
 
@@ -986,8 +989,8 @@ mod tests {
         pool.restore(author(1), 1, [10], "stale", 0).unwrap();
         assert!(!pool.contains(&1));
         assert!(pool.is_empty());
-        assert!(pool.arrived(10, 0).is_empty());
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.arrived(10, 0), [] as [&str; 0]);
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
         assert!(pool.is_empty());
     }
 
@@ -1006,7 +1009,7 @@ mod tests {
             pool.take_ready().is_empty(),
             "the ready event is taken once"
         );
-        assert!(pool.arrived(10, 0).is_empty());
+        assert_eq!(pool.arrived(10, 0), [] as [&str; 0]);
         assert!(pool.is_empty());
     }
 
@@ -1021,8 +1024,8 @@ mod tests {
             .unwrap();
         assert!(pool.contains(&7));
         assert_eq!(pool.waiting_count(author(1)), 1);
-        assert!(pool.take_ready().is_empty());
-        assert!(pool.arrived(9, 0).is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
+        assert_eq!(pool.arrived(9, 0), [] as [&str; 0]);
         assert!(
             pool.contains(&7),
             "no arrival releases a held-for-good copy"
@@ -1043,7 +1046,7 @@ mod tests {
         // ...but the key was not recorded: an event depending on it still
         // waits, and the key itself is not treated as a duplicate (#1730).
         pool.insert(author, 11, [20], "b", 0).unwrap();
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
         assert_eq!(pool.len(), 1);
         pool.insert(author, 20, [], "c", 0).unwrap();
         assert_eq!(pool.take_ready(), vec!["c"]);
@@ -1054,7 +1057,7 @@ mod tests {
         let mut pool: WaitingPool<u32, &str> = WaitingPool::new(WaitingLimits::default());
         let author = [7u8; 32];
         pool.insert(author, 10, [20], "a", 0).unwrap();
-        assert!(pool.release(10, 0).is_empty());
+        assert_eq!(pool.release(10, 0), [] as [&str; 0]);
         assert!(pool.is_empty());
     }
 
@@ -1072,17 +1075,17 @@ mod tests {
         // both re-inserts are duplicates.
         pool.insert(author(1), 7, [], "a-again", 0).unwrap();
         pool.insert(author(1), 7, [9], "a-held", 0).unwrap();
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
         assert!(pool.is_empty(), "no second copy is held either");
         // Arrival closes the window; the arrived guard takes over.
-        assert!(pool.arrived(7, 0).is_empty());
+        assert_eq!(pool.arrived(7, 0), [] as [&str; 0]);
         pool.insert(author(1), 7, [], "a-third", 0).unwrap();
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
         // A released waiter's key is handed out the same way.
         pool.insert(author(1), 10, [20], "waiter", 0).unwrap();
         assert_eq!(pool.arrived(20, 0), vec!["waiter"]);
         pool.insert(author(1), 10, [], "waiter-again", 0).unwrap();
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
         // But the owner re-holding a handed-out event through
         // restore (the event store's settle path) is a decision
         // about the in-flight copy, not a duplicate arrival.
@@ -1096,7 +1099,7 @@ mod tests {
         pool.insert(author(1), 11, [], "dropped", 0).unwrap();
         assert_eq!(pool.take_ready(), vec!["dropped"]);
         pool.insert(author(1), 11, [], "dropped-again", 0).unwrap();
-        assert!(pool.take_ready().is_empty());
+        assert_eq!(pool.take_ready(), [] as [&str; 0]);
         pool.forget(&11);
         pool.insert(author(1), 11, [], "dropped-again", 0).unwrap();
         assert_eq!(pool.take_ready(), vec!["dropped-again"]);

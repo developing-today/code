@@ -13,6 +13,7 @@
 // metadata DB behind the store interfaces and #12583's deploy.
 
 import type { AuthDeps } from "./auth.ts";
+import { BindingBridgeSurface } from "./bridge.ts";
 import { configFromEnv, type HostedEnv } from "./config.ts";
 import { AppRotationGitHubWriter, FixtureGitHubWriter } from "./github.ts";
 import { ingestionDepsFrom, runIngestionSweep } from "./ingestion.ts";
@@ -67,6 +68,13 @@ function buildDeps(env: HostedEnv): AuthDeps {
   // implement GitHubItemSource, GitHubCommentSurface,
   // GitHubBodyEditor and GitHubProjectSurface over the same
   // rotation / recorded state.
+  // The bridge door's surface (#14373): the message bridge over its
+  // service binding, presenting the PM credential — the same binding
+  // and credential the console's edge Worker uses, so the PM service
+  // API and the console share one send path. Absent the binding or
+  // the credential, the door fails closed (503) per request.
+  const bridge =
+    config.bridge && env.BRIDGE ? new BindingBridgeSurface(env.BRIDGE, config.bridge.token) : undefined;
   return {
     config,
     sessions,
@@ -78,6 +86,7 @@ function buildDeps(env: HostedEnv): AuthDeps {
     githubComments: githubWriter,
     githubEditor: githubWriter,
     githubProjects: githubWriter,
+    ...(bridge ? { bridge } : {}),
   };
 }
 
