@@ -42,6 +42,7 @@ pub mod backend;
 pub mod boundary;
 pub mod c8_fingerprint;
 pub mod c8_profile;
+pub mod catalog;
 pub mod classification;
 pub mod classify;
 pub mod cold;
