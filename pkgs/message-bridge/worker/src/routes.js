@@ -29,6 +29,23 @@
 //                                     never the token or path, wake.js)
 //   POST /api/<token>/wake-hooks      JSON {address, url, token?} sets one;
 //                                     {address, url: null} removes it
+//   POST /fleet/<token>/hello|inbox|ack|send  fleet mailboxes (fleet.js);
+//                                     the token is the shared fleet token
+//                                     or one agent's own credential
+//                                     (#14368), which acts only as itself
+//   POST /api/<token>/enroll-tokens   owner: mint a bootstrap enroll
+//                                     token bound to a name/kind/groups;
+//                                     the value is returned once
+//   POST /api/<token>/enroll-tokens/revoke  owner: revoke an unused
+//                                     bootstrap token
+//   POST /enroll/exchange             {bootstrap_token, agent}: burn the
+//                                     token, register the mailbox (and
+//                                     notes identity), return the agent's
+//                                     fleet credential + notes token once
+//   POST /api/<token>/fleet/credentials/revoke  owner: revoke an agent's
+//                                     fleet credential(s)
+//   POST /api/<token>/notes-tokens/revoke  owner: revoke an identity's
+//                                     notes token(s)
 //   POST /notes/register              owner Bearer token; registers a
 //                                     class/name identity + token hash
 //   POST /notes/send                  identity Bearer token; {to, note},
