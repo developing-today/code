@@ -31,18 +31,19 @@ pub mod doors;
 pub mod flow;
 pub mod identities;
 pub mod registry;
+pub mod saml;
 pub mod signing;
 pub mod upstream;
 pub mod verify;
 
 use audit::AuditLog;
-use axum::{Json, Router, routing::get};
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64_STD};
+use axum::{routing::get, Json, Router};
+use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
 use der::Decode;
 use flow::FlowState;
 use identities::IdentityStore;
 use pkcs1::DecodeRsaPublicKey;
-use rsa::{RsaPublicKey, traits::PublicKeyParts};
+use rsa::{traits::PublicKeyParts, RsaPublicKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -234,6 +235,8 @@ pub struct AppState {
     /// The authorize/token/userinfo flow state; `None` in
     /// public-only mode (no registry config supplied).
     pub flow: Option<Arc<FlowState>>,
+    /// SAML metadata signing state; absent when the SAML key is not configured.
+    pub saml_metadata: Option<Arc<saml::MetadataSigner>>,
 }
 
 #[derive(Serialize)]
@@ -256,7 +259,21 @@ pub fn build_app(config: Config, jwks: Jwks) -> Router {
 }
 
 pub fn build_app_with_flow(config: Config, jwks: Jwks, flow: Option<Arc<FlowState>>) -> Router {
-    let state = AppState { config, jwks, flow };
+    build_app_with_saml_metadata(config, jwks, flow, None)
+}
+
+pub fn build_app_with_saml_metadata(
+    config: Config,
+    jwks: Jwks,
+    flow: Option<Arc<FlowState>>,
+    saml_metadata: Option<Arc<saml::MetadataSigner>>,
+) -> Router {
+    let state = AppState {
+        config,
+        jwks,
+        flow,
+        saml_metadata,
+    };
     Router::new()
         .route(
             "/healthz",
@@ -297,6 +314,7 @@ pub fn build_app_with_flow(config: Config, jwks: Jwks, flow: Option<Arc<FlowStat
         )
         .route("/token", axum::routing::post(flow::token))
         .route("/userinfo", get(flow::userinfo))
+        .route("/saml/metadata", get(saml::metadata))
         .route("/door/{name}/start", get(doors::door_start))
         .route("/door/{name}/callback", get(doors::door_callback))
         .with_state(state)
@@ -330,20 +348,21 @@ pub fn app_from_config(config: Config) -> Result<Router, String> {
     let pem_refs: Vec<&str> = pems.iter().map(|s| s.as_str()).collect();
     let jwks = jwks_from_cert_pems(&pem_refs)?;
 
+    let saml_metadata = load_saml_metadata_signer(&config)?;
     let flow = match &config.provider_config_path {
         None => None,
         Some(cfg_path) => {
             let registry = registry::ProviderConfig::load(cfg_path)?;
             // The key list is parallel to the certificate list;
             // with no list configured it is the single key path.
-            let key_paths: Vec<PathBuf> =
-                if !config.signing_key_paths.is_empty() {
-                    config.signing_key_paths.clone()
-                } else {
-                    vec![config.signing_key_path.clone().ok_or(
-                        "IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set",
-                    )?]
-                };
+            let key_paths: Vec<PathBuf> = if !config.signing_key_paths.is_empty() {
+                config.signing_key_paths.clone()
+            } else {
+                vec![config
+                    .signing_key_path
+                    .clone()
+                    .ok_or("IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set")?]
+            };
             if key_paths.len() != cert_paths.len() {
                 return Err(format!(
                     "signing key count ({}) does not match certificate count ({})",
@@ -422,5 +441,52 @@ pub fn app_from_config(config: Config) -> Result<Router, String> {
             )))
         }
     };
-    Ok(build_app_with_flow(config, jwks, flow))
+    Ok(build_app_with_saml_metadata(
+        config,
+        jwks,
+        flow,
+        saml_metadata,
+    ))
+}
+
+fn load_saml_metadata_signer(config: &Config) -> Result<Option<Arc<saml::MetadataSigner>>, String> {
+    let key_path = match std::env::var("IDP_PROVIDER_SAML_KEY") {
+        Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
+        _ => return Ok(None),
+    };
+    let cert_path = std::env::var("IDP_PROVIDER_SAML_CERT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from("pkgs/idp-pki/trust/saml-signing.crt.pem")
+                .canonicalize()
+                .unwrap_or_else(|_| {
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../idp-pki/trust/saml-signing.crt.pem")
+                })
+        });
+    let passphrase = std::env::var("IDP_CA_PASSPHRASE").map_err(|_| {
+        "IDP_CA_PASSPHRASE is not set (the launcher fetches it from the vault by name into process memory)"
+    })?;
+    let key = signing::load_signing_key(&key_path, &passphrase)?;
+    let cert_pem = std::fs::read_to_string(&cert_path).map_err(|e| {
+        format!(
+            "failed to read SAML signing cert at {}: {e}",
+            cert_path.display()
+        )
+    })?;
+    let cert_der = pem_to_der(&cert_pem)?;
+    let jwk = jwk_from_cert_pem(&cert_pem)?;
+    let probe = signing::TokenSigner::new(key.clone(), "saml".into());
+    let (n, e) = probe.public_components();
+    if b64url(&n) != jwk.n || b64url(&e) != jwk.e {
+        return Err(format!(
+            "loaded SAML signing key {} does not match its published certificate",
+            key_path.display()
+        ));
+    }
+    Ok(Some(Arc::new(saml::MetadataSigner::new(
+        config.issuer.clone(),
+        &key,
+        cert_der,
+    )?)))
 }
