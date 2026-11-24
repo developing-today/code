@@ -17,11 +17,13 @@ for u in github-backup-fetch.service github-backup-fetch.timer \
   github-backup-reconcile.service github-backup-reconcile.timer \
   github-backup-drain.service github-backup-drain.timer \
   github-backup-r2.service github-backup-r2.timer \
-  github-backup-mirror.service github-backup-mirror.timer; do
+  github-backup-mirror.service github-backup-mirror.timer \
+  github-backup-freshness.service github-backup-freshness.timer; do
   sed "s#__GB_DIR__#$GB_DIR#g" "$GB_DIR/systemd/$u" >"$UNIT_DIR/$u"
 done
 systemctl --user daemon-reload
 systemctl --user enable --now github-backup-fetch.timer \
   github-backup-reconcile.timer github-backup-drain.timer \
-  github-backup-r2.timer github-backup-mirror.timer
+  github-backup-r2.timer github-backup-mirror.timer \
+  github-backup-freshness.timer
 systemctl --user list-timers 'github-backup-*' --no-pager
