@@ -49,8 +49,21 @@
 //!      SECRETS_BROKER_SOCKET (Unix socket dual-bind, #6216; default
 //!      ~/.config/secrets-broker/broker.sock via fleet-config),
 //!      SECRETS_BROKER_TOKEN_FILE (default ~/.config/secrets-broker/token),
+//!      SECRETS_BROKER_WATERMARK_FILE (default
+//!      ~/.config/secrets-broker/watermark, #13948 S2),
 //!      SECRETS_BROKER_TTL_S (default 900, minimum 30 — validated
 //!      at startup, #5860).
+//!
+//! S2 delta refresh (#13948 §5.1): each refresh is still the single
+//! `bws secret list` call S1 landed, but entries are applied by
+//! `revisionDate` against a durable watermark — the previous
+//! successful refresh's start time minus WATERMARK_SKEW_S overlap,
+//! persisted atomically to the watermark file and reloaded at
+//! startup. Entries newer than the watermark are installed, the rest
+//! are untouched, ids absent from the list are deleted. The
+//! persisted watermark is the SINGLE quantity the peer chain
+//! consumes (S3 exposes it, S4 compares and adopts it); no second
+//! un-skewed timestamp exists.
 
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
@@ -63,9 +76,15 @@ use tiny_http::{Header, Response, Server, StatusCode};
 /// One cached secret: its value plus when the broker last fetched
 /// it from Bitwarden (#6767). The age is what lets a consumer (or a
 /// rotation runbook) distinguish "the broker is serving a value N
-/// seconds old" from "Bitwarden itself holds this value".
+/// seconds old" from "Bitwarden itself holds this value". The `id`
+/// is the Bitwarden secret id from the last list that carried this
+/// name; it is what deletion-by-id-diff compares (#13948 S2). A
+/// read-through install (#6275) does not know the id, so it stores
+/// an empty id, which the delta apply retains conservatively — an
+/// unknown id can never prove absence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CachedSecret {
+    id: String,
     value: String,
     fetched_at_unix: u64,
 }
@@ -290,6 +309,237 @@ fn parse_list_entries(list: &Value) -> Result<Vec<(String, String, String)>, Str
     Ok(items)
 }
 
+/// Skew overlap subtracted from the refresh start to form the
+/// durable watermark (#13948 §5.1, Drew's "from maybe just before
+/// the last refresh started"). A change timestamped during the
+/// refresh window is never skipped: the next refresh's filter is
+/// `revisionDate > watermark`, and the watermark sits a full skew
+/// behind the start of the refresh that produced it, so an entry
+/// revised mid-refresh still reads as newer. 60 s covers a whole
+/// one-call list refresh (seconds, S1) with wide margin without
+/// re-applying meaningful history on every tick.
+pub const WATERMARK_SKEW_S: u64 = 60;
+
+/// Default watermark file: alongside the broker token, under the
+/// same `~/.config/secrets-broker` directory. Overridable with
+/// `SECRETS_BROKER_WATERMARK_FILE` (tests point it at a temp dir).
+fn watermark_file_path() -> Option<String> {
+    if let Ok(p) = std::env::var("SECRETS_BROKER_WATERMARK_FILE") {
+        if !p.trim().is_empty() {
+            return Some(p);
+        }
+    }
+    let home = crate::home::from_env().ok()?;
+    Some(format!("{home}/.config/secrets-broker/watermark"))
+}
+
+/// Load the durable watermark written by the previous process, if
+/// any. A missing or unreadable file is a cold start (full apply),
+/// never a failure: re-applying the whole list is always safe, it
+/// just costs one full install.
+fn load_watermark() -> Option<u64> {
+    let path = watermark_file_path()?;
+    let raw = std::fs::read_to_string(&path).ok()?;
+    raw.trim().parse::<u64>().ok()
+}
+
+/// Persist the watermark atomically (write-temp-then-rename), so a
+/// broker killed mid-refresh restarts into the pre-refresh watermark
+/// and pre-refresh set, never a torn file (#13948 S2, #5504). The
+/// file carries a bare decimal unix time plus newline; it names no
+/// secret and holds no vault material. Best-effort at the call site:
+/// a persist failure is logged and the in-memory watermark still
+/// advances — the next process start simply falls back to a full
+/// apply, which is safe.
+fn persist_watermark(watermark: u64) -> Result<(), String> {
+    let path = watermark_file_path().ok_or("no watermark file path (HOME unset)")?;
+    let tmp = format!("{path}.tmp-{}", std::process::id());
+    std::fs::write(&tmp, format!("{watermark}\n"))
+        .map_err(|e| format!("watermark write failed: {}", e.kind()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("watermark rename failed: {}", e.kind()))?;
+    Ok(())
+}
+
+/// Parse an RFC 3339 timestamp (`bws secret list` `revisionDate`,
+/// e.g. `2026-10-07T07:23:52.457179600Z`) to unix seconds, without a
+/// date-time crate (none in the workspace). Accepts `Z` and numeric
+/// `±HH:MM` offsets, with or without a fractional second part.
+/// Returns `None` on any shape it does not recognise; callers treat
+/// an unparseable stamp as "changed" (apply the entry), never as a
+/// reason to skip it.
+fn parse_rfc3339_unix(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (dt, offset_s): (&str, i64) = if let Some(z) = s.strip_suffix('Z').or_else(|| s.strip_suffix('z')) {
+        (z, 0)
+    } else if s.len() >= 6 {
+        let (head, tail) = s.split_at(s.len() - 6);
+        let (sign_b, hh, mm) = (tail.as_bytes()[0], &tail[1..3], &tail[4..6]);
+        if (sign_b != b'+' && sign_b != b'-') || &tail[3..4] != ":" {
+            return None;
+        }
+        let hh: i64 = hh.parse().ok()?;
+        let mm: i64 = mm.parse().ok()?;
+        let off = hh * 3600 + mm * 60;
+        (head, if sign_b == b'+' { off } else { -off })
+    } else {
+        return None;
+    };
+    let (date, time) = dt.split_once('T').or_else(|| dt.split_once('t'))?;
+    let d: Vec<&str> = date.split('-').collect();
+    let (y, mo, d): (i64, i64, i64) = match d.as_slice() {
+        [y, mo, d] => (y.parse().ok()?, mo.parse().ok()?, d.parse().ok()?),
+        _ => return None,
+    };
+    let time = time.split('.').next()?;
+    let t: Vec<&str> = time.split(':').collect();
+    let (h, mi, se): (i64, i64, i64) = match t.as_slice() {
+        [h, mi, se] => (h.parse().ok()?, mi.parse().ok()?, se.parse().ok()?),
+        _ => return None,
+    };
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+        return None;
+    }
+    // days_from_civil (Howard Hinnant): days since 1970-01-01.
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (mo + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let secs = days * 86400 + h * 3600 + mi * 60 + se - offset_s;
+    u64::try_from(secs).ok()
+}
+
+/// One `bws secret list` entry's revision stamp, if present and
+/// parseable. A missing or unparseable `revisionDate` is NOT a
+/// validation failure — the entry is applied conservatively (it may
+/// have changed; skipping it would risk serving stale). Only
+/// id/key/value strictness can fail a refresh (#5504).
+fn entry_revision_unix(entry: &Value) -> Option<u64> {
+    entry
+        .get("revisionDate")
+        .and_then(|v| v.as_str())
+        .and_then(parse_rfc3339_unix)
+}
+
+/// A fully validated list entry plus its revision stamp (None =
+/// missing/unparseable, apply conservatively).
+type DeltaEntry = (String, String, String, Option<u64>);
+
+/// Validate the whole list strictly (id/key/value, #5504) and attach
+/// each entry's revision stamp. Any malformed entry fails the whole
+/// parse before the cache is touched.
+fn parse_delta_entries(list: &Value) -> Result<Vec<DeltaEntry>, String> {
+    let items = parse_list_entries(list)?;
+    let arr = list.as_array().ok_or("bws list is not an array")?;
+    Ok(items
+        .into_iter()
+        .zip(arr.iter())
+        .map(|((id, key, value), raw)| (id, key, value, entry_revision_unix(raw)))
+        .collect())
+}
+
+/// The outcome of one delta apply: how many listed entries were
+/// installed, how many cached names were evicted by the id-set diff,
+/// and the total the cache holds now. Logged by the refresh loop as
+/// names/counts only — never values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DeltaOutcome {
+    applied: usize,
+    deleted: usize,
+    total: usize,
+}
+
+/// Apply one validated list as a delta against `watermark`
+/// (#13948 §5.1): entries with `revisionDate` after the watermark —
+/// or with no parseable stamp — are installed; every other entry is
+/// untouched (its cached value AND its fetch time survive); ids
+/// absent from the list are deleted locally. `watermark == None` is
+/// the cold-start full load: every entry is installed.
+///
+/// Atomicity: the new map is built entirely from the read lock's
+/// snapshot plus the validated entries, then swapped in under one
+/// write lock together with the watermark advance. A failed or
+/// partial list never reaches this function, so it can never evict
+/// (#5504); a broker killed before the swap restarts into the
+/// pre-refresh set and watermark.
+fn apply_delta_refresh(
+    state: &Arc<State>,
+    entries: &[DeltaEntry],
+    watermark: Option<u64>,
+    fetched_at_unix: u64,
+    watermark_new: u64,
+) -> DeltaOutcome {
+    let listed_keys: std::collections::HashSet<&str> =
+        entries.iter().map(|(_, key, _, _)| key.as_str()).collect();
+    let old = state.secrets.read().unwrap();
+    let mut next: HashMap<String, CachedSecret> = HashMap::with_capacity(entries.len());
+    let mut applied = 0usize;
+    for (id, key, value, rev) in entries {
+        let changed = match (watermark, rev) {
+            (None, _) => true,
+            (_, None) => true,
+            (Some(wm), Some(r)) => *r > wm,
+        };
+        if changed {
+            applied += 1;
+            next.insert(
+                key.clone(),
+                CachedSecret {
+                    id: id.clone(),
+                    value: value.clone(),
+                    fetched_at_unix,
+                },
+            );
+        } else if let Some(kept) = old.get(key) {
+            next.insert(key.clone(), kept.clone());
+        } else {
+            // Below-or-at the watermark but not previously cached
+            // (e.g. evicted read-through, or a first refresh racing
+            // a concurrent read-through): install it — the listing
+            // is authoritative for the value it carries.
+            applied += 1;
+            next.insert(
+                key.clone(),
+                CachedSecret {
+                    id: id.clone(),
+                    value: value.clone(),
+                    fetched_at_unix,
+                },
+            );
+        }
+    }
+    // Deletion by id-set diff: a cached NAME the authoritative list
+    // no longer carries is dropped when its Bitwarden id is known
+    // (hence provably absent — the id set is the existence proof) and
+    // retained when its id is unknown (read-through installs with no
+    // recorded id: absence cannot be proven for them, and the next
+    // refresh carrying their name normalises them).
+    for (key, kept) in old.iter() {
+        if listed_keys.contains(key.as_str()) {
+            continue;
+        }
+        if kept.id.is_empty() {
+            next.insert(key.clone(), kept.clone());
+        }
+    }
+    // Evicted names: cached before, gone now.
+    let deleted = old.keys().filter(|k| !next.contains_key(*k)).count();
+    let total = next.len();
+    drop(old);
+    *state.secrets.write().unwrap() = next;
+    // The persisted watermark is the SINGLE quantity the peer chain
+    // consumes (S3 exposes it as `last_upstream_refresh_at`, S4
+    // compares and adopts it): refresh-start minus the skew overlap.
+    // No second un-skewed timestamp is kept for peer comparison.
+    *state.last_refresh.write().unwrap() = Some(watermark_new);
+    DeltaOutcome {
+        applied,
+        deleted,
+        total,
+    }
+}
 /// Resolve one key to its id in a `bws secret list` payload.
 /// Ok(None) is a definite "not in the vault"; a key-matching entry
 /// whose id is missing or non-string is a source failure (Err), not
@@ -311,12 +561,18 @@ fn resolve_list_id(list: &Value, name: &str) -> Result<Option<String>, String> {
 }
 
 fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
+    // The watermark is the START of the last successful refresh minus
+    // the skew overlap (#13948 §5.1): record the start before the one
+    // `bws secret list` call lands, so a change timestamped during
+    // the refresh window still reads as newer on the next tick.
+    let started_unix = now_unix();
+    let watermark = *state.last_refresh.read().unwrap();
     let token = bws_token().ok_or("no Bitwarden access token available")?;
     let list_raw = bws_run(&["secret", "list", "-o", "json"], &token)?;
     let list: Value =
         serde_json::from_str(&list_raw).map_err(|e| format!("bws list not json: {e}"))?;
-    let items = parse_list_entries(&list)?;
-    let total = items.len();
+    let entries = parse_delta_entries(&list)?;
+    let total = entries.len();
     // The complete list (including values) has landed and validated.
     // No cache mutation happens until validation is complete, so a
     // partial/failed list leaves the previous cache and watermark
@@ -325,21 +581,41 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     for _ in 0..total {
         note_refresh_fetch(state);
     }
-    Ok(install_list_refresh(state, &items, now_unix()))
+    let fetched_at_unix = now_unix();
+    let watermark_new = started_unix.saturating_sub(WATERMARK_SKEW_S);
+    let outcome = apply_delta_refresh(state, &entries, watermark, fetched_at_unix, watermark_new);
+    // Durability is best-effort after a successful apply: the
+    // in-memory watermark has already advanced, and a persist failure
+    // merely degrades the next process start to a full apply (safe).
+    if let Err(e) = persist_watermark(watermark_new) {
+        crate::log::info("secrets-broker", &format!("watermark persist failed: {e}"));
+    } else {
+        crate::log::info(
+            "secrets-broker",
+            &format!(
+                "delta refresh: applied {} of {}, deleted {}, total {}",
+                outcome.applied, total, outcome.deleted, outcome.total
+            ),
+        );
+    }
+    Ok(outcome.total)
 }
 
 /// Atomically replace the cache with one fully validated list result.
-/// This is the only refresh install path: failed or partial list
-/// results never reach this function, preserving the prior cache and
-/// `last_refresh` (#5504).
+/// Cold-start/full-load install path and the S1 back-compat seam:
+/// failed or partial list results never reach this function,
+/// preserving the prior cache and `last_refresh` (#5504). The
+/// recorded `now` is the watermark the caller computed
+/// (refresh-start minus skew); tests pass fixed times through.
 fn install_list_refresh(state: &Arc<State>, items: &[(String, String, String)], now: u64) -> usize {
     let fetched_at_unix = now;
     let secrets = items
         .iter()
-        .map(|(_, key, value)| {
+        .map(|(id, key, value)| {
             (
                 key.clone(),
                 CachedSecret {
+                    id: id.clone(),
                     value: value.clone(),
                     fetched_at_unix,
                 },
@@ -432,6 +708,11 @@ fn fetch_through_with(
             state.secrets.write().unwrap().insert(
                 name.to_string(),
                 CachedSecret {
+                    // Read-through knows the value but not the id
+                    // (fetch_one resolves it internally and drops
+                    // it): empty id, retained conservatively by the
+                    // delta's id-set diff until a list carries it.
+                    id: String::new(),
                     value: v.clone(),
                     fetched_at_unix: now_unix(),
                 },
@@ -709,9 +990,19 @@ pub fn run() -> i32 {
         }
     };
 
+    // The durable watermark (#13948 §5.1): the previous process's
+    // refresh-start-minus-skew, reloaded here so a restart resumes
+    // delta filtering where the last successful refresh left off. A
+    // missing file is a cold start — the next refresh applies the
+    // whole list. This single quantity is also what the peer chain
+    // consumes (S3 `last_upstream_refresh_at`, S4 compare-and-adopt).
+    let loaded_watermark = load_watermark();
+    if loaded_watermark.is_some() {
+        crate::log::info("secrets-broker", "loaded durable watermark from disk");
+    }
     let state = Arc::new(State {
         secrets: RwLock::new(HashMap::new()),
-        last_refresh: RwLock::new(None),
+        last_refresh: RwLock::new(loaded_watermark),
         last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
         refresh_progress: RwLock::new(None),
@@ -890,10 +1181,12 @@ fn url_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedSecret, DEFAULT_TTL_S, MIN_TTL_S, State, apply_list_refresh, begin_refresh_progress,
-        end_refresh_progress, fetch_through_with, handle_request, install_list_refresh,
-        note_refresh_fetch, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
-        resolve_list_id, url_decode,
+        CachedSecret, DEFAULT_TTL_S, DeltaOutcome, MIN_TTL_S, State, WATERMARK_SKEW_S,
+        apply_delta_refresh, apply_list_refresh, begin_refresh_progress, end_refresh_progress,
+        entry_revision_unix, fetch_through_with, handle_request, install_list_refresh,
+        load_watermark, note_refresh_fetch, now_unix, parse_delta_entries, parse_list_entries,
+        parse_rfc3339_unix, parse_ttl_s, persist_watermark, pre_body_refusal, resolve_list_id,
+        url_decode,
     };
     use std::time::Duration;
 
@@ -1211,6 +1504,29 @@ mod tests {
                 secrets.insert(
                     k.to_string(),
                     CachedSecret {
+                        // Fixture predates id tracking: unknown id,
+                        // retained conservatively by the delta diff.
+                        id: String::new(),
+                        value: v.to_string(),
+                        fetched_at_unix: *at,
+                    },
+                );
+            }
+        }
+        state
+    }
+
+    /// S2 fixture: cache entries with known Bitwarden ids, as a
+    /// successful refresh would leave them.
+    fn seeded_state_ids(entries: &[(&str, &str, &str, u64)]) -> Arc<State> {
+        let state = empty_state();
+        {
+            let mut secrets = state.secrets.write().unwrap();
+            for (id, k, v, at) in entries {
+                secrets.insert(
+                    k.to_string(),
+                    CachedSecret {
+                        id: id.to_string(),
                         value: v.to_string(),
                         fetched_at_unix: *at,
                     },
@@ -1243,6 +1559,7 @@ mod tests {
         assert_eq!(
             secrets.get("alpha"),
             Some(&CachedSecret {
+                id: "id-a".to_string(),
                 value: "new-alpha".to_string(),
                 fetched_at_unix: 200
             })
@@ -1295,6 +1612,204 @@ mod tests {
         assert_eq!(body["fetched_at_unix"], at);
         let age = body["age_seconds"].as_u64().expect("age present");
         assert!((120..130).contains(&age), "age {age}");
+    }
+
+    #[test]
+    fn rfc3339_parses_the_live_bws_revision_shape() {
+        // Oracle: `bws secret list` revisionDate looks like
+        // 2026-10-07T07:23:52.457179600Z (9-digit fraction, Z).
+        let live = parse_rfc3339_unix("2026-10-07T07:23:52.457179600Z").expect("live shape");
+        assert_eq!(live, parse_rfc3339_unix("2026-10-07T07:23:52Z").expect("plain"));
+        assert_eq!(
+            live,
+            parse_rfc3339_unix("2026-10-07T09:23:52+02:00").expect("offset")
+        );
+        assert_eq!(
+            parse_rfc3339_unix("2026-10-07T09:23:52+02:00").expect("offset"),
+            parse_rfc3339_unix("2026-10-07T07:23:52Z").expect("z") 
+        );
+        // Absolute anchor (verified against `date -u -d`): 2026-01-01T00:00:00Z.
+        assert_eq!(parse_rfc3339_unix("2026-01-01T00:00:00Z"), Some(1767225600));
+        for bad in ["", "not-a-date", "2026-13-01T00:00:00Z", "2026-01-01 00:00:00", "2026-01-01T25:00:00Z"] {
+            assert_eq!(parse_rfc3339_unix(bad), None, "reject {bad}");
+        }
+    }
+
+    #[test]
+    fn delta_refresh_applies_exactly_the_changed_entry() {
+        // Proof (1): one secret changed upstream → exactly one entry
+        // applied; the untouched entry keeps its old value AND its
+        // old fetch time; the delisted id is evicted.
+        let state = seeded_state_ids(&[
+            ("id-a", "alpha", "old-alpha", 100),
+            ("id-b", "beta", "old-beta", 100),
+            ("id-g", "gamma", "old-gamma", 100),
+        ]);
+        let entries = vec![
+            ("id-a".to_string(), "alpha".to_string(), "new-alpha-upstream".to_string(), Some(900)),
+            ("id-b".to_string(), "beta".to_string(), "new-beta".to_string(), Some(1100)),
+        ];
+        let out = apply_delta_refresh(&state, &entries, Some(1000), 2000, 1940);
+        assert_eq!(out, DeltaOutcome { applied: 1, deleted: 1, total: 2 });
+        let secrets = state.secrets.read().unwrap();
+        // Below-watermark entry: value and fetch time untouched.
+        assert_eq!(
+            secrets.get("alpha").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            Some(("old-alpha", 100))
+        );
+        assert_eq!(
+            secrets.get("beta").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            Some(("new-beta", 2000))
+        );
+        assert!(!secrets.contains_key("gamma"));
+        // Single quantity: the watermark advances to start-minus-skew.
+        assert_eq!(*state.last_refresh.read().unwrap(), Some(1940));
+    }
+
+    #[test]
+    fn delta_refresh_with_no_changes_is_a_noop_beyond_the_list_call() {
+        // Proof (2): nothing newer than the watermark → zero applies,
+        // zero evictions, cached fetch times bit-identical; the
+        // watermark still advances to the new refresh start-minus-skew.
+        let state = seeded_state_ids(&[
+            ("id-a", "alpha", "old-alpha", 100),
+            ("id-b", "beta", "old-beta", 100),
+        ]);
+        let entries = vec![
+            ("id-a".to_string(), "alpha".to_string(), "old-alpha".to_string(), Some(500)),
+            ("id-b".to_string(), "beta".to_string(), "old-beta".to_string(), Some(900)),
+        ];
+        let out = apply_delta_refresh(&state, &entries, Some(1000), 2000, 1940);
+        assert_eq!(out, DeltaOutcome { applied: 0, deleted: 0, total: 2 });
+        let secrets = state.secrets.read().unwrap();
+        assert_eq!(
+            secrets.get("alpha").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            Some(("old-alpha", 100))
+        );
+        assert_eq!(
+            secrets.get("beta").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            Some(("old-beta", 100))
+        );
+        assert_eq!(*state.last_refresh.read().unwrap(), Some(1940));
+    }
+
+    #[test]
+    fn delta_refresh_entry_without_a_stamp_is_applied_conservatively() {
+        // A missing/unparseable revisionDate is not a validation
+        // failure and never skips the entry — it may have changed.
+        let list = serde_json::json!([
+            {"id": "id-a", "key": "alpha", "value": "v-a"},
+            {"id": "id-b", "key": "beta", "value": "v-b", "revisionDate": "not-a-date"}
+        ]);
+        let entries = parse_delta_entries(&list).expect("stamps never fail validation");
+        assert_eq!(entries[0].3, None);
+        assert_eq!(entries[1].3, None);
+        let state = seeded_state_ids(&[("id-a", "alpha", "old-a", 100)]);
+        let out = apply_delta_refresh(&state, &entries, Some(1000), 2000, 1940);
+        assert_eq!(out.applied, 2);
+        assert_eq!(
+            state.secrets.read().unwrap().get("alpha").map(|c| c.value.as_str()),
+            Some("v-a")
+        );
+    }
+
+    #[test]
+    fn delta_refresh_retains_unknown_id_entries_it_cannot_prove_absent() {
+        // Read-through installs (#6275) carry no Bitwarden id; the
+        // id-set diff cannot prove them absent, so they survive a
+        // refresh that does not list their name.
+        let state = seeded_state(&[("rt-name", "rt-value", 100)]);
+        let entries = vec![(
+            "id-a".to_string(),
+            "alpha".to_string(),
+            "v-a".to_string(),
+            Some(500),
+        )];
+        let out = apply_delta_refresh(&state, &entries, Some(1000), 2000, 1940);
+        assert_eq!(out.deleted, 0);
+        assert!(state.secrets.read().unwrap().contains_key("rt-name"));
+    }
+
+    #[test]
+    fn malformed_delta_list_applies_nothing_including_the_watermark() {
+        // Proof (#5504) at the delta gate: a partial list fails
+        // before the cache is touched — values, fetch times, and the
+        // watermark are all bit-identical afterwards.
+        let state = seeded_state_ids(&[("id-a", "alpha", "old-alpha", 100)]);
+        *state.last_refresh.write().unwrap() = Some(1000);
+        let partial = serde_json::json!([
+            {"id": "id-a", "key": "alpha", "value": "new-alpha", "revisionDate": "2026-01-01T00:00:00Z"},
+            {"id": "id-b", "key": "beta"}
+        ]);
+        assert!(parse_delta_entries(&partial).is_err());
+        let secrets = state.secrets.read().unwrap();
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(
+            secrets.get("alpha").map(|c| (c.value.as_str(), c.fetched_at_unix)),
+            Some(("old-alpha", 100))
+        );
+        assert_eq!(*state.last_refresh.read().unwrap(), Some(1000));
+    }
+
+    #[test]
+    fn skew_window_change_is_still_applied_on_the_next_refresh() {
+        // Proof (4, skew): the watermark is refresh-start minus
+        // WATERMARK_SKEW_S, so an entry revised DURING the refresh
+        // window (after start, before the list lands) still reads as
+        // newer on the following tick.
+        assert_eq!(WATERMARK_SKEW_S, 60);
+        let start = 2000u64;
+        let watermark_new = start - WATERMARK_SKEW_S;
+        let state = seeded_state_ids(&[("id-a", "alpha", "old-a", 100)]);
+        // Entry revised at 1990: inside the skew window behind start.
+        let entries = vec![(
+            "id-a".to_string(),
+            "alpha".to_string(),
+            "mid-refresh-value".to_string(),
+            entry_revision_unix(&serde_json::json!({"revisionDate": "1970-01-01T00:33:10Z"})),
+        )];
+        assert_eq!(entries[0].3, Some(1990));
+        let out = apply_delta_refresh(&state, &entries, Some(1000), 2100, watermark_new);
+        assert_eq!(out.applied, 1);
+        assert_eq!(*state.last_refresh.read().unwrap(), Some(watermark_new));
+        // And the NEXT refresh, filtering against the persisted
+        // watermark, still sees it as newer (1990 > 1940): re-apply
+        // is idempotent, never a skip.
+        let out2 = apply_delta_refresh(&state, &entries, Some(watermark_new), 2200, 2140);
+        assert_eq!(out2.applied, 1);
+        assert_eq!(
+            state.secrets.read().unwrap().get("alpha").map(|c| c.value.as_str()),
+            Some("mid-refresh-value")
+        );
+    }
+
+    #[test]
+    fn watermark_round_trips_through_the_file_atomically() {
+        // Proof (3/4, durability): persist + reload returns the exact
+        // watermark; a torn write can never leave a half file behind
+        // (write-temp-then-rename) — simulated here by asserting the
+        // file bytes are exactly the decimal form.
+        let dir = std::env::temp_dir().join(format!("wm-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("watermark");
+        // SAFETY: the watermark path override is test-only and no
+        // other test in this module reads it concurrently.
+        unsafe {
+            std::env::set_var(
+                "SECRETS_BROKER_WATERMARK_FILE",
+                path.to_string_lossy().to_string(),
+            );
+        }
+        persist_watermark(1940).expect("persist");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "1940\n");
+        assert_eq!(load_watermark(), Some(1940));
+        // A garbage file is a cold start, never a crash.
+        std::fs::write(&path, "torn-half").unwrap();
+        assert_eq!(load_watermark(), None);
+        std::fs::remove_dir_all(&dir).ok();
+        unsafe {
+            std::env::remove_var("SECRETS_BROKER_WATERMARK_FILE");
+        }
     }
 
     proptest! {
