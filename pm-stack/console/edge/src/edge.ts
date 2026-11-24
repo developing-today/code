@@ -536,14 +536,14 @@ export class Edge {
     const held = await this.heldList();
     const handed = await this.handedList();
     const can = this.primary(cfg) && this.mine(cfg) !== null;
-    const withMachine = new Set(held.filter((h) => withMachine(h, handed)).map((h) => heldAbout(h)));
+    const machineAbouts = new Set(held.filter((h) => withMachine(h, handed)).map((h) => heldAbout(h)));
     // Things with something ahead that only a machine can do.
     const behind = new Set<string>();
     const waits = new Map<string, HeldFor>();
     for (const h of held) {
       const about = heldAbout(h);
       if (withMachine(h, handed)) waits.set(h.id, "asked");
-      else if (can && this.does(h.kind) && !withMachine.has(about) && !behind.has(about)) {
+      else if (can && this.does(h.kind) && !machineAbouts.has(about) && !behind.has(about)) {
         waits.set(h.id, "either");
       } else {
         waits.set(h.id, "machine");
@@ -727,14 +727,14 @@ export class Edge {
     if (!this.primary(cfg) || !this.mine(cfg)) return [];
     const held = await this.heldList();
     const handed = await this.handedList();
-    const withMachine = new Set(held.filter((h) => withMachine(h, handed)).map((h) => heldAbout(h)));
+    const machineAbouts = new Set(held.filter((h) => withMachine(h, handed)).map((h) => heldAbout(h)));
     const seen = new Set<string>();
     const first: Held[] = [];
     for (const h of held) {
       const about = heldAbout(h);
       if (seen.has(about)) continue;
       seen.add(about);
-      if (this.does(h.kind) && !withMachine.has(about)) first.push(h);
+      if (this.does(h.kind) && !machineAbouts.has(about)) first.push(h);
     }
     return first;
   }
