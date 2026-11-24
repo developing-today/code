@@ -59,6 +59,7 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 ## Dated records
 
+- [PM answer write-back to the queue broker](2026-11-24_design_pm14043_answer_writeback.md) — design of record for #14043: applier placement (aggregator-side), applier-to-broker authority (signed decide envelope), exactly-once application, failure alerting, composition with #13469, and the packetisable build slices S1–S5 (tracking #14043).
 - [Free models & free tokens census](2026-11-24T01-21-58Z_research_free-census/2026-11-24T01-21-58Z_research_free-census.md) — dated record of the 2026-11-23 free-provider and free-token census; the evidence base for the free-first route order (tracking #13877).
 - [Luna-as-decision experiment](2026-11-24T02-09-38Z_research_decision-eval/2026-11-24T02-09-38Z_research_decision-eval.md) — dated record of the decision-API model experiment (code#13675 Part 3b): Luna low + harness judged against the pre-posted bar — 36/36 schema-faithful, 35/36 correct (97.2%), verdict PASS, seatable in systemone after the free legs (tracking #13877).
 - [Roc investigation — research corpus](2026-11-24T02-09-38Z_research_roc-investigation/2026-11-24T02-09-38Z_research_roc-investigation.md) — dated record of the 2026-11-23 Roc ecosystem investigation (blog catalogue, ecosystem survey, platform-design note, Zulip digest, repo-bundle research set); the talks/media catalogue lives at `doc/living/roc/` (tracking #13877).
