@@ -34,6 +34,34 @@
 //   POST /api/<owner>/fleet/send       {body, to, kind?, sender?}: one
 //                                      inbound row per recipient
 //
+// Per-agent credentials and bootstrap enrollment (#14368, design §4.5):
+// the routes above also answer to a per-agent credential in place of
+// the fleet token (/fleet/<credential>/...). A credential is a random
+// value whose SHA-256 hash alone is stored (fleet_credential, the
+// notes-token model); it acts only as its own agent — hello/inbox/ack
+// for its own name (scope "inbox"), send with from_addr fixed to
+// agent:<its name> (scope "send") — and every refusal is the usual
+// plain 404. The owner mints single-use, expiring bootstrap tokens
+// bound at mint time to a name, kind and groups (enroll_token, hash
+// only):
+//
+//   POST /api/<owner>/enroll-tokens    {agent, kind?, groups?,
+//                                      notes_identity?, ttl_seconds?}:
+//                                      mints a bootstrap token; the
+//                                      value is returned once, here
+//   POST /api/<owner>/enroll-tokens/revoke  {bootstrap_token | token_hash}:
+//                                      revokes an unused bootstrap token
+//   POST /enroll/exchange              {bootstrap_token, agent}: burns
+//                                      the token, registers the mailbox
+//                                      (and the notes identity, when
+//                                      minted with one) and returns the
+//                                      agent's fleet credential and
+//                                      notes token, once
+//   POST /api/<owner>/fleet/credentials/revoke  {agent}: revokes every
+//                                      live fleet credential of an agent
+//   POST /api/<owner>/notes-tokens/revoke  {identity}: revokes an
+//                                      identity's notes token(s)
+//
 // `to` names recipients as "agent:<name>" (or a bare name), "group:<name>"
 // (every registered agent in that group) or "all" (every registered
 // agent); a list or a comma-separated string mixes them. kind is
@@ -58,6 +86,7 @@
 
 import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./auth.js";
 import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
+import { normalizeNoteIdentity, noteTokenHash } from "./notes.js";
 import { relay, replyAddress } from "./relay.js";
 
 export const FLEET_KINDS = ["message", "command"];
@@ -294,6 +323,30 @@ export function fleetSchema(sql) {
   const cols = sql.exec("PRAGMA table_info(fleet_message)").toArray();
   if (!cols.some((c) => c.name === "from_addr")) sql.exec("ALTER TABLE fleet_message ADD COLUMN from_addr TEXT");
   sql.exec("CREATE INDEX IF NOT EXISTS fleet_message_mailbox ON fleet_message (agent, direction, read_at)");
+  // Per-agent credentials (#14368): only the SHA-256 hash of a credential
+  // is stored, never the value. scopes is a JSON array drawn from
+  // CREDENTIAL_SCOPES; revoked_at is the per-agent kill switch.
+  sql.exec(`CREATE TABLE IF NOT EXISTS fleet_credential (
+    token_hash TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    scopes TEXT NOT NULL DEFAULT '[]',
+    created TEXT NOT NULL,
+    revoked_at TEXT
+  )`);
+  // Bootstrap enroll tokens (#14368): hash only, bound at mint time to
+  // the agent name, kind and groups; single-use (used_at), expiring
+  // (expires_at), revocable while unused (revoked_at).
+  sql.exec(`CREATE TABLE IF NOT EXISTS enroll_token (
+    token_hash TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    groups TEXT NOT NULL DEFAULT '[]',
+    notes_identity TEXT,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    revoked_at TEXT,
+    created TEXT NOT NULL
+  )`);
 }
 
 const rows = (cursor) => cursor.toArray().map((r) => ({ ...r }));
@@ -516,6 +569,235 @@ export async function fleetCall(stub, op, args) {
   return out;
 }
 
+// ---- per-agent credentials and bootstrap enrollment (#14368) ----
+
+export const CREDENTIAL_SCOPES = ["inbox", "send"];
+export const ENROLL_DEFAULT_TTL_SECONDS = 24 * 3600;
+export const ENROLL_MIN_TTL_SECONDS = 60;
+export const ENROLL_MAX_TTL_SECONDS = 7 * 24 * 3600;
+
+/** A fresh credential value: 32 random bytes, base64url (43 chars). Only its hash is stored. */
+export function randomTokenValue() {
+  const b = new Uint8Array(32);
+  crypto.getRandomValues(b);
+  return b64url(b);
+}
+
+// Storage for credentials and enroll tokens (Durable Object sql; the
+// test MemoryStore mirrors these semantics). Hash-only throughout: no
+// function here ever sees a token value, only its SHA-256 hex.
+
+export function fleetCredentialAuthSql(sql, token_hash) {
+  const r = sql
+    .exec("SELECT agent, scopes FROM fleet_credential WHERE token_hash = ? AND revoked_at IS NULL", token_hash)
+    .toArray()[0];
+  return r ? { agent: r.agent, scopes: JSON.parse(r.scopes) } : null;
+}
+
+export function fleetCredentialPutSql(sql, { token_hash, agent, scopes, created }) {
+  sql.exec(
+    "INSERT INTO fleet_credential (token_hash, agent, scopes, created) VALUES (?, ?, ?, ?)",
+    token_hash,
+    agent,
+    JSON.stringify(scopes),
+    created,
+  );
+  return { agent, scopes: [...scopes] };
+}
+
+/** Revokes every live credential of the agent; returns how many. */
+export function fleetCredentialRevokeSql(sql, agent, now) {
+  return sql
+    .exec(
+      "UPDATE fleet_credential SET revoked_at = ? WHERE agent = ? AND revoked_at IS NULL RETURNING token_hash",
+      now,
+      agent,
+    )
+    .toArray().length;
+}
+
+export function enrollTokenMintSql(sql, row) {
+  sql.exec(
+    `INSERT INTO enroll_token (token_hash, agent, kind, groups, notes_identity, expires_at, created)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    row.token_hash,
+    row.agent,
+    row.kind,
+    JSON.stringify(row.groups),
+    row.notes_identity,
+    row.expires_at,
+    row.created,
+  );
+  return {
+    agent: row.agent,
+    kind: row.kind,
+    groups: [...row.groups],
+    notes_identity: row.notes_identity,
+    expires_at: row.expires_at,
+    created: row.created,
+  };
+}
+
+export function enrollTokenGetSql(sql, token_hash) {
+  const r = sql.exec("SELECT * FROM enroll_token WHERE token_hash = ?", token_hash).toArray()[0];
+  return r
+    ? {
+        agent: r.agent,
+        kind: r.kind,
+        groups: JSON.parse(r.groups),
+        notes_identity: r.notes_identity,
+        expires_at: r.expires_at,
+        used_at: r.used_at,
+        revoked_at: r.revoked_at,
+        created: r.created,
+      }
+    : null;
+}
+
+/**
+ * Burns a bootstrap token: one UPDATE that only lands when the token
+ * exists, names this agent, and is unused, unrevoked and unexpired —
+ * so a token can never be claimed twice. Returns the bound mint record.
+ */
+export function enrollTokenClaimSql(sql, token_hash, agent, now) {
+  const claimed = sql
+    .exec(
+      `UPDATE enroll_token SET used_at = ?
+       WHERE token_hash = ? AND agent = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+       RETURNING agent, kind, groups, notes_identity`,
+      now,
+      token_hash,
+      agent,
+      now,
+    )
+    .toArray();
+  if (!claimed.length) return null;
+  const r = claimed[0];
+  return { agent: r.agent, kind: r.kind, groups: JSON.parse(r.groups), notes_identity: r.notes_identity };
+}
+
+/** Revokes an unused bootstrap token; false when it was used, revoked or unknown. */
+export function enrollTokenRevokeSql(sql, token_hash, now) {
+  return (
+    sql
+      .exec(
+        "UPDATE enroll_token SET revoked_at = ? WHERE token_hash = ? AND used_at IS NULL AND revoked_at IS NULL RETURNING token_hash",
+        now,
+        token_hash,
+      )
+      .toArray().length > 0
+  );
+}
+
+/** Validates a bootstrap mint body; the token is bound to what this returns. */
+export function normalizeEnrollMint(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
+  const ttl = data.ttl_seconds === undefined || data.ttl_seconds === null ? ENROLL_DEFAULT_TTL_SECONDS : data.ttl_seconds;
+  if (!Number.isInteger(ttl) || ttl < ENROLL_MIN_TTL_SECONDS || ttl > ENROLL_MAX_TTL_SECONDS) {
+    throw new InputError(`ttl_seconds must be an integer between ${ENROLL_MIN_TTL_SECONDS} and ${ENROLL_MAX_TTL_SECONDS}`);
+  }
+  return {
+    agent: normalizeName(data.agent),
+    kind:
+      data.kind === undefined || data.kind === null || data.kind === "" ? "agent" : normalizeName(data.kind, "kind"),
+    groups: normalizeGroups(data.groups) ?? [],
+    notes_identity:
+      data.notes_identity === undefined || data.notes_identity === null || data.notes_identity === ""
+        ? null
+        : normalizeNoteIdentity(data.notes_identity),
+    ttl_seconds: ttl,
+  };
+}
+
+/**
+ * Mints a bootstrap token for the owner. The value exists only in this
+ * return value; the store receives its SHA-256 hash.
+ */
+export async function mintEnrollToken(store, data, nowMs = Date.now()) {
+  const m = normalizeEnrollMint(data);
+  const value = randomTokenValue();
+  const created = new Date(nowMs).toISOString();
+  const expires_at = new Date(nowMs + m.ttl_seconds * 1000).toISOString();
+  await store.enrollTokenMint({
+    token_hash: await noteTokenHash(value),
+    agent: m.agent,
+    kind: m.kind,
+    groups: m.groups,
+    notes_identity: m.notes_identity,
+    expires_at,
+    created,
+  });
+  return {
+    agent: m.agent,
+    kind: m.kind,
+    groups: m.groups,
+    notes_identity: m.notes_identity,
+    expires_at,
+    bootstrap_token: value,
+  };
+}
+
+/**
+ * Exchanges a bootstrap token for the agent's working credentials.
+ * Every failure — wrong, used, expired or revoked token, or a name
+ * that isn't the name the token was minted for — returns null, and the
+ * route answers the plain 404 every wrong token gets on this Worker.
+ * On success the credential values are returned here, once; the store
+ * keeps only their hashes. The token is burned before any credential
+ * is minted, so a failure mid-exchange costs a re-mint, never a
+ * second use.
+ */
+export async function exchangeEnrollToken(store, data, now = new Date().toISOString()) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  if (typeof data.bootstrap_token !== "string" || data.bootstrap_token.length < 32 || data.bootstrap_token.length > 512) {
+    return null;
+  }
+  let agent;
+  try {
+    agent = normalizeName(data.agent);
+  } catch {
+    return null;
+  }
+  const claimed = await store.enrollTokenClaim(await noteTokenHash(data.bootstrap_token), agent, now);
+  if (!claimed) return null;
+  const fleetValue = randomTokenValue();
+  await store.fleetCredentialPut({
+    token_hash: await noteTokenHash(fleetValue),
+    agent,
+    scopes: [...CREDENTIAL_SCOPES],
+    created: now,
+  });
+  await store.fleet("hello", { agent, groups: claimed.groups });
+  let notesToken = null;
+  if (claimed.notes_identity) {
+    notesToken = randomTokenValue();
+    await store.noteRegister({
+      identity: claimed.notes_identity,
+      token_hash: await noteTokenHash(notesToken),
+      can_send: true,
+      can_inbox: true,
+    });
+  }
+  return {
+    agent,
+    kind: claimed.kind,
+    groups: claimed.groups,
+    notes_identity: claimed.notes_identity,
+    fleet_token: fleetValue,
+    notes_token: notesToken,
+  };
+}
+
+/** The hash a revoke call names: a bootstrap value to hash, or a stored hash itself. */
+async function enrollRevokeHash(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
+  if (typeof data.bootstrap_token === "string" && data.bootstrap_token.length >= 32 && data.bootstrap_token.length <= 512) {
+    return noteTokenHash(data.bootstrap_token);
+  }
+  if (typeof data.token_hash === "string" && /^[0-9a-f]{64}$/.test(data.token_hash)) return data.token_hash;
+  throw new InputError("give bootstrap_token or token_hash");
+}
+
 // ---- HTTP ----
 
 const json = (data, status = 200) =>
@@ -585,23 +867,52 @@ export function commandForAgent(m) {
   return { ...m, sender: null, from_addr: null };
 }
 
-async function agentRoute(request, store, what, url, delivered) {
+/** The credential's own name when raw names it (normalized), else null. */
+function credOwnName(raw, cred) {
+  try {
+    return normalizeName(raw) === cred.agent ? cred.agent : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Agent routes. With the shared fleet token (cred null) any agent name
+ * may be named, as before. With a per-agent credential the request may
+ * act only as that agent, within its scopes; anything else is the
+ * plain 404 a wrong token gets, so a credential learns nothing about
+ * other agents' mailboxes.
+ */
+async function agentRoute(request, store, what, url, delivered, cred = null) {
+  const scoped = (scope) => !cred || cred.scopes.includes(scope);
   if (what === "hello") {
     if (request.method !== "POST") return notAllowed("POST");
-    return json(await store.fleet("hello", await readJson(request)));
+    const d = await readJson(request);
+    if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
+    return json(await store.fleet("hello", d));
   }
   if (what === "inbox") {
     if (request.method !== "GET") return notAllowed("GET");
+    if (cred && (!scoped("inbox") || credOwnName(url.searchParams.get("agent"), cred) === null)) return notFound();
     const out = await store.fleet("inbox", query(url));
     return json({ ...out, messages: out.messages.map(commandForAgent) });
   }
   if (what === "ack") {
     if (request.method !== "POST") return notAllowed("POST");
-    return json(await store.fleet("ack", await readJson(request)));
+    const d = await readJson(request);
+    if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
+    return json(await store.fleet("ack", d));
   }
   if (what === "send") {
     if (request.method !== "POST") return notAllowed("POST");
-    return json(await agentSend(store, await readJson(request), delivered), 201);
+    const d = await readJson(request);
+    if (cred) {
+      if (!scoped("send") || credOwnName(d.agent, cred) === null) return notFound();
+      // from_addr is fixed by the relay to agent:<this name>; the
+      // sender label follows it, whatever the body claims.
+      d.sender = cred.agent;
+    }
+    return json(await agentSend(store, d, delivered), 201);
   }
   return notFound();
 }
@@ -626,26 +937,72 @@ async function ownerRoute(request, store, what, url, delivered) {
 }
 
 /**
- * Handles /fleet/<fleet token>/<what> and /api/<owner>/fleet/<what>;
- * returns null for any other path so the caller routes it as before. A
- * wrong token is a plain 404, like everywhere else.
+ * Handles /fleet/<fleet token or agent credential>/<what>,
+ * /api/<owner>/fleet/<what>, the owner's credential and enroll-token
+ * routes, and POST /enroll/exchange; returns null for any other path
+ * so the caller routes it as before. A wrong token — shared, credential
+ * or bootstrap — is a plain 404, like everywhere else.
  */
 export async function handleFleet(request, env, url, getStore, deliveredFor = () => () => {}) {
   const parts = url.pathname.split("/").filter(Boolean);
   try {
+    if (parts[0] === "enroll") {
+      if (parts.length !== 2 || parts[1] !== "exchange") return notFound();
+      if (request.method !== "POST") return notAllowed("POST");
+      let data = null;
+      try {
+        data = await readJson(request);
+      } catch {
+        return notFound();
+      }
+      const out = await exchangeEnrollToken(getStore(), data);
+      return out ? json(out, 201) : notFound();
+    }
     if (parts[0] === "fleet") {
       if (parts.length !== 3) return notFound();
-      const expected = await fleetToken(env);
-      if (!expected || !safeEqual(parts[1], expected)) return notFound();
       const store = getStore();
-      return await agentRoute(request, store, parts[2], url, deliveredFor(store));
+      const expected = await fleetToken(env);
+      if (expected && safeEqual(parts[1], expected)) {
+        return await agentRoute(request, store, parts[2], url, deliveredFor(store));
+      }
+      // A per-agent credential: looked up by hash, bound to one agent.
+      if (parts[1].length < MIN_TOKEN_LENGTH || parts[1].length > 512) return notFound();
+      const cred = await store.fleetCredentialAuth(await noteTokenHash(parts[1]));
+      if (!cred) return notFound();
+      return await agentRoute(request, store, parts[2], url, deliveredFor(store), cred);
     }
-    if (parts[0] === "api" && parts[2] === "fleet") {
+    if (parts[0] === "api") {
       const m = matchTokenPath(url.pathname, env);
       if (!m || m.role !== "owner") return null; // not ours: the caller 404s
-      if (parts.length !== 4) return notFound();
       const store = getStore();
-      return await ownerRoute(request, store, parts[3], url, deliveredFor(store));
+      if (parts[2] === "fleet") {
+        if (parts.length === 4) return await ownerRoute(request, store, parts[3], url, deliveredFor(store));
+        if (parts.length === 5 && parts[3] === "credentials" && parts[4] === "revoke") {
+          if (request.method !== "POST") return notAllowed("POST");
+          const agent = normalizeName((await readJson(request)).agent);
+          return json({ agent, revoked: await store.fleetCredentialRevoke(agent) });
+        }
+        return notFound();
+      }
+      if (parts[2] === "enroll-tokens") {
+        if (parts.length === 3) {
+          if (request.method !== "POST") return notAllowed("POST");
+          return json(await mintEnrollToken(store, await readJson(request)), 201);
+        }
+        if (parts.length === 4 && parts[3] === "revoke") {
+          if (request.method !== "POST") return notAllowed("POST");
+          const hash = await enrollRevokeHash(await readJson(request));
+          return json({ revoked: await store.enrollTokenRevoke(hash) });
+        }
+        return notFound();
+      }
+      if (parts[2] === "notes-tokens" && parts.length === 4 && parts[3] === "revoke") {
+        if (request.method !== "POST") return notAllowed("POST");
+        const identity = normalizeNoteIdentity((await readJson(request)).identity);
+        return json({ identity, revoked: await store.noteRevoke(identity) });
+      }
+      if (parts[2] === "enroll-tokens" || parts[2] === "notes-tokens") return notFound();
+      return null; // another /api area: the caller routes it
     }
   } catch (err) {
     if (err instanceof InputError) return json({ error: err.message }, 400);
