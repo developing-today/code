@@ -225,6 +225,42 @@ it (the laptop's, the sign-in issuer's).
   says when it answers again and which of the two it was. Health has
   the times as `github.quiet.core` and `github.quiet.search`. "Try
   again now" lifts both.
+- **A notification says what happened and carries what can be done
+  about it.** Each message the notifier sends has up to two buttons
+  (`PushAction` in `src/notify.ts`): on a reply from the fleet, "Reply"
+  (a line typed on the notification itself, where the device can take
+  one; where it cannot, the thread is opened) and "Close it"; on
+  something only the owner can do, "I did it" and "Open"; on a unit
+  that failed, "Restart it" and "Look". A button that does something
+  does it the way the app does anything: the service worker writes it
+  down on the device, sends it under a name, and with no connection it
+  is kept and sent later, never twice. With the app closed a
+  notification in the same place says what became of it ("Done.",
+  "Kept on this device…", or that it could not be done); with the app
+  open, the app says it. The body says enough to act on: the reply
+  itself, what to do and on which item, which unit and what it is for.
+  A push service takes a message of 4096 bytes and may refuse a longer
+  one (RFC 8030), so a message that would be longer as it is sealed is
+  cut to the longest start that fits, marked as cut, buttons kept.
+- **The app is told when something changes.** The open app holds a
+  WebSocket to the Worker (`/console/api/events`, the owner signed in
+  like any other request). The Worker's object keeps it by the
+  platform's hibernation API, so the connection stays open while the
+  object is put away and costs nothing between events. When a document
+  would be answered with another tag (a list read with other content
+  or another health, something the owner did, what is held), everyone
+  connected is told which documents, once however many changes arrive
+  together: `{"t":"changed","docs":["core"]}`. The app reads those
+  again by their tags. While someone is connected the object wakes
+  every twenty seconds to read again what it reads itself and has gone
+  stale; with nobody connected it does not wake for this. The app says
+  "ping" every 45 seconds, which the platform answers itself. What the
+  owner does still goes by its own requests (kept on the device and
+  sent again when there is no connection), never over this. With no
+  live connection (a machine serving the app by itself, or a network
+  that will not carry one) the app looks every twenty seconds, as
+  before; with one, once a minute in case something was missed. The
+  health answer says how many are connected (`listening`).
 - **The repository's settings are the platform's own.** Which
   repository and queue, where the queue's store answers and what its
   token is called, the Android app's package and the label that marks
@@ -260,9 +296,10 @@ it (the laptop's, the sign-in issuer's).
   the rest. A test holds the two readings to each other on the same
   issues. The search is not used for this: it is counted by the minute,
   it lags, and it takes issues and pull requests in separate queries
-  (asked for both at once it answers 422, which is what the dashboard's
-  own census did until #14103; it asks the same lists now, and a test
-  holds the two to asking for the same pages). The lists are asked for
+  (asked for both at once it answers 422 to some tokens, a GitHub App's
+  among them, though not to the one the dashboard runs with, whose
+  census asked it so until #14103; it asks the same lists now, and a
+  test holds the two to asking for the same pages). The lists are asked for
   by their tags like any other, so the eight of them cost nothing while
   nothing changes. A repository the token cannot see (404, or a 403
   that is not about calling too often) is named in what is shown, and

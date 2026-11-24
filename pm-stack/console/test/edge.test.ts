@@ -706,6 +706,22 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     },
   };
   const alarm = { at: 0 };
+  /** The platform's live connections, standing in: who is connected
+   * (each by what it was sent), as the platform holds them whether or
+   * not the object is in memory. */
+  const live: { open: string[][]; refuses: boolean } = { open: [], refuses: false };
+  const sockets = {
+    accept: (_req: Request) => {
+      live.open.push([]);
+      // What the platform answers an upgrade with (its 101 cannot be made outside it).
+      return new Response(null, { status: 200, headers: { "x-live": "accepted" } });
+    },
+    send: (text: string) => {
+      for (const got of live.open) got.push(text);
+      return live.open.length;
+    },
+    count: () => live.open.length,
+  };
   /** What the edge left running behind an answer. */
   const behind: Promise<unknown>[] = [];
   /** A new object over the same storage, as after a restart; `direct`
@@ -730,6 +746,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
         alarm.at = at;
       },
       getAlarm: async () => alarm.at || null,
+      sockets,
       later: (work) => {
         behind.push(work);
       },
@@ -1143,6 +1160,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     githubCalls,
     queueCalls,
     strays,
+    live,
     ghIssues,
     ghComments,
     ghLabels,
@@ -1176,6 +1194,7 @@ describe("before the host's first report", () => {
       github: { answers: 0, unchanged: 0, since: w.now.t, kept: 0, quiet: { core: null, search: null } },
       hostSeen: null,
       hostVersion: null,
+      listening: 0,
       machineSettingsDiffer: null,
       androidBuild: null,
       androidRelease: null,
@@ -3245,6 +3264,151 @@ describe("notifications and phones, from the edge", () => {
     await w.link.now.once();
     expect(await w.edge.now.phones.devices.check(linked!.token)).toBeNull();
     expect(await w.hostDeps.phones!.devices.check(linked!.token)).toBeNull();
+  });
+});
+
+// The app is told when something changes, and reads again at once. The
+// connection is the platform's (a WebSocket the Worker's object holds,
+// kept by Cloudflare while the object sleeps); here it is stood in for.
+// The oracle for "changed" is the document's own tag: a message means
+// the document named would be answered with another tag.
+describe("the app is told when something changes", () => {
+  type World = Awaited<ReturnType<typeof setup>>;
+  const connect = (w: World, init: { token?: string | null; upgrade?: boolean } = {}) =>
+    w.browse("/console/api/events", {
+      ...(init.token === undefined ? {} : { token: init.token }),
+      headers: init.upgrade === false ? {} : { upgrade: "websocket" },
+    });
+  /** Everything this side reads itself, read once: after this a read is
+   * a change only if what it reads has changed. */
+  const readAll = async (w: World) => {
+    for (let look = 0; look < 2; look++) {
+      await w.core();
+      await w.browse("/console/api/doc/ops");
+      await Promise.all(w.behind.splice(0));
+    }
+  };
+  const said = (w: World) => w.live.open.map((got) => got.map((text) => JSON.parse(text)));
+  const tag = async (w: World, doc: string) => (await w.browse(`/console/api/doc/${doc}`)).headers.get("etag");
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("only the owner, signed in, is connected; anything else is not a connection", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    // Not signed in: the Worker connects nobody (the request goes on to the machine, which refuses a stranger).
+    expect((await connect(w, { token: null })).headers.get("x-live")).toBeNull();
+    expect(
+      (await connect(w, { token: await w.token({ email: "someone@else.example" }) })).headers.get("x-live"),
+    ).toBeNull();
+    expect(w.live.open).toHaveLength(0);
+    // Signed in, but not asking to be connected.
+    expect((await connect(w, { upgrade: false })).status).toBe(426);
+    expect(w.live.open).toHaveLength(0);
+    // The owner, asking to be connected.
+    const res = await connect(w);
+    expect(res.headers.get("x-live")).toBe("accepted");
+    expect(w.live.open).toHaveLength(1);
+    // And health says how many are connected, which is all it says of them.
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as { listening: number };
+    expect(health.listening).toBe(1);
+  });
+
+  test("what the owner does changes the core document: everyone connected is told once, and the document has another tag", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await Promise.all(w.behind.splice(0));
+    await connect(w);
+    await connect(w);
+    await tick();
+    for (const got of w.live.open) got.length = 0;
+    const before = await tag(w, "core");
+    expect((await w.act("issue.comment", { issue: 14, text: "live" })).status).toBe(200);
+    await tick();
+    // Each connection was told that the core document changed: once, however many things changed in it.
+    expect(said(w)).toEqual([[{ t: "changed", docs: ["core"] }], [{ t: "changed", docs: ["core"] }]]);
+    expect(await tag(w, "core")).not.toBe(before);
+  });
+
+  test("a read that changes nothing says nothing, and one that changes a list says which document", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await readAll(w);
+    await connect(w);
+    await tick();
+    w.live.open[0].length = 0;
+    // Past every list's age, with nothing changed at GitHub or in the queue.
+    w.now.t += 10 * 60_000;
+    await w.edge.now.alarm();
+    await tick();
+    expect(said(w)).toEqual([[]]);
+    // A task is claimed: the board is another board.
+    w.queueTasks[1].status = "claimed";
+    w.now.t += 10 * 60_000;
+    await w.edge.now.alarm();
+    await tick();
+    expect(said(w)).toEqual([[{ t: "changed", docs: ["core"] }]]);
+  });
+
+  test("while someone is connected the Worker keeps reading by itself, and stops asking to be woken for it when nobody is", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await Promise.all(w.behind.splice(0));
+    await connect(w);
+    // It asked to be woken within the half minute.
+    expect(w.alarm.at).toBeGreaterThan(w.now.t);
+    expect(w.alarm.at).toBeLessThanOrEqual(w.now.t + 30_000);
+    // Woken past the board's age: the board is read again with nobody asking for a document.
+    const reads = () => w.queueCalls.length;
+    const before = reads();
+    w.now.t += 2 * 60_000;
+    await w.edge.now.alarm();
+    expect(reads()).toBeGreaterThan(before);
+    expect(w.alarm.at).toBeLessThanOrEqual(w.now.t + 30_000);
+    // Everyone goes away: the next wake is not for this (the machine's silence is still watched for).
+    w.live.open.length = 0;
+    w.now.t += 30_000;
+    await w.edge.now.alarm();
+    expect(w.alarm.at === 0 || w.alarm.at > w.now.t + 30_000).toBe(true);
+    const after = reads();
+    w.now.t += 2 * 60_000;
+    await w.edge.now.alarm();
+    expect(reads()).toBe(after);
+  });
+
+  test("a machine's report that changes what only it has is passed on too", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await Promise.all(w.behind.splice(0));
+    await connect(w);
+    await tick();
+    w.live.open[0].length = 0;
+    (w.data.sessions as { waiting: unknown[] }).waiting = [{ id: "s1", title: "Log in", ref: "", why: "" }];
+    w.now.t += 11_000;
+    await w.hostReads();
+    await w.link.now.once();
+    await w.core();
+    await Promise.all(w.behind.splice(0));
+    await tick();
+    expect(said(w)[0]).toContainEqual({ t: "changed", docs: ["core"] });
+  });
+
+  test("with nobody connected nothing is sent, and a Worker with no connections to hold says so", async () => {
+    const w = await setup({ direct: true });
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await w.act("issue.comment", { issue: 14, text: "nobody listening" })).status).toBe(200);
+    await tick();
+    expect(w.live.open).toEqual([]);
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as { listening: number };
+    expect(health.listening).toBe(0);
   });
 });
 
@@ -6970,9 +7134,15 @@ describe("telling the owner, with no machine", () => {
     w.edge.now = w.makeEdge();
     await w.edge.now.alarm();
     expect(w.pushes).toHaveLength(1);
+    // What to do, on what, and a button that says it is done: as it
+    // reaches the phone, after the trip through the push service's own encryption.
     expect(JSON.parse(await phone.open(w.pushes[0].body))).toMatchObject({
       title: "Something needs you",
-      body: "Plug the hardware key into the build host.",
+      body: "Plug the hardware key into the build host. (developing-today/code#21)",
+      actions: [
+        { action: "done", title: "I did it", kind: "hands.done", args: { ref: "developing-today/code#21" } },
+        { action: "open", title: "Open", url: "/console/#needs/hands" },
+      ],
     });
     // Told once: a later wake that finds the same thing says nothing more.
     w.now.t += 121_000;

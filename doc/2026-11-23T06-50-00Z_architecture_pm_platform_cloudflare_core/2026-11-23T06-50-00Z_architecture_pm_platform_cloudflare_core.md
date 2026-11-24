@@ -1456,3 +1456,123 @@ lists of what it does and reads.
 comment, each with the Worker's token and once, no machine asked, and
 the item gone from the next look. Nine faults planted one at a time
 under bun, each caught.
+
+## 2026-11-24T08:25Z Correction: the dashboard's census was not failing in service (#14103)
+
+The section of 06:55Z says the dashboard's census "asked GitHub's
+search for `repo:<repo> state:open label:"<label>"`, which GitHub
+answers 422 to". That was read from what GitHub answered the token of
+the session that wrote it, and never checked against the dashboard that
+runs. Checked on the machine that runs it (`amd`, 08:10Z):
+
+- `GET http://127.0.0.1:4870/api/needs-drew.json`: `complete: true`,
+  eight of eight sources good, 54 items, fetched a minute before.
+- The search in the old form, asked with the fleet's identity:
+  `total_count 13`. The repository's own list: the same 13.
+
+So the 422 is what GitHub gives some tokens (a GitHub App's) and not
+the one the dashboard runs with. Nothing the owner saw was broken, and
+nothing was fixed for him by #14165. What stands of it: the census
+reads the same items from the list, on the core allowance, whichever
+kind of token it is given; and the console's list of repositories is
+the dashboard's. The issue's title, its priority and the comments in
+the code that said "every query failed" are corrected.
+
+**What it shows about checking.** A claim about what is in service was
+made from outside the service. The machine can be asked now (below),
+and a claim of that kind is made from its answer.
+
+## 2026-11-24T08:30Z Update: the live pages, looked at on the machine
+
+The console at main, started on the machine beside the one in service
+(its own port, its own empty state, no report to the edge), read by a
+headless browser at a phone's width. What was wrong, and what was done:
+
+- **"394 need you"** on the first screen, and "99+" on the tab: 347 of
+  them were questions the fleet had put with an answer it recommends.
+  What leads now is what only the owner can do (29); the tab's count
+  adds the reviews asked of him. The Needs screen opens on that list,
+  and the questions have one button that takes every recommendation.
+- **"Why 272 tasks are blocked"** stood above six lines that added up
+  to fifteen: almost every blocked task carries a reason of its own, so
+  the commonest six said nothing of the rest. The board now counts them
+  by the kind of reason (one written on the task, a time waited for and
+  whether it has passed, other tasks, none), which adds up to all of
+  them. The query is run on a real SQLite in its test.
+- **A task being worked on could not be steered from its card.** It has
+  "Comment" (on its issue, which Cloudflare posts itself) and "Message
+  its agent".
+- **"failed · failed"** on a failed unit: said once.
+- The console in service on the machine runs from `~/git/code`, which
+  was on a lane's branch: the app it served was that branch's, and its
+  code was seven hours behind main (#13833). Not fixed by this.
+
+## 2026-11-24T08:40Z Update: the app is told when something changes
+
+**Intent.** The app looked every twenty seconds. What changed in
+between was seen at the next look, and every look was a request
+whether or not anything had changed. The owner asked for an app that
+receives events as they happen.
+
+**Done.** The documents class says when what a document would say has
+changed (`Docs.onChange`: a section read with other content or another
+health, a value beside the sections, what the owner did), and never
+for a read that changed nothing. The Worker's object holds a WebSocket
+for each open copy of the app, by the platform's hibernation API, and
+passes those changes on: which documents, once for however many changes
+arrive together. The app reads them again by their tags. While someone
+is connected the object wakes every twenty seconds to read what has
+gone stale; with nobody connected it does not.
+
+**Not over the connection.** What the owner does. It goes by requests
+that are kept on the device and sent again, which a connection that may
+drop is no place for.
+
+**Checked.** In the real Worker runtime, with a real WebSocket: the
+owner is connected and a stranger is not (401), the platform answers
+the app's ping, something the owner does is said to the connected app
+by the document's name, and nobody is counted as connected after the
+app goes away. Nineteen faults planted one at a time: eighteen caught,
+and the nineteenth showed a flag that did nothing, which was removed.
+
+**Not seen.** A phone connected in service: `listening` in the health
+answer says when one is.
+
+## 2026-11-24T08:45Z Update: a notification carries what can be done about it
+
+**Intent.** A notification said that something had happened and opened
+the app. The owner asked for notifications with the details in them and
+buttons that answer.
+
+**Done.** Each message has up to two buttons, most useful first: on a
+reply from the fleet, "Reply" (typed on the notification where the
+device can take a line of text; where it cannot, the thread is opened)
+and "Close it"; on something only he can do, "I did it" and "Open"; on
+a unit that failed, "Restart it" and "Look". The body says enough to
+act on. Pressing a button that does something goes through the same
+keeping and sending as the app: written down on the device first, sent
+under a name, kept and sent later with no connection, never done twice.
+The Android app shows the site's notifications as its own, so it has
+the buttons too.
+
+A message had no bound on its length: a body of twenty thousand
+characters was sealed and posted as twenty thousand bytes, which a push
+service refuses (it takes 4096, RFC 8030 section 7.2). With fuller
+bodies that mattered more, so a message that would be too long as it is
+sealed is now cut to the longest start that fits, in whole characters,
+marked as cut, with its buttons kept.
+
+**Checked.** The service worker's file is run against a stand-in for
+the browser's worker scope: the buttons shown, what pressing each does
+(one request, as the app would send it), a typed reply, no text given,
+no connection, the platform turning it down, the app open. Fourteen
+faults planted one at a time, all caught. The cut is measured on what
+is really posted, against the 4096 bytes, and read back the way a phone
+reads it, for characters of one, two and four bytes and one that JSON
+writes as two; eight faults planted, all caught. (Cutting by code unit
+and not by character would give the same result, since half a
+character costs more bytes written out than the whole one: it is cut
+by character because that is what makes the search plainly right.)
+
+**Not seen.** A real phone showing the buttons: it takes a real push to
+a subscribed device, which is the owner's.

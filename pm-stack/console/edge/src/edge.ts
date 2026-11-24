@@ -170,6 +170,10 @@ export const SILENT_MS = 10 * 60_000;
 /** With nobody looking, what the edge reads itself and tells the owner
  * about is read again this often. */
 const OWN_CLOCK_MS = 60_000;
+/** While the app is connected, how often this side wakes to read again
+ * what has gone stale (each list by its own age), so that what changed
+ * is said to the app without the app asking. */
+export const LIVE_MS = 20_000;
 /** How long that read is waited for before the owner is told what there is. */
 const CLOCK_WAIT_MS = 20_000;
 /** A wake that did not get its work done is tried again this soon. */
@@ -291,6 +295,16 @@ export interface EdgeOptions {
      * hold for the next that is. */
     kinds?: readonly string[];
   };
+  /** The live connections to the app, which the platform holds (they
+   * stay open while this object is put away): take a request to be
+   * one and give the answer for it, say something to all of them, and
+   * how many there are. Absent where there are none to hold (a test
+   * that has no need of them): nobody is connected then. */
+  sockets?: {
+    accept: (req: Request) => Response;
+    send: (text: string) => number;
+    count: () => number;
+  };
   /** Ask to be woken at a time: to read again what the owner is told
    * about, and to notice a machine gone quiet. */
   setAlarm?: (at: number) => Promise<void>;
@@ -380,6 +394,11 @@ export class Edge {
   private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
   private getAlarm: () => Promise<number | null>;
+  private sockets: NonNullable<EdgeOptions["sockets"]> | null;
+  /** Documents that changed and have not been said to the connected yet. */
+  private changedDocs = new Set<DocName>();
+  /** When this side last read by itself for those connected. */
+  private liveAt = 0;
   /** What this side goes by (see config()), worked out from `told`. */
   private cfg: EdgeConfig | null | undefined;
   /** What a machine told, as it is kept; undefined until read. */
@@ -451,6 +470,7 @@ export class Edge {
     this.woke = this.now();
     this.fetchImpl = plain(options.fetchImpl ?? fetch) as typeof fetch;
     this.direct = options.direct;
+    this.sockets = options.sockets ?? null;
     const setAlarm = options.setAlarm ?? (async () => {});
     this.setAlarm = async (at) => {
       this.alarmFor = at;
@@ -486,6 +506,8 @@ export class Edge {
       ),
       this.now,
     );
+    // A document that has changed is said to whoever is connected.
+    this.docs.onChange = (docs) => this.changed(docs);
     this.push = new Push(
       kvStore(this.kv, "push"),
       // The contact a push service is given: the project's page.
@@ -2076,6 +2098,9 @@ export class Edge {
       wakes.push(Math.max(this.hostSeen + SILENT_MS + 1000, now + ALARM_RETRY_MS));
     }
     if (await this.clockWanted(cfg)) wakes.push(Math.max(now + 1000, this.clockAt + this.ownClockMs));
+    // The app is connected: this side reads by itself what has gone
+    // stale, so there is something to say when it changes.
+    if (this.listening() > 0 && this.owned(cfg).length > 0) wakes.push(Math.max(now + 1000, this.liveAt + LIVE_MS));
     // Something the owner is told about that this side was turned away
     // for is tried again when its time is up; with nobody looking and
     // no machine reporting, only a wake would notice that it is.
@@ -2090,6 +2115,32 @@ export class Edge {
     const due = await this.heldDue(cfg);
     if (due !== null) wakes.push(Math.max(now + 1000, due));
     if (wakes.length > 0) await this.setAlarm(Math.min(...wakes));
+  }
+
+  /** How many copies of the app are connected. */
+  private listening(): number {
+    return this.sockets?.count() ?? 0;
+  }
+
+  /** Documents whose content has just changed: said once to everyone
+   * connected, however many changes arrive together (a pass that reads
+   * five lists says "core" once). The app reads the document again by
+   * its tag, so a message that turns out to be about nothing new to it
+   * costs it one "not modified". */
+  private changed(docs: DocName[]): void {
+    for (const doc of docs) this.changedDocs.add(doc);
+    // Said after whatever is running now has finished changing things:
+    // the first to get there says all of it, and the rest find nothing left.
+    queueMicrotask(() => {
+      const names = DOC_NAMES.filter((doc) => this.changedDocs.has(doc));
+      this.changedDocs.clear();
+      if (names.length === 0 || this.listening() === 0) return;
+      try {
+        this.sockets?.send(JSON.stringify({ t: "changed", docs: names }));
+      } catch (error) {
+        console.error(`pm-edge: telling the app: ${(error as Error).message}`);
+      }
+    });
   }
 
   /** This side reads something the owner is told about, and a device
@@ -2130,6 +2181,18 @@ export class Edge {
       // is the second that reads.
       for (let look = 0; look < 2; look++) await this.docs.current(this.ownedTold(cfg), CLOCK_WAIT_MS);
       await this.tell(cfg).catch((error) => console.error(`pm-edge: notify: ${(error as Error).message}`));
+    }
+    // The app is connected: what this side reads itself and has gone
+    // stale is read again (each list by its own age; one that has not
+    // changed costs nothing), and a change is said to the app as the
+    // read ends.
+    if (this.listening() > 0 && now - this.liveAt >= LIVE_MS) {
+      this.liveAt = now;
+      const mine = this.owned(cfg);
+      if (mine.length > 0) {
+        this.docs.keepAlive();
+        await this.docs.current(mine, CLOCK_WAIT_MS);
+      }
     }
     // What is held: the day's limit is kept with no machine reporting,
     // and what this side can now do itself, it does.
@@ -2219,6 +2282,9 @@ export class Edge {
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
+        // How many copies of the app are connected to be told of
+        // changes as they happen.
+        listening: this.listening(),
         // In which of the platform's own settings (the repository's:
         // src/settings.ts) the machine said it runs with others, by
         // name and never by value; null while no machine has said any.
@@ -2350,6 +2416,19 @@ export class Edge {
         if (seg.length === 1 && seg[0] === "push") return json(await this.push.status());
         if (seg.length === 1 && seg[0] === "devices") return json(await this.phones.devices.list());
         if (seg.length === 1 && seg[0] === "machines") return json(await this.machinesSaid(cfg));
+        if (seg.length === 1 && seg[0] === "events") {
+          // The app asking to be told when something changes: a
+          // connection the platform holds. Only the owner gets here.
+          if ((req.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") {
+            return json({ error: "this is where the app connects to be told of changes (a WebSocket)" }, 426);
+          }
+          if (!this.sockets) return json({ error: "no live connections here" }, 404);
+          const res = this.sockets.accept(req);
+          // Someone is there to tell: this side wakes by itself to read.
+          this.docs.keepAlive();
+          await this.schedule(cfg);
+          return res;
+        }
         // What needs only GitHub and the queue store is read here, by
         // the code a machine would read it with.
         const mine = this.mine(cfg);

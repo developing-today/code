@@ -100,6 +100,20 @@ pub fn ensure_source_registry(conn: &Connection) -> Result<()> {
         .map_err(|e| Error::backend(format!("source registry: creating tables: {e}")))
 }
 
+/// Open the source registry at `path`, creating the file and the
+/// registry tables when absent (#3125 slice 7): the serving-side
+/// entry point that turns the catalog path named by CLI/service
+/// config into the connection `ShardedBackend::with_source_registry`
+/// consumes. Additive only, like registration itself: an existing
+/// database keeps every row; a fresh one starts empty, so every
+/// occurrence stays unattributed until roots are registered.
+pub fn open_source_registry(path: &std::path::Path) -> Result<Connection> {
+    let conn = Connection::open(path)
+        .map_err(|e| Error::backend(format!("source registry: opening {}: {e}", path.display())))?;
+    ensure_source_registry(&conn)?;
+    Ok(conn)
+}
+
 fn require_non_empty(field: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
         return Err(Error::fatal(format!(

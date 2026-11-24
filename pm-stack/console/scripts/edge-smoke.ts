@@ -801,6 +801,32 @@ try {
         needsAsked.length >= 8,
       `${JSON.stringify(needs)}; ${needsAsked.length} list reads`,
     );
+    // The app connected to be told of changes: a real WebSocket, held by
+    // this runtime's own object. Only the platform can make one, so
+    // only here is it known to work. A stranger is not connected.
+    const liveAt = `${EDGE.replace(/^http/, "ws")}/console/api/events`;
+    const liveSaid: string[] = [];
+    const stranger = await fetch(`${EDGE}/console/api/events`, {
+      headers: { upgrade: "websocket" },
+      redirect: "manual",
+    });
+    await stranger.body?.cancel();
+    const liveWs = new WebSocket(liveAt, { headers: { "cf-access-jwt-assertion": await ownerToken() } } as never);
+    const liveOpened = await new Promise<boolean>((resolve) => {
+      liveWs.onopen = () => resolve(true);
+      liveWs.onerror = () => resolve(false);
+      setTimeout(() => resolve(false), 8000);
+    });
+    liveWs.onmessage = (event) => liveSaid.push(String(event.data));
+    if (liveOpened) liveWs.send("ping");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const listening = ((await (await get("/console/health")).json()) as { listening?: number }).listening;
+    check(
+      "the owner's app is connected to be told of changes, a stranger is not, and the platform answers its ping",
+      liveOpened && stranger.status !== 101 && listening === 1 && liveSaid.includes("pong"),
+      `opened ${liveOpened}, a stranger got ${stranger.status}, listening ${listening}, said ${JSON.stringify(liveSaid)}`,
+    );
+    liveSaid.length = 0;
     // "Done" on what needed his hands, by the Worker itself: the label
     // taken off, then the fleet told, and the list read again so the
     // item is gone from the next look.
@@ -836,6 +862,21 @@ try {
         !seen.slice(askedHostFrom).some((s) => s.includes("/console/api/act")),
       `before ${JSON.stringify(handsBefore)}, did ${JSON.stringify(handsDone)}, wrote ${JSON.stringify(handsWrote)}, after ${JSON.stringify(handsAfter)}`,
     );
+    // What he did changed what the app shows: the connected app was
+    // told so, by name of the document, without asking.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const toldOf = liveSaid
+      .filter((text) => text.startsWith("{"))
+      .map((text) => JSON.parse(text) as { t: string; docs: string[] });
+    check(
+      "and the connected app was told that the core document changed",
+      toldOf.length >= 1 && toldOf.every((m) => m.t === "changed") && toldOf.some((m) => m.docs.includes("core")),
+      JSON.stringify(liveSaid),
+    );
+    liveWs.close();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const stillListening = ((await (await get("/console/health")).json()) as { listening?: number }).listening;
+    check("and once the app goes away nobody is connected", stillListening === 0, String(stillListening));
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const readsBefore = outside.filter((o) => o.to === "github").length;
     let readsAfter = readsBefore;

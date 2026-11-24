@@ -69,6 +69,9 @@ export class PmEdge extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // The app says "ping" to keep its connection from being dropped as
+    // idle; the platform answers "pong" itself, without waking this.
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.edge = new Edge({
       fetchImpl: keysFetch(env),
       kv: {
@@ -86,6 +89,29 @@ export class PmEdge extends DurableObject<Env> {
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
       },
+      // Live connections to the app. The platform holds them, so they
+      // stay open while this object is put away between events, and it
+      // is woken (by its alarm) only when there is something to read.
+      sockets: {
+        accept: () => {
+          const pair = new WebSocketPair();
+          ctx.acceptWebSocket(pair[1]);
+          return new Response(null, { status: 101, webSocket: pair[0] });
+        },
+        send: (text) => {
+          let told = 0;
+          for (const ws of ctx.getWebSockets()) {
+            try {
+              ws.send(text);
+              told++;
+            } catch {
+              // Gone between being listed and being told: the platform drops it.
+            }
+          }
+          return told;
+        },
+        count: () => ctx.getWebSockets().length,
+      },
       setAlarm: (at) => ctx.storage.setAlarm(at),
       getAlarm: () => ctx.storage.getAlarm(),
       ownClockMs: ownClockMs(env.OWN_CLOCK_MS),
@@ -100,6 +126,30 @@ export class PmEdge extends DurableObject<Env> {
 
   alarm(): Promise<void> {
     return this.edge.alarm();
+  }
+
+  /** The app says nothing over its connection but "ping" (answered by
+   * the platform, above): what it does goes by its requests, which are
+   * kept and sent again when there is no connection. Anything else
+   * said is not for this. */
+  webSocketMessage(): void {}
+
+  /** The app went away, or the connection broke: finish closing it. */
+  webSocketClose(ws: WebSocket, code: number): void {
+    try {
+      // 1005 and 1006 say how it ended and may not be sent back.
+      ws.close(code === 1005 || code === 1006 ? 1000 : code);
+    } catch {
+      // Already closed.
+    }
+  }
+
+  webSocketError(ws: WebSocket): void {
+    try {
+      ws.close(1011);
+    } catch {
+      // Already closed.
+    }
   }
 }
 
