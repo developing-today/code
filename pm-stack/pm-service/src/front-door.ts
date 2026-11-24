@@ -55,7 +55,7 @@ export const ROLES: ReadonlySet<string> = new Set([
   "read-only",
 ]);
 
-export interface JsonWebKey {
+export interface JwksKey {
   kty?: string;
   kid?: string;
   alg?: string;
@@ -66,7 +66,7 @@ export interface JsonWebKey {
 }
 
 export interface JsonWebKeySet {
-  keys: JsonWebKey[];
+  keys: JwksKey[];
 }
 
 export interface ResolvedPrincipal {
@@ -176,9 +176,12 @@ export async function resolveFrontDoor(
 
     let key: CryptoKey;
     try {
+      // The JWKS key is provider data: cast to the DOM JsonWebKey
+      // (now unshadowed) and let importKey validate the material;
+      // a bad key denies as unknown_key below.
       key = await crypto.subtle.importKey(
         "jwk",
-        jwk as JsonWebKey,
+        jwk as unknown as JsonWebKey,
         { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
         false,
         ["verify"],
