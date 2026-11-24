@@ -64,6 +64,7 @@
 - [Design: first apps and the ecosystem](design/first-apps.md)
 - [Design: scale, performance and adversarial hardening](design/scale-hardening.md)
 - [Roadmap, issue map and the design-record index](design/roadmap-and-issue-map.md)
+- [High-level roadmap](design/high-level-roadmap.md)
 
 - [Repository layout](development/layout.md)
 - [Building and testing](development/building.md)
