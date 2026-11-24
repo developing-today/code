@@ -1650,6 +1650,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                 "exit",
                 "state",
                 "interrupted",
+                "ctx",
             ],
         )
         for row in la.RESTORE_FIELD_TABLE:
@@ -1657,6 +1658,8 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
         by_field = {row[0]: row for row in la.RESTORE_FIELD_TABLE}
         for field in ("exit", "cwd", "cmd"):
             self.assertIn("#1568", by_field[field][3])
+        self.assertIn("#14186", by_field["ctx"][1])
+        self.assertIn("#14186", by_field["ctx"][3])
 
     def test_malformed_matrix_rows_are_skipped(self):
         la = self._import_agent()
@@ -1838,6 +1841,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
             "exit": 3,
             "state": "done",
             "interrupted": False,
+            "ctx": {"FLEET_CTX_TASK_ID": "23046"},
             "_files": (),
         }
         with tempfile.TemporaryDirectory() as state_dir:
@@ -1855,6 +1859,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                 "exit",
                 "state",
                 "interrupted",
+                "ctx",
             ):
                 self.assertEqual(restored[key], job[key], key)
             with patch.object(la, "STATE_DIR", Path(state_dir)):
@@ -1869,6 +1874,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                     "cmd": "echo hi",
                     "started_at": 100.0,
                     "interrupted": False,
+                    "ctx": {"FLEET_CTX_TASK_ID": "23046"},
                     "duration_ms": 50000,
                     "stdout": "",
                     "stderr": "",
