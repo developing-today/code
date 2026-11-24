@@ -952,10 +952,19 @@ pub fn run() -> i32 {
         ),
     }
 
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for mut req in server.incoming_requests() {
+        let Some(slot) = crate::uds_http::InFlightSlot::claim(&in_flight) else {
+            let _ = req.respond(json_response(
+                503,
+                json!({"error": "broker is at its request cap; retry"}),
+            ));
+            continue;
+        };
         let state = Arc::clone(&state);
         let token = token.clone();
         std::thread::spawn(move || {
+            let _slot = slot;
             let url = req.url().to_string();
             let provided = req
                 .headers()

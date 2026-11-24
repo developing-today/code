@@ -42,6 +42,31 @@ pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// Bound on simultaneous UDS connections (#6515, thread 4492609760):
 /// past this, new connections are dropped until a slot frees.
 const MAX_CONNECTIONS: usize = 128;
+/// Bound on simultaneous TCP requests, shared by both brokers' tiny_http
+/// loops (remainder of darwin-nix#1925): past it the request is refused
+/// on the accept thread, so no per-request thread is spawned for it.
+pub(crate) const MAX_TCP_IN_FLIGHT: usize = 128;
+
+/// A claimed slot on a TCP in-flight counter. Dropping it releases the
+/// slot, so every early return in a request thread gives it back.
+pub(crate) struct InFlightSlot(Arc<AtomicUsize>);
+
+impl InFlightSlot {
+    /// Claims a slot, or `None` once `MAX_TCP_IN_FLIGHT` are held.
+    pub(crate) fn claim(counter: &Arc<AtomicUsize>) -> Option<Self> {
+        if counter.fetch_add(1, Ordering::SeqCst) >= MAX_TCP_IN_FLIGHT {
+            counter.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Self(Arc::clone(counter)))
+    }
+}
+
+impl Drop for InFlightSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 /// How long the stale-socket probe waits for a connect to resolve
 /// before assuming a live owner (#6515, thread 4492609644). A unix
 /// connect to a live listener completes immediately; a full backlog
@@ -382,10 +407,12 @@ fn serve_inner<F>(
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_socket, serve, serve_with_precheck};
+    use super::{InFlightSlot, MAX_TCP_IN_FLIGHT, bind_socket, serve, serve_with_precheck};
     use std::io::{Read, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn temp_socket(tag: &str) -> std::path::PathBuf {
         let dir =
@@ -759,5 +786,22 @@ mod tests {
             prop_assert_eq!(calls.load(Ordering::SeqCst), 1);
             let _ = std::fs::remove_dir_all(path.parent().unwrap());
         }
+    }
+
+    #[test]
+    fn tcp_in_flight_slots_are_capped_and_released_on_drop() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let held: Vec<InFlightSlot> = (0..MAX_TCP_IN_FLIGHT)
+            .map(|_| InFlightSlot::claim(&counter).expect("under the cap"))
+            .collect();
+        assert_eq!(counter.load(Ordering::SeqCst), MAX_TCP_IN_FLIGHT);
+        for _ in 0..1000 {
+            assert!(InFlightSlot::claim(&counter).is_none());
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), MAX_TCP_IN_FLIGHT);
+        drop(held);
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert!(InFlightSlot::claim(&counter).is_some());
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 }
