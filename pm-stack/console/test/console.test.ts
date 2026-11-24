@@ -13,7 +13,7 @@
 // compared with literal URLs, so no spelling of a path can pass as one
 // of the public files unless the dashboard is asked for exactly that file.
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { actions } from "../src/actions.ts";
@@ -1166,37 +1166,108 @@ describe("HTTP surface", () => {
     expect((await handle(get("/elsewhere"), alone)).status).toBe(404);
   });
 
-  test("every file the page and the worker load is served here, served by the edge, and shipped in the edge's build", async () => {
-    // Three lists name the app's files: this service's, the edge's, and
-    // what the edge's build copies. A file missing from one of them
-    // works on the laptop and is a 404 behind Cloudflare, or the other
-    // way round; and the worker cannot open the app offline without
-    // every one of them.
-    const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf8");
-    const page = [...read("public/index.html").matchAll(/(?:src|href)="\/console\/([^"]+)"/g)].map((m) => m[1]);
-    const worker = [
-      ...(/const FILES = \[([^\]]+)\]/.exec(read("public/sw.js"))?.[1] ?? "").matchAll(/"\/console\/([^"]+)"/g),
-    ].map((m) => m[1]);
-    const loaded = [...new Set([...page, ...worker, "sw.js"])].sort();
-    expect(loaded).toEqual(["app.css", "app.js", "icon.svg", "outbox.js", "sw.js"]);
-    // The worker keeps everything the page loads, or the page would not open offline.
-    expect([...new Set(worker)].sort()).toEqual(page.sort());
+  test("the app's files are named in one list, and this service, the Worker's build and the page all go by it", async () => {
+    // public/files.json is the one place a file of the app is named.
+    // The oracle for "is everything there" is what the page and its
+    // style sheets and scripts actually ask for, read from their own
+    // text; the oracle for "is it served" is the file on disk.
+    const at = (path: string) => join(import.meta.dir, "..", path);
+    const read = (path: string) => readFileSync(at(path), "utf8");
+    const list = JSON.parse(read("public/files.json")) as {
+      page: string;
+      files: { path: string; type: string; kept: string }[];
+    };
+    const named = list.files.map((f) => f.path);
+    expect(new Set(named).size).toBe(named.length);
+    expect(list.page).toBe("index.html");
+    // Each is a real file with something in it, of a kind the service worker takes for the app's.
+    for (const f of list.files) {
+      expect([f.path, statSync(at(`public/${f.path}`)).size > 0]).toEqual([f.path, true]);
+      expect([f.path, /^[a-z0-9/_-]+\.(?:js|css|svg|json|woff2)$/.test(f.path)]).toEqual([f.path, true]);
+      expect([f.path, ["installed", "used", "never"].includes(f.kept)]).toEqual([f.path, true]);
+    }
+    // What the page loads, what the style sheets load, and what the
+    // scripts import: all of it is on the list.
+    const asked = new Set<string>();
+    for (const m of read("public/index.html").matchAll(/(?:src|href)="\/console\/([^"]+)"/g)) asked.add(m[1]);
+    for (const sheet of named.filter((n) => n.endsWith(".css"))) {
+      for (const m of read(`public/${sheet}`).matchAll(/url\("\/console\/([^"]+)"\)/g)) asked.add(m[1]);
+    }
+    for (const script of named.filter((n) => n.endsWith(".js"))) {
+      for (const m of read(`public/${script}`).matchAll(
+        /(?:^import [^"\n]*|importScripts\()"(?:\.\/|\/console\/)([^"]+)"/gm,
+      ))
+        asked.add(m[1]);
+    }
+    expect([...asked].filter((name) => !named.includes(name))).toEqual([]);
+    // The page asks for its style sheets, the look, the outbox and the app (and the icon).
+    for (const must of ["app.css", "themes.css", "look.css", "look.js", "outbox.js", "app.js", "icon.svg"])
+      expect([...asked]).toContain(must);
+    // Everything the page needs to open is kept from the start; a
+    // typeface is kept when used; the worker itself never.
+    const keptWhen = Object.fromEntries(list.files.map((f) => [f.path, f.kept]));
+    for (const m of read("public/index.html").matchAll(/(?:src|href)="\/console\/([^"]+)"/g))
+      expect([m[1], keptWhen[m[1]]]).toEqual([m[1], "installed"]);
+    expect(keptWhen["files.json"]).toBe("installed");
+    expect(keptWhen["sw.js"]).toBe("never");
+    expect(
+      list.files.filter((f) => f.path.startsWith("fonts/")).every((f) => f.kept === "used" && f.type === "font/woff2"),
+    ).toBe(true);
+    expect(list.files.filter((f) => f.path.startsWith("fonts/")).length).toBe(
+      readdirSync(at("public/fonts")).filter((n) => n.endsWith(".woff2")).length,
+    );
+
+    // This service serves each as what the list says it is, byte for
+    // byte, and nothing in the folder that the list does not name.
     const d = deps("owner");
-    for (const name of loaded) expect([name, (await handle(get(`/console/${name}`), d)).status]).toEqual([name, 200]);
-    const edgeServes = [
-      ...(/const STATIC: Record<string, string> = \{([^}]+)\}/.exec(read("edge/src/edge.ts"))?.[1] ?? "").matchAll(
-        /"([^"]+)":/g,
-      ),
-    ].map((m) => m[1]);
-    expect(edgeServes.sort()).toEqual(loaded);
-    const built = [
-      ...(
-        /for \(const name of \[([^\]]+)\]\) \{\s*cpSync\(join\(here, "\.\.", "public"/.exec(
-          read("edge/build.mjs"),
-        )?.[1] ?? ""
-      ).matchAll(/"([^"]+)"/g),
-    ].map((m) => m[1]);
-    expect(built.sort()).toEqual([...loaded, "index.html"].sort());
+    for (const f of list.files) {
+      const res = await handle(get(`/console/${f.path}`), d);
+      expect([f.path, res.status, res.headers.get("content-type")]).toEqual([f.path, 200, f.type]);
+      expect([f.path, Buffer.from(await res.arrayBuffer()).equals(readFileSync(at(`public/${f.path}`)))]).toEqual([
+        f.path,
+        true,
+      ]);
+    }
+    for (const unlisted of ["index.html", "fonts/licences/inter.txt", "fonts/", "files.json.bak"]) {
+      expect([unlisted, (await handle(get(`/console/${unlisted}`), d)).status]).toEqual([unlisted, 404]);
+    }
+
+    // The Worker's build, run for real into a folder of its own: the
+    // page and every listed file, byte for byte, and nothing else.
+    const out = mkdtempSync(join(tmpdir(), "pm-build-"));
+    try {
+      const built = Bun.spawnSync([process.execPath, at("edge/build.mjs"), "--out", out], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect([built.exitCode, built.stderr.toString()]).toEqual([0, ""]);
+      const shipped: string[] = [];
+      const walk = (dir: string, under: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.isDirectory()) walk(join(dir, entry.name), `${under}${entry.name}/`);
+          else shipped.push(`${under}${entry.name}`);
+        }
+      };
+      walk(join(out, "console"), "");
+      expect(shipped.sort()).toEqual([...named, "index.html"].sort());
+      for (const name of shipped) {
+        expect([name, readFileSync(join(out, "console", name)).equals(readFileSync(at(`public/${name}`)))]).toEqual([
+          name,
+          true,
+        ]);
+      }
+      // It takes a folder to build into, and nothing else.
+      const odd = Bun.spawnSync([process.execPath, at("edge/build.mjs"), "--somewhere"], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect([odd.exitCode, odd.stderr.toString().startsWith("usage:")]).toEqual([2, true]);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+    // And the Worker serves from the same list (its own tests ask it for the files).
+    expect(read("edge/src/edge.ts")).toContain('import appFiles from "../../public/files.json";');
+    expect(read("src/server.ts")).toContain('import appFiles from "../public/files.json";');
   });
 
   test("the page and its files are served to the owner with a strict policy", async () => {

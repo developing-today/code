@@ -1775,6 +1775,8 @@ class TestSinkClaimDiagnostics(unittest.TestCase):
             (Result(13, "private"), "cli_nonzero"),
             (Result(0, "private"), "invalid_json"),
             (Result(0, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(5, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(5, '{"ignored":"private"}'), "cli_nonzero"),
             (Result(0, '{"ignored":"private"}'), "missing_claim_row"),
         )
         for fixture, category in fixtures:

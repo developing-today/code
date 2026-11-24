@@ -403,7 +403,7 @@ usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <js
 Client-side completion dressing (all fail-soft, explicit caller values win):
 
 - `result.dominant_model`: the bound session's dominant serving model over the task's claim window (route_attempt call count), when derivable.
-- Telemetry defaulting: `pool`/`model`/`effort` are filled from the claim stamp, else the completing session's serving leaf / declared route pool; `cost_usd` stays null (no cost readout is sourceable). `effort` is recorded only from resolved session messages, never inferred from route names.
+- Telemetry defaulting: `pool`/`model`/`effort` are filled from the claim stamp, else the completing session's serving leaf / declared route pool; `cost_usd` stays null (no cost readout is sourceable). `effort` is recorded only from resolved session messages, never inferred from route names. A claim stamp written through the route provider (`opencode-route`) names the route id in `claim_model` — that is the pool, not a serving leaf — so it never supplies `model`; the session's serving leaf, or null, does.
 
 **The evidence gate.** Shape validation alone used to let a fix-class row complete `done` on any non-empty evidence string while its issue was open and a draft PR still carried the work. Now, a completion that requires a disposition must carry `result.disposition` — the verified readback record produced by `verify-disposition` (next section):
 

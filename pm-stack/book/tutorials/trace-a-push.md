@@ -38,7 +38,7 @@ For `section-risk`, the trace continues in `aggregator/src/aa.ts`: route section
 
 Open `aggregator/src/alerts.ts`, in `runAlertTick` and `runDashboardNotificationTick`. For each subscription, the engine applies, in order:
 
-1. Class enablement: `classEnabled` reads the subscription's stored class map. Legacy rows default only `incident` on.
+1. Class enablement: `classEnabled` reads the subscription's stored class map. A stored choice always wins, including an explicit opt-out; a class with no stored choice — one added after the subscription was created — takes its reviewed default from `NOTIFICATION_CLASS_DEFAULTS` (the #13940 backfill for pre-class rows), and a class with no reviewed default stays off.
 2. Quiet hours: the default window is 23:00–07:00 America/Chicago. Quiet hours hold every class except breakthrough classes. `incident` is a breakthrough class. A failed section in `section-risk` is a breakthrough. The 48-hour point in `blocked-age` is a breakthrough.
 3. Dedupe: the key is subscription, class, object ref, and state fingerprint.
 4. Cooldown: 6 hours, `NOTIFICATION_COOLDOWN_MS`.

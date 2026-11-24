@@ -504,6 +504,29 @@ try {
       me.email === "owner@example.com" && me.edge === true,
       JSON.stringify(me),
     );
+
+    // The app is one list of files (public/files.json): the Worker's build
+    // ships them and the Worker serves them. Each is asked for here, as
+    // the signed-in owner, and has to come back whole and as what it is.
+    const appFiles = JSON.parse(readFileSync(join(import.meta.dir, "..", "public", "files.json"), "utf8")) as {
+      files: { path: string; type: string }[];
+    };
+    const wrong: string[] = [];
+    for (const file of appFiles.files) {
+      const res = await asOwner(`/console/${file.path}`);
+      const got = new Uint8Array(await res.arrayBuffer());
+      const want = readFileSync(join(import.meta.dir, "..", "public", file.path));
+      if (res.status !== 200 || res.headers.get("content-type") !== file.type || got.length !== want.length) {
+        wrong.push(`${file.path}: ${res.status} ${res.headers.get("content-type")} ${got.length}/${want.length}`);
+      }
+    }
+    check(
+      `every file the app is made of is served whole and as what it is (${appFiles.files.length} files, typefaces among them)`,
+      appFiles.files.length > 20 && wrong.length === 0,
+      wrong.join("; "),
+    );
+    const unlisted = await asOwner("/console/fonts/licences/inter.txt");
+    check("a file the list does not name is not served", unlisted.status !== 200, String(unlisted.status));
     const onceId = "11111111-1111-4111-8111-111111111111";
     const didFirst = (await (await actAsOwner("push.class", { class: "trouble", on: false }, onceId)).json()) as {
       result?: Record<string, boolean>;

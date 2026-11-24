@@ -9,7 +9,18 @@
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
 import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
-import { fleetCall, fleetOp, fleetSchema } from "./fleet.js";
+import {
+  enrollTokenClaimSql,
+  enrollTokenGetSql,
+  enrollTokenMintSql,
+  enrollTokenRevokeSql,
+  fleetCall,
+  fleetCredentialAuthSql,
+  fleetCredentialPutSql,
+  fleetCredentialRevokeSql,
+  fleetOp,
+  fleetSchema,
+} from "./fleet.js";
 import { route } from "./routes.js";
 
 export class MessageStore extends DurableObject {
@@ -106,6 +117,42 @@ export class MessageStore extends DurableObject {
   /** One fleet mailbox operation over arguments fleetCall validated. */
   fleet(op, args) {
     return fleetOp(this.sql, op, args);
+  }
+
+  // Per-agent credentials and bootstrap enroll tokens (#14368): the
+  // store only ever sees SHA-256 hashes, never a token value.
+
+  fleetCredentialAuth(token_hash) {
+    return fleetCredentialAuthSql(this.sql, token_hash);
+  }
+
+  fleetCredentialPut(rec) {
+    return fleetCredentialPutSql(this.sql, rec);
+  }
+
+  fleetCredentialRevoke(agent) {
+    return fleetCredentialRevokeSql(this.sql, agent, new Date().toISOString());
+  }
+
+  enrollTokenMint(row) {
+    return enrollTokenMintSql(this.sql, row);
+  }
+
+  enrollTokenGet(token_hash) {
+    return enrollTokenGetSql(this.sql, token_hash);
+  }
+
+  enrollTokenClaim(token_hash, agent, now) {
+    return enrollTokenClaimSql(this.sql, token_hash, agent, now);
+  }
+
+  enrollTokenRevoke(token_hash) {
+    return enrollTokenRevokeSql(this.sql, token_hash, new Date().toISOString());
+  }
+
+  /** Deletes an identity's notes token(s); returns how many were revoked. */
+  noteRevoke(identity) {
+    return this.sql.exec("DELETE FROM note_token WHERE identity = ? RETURNING token_hash", identity).toArray().length;
   }
 
   /** Stores a new client; false when the table is full of clients worth keeping. */
@@ -272,6 +319,53 @@ export class MessageStore extends DurableObject {
       .exec("SELECT signal_counter FROM note_identity WHERE identity = ?", identity)
       .toArray()[0];
     return row ? { registered: true, counter: row.signal_counter } : { registered: false, counter: 0 };
+  }
+
+  /** Owner read over note_message (pipeline.js); sender/receiver are exact identities. */
+  noteOwnerList(q = {}) {
+    const where = ["id > ?"];
+    const args = [q.since_id ?? 0];
+    if (q.before_id !== undefined && q.before_id !== null) {
+      where.push("id < ?");
+      args.push(q.before_id);
+    }
+    if (q.unread_only) where.push("ack_at IS NULL");
+    if (q.sender) {
+      where.push("sender = ?");
+      args.push(q.sender);
+    }
+    if (q.receiver) {
+      where.push("recipient = ?");
+      args.push(q.receiver);
+    }
+    const order = q.order === "desc" ? "DESC" : "ASC";
+    return this.sql
+      .exec(
+        `SELECT id, ts, recipient, sender, body, ack_at FROM note_message WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT ?`,
+        ...args,
+        q.limit ?? 50,
+      )
+      .toArray()
+      .map((r) => ({ ...r }));
+  }
+
+  /** Owner directory of note identities (pipeline.js): scopes folded over each identity's tokens. */
+  noteDirectory() {
+    return this.sql
+      .exec(
+        `SELECT i.identity AS identity, i.signal_counter AS signal_counter, i.created AS created,
+           COALESCE(MAX(t.can_send), 0) AS can_send, COALESCE(MAX(t.can_inbox), 0) AS can_inbox
+         FROM note_identity i LEFT JOIN note_token t ON t.identity = i.identity
+         GROUP BY i.identity ORDER BY i.identity`,
+      )
+      .toArray()
+      .map((r) => ({
+        identity: r.identity,
+        can_send: !!r.can_send,
+        can_inbox: !!r.can_inbox,
+        signal_counter: r.signal_counter,
+        created: r.created,
+      }));
   }
 
   eventSubGet(id) {
@@ -452,13 +546,25 @@ function storeFor(env) {
     wakeHooks: () => stub.wakeHooks(),
     wakeClaim: (address, now, max) => stub.wakeClaim(address, now, max),
     noteRegister: (reg) => stub.noteRegister(reg),
+    noteRevoke: (identity) => stub.noteRevoke(identity),
     noteAuth: (token_hash) => stub.noteAuth(token_hash),
     noteIdentities: () => stub.noteIdentities(),
     noteDeliver: (delivery) => stub.noteDeliver(delivery),
     noteInbox: (identity) => stub.noteInbox(identity),
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
     noteSignal: (identity) => stub.noteSignal(identity),
+    // Owner reads (pipeline.js): the query is validated in the Worker
+    // by normalizePipelineQuery before these are called, like fleet.
+    noteOwnerList: (q) => stub.noteOwnerList(q),
+    noteDirectory: () => stub.noteDirectory(),
     fleet: (op, args) => fleetCall(stub, op, args),
+    fleetCredentialAuth: (token_hash) => stub.fleetCredentialAuth(token_hash),
+    fleetCredentialPut: (rec) => stub.fleetCredentialPut(rec),
+    fleetCredentialRevoke: (agent) => stub.fleetCredentialRevoke(agent),
+    enrollTokenMint: (row) => stub.enrollTokenMint(row),
+    enrollTokenGet: (token_hash) => stub.enrollTokenGet(token_hash),
+    enrollTokenClaim: (token_hash, agent, now) => stub.enrollTokenClaim(token_hash, agent, now),
+    enrollTokenRevoke: (token_hash) => stub.enrollTokenRevoke(token_hash),
   };
 }
 

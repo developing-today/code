@@ -1672,6 +1672,7 @@ function viewMore() {
       tile("more/machines", "Machines", "each machine, what only it can do, and what waits for one"),
       tile("more/platform", "Platform", "every Worker: what it does, whether it is in service, how it is deployed"),
       tile("more/device", "On this device", "what is kept here to send, and what it shows with no connection"),
+      Look ? tile("more/look", "Appearance", lookCounts()) : null,
       tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
   ];
@@ -1694,6 +1695,163 @@ function viewMore() {
       },
       "Sign out",
     ),
+  );
+  return out;
+}
+
+// ---- appearance ----------------------------------------------------------
+// How the app looks on this device: look.js holds the choices and puts
+// them on the page; this is the screen they are made on. Every choice
+// shows at once, on the whole app, so the app itself is the preview.
+
+const Look = globalThis.PMLook;
+/** Choices this device would not keep (storage refused): they are held
+ * here so the screen still shows what the page is wearing. */
+let lookUnkept = null;
+/** Which of the two the theme grid sets while the system is followed. */
+let lookSlot = null;
+
+const themeName = (id, look = Look) => look.THEMES.find((t) => t[0] === id)?.[1] ?? id;
+
+/** What is in effect, in a sentence: the theme shown, and why that one. */
+export function lookSaid(settings, systemDark, look = Look) {
+  const shown = look.themeFor(settings, systemDark);
+  if (!settings.follow) return `${themeName(shown, look)}, whatever the system is set to.`;
+  const [day, night] = [themeName(settings.day, look), themeName(settings.night, look)];
+  return `Following the system: ${day} when it is light, ${night} when it is dark. It is ${systemDark ? "dark" : "light"} now, so ${themeName(shown, look)}.`;
+}
+
+/** What choosing a theme changes: the one theme when the system is not
+ * followed, otherwise the theme for whichever of day and night is being
+ * set. */
+export function themeChange(settings, slot, id) {
+  if (!settings.follow) return { theme: id };
+  return slot === "night" ? { night: id } : { day: id };
+}
+
+/** What the More screen says of this one. */
+export function lookCounts(look = Look) {
+  const black = look.THEMES.filter((t) => t[2] === "black").length;
+  return `${look.THEMES.length} themes (${black} true black), ${look.FONTS.length} typefaces, text size, spacing`;
+}
+
+function viewLook(sub) {
+  if (!Look) return [empty("How the app looks could not be loaded on this device.")];
+  const which = ["colours", "type", "layout"].includes(sub) ? sub : "colours";
+  const s = lookUnkept || Look.current();
+  const dark = Look.systemDark();
+  const set = (change) => {
+    const r = Look.choose({ ...s, ...change });
+    lookUnkept = r.kept ? null : r.settings;
+    if (!r.kept) toast("This device would not keep that: it lasts until the app is closed.", true);
+    draw();
+  };
+  const tab = (name, label) => h("button", { "aria-pressed": String(which === name), onclick: () => go(`more/look/${name}`) }, label);
+  const out = [h("div", { class: "seg wrap", role: "group", "aria-label": "What to change" }, tab("colours", "Colours"), tab("type", "Typeface"), tab("layout", "Size and spacing"))];
+  const steps = (label, list, name) =>
+    h(
+      "div",
+      { class: "seg wrap", role: "group", "aria-label": label },
+      ...list.map(([id, said]) => h("button", { "aria-pressed": String(s[name] === id), onclick: () => set({ [name]: id }) }, said)),
+    );
+  // Something of everything, to see a choice on: text, small print, the
+  // three status colours, and each kind of button.
+  const sample = () =>
+    h(
+      "div",
+      { class: "card sample" },
+      h("h3", {}, "What it looks like"),
+      h("p", {}, "The quick brown fox jumps over the lazy dog. 0123456789 Il1 O0 rn m."),
+      h("p", { class: "meta" }, "Small print, as under every card: #14286 merged 12 min ago by a pooled lane."),
+      h("div", { class: "row" }, h("span", { class: "chip good" }, "done"), h("span", { class: "chip warn" }, "waiting"), h("span", { class: "chip accent" }, "in progress"), h("span", { class: "chip" }, "queued")),
+      h("div", { class: "row" }, h("button", { type: "button" }, "Do it"), h("button", { type: "button", class: "ghost" }, "Not now"), h("button", { type: "button", class: "danger" }, "Remove")),
+    );
+
+  if (which === "colours") {
+    const slot = s.follow ? lookSlot || (dark ? "night" : "day") : null;
+    const chosen = s.follow ? (slot === "night" ? s.night : s.day) : s.theme;
+    const pressed = (on) => String(Boolean(on));
+    out.push(
+      h(
+        "div",
+        { class: "seg wrap", role: "group", "aria-label": "Which theme is shown" },
+        h("button", { "aria-pressed": pressed(s.follow), onclick: () => set({ follow: true }) }, "Follow the system"),
+        h("button", { "aria-pressed": pressed(!s.follow), onclick: () => set({ follow: false, theme: Look.themeFor(s, dark) }) }, "One theme"),
+      ),
+      h("p", { class: "meta" }, lookSaid(s, dark)),
+    );
+    if (s.follow) {
+      const slotButton = (name, label) =>
+        h(
+          "button",
+          {
+            "aria-pressed": pressed(slot === name),
+            onclick: () => {
+              lookSlot = name;
+              draw();
+            },
+          },
+          label,
+        );
+      out.push(
+        h("div", { class: "seg wrap", role: "group", "aria-label": "Which of the two to choose" }, slotButton("day", `When light: ${themeName(s.day)}`), slotButton("night", `When dark: ${themeName(s.night)}`)),
+      );
+    }
+    for (const [group, title, note] of Look.THEME_GROUPS) {
+      out.push(
+        h("h2", {}, title),
+        note ? h("p", { class: "meta" }, note) : null,
+        h(
+          "div",
+          { class: "picks" },
+          ...Look.THEMES.filter((t) => t[2] === group).map(([id, name]) =>
+            h(
+              "button",
+              { class: "pick", "aria-pressed": pressed(chosen === id), onclick: () => set(themeChange(s, slot, id)) },
+              // The theme's own colours, on this one element.
+              h(
+                "span",
+                { class: "swatch", "data-theme": id, "aria-hidden": "true" },
+                h("span", { class: "swatch-card" }, h("b", {}, "Aa"), h("i", {}, "small print")),
+                h("span", { class: "dots" }, h("i", { class: "dot accent" }), h("i", { class: "dot good" }), h("i", { class: "dot warn" }), h("i", { class: "dot bad" })),
+              ),
+              h("span", { class: "pick-name" }, name),
+            ),
+          ),
+        ),
+      );
+    }
+  } else if (which === "type") {
+    out.push(sample(), h("p", { class: "meta" }, "Each is shown as itself. The device's own cost nothing; the others are fetched when first shown and then kept here, so they work with no connection."));
+    for (const [group, title] of Look.FONT_GROUPS) {
+      out.push(
+        h("h2", {}, title),
+        h(
+          "div",
+          { class: "options" },
+          ...Look.FONTS.filter((f) => f[2] === group).map(([id, name, , note]) =>
+            h("button", { class: "option face", "data-font": id, "aria-pressed": String(s.font === id), onclick: () => set({ font: id }) }, h("b", {}, name), h("span", {}, note)),
+          ),
+        ),
+      );
+    }
+  } else {
+    out.push(
+      sample(),
+      h("h2", {}, "Text size"),
+      steps("Text size", Look.SIZES, "size"),
+      h("h2", {}, "Room around things"),
+      steps("Room around things", Look.SPACES, "space"),
+      h("h2", {}, "Corners"),
+      steps("Corners", Look.CORNERS, "corners"),
+      h("h2", {}, "Movement"),
+      steps("Movement", Look.MOTIONS, "motion"),
+    );
+  }
+  out.push(
+    h("h2", {}, "This device"),
+    h("p", { class: "meta" }, "These choices are kept on this device only: a phone and a desk can each look their own way."),
+    h("div", { class: "row" }, h("button", { class: "ghost", onclick: () => set({ ...Look.DEFAULTS }) }, "Put it back how it came")),
   );
   return out;
 }
@@ -3543,6 +3701,7 @@ const VIEWS = {
   "more/machines": ["Machines", viewMachines],
   "more/platform": ["Platform", viewPlatform],
   "more/device": ["On this device", viewDevice],
+  "more/look": ["Appearance", viewLook],
   "more/releases": ["Releases", viewReleases],
   "more/roadmap": ["Roadmap", viewRoadmap],
   "more/bugs": ["Bugs", viewBugs],
