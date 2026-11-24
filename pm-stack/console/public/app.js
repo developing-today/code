@@ -29,6 +29,17 @@ function icon(d) {
   return s;
 }
 
+/** Words written for a Markdown file, as plain words: a link is its
+ * text, and the marks around code and strong words are dropped. (The
+ * roadmap files are Markdown; the app shows what they say, not how
+ * they are marked up.) */
+export function plainWords(text) {
+  return String(text ?? "")
+    .replace(/\[((?:[^\]\\]|\\.)*)\]\([^)\s]*\)/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1");
+}
+
 /** "just now", "12 min ago", "3 h ago", "2 d ago" since an ISO time
  * (times without a zone are UTC). */
 export function ago(iso, now = Date.now()) {
@@ -2254,7 +2265,7 @@ function planRow(area, phase) {
         " ",
         r.issues.map((n) => [ext(`https://github.com/${me.repo || "developing-today/code"}/issues/${n}`, `#${n}`), " "]),
       ),
-      r.intent ? h("p", {}, r.intent) : null,
+      r.intent ? h("p", {}, plainWords(r.intent)) : null,
       h(
         "div",
         { class: "row end" },
