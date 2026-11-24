@@ -3530,14 +3530,33 @@ func TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment(t *te
 // the deterministic probe-count sensitivity at equal budgets is covered by
 // the CLI unit test, where readiness can be held false without timing races.
 func TestDaemonInlineStartPollIsAppliedToTheInlineReadinessLoop(t *testing.T) {
-	e := newEnv(t, oneServer)
-	e.setenv("MCPX_DAEMON_INLINE=always", "MCPX_DAEMON_INLINE_START_TIMEOUT=1ns", "MCPX_DAEMON_INLINE_START_POLL=1s")
-	out, err := e.try("ls")
-	if err == nil {
-		t.Fatalf("oracle: the 1ns inline start budget should expire before readiness; got:\n%s", out)
+	probesFor := func(poll string) int {
+		e := newEnv(t, oneServer)
+		e.setenv(
+			"MCPX_DAEMON_INLINE=always",
+			"MCPX_DAEMON_INLINE_START_TIMEOUT=50ms",
+			"MCPX_DAEMON_INLINE_START_POLL="+poll,
+			"MCPX_AUTOSTART_PING_TIMEOUT=1ns",
+		)
+		out, err := e.try("ls")
+		if err == nil {
+			t.Fatalf("oracle: 1ns readiness pings should time out within the inline start budget; got:\n%s", out)
+		}
+		const marker = "the in-process daemon did not answer after "
+		start := strings.Index(out, marker)
+		if start < 0 {
+			t.Fatalf("inline start timeout should report its readiness probe count, got:\n%s", out)
+		}
+		var probes int
+		if _, scanErr := fmt.Sscanf(out[start:], marker+"%d readiness probes", &probes); scanErr != nil {
+			t.Fatalf("could not parse inline readiness probe count from %q: %v", out[start:], scanErr)
+		}
+		return probes
 	}
-	if !strings.Contains(out, "the in-process daemon did not answer after 0 readiness probes") {
-		t.Fatalf("inline start timeout should report the zero readiness probes before the deadline, got:\n%s", out)
+	shortPollProbes := probesFor("1ms")
+	longPollProbes := probesFor("1s")
+	if shortPollProbes <= longPollProbes {
+		t.Fatalf("with equal 50ms start budgets, 1ms poll produced %d probes and 1s poll produced %d; shorter poll should retry more", shortPollProbes, longPollProbes)
 	}
 }
 
