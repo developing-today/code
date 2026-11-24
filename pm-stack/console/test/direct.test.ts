@@ -632,6 +632,7 @@ describe("what this side notes of each call it makes", () => {
       asks: ["github", "queue"],
       census: ["github"],
       done: ["queue", "github"],
+      agents: ["bridge"],
     });
   });
 });

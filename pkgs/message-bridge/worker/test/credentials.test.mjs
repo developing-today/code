@@ -312,7 +312,7 @@ test("sql store: hash-only storage and the claim predicate", async () => {
   assert.equal(noteRegs[0].token_hash, await noteTokenHash(out.notes_token), "notes registration is hash-only too");
 
   // The credential authenticates until revoked.
-  assert.deepEqual(fleetCredentialAuthSql(sql, await noteTokenHash(out.fleet_token)), { agent: "sql-1", scopes: ["inbox", "send"] });
+  assert.deepEqual(fleetCredentialAuthSql(sql, await noteTokenHash(out.fleet_token)), { agent: "sql-1", scopes: ["inbox", "send"], addr: null });
   assert.equal(fleetCredentialRevokeSql(sql, "sql-1", new Date().toISOString()), 1);
   assert.equal(fleetCredentialAuthSql(sql, await noteTokenHash(out.fleet_token)), null);
 

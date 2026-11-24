@@ -49,7 +49,10 @@ const STUB_ROUTES = DOOR_ROUTES.filter(
     r.path !== "/v1/queue/health" &&
     r.path !== "/v1/ingestion/github" &&
     r.path !== "/v1/sync/project" &&
-    r.path !== "/v1/sync/queue-github",
+    r.path !== "/v1/sync/queue-github" &&
+    r.path !== "/v1/bridge/send" &&
+    r.path !== "/v1/bridge/agents" &&
+    r.path !== "/v1/bridge/messages",
 );
 
 test("every door route refuses an unauthenticated request", async () => {

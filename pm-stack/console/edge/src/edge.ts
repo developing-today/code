@@ -1730,7 +1730,14 @@ export class Edge {
       return;
     }
     const kinds: Record<string, { ok: boolean; error?: string }> = {};
-    for (const name of this.owned(cfg)) {
+    for (const name of DIRECT_READ_SECTIONS) {
+      // The agents section is the bridge's: with no PM bridge
+      // credential held there is no path here to prove, and the
+      // section is a machine's, as it was before (#14373). Every
+      // other section is checked even while it is a machine's for
+      // being refused: the check is how this side finds it can read
+      // the section itself again.
+      if (name === "agents" && !this.bridgeReady()) continue;
       try {
         await directRead(name, direct.ops, direct.work);
         kinds[name] = { ok: true };

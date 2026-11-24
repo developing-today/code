@@ -1,6 +1,6 @@
 {
   "about": "Every Cloudflare Worker this repository holds: where it lives, what it does, whether it is in service and how it gets there. The PM app's Platform screen is drawn from this file. `state` was checked from outside on the day in `checked`, by asking each Worker's address.",
-  "checked": "2026-11-24",
+  "checked": "2026-11-23",
   "workers": [
     {
       "name": "pm-console-edge",
