@@ -22,13 +22,19 @@
   [#5909](https://github.com/developing-today/code/issues/5909) (CLOSED —
   PGQ boundary; remote execution and sensitivity filtering remain
   server-side).
-- **Depends provisionally on:**
-  [#5817](https://github.com/developing-today/code/issues/5817) (OPEN —
-  sensitivity classification levels, assignment, defaults). Every place
-  this record depends on the classification model is marked
-  **PROVISIONAL (#5817)** and listed in one section below; the shapes
-  decided here are parameterized by level rank so #5817's levels can
-  land without re-deciding them.
+- **Depends on:**
+  [#5817](https://github.com/developing-today/code/issues/5817) (CLOSED
+  2026-11-11 — sensitivity classification levels, assignment, defaults;
+  record: `doc/2026-11-11_decision_id5817_sensitivity_classification.md`,
+  landed via PR #8449). At this record's 2026-11-10 baseline #5817 was
+  still open, so every place this record depended on the classification
+  model was marked **PROVISIONAL (#5817)** and listed in one section
+  below. Those assumptions were reconciled against #5817's landed
+  S0–S3 model on 2026-11-24 (task 21852 second-pass verdict on #5818):
+  all four hold, and no decision in this record changes — see the
+  reconciliation notes in the assumptions section below. The shapes
+  decided here are parameterized by level rank, so #5817's levels
+  landed without re-deciding them.
 - **Evidence baseline:** `origin/main` at `69b4906b8f`, checked
   2026-11-10. At that point #5818, #5817, and #5675 were OPEN; #5816 and
   #5799 were CLOSED with their records on-issue; PR #7361 was OPEN.
@@ -73,8 +79,10 @@
    Silent filtering and existence leaks are both failure modes
    (parent §4); the gradient is the per-level choice the parent
    assigns to this record. **PROVISIONAL (#5817)** in level naming
-   only: the gradient is defined over level _rank_, so it survives
-   whatever level set #5817 lands.
+   only at baseline — reconciled 2026-11-24 (rank = the S-number in
+   #5817's landed S0–S3 set; see the assumptions section): the
+   gradient is defined over level _rank_, so it survived the level
+   set #5817 landed.
 5. **Unclassified data is treated as above-clearance for remote
    requesters.** The parent fixes the default for unclassified data
    as safe, not permissive; concretely, unclassified rows are
@@ -199,28 +207,55 @@ A query refused at validation or authorization is audited too, with
 its error outcome — refused queries are exactly the ones an owner
 needs to see.
 
-## PROVISIONAL assumptions on #5817 (reconcile before finalizing)
+## Assumptions on #5817 — reconciled against the landed model (2026-11-24)
+
+At this record's baseline #5817 was open, so the four assumptions
+below were recorded as PROVISIONAL. #5817 has since landed: four
+ordered levels **S0 Public / S1 Internal / S2 Confidential / S3
+Restricted**; assignment by the data owner at table level with
+raise-only row/field refinement (effective = max); unclassified
+rows/fields inherit the nearest classified ancestor, with S2
+Confidential the default at the classification root (record:
+`doc/2026-11-11_decision_id5817_sensitivity_classification.md`,
+PR #8449, merged 2026-11-11). Task 21852's second-pass verdict on
+#5818 (2026-11-24, comment 7126075150) reconciled each assumption
+against that model: **all four hold**, as noted under each item.
+This is a re-pointing/finalization record only; no decision in
+this record changes.
 
 1. **Level set and names.** This record assumes a totally ordered
    level set with a distinguishable baseline (public) level and a
    top level. #5817 may name and number them differently; the
    honesty gradient (decision 4) is defined over rank and the
    baseline/top anchors, and must be re-pointed at #5817's set when
-   it lands.
+   it lands. **Reconciled (2026-11-24): HOLDS** — #5817 landed a
+   totally ordered set with baseline S0 Public and top S3
+   Restricted; the gradient re-points mechanically (rank =
+   S-number); no re-decision was needed.
 2. **Granularity.** This record assumes classification can attach
    at row and field granularity (the parent's §4 contemplates both).
    If #5817 lands table/row-only, the field-redaction and
    `field_withheld` rules apply vacuously until field granularity
-   exists; the row rules are unaffected.
+   exists; the row rules are unaffected. **Reconciled (2026-11-24):
+   HOLDS** — #5817's model carries both row and field refinement,
+   so the field-redaction and `field_withheld` rules apply
+   non-vacuously.
 3. **Unclassified default.** Decision 5 fixes the remote-execution
    _behaviour_ (withhold, boolean tier). If #5817 assigns
    unclassified data a named level instead, the behaviour maps to
    that level's rank; the safe direction may not be relaxed by the
-   mapping.
+   mapping. **Reconciled (2026-11-24): HOLDS**, via the mapping
+   this assumption itself prescribed — unclassified data takes its
+   nearest classified ancestor's level (S2 at the classification
+   root), never a drop to S0; decision 5's withhold behaviour maps
+   to that rank and the safe direction is not relaxed.
 4. **Assignment authority.** Who may classify or reclassify is
    #5817's; this record assumes only that the executor can read the
    classification of every row/field it scans, atomically with the
    scan (no classification that changes meaning mid-query).
+   **Reconciled (2026-11-24): HOLDS** — #5817 settles authority
+   with the data owner (raise-only row/field refinement), and the
+   executor reads classification as assumed here.
 
 ## Alternatives rejected
 
@@ -300,6 +335,10 @@ needs to see.
   no per-field or redacted-field grants in v1.
 - #5817 issue body: levels/assignment/defaults and field-vs-row
   behaviour are its scope; it was OPEN at this record's baseline.
+  It has since landed (PR #8449, merged 2026-11-11); its record is
+  `doc/2026-11-11_decision_id5817_sensitivity_classification.md`
+  (four ordered levels S0 Public / S1 Internal / S2 Confidential /
+  S3 Restricted).
 - Task 10221 triage verdict on #5818 (2026-11-08, comment 6723779432):
   the scoped follow-on this record executes — filtering before
   results leave the server, withheld honesty, serving-side audit,
@@ -308,6 +347,12 @@ needs to see.
   `src/commands/get.rs` (MetaRequest transport precedent);
   absence of a filtered-query executor or query audit in `pkgs/id`
   at baseline (repository search, 2026-11-10).
+- Reconciliation and finalization (2026-11-24): task 21852
+  second-pass verdict on #5818 (comment 7126075150) — all four
+  provisional assumptions hold against #5817's landed model;
+  task 22746 then made this finalization edit (dependency block,
+  decision-4 marker, assumptions section, this entry). No
+  decision changed.
 
 No build or test was run: this change is a design record only. No
 implementation was started.

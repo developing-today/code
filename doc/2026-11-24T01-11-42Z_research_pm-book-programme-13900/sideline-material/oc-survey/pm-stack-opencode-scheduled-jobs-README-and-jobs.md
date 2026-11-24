@@ -74,18 +74,18 @@ only after the explicitly enabled timer fires on its cadence and
 `latest.log`/`history.jsonl` agree.
 =====JOBS.JSON=====
 {
-  "schemaVersion": 1,
-  "jobs": [
-    {
-      "id": "quota-freshness-summary",
-      "description": "Read-only summary of the latest quota snapshot freshness and health",
-      "service": "opencode-quota-freshness-summary.service",
-      "timer": "opencode-quota-freshness-summary.timer",
-      "cadence": "OnCalendar=hourly",
-      "route": "opencode-route/workhorse",
-      "input": "~/.local/state/pm-aggregator/quota-current.json (sanitized before model use)",
-      "logs": "~/.local/state/opencode-scheduled/quota-freshness-summary/{latest.log,history.jsonl}",
-      "state": "enabled; first hourly firing 2026-11-21T20:00:58-06:00 succeeded (exit 0)"
-    }
-  ]
+"schemaVersion": 1,
+"jobs": [
+{
+"id": "quota-freshness-summary",
+"description": "Read-only summary of the latest quota snapshot freshness and health",
+"service": "opencode-quota-freshness-summary.service",
+"timer": "opencode-quota-freshness-summary.timer",
+"cadence": "OnCalendar=hourly",
+"route": "opencode-route/workhorse",
+"input": "~/.local/state/pm-aggregator/quota-current.json (sanitized before model use)",
+"logs": "~/.local/state/opencode-scheduled/quota-freshness-summary/{latest.log,history.jsonl}",
+"state": "enabled; first hourly firing 2026-11-21T20:00:58-06:00 succeeded (exit 0)"
+}
+]
 }

@@ -258,18 +258,18 @@ fn extension_namespace_keys_match_the_schema_rule() {
     // canonical schema pattern ^[^./\s]+([./][^./\s]+)+$ rejects, not only
     // keys with no separator at all.
     let malformed = [
-        ".",           // separator only
-        "/",           // separator only
-        "a..b",        // empty segment
-        "a//b",        // empty segment
-        "a./b",        // empty segment across mixed separators
-        ".a.b",        // leading separator
-        "a.b.",        // trailing separator
-        "a b.c",       // whitespace inside a segment
-        "a/b c",       // whitespace inside a later segment
+        ".",          // separator only
+        "/",          // separator only
+        "a..b",       // empty segment
+        "a//b",       // empty segment
+        "a./b",       // empty segment across mixed separators
+        ".a.b",       // leading separator
+        "a.b.",       // trailing separator
+        "a b.c",      // whitespace inside a segment
+        "a/b c",      // whitespace inside a later segment
         "a\tb.c",     // tab whitespace
-        "a.b ",        // trailing whitespace
-        " example.c",  // leading whitespace
+        "a.b ",       // trailing whitespace
+        " example.c", // leading whitespace
     ];
     for key in malformed {
         let mut doc = valid_doc();
@@ -286,8 +286,8 @@ fn extension_namespace_keys_match_the_schema_rule() {
     for key in ["example.com/experiment", "a.b", "a/b", "a.b/c.d"] {
         let mut doc = valid_doc();
         doc["extensions"] = json!({ key: { "enabled": true } });
-        let resolved = load(&doc)
-            .unwrap_or_else(|err| panic!("key {key:?} must resolve, got {err:?}"));
+        let resolved =
+            load(&doc).unwrap_or_else(|err| panic!("key {key:?} must resolve, got {err:?}"));
         assert_eq!(
             resolved.extensions[key],
             json!({ "enabled": true }),
@@ -305,12 +305,21 @@ fn oracle_resolution_is_deterministic() {
     let overrides = shuffled["overrides"].as_array().expect("overrides").clone();
     shuffled["overrides"] = Value::Array(overrides.into_iter().rev().collect());
 
-    let a = load(&valid_doc()).expect("valid").canonical_json().expect("json");
-    let b = load(&shuffled).expect("valid").canonical_json().expect("json");
+    let a = load(&valid_doc())
+        .expect("valid")
+        .canonical_json()
+        .expect("json");
+    let b = load(&shuffled)
+        .expect("valid")
+        .canonical_json()
+        .expect("json");
     assert_eq!(a, b, "resolution must be authoring-order independent");
 
     // Resolving the same document twice is byte-identical.
-    let again = load(&valid_doc()).expect("valid").canonical_json().expect("json");
+    let again = load(&valid_doc())
+        .expect("valid")
+        .canonical_json()
+        .expect("json");
     assert_eq!(a, again);
 }
 

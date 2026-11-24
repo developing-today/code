@@ -4,12 +4,21 @@
 //   POST /events  (alias POST /webhook)
 //     Authenticated webhook (shared secret, Worker secret
 //     WEBHOOK_SECRET — vaulted in Bitwarden by name
-//     `cloudflare.decision-events.webhook-secret`, set with
-//     `wrangler secret put`; never in this repo). Accepts a batch of
+//     `cloudflare.decision-events.webhook-secret`, installed as a
+//     Worker secret outside the release workflow; never in this repo.
+//     Accepts a batch of
 //     decision-set events ({events: [...]}, a bare array, or one
 //     event), stores them in D1 (INSERT OR IGNORE on event_id —
 //     redelivery is a no-op), then hands each set's NEW events to that
 //     set's Durable Object for per-set fan-out.
+//   GET /sets?<limit>
+//     Authenticated list of every set the Worker holds events for,
+//     newest activity first: per set its event count and its latest
+//     event (id, type, ts). The edge reads this to find open
+//     questions without a machine (#13491): per-set reads need a
+//     setId, and only the store knows which sets exist. Question
+//     text itself still lives in the aggregator's decisions file —
+//     this lists activity, not definitions.
 //   GET /sets/<setId>/events?limit=<n>&after=<cursor>
 //     Authenticated read-back of a set's events from D1, in
 //     (ts, event_id) order. `after` is the composite cursor the
@@ -44,6 +53,7 @@ import {
 export interface Env {
   DB: D1Database;
   SET_EVENTS: DurableObjectNamespace;
+  VERSION?: string;
   WEBHOOK_SECRET?: string;
 }
 
@@ -228,6 +238,34 @@ async function handlePostEvents(request: Request, env: Env): Promise<Response> {
   );
 }
 
+async function handleListSets(url: URL, env: Env): Promise<Response> {
+  const limitRaw = Number(url.searchParams.get("limit") ?? "200");
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 1000) : 200;
+  const { results } = await env.DB.prepare(
+    `WITH ranked AS (
+      SELECT set_id, COUNT(*) OVER (PARTITION BY set_id) AS n,
+        MIN(ts) OVER (PARTITION BY set_id) AS first_ts,
+        ts AS last_ts, event_id AS last_event_id, type AS last_type,
+        ROW_NUMBER() OVER (PARTITION BY set_id ORDER BY ts DESC, event_id DESC) AS row_num
+      FROM decision_set_events
+    )
+    SELECT set_id, n, first_ts, last_ts, last_event_id, last_type
+    FROM ranked WHERE row_num = 1
+    ORDER BY last_ts DESC, set_id ASC LIMIT ?`,
+  )
+    .bind(limit)
+    .all<Record<string, unknown>>();
+  const sets = (results ?? []).map((row) => ({
+    setId: row.set_id,
+    events: row.n,
+    firstTs: row.first_ts,
+    lastTs: row.last_ts,
+    lastEventId: row.last_event_id,
+    lastType: row.last_type,
+  }));
+  return Response.json({ count: sets.length, sets });
+}
+
 async function handleGetEvents(url: URL, env: Env, setId: string): Promise<Response> {
   const limitRaw = Number(url.searchParams.get("limit") ?? "200");
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(Math.trunc(limitRaw), 1), 1000) : 200;
@@ -269,10 +307,20 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
-      return Response.json({ ok: true, service: "decision-events", webhookConfigured: Boolean(env.WEBHOOK_SECRET) });
+      return Response.json({
+        ok: true,
+        service: "decision-events",
+        webhookConfigured: Boolean(env.WEBHOOK_SECRET),
+        version: env.VERSION ?? "unknown",
+      });
     }
     if ((url.pathname === "/events" || url.pathname === "/webhook") && request.method === "POST") {
       return handlePostEvents(request, env);
+    }
+    if (url.pathname === "/sets" && request.method === "GET") {
+      if (!env.WEBHOOK_SECRET) return jsonError(503, "webhook secret not configured");
+      if (!isAuthorized(request.headers, env.WEBHOOK_SECRET)) return jsonError(401, "unauthorized");
+      return handleListSets(url, env);
     }
     const setMatch = /^\/sets\/([^/]+)\/(events|state|stream)$/.exec(url.pathname);
     if (setMatch && request.method === "GET") {

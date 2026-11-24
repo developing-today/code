@@ -125,11 +125,13 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
       calls += 1;
       return { status: 0, stdout: "", stderr: "" };
     };
+    const logged: string[] = [];
     const config = {
       enabled: true,
       executable: "placement-record",
       policyFile: "/policy/placement-policy.yaml",
       quotaCurrentFile: "/state/quota-current.json",
+      logError: (line: string) => logged.push(line),
     };
 
     expect(
@@ -143,6 +145,8 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
       ),
     ).toBeNull();
     expect(calls).toBe(0);
+    // The unmapped-provider seating is counted even though the helper never ran.
+    expect(logged).toEqual(["placement-guard: skipped: provider anthropic has no pool mapping for queue task 2 / r"]);
   });
 
   test("bare Go fails closed when its active console account cannot be mapped", () => {
@@ -163,5 +167,53 @@ describe("pm-dispatch placement guard (issue #2732; oracle = placement-record ar
       ),
     ).toThrow("cannot identify the active OpenCode Go account");
     expect(calls).toBe(0);
+  });
+
+  test("null-model seating is skipped and counted in the dispatcher log (oracle = skipped log line)", () => {
+    const logged: string[] = [];
+    let calls = 0;
+    const result = enforcePlacementGuard(
+      {
+        enabled: true,
+        executable: "placement-record",
+        policyFile: "/policy/placement-policy.yaml",
+        quotaCurrentFile: "/state/quota-current.json",
+        logError: (line) => logged.push(line),
+      },
+      { taskId: 4, repo: "developing-today/code", model: null },
+      () => {
+        calls += 1;
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    );
+    expect(result).toBeNull();
+    expect(calls).toBe(0);
+    expect(logged).toEqual([
+      "placement-guard: skipped: no model in request (default route unresolved) for queue task 4 / developing-today/code",
+    ]);
+  });
+
+  test("unmapped-provider seating is skipped and counted in the dispatcher log (oracle = skipped log line)", () => {
+    const logged: string[] = [];
+    let calls = 0;
+    const result = enforcePlacementGuard(
+      {
+        enabled: true,
+        executable: "placement-record",
+        policyFile: "/policy/placement-policy.yaml",
+        quotaCurrentFile: "/state/quota-current.json",
+        logError: (line) => logged.push(line),
+      },
+      { taskId: 5, repo: "developing-today/code", model: { providerID: "anthropic", id: "claude-sonnet" } },
+      () => {
+        calls += 1;
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    );
+    expect(result).toBeNull();
+    expect(calls).toBe(0);
+    expect(logged).toEqual([
+      "placement-guard: skipped: provider anthropic has no pool mapping for queue task 5 / developing-today/code",
+    ]);
   });
 });

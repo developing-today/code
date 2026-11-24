@@ -153,7 +153,12 @@ export function validateMetadataBlock(value: unknown): string[] {
   if (value.pm_meta !== 1) problems.push(`unsupported pm_meta version: ${String(value.pm_meta)}`);
   const parent = value.direct_parent;
   if (parent !== null) {
-    if (!isRecord(parent) || typeof parent.repo !== "string" || !Number.isInteger(parent.number) || typeof parent.kind !== "string")
+    if (
+      !isRecord(parent) ||
+      typeof parent.repo !== "string" ||
+      !Number.isInteger(parent.number) ||
+      typeof parent.kind !== "string"
+    )
       problems.push("direct_parent must be null or {repo, number, kind}");
   }
   if (!Array.isArray(value.links)) {

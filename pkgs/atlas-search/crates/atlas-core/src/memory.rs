@@ -11,7 +11,11 @@
 //! module is the first connector slice:
 //!
 //! * [`MEMORY_CORPORA`] + [`register_memory_corpora`] register the
-//!   design's five corpora as staging units with provenance.
+//!   design's five corpora as staging units with provenance. Each
+//!   unit's registry record carries its embedding-model identity
+//!   (#8623 slice 2): re-registration verifies the recorded identity
+//!   is the mandated model and refuses a corpus recorded under a
+//!   retired model, so ingestion never mixes incomparable vectors.
 //! * [`MemoryEntry`] + [`parse_memory_export`] read a read-only JSON
 //!   export of OpenClaw's memory-lancedb store. The export carries
 //!   the store's columns; its `vector` column is deliberately
@@ -23,15 +27,14 @@
 //!   `chunks_raw` write path every staged unit uses; promotion and
 //!   search are the existing aggregator and fan-out, unchanged.
 //!
-//! Out of scope (slice 1b, the #8622 remainder): the native LanceDB
-//! reader, idempotency keyed on id+updated_at, and the
-//! rebuild-from-sources proof. Until 1b, this connector stages a
-//! unit once and the unit is then promoted — promotion is the
-//! terminal write, as for every staged unit.
+//! Slice 1b adds replay-safe staging keyed by the stable LanceDB row
+//! id and source update timestamp (with content/metadata comparison
+//! when the source has no timestamp). The native LanceDB reader and
+//! rebuild-from-sources proof remain follow-up work.
 
 use std::path::Path;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
 use crate::shards::Tier;
@@ -101,14 +104,29 @@ pub const MEMORY_CORPORA: [MemoryCorpus; 5] = [
 /// Registration is idempotent — a corpus already in the registry is
 /// returned as recorded, never re-provisioned — so a connector run
 /// can call this first, unconditionally.
+///
+/// Slice 2 (#8623): a corpus already in the registry is checked
+/// against the mandated embedding-model identity before it is
+/// returned. A corpus recorded under a retired model fails loudly
+/// here — ingestion into it is refused — instead of mixing vectors
+/// from different models into one corpus. Rebuild the corpus with
+/// the re-embed job first; this function never rewrites identity.
 pub fn register_memory_corpora(
     registry: &Registry,
     staging_dir: &Path,
     now: &str,
 ) -> Result<Vec<StagingUnit>> {
+    use crate::shards::EMBEDDING_MODEL_ID;
+
     let mut out = Vec::with_capacity(MEMORY_CORPORA.len());
     for corpus in MEMORY_CORPORA {
         if let Some(unit) = registry.lookup(corpus.unit_id)? {
+            if unit.embedding_model != EMBEDDING_MODEL_ID {
+                return Err(Error::fatal(format!(
+                    "memory connector: refusing corpus {}: its recorded embedding_model `{}` is not the mandated `{EMBEDDING_MODEL_ID}`; vectors from different embedding models are not comparable — rebuild the corpus with the re-embed job first",
+                    corpus.unit_id, unit.embedding_model
+                )));
+            }
             out.push(unit);
             continue;
         }
@@ -230,6 +248,33 @@ pub fn stage_memory_entry(
     entry: &MemoryEntry,
     now: &str,
 ) -> Result<i64> {
+    stage_memory_entry_with_status(conn, unit_id, entry, now).map(|(id, _)| id)
+}
+
+fn stage_memory_entry_with_status(
+    conn: &Connection,
+    unit_id: &str,
+    entry: &MemoryEntry,
+    now: &str,
+) -> Result<(i64, bool)> {
+    let tx = conn.unchecked_transaction().map_err(|e| {
+        Error::backend(format!("memory connector: starting stage transaction: {e}"))
+    })?;
+    let result = stage_memory_entry_in_transaction(&tx, unit_id, entry, now)?;
+    tx.commit().map_err(|e| {
+        Error::backend(format!(
+            "memory connector: committing stage transaction: {e}"
+        ))
+    })?;
+    Ok(result)
+}
+
+fn stage_memory_entry_in_transaction(
+    conn: &Connection,
+    unit_id: &str,
+    entry: &MemoryEntry,
+    now: &str,
+) -> Result<(i64, bool)> {
     check_stage_schema(conn)?;
     let chunks = chunk_artifact_text(&entry.text);
     let source = entry.source_ref();
@@ -248,26 +293,90 @@ pub fn stage_memory_entry(
         "chunks": chunks.len(),
     })
     .to_string();
-    conn.execute(
-        "INSERT INTO items (unit_id, kind, source, text, sensitivity, created_at, meta) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            unit_id,
-            "memory",
-            source,
-            entry.text,
-            entry.sensitivity.name(),
-            updated_at.as_deref().unwrap_or(now),
-            meta,
-        ],
-    )
-    .map_err(|e| {
-        Error::backend(format!(
-            "memory connector: inserting item for {}: {e}",
-            entry.id
-        ))
-    })?;
-    let item_id = conn.last_insert_rowid();
+    let existing = conn
+        .query_row(
+            "SELECT id, text, sensitivity, meta FROM items \
+             WHERE unit_id = ?1 AND kind = 'memory' AND source = ?2 ORDER BY id DESC LIMIT 1",
+            params![unit_id, source],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|e| {
+            Error::backend(format!(
+                "memory connector: finding item for {}: {e}",
+                entry.id
+            ))
+        })?;
+
+    let (item_id, changed) = match existing {
+        Some((id, text, sensitivity, old_meta)) => {
+            let unchanged = text == entry.text
+                && sensitivity == entry.sensitivity.name()
+                && old_meta
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                    .is_some_and(|old| {
+                        let new: serde_json::Value =
+                            serde_json::from_str(&meta).unwrap_or_default();
+                        old.get("updated_at") == new.get("updated_at")
+                            && old.get("agent") == new.get("agent")
+                            && old.get("category") == new.get("category")
+                            && old.get("importance") == new.get("importance")
+                            && old.get("sensitivity") == new.get("sensitivity")
+                    });
+            if unchanged {
+                return Ok((id, false));
+            }
+            conn.execute(
+                "UPDATE items SET text = ?1, sensitivity = ?2, created_at = ?3, meta = ?4 WHERE id = ?5",
+                params![
+                    entry.text,
+                    entry.sensitivity.name(),
+                    updated_at.as_deref().unwrap_or(now),
+                    meta,
+                    id,
+                ],
+            )
+            .map_err(|e| Error::backend(format!("memory connector: updating item for {}: {e}", entry.id)))?;
+            conn.execute("DELETE FROM chunks_raw WHERE item_id = ?1", [id])
+                .map_err(|e| {
+                    Error::backend(format!(
+                        "memory connector: replacing chunks for {}: {e}",
+                        entry.id
+                    ))
+                })?;
+            (id, true)
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO items (unit_id, kind, source, text, sensitivity, created_at, meta) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    unit_id,
+                    "memory",
+                    source,
+                    entry.text,
+                    entry.sensitivity.name(),
+                    updated_at.as_deref().unwrap_or(now),
+                    meta,
+                ],
+            )
+            .map_err(|e| {
+                Error::backend(format!(
+                    "memory connector: inserting item for {}: {e}",
+                    entry.id
+                ))
+            })?;
+            (conn.last_insert_rowid(), true)
+        }
+    };
     for (idx, chunk) in chunks.iter().enumerate() {
         conn.execute(
             "INSERT INTO chunks_raw (item_id, idx, text, content_hash, created_at) \
@@ -281,7 +390,7 @@ pub fn stage_memory_entry(
             ))
         })?;
     }
-    Ok(item_id)
+    Ok((item_id, changed))
 }
 
 /// Stage a whole parsed export into a unit, in export order.
@@ -294,7 +403,12 @@ pub fn stage_memory_export(
 ) -> Result<Vec<i64>> {
     entries
         .iter()
-        .map(|entry| stage_memory_entry(conn, unit_id, entry, now))
+        .map(|entry| stage_memory_entry_with_status(conn, unit_id, entry, now))
+        .filter_map(|result| match result {
+            Ok((id, true)) => Some(Ok(id)),
+            Ok((_, false)) => None,
+            Err(error) => Some(Err(error)),
+        })
         .collect()
 }
 

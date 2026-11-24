@@ -448,6 +448,9 @@ struct SearchArgs {
     /// EXPERIMENTAL, off by default: serve the vector branch from the atlas core shard fan-out (dir:<path> or turso[:<org>]); FTS, details and --expand stay on the backend (issue #5755). Skips --via-service.
     #[arg(long, env = "ATLAS_SHARDS")]
     shards: Option<String>,
+    /// path to the catalog/source-registry database for occurrence attribution (#3125 slice 7): with --shards, occurrence rows resolve their source locators to registered roots (root_id). Requires --shards.
+    #[arg(long = "source-registry", env = "ATLAS_SOURCE_REGISTRY")]
+    source_registry: Option<PathBuf>,
     #[command(flatten)]
     backend: BackendArgs,
     #[command(flatten)]
@@ -943,6 +946,13 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
     // The disclosure context validates up front too (#12404),
     // so a bad value fails identically on every path.
     let context = parse_context(&args.context)?;
+    if args.source_registry.is_some() && args.shards.is_none() {
+        return Err((
+            2,
+            "--source-registry requires --shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        ));
+    }
     let mut note: Option<String> = None;
     // The shard fan-out is standalone-only: the service does not
     // honor it yet, so a via-service answer would silently come
@@ -975,7 +985,12 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
             &args.vector.vec_table,
         )
         .map_err(map_err)?;
-        backend = Box::new(ShardedBackend::new(backend, set));
+        let mut sharded = ShardedBackend::new(backend, set);
+        if let Some(path) = args.source_registry.as_deref() {
+            let conn = atlas_core::source_registry::open_source_registry(path).map_err(map_err)?;
+            sharded = sharded.with_source_registry(conn);
+        }
+        backend = Box::new(sharded);
     }
     let embedder = CliEmbedder::new(args.vector.model.clone(), args.vector.embedder);
     let opts = SearchOptions {
@@ -1099,11 +1114,15 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     if let Some(spec) = &settings.shards {
         let ceiling = serve_discovery_ceiling(&settings.clients);
         let set = open_from_spec(spec, ceiling, &settings.vec_table).map_err(map_err)?;
-        let backend = ShardedBackend::new(backend, set).with_refresh(
+        let mut backend = ShardedBackend::new(backend, set).with_refresh(
             spec.clone(),
             ceiling,
             settings.shard_refresh,
         );
+        if let Some(path) = &settings.source_registry {
+            let conn = atlas_core::source_registry::open_source_registry(path).map_err(map_err)?;
+            backend = backend.with_source_registry(conn);
+        }
         let engine = std::sync::Arc::new(server::CoreSearchEngine::new(
             std::sync::Arc::new(backend),
             shared,

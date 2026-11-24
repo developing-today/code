@@ -8,7 +8,7 @@ lane has its [own page](ipfs-libp2p.md).
 
 **Judgment up front: complement candidate, narrowly — not an alternate
 base.** Veilid is a real, maintained, open-source p2p application
-framework whose centre of gravity is *anonymity and routed privacy*, not
+framework whose centre of gravity is _anonymity and routed privacy_, not
 capability auth and not data sync. For this estate it competes with iroh
 only at the transport layer, where it is weaker for our purposes, and it
 offers exactly one thing iroh does not: receiver-private addressing and
@@ -46,7 +46,7 @@ namespacing and routing world; there is no bridging story to iroh
 NodeIds beyond "both are Ed25519."
 
 **DHT records — the strongest component.** Veilid's DHT is a Kademlia
-store of *mutable, signed* records:
+store of _mutable, signed_ records:
 
 - Records are owned by a keypair; each record has up to 32 subkeys, each
   holding a value of at most **1 MiB** (the practical per-value guidance
@@ -63,13 +63,13 @@ store of *mutable, signed* records:
   a rendezvous/signalling layer rather than a poll-loop.
 - Offline behaviour is honest: writes made while disconnected queue and
   propagate on reconnect; reads may be stale by design (sequence numbers
-  tell you *how* stale relative to a known value).
+  tell you _how_ stale relative to a known value).
 
 **Routing and privacy — the actual point of the project.** Veilid routes
 traffic through **safety routes** (sender-chosen relay hops) and
 **private routes** (receiver-published multi-hop routes): a receiver is
 addressed via an opaque **route blob**, and can receive messages
-*without ever learning — or revealing — a NodeId or IP address* to the
+_without ever learning — or revealing — a NodeId or IP address_ to the
 sender. Combined with per-message encryption this is a genuinely
 different privacy posture from iroh's (where peers are addressed by, and
 learn, each other's NodeIds). NAT traversal (its VICE system) handles
@@ -89,7 +89,7 @@ different from this investigation's subject: **FourCC node-feature
 advertisements** — bitflags a node publishes about which protocol
 features it supports (`ROUT`, `SGNL`, `RLAY`, `DHTV`, `DHTW`, `APPM`,
 with `TUNL` and `BLOC` defined but unimplemented). They are capability
-*negotiation* in the protocol-engineering sense, **not authorisation**:
+_negotiation_ in the protocol-engineering sense, **not authorisation**:
 there is no delegation, no attenuation, no expiry, no revocation —
 nothing in Veilid answers "may this principal do this thing." Access
 control in Veilid reduces to: DHT record ownership/schemas (write
@@ -110,24 +110,24 @@ capabilities" should be read as the FourCC sense unless shown otherwise.
 - **Anonymity costs performance and debuggability**: multi-hop routed
   delivery is latency-expensive and operationally opaque compared with
   iroh's direct-first-with-relay-fallback model; for an estate whose
-  traffic is overwhelmingly *its own named seats talking to each other*,
+  traffic is overwhelmingly _its own named seats talking to each other_,
   anonymity-from-each-other is mostly not the requirement — the seats
   are supposed to know who they are talking to.
 - **Ecosystem gravity**: the app catalogue on the public network is
   small (chat demos, file-sharing experiments); there is no sync engine,
-  no CRDT store, no group system — Veilid would be a *third* framework
+  no CRDT store, no group system — Veilid would be a _third_ framework
   to operate alongside iroh + p2panda, bought for one feature.
 
 ## The one proven composition — and the one estate-shaped use
 
-There is a real production-shaped precedent for composing Veilid *with*
+There is a real production-shaped precedent for composing Veilid _with_
 iroh rather than choosing between them: OpenArchive's **Save** app
 (secure media archiving for human-rights defenders, in beta production)
 uses **Veilid for encrypted p2p networking / anonymous connections and
 iroh for data storage, replication, and verification**, hand-glued by
 Hypha Co-operative. That is exactly the shape this lane would predict:
-Veilid where *who can be found* is the sensitive part, iroh where *moving
-and verifying data* is the job.
+Veilid where _who can be found_ is the sensitive part, iroh where _moving
+and verifying data_ is the job.
 
 For this estate, the only use shaped like our problems is the
 **rendezvous/discovery record layer**: hosts that are not on Tailscale

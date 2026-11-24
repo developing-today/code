@@ -66,16 +66,16 @@ $ fleet queue bind 19479 --worker repo-worker-code --session-id ses_01J9EXAMPLE0
 usage: repo-queue heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]
 ```
 
-| Flag                     | Argument        | Default                          | Meaning                                                                                                           |
-| ------------------------ | --------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `<task-id>` (positional) | task id         | required                         | The claimed task whose lease to refresh.                                                                          |
-| `--worker`               | worker id       | `repo-worker-code`               | Holder identity.                                                                                                  |
-| `--lane`                 | lane id         | env `REPO_QUEUE_LANE`, else null | Holder lane check.                                                                                                |
-| `--extend-seconds`       | integer seconds | 900 (15 min)                     | New lease length from now. Range 1..=86400, exit 2 outside (a 0/negative extend "lapses the holder's own claim"). |
-| `--progress`             | text/JSON       | unset                            | Progress value merged into the row. Mutually exclusive with `--progress-file`.                                    |
-| `--progress-file`        | file path       | unset                            | File whose text is read as the progress value. Mutually exclusive with `--progress`.                              |
+| Flag                     | Argument        | Default                          | Meaning                                                                              |
+| ------------------------ | --------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| `<task-id>` (positional) | task id         | required                         | The claimed task whose lease to refresh.                                             |
+| `--worker`               | worker id       | `repo-worker-code`               | Holder identity.                                                                     |
+| `--lane`                 | lane id         | env `REPO_QUEUE_LANE`, else null | Holder lane check.                                                                   |
+| `--extend-seconds`       | integer seconds | 900 (15 min)                     | Minimum renewal window from now. Range 1..=86400, exit 2 outside.                    |
+| `--progress`             | text/JSON       | unset                            | Progress value merged into the row. Mutually exclusive with `--progress-file`.       |
+| `--progress-file`        | file path       | unset                            | File whose text is read as the progress value. Mutually exclusive with `--progress`. |
 
-**Behaviour.** Refreshes the claim lease: `lease_until = now + extend_seconds` on both the task row and the `leases` row (`heartbeat_at` updated). Note the asymmetry: claim's default lease is 2700 s but a heartbeat only adds 900 s unless told otherwise. `--progress`/`--progress-file` optionally merge a progress value into the row. Heartbeat goes through the fallback-switch path: a primary-store failure switches the work to the GitHub fallback, exit 6 (see [the fallback queue](queue-fallback.md)). Prints the row + `mode_line`.
+**Behaviour.** The Turso broker keeps the later of the current deadline and `now + extend_seconds`. It writes the resulting deadline to the task and its lease in one SQLite statement and refreshes `heartbeat_at`, including on an early heartbeat. A changed claim observed during renewal returns exit 5. Brokers built before [#13553](https://github.com/developing-today/code/issues/13553) replace the deadline with `now + extend_seconds` and can shorten a longer lease. Check the serving broker revision when interpreting older observations. `--progress`/`--progress-file` optionally merge a progress value into the row. Heartbeat goes through the fallback-switch path: a primary-store failure switches the work to the GitHub fallback, exit 6 (see [the fallback queue](queue-fallback.md)). Prints the row + `mode_line`.
 
 Exit codes: 0 ok · 2 usage / out-of-range `--extend-seconds` / both progress flags · 3 transport · 4 broker store failure · 5 no matching claimed row · 6 fallback switch.
 
@@ -403,7 +403,7 @@ usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <js
 Client-side completion dressing (all fail-soft, explicit caller values win):
 
 - `result.dominant_model`: the bound session's dominant serving model over the task's claim window (route_attempt call count), when derivable.
-- Telemetry defaulting: `pool`/`model`/`effort` are filled from the claim stamp, else the completing session's serving leaf / declared route pool; `cost_usd` stays null (no cost readout is sourceable). `effort` is recorded only from resolved session messages, never inferred from route names.
+- Telemetry defaulting: `pool`/`model`/`effort` are filled from the claim stamp, else the completing session's serving leaf / declared route pool; `cost_usd` stays null (no cost readout is sourceable). `effort` is recorded only from resolved session messages, never inferred from route names. A claim stamp written through the route provider (`opencode-route`) names the route id in `claim_model` — that is the pool, not a serving leaf — so it never supplies `model`; the session's serving leaf, or null, does.
 
 **The evidence gate.** Shape validation alone used to let a fix-class row complete `done` on any non-empty evidence string while its issue was open and a draft PR still carried the work. Now, a completion that requires a disposition must carry `result.disposition` — the verified readback record produced by `verify-disposition` (next section):
 
@@ -468,3 +468,25 @@ $ fleet queue verify-disposition 13165 --repo developing-today/code --json
 {"checked_at": "2026-11-23T04:24:00Z", "source": "github-readback", "issue": {"number": 13165, "state": "open", "state_reason": null, "closed_at": null, "closed_by": null}, "pulls": [], "verdict": "invalid_no_work", "follow_up": null}
 (exit 1 — no merged pull and no follow-up on record; a completion carrying this record would be rejected)
 ```
+
+## fleet queue reprioritize
+
+```text
+usage: repo-queue reprioritize <task-id> <new-priority> [--reason <text>] [--worker <id>]
+```
+
+| Flag                          | Argument       | Default                           | Meaning                                                                                                                                             |
+| ----------------------------- | -------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<task-id>` (positional)      | task id        | required                          | The queued task whose priority changes.                                                                                                             |
+| `<new-priority>` (positional) | priority value | required                          | A number, or a category name the validator maps to one (`validate::resolve_priority`). Missing or unresolvable → exit 2.                            |
+| `--reason`                    | text           | unset                             | Why the priority changed; recorded with the change.                                                                                                 |
+| `--worker`                    | worker id      | the authenticated caller identity | The acting worker. The actor is the authenticated caller identity presented over the broker's token channel; no free-form actor string is accepted. |
+
+**Behaviour.** Calls the broker's `POST /reprioritize`; the broker
+applies the new priority in the Turso queue store and syncs the task's
+GitHub category to match. Prints the served task row as JSON. Landed in
+#14100 (PR #14203) and listed in the queue domain's registry subcommand
+inventory, so `fleet queue --help` shows it.
+
+Exit codes: 0 success · 2 usage (including a missing or unresolvable
+priority).

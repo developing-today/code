@@ -84,11 +84,11 @@ of the words in comments; the file itself contains no token values.)
 export interface Env extends OAuthEnv {
   BRIDGE_BASE: string;
   ACCESS_CLIENT_ID: string;
-  ACCESS_CLIENT_SECRET: string;  // (display-redacted in survey output)
-  MACHINE_BEARER: string;         // Worker secret; canonical value in fleet
-                                  // secrets as mcpx.machine-bearer; staged by
-                                  // the publish workflow from the GitHub
-                                  // environment secret of the same name
+  ACCESS_CLIENT_SECRET: string; // (display-redacted in survey output)
+  MACHINE_BEARER: string; // Worker secret; canonical value in fleet
+  // secrets as mcpx.machine-bearer; staged by
+  // the publish workflow from the GitHub
+  // environment secret of the same name
 }
 ```
 
@@ -97,7 +97,7 @@ export interface Env extends OAuthEnv {
 ```ts
 export interface OAuthEnv {
   OAUTH_KV: KVNamespace;
-  ACCESS_AUD: string;           // AUD of the Access application scoped to /authorize
-  ACCESS_TEAM_DOMAIN: string;   // team domain hosting the JWKS
+  ACCESS_AUD: string; // AUD of the Access application scoped to /authorize
+  ACCESS_TEAM_DOMAIN: string; // team domain hosting the JWKS
 }
 ```

@@ -45,17 +45,41 @@ usage() {
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --apk) APK="${2:-}"; shift 2 ;;
-    --edge-url) EDGE_URL="${2:-}"; shift 2 ;;
-    --act-log) ACT_LOG="${2:-}"; shift 2 ;;
-    --answer-label) ANSWER_LABEL="${2:-}"; shift 2 ;;
-    --question-text) QUESTION_TEXT="${2:-}"; shift 2 ;;
-    --next-question-text) NEXT_QUESTION_TEXT="${2:-}"; shift 2 ;;
-    *) echo "offline-check: unknown argument: $1" >&2; usage ;;
+  --apk)
+    APK="${2:-}"
+    shift 2
+    ;;
+  --edge-url)
+    EDGE_URL="${2:-}"
+    shift 2
+    ;;
+  --act-log)
+    ACT_LOG="${2:-}"
+    shift 2
+    ;;
+  --answer-label)
+    ANSWER_LABEL="${2:-}"
+    shift 2
+    ;;
+  --question-text)
+    QUESTION_TEXT="${2:-}"
+    shift 2
+    ;;
+  --next-question-text)
+    NEXT_QUESTION_TEXT="${2:-}"
+    shift 2
+    ;;
+  *)
+    echo "offline-check: unknown argument: $1" >&2
+    usage
+    ;;
   esac
 done
 [ -n "$APK" ] && [ -n "$EDGE_URL" ] && [ -n "$ACT_LOG" ] || usage
-[ -f "$APK" ] || { echo "offline-check: no APK at $APK" >&2; exit 2; }
+[ -f "$APK" ] || {
+  echo "offline-check: no APK at $APK" >&2
+  exit 2
+}
 
 # The screen as the emulator sees it, one text per line.
 screen_text() {

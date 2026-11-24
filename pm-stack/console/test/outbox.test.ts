@@ -77,6 +77,8 @@ test("what may wait, what is sent only while it is fresh, and what needs a conne
     "issue.rank",
     "task.move",
     "message.send",
+    "message.broaden",
+    "message.offer",
     "intake.send",
   ]) {
     expect([kind, O.rule(kind)]).toEqual([kind, "late"]);
@@ -111,6 +113,13 @@ test("each action is said in a line the owner will know it by", () => {
     "Prompt: “Ship the parser rework this week”",
   );
   expect(said("ask.send", { text: "x".repeat(200) })).toBe(`Prompt: “${"x".repeat(59)}…”`);
+  // A question and a standing instruction are said as what they are.
+  expect(said("ask.send", { text: "Why did it stall?", intent: "question" })).toBe("Question: “Why did it stall?”");
+  expect(said("ask.send", { text: "No red merges", intent: "directive" })).toBe(
+    "Standing instruction: “No red merges”",
+  );
+  expect(said("ask.send", { text: "Do it", intent: "task" })).toBe("Prompt: “Do it”");
+  expect(said("ask.send", { text: "Do it", intent: "something else" })).toBe("Prompt: “Do it”");
   expect(said("ask.reply", { issue: 201, text: "Yes" })).toBe("Reply on #201: “Yes”");
   expect(said("ask.close", { issue: 202 })).toBe("Mark prompt #202 done");
   expect(said("issue.comment", { issue: 301, text: "" })).toBe("Comment on #301");
@@ -135,6 +144,8 @@ test("each action is said in a line the owner will know it by", () => {
   expect(said("question.defer", {})).toBe("Put a question off");
   expect(said("questions.accept", { set: "s" })).toBe("Accept the recommended answers");
   expect(said("message.send", { to: ["xaltha"], text: "hello" })).toBe("Message to xaltha: “hello”");
+  expect(said("message.broaden", { batch: "b9" })).toBe("Broaden the send on batch b9");
+  expect(said("message.offer", { to: ["agent:f*"], slots: 2, text: "take it" })).toBe("Offer to agent:f* (2 slots): “take it”");
   expect(said("unit.act", { unit: "pm-console.service", action: "restart" })).toBe("restart pm-console.service");
   // One it does not know is still said, as it came; and no arguments are no reason to fail.
   expect(said("something.new", { a: 1 })).toBe("something.new");
@@ -185,6 +196,20 @@ test("what each kind of answer does to an entry", () => {
     note: "Kept for the laptop, which will do it when it is back.",
     result: null,
   });
+  // The platform says who it waits for, and that is what is said of it.
+  const heldNote = (waits: unknown) =>
+    O.classify({ status: 200, body: { ok: true, held: true, result: null, waits } }).note;
+  expect(heldNote("machine")).toBe("Kept for the laptop, which will do it when it is back.");
+  expect(heldNote("either")).toBe(
+    "Kept: Cloudflare does it as soon as it can again, or the laptop if it is back first.",
+  );
+  expect(heldNote("asked")).toBe(
+    "Kept: the laptop did not answer. It may have got this, and says what became of it when it is back.",
+  );
+  // Something it does not know to say is said as the plain case, never as whatever came.
+  for (const waits of ["someone", "constructor", "toString", "", 3, null, {}]) {
+    expect([waits, heldNote(waits)]).toEqual([waits, "Kept for the laptop, which will do it when it is back."]);
+  }
   // Refused or failed, in the platform's own words: not tried again by itself.
   expect(O.classify({ status: 404, body: { error: "no such issue" } })).toEqual({
     state: "failed",
@@ -509,6 +534,8 @@ test("what an action is about: two about one thing keep their order, on the devi
     ["ask.send", { text: "x" }, null],
     ["intake.send", { text: "x", kind: "bug" }, null],
     ["message.send", { to: ["a"], text: "x" }, null],
+    ["message.broaden", { batch: "b9" }, "batch:b9"],
+    ["message.offer", { to: ["a"], text: "x", slots: 2 }, null],
     ["deploy.start", { what: "site" }, null],
     ["prompt.enqueue", { issue: 201, text: "x" }, null],
     ["something.new", { issue: 1 }, null],

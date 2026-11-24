@@ -16,11 +16,16 @@
 //! - [`graph`] — the cross-signing graph as data/policy (§§3.2, 24.2),
 //!   never a hardcoded loop;
 //! - [`profile`] — leaf profiles mirroring `pkgs/idp-pki`'s `idp-ca`;
+//! - [`ocsp`] — the RFC 6960 responder core: delegated responder
+//!   certificates, response signing, inspection and verification
+//!   against the chain code (§§4.3, 6.1);
 //! - [`model`] — typed requests and the bundle manifest schema (§7.1);
 //! - [`engine`] — key generation, issuance, chain building and
 //!   validation over rcgen + aws-lc-rs;
 //! - [`bundle`] — bundle directories: manifest load/save, artifact
 //!   index, checksum verification.
+//! - [`inventory`] — read-only cross-bundle inventory: `inventory
+//!   list|show|search|audit` over bundle directories (spec §6.1).
 //!
 //! Safety rails baked into the API, not just the CLI:
 //! - Root/issuer signing always requires an explicitly passed signer
@@ -38,9 +43,12 @@ pub mod cli;
 pub mod engine;
 pub mod error;
 pub mod graph;
+pub mod inventory;
 pub mod model;
 pub mod naming;
+pub mod ocsp;
 pub mod profile;
+pub mod publish;
 pub mod timeparse;
 
 pub use error::{CertError, Result};

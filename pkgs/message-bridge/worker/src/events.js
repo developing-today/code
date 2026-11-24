@@ -1,6 +1,6 @@
 // MCP Events for ChatGPT: a ChatGPT chat subscribes to "message.created"
 // and the bridge wakes it with a signed webhook whenever Drew sends
-// ChatGPT a message (from the page or the JSON API).
+// ChatGPT a message (from the console or the JSON API).
 //
 // Protocol: OpenAI's MCP Events guide (developers.openai.com/plugins/
 // build/mcp-events), which follows Standard Webhooks for signing.

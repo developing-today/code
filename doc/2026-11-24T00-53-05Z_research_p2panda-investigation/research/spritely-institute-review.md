@@ -131,6 +131,7 @@ home page's whitepaper section.
 ## 3. Projects
 
 ### 3.1 Goblins — the foundation
+
 ([project page](https://spritely.institute/goblins/))
 
 Spritely's distributed object programming environment: local
@@ -144,6 +145,7 @@ over OCapN. Code on Codeberg (`spritely/goblins`,
 maturity framing elsewhere is "working beta" (see `ocap-family.md`).
 
 ### 3.2 Hoot — Scheme to WebAssembly
+
 ([project page](https://spritely.institute/hoot/))
 
 A Scheme-to-Wasm compiler backend for Guile plus a self-contained Wasm
@@ -155,6 +157,7 @@ Chrome 119+, Safari 26+, Node 22+. Distributed via Guix, Debian
 testing/unstable, and a Homebrew tap.
 
 ### 3.3 OCapN — the protocol suite
+
 ([ocapn.org](https://ocapn.org); linked from the home page)
 
 The pre-standardisation effort to make CapTP implementations
@@ -169,6 +172,7 @@ with Jessica Tallon as primary spec author. Status remains explicitly
 `ocap-family.md` §1.2 for the spec-repo detail).
 
 ### 3.4 Oaken — capability-secure Scheme sublanguage (2025)
+
 Announced May 2025, NLnet-funded, by Daphne Preston-Kendal
 ([announcement](https://spritely.institute/news/announcing-spritely-oaken.html);
 [NLnet project page](https://nlnet.nl/project/SpritelyOaken/)). Oaken is
@@ -182,6 +186,7 @@ macros, and plugins, and at composing with Goblins/Hoot. Early-stage;
 initial version deliberately supports only basic tamings.
 
 ### 3.5 Shepherd × Goblins — capability-secure system layer
+
 A port of GNU Shepherd (Guix's init/service manager) to Goblins actors,
 NLnet-funded, announced May 2024 and updated September 2025. Goal:
 services as object capabilities, unifying root and user Shepherds, and
@@ -193,6 +198,7 @@ handful of shell tests still failing and syslog a known gap — **not yet
 PID 1 ready** ([update](https://www.spritely.institute/news/shepherd-goblins-update.html)).
 
 ### 3.6 Guile Noise — Noise Protocol library for Guile
+
 Written for the E2EE relay work (§6.3): a general-purpose Noise
 implementation for Guile/Hoot where none existed. All 12 fundamental
 interactive handshake patterns; X25519, AES-GCM, SHA-256/SHA-512;
@@ -251,29 +257,29 @@ archive listing only (see coverage statement).
    new E2EE relay. Records real bugs found under deadline: a "crossed
    hellos" race (promises on the losing connection never resolve;
    worked around with a timeout retry) and the promise-vs-reference
-   `eq?` identity footgun. Ranked 5th overall. *Matters: first app to
+   `eq?` identity footgun. Ranked 5th overall. _Matters: first app to
    exercise third-party handoffs over the relay netlayer — the relay's
-   public proof.*
+   public proof._
    ([article](https://spritely.institute/news/lisp-game-jam-devlog-polydraw.html))
 2. **Hoot 0.10.0 released!** — Thompson, 2026-10-28 — Adds R6RS library
    versioning and a large `(rnrs …)` surface, partial SRFI-13/60,
    `define-macro`, CLI validation and a Node exnref flag; promotes the
-   game-jam template. *Matters: closes much of the R6RS/Guile
-   compatibility gap for browser Scheme.*
+   game-jam template. _Matters: closes much of the R6RS/Guile
+   compatibility gap for browser Scheme._
    ([article](https://spritely.institute/news/hoot-0-10-0-released.html))
 3. **End-to-end encrypted relays for OCapN** — Tallon, 2026-10-15 —
    Announces the NLnet-funded federated, stateless, E2EE relay that
    replaces prelay: a Noise meta-netlayer (XK, X25519/AES-GCM/SHA-256)
    composed over the relay netlayer, a new Guile Noise library, and an
-   OCapN spec to follow. *Matters: the subject of §6 — Spritely's NAT
-   answer becomes recommendable.*
+   OCapN spec to follow. _Matters: the subject of §6 — Spritely's NAT
+   answer becomes recommendable._
    ([article](https://www.spritely.institute/news/end-to-end-encrypted-relays-for-ocapn.html))
 4. **Hoot 0.9.0 released!** — Thompson, 2026-05-13 — Moves to standard
    Wasm exceptions and DWARF debug data (with a `hoot strip` for
    production), a DWARF parser in reflect.js, an exported `main` for
    non-JS runtimes, and a new `hoot compile` CLI replacing
-   `guild compile-wasm`. *Matters: debugging and portability of Hoot
-   binaries beyond JavaScript.*
+   `guild compile-wasm`. _Matters: debugging and portability of Hoot
+   binaries beyond JavaScript._
    ([article](https://spritely.institute/news/hoot-0-9-0-released.html))
 5. **Spritely Goblins v0.18.0: Sleepy actors!** — Thompson &
    Lemmer-Webber, 2026-04-21 — "Sleepy actors": persisted actors can be
@@ -281,22 +287,22 @@ archive listing only (see coverage statement).
    and LRU strategies shipped). Also adopts the latest OCapN draft —
    `op:deliver-only` dropped, GC ops batched/pluralised, **protocol
    version bumped (incompatible)** — and fixes a multi-vat restore race
-   and a WebSocket netlayer signing-oracle vulnerability. *Matters:
+   and a WebSocket netlayer signing-oracle vulnerability. _Matters:
    large persistent actor graphs no longer need to be memory-resident;
-   also the clearest evidence the wire protocol is still moving.*
+   also the clearest evidence the wire protocol is still moving._
    ([article](https://www.spritely.institute/news/spritely-goblins-v0-18-0-sleepy-actors.html))
 6. **Hoot 0.8.0 released!** — Thompson, 2026-02-25 — A built-in
    `(hoot repl)` for live hacking in Wasm, a web REPL/server proxying to
    a browser tab, `hoot repl`/`hoot server` CLI commands, initial Emacs
    (Geiser) support, web request/response/socket modules, and extensive
-   Wasm toolchain validation work. *Matters: REPL-driven development —
-   Scheme's signature workflow — arrives for Wasm.*
+   Wasm toolchain validation work. _Matters: REPL-driven development —
+   Scheme's signature workflow — arrives for Wasm._
    ([article](https://spritely.institute/news/hoot-0-8-0-released.html))
 7. **Mandy: ActivityPub on Goblins** — Tallon, 2026-01-06 — The
    ActivityPub-on-Goblins prototype (§3.7): HTTP bridging via Fibers, a
    nonce registry for persistent object IDs, activities as Goblins
-   messages. *Matters: a concrete bridge from Spritely's research back
-   to the Fediverse its founders standardised.*
+   messages. _Matters: a concrete bridge from Spritely's research back
+   to the Fediverse its founders standardised._
    ([article](https://spritely.institute/news/mandy-activitypub-on-goblins.html))
 
 ### 2025
@@ -306,52 +312,52 @@ archive listing only (see coverage statement).
    rather than compete, demonstrated by Brassica Chat (§3.7): ocaps for
    online access, BFT operation-based CRDTs for offline sync, zcaps for
    offline authorisation; contrasts capabilities with ACLs on
-   granularity, delegation, and confused-deputy risk. *Matters:
+   granularity, delegation, and confused-deputy risk. _Matters:
    Spritely's position paper for local-first architecture — and the
-   family's first real answer to the offline question.*
+   family's first real answer to the offline question._
    ([article](https://spritely.institute/news/composing-capability-security-and-conflict-free-replicated-data-types.html))
 9. **GoblinShare: Secure, Peer-to-Peer File-Sharing with Goblins** —
    Sims, 2025-11-18 — GoblinShare + the Guile Magenc port built in a
-   week (§3.7); core logic ~250 lines. *Matters: the "look how little
-   code secure p2p takes" demo.*
+   week (§3.7); core logic ~250 lines. _Matters: the "look how little
+   code secure p2p takes" demo._
    ([article](https://spritely.institute/news/goblinshare-secure-peer-to-peer-file-sharing-with-goblins.html))
 10. **Hoot 0.7.0 released!** — Thompson, 2025-10-22 — Guile source
     modules on the load path by default, SRFI-1 from Guile's pure
     Scheme, modules from JS typed arrays, explicit top-level imports;
-    first Safari 26 compatibility. *Matters: more real Guile code runs
-    under Hoot; WebKit unblocked.*
+    first Safari 26 compatibility. _Matters: more real Guile code runs
+    under Hoot; WebKit unblocked._
     ([article](https://spritely.institute/news/hoot-0-7-0-released.html))
 11. **Spritely Goblins v0.17.0: Persistence is better than ever!** —
     Tallon, 2025-10-16 — **Bloblin**, a streaming persistence store:
     full graph once, then compressed Syrup deltas per churn (new file
     every 1,000 churns), "many thousands of deltas per second"; store
-    migration tooling; new `^vector`/`^ring-buffer` actors. *Matters:
+    migration tooling; new `^vector`/`^ring-buffer` actors. _Matters:
     removes the whole-graph-rewrite bottleneck that capped persistent
-    vat scale.*
+    vat scale._
     ([article](https://www.spritely.institute/news/spritely-goblins-v0-17-0-persistence-is-better-than-ever.html))
 12. **Shepherd × Goblins update** — Sims & Thompson, 2025-09-10 —
     Progress on the Shepherd port (§3.5): core actors rewritten and
     unit-tested, API kept as a compatibility layer, working demo in a
     Guix home container; 4–7 shell tests still failing, syslog the big
-    gap. *Matters: capability security reaching the OS service layer,
-    honestly reported as not-yet-PID-1.*
+    gap. _Matters: capability security reaching the OS service layer,
+    honestly reported as not-yet-PID-1._
     ([article](https://www.spritely.institute/news/shepherd-goblins-update.html))
 13. **Spritely Goblins v0.16.1 released!** — Tallon, 2025-09-03 — Patch
     fixing 0.16.0 issues that broke OCapN-over-Hoot, duplicate-connection
-    bugs, and a vat event-log data-loss bug. *Matters: restores the
-    browser networking path.*
+    bugs, and a vat event-log data-loss bug. _Matters: restores the
+    browser networking path._
     ([article](https://www.spritely.institute/news/spritely-goblins-v0-16-1-released.html))
 14. **Spritely Goblins v0.16.0 released!** — Lemmer-Webber, 2025-08-07 —
     Two core speedups claimed at 10–20× each (compile-time `spawn`;
     cookie-comparison promises replacing sealer-based `bcom`), plus a
     new **Unix Domain Socket netlayer** using socket-passing to avoid
-    ACL/confused-deputy risks for local IPC. *Matters: a step-change in
-    Goblins performance, and OCapN as a local IPC mechanism.*
+    ACL/confused-deputy risks for local IPC. _Matters: a step-change in
+    Goblins performance, and OCapN as a local IPC mechanism._
     ([article](https://www.spritely.institute/news/spritely-goblins-v0-16-0-released.html))
 15. **Spritely presented spirited speeches spanning the planet** —
     Pillow, 2025-07-31 — Roundup of six months of talks (FOSDEM-heavy):
     fediverse futures, ocap security, Hoot web deployment, Shepherd,
-    Spritely's vision. *Matters: the talks index for the programme.*
+    Spritely's vision. _Matters: the talks index for the programme._
     ([article](https://www.spritely.institute/news/spritely-presented-spirited-speeches-spanning-the-planet.html))
 16. † **Goblinville: A Spring Lisp Game Jam 2025 retrospective** —
     2025-06-04 (date from secondary listings) — Retrospective on
@@ -362,8 +368,8 @@ archive listing only (see coverage statement).
     the quest for a persistent/functional hash table for Goblins:
     association lists are immutable and O(1) to extend but O(n) to look
     up; the post works through what a functional hash table must
-    provide. *Matters: the data-structure groundwork under Goblins'
-    persistence and Hoot's hashtable work.*
+    provide. _Matters: the data-structure groundwork under Goblins'
+    persistence and Hoot's hashtable work._
     ([archive listing](https://www.spritely.institute/news/index-1.html))
 18. † **Hoot 0.6.1 released!** — 2025-05-06 — Patch release following
     0.6.0; details not verified in this pass.
@@ -373,48 +379,48 @@ archive listing only (see coverage statement).
     for running untrusted code, with library "taming" and the powerbox
     pattern, inspired by Rees's dissertation (Rees advising). Use cases
     named: safe spreadsheet macros, game mods, sandboxed Shepherd
-    services. *Matters: Spritely's confinement layer — the missing
+    services. _Matters: Spritely's confinement layer — the missing
     piece between Goblins' network security and in-process plugin
-    safety.*
+    safety._
     ([article](https://spritely.institute/news/announcing-spritely-oaken.html))
 20. † **Successful supporter drive supplements Spritely's story** —
     2025-04-08 — Reports the success of Spritely's first supporter
     drive (see #24/#25 for the goal and launch); the archive excerpt
     stresses that donations are also individual endorsements of the
-    mission. *Matters: evidence the individual-funding leg works.*
+    mission. _Matters: evidence the individual-funding leg works._
     ([archive listing](https://www.spritely.institute/news/index-1.html))
 21. **Spritely Goblins v0.15.1 released!** — Thompson, 2025-03-26 —
     Patch (largely Tallon's work) fixing CapTP issues with ghashes/far
     references in persistent vats, GC thread-safety, severed-connection
     re-enlivening, prelay/WebSocket severance, and Hoot compilation;
     adds serialisable vectors/pairs over CapTP, `on-sever`, and a
-    timers library. *Matters: stabilises the new browser/OCapN surface.*
+    timers library. _Matters: stabilises the new browser/OCapN surface._
     ([article](https://www.spritely.institute/news/spritely-goblins-v0-15-1-released.html))
 22. **Spritely Goblins v0.15.0: Goblins in the browser!** —
     Lemmer-Webber & Grinn, 2025-01-24 — Goblins compiled by Hoot to
     Wasm from the same codebase as Guile, OCapN working in-browser
     (in-page 150-line goblin-chat demo), a new WebSocket netlayer
     bridged by prelay (noted as **not yet end-to-end encrypted** — the
-    gap §6 closes), and 1.2–2× performance gains. *Matters: the
-    Hoot bet pays off; Goblins reaches browser users.*
+    gap §6 closes), and 1.2–2× performance gains. _Matters: the
+    Hoot bet pays off; Goblins reaches browser users._
     ([article](https://www.spritely.institute/news/spritely-goblins-v0-15-0-goblins-in-the-browser.html))
 23. **Guile Hoot 0.6.0 released!** — Thompson, 2025-01-22 —
     Reimplemented weak-key/weak-value hashtables and weak vectors;
     enough of Guile (psyntax expander, eval, environments, modules) to
     compile nearly all of Goblins; Safari/WebKit 18.2+ joins the
     supported list after WebKit shipped Wasm GC + tail calls.
-    *Matters: removes the last browser blockers to Goblins-on-Hoot.*
+    _Matters: removes the last browser blockers to Goblins-on-Hoot._
     ([article](https://www.spritely.institute/news/guile-hoot-0-6-0-released.html))
 24. **Spritely is going to Guix Days and FOSDEM** — Grinn, 2025-01-16 —
     Whole team to Brussels; two hours of talks across Guix Days and
-    FOSDEM 2025 (fediverse, Shepherd, Hoot, Goblins). *Matters: the
-    public debut of several programme threads at once.*
+    FOSDEM 2025 (fediverse, Shepherd, Hoot, Goblins). _Matters: the
+    public debut of several programme threads at once._
     ([article](https://www.spritely.institute/news/spritely-is-going-to-guix-days-and-fosdem.html))
 25. **Supporter drive goal complete! Time for a stretch goal!** —
     Lemmer-Webber & Grinn, 2025-01-15 — The first supporter drive
     passed **$80,000 with three weeks to go**; stretch goal +$40,000
-    for a browser Goblins playground and Cirkoban Deluxe. *Matters:
-    community funding validated early and publicly.*
+    for a browser Goblins playground and Cirkoban Deluxe. _Matters:
+    community funding validated early and publicly._
     ([article](https://www.spritely.institute/news/2024-2025-supporter-drive-success.html))
 
 ### 2024
@@ -422,64 +428,64 @@ archive listing only (see coverage statement).
 26. **Spritely launches Supporter Drive** — Lemmer-Webber & Grinn,
     2024-12-04 — Launches the first supporter campaign (501(c)(3),
     tiered perks) with the full pitch: Goblins + OCapN + Hoot as new
-    decentralised foundations rather than Web 2.0 replicas. *Matters:
-    the individual-funding leg begins.*
+    decentralised foundations rather than Web 2.0 replicas. _Matters:
+    the individual-funding leg begins._
     ([article](https://www.spritely.institute/news/spritely-launches-supporter-drive.html))
 27. **Make a game with Hoot for the Autumn Lisp Game Jam!** — tessa,
     2024-10-22 — Jam invitation with Spritely's Hoot game template and
-    forum support. *Matters: the jam pipeline that later produced
-    Polydraw starts here.*
+    forum support. _Matters: the jam pipeline that later produced
+    Polydraw starts here._
     ([article](https://www.spritely.institute/news/make-a-game-with-hoot-for-the-autumn-lisp-game-jam.html))
 28. **Our first office hours: A recap (and how to join the next one)**
     — tessa, 2024-10-17 — Ten community members at the first session;
     office hours become monthly (last Wednesday, Cal.com + Jitsi).
-    *Matters: a standing open support channel.*
+    _Matters: a standing open support channel._
     ([article](https://www.spritely.institute/news/first-office-hours-recap.html))
 29. **Spritely went to DWeb Camp: 2024 Recap** — Thompson, 2024-09-26 —
     Talks on the Wasm/Hoot bet and keeping decentralisation fun; a
     "Spritely Arcade" demo table (with Endo JS) running Cirkoban and
-    Strigoform. *Matters: games-as-demos validated with the dweb
-    community.*
+    Strigoform. _Matters: games-as-demos validated with the dweb
+    community._
     ([article](https://www.spritely.institute/news/spritely-went-to-dweb-camp-2024-recap.html))
 30. **Spritely Goblins v0.14.0: libp2p and Improved Persistence** —
     Tallon, 2024-09-19 — Adds a **libp2p netlayer** (TCP/QUIC + NAT
     hole punching via a companion Go libp2p daemon, mirroring how the
     onion netlayer uses Tor) and upgrades Aurie persistence:
     cross-vat far references, persistent netlayers, versioned
-    migrations. *Matters: Goblins' first non-Tor NAT traversal, and
-    persistence becomes practical across vats and firewalls.*
+    migrations. _Matters: Goblins' first non-Tor NAT traversal, and
+    persistence becomes practical across vats and firewalls._
     ([article](https://www.spritely.institute/news/spritely-goblins-v0-14-0-libp2p-and-improved-persistence.html))
 31. **Come work with us! Hiring a Technical Administrator** —
     Institute, 2024-09-12 — Organisational-capacity hire bridging
-    technical and administrative work. *Matters: the nonprofit is
-    professionalising behind the research.*
+    technical and administrative work. _Matters: the nonprofit is
+    professionalising behind the research._
     ([article](https://www.spritely.institute/news/come-work-with-us-hiring-a-technical-administrator.html))
 32. **Guile Hoot v0.5.0 released!** — Thompson, 2024-09-06 — A Scheme
     interpreter in `(hoot eval)`, a lightweight Fibers-style
     concurrency API on JS promises/delimited continuations, more Guile
     compatibility, backtraces with source locations. Safari still
-    unsupported. *Matters: runtime evaluation + async + debuggability
-    for real browser apps.*
+    unsupported. _Matters: runtime evaluation + async + debuggability
+    for real browser apps._
     ([article](https://www.spritely.institute/news/guile-hoot-v0-5-0-released.html))
 33. **Announcing Spritely Office Hours!** — tessa, 2024-09-05 — Trial
     of engineering office hours; support routing (bugs → Codeberg
-    trackers, questions → forum first). *Matters: support
-    infrastructure for a growing user base.*
+    trackers, questions → forum first). _Matters: support
+    infrastructure for a growing user base._
     ([article](https://www.spritely.institute/news/announcing-spritely-office-hours.html))
 34. **Spritely goes to DWeb Camp** — tessa, 2024-08-09 — Itinerary
     announcement for DWeb Camp 2024 (talks + Demo Night Market).
-    *Matters: outreach to the decentralised-web community.*
+    _Matters: outreach to the decentralised-web community._
     ([article](https://www.spritely.institute/news/spritely-goes-to-dweb-camp.html))
 35. **Cirkoban: Sokoban meets cellular automata written in Scheme** —
     Thompson, 2024-06-03 — The Cirkoban story (§3.7): 15 levels,
     transactional rollback as undo, first publicly accessible
-    Goblins-in-browser app, 2nd place in the Spring jam. *Matters: the
-    first complete, playable proof of Hoot + Goblins on the web.*
+    Goblins-in-browser app, 2nd place in the Spring jam. _Matters: the
+    first complete, playable proof of Hoot + Goblins on the web._
     ([article](https://www.spritely.institute/news/cirkoban-sokoban-meets-cellular-automata-written-in-scheme.html))
 36. **Make a game with Hoot for the Lisp Game Jam!** — Thompson,
     2024-05-15 — Spring jam invitation; 100+ registered participants;
-    the Hoot game template introduced. *Matters: the jam as Hoot's
-    stress-test and recruiting channel.*
+    the Hoot game template introduced. _Matters: the jam as Hoot's
+    stress-test and recruiting channel._
     ([article](https://spritely.institute/news/make-a-game-with-hoot-for-the-lisp-game-jam.html))
 37. **Distributed System Daemons: More Than a Twinkle in Goblins'
     Eye** — Sims, 2024-05-09 — Announces the NLnet-funded Shepherd port
@@ -487,60 +493,60 @@ archive listing only (see coverage statement).
     so far," with the ambition of Guix as an object-capability OS and
     distributed Shepherds; also notes NLnet grants for Whippet and
     Pre-Scheme. (Slug retains its December-2023 drafting date.)
-    *Matters: Goblins tested at the operating-system layer.*
+    _Matters: Goblins tested at the operating-system layer._
     ([article](https://www.spritely.institute/news/spritely-nlnet-grants-december-2023.html))
 38. **Guile Hoot v0.4.1 released!** — Thompson, 2024-04-30 —
     Maintenance release fixing 0.4.0 miscompilations (tailify pass),
     FFI and linker bugs; adds `(hoot web-server)` and compiler flags.
-    *Matters: stabilises the compiler before the Spring jam.*
+    _Matters: stabilises the compiler before the Spring jam._
     ([article](https://www.spritely.institute/news/guile-hoot-v0-4-1-released.html))
 39. **Organizational changes at the Spritely Institute** —
     Lemmer-Webber, 2024-04-25 — Randy Farmer steps down as Executive
     Director (remains consultant/co-founder); Lemmer-Webber becomes
-    ED, Thompson CTO; full team listing. *Matters: the leadership
-    handover that set the current structure.*
+    ED, Thompson CTO; full team listing. _Matters: the leadership
+    handover that set the current structure._
     ([article](https://www.spritely.institute/news/organizational-changes.html))
 40. **Spritely Goblins v0.13.0: Object Persistence and Easier IO!** —
     Lemmer-Webber, 2024-04-23 — Introduces **Aurie**, Goblins'
     persistence system (version-tagged self-portraits via
     `define-actor`, transactional deltas), and the `^io` actor wrapping
     IO resources so programs avoid programming in raw Fibers.
-    *Matters: long-lived Goblins worlds can survive restarts and
-    evolve — the persistence line that Bloblin later completes.*
+    _Matters: long-lived Goblins worlds can survive restarts and
+    evolve — the persistence line that Bloblin later completes._
     ([article](https://www.spritely.institute/news/spritely-goblins-v0-13-0-object-persistence-and-easier-io.html))
 41. **Guile Hoot v0.4.0 released!** — Thompson, 2024-04-09 —
     User-defined modules (R6RS `library` first), the standard library
     reorganised into importable modules, a project template, complex
     arithmetic, Wasm exceptions; 54 of 57 Scheme benchmarks running.
-    *Matters: multi-file programs make Hoot usable for real projects.*
+    _Matters: multi-file programs make Hoot usable for real projects._
     ([article](https://www.spritely.institute/news/guile-hoot-v0-4-0-released.html))
 42. **How to Draw an Owl with the Spritely Institute** — tessa,
     2024-04-01 — April Fools' two-step owl-drawing meme post.
-    *Matters: culture/fun as deliberate community strategy.*
+    _Matters: culture/fun as deliberate community strategy._
     ([article](https://www.spritely.institute/news/how-to-draw-an-owl-with-the-spritely-institute.html))
 43. **LWN on Spritely** — Institute, 2024-02-29 — Pointer to LWN.net's
     piece on Spritely's long-term distributed-computing paradigm and
-    OCapN's role. *Matters: mainstream free-software press attention.*
+    OCapN's role. _Matters: mainstream free-software press attention._
     ([article](https://www.spritely.institute/news/lwn-on-spritely.html))
 44. **[Contract] Goblins (Scheme/Wasm) Integration Engineer** —
-    Institute, 2024-02-26 — Remote 20 hrs/wk contract ad. *Matters:
-    targeted investment in the Goblins×Hoot integration point.*
+    Institute, 2024-02-26 — Remote 20 hrs/wk contract ad. _Matters:
+    targeted investment in the Goblins×Hoot integration point._
     ([article](https://www.spritely.institute/news/contract-goblins-scheme-wasm-integration-engineer.html))
 45. **Developer Community Forum open for everyone!** — Farmer,
     2024-02-02 — The community forum goes public; support expectations
-    set (bugs to trackers, questions to the forum). *Matters: Spritely's
-    public, searchable community home.*
+    set (bugs to trackers, questions to the forum). _Matters: Spritely's
+    public, searchable community home._
     ([article](https://www.spritely.institute/news/developer-community-forum-open-for-everyone.html))
 46. **Guile Hoot v0.3.0 released!** — Thompson, 2024-01-30 — Partial
     module system (prelude split into importable libraries), hash
     tables incl. weak-key, debugging aids; over half the Scheme
     benchmarks passing; Firefox 121 enables Wasm tail calls.
-    *Matters: the prerequisite step to user modules in 0.4.0.*
+    _Matters: the prerequisite step to user modules in 0.4.0._
     ([article](https://www.spritely.institute/news/guile-hoot-v0-3-0-released.html))
 47. **Meet us at GuixDays & FOSDEM!** — Farmer, 2024-01-23 — FOSDEM
     2024 invitation (Hoot and unified-vision talks); openly solicits
-    partnership and joint-funding conversations. *Matters: Spritely
-    positioning inside the Guix/Guile community.*
+    partnership and joint-funding conversations. _Matters: Spritely
+    positioning inside the Guix/Guile community._
     ([article](https://www.spritely.institute/news/fosdem2024.html))
 48. **Spritely Goblins v0.12.0 Released: Two new netlayers join the
     OCapN family and more!** — Tallon, 2024-01-22 — Introduces
@@ -548,42 +554,42 @@ archive listing only (see coverage statement).
     unauthenticated — "the relay has the power to snoop and modify")
     and the **TCP+TLS netlayer** (self-signed certs, faster than Tor);
     CapTP hardening (crossed-hellos mitigation, handoff certificate
-    verification, test-suite integration). *Matters: the starting point
+    verification, test-suite integration). _Matters: the starting point
     of the relay story §6 completes — and an unusually honest
-    "don't trust this yet" release.*
+    "don't trust this yet" release._
     ([article](https://www.spritely.institute/news/spritely-goblins-v0-12-0-released-two-new-netlayers-join-the-ocapn-family-and-more.html))
 
 ### 2023
 
 49. **[EFF] Spritely and Veilid: Exciting Projects Building the
     Peer-to-Peer Web** — Institute, 2023-12-15 — Pointer to the EFF's
-    joint profile of Spritely and Veilid. *Matters: civil-society
+    joint profile of Spritely and Veilid. _Matters: civil-society
     endorsement beyond the Lisp world (and a Spritely–Veilid pairing
-    worth noting for our survey).*
+    worth noting for our survey)._
     ([article](https://www.spritely.institute/news/eff-spritely-and-veilid-exciting-projects-building-the-peer-to-peer-web.html))
 50. **Scheme in Scheme on Wasm in the browser** — Thompson, 2023-12-15
     — Building a browser REPL for Hoot from a metacircular Scheme
     interpreter (SICP-style) because Hoot didn't yet expose Guile's
-    evaluator in Wasm. *Matters: capability-secure in-browser Scheme
-    REPL; the path to try-it-live tooling.*
+    evaluator in Wasm. _Matters: capability-secure in-browser Scheme
+    REPL; the path to try-it-live tooling._
     ([article](https://www.spritely.institute/news/scheme-in-scheme-on-wasm-in-the-browser.html))
 51. **Having a Hoot at the Lisp Game Jam: A Tale of Two Daves** —
     tessa, 2023-12-07 — Interview with David Wilson (Cybersol) and Dave
     Thompson (Strigoform) on building jam games with Hoot 0.1.0 and
-    working around its limits. *Matters: the jam as real-world
-    stress-test driving Hoot's FFI.*
+    working around its limits. _Matters: the jam as real-world
+    stress-test driving Hoot's FFI._
     ([article](https://www.spritely.institute/news/having-a-hoot-at-the-lisp-game-jam-a-tale-of-two-daves.html))
 52. **Building interactive web pages with Guile Hoot** — Thompson,
     2023-11-30 — Tutorial: with Wasm GC, Hoot-compiled Scheme calls the
     DOM directly via the new FFI; builds from hello-world to a full
     to-do app with a React-like virtual-DOM layer, almost entirely in
-    Scheme. *Matters: proof Hoot builds real interactive front-ends.*
+    Scheme. _Matters: proof Hoot builds real interactive front-ends._
     ([article](https://www.spritely.institute/news/building-interactive-web-pages-with-guile-hoot.html))
 53. **Guile Hoot v0.2.0 released!** — Thompson, 2023-11-30 —
     Near-complete R7RS-small, the foreign function interface,
     user-defined record types, a better tree-shaker; Chrome 119 ships
-    Wasm GC + tail calls. *Matters: the FFI release — Hoot reaches the
-    DOM and host APIs.*
+    Wasm GC + tail calls. _Matters: the FFI release — Hoot reaches the
+    DOM and host APIs._
     ([article](https://www.spritely.institute/news/guile-hoot-v0-2-0-released.html))
 54. **Introducing OCapN, interoperable capabilities over the network**
     — Tallon, 2023-11-16 — The OCapN launch post: NLnet-funded
@@ -592,57 +598,57 @@ archive listing only (see coverage statement).
     Netlayers, Locators), an interop test suite (already passed by an
     independent Haskell implementation), and both Goblins
     implementations passing it; eventual IETF/W3C ambition stated.
-    *Matters: Goblins' internal protocol becomes a multi-implementation
-    effort — the founding document of the OCapN programme.*
+    _Matters: Goblins' internal protocol becomes a multi-implementation
+    effort — the founding document of the OCapN programme._
     ([article](https://www.spritely.institute/news/introducing-ocapn-interoperable-capabilities-over-the-network.html))
 55. **Guile Hoot v0.1.0 released!** — Thompson, 2023-10-16 — First
     official Hoot release: Guile's Scheme-to-Wasm backend plus the
     self-contained Scheme-written Wasm toolchain; kilobyte-scale
     binaries on host Wasm GC; explicitly no module system, records, or
-    FFI yet. *Matters: a dynamic language becomes a first-class Wasm
-    citizen.*
+    FFI yet. _Matters: a dynamic language becomes a first-class Wasm
+    citizen._
     ([article](https://www.spritely.institute/news/guile-hoot-v0-1-0-released.html))
 56. **Scheme in the browser: A Hoot of a tale** — Thompson, 2023-10-10
     — First end-to-end Hoot proof: Wireworld reimplemented in ~70 lines
     of Scheme (28 KiB gzipped), and the design choices explained
     (Wasm GC over a shipped collector, tail calls, in-Guile Wasm
-    interpreter for REPL-driven development). *Matters: the "it
-    actually works" moment before 0.1.0.*
+    interpreter for REPL-driven development). _Matters: the "it
+    actually works" moment before 0.1.0._
     ([article](https://www.spritely.institute/news/scheme-wireworld-in-browser.html))
 57. **[Hiring] Open Source Developer Relations Manager** — Institute,
     2023-09-29 — DevRel hire to support the Goblins ecosystem; more
-    roles promised as funding permits. *Matters: the shift from pure
-    R&D toward community growth.*
+    roles promised as funding permits. _Matters: the shift from pure
+    R&D toward community growth._
     ([article](https://www.spritely.institute/news/hiring-open-source-developer-relations-manager.html))
 58. **Lisp Game Jam – "Wireworld" – Hoot's low level Wasm tooling in
     action** — Lemmer-Webber, 2023-06-12 — A WASM-4 Wireworld cartridge
     built with Hoot's low-level assembly tools; argues Scheme
     generating Wasm beats hand-written WAT on readability, correctness,
-    and iteration speed. *Matters: Hoot's low-level layers as a
-    "programs that write programs" toolkit.*
+    and iteration speed. _Matters: Hoot's low-level layers as a
+    "programs that write programs" toolkit._
     ([article](https://www.spritely.institute/news/hoot-wireworld-live-in-browser.html))
 59. **Lisp Game Jam – "Fantasary" – prototyping an object world
     (& TCP netlayer)** — Thompson, 2023-06-07 — Fantasary (§3.7): a
     text virtual world built to test a prototype Simple TCP netlayer,
     petnames, and the unum pattern; candid about open problems — NAT
     traversal, 4,124-character sturdyref URIs from encoded certs, X.509
-    as a poor fit. *Matters: the testbed for the TCP+TLS netlayer that
-    shipped in 0.12.0.*
+    as a poor fit. _Matters: the testbed for the TCP+TLS netlayer that
+    shipped in 0.12.0._
     ([article](https://www.spritely.institute/news/lisp-game-jam-fantasary-prototyping-an-object-world-tcp-netlayer.html))
 60. **Directly compiling Scheme to WebAssembly: lambdas, recursion,
     iteration!** — Lemmer-Webber, 2023-05-30 — Three months after the
     Guile-on-Wasm announcement, Hoot compiles Scheme procedures
     directly to Wasm (factorial in 970 bytes; a tail-recursive loop
     benchmarked ~5× native Guile, with caveats stated); roadmap:
-    R7RS-small, then Goblins in the browser. *Matters: first public
-    evidence direct Scheme-to-Wasm could be tiny and fast.*
+    R7RS-small, then Goblins in the browser. _Matters: first public
+    evidence direct Scheme-to-Wasm could be tiny and fast._
     ([article](https://www.spritely.institute/news/scheme-to-wasm-lambdas-recursion.html))
 61. **Spritely Goblins v0.10, for Guile and Racket!** — Lemmer-Webber,
     2023-01-30 — Guile and Racket Goblins interoperate over OCapN for
     the first time (goblin-chat across both), and Guile becomes the
-    primary implementation. *Matters: cross-implementation interop
+    primary implementation. _Matters: cross-implementation interop
     proves OCapN is a protocol, not an implementation detail — the
-    archive's founding release.*
+    archive's founding release._
     ([article](https://spritely.institute/news/spritely-goblins-v0-10-for-guile-and-racket.html))
 
 ### Themes across the archive
@@ -689,7 +695,7 @@ grant-paced: each NLnet grant maps to a visible deliverable chain
 drive added a second, community leg ($80k goal publicly met). The team
 is small (three named engineering leads plus a handful of staff and
 contractors), which is both the strength (coherence) and the risk
-(concentration: Tallon alone is Goblins lead *and* OCapN spec author).
+(concentration: Tallon alone is Goblins lead _and_ OCapN spec author).
 
 **Contribution policy — the AI question.** Confirmed, with a scope
 nuance. The **OCapN project's** README states the prohibition on
@@ -726,7 +732,7 @@ general-case fallback, and Spritely is blunt that relays are
 "unsatisfying compared to making direct connections" but necessary.
 
 The history matters. Goblins 0.12 (January 2024) shipped **prelay**, a
-*federated* relay that was deliberately named "pre-" because, although
+_federated_ relay that was deliberately named "pre-" because, although
 the peer↔relay legs were encrypted in transit, the relay could read and
 modify the CapTP traffic passing through it — it was unauthenticated
 and not end-to-end encrypted, and Spritely said so in the manual and
@@ -751,7 +757,7 @@ only ciphertext it cannot read, modify undetectably, or replay.**
 - **Federation instead of a platform.** A relay server exposes two
   actors: a **Controller** (a client steers its own connections) and an
   **Endpoint** (named in the peer's locator, publicly enlivenable).
-  Two peers homed on *different* relays still connect: the initiating
+  Two peers homed on _different_ relays still connect: the initiating
   relay enlivens the remote relay's Endpoint, the two relays spawn
   paired forwarding objects (`rarelay`/`rbrelay`), and the destination
   relay calls the destination peer's registered incoming object. No
@@ -771,14 +777,14 @@ only ciphertext it cannot read, modify undetectably, or replay.**
   designator key), **replay protection**, and **perfect forward
   secrecy** from per-session ephemeral keys.
 - **Composability.** The encryption is not relay-specific: Noise is a
-  *meta-netlayer* that wraps any other netlayer, so the same E2EE +
+  _meta-netlayer_ that wraps any other netlayer, so the same E2EE +
   mutual authentication can be layered over TCP+TLS or even Tor
   (which authenticates only the outbound direction to an onion service;
   Noise adds bidirectional authentication).
 
 **What the relay can and cannot see.** It cannot read message contents,
 cannot undetectably modify them, and cannot replay them. It necessarily
-*can* see connection metadata: which Endpoint/designator is being
+_can_ see connection metadata: which Endpoint/designator is being
 contacted, when, how much traffic, and the connecting peers' network
 addresses on their home legs (and, in federation, the other relay).
 Spritely claims **no anonymity property** for the relay — that is Tor's
@@ -806,7 +812,7 @@ implementation writes its own Noise.)
   backend is pluggable.
 - **How OCapN uses it.** The relay/Noise netlayer uses the **XK**
   pattern: the responder's static public key is known to the initiator
-  in advance — it *is* the designator in the peer's OCapN locator — and
+  in advance — it _is_ the designator in the peer's OCapN locator — and
   the initiator transmits its own static key during the handshake, so
   both sides end up mutually authenticated. XK's three-message
   handshake mixes ephemeral and static DH operations to produce two
@@ -825,7 +831,7 @@ implementation writes its own Noise.)
 
 ### 6.4 How the relay actually works, end to end
 
-1. Each peer registers an *incoming* object with its home relay's
+1. Each peer registers an _incoming_ object with its home relay's
    Controller. Its sturdyrefs name the relay's **Endpoint** object plus
    its Noise static key (the locator designator).
 2. To connect, the initiator's CapTP enlivening asks its relay's
@@ -858,16 +864,16 @@ implementation writes its own Noise.)
 
 ### 6.5 Comparisons: where each relay/rendezvous design puts trust
 
-| System | What the relay/route is | Can it read content? | Metadata it learns | Who runs it / federation | Anonymity aim |
-|---|---|---|---|---|---|
-| **Spritely E2EE relay (2026)** | Federated, stateless OCapN forwarder; Noise XK between peers | No — ciphertext only; modification/replay prevented | Peer designators/endpoints contacted, timing, volume, client IPs on home legs | Anyone; relays interoperate via OCapN itself; Guix service planned | None claimed |
-| **Spritely prelay (2024)** | Same federation shape, no E2EE | **Yes — could snoop and modify** (documented) | Everything above plus plaintext | Anyone | None |
-| **iroh relay** | Home-relay + fallback relay for QUIC endpoints; hole punching attempted first, relay is fallback | No — payload is QUIC/TLS 1.3 between endpoints | EndpointIds of both sides, IPs, timing, volume | n0's public relays or self-run; per-endpoint home relay | None claimed (endpoint IDs are public keys, linkable) |
-| **Tor onion services** | Rendezvous over 6-hop circuits via introduction/rendezvous points | No — onion encryption end to end | Rendezvous point sees a rendezvous happening, not the parties' identities (by design) | Volunteer relay network; rendezvous points are chosen relays | **Yes — core goal**, at high latency cost |
-| **Veilid** | Safety routes (relay hops, DHT-mediated) and private routes (peer-provided route blobs) | No — route traffic is encrypted to the destination | Compiled-route relays see fragments; design minimises any single node's knowledge | Any node in the public DHT network | **Yes** — route privacy is the product |
-| **Nostr relays** | Store-and-forward servers holding signed events | Public events: yes, plaintext by design; DMs: NIP-44 ciphertext, but relay stores them | Nearly everything: authors, recipients (gift-wrap mitigates), timing, social graph | Anyone; users multi-home across relays | No (pseudonymity only) |
-| **Matrix federation** | Homeservers that host rooms and replicate room state | E2EE rooms: content no; but the server holds room state, membership, and metadata, and *is* the user's home | Extensive — it is the user's server, not a transit hop | Federation of homeservers; users are bound to their server's data custody | No |
-| **TURN (WebRTC)** | Generic media/data relay with credentials | No for DTLS-SRTP media (E2E between peers) | Both IPs, ports, timing, volume; allocation credentials identify the user to the operator | Usually the app operator's own servers; not meaningfully federated | No |
+| System                         | What the relay/route is                                                                          | Can it read content?                                                                                        | Metadata it learns                                                                        | Who runs it / federation                                                  | Anonymity aim                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------- |
+| **Spritely E2EE relay (2026)** | Federated, stateless OCapN forwarder; Noise XK between peers                                     | No — ciphertext only; modification/replay prevented                                                         | Peer designators/endpoints contacted, timing, volume, client IPs on home legs             | Anyone; relays interoperate via OCapN itself; Guix service planned        | None claimed                                          |
+| **Spritely prelay (2024)**     | Same federation shape, no E2EE                                                                   | **Yes — could snoop and modify** (documented)                                                               | Everything above plus plaintext                                                           | Anyone                                                                    | None                                                  |
+| **iroh relay**                 | Home-relay + fallback relay for QUIC endpoints; hole punching attempted first, relay is fallback | No — payload is QUIC/TLS 1.3 between endpoints                                                              | EndpointIds of both sides, IPs, timing, volume                                            | n0's public relays or self-run; per-endpoint home relay                   | None claimed (endpoint IDs are public keys, linkable) |
+| **Tor onion services**         | Rendezvous over 6-hop circuits via introduction/rendezvous points                                | No — onion encryption end to end                                                                            | Rendezvous point sees a rendezvous happening, not the parties' identities (by design)     | Volunteer relay network; rendezvous points are chosen relays              | **Yes — core goal**, at high latency cost             |
+| **Veilid**                     | Safety routes (relay hops, DHT-mediated) and private routes (peer-provided route blobs)          | No — route traffic is encrypted to the destination                                                          | Compiled-route relays see fragments; design minimises any single node's knowledge         | Any node in the public DHT network                                        | **Yes** — route privacy is the product                |
+| **Nostr relays**               | Store-and-forward servers holding signed events                                                  | Public events: yes, plaintext by design; DMs: NIP-44 ciphertext, but relay stores them                      | Nearly everything: authors, recipients (gift-wrap mitigates), timing, social graph        | Anyone; users multi-home across relays                                    | No (pseudonymity only)                                |
+| **Matrix federation**          | Homeservers that host rooms and replicate room state                                             | E2EE rooms: content no; but the server holds room state, membership, and metadata, and _is_ the user's home | Extensive — it is the user's server, not a transit hop                                    | Federation of homeservers; users are bound to their server's data custody | No                                                    |
+| **TURN (WebRTC)**              | Generic media/data relay with credentials                                                        | No for DTLS-SRTP media (E2E between peers)                                                                  | Both IPs, ports, timing, volume; allocation credentials identify the user to the operator | Usually the app operator's own servers; not meaningfully federated        | No                                                    |
 
 Three contrasts Drew should take away:
 
@@ -877,23 +883,23 @@ Three contrasts Drew should take away:
    The differences are in what rides on top and how federation works —
    iroh relays are located via DNS/home-relay config and forward QUIC
    between EndpointIds, with hole punching as the preferred path and
-   the relay as fallback; Spritely's relays are *addressed as OCapN
-   objects* and federate by speaking OCapN to each other, and the
+   the relay as fallback; Spritely's relays are _addressed as OCapN
+   objects_ and federate by speaking OCapN to each other, and the
    relay is a first-class netlayer rather than a fallback (there is no
    hole-punching attempt in the Goblins relay path; the libp2p netlayer
    is where Goblins gets hole punching). Spritely also composes
-   encryption as a separate meta-netlayer usable over *any* transport,
+   encryption as a separate meta-netlayer usable over _any_ transport,
    where iroh bakes TLS into QUIC.
 2. **Against Tor and Veilid, the Spritely relay is deliberately
    weaker on privacy and stronger on simplicity/latency.** Tor and
-   Veilid spend hops and complexity to hide *who is talking to whom*
-   from the infrastructure; Spritely's relay hides only *what is said*.
+   Veilid spend hops and complexity to hide _who is talking to whom_
+   from the infrastructure; Spritely's relay hides only _what is said_.
    In Spritely's own stack those are different netlayers for different
    threat models (onion for anonymity, relay for reachability), which
    is the right way to read the design: the relay does not compete with
    Tor, it complements it.
 3. **Against Nostr/Matrix, the contrast is custody.** Nostr relays
-   store your events; Matrix servers store your rooms and *are* your
+   store your events; Matrix servers store your rooms and _are_ your
    identity's home. Spritely's relay stores nothing and knows no
    accounts — the ActivityPub lesson applied to infrastructure. The
    cost is the mirror image: no store-and-forward, so an offline peer
@@ -910,7 +916,7 @@ at most one live connection per peer pair, so that CapTP above it can
 assume authenticated, non-replayable delivery and stable object
 identity. Prelay violated the "secure" clause in spirit (transport
 encryption but a trusted middle); the Noise composition restores it
-*without changing CapTP or the relay's federation machinery* — the
+_without changing CapTP or the relay's federation machinery_ — the
 meta-netlayer pattern (a netlayer defined over another netlayer) is
 doing the architectural work. Sturdyrefs survive unchanged: the
 locator gains a Noise-key-bearing designator and a relay Endpoint, and
@@ -924,11 +930,11 @@ Spritely shipped a timeout workaround in the game and flags a Goblins
 fix as future work.
 
 **Estate note (one paragraph).** For our own transport programme, the
-transferable ideas are: (a) encryption as a *composable layer* keyed by
+transferable ideas are: (a) encryption as a _composable layer_ keyed by
 the locator's designator, separable from the forwarding mechanism;
 (b) statelessness as an explicit anti-custody design goal for relay
 infrastructure, learned from federation's mistakes; (c) relays
-addressed and federated *in the same capability system they serve*,
+addressed and federated _in the same capability system they serve_,
 rather than as external configured infrastructure; and (d) the honest
 metadata posture — Spritely's relay, like iroh's, does not pretend to
 anonymity, and says what the relay can see. The non-transferable part

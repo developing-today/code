@@ -34,8 +34,7 @@ export default {
     let jurisdiction = url.searchParams.get("jurisdiction") ?? "";
     let routed = url.searchParams.get("routed");
     let pathname = url.pathname;
-    const prefix =
-      pathname.match(/^\/__harness\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)(\/.*)?$/);
+    const prefix = pathname.match(/^\/__harness\/([^/]+)\/([^/]+)\/([^/]+)\/([^/]+)(\/.*)?$/);
     if (prefix) {
       name = prefix[1];
       binding = prefix[2];
@@ -51,10 +50,7 @@ export default {
     // request's own upgrade state — so the DO would see a plain
     // GET and answer 400 websocket_required.
     if ((req.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
-      const forwarded = new Request(
-        "https://do" + pathname,
-        req as unknown as RequestInit,
-      );
+      const forwarded = new Request("https://do" + pathname, req as unknown as RequestInit);
       forwarded.headers.set(HDR_BINDING, binding);
       forwarded.headers.set(HDR_JURISDICTION, jurisdiction);
       if (iroh !== null) forwarded.headers.set(HDR_IROH, iroh);

@@ -4,14 +4,14 @@ Source: https://github.com/developing-today/code/blob/main/nixos/services/id-mai
 
 This chapter documents the ID mail Worker **as it stands**: the production mail surface for ID, in `nixos/services/id-mail/worker/`. It is a different package, with a different status, from the hosted edition in [The hosted Worker API](hosted-worker.md): that Worker is a local-only scaffold that is not deployed, while this one is the Worker the live ID node's mail wiring points at.
 
-| Item | Value |
-|---|---|
-| Worker name | `mail` (the `worker` key of `config.json`; the package name in `package.json` is also `mail`) |
-| Source | `nixos/services/id-mail/worker/` — entry point `src/index.js`, one transport in `src/transports/email.js`, the rate limiter in `src/limiter.js` |
-| Compatibility date | `2026-10-01` (`compatibilityDate` in `config.json`) |
-| `workers.dev` | `true` (`workersDev` in `config.json`) |
-| Retires | `id-mail` (the `retire` list in `config.json`; see "Deployment" below for which path acts on it) |
-| Sender | `id@security.cab` (the only entry in `senders`, and the only address either caller may send from) |
+| Item               | Value                                                                                                                                           |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker name        | `mail` (the `worker` key of `config.json`; the package name in `package.json` is also `mail`)                                                   |
+| Source             | `nixos/services/id-mail/worker/` — entry point `src/index.js`, one transport in `src/transports/email.js`, the rate limiter in `src/limiter.js` |
+| Compatibility date | `2026-10-01` (`compatibilityDate` in `config.json`)                                                                                             |
+| `workers.dev`      | `true` (`workersDev` in `config.json`)                                                                                                          |
+| Retires            | `id-mail` (the `retire` list in `config.json`; see "Deployment" below for which path acts on it)                                                |
+| Sender             | `id@security.cab` (the only entry in `senders`, and the only address either caller may send from)                                               |
 
 There is **no `wrangler.toml`** in this package. The configuration of record is `config.json`, consumed two ways: `cloudflare.config.ts` builds the Worker definition for the pinned `cf` CLI from it, and `deploy.mjs` generates a Wrangler configuration (`.generated/wrangler.json`) from it for the operator deploy path. A reader looking for a Wrangler file to edit will not find one; `config.json` is the file to change, and [Keeping this book current](../development/keeping-this-book-current.md) applies to it.
 
@@ -31,12 +31,12 @@ The template check is the Worker's part of the confirmation design: the producti
 
 `config.json` declares four routes, each attached as a custom domain by the generated configuration:
 
-| Route | Notes |
-|---|---|
-| `mail.security.cab` | The route the live host configuration uses: `nixos/hosts/default.nix` sets `services.id-mail.workerUrl = "https://mail.security.cab"`. |
-| `mail.id.security.cab` | Also declared in `config.json`. |
-| `id-mail.security.cab` | Also declared in `config.json`. |
-| `mail-id.security.cab` | Also declared in `config.json`. |
+| Route                  | Notes                                                                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `mail.security.cab`    | The route the live host configuration uses: `nixos/hosts/default.nix` sets `services.id-mail.workerUrl = "https://mail.security.cab"`. |
+| `mail.id.security.cab` | Also declared in `config.json`.                                                                                                        |
+| `id-mail.security.cab` | Also declared in `config.json`.                                                                                                        |
+| `mail-id.security.cab` | Also declared in `config.json`.                                                                                                        |
 
 All four routes reach the same Worker and the same single handler: the handler does not branch on the host. There is exactly one HTTP route in the code — `POST` on any path — specified under "The request" below. The promotion workflow's health probe (see "Deployment") POSTs to each configured route and expects the unauthenticated `401` described there.
 
@@ -54,13 +54,13 @@ Content-Type: application/json
 
 The toy values above are invented; the subject and body shape are the first configured template with a six-digit code.
 
-| Field | Shape | Rules (enforced in `src/transports/email.js` unless noted) |
-|---|---|---|
-| `to` | string, or array of strings | 1 to the caller's `maxRecipients` addresses. Each address must match the transport's address pattern, be at most 254 characters, and contain no line break. Rate-limit keys are the lowercased addresses. |
-| `subject` | string | One line, at most 200 characters. |
-| `text` | string | At most 10,000 characters. |
-| `from` | string, optional | Defaults to the first address in the caller's grant. Must be one line and must be in the caller's grant `from` list, or the request is refused with `403`. |
-| `transport` | string, optional | Defaults to `defaultTransport` from the configuration (`email`). Must be an enabled transport the caller is granted, or the request is refused (`400` unknown, `403` not granted). `email` is the only transport that exists. |
+| Field       | Shape                       | Rules (enforced in `src/transports/email.js` unless noted)                                                                                                                                                                    |
+| ----------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `to`        | string, or array of strings | 1 to the caller's `maxRecipients` addresses. Each address must match the transport's address pattern, be at most 254 characters, and contain no line break. Rate-limit keys are the lowercased addresses.                     |
+| `subject`   | string                      | One line, at most 200 characters.                                                                                                                                                                                             |
+| `text`      | string                      | At most 10,000 characters.                                                                                                                                                                                                    |
+| `from`      | string, optional            | Defaults to the first address in the caller's grant. Must be one line and must be in the caller's grant `from` list, or the request is refused with `403`.                                                                    |
+| `transport` | string, optional            | Defaults to `defaultTransport` from the configuration (`email`). Must be an enabled transport the caller is granted, or the request is refused (`400` unknown, `403` not granted). `email` is the only transport that exists. |
 
 The whole body is capped at 64 KiB (`MAX_BODY_BYTES` = 64 × 1024 in `src/index.js`): a body that declares or streams more than that is refused with `413` before it is buffered whole or parsed (#11331).
 
@@ -76,10 +76,10 @@ Authentication is a bearer token per caller, checked against the `CALLERS` secre
 
 The callers declared in `config.json`:
 
-| Caller | Bitwarden token name (`tokenKey`) | Mode | `from` | `maxRecipients` |
-|---|---|---|---|---|
-| `amd` | `cloudflare.id-mail-worker-token` | `template` | `id@security.cab` | 1 |
-| `admin` | `cloudflare.id-mail-admin-token` | `free` | `id@security.cab` | 5 |
+| Caller  | Bitwarden token name (`tokenKey`) | Mode       | `from`            | `maxRecipients` |
+| ------- | --------------------------------- | ---------- | ----------------- | --------------- |
+| `amd`   | `cloudflare.id-mail-worker-token` | `template` | `id@security.cab` | 1               |
+| `admin` | `cloudflare.id-mail-admin-token`  | `free`     | `id@security.cab` | 5               |
 
 - `template` mode (`amd`, the production node's caller): subject and body must match a configured template, as described above.
 - `free` mode (`admin`): any subject and body that pass the general field checks may be sent, to up to five recipients.
@@ -90,24 +90,24 @@ Grants are validated twice: `deploy.mjs` validates `config.json` before deployin
 
 The Worker reads four bindings, declared in `cloudflare.config.ts` and mirrored in the Wrangler configuration `deploy.mjs` generates:
 
-| Binding | Type | Content |
-|---|---|---|
-| `MAIL_CONFIG` | Text (plain-text var in the generated Wrangler config) | JSON built from `config.json` by both config paths, containing exactly `defaultTransport`, `transports`, `limits` and `templates`. Caller definitions and routes are **not** in it. |
-| `CALLERS` | Secret | JSON object keyed by caller name: `{sha256, transports}` per caller, where `transports` maps a transport name to its grant `{mode, from, maxRecipients}`. Set by `wrangler secret put CALLERS` on the operator deploy path; inherited from the current active version on the workflow publish path. |
-| `EMAIL` | Send-email binding | `allowedSenderAddresses` is the `senders` list from `config.json`: `id@security.cab` only. |
-| `LIMITER` | Durable Object namespace | The `Limiter` class exported from `src/limiter.js`, in the same Worker. Migration tag `v1`, SQLite-backed (`new_sqlite_classes = ["Limiter"]` in the generated config). |
+| Binding       | Type                                                   | Content                                                                                                                                                                                                                                                                                             |
+| ------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MAIL_CONFIG` | Text (plain-text var in the generated Wrangler config) | JSON built from `config.json` by both config paths, containing exactly `defaultTransport`, `transports`, `limits` and `templates`. Caller definitions and routes are **not** in it.                                                                                                                 |
+| `CALLERS`     | Secret                                                 | JSON object keyed by caller name: `{sha256, transports}` per caller, where `transports` maps a transport name to its grant `{mode, from, maxRecipients}`. Set by `wrangler secret put CALLERS` on the operator deploy path; inherited from the current active version on the workflow publish path. |
+| `EMAIL`       | Send-email binding                                     | `allowedSenderAddresses` is the `senders` list from `config.json`: `id@security.cab` only.                                                                                                                                                                                                          |
+| `LIMITER`     | Durable Object namespace                               | The `Limiter` class exported from `src/limiter.js`, in the same Worker. Migration tag `v1`, SQLite-backed (`new_sqlite_classes = ["Limiter"]` in the generated config).                                                                                                                             |
 
 The `MAIL_CONFIG` values as configured today, from `config.json`:
 
-| Key | Value |
-|---|---|
-| `defaultTransport` | `email` |
-| `transports` | `["email"]` |
-| `limits.windowSeconds` | `60` |
-| `limits.callerPerWindow` | `60` |
-| `limits.recipientPerWindow` | `5` |
-| `templates[0]` | subject `id: confirm your address`; body `Your code is {code}. It works for 15 minutes.` plus a trailing newline |
-| `templates[1]` | subject `id: sign-in code`; body as above |
+| Key                         | Value                                                                                                            |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `defaultTransport`          | `email`                                                                                                          |
+| `transports`                | `["email"]`                                                                                                      |
+| `limits.windowSeconds`      | `60`                                                                                                             |
+| `limits.callerPerWindow`    | `60`                                                                                                             |
+| `limits.recipientPerWindow` | `5`                                                                                                              |
+| `templates[0]`              | subject `id: confirm your address`; body `Your code is {code}. It works for 15 minutes.` plus a trailing newline |
+| `templates[1]`              | subject `id: sign-in code`; body as above                                                                        |
 
 A template matches when the subject is exactly equal and the body matches the template body with `{code}` replaced by exactly six digits (`\d{6}`) and nothing else changed. The two templates are the same two messages the native `code_mail` function builds; changing one side without the other breaks confirmation mail for the template-mode caller, in the `400 {"error":"template"}` shape below.
 
@@ -124,26 +124,26 @@ Order matters, and is deliberate in `src/index.js`:
 
 Every response is JSON of the form `{"error": ...}` except the success response. The complete set the handler and the email transport produce:
 
-| Status | `error` | Cause |
-|---|---|---|
-| `405` | `method not allowed` | Any method other than `POST`. Checked first, before configuration or authentication. |
-| `500` | `worker is not configured` | `CALLERS` or `MAIL_CONFIG` missing, unparseable, or with the wrong shape (#6970). |
-| `401` | `unauthorized` | No bearer token, or its digest matches no caller. |
-| `413` | `body is too large` | The body declares or streams more than 64 KiB (#11331). |
-| `400` | `body is not JSON` | The body does not parse as JSON. |
-| `400` | `body must be a JSON object` | The JSON value is not a plain object. |
-| `400` | `unknown transport` | `transport` names no enabled, implemented transport. |
-| `403` | `caller may not use this transport` | The transport exists but is not in the caller's grants. |
-| `400` | `to, subject, text and from must be strings` | A required field is missing or not a string (including a `to` that is neither a string nor a list of strings). |
-| `400` | `to, subject and from must be one line` | A line break in the subject, the sender, or a recipient. |
-| `400` | `to must have 1 to <maxRecipients> addresses` | Recipient count outside the caller's grant. |
-| `400` | `to must be email addresses` | An address fails the pattern or exceeds 254 characters. |
-| `400` | `subject or text is too long` | Subject over 200 or text over 10,000 characters. |
-| `403` | `caller may not send from that address` | `from` is not in the caller's grant. |
-| `400` | `template` | Template mode: subject/body match no configured template (including a code that is not exactly six digits). The error text is the single word `template`. |
-| `500` | `caller grant is misconfigured` | A grant reaches the transport with the wrong shape despite the boundary validation. |
-| `429` | `rate limited` | Caller or recipient window exhausted, in the order above. |
-| `502` | the send error's `code`, or `send_failed` | The send-email binding threw; the response also carries a `message` field with the error's message. A multi-recipient send that fails part-way has already delivered to the earlier recipients; the Worker does not roll back or report which recipients succeeded. |
+| Status | `error`                                       | Cause                                                                                                                                                                                                                                                               |
+| ------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `405`  | `method not allowed`                          | Any method other than `POST`. Checked first, before configuration or authentication.                                                                                                                                                                                |
+| `500`  | `worker is not configured`                    | `CALLERS` or `MAIL_CONFIG` missing, unparseable, or with the wrong shape (#6970).                                                                                                                                                                                   |
+| `401`  | `unauthorized`                                | No bearer token, or its digest matches no caller.                                                                                                                                                                                                                   |
+| `413`  | `body is too large`                           | The body declares or streams more than 64 KiB (#11331).                                                                                                                                                                                                             |
+| `400`  | `body is not JSON`                            | The body does not parse as JSON.                                                                                                                                                                                                                                    |
+| `400`  | `body must be a JSON object`                  | The JSON value is not a plain object.                                                                                                                                                                                                                               |
+| `400`  | `unknown transport`                           | `transport` names no enabled, implemented transport.                                                                                                                                                                                                                |
+| `403`  | `caller may not use this transport`           | The transport exists but is not in the caller's grants.                                                                                                                                                                                                             |
+| `400`  | `to, subject, text and from must be strings`  | A required field is missing or not a string (including a `to` that is neither a string nor a list of strings).                                                                                                                                                      |
+| `400`  | `to, subject and from must be one line`       | A line break in the subject, the sender, or a recipient.                                                                                                                                                                                                            |
+| `400`  | `to must have 1 to <maxRecipients> addresses` | Recipient count outside the caller's grant.                                                                                                                                                                                                                         |
+| `400`  | `to must be email addresses`                  | An address fails the pattern or exceeds 254 characters.                                                                                                                                                                                                             |
+| `400`  | `subject or text is too long`                 | Subject over 200 or text over 10,000 characters.                                                                                                                                                                                                                    |
+| `403`  | `caller may not send from that address`       | `from` is not in the caller's grant.                                                                                                                                                                                                                                |
+| `400`  | `template`                                    | Template mode: subject/body match no configured template (including a code that is not exactly six digits). The error text is the single word `template`.                                                                                                           |
+| `500`  | `caller grant is misconfigured`               | A grant reaches the transport with the wrong shape despite the boundary validation.                                                                                                                                                                                 |
+| `429`  | `rate limited`                                | Caller or recipient window exhausted, in the order above.                                                                                                                                                                                                           |
+| `502`  | the send error's `code`, or `send_failed`     | The send-email binding threw; the response also carries a `message` field with the error's message. A multi-recipient send that fails part-way has already delivered to the earlier recipients; the Worker does not roll back or report which recipients succeeded. |
 
 There are no other routes or responses: no health endpoint, no GET surface, and no path routing — a `GET` to any route is the `405` above, and a `POST` to any path is the send handler.
 
@@ -151,10 +151,10 @@ There are no other routes or responses: no health endpoint, no GET surface, and 
 
 The Worker is one of two ways confirmation mail can leave the host. The script `id-cloudflare-mail` (source `cloudflare-mail.sh`, run by `id serve --world-mail-command` with `ID_MAIL_TO`, `ID_MAIL_SUBJECT` and `ID_MAIL_BODY` set) selects on `ID_MAIL_TRANSPORT`:
 
-| Transport | Path | Credentials it reads |
-|---|---|---|
-| `rest` | POSTs `{from, to, subject, text}` directly to the Cloudflare Email Sending REST API, `https://api.cloudflare.com/client/v4/accounts/<account>/email/sending/send`, and checks the response reports success with no permanent bounces. `from` defaults to `id@security.cab` (`ID_MAIL_FROM` overrides). | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
-| `worker` | POSTs `{to, subject, text}` — no `from` — to `ID_MAIL_WORKER_URL` with the bearer token, discarding the response body; `curl -f` makes any non-success status a script failure. The Worker's grant supplies the sender. | `ID_MAIL_WORKER_URL`, `ID_MAIL_WORKER_TOKEN` |
+| Transport | Path                                                                                                                                                                                                                                                                                                   | Credentials it reads                            |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| `rest`    | POSTs `{from, to, subject, text}` directly to the Cloudflare Email Sending REST API, `https://api.cloudflare.com/client/v4/accounts/<account>/email/sending/send`, and checks the response reports success with no permanent bounces. `from` defaults to `id@security.cab` (`ID_MAIL_FROM` overrides). | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
+| `worker`  | POSTs `{to, subject, text}` — no `from` — to `ID_MAIL_WORKER_URL` with the bearer token, discarding the response body; `curl -f` makes any non-success status a script failure. The Worker's grant supplies the sender.                                                                                | `ID_MAIL_WORKER_URL`, `ID_MAIL_WORKER_TOKEN`    |
 
 The NixOS module `services.id-mail` chooses between them: its `transport` option is `rest` or `worker` (default `rest`), `workerUrl` is required for `worker`, and it renders the chosen pair plus the world admin token into the sops template `id-mail.env` for the primary instance. Its secrets are `cloudflare_email_sending_token`, `cloudflare_account_id` and `id_mail_worker_token`. The live host configuration (`nixos/hosts/default.nix`) sets `transport = "worker"` and `workerUrl = "https://mail.security.cab"`, so the production node sends through this Worker, as the `amd` template-mode caller, one recipient at a time.
 

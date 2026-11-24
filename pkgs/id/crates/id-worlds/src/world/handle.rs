@@ -314,6 +314,8 @@ impl WorldHandle {
             presence,
             active_subs: BTreeSet::new(),
             handled_requests: BTreeSet::new(),
+            pending_results: std::collections::VecDeque::new(),
+            fuel_retry_not_before: None,
             pending_forms: BTreeMap::new(),
             denied_subs: BTreeSet::new(),
             ticks: BTreeMap::new(),
@@ -1667,6 +1669,36 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped lease handoff response")?
+    }
+
+    /// Run a spill v2 automatic failover (design #5787 §1, #7572).
+    /// The actor plans from its journaled lease and the supplied
+    /// grantor-side pool and journals the revoke/grant pair in plan
+    /// order; the returned execution names the successor, its epoch,
+    /// and the grant position it must replay through before writing.
+    /// The host adapter must authenticate the caller and supply pool
+    /// observations gathered from the roster's readers.
+    pub async fn failover_write_lease(
+        &self,
+        pool: spill_pool::SpillPool,
+        journal_tip: u64,
+        max_catch_up_lag: u64,
+        term_ms: u64,
+    ) -> Result<spill_pool::FailoverExecution> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::FailoverWriteLease {
+                pool,
+                journal_tip,
+                max_catch_up_lag,
+                term_ms,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped lease failover response")?
     }
 
     /// Read a world snapshot.

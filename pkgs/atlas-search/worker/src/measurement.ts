@@ -377,9 +377,7 @@ function toClassReport(counters: ClassCounters): ClassReport {
     ...counters,
     skipRatio: counters.hits > 0 ? counters.skips / counters.hits : 0,
     serveRatio:
-      counters.skips + counters.revalidations > 0
-        ? counters.skips / (counters.skips + counters.revalidations)
-        : 0,
+      counters.skips + counters.revalidations > 0 ? counters.skips / (counters.skips + counters.revalidations) : 0,
   };
 }
 
@@ -477,8 +475,7 @@ export function formatMeasurementReport(report: MeasurementReport): string {
     for (const line of report.storage) {
       const quota = line.quotaBytes === null ? "no quota supplied" : `quota ${line.quotaBytes} bytes`;
       lines.push(
-        `  ${line.tenantId}: ${line.storedBytes} bytes stored, ${quota}` +
-          (line.overQuota ? " — over quota" : ""),
+        `  ${line.tenantId}: ${line.storedBytes} bytes stored, ${quota}` + (line.overQuota ? " — over quota" : ""),
       );
     }
   }

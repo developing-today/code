@@ -48,6 +48,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          extra-conf: |
+            # #774: when the Magic Nix Cache proxy throttles (HTTP 418),
+            # fall back to building from source instead of hard-failing
+            # the job on the narinfo fetch. fallback only, deliberately
+            # no accept-flake-config (root flake nixConfig needs cgroups).
+            fallback = true
 
       # Warm store: dependency-bump PRs are rare, but when they come the
       # build should not start from cold (#288).

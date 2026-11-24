@@ -86,37 +86,37 @@ function triagePacket(issue = 777): JsonObject {
   return p;
 }
 
-function enqueue(store: QueueStore, env: QueueEnv, packet: JsonObject, extra: JsonObject = {}): JsonObject {
-  return executeQueueVerb(store, "enqueue", { queue: "repo-health", packet, ...extra }, env);
+async function enqueue(store: QueueStore, env: QueueEnv, packet: JsonObject, extra: JsonObject = {}): Promise<JsonObject> {
+  return await executeQueueVerb(store, "enqueue", { queue: "repo-health", packet, ...extra }, env);
 }
 
-function claim(store: QueueStore, env: QueueEnv, extra: JsonObject = {}): JsonObject {
-  return executeQueueVerb(store, "claim", { worker: "worker-a", ...extra }, env);
+async function claim(store: QueueStore, env: QueueEnv, extra: JsonObject = {}): Promise<JsonObject> {
+  return await executeQueueVerb(store, "claim", { worker: "worker-a", ...extra }, env);
 }
 
-function verb(store: QueueStore, env: QueueEnv, name: string, req: JsonObject): JsonObject {
-  return executeQueueVerb(store, name, req, env);
+async function verb(store: QueueStore, env: QueueEnv, name: string, req: JsonObject): Promise<JsonObject> {
+  return await executeQueueVerb(store, name, req, env);
 }
 
 // ---------------------------------------------------------------------------
 // The validator (validate.rs port)
 // ---------------------------------------------------------------------------
 
-test("validator accepts a well-formed packet and refuses malformed ones with the native strings", () => {
+test("validator accepts a well-formed packet and refuses malformed ones with the native strings", async () => {
   const { store } = setup();
-  const good = verb(store, nativeEnv(), "validate", { packet: fixPacket() });
+  const good = await verb(store, nativeEnv(), "validate", { packet: fixPacket() });
   assert.equal(good["ok"], true);
   assert.deepEqual(good["errors"], []);
 
-  const notObject = verb(store, nativeEnv(), "validate", { packet: 42 });
+  const notObject = await verb(store, nativeEnv(), "validate", { packet: 42 });
   assert.deepEqual(notObject["errors"], ["packet: must be a JSON object"]);
 
-  const noPayload = verb(store, nativeEnv(), "validate", { packet: { title: "x" } });
+  const noPayload = await verb(store, nativeEnv(), "validate", { packet: { title: "x" } });
   assert.deepEqual(noPayload["errors"], ["packet.payload: required object (repo-task/v1 payload)"]);
 
   const badKind = fixPacket();
   (badKind["payload"] as JsonObject)["kind"] = "huge_fix";
-  const kindErrors = verb(store, nativeEnv(), "validate", { packet: badKind })["errors"] as string[];
+  const kindErrors = (await verb(store, nativeEnv(), "validate", { packet: badKind }))["errors"] as string[];
   assert.ok(
     kindErrors.includes(
       'payload.kind: must be one of ["ci_investigation", "feature_slice", "pr_shepherd", "second_pass", "small_fix", "triage"]',
@@ -124,24 +124,24 @@ test("validator accepts a well-formed packet and refuses malformed ones with the
   );
 
   const offScale = fixPacket(4242, {}, { priority: 15 });
-  const priErrors = verb(store, nativeEnv(), "validate", { packet: offScale })["errors"] as string[];
+  const priErrors = (await verb(store, nativeEnv(), "validate", { packet: offScale }))["errors"] as string[];
   assert.ok(priErrors.includes("packet.priority: 15 is not on the design scale [10, 20, 30, 40, 50, 70, 90]"));
 
   const farFuture = fixPacket(4242, {}, { not_before: "2030-01-01T00:00:00Z" });
-  const nbErrors = verb(store, nativeEnv(), "validate", { packet: farFuture })["errors"] as string[];
+  const nbErrors = (await verb(store, nativeEnv(), "validate", { packet: farFuture }))["errors"] as string[];
   assert.ok(nbErrors.some((e) => e.includes("more than 366 days in the future")));
 
   const badDate = fixPacket(4242, {}, { not_before: "2026-02-30T00:00:00Z" });
-  const dateErrors = verb(store, nativeEnv(), "validate", { packet: badDate })["errors"] as string[];
+  const dateErrors = (await verb(store, nativeEnv(), "validate", { packet: badDate }))["errors"] as string[];
   assert.ok(dateErrors.some((e) => e.includes("is not a valid RFC 3339 timestamp")));
 });
 
-test("validator enforces dedupe-key family, repo and identity agreement", () => {
+test("validator enforces dedupe-key family, repo and identity agreement", async () => {
   const { store } = setup();
   // A triage packet carrying a fix key: family not valid for kind.
   const wrongFamily = triagePacket(777);
   wrongFamily["dedupe_key"] = "repo-health:v1:fix:developing-today/code:issue:777";
-  const famErrors = verb(store, nativeEnv(), "validate", { packet: wrongFamily })["errors"] as string[];
+  const famErrors = (await verb(store, nativeEnv(), "validate", { packet: wrongFamily }))["errors"] as string[];
   assert.ok(
     famErrors.includes(
       `packet.dedupe_key: family 'fix' is not valid for kind 'triage' (allowed: ["maintenance", "triage"])`,
@@ -151,28 +151,28 @@ test("validator enforces dedupe-key family, repo and identity agreement", () => 
   // Key issue disagrees with payload issue.
   const wrongIssue = fixPacket(4242);
   wrongIssue["dedupe_key"] = "repo-health:v1:fix:developing-today/code:issue:9999";
-  const issueErrors = verb(store, nativeEnv(), "validate", { packet: wrongIssue })["errors"] as string[];
+  const issueErrors = (await verb(store, nativeEnv(), "validate", { packet: wrongIssue }))["errors"] as string[];
   assert.ok(issueErrors.includes("packet.dedupe_key: issue 9999 in key does not match payload.issue.number 4242"));
 
   // No key at all: the patterns doc rides the error.
   const noKey = fixPacket();
   delete noKey["dedupe_key"];
-  const keyErrors = verb(store, nativeEnv(), "validate", { packet: noKey })["errors"] as string[];
+  const keyErrors = (await verb(store, nativeEnv(), "validate", { packet: noKey }))["errors"] as string[];
   assert.ok(keyErrors[0].startsWith("packet.dedupe_key: required deterministic key:"));
   assert.ok(keyErrors[0].includes("repo-health:v1:fix:<repo>:issue:<n>"));
 
   // Leading zeros are not canonical numbers (#5510).
   const leadingZero = fixPacket(4242);
   leadingZero["dedupe_key"] = "repo-health:v1:fix:developing-today/code:issue:04242";
-  const lzErrors = verb(store, nativeEnv(), "validate", { packet: leadingZero })["errors"] as string[];
+  const lzErrors = (await verb(store, nativeEnv(), "validate", { packet: leadingZero }))["errors"] as string[];
   assert.ok(lzErrors.some((e) => e.includes("matches no design pattern")));
 });
 
-test("validator checks the second_pass review block and the feature_slice block", () => {
+test("validator checks the second_pass review block and the feature_slice block", async () => {
   const { store } = setup();
   const sp = fixPacket(4242, { kind: "second_pass" });
   sp["dedupe_key"] = "repo-health:v1:second-pass:developing-today/code:4242:pass-1";
-  const spErrors = verb(store, nativeEnv(), "validate", { packet: sp })["errors"] as string[];
+  const spErrors = (await verb(store, nativeEnv(), "validate", { packet: sp }))["errors"] as string[];
   assert.ok(spErrors.includes("payload.review: required object for kind second_pass (design #2025 section 5.2)"));
 
   (sp["payload"] as JsonObject)["review"] = {
@@ -181,7 +181,7 @@ test("validator checks the second_pass review block and the feature_slice block"
     pass: 2,
     pass_cap: 1,
   };
-  const capErrors = verb(store, nativeEnv(), "validate", { packet: sp })["errors"] as string[];
+  const capErrors = (await verb(store, nativeEnv(), "validate", { packet: sp }))["errors"] as string[];
   assert.ok(
     capErrors.includes(
       "payload.review.pass: pass 2 exceeds pass_cap 1 — the termination cap is enforced at enqueue (design #2025 section 5.1)",
@@ -191,7 +191,7 @@ test("validator checks the second_pass review block and the feature_slice block"
 
   const slice = fixPacket(4242, { kind: "feature_slice" });
   slice["dedupe_key"] = "repo-health:v1:slice:developing-today/code:issue:4242:slice-1";
-  const sliceErrors = verb(store, nativeEnv(), "validate", { packet: slice })["errors"] as string[];
+  const sliceErrors = (await verb(store, nativeEnv(), "validate", { packet: slice }))["errors"] as string[];
   assert.ok(sliceErrors.includes("payload.slice: required object for kind feature_slice (#12233 F2c)"));
 });
 
@@ -199,28 +199,28 @@ test("validator checks the second_pass review block and the feature_slice block"
 // Enqueue: validation envelope, dedupe, revive, work identity
 // ---------------------------------------------------------------------------
 
-test("enqueue refuses an invalid packet with the validation envelope, not a throw", () => {
+test("enqueue refuses an invalid packet with the validation envelope, not a throw", async () => {
   const { store } = setup();
-  const res = enqueue(store, hostedEnv(), { title: "x" });
+  const res = await enqueue(store, hostedEnv(), { title: "x" });
   assert.equal(res["ok"], false);
   assert.equal(res["exit"], 2);
   assert.ok(String(res["error"]).startsWith("packet validation failed ("));
   assert.ok(Array.isArray(res["errors"]));
 });
 
-test("enqueue dedupes on (queue, dedupe_key) and revives a terminal predecessor", () => {
+test("enqueue dedupes on (queue, dedupe_key) and revives a terminal predecessor", async () => {
   const { store } = setup();
-  const first = enqueue(store, hostedEnv(), fixPacket());
+  const first = await enqueue(store, hostedEnv(), fixPacket());
   assert.equal(first["ok"], true);
   const firstId = (first["row"] as JsonObject)["id"];
-  const second = enqueue(store, hostedEnv(), fixPacket());
+  const second = await enqueue(store, hostedEnv(), fixPacket());
   assert.equal((second["row"] as JsonObject)["id"], firstId);
-  assert.equal(store.allTasks().length, 1);
+  assert.equal((await store.allTasks()).length, 1);
 
   // Complete it, then enqueue again: a fresh row revives from it.
-  const claimed = claim(store, nativeEnv(), {});
+  const claimed = await claim(store, nativeEnv(), {});
   assert.equal(claimed["ok"], true);
-  const done = verb(store, nativeEnv(), "complete", {
+  const done = await verb(store, nativeEnv(), "complete", {
     task_id: firstId,
     worker: "worker-a",
     result: {
@@ -235,7 +235,7 @@ test("enqueue dedupes on (queue, dedupe_key) and revives a terminal predecessor"
     },
   });
   assert.equal(done["ok"], true);
-  const revived = enqueue(store, hostedEnv(), fixPacket());
+  const revived = await enqueue(store, hostedEnv(), fixPacket());
   const revivedRow = revived["row"] as JsonObject;
   assert.notEqual(revivedRow["id"], firstId);
   assert.deepEqual(revived["revived_from"], { task_id: firstId, status: "done" });
@@ -243,38 +243,38 @@ test("enqueue dedupes on (queue, dedupe_key) and revives a terminal predecessor"
   assert.equal((progress["revived_from"] as JsonObject)["task_id"], firstId);
 });
 
-test("enqueue reports a work-identity collision and honours dedupe_override", () => {
+test("enqueue reports a work-identity collision and honours dedupe_override", async () => {
   const { store } = setup();
-  const first = enqueue(store, hostedEnv(), fixPacket());
+  const first = await enqueue(store, hostedEnv(), fixPacket());
   const firstId = (first["row"] as JsonObject)["id"];
   // Same issue + kind, different (dispatch-suffixed) dedupe key:
   // the work identity already has a live task.
   const parallel = fixPacket();
   parallel["dedupe_key"] = "repo-health:v1:fix:developing-today/code:issue:4242:dispatch:0123abcd";
-  const collision = enqueue(store, hostedEnv(), parallel);
+  const collision = await enqueue(store, hostedEnv(), parallel);
   assert.equal((collision["row"] as JsonObject)["id"], firstId);
   const detail = collision["work_identity_collision"] as JsonObject;
   assert.equal(detail["rule"], "open_work_identity");
   assert.equal(detail["identity"], "developing-today/code#4242:fix");
-  assert.equal(store.allTasks().length, 1);
+  assert.equal((await store.allTasks()).length, 1);
 
   // With an override reason, the parallel task is deliberate.
   const overridePacket = fixPacket(4242, { dedupe_override: "parallel verification lane" });
   overridePacket["dedupe_key"] = "repo-health:v1:fix:developing-today/code:issue:4242:dispatch:0123abcd";
-  const overridden = enqueue(store, hostedEnv(), overridePacket);
+  const overridden = await enqueue(store, hostedEnv(), overridePacket);
   assert.notEqual((overridden["row"] as JsonObject)["id"], firstId);
-  assert.equal(store.allTasks().length, 2);
-  const events = store.allEvents().filter((e) => e.kind === "dedupe_override");
+  assert.equal((await store.allTasks()).length, 2);
+  const events = (await store.allEvents()).filter((e) => e.kind === "dedupe_override");
   assert.equal(events.length, 1);
   assert.equal((events[0].detail as JsonObject)["reason"], "parallel verification lane");
 });
 
-test("enqueue into a shadow queue requires deliberate intent", () => {
+test("enqueue into a shadow queue requires deliberate intent", async () => {
   const { store } = setup();
-  const refused = executeQueueVerb(store, "enqueue", { queue: "repo-health-shadow", packet: fixPacket() }, hostedEnv());
+  const refused = await executeQueueVerb(store, "enqueue", { queue: "repo-health-shadow", packet: fixPacket() }, hostedEnv());
   assert.equal(refused["ok"], false);
   assert.equal(refused["exit"], 2);
-  const allowed = executeQueueVerb(
+  const allowed = await executeQueueVerb(
     store,
     "enqueue",
     { queue: "repo-health-shadow", packet: fixPacket(), shadow_intent: true },
@@ -283,10 +283,10 @@ test("enqueue into a shadow queue requires deliberate intent", () => {
   assert.equal(allowed["ok"], true);
 });
 
-test("label enrichment mirrors the issue's labels and the band re-prioritises", () => {
+test("label enrichment mirrors the issue's labels and the band re-prioritises", async () => {
   const { store } = setup();
   store.seedMirrorLabels("developing-today/code", 4242, ["next-up", "area/fleet"]);
-  const res = enqueue(store, hostedEnv(), fixPacket());
+  const res = await enqueue(store, hostedEnv(), fixPacket());
   const row = res["row"] as JsonObject;
   assert.deepEqual((row["payload"] as JsonObject)["labels"], ["next-up", "area/fleet"]);
   // The next-up band (25) outranks the packet's stated 30.
@@ -297,17 +297,17 @@ test("label enrichment mirrors the issue's labels and the band re-prioritises", 
 // Acceptance 1: cross-door claim, one shared timeline
 // ---------------------------------------------------------------------------
 
-test("acceptance 1: hosted-enqueued work is claimed natively and vice versa, one timeline", () => {
+test("acceptance 1: hosted-enqueued work is claimed natively and vice versa, one timeline", async () => {
   const { store } = setup();
   // Hosted door enqueues; the native door claims, heartbeats, completes.
-  const enq = enqueue(store, hostedEnv(), fixPacket());
+  const enq = await enqueue(store, hostedEnv(), fixPacket());
   const id = (enq["row"] as JsonObject)["id"] as number;
-  const claimedNative = claim(store, nativeEnv(), { worker: "native-worker" });
+  const claimedNative = await claim(store, nativeEnv(), { worker: "native-worker" });
   assert.equal(claimedNative["ok"], true);
   assert.equal((claimedNative["row"] as JsonObject)["worker_id"], "native-worker");
-  const hb = verb(store, hostedEnv(), "heartbeat", { task_id: id, worker: "native-worker" });
+  const hb = await verb(store, hostedEnv(), "heartbeat", { task_id: id, worker: "native-worker" });
   assert.equal(hb["ok"], true, "the hosted door heartbeats the native claim: same worker identity");
-  const doneNative = verb(store, nativeEnv(), "complete", {
+  const doneNative = await verb(store, nativeEnv(), "complete", {
     task_id: id,
     worker: "native-worker",
     result: {
@@ -324,20 +324,20 @@ test("acceptance 1: hosted-enqueued work is claimed natively and vice versa, one
   assert.equal(doneNative["ok"], true);
 
   // Native door enqueues; the hosted door claims.
-  const enq2 = enqueue(store, nativeEnv(), fixPacket(5151));
+  const enq2 = await enqueue(store, nativeEnv(), fixPacket(5151));
   const id2 = (enq2["row"] as JsonObject)["id"] as number;
-  const claimedHosted = claim(store, hostedEnv(), { worker: "hosted-worker" });
+  const claimedHosted = await claim(store, hostedEnv(), { worker: "hosted-worker" });
   assert.equal(claimedHosted["ok"], true);
   assert.equal((claimedHosted["row"] as JsonObject)["id"], id2);
 
   // One shared timeline: the hosted claim's event carries the
   // binding mark; the native claim's carries none.
-  const timeline = verb(store, hostedEnv(), "timeline", { task_id: id2 });
+  const timeline = await verb(store, hostedEnv(), "timeline", { task_id: id2 });
   const rows = (timeline["row"] as JsonObject)["rows"] as JsonObject[];
   const claimedEvent = rows.find((r) => r["kind"] === "claimed");
   assert.ok(claimedEvent);
   assert.equal((claimedEvent["detail"] as JsonObject)["binding_id"], BINDING_A);
-  const timeline1 = verb(store, nativeEnv(), "timeline", { task_id: id });
+  const timeline1 = await verb(store, nativeEnv(), "timeline", { task_id: id });
   const rows1 = (timeline1["row"] as JsonObject)["rows"] as JsonObject[];
   const nativeClaimed = rows1.find((r) => r["kind"] === "claimed");
   assert.ok(nativeClaimed);
@@ -348,18 +348,18 @@ test("acceptance 1: hosted-enqueued work is claimed natively and vice versa, one
 // Acceptance 2: concurrent claims produce exactly one claim
 // ---------------------------------------------------------------------------
 
-test("acceptance 2: two doors claiming concurrently for one item produce exactly one claim", () => {
+test("acceptance 2: two doors claiming concurrently for one item produce exactly one claim", async () => {
   const { store } = setup();
-  enqueue(store, hostedEnv(), fixPacket());
-  const first = claim(store, hostedEnv(), { worker: "door-one" });
-  const second = claim(store, nativeEnv(), { worker: "door-two" });
+  await enqueue(store, hostedEnv(), fixPacket());
+  const first = await claim(store, hostedEnv(), { worker: "door-one" });
+  const second = await claim(store, nativeEnv(), { worker: "door-two" });
   assert.equal((first["row"] as JsonObject)["worker_id"], "door-one");
   assert.equal(second["row"], null);
-  const claimedEvents = store.allEvents().filter((e) => e.kind === "claimed");
+  const claimedEvents = (await store.allEvents()).filter((e) => e.kind === "claimed");
   assert.equal(claimedEvents.length, 1);
 });
 
-test("acceptance 2 (race at the seam): a claim that loses the conditional update re-picks and gets nothing", () => {
+test("acceptance 2 (race at the seam): a claim that loses the conditional update re-picks and gets nothing", async () => {
   // A store whose conditional update is preempted once by a
   // competing door's claim — the exact interleaving the native
   // backend's conditional UPDATE arbitrates. The engine must not
@@ -389,79 +389,79 @@ test("acceptance 2 (race at the seam): a claim that loses the conditional update
   }
   const store = new RacingStore();
   clock = T0;
-  enqueue(store, hostedEnv(), fixPacket());
-  const res = claim(store, hostedEnv(), { worker: "door-one" });
+  await enqueue(store, hostedEnv(), fixPacket());
+  const res = await claim(store, hostedEnv(), { worker: "door-one" });
   assert.equal(store.raced, true);
   assert.equal(res["row"], null, "the losing door claims nothing");
-  assert.equal(store.allTasks()[0].worker_id, "racer");
+  assert.equal((await store.allTasks())[0].worker_id, "racer");
 });
 
 // ---------------------------------------------------------------------------
 // Claim semantics: ordering, attempts, leases, filters, batch
 // ---------------------------------------------------------------------------
 
-test("claim picks by priority, then creation order; parked resumes do not burn attempts", () => {
+test("claim picks by priority, then creation order; parked resumes do not burn attempts", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket(101, {}, { priority: 50 }));
-  enqueue(store, nativeEnv(), fixPacket(102, {}, { priority: 10 }));
-  enqueue(store, nativeEnv(), fixPacket(103, {}, { priority: 30 }));
-  const first = claim(store, nativeEnv(), {});
+  await enqueue(store, nativeEnv(), fixPacket(101, {}, { priority: 50 }));
+  await enqueue(store, nativeEnv(), fixPacket(102, {}, { priority: 10 }));
+  await enqueue(store, nativeEnv(), fixPacket(103, {}, { priority: 30 }));
+  const first = await claim(store, nativeEnv(), {});
   assert.equal((first["row"] as JsonObject)["id"], 2, "priority 10 first");
   assert.equal((first["row"] as JsonObject)["attempts"], 1);
   // Park it and claim again: the parked resume keeps attempts at 1.
   const id = (first["row"] as JsonObject)["id"] as number;
-  const parked = verb(store, nativeEnv(), "park", { task_id: id, worker: "worker-a", delay_seconds: 30 });
+  const parked = await verb(store, nativeEnv(), "park", { task_id: id, worker: "worker-a", delay_seconds: 30 });
   assert.equal(parked["ok"], true);
   clock += 31;
   // A due parked task is picked (by-id claims take queued and
   // handed_off rows only, as natively) — and it outranks the
   // queued rows on priority, still without burning an attempt.
-  const resumed = claim(store, nativeEnv(), {});
+  const resumed = await claim(store, nativeEnv(), {});
   assert.equal((resumed["row"] as JsonObject)["id"], id);
   assert.equal((resumed["row"] as JsonObject)["attempts"], 1);
 });
 
-test("an expired lease returns the task and the lapsed holder is told to re-claim", () => {
+test("an expired lease returns the task and the lapsed holder is told to re-claim", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket());
-  const claimed = claim(store, nativeEnv(), { worker: "first", lease_seconds: 60 });
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), { worker: "first", lease_seconds: 60 });
   const id = (claimed["row"] as JsonObject)["id"] as number;
   clock += 61;
-  const reclaimed = claim(store, nativeEnv(), { worker: "second" });
+  const reclaimed = await claim(store, nativeEnv(), { worker: "second" });
   assert.equal((reclaimed["row"] as JsonObject)["worker_id"], "second");
-  const hb = verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "first" });
+  const hb = await verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "first" });
   assert.equal(hb["ok"], false);
   assert.equal(hb["exit"], 5);
   assert.ok(String(hb["error"]).includes("is not claimed by first"));
   // The second worker's own heartbeat names the real holder instead.
-  const hb2 = verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "third" });
+  const hb2 = await verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "third" });
   assert.ok(String(hb2["error"]).includes("it is claimed by second"));
 });
 
-test("claim filters, batch claims, and the by-id/task guards", () => {
+test("claim filters, batch claims, and the by-id/task guards", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket(201));
-  enqueue(store, nativeEnv(), triagePacket(202));
-  const filtered = claim(store, nativeEnv(), { filter: "kind = triage" });
+  await enqueue(store, nativeEnv(), fixPacket(201));
+  await enqueue(store, nativeEnv(), triagePacket(202));
+  const filtered = await claim(store, nativeEnv(), { filter: "kind = triage" });
   assert.equal((filtered["row"] as JsonObject)["id"], 2);
-  const badFilter = claim(store, nativeEnv(), { filter: "kind ~~ triage" });
+  const badFilter = await claim(store, nativeEnv(), { filter: "kind ~~ triage" });
   assert.equal(badFilter["ok"], false);
   assert.equal(badFilter["exit"], 2);
   assert.ok(String(badFilter["error"]).includes("bad filter"));
 
-  const batch = claim(store, nativeEnv(), { count: 2, worker: "batcher" });
+  const batch = await claim(store, nativeEnv(), { count: 2, worker: "batcher" });
   assert.equal(batch["claimed"], 1, "one item remains after the filtered claim");
-  const batchGuard = claim(store, nativeEnv(), { count: 2, task_id: 1 });
+  const batchGuard = await claim(store, nativeEnv(), { count: 2, task_id: 1 });
   assert.equal(batchGuard["ok"], false);
   assert.ok(String(batchGuard["error"]).includes("--count cannot be combined with --task"));
 });
 
-test("the claim guard quarantines a stored packet that no longer validates (#5444)", () => {
+test("the claim guard quarantines a stored packet that no longer validates (#5444)", async () => {
   const { store } = setup();
   // Seed a row whose payload is not a valid packet (the native
   // sweep's reason to exist: rows written before validation, or
   // corrupted in place).
-  const row = store.insertTask({
+  const row = await store.insertTask({
     queue: "repo-health",
     title: "rotten",
     body: null,
@@ -498,9 +498,9 @@ test("the claim guard quarantines a stored packet that no longer validates (#544
     dep_blocked_until: null,
     dep_recheck_seconds: null,
   });
-  const res = claim(store, nativeEnv(), {});
+  const res = await claim(store, nativeEnv(), {});
   assert.equal(res["row"], null);
-  const after = store.getTask(row.id);
+  const after = await store.getTask(row.id);
   assert.equal(after?.status, "blocked");
   assert.ok(after?.last_error?.includes("quarantined by claim path"));
 });
@@ -509,17 +509,35 @@ test("the claim guard quarantines a stored packet that no longer validates (#544
 // Lifecycle verbs
 // ---------------------------------------------------------------------------
 
-test("heartbeat, checkpoint, park and wake round-trip a claim", () => {
+test("heartbeat preserves the later deadline on both the task and lease", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket());
-  const claimed = claim(store, nativeEnv(), {});
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), { lease_seconds: 14400 });
+  const id = (claimed["row"] as JsonObject)["id"] as number;
+  for (const [elapsed, expected] of [
+    [300, 14400],
+    [300, 14400],
+    [14000, 14900],
+  ] as const) {
+    clock = T0 + elapsed;
+    const heartbeat = await verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "worker-a" });
+    assert.equal((heartbeat["row"] as JsonObject)["lease_until"], iso(T0 + expected));
+    assert.equal(store.leaseRow(id)?.lease_until, iso(T0 + expected));
+    assert.equal(store.leaseRow(id)?.heartbeat_at, iso(clock));
+  }
+});
+
+test("heartbeat, checkpoint, park and wake round-trip a claim", async () => {
+  const { store } = setup();
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), {});
   const id = (claimed["row"] as JsonObject)["id"] as number;
 
-  const wrongWorker = verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "someone-else" });
+  const wrongWorker = await verb(store, nativeEnv(), "heartbeat", { task_id: id, worker: "someone-else" });
   assert.equal(wrongWorker["exit"], 5);
   assert.ok(String(wrongWorker["error"]).includes("heartbeat_task: task 1 is not claimed by someone-else"));
 
-  const cp = verb(store, nativeEnv(), "checkpoint", {
+  const cp = await verb(store, nativeEnv(), "checkpoint", {
     task_id: id,
     worker: "worker-a",
     stage: "investigating",
@@ -534,7 +552,7 @@ test("heartbeat, checkpoint, park and wake round-trip a claim", () => {
     at: iso(clock),
   });
 
-  const parked = verb(store, nativeEnv(), "park", {
+  const parked = await verb(store, nativeEnv(), "park", {
     task_id: id,
     worker: "worker-a",
     delay_seconds: 600,
@@ -545,30 +563,30 @@ test("heartbeat, checkpoint, park and wake round-trip a claim", () => {
   assert.equal(parkedRow["wait_kind"], "timer");
   assert.equal(parkedRow["not_before"], iso(clock + 600));
 
-  const woken = verb(store, nativeEnv(), "wake", { task_id: id, worker: "worker-a", reason: "CI done" });
+  const woken = await verb(store, nativeEnv(), "wake", { task_id: id, worker: "worker-a", reason: "CI done" });
   assert.equal((woken["row"] as JsonObject)["status"], "queued");
-  const reclaimed = claim(store, nativeEnv(), {});
+  const reclaimed = await claim(store, nativeEnv(), {});
   assert.equal((reclaimed["row"] as JsonObject)["id"], id);
 });
 
-test("release requires a reason and returns the task to the queue", () => {
+test("release requires a reason and returns the task to the queue", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket());
-  const claimed = claim(store, nativeEnv(), {});
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), {});
   const id = (claimed["row"] as JsonObject)["id"] as number;
-  const noReason = verb(store, nativeEnv(), "release", { task_id: id, worker: "worker-a" });
+  const noReason = await verb(store, nativeEnv(), "release", { task_id: id, worker: "worker-a" });
   assert.equal(noReason["exit"], 2);
   assert.ok(String(noReason["error"]).includes("a release requires a reason"));
-  const released = verb(store, nativeEnv(), "release", { task_id: id, worker: "worker-a", reason: "not mine" });
+  const released = await verb(store, nativeEnv(), "release", { task_id: id, worker: "worker-a", reason: "not mine" });
   assert.equal((released["row"] as JsonObject)["status"], "queued");
 });
 
-test("fail: transient requeues with backoff, blocked parks the row, fatal terminates; revive restores", () => {
+test("fail: transient requeues with backoff, blocked parks the row, fatal terminates; revive restores", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket());
-  const claimed = claim(store, nativeEnv(), {});
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), {});
   const id = (claimed["row"] as JsonObject)["id"] as number;
-  const failed = verb(store, nativeEnv(), "fail", {
+  const failed = await verb(store, nativeEnv(), "fail", {
     task_id: id,
     worker: "worker-a",
     error: "boom",
@@ -578,41 +596,41 @@ test("fail: transient requeues with backoff, blocked parks the row, fatal termin
   assert.equal(failedRow["status"], "queued");
   assert.equal(failedRow["not_before"], iso(clock + 900), "first-attempt backoff is 15 minutes");
   clock += 901;
-  const reclaimed = claim(store, nativeEnv(), {});
+  const reclaimed = await claim(store, nativeEnv(), {});
   assert.equal((reclaimed["row"] as JsonObject)["attempts"], 2);
-  const fatal = verb(store, nativeEnv(), "fail", {
+  const fatal = await verb(store, nativeEnv(), "fail", {
     task_id: id,
     worker: "worker-a",
     error: "nope",
     reason_class: "fatal",
   });
   assert.equal((fatal["row"] as JsonObject)["status"], "failed");
-  const revived = verb(store, nativeEnv(), "revive", { task_id: id, worker: "worker-a", reason: "retry" });
+  const revived = await verb(store, nativeEnv(), "revive", { task_id: id, worker: "worker-a", reason: "retry" });
   const revivedRow = revived["row"] as JsonObject;
   assert.equal(revivedRow["status"], "queued");
   assert.equal(revivedRow["attempts"], 0);
 });
 
-test("cancel is idempotent and terminal rows answer unchanged", () => {
+test("cancel is idempotent and terminal rows answer unchanged", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket());
-  const cancelled = verb(store, nativeEnv(), "cancel", { task_id: 1, worker: "fleet-monitor", reason: "duplicate" });
+  await enqueue(store, nativeEnv(), fixPacket());
+  const cancelled = await verb(store, nativeEnv(), "cancel", { task_id: 1, worker: "fleet-monitor", reason: "duplicate" });
   assert.equal((cancelled["row"] as JsonObject)["status"], "cancelled");
-  const again = verb(store, nativeEnv(), "cancel", { task_id: 1, worker: "fleet-monitor", reason: "duplicate" });
+  const again = await verb(store, nativeEnv(), "cancel", { task_id: 1, worker: "fleet-monitor", reason: "duplicate" });
   assert.equal((again["row"] as JsonObject)["status"], "cancelled");
-  assert.equal(store.allEvents().filter((e) => e.kind === "cancelled").length, 1);
-  const missing = verb(store, nativeEnv(), "cancel", { task_id: 999, worker: "fleet-monitor" });
+  assert.equal((await store.allEvents()).filter((e) => e.kind === "cancelled").length, 1);
+  const missing = await verb(store, nativeEnv(), "cancel", { task_id: 999, worker: "fleet-monitor" });
   assert.equal(missing["exit"], 5);
 });
 
-test("block with a task dep rechecks through the store and unblocks when the dep lands", () => {
+test("block with a task dep rechecks through the store and unblocks when the dep lands", async () => {
   const { store } = setup();
-  const depEnq = enqueue(store, nativeEnv(), triagePacket(555));
+  const depEnq = await enqueue(store, nativeEnv(), triagePacket(555));
   const depId = (depEnq["row"] as JsonObject)["id"] as number;
-  enqueue(store, nativeEnv(), fixPacket(556));
-  const claimed = claim(store, nativeEnv(), { filter: "kind = small_fix" });
+  await enqueue(store, nativeEnv(), fixPacket(556));
+  const claimed = await claim(store, nativeEnv(), { filter: "kind = small_fix" });
   const id = (claimed["row"] as JsonObject)["id"] as number;
-  const blocked = verb(store, nativeEnv(), "block", {
+  const blocked = await verb(store, nativeEnv(), "block", {
     task_id: id,
     worker: "worker-a",
     blocker: "waiting on the triage",
@@ -620,51 +638,51 @@ test("block with a task dep rechecks through the store and unblocks when the dep
     deps: [{ kind: "task", task_id: depId }],
   });
   assert.equal((blocked["row"] as JsonObject)["status"], "blocked");
-  const early = verb(store, nativeEnv(), "dep-recheck", { task_id: id });
+  const early = await verb(store, nativeEnv(), "dep-recheck", { task_id: id });
   assert.equal((early["row"] as JsonObject)["outcome"], "still_blocked");
 
   // Land the dep (triage exit 'invalid' needs only its note).
-  claim(store, nativeEnv(), { task_id: depId });
-  const depDone = verb(store, nativeEnv(), "complete", {
+  await claim(store, nativeEnv(), { task_id: depId });
+  const depDone = await verb(store, nativeEnv(), "complete", {
     task_id: depId,
     worker: "worker-a",
     result: { triage_outcome: "invalid", triage_note: "not a real issue" },
   });
   assert.equal(depDone["ok"], true);
-  const recheck = verb(store, nativeEnv(), "dep-recheck", { task_id: id });
+  const recheck = await verb(store, nativeEnv(), "dep-recheck", { task_id: id });
   assert.equal((recheck["row"] as JsonObject)["outcome"], "unblocked");
-  assert.equal(store.getTask(id)?.status, "queued");
+  assert.equal((await store.getTask(id))?.status, "queued");
 });
 
-test("lane assignment, platform limits, and session binding follow the native rules", () => {
+test("lane assignment, platform limits, and session binding follow the native rules", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket());
-  const claimed = claim(store, nativeEnv(), { session_id: "ses_holder1" });
+  await enqueue(store, nativeEnv(), fixPacket());
+  const claimed = await claim(store, nativeEnv(), { session_id: "ses_holder1" });
   const id = (claimed["row"] as JsonObject)["id"] as number;
 
-  const assigned = verb(store, nativeEnv(), "lane", { task_id: id, worker: "worker-a" });
+  const assigned = await verb(store, nativeEnv(), "lane", { task_id: id, worker: "worker-a" });
   const ledger = assigned["row"] as JsonObject;
   assert.equal(ledger["assigned_lane"], "direct");
 
-  const noReason = verb(store, nativeEnv(), "lane", { task_id: id, worker: "worker-a", platform_limit: "muse" });
+  const noReason = await verb(store, nativeEnv(), "lane", { task_id: id, worker: "worker-a", platform_limit: "muse" });
   assert.equal(noReason["exit"], 4);
   assert.ok(String(noReason["error"]).includes("requires a recorded reason"));
 
-  const bound = verb(store, nativeEnv(), "bind", { task_id: id, worker: "worker-a", session_id: "ses_bound1" });
+  const bound = await verb(store, nativeEnv(), "bind", { task_id: id, worker: "worker-a", session_id: "ses_bound1" });
   assert.equal(bound["ok"], true);
   assert.equal((bound["row"] as JsonObject)["session_id"], "ses_bound1");
-  const rebind = verb(store, nativeEnv(), "bind", { task_id: id, worker: "worker-a", session_id: "ses_other1" });
+  const rebind = await verb(store, nativeEnv(), "bind", { task_id: id, worker: "worker-a", session_id: "ses_other1" });
   assert.equal(rebind["exit"], 4);
   assert.ok(String(rebind["error"]).includes("already bound to session ses_bound1"));
-  const badSession = verb(store, nativeEnv(), "bind", { task_id: id, worker: "worker-a", session_id: "nope" });
+  const badSession = await verb(store, nativeEnv(), "bind", { task_id: id, worker: "worker-a", session_id: "nope" });
   assert.equal(badSession["exit"], 2);
 });
 
-test("a claim transfer moves the claim to the holder's named successor session only", () => {
+test("a claim transfer moves the claim to the holder's named successor session only", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket());
-  claim(store, nativeEnv(), { worker: "holder", session_id: "ses_first" });
-  const refused = claim(store, nativeEnv(), {
+  await enqueue(store, nativeEnv(), fixPacket());
+  await claim(store, nativeEnv(), { worker: "holder", session_id: "ses_first" });
+  const refused = await claim(store, nativeEnv(), {
     worker: "successor",
     task_id: 1,
     from_session: "ses_wrong",
@@ -673,7 +691,7 @@ test("a claim transfer moves the claim to the holder's named successor session o
   assert.equal(refused["ok"], false);
   assert.equal(refused["exit"], 4);
   assert.ok(String(refused["error"]).includes("transfer refused"));
-  const moved = claim(store, nativeEnv(), {
+  const moved = await claim(store, nativeEnv(), {
     worker: "successor",
     task_id: 1,
     from_session: "ses_first",
@@ -684,21 +702,21 @@ test("a claim transfer moves the claim to the holder's named successor session o
   assert.equal((row["progress"] as JsonObject)["session_id"], "ses_second");
 });
 
-test("list, show and health report the queue in the native shapes", () => {
+test("list, show and health report the queue in the native shapes", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket(601));
-  enqueue(store, nativeEnv(), fixPacket(602));
-  claim(store, nativeEnv(), {});
-  const list = verb(store, nativeEnv(), "list", { queue: "repo-health" });
+  await enqueue(store, nativeEnv(), fixPacket(601));
+  await enqueue(store, nativeEnv(), fixPacket(602));
+  await claim(store, nativeEnv(), {});
+  const list = await verb(store, nativeEnv(), "list", { queue: "repo-health" });
   assert.equal(list["total"], 2);
   assert.equal((list["rows"] as JsonObject[]).length, 2);
-  const rich = verb(store, nativeEnv(), "list", { queue: "repo-health", rich: true });
+  const rich = await verb(store, nativeEnv(), "list", { queue: "repo-health", rich: true });
   assert.ok("payload" in (rich["rows"] as JsonObject[])[0]);
-  const shown = verb(store, nativeEnv(), "show", { task_id: 1 });
+  const shown = await verb(store, nativeEnv(), "show", { task_id: 1 });
   assert.equal(shown["ok"], true);
-  const missing = verb(store, nativeEnv(), "show", { task_id: 42 });
+  const missing = await verb(store, nativeEnv(), "show", { task_id: 42 });
   assert.equal(missing["exit"], 5);
-  const health = verb(store, nativeEnv(), "health", {});
+  const health = await verb(store, nativeEnv(), "health", {});
   const entry = (health["rows"] as JsonObject[])[0];
   assert.equal(entry["queue"], "repo-health");
   assert.equal(entry["queued"], 1);
@@ -710,16 +728,16 @@ test("list, show and health report the queue in the native shapes", () => {
 // The completion gate (disposition.rs port)
 // ---------------------------------------------------------------------------
 
-test("the completion gate refuses fix work without evidence and without a verified disposition", () => {
+test("the completion gate refuses fix work without evidence and without a verified disposition", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), fixPacket());
-  claim(store, nativeEnv(), {});
-  const bare = verb(store, nativeEnv(), "complete", { task_id: 1, worker: "worker-a", result: {} });
+  await enqueue(store, nativeEnv(), fixPacket());
+  await claim(store, nativeEnv(), {});
+  const bare = await verb(store, nativeEnv(), "complete", { task_id: 1, worker: "worker-a", result: {} });
   assert.equal(bare["exit"], 2);
   assert.ok(String(bare["error"]).includes("fix-class completion requires an evidence reference"));
-  assert.equal(store.getTask(1)?.status, "claimed", "a refused completion leaves the task claimed");
+  assert.equal((await store.getTask(1))?.status, "claimed", "a refused completion leaves the task claimed");
 
-  const noDisposition = verb(store, nativeEnv(), "complete", {
+  const noDisposition = await verb(store, nativeEnv(), "complete", {
     task_id: 1,
     worker: "worker-a",
     result: { pr_url: "https://github.com/developing-today/code/pull/999" },
@@ -727,7 +745,7 @@ test("the completion gate refuses fix work without evidence and without a verifi
   assert.equal(noDisposition["exit"], 2);
   assert.ok(String(noDisposition["error"]).includes("requires a verified disposition"));
 
-  const stale = verb(store, nativeEnv(), "complete", {
+  const stale = await verb(store, nativeEnv(), "complete", {
     task_id: 1,
     worker: "worker-a",
     result: {
@@ -744,7 +762,7 @@ test("the completion gate refuses fix work without evidence and without a verifi
   assert.equal(stale["exit"], 2);
   assert.ok(String(stale["error"]).includes("is 3600s old (bound 1800s)"));
 
-  const wrongIssue = verb(store, nativeEnv(), "complete", {
+  const wrongIssue = await verb(store, nativeEnv(), "complete", {
     task_id: 1,
     worker: "worker-a",
     result: {
@@ -761,7 +779,7 @@ test("the completion gate refuses fix work without evidence and without a verifi
   assert.equal(wrongIssue["exit"], 2);
   assert.ok(String(wrongIssue["error"]).includes("disposition describes issue #1111 but the task is for #4242"));
 
-  const good = verb(store, nativeEnv(), "complete", {
+  const good = await verb(store, nativeEnv(), "complete", {
     task_id: 1,
     worker: "worker-a",
     result: {
@@ -776,28 +794,28 @@ test("the completion gate refuses fix work without evidence and without a verifi
     },
   });
   assert.equal(good["ok"], true);
-  assert.equal(store.getTask(1)?.status, "done");
+  assert.equal((await store.getTask(1))?.status, "done");
 });
 
-test("triage completion enqueues the fix follow-on once and reuses it live", () => {
+test("triage completion enqueues the fix follow-on once and reuses it live", async () => {
   const { store } = setup();
-  enqueue(store, nativeEnv(), triagePacket(777));
-  claim(store, nativeEnv(), {});
-  const done = verb(store, nativeEnv(), "complete", { task_id: 1, worker: "worker-a", result: {} });
+  await enqueue(store, nativeEnv(), triagePacket(777));
+  await claim(store, nativeEnv(), {});
+  const done = await verb(store, nativeEnv(), "complete", { task_id: 1, worker: "worker-a", result: {} });
   assert.equal(done["ok"], true);
   const followOnId = done["follow_on_task_id"] as number;
   assert.ok(followOnId > 1);
-  const followOn = store.getTask(followOnId);
+  const followOn = await store.getTask(followOnId);
   assert.equal(followOn?.dedupe_key, "repo-health:v1:fix:developing-today/code:issue:777");
   assert.equal((followOn?.payload as JsonObject)["kind"], "small_fix");
   assert.equal(followOn?.status, "queued");
 
   // A second triage of the same issue (revived row) attaches to
   // the same live follow-on instead of enqueueing a twin.
-  enqueue(store, nativeEnv(), triagePacket(777));
-  const second = claim(store, nativeEnv(), { filter: "kind = triage" });
+  await enqueue(store, nativeEnv(), triagePacket(777));
+  const second = await claim(store, nativeEnv(), { filter: "kind = triage" });
   const secondId = (second["row"] as JsonObject)["id"] as number;
-  const done2 = verb(store, nativeEnv(), "complete", { task_id: secondId, worker: "worker-a", result: {} });
+  const done2 = await verb(store, nativeEnv(), "complete", { task_id: secondId, worker: "worker-a", result: {} });
   assert.equal(done2["follow_on_task_id"], followOnId);
 });
 
@@ -846,9 +864,9 @@ test("acceptance 3: an anonymous claim at the hosted door is refused; the native
   const anon = await dispatch(post("/v1/queue/claim", null, { worker: "anon" }), deps);
   assert.equal(anon.status, 401);
   // The same work through the native door never needed a credential.
-  const enq = enqueue(store, nativeEnv(), fixPacket());
+  const enq = await enqueue(store, nativeEnv(), fixPacket());
   assert.equal(enq["ok"], true);
-  const claimed = claim(store, nativeEnv(), { worker: "native-worker" });
+  const claimed = await claim(store, nativeEnv(), { worker: "native-worker" });
   assert.equal(claimed["ok"], true);
 });
 
@@ -914,8 +932,8 @@ test("StoreQueueRecordSource reads the queue's claim record for the caller's own
     closedAt: null,
     laneStartIssues: [],
   });
-  enqueue(store, nativeEnv(), fixPacket());
-  claim(store, nativeEnv(), { worker: "worker-a", session_id: "ses_bound42" });
+  await enqueue(store, nativeEnv(), fixPacket());
+  await claim(store, nativeEnv(), { worker: "worker-a", session_id: "ses_bound42" });
   const source = new StoreQueueRecordSource(store, sessions);
   const record = await source.recordForSession(BINDING_A, "ses_bound42");
   assert.ok(record);
@@ -934,7 +952,7 @@ test("StoreQueueRecordSource reads the queue's claim record for the caller's own
 // The fallback-claim protocol (fallback.rs port)
 // ---------------------------------------------------------------------------
 
-test("fallback markers parse strictly and the fold contests, supersedes and releases", () => {
+test("fallback markers parse strictly and the fold contests, supersedes and releases", async () => {
   const claimLine = "<!-- fleet-claim v1 kind=claim worker=felix ts=2026-01-01T00:00:00Z -->";
   assert.deepEqual(parseMarker(`progress note\n${claimLine}\nmore`), {
     kind: "claim",

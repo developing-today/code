@@ -32,7 +32,7 @@ The physical machine is in part 1's
   non-states the record keeps visible, not omissions.
 - **Per-host fragments** sit beside the host definition:
   `amd-rustdesk.nix`, `amd-sunshine.nix`, `amd-krdp.nix`,
-  `amd-ipv4-preference.nix` (the IPv6 workaround), 
+  `amd-ipv4-preference.nix` (the IPv6 workaround),
   `amd-openclaw-secrets.nix`, and `amd-agent-rebuild.nix`
   (agent-triggered rebuilds of the amd config from main).
 - **The rest of the host tree:** a second host, `nixos`

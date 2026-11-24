@@ -192,6 +192,24 @@ jobs:
           fi
           echo "fence-check and kaneo-cutover script suites passed."
 
+      # Ownership-map guard for #3989 criterion 1:
+      # pm-stack/scripts/ownership-map.test.sh pins the
+      # machine-checkable citations of
+      # doc/pm-stack/current-state-reconciliation-2026-11-24.md
+      # (one canonical home + one active writer per service, the
+      # muse-dev2 deletion recorded, the #6816 re-plan named), so the
+      # map cannot silently rot. Named explicitly and asserted to
+      # exist first, like the fencing suites above.
+      - name: Test ownership-map doc-rot guard suite
+        run: |
+          t=pm-stack/scripts/ownership-map.test.sh
+          if [ ! -f "$t" ]; then
+            echo "::error::Missing suite file $t — the ownership-map guard suite was not run."
+            exit 1
+          fi
+          bash "$t" || exit 1
+          echo "ownership-map guard suite passed."
+
       # Python suites for #5951: pm-stack/opencode-claimant/test_poll.py
       # (36 tests, the #3026 claimant session-cap gate) and
       # pm-stack/grist/test_update_choice_options.py (7 tests) were run
@@ -381,12 +399,14 @@ jobs:
           fi
           bun test
 
-      # Bun suite for #12825: pm-stack/pm-service/test/
+      # Bun suites for #12825 + #12826 + #12828: pm-stack/pm-service/test/
       # (tenant-store.test.ts, the component A PM tenant store
-      # schema + migrations conformance suite) must not be a
-      # silently skipped suite either. It needs only bun
-      # (bun:sqlite is built in), no install step.
-      - name: Test pm-service tenant-store suite
+      # schema + migrations conformance suite; collector.test.ts,
+      # the hosted collector acceptance suite; read-api.test.ts,
+      # the hosted read API parity suite) must not be silently
+      # skipped suites either. They need only bun (bun:sqlite is
+      # built in), no install step.
+      - name: Test pm-service suites
         working-directory: pm-stack/pm-service
         run: |
           if [ ! -d test ] || ! ls test/*.test.ts >/dev/null 2>&1; then

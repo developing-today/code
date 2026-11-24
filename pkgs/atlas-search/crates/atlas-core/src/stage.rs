@@ -113,7 +113,8 @@ impl std::fmt::Display for UnitState {
 }
 
 /// One row of the registry: unit id → staging DB, owner, sensitivity
-/// level, state, schema version (design 4.1).
+/// level, state, schema version (design 4.1), plus the corpus's
+/// recorded embedding-model identity (#8623 slice 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagingUnit {
     pub unit_id: String,
@@ -128,6 +129,13 @@ pub struct StagingUnit {
     pub schema_version: i64,
     pub created_at: String,
     pub updated_at: String,
+    /// The embedding model + pipeline identity this corpus's vectors
+    /// are recorded as produced with
+    /// ([`crate::shards::EMBEDDING_MODEL_ID`]). Recorded at provision
+    /// time; ingestion refuses a corpus whose recorded identity is not
+    /// the mandated one, and the re-embed job updates it when it
+    /// rebuilds the corpus under a new model.
+    pub embedding_model: String,
 }
 
 /// Immutable audit record written as part of a successful promotion.
@@ -260,13 +268,15 @@ pub struct ArtifactEntry {
     pub text: String,
 }
 
-/// One staged item, read back from a staging DB ([`list_staged_items`]).
+/// One staged item, read back from a staging DB ([`list_staged_items`]),
+/// with its full text and chunk count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedItem {
     pub id: i64,
     pub unit_id: String,
     pub kind: String,
     pub source: Option<String>,
+    pub text: String,
     pub sensitivity: String,
     pub created_at: String,
     pub meta: Option<String>,
@@ -672,7 +682,7 @@ pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec
     check_stage_schema(conn)?;
     let mut stmt = conn
         .prepare(
-            "SELECT i.id, i.unit_id, i.kind, i.source, i.sensitivity, i.created_at, i.meta, \
+            "SELECT i.id, i.unit_id, i.kind, i.source, i.text, i.sensitivity, i.created_at, i.meta, \
              (SELECT COUNT(*) FROM chunks_raw c WHERE c.item_id = i.id) \
              FROM items i WHERE (?1 IS NULL OR i.unit_id = ?1) ORDER BY i.id",
         )
@@ -684,10 +694,11 @@ pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec
                 unit_id: r.get(1)?,
                 kind: r.get(2)?,
                 source: r.get(3)?,
-                sensitivity: r.get(4)?,
-                created_at: r.get(5)?,
-                meta: r.get(6)?,
-                chunk_count: r.get(7)?,
+                text: r.get(4)?,
+                sensitivity: r.get(5)?,
+                created_at: r.get(6)?,
+                meta: r.get(7)?,
+                chunk_count: r.get(8)?,
             })
         })
         .map_err(|e| Error::backend(format!("staging: listing items: {e}")))?;
@@ -745,7 +756,10 @@ impl Registry {
     }
 
     /// The one provisioning tool: create the unit's staging DB, apply
-    /// the v1 schema, and register the unit as `open`.
+    /// the v1 schema, and register the unit as `open`. The unit's
+    /// recorded embedding-model identity is the mandated model
+    /// (#8623 slice 2): every corpus starts unified, and a model
+    /// change afterwards is an explicit re-embed, never silent drift.
     pub fn provision(
         &self,
         staging_db: &Path,
@@ -770,6 +784,7 @@ impl Registry {
             schema_version: STAGE_SCHEMA_VERSION,
             created_at: now.to_string(),
             updated_at: now.to_string(),
+            embedding_model: EMBEDDING_MODEL_ID.to_string(),
         };
         // If registration fails, remove the just-provisioned database:
         // leaving it behind would strand an unregistered staging DB
@@ -786,16 +801,21 @@ impl Registry {
 
     /// Insert (or replace) a unit record. Re-registering a unit id
     /// overwrites it — the registry is a mapping, not an append log.
+    /// The record carries the unit's embedding-model identity (#8623
+    /// slice 2); callers that re-register an existing corpus must pass
+    /// the recorded identity back unchanged unless the corpus was
+    /// just rebuilt under a new model by the re-embed job.
     pub fn register(&self, unit: &StagingUnit) -> Result<()> {
         self.conn
             .execute(
                 "INSERT INTO staging_units \
-                 (unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                 (unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at, embedding_model) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
                  ON CONFLICT(unit_id) DO UPDATE SET \
                    db_uri = excluded.db_uri, owner = excluded.owner, \
                    sensitivity = excluded.sensitivity, state = excluded.state, \
-                   schema_version = excluded.schema_version, updated_at = excluded.updated_at",
+                   schema_version = excluded.schema_version, updated_at = excluded.updated_at, \
+                   embedding_model = excluded.embedding_model",
                 params![
                     unit.unit_id,
                     unit.db_uri,
@@ -805,9 +825,51 @@ impl Registry {
                     unit.schema_version,
                     unit.created_at,
                     unit.updated_at,
+                    unit.embedding_model,
                 ],
             )
             .map_err(|e| Error::backend(format!("registry: registering {}: {e}", unit.unit_id)))?;
+        Ok(())
+    }
+
+    /// The ingestion-time embedding-identity check (#8623 slice 2):
+    /// refuse a corpus whose recorded model is not the mandated one.
+    /// Ingestion paths call this for an already-registered corpus
+    /// before staging into it, so a corpus recorded under a retired
+    /// model fails loudly instead of mixing incomparable vectors into
+    /// one corpus. A corpus recorded under the mandated model passes.
+    pub fn assert_corpus_model(&self, unit_id: &str) -> Result<()> {
+        let unit = self.lookup(unit_id)?.ok_or_else(|| {
+            Error::fatal(format!("registry: no staging unit {unit_id:?} to check"))
+        })?;
+        if unit.embedding_model == EMBEDDING_MODEL_ID {
+            return Ok(());
+        }
+        Err(Error::fatal(format!(
+            "registry: refusing ingestion into corpus {unit_id}: its recorded embedding_model `{}` is not the mandated `{EMBEDDING_MODEL_ID}`; vectors from different embedding models are not comparable — rebuild the corpus with the re-embed job first",
+            unit.embedding_model
+        )))
+    }
+
+    /// Record a corpus's embedding-model identity after an explicit
+    /// rebuild under a new model (#8623 slice 2): the re-embed job's
+    /// close-out. Refuses an unknown unit. This is the only path that
+    /// changes a live corpus's identity — ingestion never does.
+    pub fn record_embedding_model(&self, unit_id: &str, model: &str, now: &str) -> Result<()> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE staging_units SET embedding_model = ?2, updated_at = ?3 WHERE unit_id = ?1",
+                params![unit_id, model, now],
+            )
+            .map_err(|e| {
+                Error::backend(format!("registry: recording embedding model for {unit_id}: {e}"))
+            })?;
+        if changed == 0 {
+            return Err(Error::fatal(format!(
+                "registry: no staging unit {unit_id:?} to record an embedding model for"
+            )));
+        }
         Ok(())
     }
 
@@ -815,7 +877,7 @@ impl Registry {
     pub fn lookup(&self, unit_id: &str) -> Result<Option<StagingUnit>> {
         self.conn
             .query_row(
-                "SELECT unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at \
+                "SELECT unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at, embedding_model \
                  FROM staging_units WHERE unit_id = ?1",
                 params![unit_id],
                 row_to_unit,
@@ -829,7 +891,7 @@ impl Registry {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at \
+                "SELECT unit_id, db_uri, owner, sensitivity, state, schema_version, created_at, updated_at, embedding_model \
                  FROM staging_units WHERE state = ?1 ORDER BY unit_id",
             )
             .map_err(|e| Error::backend(format!("registry: listing {}: {e}", state.name())))?;
@@ -892,8 +954,10 @@ impl Registry {
     /// provenance — the same refusal shard discovery applies
     /// (#7646), so a source whose embedding step ran a non-mandated
     /// model cannot be promoted silently (#6019 ingestion inherits
-    /// this gate by promoting through here). On refusal the unit's
-    /// state does not change.
+    /// this gate by promoting through here). The registry's own
+    /// per-corpus identity record is checked first (#8623 slice 2):
+    /// a stale registry record refuses even when the staging DB was
+    /// freshly stamped. On refusal the unit's state does not change.
     ///
     /// A promotion that is accepted performs the design's close-out
     /// (#5669 criterion 4, design 4.1):
@@ -918,6 +982,12 @@ impl Registry {
         if unit.state == UnitState::Merged {
             return Err(Error::fatal(format!(
                 "registry: unit {unit_id:?} is already merged"
+            )));
+        }
+        if unit.embedding_model != EMBEDDING_MODEL_ID {
+            return Err(Error::fatal(format!(
+                "registry: refusing to promote unit {unit_id}: its recorded embedding_model `{}`, not the mandated `{EMBEDDING_MODEL_ID}`; vectors from different embedding models are not comparable — rebuild the corpus with the re-embed job first",
+                unit.embedding_model
             )));
         }
         assert_unit_embedding_model(&unit)?;
@@ -1182,6 +1252,7 @@ fn row_to_unit(row: &rusqlite::Row<'_>) -> rusqlite::Result<StagingUnit> {
         schema_version: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+        embedding_model: row.get(8)?,
     })
 }
 
@@ -1216,7 +1287,28 @@ fn remove_staging_db(path: &Path) {
 
 fn ensure_registry(conn: &Connection) -> Result<()> {
     conn.execute_batch(REGISTRY_V1_DDL)
-        .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))
+        .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))?;
+    // Slice-2 migration (#8623): pre-slice-2 registry databases were
+    // created by a DDL without the per-corpus `embedding_model`
+    // column. Fresh databases already have it (see the v1 DDL); this
+    // migrates the old ones in place, defaulting every existing
+    // corpus to the mandated model — the one model the pre-slice-2
+    // gate ever allowed through promotion, so the default rewrites
+    // no history.
+    let has_column: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('staging_units') WHERE name = 'embedding_model')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| Error::backend(format!("registry: reading staging_units columns: {e}")))?;
+    if !has_column {
+        conn.execute_batch(&format!(
+            "ALTER TABLE staging_units ADD COLUMN embedding_model TEXT NOT NULL DEFAULT '{EMBEDDING_MODEL_ID}'"
+        ))
+        .map_err(|e| Error::backend(format!("registry: adding embedding_model column: {e}")))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn open(path: &Path) -> Result<Connection> {
@@ -1541,6 +1633,7 @@ mod tests {
             schema_version: STAGE_SCHEMA_VERSION,
             created_at: "2026-11-10T00:00:00Z".to_string(),
             updated_at: "2026-11-17T01:00:00Z".to_string(),
+            embedding_model: EMBEDDING_MODEL_ID.to_string(),
         };
         let recomputed =
             build_merge_manifest(&archived, "2026-11-17T01:00:00Z").expect("recompute manifest");

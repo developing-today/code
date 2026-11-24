@@ -81,8 +81,23 @@ export function enforcePlacementGuard(
     runPlacementCommand(config.executable, command),
 ): PlacementGuardResult | null {
   if (!config.enabled) return null;
+  const log = config.logError ?? console.error;
+  // Unguarded seatings leave a countable trace so the steward can score
+  // guard coverage from the dispatcher log instead of reconstructing it
+  // from quota archaeology (issue #2732, acceptance 2).
+  if (!request.model) {
+    log(
+      `placement-guard: skipped: no model in request (default route unresolved) for queue task ${request.taskId} / ${request.repo}`,
+    );
+    return null;
+  }
   const placement = placementForModel(request.model, request.activeGoAccountLabel);
-  if (!placement) return null;
+  if (!placement) {
+    log(
+      `placement-guard: skipped: provider ${request.model.providerID} has no pool mapping for queue task ${request.taskId} / ${request.repo}`,
+    );
+    return null;
+  }
   if (!config.policyFile.trim()) throw new Error("placement-record: policy file is not configured");
   if (!config.quotaCurrentFile.trim()) throw new Error("placement-record: quota-current file is not configured");
 

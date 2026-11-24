@@ -2656,11 +2656,12 @@ mod tests {
     #[test]
     fn write_lease_entries_survive_jsonl_reopen_with_epoch_intact() {
         // Design #2819 phase 2 (#3804): lease entries appended to a
-        // fresh (version 1) journal bump its header to version 7 on
-        // first write, and a reopen + replay rebuilds the same lease:
-        // holder, monotonic epoch, term, and transition history.
+        // fresh (version 1) journal bump its header to version 16 on
+        // first write (#13711: stamped positions), and a reopen +
+        // replay rebuilds the same lease: holder, monotonic epoch,
+        // term, and transition history.
         use crate::world::{
-            JOURNAL_VERSION_WRITE_LEASE, JournalEntry as Entry, WorldCore, WorldJournal,
+            JOURNAL_VERSION_LEASE_POSITION, JournalEntry as Entry, WorldCore, WorldJournal,
             WorldLimits,
         };
         let dir = TempDir::new().unwrap();
@@ -2672,6 +2673,7 @@ mod tests {
                 to: "native-1".to_owned(),
                 epoch: 1,
                 expires_at_ms: Some(30_000),
+                position: 1,
             })
             .unwrap();
         journal
@@ -2679,6 +2681,7 @@ mod tests {
                 holder: "native-1".to_owned(),
                 epoch: 1,
                 expires_at_ms: 40_000,
+                position: 2,
             })
             .unwrap();
         drop(journal);
@@ -2687,7 +2690,7 @@ mod tests {
         assert!(matches!(
             entries[0],
             Entry::Created {
-                version: JOURNAL_VERSION_WRITE_LEASE,
+                version: JOURNAL_VERSION_LEASE_POSITION,
                 ..
             }
         ));

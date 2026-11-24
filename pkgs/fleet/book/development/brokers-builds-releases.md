@@ -14,13 +14,13 @@ The inspected broker serializes refreshes, bounds each provider child to 60 seco
 
 Proposed health reports expose liveness, readiness, observation time, dependency status, serving generation and operation progress. A dependency failure should never fan out into a series of downstream restarts.
 
-| Leg | Discriminating observation | Recovery owner |
-|---|---|---|
-| Tailnet | Local daemon available; expected peer reachable | Host service manager handles absent daemon. A peer outage has its own disposition. |
-| Relay | Listener accepts and completes its upstream handshake | Relay supervisor reconnects once transport is ready. |
-| Session broker | Expected protocol version and framed health response | Broker supervisor repairs a failed listener or handshake. |
+| Leg            | Discriminating observation                                   | Recovery owner                                                                                                                      |
+| -------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Tailnet        | Local daemon available; expected peer reachable              | Host service manager handles absent daemon. A peer outage has its own disposition.                                                  |
+| Relay          | Listener accepts and completes its upstream handshake        | Relay supervisor reconnects once transport is ready.                                                                                |
+| Session broker | Expected protocol version and framed health response         | Broker supervisor repairs a failed listener or handshake.                                                                           |
 | Secrets broker | First successful refresh, current activity and scoped canary | Refresh worker times out provider calls and retries. While `refreshing:true`, heal reports slowness and leaves the process running. |
-| GitHub | Authenticated read succeeds for the intended repository | Credential owner handles denial; rate limits get bounded backoff. |
+| GitHub         | Authenticated read succeeds for the intended repository      | Credential owner handles denial; rate limits get bounded backoff.                                                                   |
 
 **Cutover contract.** Size each gate from the slowest supported legitimate cold operation including allowed retries and probe delay. A child timeout bounds one fetch, not the entire inventory. Deploy through the registered per-service generation path. Proposed hardening serializes deploy and heal per service, journals the candidate and prior closure before switching, then records the serving executable digest after readiness. Reconcile interrupted switches at both journal boundaries. A test with two generations on the same port must demonstrate that rollback restores the former listener's executable identity, the pointer and journal, and a successful authenticated canary. [Generation machinery](https://github.com/developing-today/code/blob/1f9bc15391ca1c2efa639463a6369392456c27e5/pkgs/deploy/deploy.py)
 
@@ -48,15 +48,15 @@ The inspected upstream main tree contains 22 gitlinks. The upstream README roste
 
 Git anchoring, repo-health membership, Codespaces initialization and organization-wide discovery are independent properties. The adopted membership tiers live in upstream `FLEET.md`. Join those records to the immutable tree and `.gitmodules` before updating operator instructions. An access grant in a devcontainer declaration is a request; it cannot establish that the user's effective token has it. [Adopted tiers](https://github.com/dezren39/fleet/blob/45ad3e42cc09167eca5173359698f05a2927f078/FLEET.md) · [Devcontainer](https://github.com/dezren39/fleet/blob/45ad3e42cc09167eca5173359698f05a2927f078/.devcontainer/devcontainer.json) · [Source census](https://github.com/developing-today/code/issues/2017)
 
-| Paths | Documented consumer or use |
-|---|---|
-| `code`, `nix`, `openchamber`, `opencode`, `zettel` | Each is a named warm-export input. `code` contains the Fleet implementation; `nix` tracks darwin-nix. OpenChamber and OpenCode are separate forked consumers. `zettel` is the organization Zettel copy. |
-| `dezren39-zettel`, `cairn` | Separate personal Zettel pin and research corpus. Their FULL-lite membership does not combine them into one build. |
-| `kaneo`, `nix-cache` | PM board integration and the R2 cache service, respectively. Verify Kaneo's immutable repository ID against migration records before editing its slug. The cache is consumed as a service. |
-| `hatch`, `hatch-personal`, `hatch-drawer`, `hatch-personal-drawer` | Hatch tools and configuration, conditional personal checkout, bulk overflow and an additional managed pin. Effective users of the personal drawer remain unverified. |
-| `hardware-doc`, `zulip-archive` | Explicit Codespaces checkouts. Additional runtime integration is unverified. |
-| `org-readme`, `dezren39` | Organization and account profile repositories. |
-| `cairn-private`, `openclaw-personal` | Managed pins. No additional product-consumer claim follows from their names. |
-| `muse-esp32-screen`, `opencode-auto-continue`, `opencode-muse` | Display/browser twin, OpenCode continuation plugin and Muse provider plugin. A Fleet protocol consumer or effective plugin installation requires separate evidence. |
+| Paths                                                              | Documented consumer or use                                                                                                                                                                              |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `code`, `nix`, `openchamber`, `opencode`, `zettel`                 | Each is a named warm-export input. `code` contains the Fleet implementation; `nix` tracks darwin-nix. OpenChamber and OpenCode are separate forked consumers. `zettel` is the organization Zettel copy. |
+| `dezren39-zettel`, `cairn`                                         | Separate personal Zettel pin and research corpus. Their FULL-lite membership does not combine them into one build.                                                                                      |
+| `kaneo`, `nix-cache`                                               | PM board integration and the R2 cache service, respectively. Verify Kaneo's immutable repository ID against migration records before editing its slug. The cache is consumed as a service.              |
+| `hatch`, `hatch-personal`, `hatch-drawer`, `hatch-personal-drawer` | Hatch tools and configuration, conditional personal checkout, bulk overflow and an additional managed pin. Effective users of the personal drawer remain unverified.                                    |
+| `hardware-doc`, `zulip-archive`                                    | Explicit Codespaces checkouts. Additional runtime integration is unverified.                                                                                                                            |
+| `org-readme`, `dezren39`                                           | Organization and account profile repositories.                                                                                                                                                          |
+| `cairn-private`, `openclaw-personal`                               | Managed pins. No additional product-consumer claim follows from their names.                                                                                                                            |
+| `muse-esp32-screen`, `opencode-auto-continue`, `opencode-muse`     | Display/browser twin, OpenCode continuation plugin and Muse provider plugin. A Fleet protocol consumer or effective plugin installation requires separate evidence.                                     |
 
 The pinned README still described twelve members. Its seven requested write grants also differed from the devcontainer's eleven. Use a manifest-to-table comparison for membership and a separate declaration-to-permission comparison for Codespaces. Neither comparison authorizes changing the grants. Resolve the member's actual identity and check consumers before removing a gitlink. [Upstream README](https://github.com/dezren39/fleet/blob/45ad3e42cc09167eca5173359698f05a2927f078/README.md) · [Execution record](https://github.com/developing-today/code/issues/2230) · [Migration record](https://github.com/developing-today/code/pull/5454)

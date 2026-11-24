@@ -8,6 +8,16 @@
     "roles": ["owner", "orchestrator", "agent", "read-only"]
   },
   "allowlist": ["devtoday-local:drew"],
+  "_saml_comment": "Static SAML SP trust (#13793). No metadata is fetched. entity_id is exact/opaque; acs_urls must be HTTPS (HTTP only for loopback). request_signing_certificate is optional PEM X.509; require_signed_requests needs one. released_attributes defaults to roles + displayName; [] releases neither. This localhost example is only for local testing, not a real SP registration.",
+  "saml_sps": [
+    {
+      "entity_id": "urn:devtoday:test-sp",
+      "acs_urls": ["http://127.0.0.1:8914/saml/acs"],
+      "request_signing_certificate": null,
+      "released_attributes": ["roles", "displayName"],
+      "require_signed_requests": false
+    }
+  ],
   "audit_db_path": "/home/user/idp-provider/audit.sqlite3",
   "clients": [
     {
