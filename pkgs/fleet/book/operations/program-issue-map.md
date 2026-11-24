@@ -304,9 +304,10 @@ with their live dependencies. Each names the chapter that carries it.
   it, never precedes it.
 - The watchdog follow-ons (item 5) depend on nothing in this list;
   #13503 depends on the PM console's programme, not on this book.
-- The Lab Book cross-links (item 6) depend on the Lab Book lane
-  under #13905 for their primary targets; the fleet-side chapters
-  they point from are landed with this addendum.
+- The Lab Book cross-links (item 6) pointed at an unlanded book
+  when drafted; part 1 landed mid-lane (PR #13968, 2026-11-23),
+  and the chapter links its real chapters where they exist and
+  names #13905 where they do not (DNS).
 - The dispatch-test jobs store carries no open dependency: it is
   live, its owner is `fleet dispatch-test`, and the #13844 audit's
   MOVE-CLEAN recommendation is a programme decision, not a blocker.
