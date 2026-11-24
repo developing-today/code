@@ -225,17 +225,27 @@ it (the laptop's, the sign-in issuer's).
   says when it answers again and which of the two it was. Health has
   the times as `github.quiet.core` and `github.quiet.search`. "Try
   again now" lifts both.
-- **The repository's settings are written once, and both sides carry
-  them.** Which repository and queue, where the queue's store answers,
-  the label that marks an instruction, and the repositories looked in
-  for what needs the owner are in `src/settings.ts`: the console on a
-  machine uses them where its environment says nothing else, and the
-  Worker's bundle has them. The Worker still acts by what the machine
-  tells it (#14163 is to end that), and says in its health answer in
-  which of them the machine told it otherwise (`machineSettingsDiffer`):
-  names only, never a value, and `null` while no machine has said
-  anything. A machine on other code than main, or with an environment
-  of its own, shows there.
+- **The repository's settings are the platform's own.** Which
+  repository and queue, where the queue's store answers and what its
+  token is called, the Android app's package and the label that marks
+  an instruction are in `src/settings.ts`. The console on a machine
+  uses them where its environment says nothing else; the Worker's
+  bundle has them, and the Worker goes by its own whatever a machine's
+  report says. So they change with a merge to main and a deploy, and
+  with nothing else: a laptop on another checkout, or a branch nobody
+  merged, does not move where the queue's token is sent. What a machine
+  tells for them is kept as told and compared. The health answer says
+  in which the machine differs (`machineSettingsDiffer`: names only,
+  never a value, `null` while no machine has said anything), and the
+  Machines screen says each with what the machine says, what main
+  says, and which the Worker goes by. Two things are not the platform's
+  own yet. Who may sign in is the deployment's and is still as a
+  machine tells it (#13495). And the list of repositories looked in
+  for what needs the owner is still the machine's while a machine tells
+  one: a machine takes a reply only for an item in a repository on its
+  own list, and what the Worker cannot do itself it leaves to a
+  machine, so reading by another list than the machine's would show
+  items the machine then refuses (#14163).
 - **What is labelled as needing the owner is read from each
   repository's own list.** Two labels say that something waits on him,
   `user/review` and `user/escalated`. The edge asks each repository
@@ -461,9 +471,12 @@ open nothing.
   there, and copying the queue's rows by hand would break its contract.
   (The fleet's own hosted queue door, `pkgs/fleet/hosted-worker`, is
   where that changes.)
-- The edge learns where things are (the repository, the queue, who the
-  owner is) from a machine's report, and keeps it. One that has never
-  had a report serves nothing.
+- The edge learns who may sign in (the owners, the sign-in issuers, the
+  Android signing fingerprints) from a machine's report, and keeps it:
+  that is set where the hostname is set up, which is a script on the
+  laptop today (#13495). One that has never had a report serves
+  nothing. Where things are it knows by itself: see "The repository's
+  settings" above.
 - GitHub's search allows thirty requests a minute for the token, shared
   with whatever else uses it. Ranked issues are read every three
   minutes and a roadmap page at most once a minute for that reason.

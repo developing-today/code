@@ -66,6 +66,70 @@ export function platformSettings(): PlatformSettings {
   };
 }
 
+/** The settings the platform goes by its own for, whatever a machine
+ * says: the Worker's are the ones its deploy carries, which is main's
+ * word. Where the queue's store answers is among them, and that is
+ * where the queue's token is sent: no machine's report moves it. */
+export const PLATFORM_OWN = [
+  "repo",
+  "queue",
+  "queueDbUrl",
+  "queueTokenName",
+  "androidPackage",
+  "promptLabel",
+] as const satisfies readonly (keyof PlatformSettings)[];
+
+/** The one the platform still goes by a reporting machine's for. A
+ * machine takes a reply, or "done", only for an item in a repository
+ * on its own list, and what the platform cannot do itself it leaves to
+ * a machine: reading by another list than the machine's would show
+ * items the machine then refuses. It becomes the platform's own with
+ * what makes that safe: a console that takes the platform's list, or
+ * an action sent only to a machine that lists the repository (#14163,
+ * #13492). */
+export const MACHINES_FOR_NOW = ["needsRepos"] as const satisfies readonly (keyof PlatformSettings)[];
+
+/** What the platform goes by, given what a machine told: its own for
+ * what is its own, and the machine's for the rest (who may sign in,
+ * which is the deployment's, and the list above). A new object. */
+export function goesBy<T extends PlatformSettings>(told: T, platform: PlatformSettings = platformSettings()): T {
+  const own = Object.fromEntries(PLATFORM_OWN.map((name) => [name, platform[name]]));
+  return { ...told, ...own };
+}
+
+/** One setting a machine runs with another value of: what it says,
+ * what the platform has, and which of the two the platform goes by. */
+export interface SettingDiffers {
+  name: keyof PlatformSettings;
+  machine: unknown;
+  platform: unknown;
+  goesBy: "platform" | "machine";
+}
+
+/** How much of what a machine says is shown: it is the machine's word,
+ * and is not shown without end. */
+const SHOWN_CHARS = 200;
+const SHOWN_ITEMS = 50;
+function shown(value: unknown): unknown {
+  if (Array.isArray(value)) return value.slice(0, SHOWN_ITEMS).map((item) => String(item).slice(0, SHOWN_CHARS));
+  return typeof value === "string" ? value.slice(0, SHOWN_CHARS) : value === undefined ? null : value;
+}
+
+/** The settings a machine runs with others of, each with both values,
+ * for showing to the owner. */
+export function settingsDifferences(
+  told: Partial<Record<keyof PlatformSettings, unknown>>,
+  platform: PlatformSettings = platformSettings(),
+): SettingDiffers[] {
+  const machines = new Set<string>(MACHINES_FOR_NOW);
+  return settingsThatDiffer(told, platform).map((name) => ({
+    name,
+    machine: shown(told[name]),
+    platform: platform[name],
+    goesBy: machines.has(name) ? "machine" : "platform",
+  }));
+}
+
 function same(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) || Array.isArray(b)) {
     return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((item, i) => item === b[i]);
