@@ -41,6 +41,7 @@ pub mod graph;
 pub mod model;
 pub mod naming;
 pub mod profile;
+pub mod publish;
 pub mod timeparse;
 
 pub use error::{CertError, Result};

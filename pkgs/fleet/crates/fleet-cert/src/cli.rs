@@ -35,6 +35,7 @@ Groups and verbs (spec §6.1 tree; status as built):
   leaf     issue | inspect | list
   chain    build | test
   bundle   inspect
+  publish  plan | verify (apply | status deferred, production-gated)
   profile  list | show
   algorithms list | describe
   explain  [topic]
@@ -226,6 +227,7 @@ fn run_inner(args: &[String]) -> Result<i32> {
         "leaf" => leaf_cmd(rest, json_out),
         "chain" => chain_cmd(rest, json_out),
         "bundle" => bundle_cmd(rest, json_out),
+        "publish" => publish_cmd(rest, json_out),
         "profile" => profile_cmd(rest, json_out),
         "algorithms" => algorithms_cmd(rest, json_out),
         "explain" => explain_cmd(rest, json_out),
@@ -687,6 +689,114 @@ fn bundle_cmd(args: &[String], json_out: bool) -> Result<i32> {
     }
 }
 
+// ---------------------------------------------------------------- publish (slice 1: plan + verify read-only)
+
+fn publish_cmd(args: &[String], json_out: bool) -> Result<i32> {
+    let verb = args.first().map(|s| s.as_str()).unwrap_or("");
+    let rest = &args[1.min(args.len())..];
+    match verb {
+        "plan" => {
+            let p = parse_args(
+                rest,
+                &["bundle", "host", "aia-base-url", "dns-target", "format", "out"],
+                &["json"],
+            )?;
+            let dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("publish plan needs a bundle directory"))?;
+            // --aia-base-url overrides --host when both are given.
+            let host = p
+                .get("aia-base-url")
+                .map(|s| s.to_string())
+                .or_else(|| p.get("host").map(|s| s.to_string()))
+                .unwrap_or_else(|| crate::publish::DEFAULT_PUBLISH_HOST.to_string());
+            let req = crate::model::PublishPlanRequest {
+                bundle: PathBuf::from(&dir),
+                host,
+                dns_target: p.get("dns-target").map(|s| s.to_string()),
+            };
+            let plan = crate::publish::plan_bundle(&req)?;
+            let format = p.get("format").unwrap_or("text").to_ascii_lowercase();
+            let value = serde_json::to_value(&plan)
+                .map_err(|e| CertError::engine(e.to_string()))?;
+            let text = crate::publish::render_plan_text(&plan);
+            let out_text = match format.as_str() {
+                "json" => serde_json::to_string_pretty(&value)
+                    .map_err(|e| CertError::engine(e.to_string()))?,
+                "yaml" | "yml" => crate::publish::render_plan_yaml(&plan),
+                "text" => text.clone(),
+                other => {
+                    return Err(CertError::usage(format!(
+                        "unknown --format '{other}' (text | json | yaml)"
+                    )));
+                }
+            };
+            if let Some(out) = p.get("out") {
+                std::fs::write(out, format!("{out_text}\n"))?;
+            }
+            if format == "yaml" && !json_out {
+                print!("{out_text}\n");
+                return Ok(0);
+            }
+            Ok(emit(json_out, format!("{text}"), value))
+        }
+        "verify" => {
+            let p = parse_args(rest, &["bundle", "published-dir", "host"], &["json"])?;
+            let dir = p
+                .get("bundle")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(0).map(|s| s.to_string()))
+                .ok_or_else(|| CertError::usage("publish verify needs a bundle directory"))?;
+            let pub_dir = p
+                .get("published-dir")
+                .map(|s| s.to_string())
+                .or_else(|| p.positional(1).map(|s| s.to_string()))
+                .ok_or_else(|| {
+                    CertError::usage(
+                        "publish verify needs --published-dir <mirror> (read-only local check)",
+                    )
+                })?;
+            let req = crate::model::PublishVerifyRequest {
+                bundle: PathBuf::from(&dir),
+                published_dir: PathBuf::from(&pub_dir),
+                host: p.get("host").map(|s| s.to_string()),
+            };
+            let report = crate::publish::verify_bundle(&req)?;
+            let mut text = format!(
+                "Publish verify: {} against {}\n",
+                report.bundle, report.published_dir
+            );
+            for c in &report.checks {
+                text.push_str(&format!(
+                    "  [{}] {} — {}\n",
+                    if c.ok { "ok" } else { "FAIL" },
+                    c.name,
+                    c.detail
+                ));
+            }
+            text.push_str(&format!(
+                "  result: {}\n",
+                if report.valid { "IN SYNC" } else { "OUT OF SYNC" }
+            ));
+            let value = serde_json::to_value(&report)
+                .map_err(|e| CertError::engine(e.to_string()))?;
+            let code = emit(json_out, text, value);
+            Ok(if report.valid { code } else { 1 })
+        }
+        "apply" | "status" | "stage" | "check" | "commit" | "rollback" | "render" => {
+            Err(CertError::policy(format!(
+                "publish {verb} is deferred to a later production-gated slice (per the #9155 gate map): \
+                 slice 1 implements plan + verify read-only only; never executes against live endpoints without gate clearance"
+            )))
+        }
+        other => Err(CertError::usage(format!(
+            "unknown publish verb '{other}' (plan | verify; apply | status are a later gated slice)"
+        ))),
+    }
+}
+
 fn list_cmd(args: &[String], json_out: bool, want: BundleType) -> Result<i32> {
     let p = parse_args(args, &["dir"], &["json"])?;
     let dir = p.get("dir").unwrap_or(".").to_string();
@@ -854,8 +964,8 @@ const NOT_BUILT: &[(&str, &str)] = &[
         "OCSP — only behind a functional responder (spec §4.3)",
     ),
     (
-        "publish",
-        "AIA/CDP publication machinery (spec §13 phase F)",
+        "publish apply/status",
+        "live AIA/CDP publication apply + status (production-gated follow-up; slice 1 ships plan + verify read-only)",
     ),
     ("dns", "DNS plan/render/verify (spec §24.7)"),
     (
@@ -973,7 +1083,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
         "  openssl (independent validator): {}\n",
         openssl.as_deref().unwrap_or("not found")
     ));
-    text.push_str("  built: root, issuer, leaf, chain, bundle (inspect), profile (list/show), algorithms (list/describe), explain, doctor\n");
+    text.push_str("  built: root, issuer, leaf, chain, bundle (inspect), publish (plan/verify read-only), profile (list/show), algorithms (list/describe), explain, doctor\n");
     text.push_str("  not built yet (tracked as child issues under #9157):\n");
     for (name, what) in NOT_BUILT {
         text.push_str(&format!("    {name} — {what}\n"));
@@ -981,7 +1091,7 @@ fn doctor_cmd(_args: &[String], json_out: bool) -> Result<i32> {
     let value = json!({
         "engine_self_test": algo_results.iter().map(|(i, ok)| json!({"algorithm": i.name, "ok": ok})).collect::<Vec<_>>(),
         "openssl": openssl,
-        "built": ["root", "issuer", "leaf", "chain", "bundle-inspect", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
+        "built": ["root", "issuer", "leaf", "chain", "bundle-inspect", "publish-plan/verify", "profile-list/show", "algorithms-list/describe", "explain", "doctor"],
         "not_built": NOT_BUILT.iter().map(|(n, w)| json!({"surface": n, "scope": w})).collect::<Vec<_>>(),
     });
     let code = emit(json_out, text, value);

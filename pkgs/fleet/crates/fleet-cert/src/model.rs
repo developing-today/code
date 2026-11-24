@@ -98,8 +98,7 @@ pub struct IssuerCreateRequest {
     pub private_store: Option<PathBuf>,
 }
 
-/// `cert leaf issue` (§§6.2, 24.6).
-#[derive(Debug, Clone)]
+/// `cert leaf issue` (§§6.2, 24.6).#[derive(Debug, Clone)]
 pub struct LeafIssueRequest {
     /// The issuer bundle directory.
     pub issuer_bundle: PathBuf,
@@ -264,6 +263,26 @@ pub struct BundleManifest {
     pub certificates: Vec<CertRecord>,
     pub files: Vec<FileRecord>,
     pub warnings: Vec<String>,
+}
+
+/// `cert publish plan` (§4.4): read-only publication rendering.
+/// Never touches live endpoints; `host` is the proposed
+/// distribution host (§4.1) and `dns_target` the optional operator
+/// IP that makes the DNS record executable.
+#[derive(Debug, Clone)]
+pub struct PublishPlanRequest {
+    pub bundle: PathBuf,
+    pub host: String,
+    pub dns_target: Option<String>,
+}
+
+/// `cert publish verify` (§4.4/§24.7): read-only mirror check of a
+/// local published directory against the bundle manifest.
+#[derive(Debug, Clone)]
+pub struct PublishVerifyRequest {
+    pub bundle: PathBuf,
+    pub published_dir: PathBuf,
+    pub host: Option<String>,
 }
 
 #[cfg(test)]
