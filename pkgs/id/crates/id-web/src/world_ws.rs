@@ -1611,7 +1611,6 @@ mod tests {
     /// frame whose rows show the counter at `count`. Since the pf.Screen
     /// migration the roc-counter view returns screen JSON, not the bare
     /// `count=N` text these tests originally asserted.
-    #[cfg(feature = "sandbox")]
     async fn assert_screen_data(client: &mut Client, count: u8) {
         let frame = next_frame(client).await.unwrap();
         let screen: serde_json::Value =
@@ -1630,7 +1629,6 @@ mod tests {
     /// Read one presentation frame from a legacy-text world: the view is plain
     /// UTF-8 (`count=N`), so the host sends it as-is in `data` and
     /// `parse_surface` yields no surface at all. Assert on that real shape.
-    #[cfg(feature = "sandbox")]
     async fn assert_text_data(client: &mut Client, count: u8) {
         let frame = next_frame(client).await.unwrap();
         assert_eq!(frame["type"], "view", "{frame}");
@@ -1654,7 +1652,6 @@ mod tests {
         })
     }
 
-    #[cfg(feature = "sandbox")]
     use id_worlds::world_session::encode_hex;
 
     #[tokio::test]
@@ -1846,7 +1843,6 @@ mod tests {
         assert_eq!(next_frame(&mut long).await.unwrap()["type"], "error");
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_can_upload_and_run_a_roc_module() {
         use iroh_blobs::store::mem::MemStore;
@@ -1925,7 +1921,6 @@ mod tests {
         assert_screen_data(&mut player, 1).await;
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_can_compile_install_and_run_roc_sources() {
         use iroh_blobs::store::mem::MemStore;
@@ -2016,7 +2011,6 @@ mod tests {
         assert_screen_data(&mut player, 1).await;
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_can_upload_and_run_a_text_only_roc_module() {
         use iroh_blobs::store::mem::MemStore;
@@ -2095,7 +2089,6 @@ mod tests {
         assert_text_data(&mut player, 1).await;
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_can_compile_install_and_run_text_only_roc_sources() {
         use iroh_blobs::store::mem::MemStore;
@@ -2187,7 +2180,6 @@ mod tests {
         assert_text_data(&mut player, 1).await;
     }
 
-    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn browser_websocket_rejects_roc_compile_without_admin_auth() {
         let addr = serve(app(Some(lobby()), Some("admin"))).await;
