@@ -733,6 +733,70 @@ export class Ops {
   }
 
   /**
+   * The wake hooks for the Agents screen (#14544): one per address
+   * (channel:claude, channel:chatgpt or agent:<name>), read through
+   * `fleet bridge wake-hooks`. What the bridge shows of a hook —
+   * address, kind, host, whether it holds a token — never the token
+   * or the URL's path.
+   */
+  async wakeHooks() {
+    const rows = (
+      JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "wake-hooks"])) as { hooks?: unknown } | null
+    )?.hooks;
+    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  }
+
+  /**
+   * Set one wake hook from the Agents screen (#14544), through the
+   * wake-hooks API the retired bridge page used. The hook travels as
+   * JSON on the CLI's stdin, never as an argument: its token is a
+   * value, and values do not travel as arguments (mintEnrollToken).
+   * The address and URL are checked here first, in the console's own
+   * terms, before anything runs; the bridge checks them again.
+   */
+  async setWakeHook(input: { address?: unknown; url?: unknown; token?: unknown }) {
+    const address = text(input.address, "address", 200).trim().toLowerCase();
+    if (!/^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/.test(address)) {
+      throw new OpError(400, `address: not a wake address: ${JSON.stringify(address).slice(0, 80)}`);
+    }
+    const url = text(input.url, "url", 2048).trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new OpError(400, "url: not a URL");
+    }
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.hash) {
+      throw new OpError(400, "url: must be https, with no user name, password or #fragment");
+    }
+    const hook: Record<string, unknown> = { address, url: parsed.href };
+    if (input.token !== undefined && input.token !== null && input.token !== "") {
+      hook.token = text(input.token, "token", 512);
+    }
+    const out = JSON.parse(
+      await this.must([this.cfg.fleetBin, "bridge", "wake-hooks", "--set", "-"], { stdin: JSON.stringify(hook) }),
+    ) as { hook?: unknown };
+    return { hook: out.hook ?? null };
+  }
+
+  /**
+   * Remove one address's wake hook from the Agents screen (#14544):
+   * the same API with no URL in it. No value travels in it, and done
+   * late it is still the right act, so at the edge it is held for a
+   * machine like agent.revoke-enroll (edge-proto.ts).
+   */
+  async removeWakeHook(address: unknown) {
+    const a = text(address, "address", 200).trim().toLowerCase();
+    if (!/^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/.test(a)) {
+      throw new OpError(400, `address: not a wake address: ${JSON.stringify(a).slice(0, 80)}`);
+    }
+    const out = JSON.parse(
+      await this.must([this.cfg.fleetBin, "bridge", "wake-hooks", "--remove", "--address", a]),
+    ) as { removed?: unknown };
+    return { address: a, removed: out.removed === true };
+  }
+
+  /**
    * Mint a bootstrap enroll token from the Agents screen (#14376,
    * design §4.9), bound at mint to the new agent's name, kind, groups
    * and class notes identity, for the TTL the owner picked. The

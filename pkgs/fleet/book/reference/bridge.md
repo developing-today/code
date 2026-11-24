@@ -195,6 +195,34 @@ $ fleet bridge revoke-enroll --agent scout-2
 
 Takes back every outstanding token minted for `scout-2`.
 
+## fleet bridge wake-hooks
+
+```
+fleet bridge wake-hooks [--set - | --remove --address A]
+```
+
+| Flag        | Argument | Default | Meaning                                                                            |
+| ----------- | -------- | ------- | ---------------------------------------------------------------------------------- |
+| `--set`     | `-`      | —       | Set one hook from a JSON object `{address, url, token?}` read from stdin.          |
+| `--remove`  | —        | —       | Remove the hook for `--address`; the answer is `{removed: true\|false}`.           |
+| `--address` | `A`      | —       | The hook's address (`channel:claude`, `channel:chatgpt` or `agent:<name>`); `--remove` only. |
+
+### Behaviour
+
+Central verb (owner token). With no flag, lists every wake hook — address, kind, host, and whether it holds a token; never the token or the URL's path. Routes: `GET`/`POST /api/<owner-token>/wake-hooks` (a POST with no `url` removes). The set form reads its JSON from stdin so a hook token never travels as an argument. This is the verb the PM console's Agents screen drives (#14544): the console lists hooks at the edge through the bridge's read-scope view (`GET /fleet/<credential>/wake-hooks`), and sets and removes through a machine, as with revoking.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge wake-hooks
+$ echo '{"address":"agent:scout-2","url":"https://hooks.example/wake"}' | fleet bridge wake-hooks --set -
+$ fleet bridge wake-hooks --remove --address agent:scout-2
+```
+
 ## fleet bridge mint-credential
 
 ```
