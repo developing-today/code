@@ -10,12 +10,12 @@
 
 Today a phone tap on a broker-raised extension push lands in the PM ledger, and nothing applies it. A seat notices and runs `/actions-exec-extend-decide` by hand. This design adds an **applier** that carries a recorded answer for a `fleet-actions-exec` alert to the broker, once, with failures raised as alerts. The ledger stays the only place of record for the answer. The broker's decide verb keeps its meaning and gains one new, narrowly scoped way to authenticate.
 
-| Seam | Chosen option | Rejected |
-| --- | --- | --- |
-| 1. Applier placement | **Aggregator-side applier** that runs when an answer is recorded for a broker-sourced alert | Broker-side consumer reading the aggregator's exported feed |
+| Seam                           | Chosen option                                                                                                                                  | Rejected                                                                           |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1. Applier placement           | **Aggregator-side applier** that runs when an answer is recorded for a broker-sourced alert                                                    | Broker-side consumer reading the aggregator's exported feed                        |
 | 2. Applier-to-broker authority | **Aggregator signs the decide envelope** with a secret held by name; the broker accepts a signed decide only for `/actions-exec-extend-decide` | Reusing seat auth (lets any seat decide without Drew's answer); trusting localhost |
-| 3. Exactly-once and races | **Applier ledger keyed by `answerId`**, plus the broker's existing settled-state outcomes read as terminal | Applying on every feed read; relying on the broker alone to dedupe |
-| 4. Failure behaviour | **Each failed application raises its own alert**, with retry until terminal | Logging the failure in the broker only (the #13902 pattern) |
+| 3. Exactly-once and races      | **Applier ledger keyed by `answerId`**, plus the broker's existing settled-state outcomes read as terminal                                     | Applying on every feed read; relying on the broker alone to dedupe                 |
+| 4. Failure behaviour           | **Each failed application raises its own alert**, with retry until terminal                                                                    | Logging the failure in the broker only (the #13902 pattern)                        |
 
 ## 1. Applier placement (decided: aggregator-side)
 
@@ -59,12 +59,12 @@ Rejected: a dedicated applier seat with its own seat credential. It would authen
 
 **Broker outcomes, read as terminal.** The broker's existing decide verb already answers each race:
 
-| Broker state at arrival | Verb outcome today | Applier state |
-| --- | --- | --- |
-| Pending extension request | Approves or denies; `decided: true` | `applied` |
-| Tier-2 window already silence-approved | `decided: false`, `approved: true`, `outcome: silence-approved` | `superseded` (raise a note, do not re-decide) |
-| Session settled, or no pending request | fail code 5 "no extension request is pending" | `superseded` if the session is settled; `rejected` otherwise |
-| Expired decision grace | `require_session_settled` settles the session first; the late deny does not read as landed | `superseded`, with the note |
+| Broker state at arrival                | Verb outcome today                                                                         | Applier state                                                |
+| -------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| Pending extension request              | Approves or denies; `decided: true`                                                        | `applied`                                                    |
+| Tier-2 window already silence-approved | `decided: false`, `approved: true`, `outcome: silence-approved`                            | `superseded` (raise a note, do not re-decide)                |
+| Session settled, or no pending request | fail code 5 "no extension request is pending"                                              | `superseded` if the session is settled; `rejected` otherwise |
+| Expired decision grace                 | `require_session_settled` settles the session first; the late deny does not read as landed | `superseded`, with the note                                  |
 
 Only the first two rows are successes, and the applier treats them as final. A late tap after silence approval is not an error: it is recorded and raised as an informational note, so Drew can see his answer did not land.
 

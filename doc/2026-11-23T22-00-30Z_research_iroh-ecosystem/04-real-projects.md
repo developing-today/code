@@ -1,9 +1,9 @@
 # Real projects
 
-*Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).
+_Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).
 Scale labels are honest: production means real users depend on it;
 beta means deployed with real communities but not finished; small
-scope means a finished tool doing one thing.*
+scope means a finished tool doing one thing._
 
 ## Delta Chat — the flagship production deployment
 
@@ -20,7 +20,7 @@ short retention window. Anyone can run one; the network is federated
 like e-mail itself.
 
 Iroh appears in Delta Chat in two shipped features — and pointedly
-*not* in a third.
+_not_ in a third.
 
 ### (a) Second-device setup and backup transfer — iroh's origin story
 
@@ -46,8 +46,7 @@ size, streams the tar, and acknowledges with a single byte.
 
 ### (b) Webxdc realtime channels — iroh-gossip
 
-The second, larger integration shipped in **Delta Chat 1.48 (November
-2024)**, after almost two years of collaboration with the iroh team.
+The second, larger integration shipped in **Delta Chat 1.48 (November 2024)**, after almost two years of collaboration with the iroh team.
 Webxdc is Delta Chat's in-chat mini-app format — small web apps sent
 as message attachments and run inside chats. 1.48 added a
 `joinRealtimeChannel()` API giving those apps an ephemeral, direct
@@ -62,7 +61,7 @@ How it works:
   travels in an encrypted message header with the app message itself.
   When an app joins or sends, the device posts a normal encrypted chat
   message containing its node address (relay URL + public key —
-  deliberately *not* its direct IP addresses, since mail providers
+  deliberately _not_ its direct IP addresses, since mail providers
   persist messages). Peers store that address scoped to the app
   instance and join the gossip swarm. No global DHT lookup is
   involved: an end-to-end encrypted system message carrying an iroh
@@ -81,7 +80,7 @@ How it works:
   all hybrid: durable updates over e-mail, ephemeral traffic over the
   gossip channel.
 
-### (c) Calls — deliberately *not* iroh
+### (c) Calls — deliberately _not_ iroh
 
 Audio/video calls are the natural third candidate, and they do **not**
 use iroh. Delta Chat's calls are peer-to-peer **WebRTC**, signalled
@@ -95,7 +94,7 @@ feature is WebRTC.
 **Why Delta Chat matters for this estate:** it is the strongest
 evidence that iroh survives contact with a mass-market, mobile-first,
 adversarial-NAT user base — and its architecture is instructive. Iroh
-is used *only* where direct connections beat store-and-forward
+is used _only_ where direct connections beat store-and-forward
 (device provisioning, ephemeral realtime), bootstrapped through the
 existing federated channel (encrypted mail messages carrying
 tickets/addresses) rather than through any global discovery system,

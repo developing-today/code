@@ -5,6 +5,7 @@ Every merged PR in dezren39/fleet since 2026-10-23 was read in full (body + diff
 **Verdicts: 81 complete · 8 completed-by-later-PR · 3 partial · 0 new gap/bug issues needed** (every remainder was already tracked — see below). All 92 PRs now carry their Lane 4 outcome label in dezren39/fleet.
 
 Partials (remainders already tracked, no duplicates filed):
+
 - fleet PR #100 → fleet#88: fix merged + verified on main, but the build leg failed again after merge (runs 45161352548, 45283270086, both 2026-11-23, after the 04:24Z merge). Comparison record posted on #88; standing issue owns follow-up.
 - fleet PR #101 → fleet#87: scoping slice landed; #87 stays open for the app-install track.
 - fleet PR #94: REST filing landed; its Drew-reserved proof step was completed later operationally (PAT workflow scope granted; code#12490 closed).

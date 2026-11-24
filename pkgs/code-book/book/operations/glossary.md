@@ -9,7 +9,7 @@ needs first.
   cache. Callers talk to the broker, not to the store behind it.
 - **Capability** — in ID, a grant that bounds what a program or participant
   may do, issued against an identity and enforced on the host side. In the
-  merged list, a *capability set* is one of the four item types.
+  merged list, a _capability set_ is one of the four item types.
 - **Census** — a dated, sourced count or survey of a system's state. This
   book rests on three: Census A (retrospective), Census B (priorities) and
   Census C (the lab), all taken 2026-11-23/24.

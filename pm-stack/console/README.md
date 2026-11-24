@@ -277,6 +277,7 @@ the Android app alike (which is the same site in Chrome).
   the demo edge, aeroplane mode, an answer made offline, the app
   swiped away, and the answer arriving exactly once when the network
   is back.
+
 - **"Sent" means recorded.** An answer the platform took and did not
   record (a question that was settled in the meantime) is not counted
   as sent: it is listed under "could not be done", with why. A question

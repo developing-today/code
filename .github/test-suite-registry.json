@@ -746,9 +746,7 @@
     },
     {
       "id": "pm-service.tenant-store",
-      "paths": [
-        "pm-stack/pm-service/test/tenant-store.test.ts"
-      ],
+      "paths": ["pm-stack/pm-service/test/tenant-store.test.ts"],
       "invocation": "cd pm-stack/pm-service && bun test",
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",
@@ -1622,7 +1620,12 @@
     },
     {
       "id": "id.rust.id-import-notion.integration",
-      "paths": ["pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs"],
+      "paths": [
+        "pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_comments.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_content.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs"
+      ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",

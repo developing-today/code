@@ -35,6 +35,7 @@ fn event(name: &str, author: u8, after_names: &[&str], group: Option<Hash>, body
         author: key(author),
         after: after(after_names),
         group,
+        at: None,
         body,
     }
 }

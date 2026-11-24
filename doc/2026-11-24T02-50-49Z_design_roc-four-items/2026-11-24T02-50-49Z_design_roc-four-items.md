@@ -29,8 +29,8 @@ The direction follows, verbatim as appended to the design note.
 
 A second direction from Drew the same evening, extending §3.8's list:
 
-**Drew's direction, in substance:** *"Plan to implement and use each of
-these and build an example app for each one, or multiple."*
+**Drew's direction, in substance:** _"Plan to implement and use each of
+these and build an example app for each one, or multiple."_
 
 "These" are the four items from the decisions-lane report — **Rocco**,
 **Roclet**, **concave**, and **roc-pdf**. They join the family plan
@@ -52,7 +52,7 @@ same thing, and this entry keeps their shapes distinct:
    dependency rather than position, notebooks saved as plain Roc or
    Markdown, exportable as runnable scripts or HTML reports. Experimental
    alpha, Chrome only. A variant candidate like Rocco; its example apps
-   are example *notebooks*, which in its model are also its distributable
+   are example _notebooks_, which in its model are also its distributable
    artefact.
 3. **concave — a platform, but first a reference design.** The
    Convex-style reactive backend announced the same day as the report:
@@ -67,20 +67,20 @@ same thing, and this entry keeps their shapes distinct:
    registry plus an `--introspect` mode) is the first use case for the
    embedding adapter the decisions lane recommended. Whether it is also
    the base code of our backend platform is **an open question for Drew,
-   recorded here rather than decided:** "implement" can mean *(a)* build
+   recorded here rather than decided:** "implement" can mean _(a)_ build
    our own implementation of the concave shape on the id platform family,
-   or *(b)* adopt the days-old upstream as the base of our variant, per
+   or _(b)_ adopt the days-old upstream as the base of our variant, per
    §3.8's pattern for the five. The costs differ by an order of
    magnitude, and the use-and-example-app parts of the direction apply
    either way.
 4. **roc-pdf — a library, not a platform.** Boswell's Roc library that
-   *generates PDF files* — pagination, font embedding, deterministic
+   _generates PDF files_ — pagination, font embedding, deterministic
    standards-conformant output — with twelve releases and the most mature
    footing of the four (Åhdén generates real-estate sale flyers with it in
    production). It joins the family as a library: nothing here gets a
    variant in the platform sense and it takes no catalogue entry, because
    catalogue caps are host capabilities and a pure Roc library needs
-   none. Example apps consume it *through* a platform — a server- or
+   none. Example apps consume it _through_ a platform — a server- or
    CLI-profile app that generates documents. "Implement and use" in
    library form: depend on it, and own fixes in a library variant if it
    becomes load-bearing.

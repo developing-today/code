@@ -82,14 +82,14 @@ figure is the whole 50-vs-52 discrepancy.
 
 Audit groups, settled against the live list:
 
-| Audit group | Audit figure | Live count | Verdict |
-|---|---:|---:|---|
-| Atlas | 33 | 33 | ✅ correct total, wrong internal breakdown (below) |
-| Fleet plane (`fleet-queue`, `fleet-platform`, `fleet-mirror`, `fleet-dispatch-jobs`) | 4 | 4 | ✅ exact |
-| Coordination (`muse-meta`) | 1 | 1 | ✅ exact |
-| Small product stores (`notes-submissions`, `bedside-and-away`, `voice-line-ledger`, `great-star-lord`) | 4 | 4 | ✅ exact |
-| Frozen staging/recovery copies (the 8 named 2026-11-17/18 copies) | 8 | 8 | ✅ exact, name-for-name |
-| **Total** | **50** | **50** | ✅ |
+| Audit group                                                                                            | Audit figure | Live count | Verdict                                            |
+| ------------------------------------------------------------------------------------------------------ | -----------: | ---------: | -------------------------------------------------- |
+| Atlas                                                                                                  |           33 |         33 | ✅ correct total, wrong internal breakdown (below) |
+| Fleet plane (`fleet-queue`, `fleet-platform`, `fleet-mirror`, `fleet-dispatch-jobs`)                   |            4 |          4 | ✅ exact                                           |
+| Coordination (`muse-meta`)                                                                             |            1 |          1 | ✅ exact                                           |
+| Small product stores (`notes-submissions`, `bedside-and-away`, `voice-line-ledger`, `great-star-lord`) |            4 |          4 | ✅ exact                                           |
+| Frozen staging/recovery copies (the 8 named 2026-11-17/18 copies)                                      |            8 |          8 | ✅ exact, name-for-name                            |
+| **Total**                                                                                              |       **50** |     **50** | ✅                                                 |
 
 ### Where the 52 came from — plainly
 
@@ -116,7 +116,7 @@ The overcount of exactly 2 is:
 1. **`atlas-core-internal-content` double-counted.** It matches the
    `atlas-core-internal-*` glob — in the live list it is one of the 29
    names matching that glob (28 shards + itself) — and the audit then
-   listed it *again* as a separate "plus" item.
+   listed it _again_ as a separate "plus" item.
 2. **A phantom 30th internal shard.** Even counting the glob generously
    (content included), the live family has **29** names, not 30. There is
    no 30th `atlas-core-internal-*` database; the audit's "30" figure is

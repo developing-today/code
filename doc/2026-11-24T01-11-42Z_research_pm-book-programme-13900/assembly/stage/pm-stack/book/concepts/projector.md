@@ -14,29 +14,29 @@ Keeping the registry in its own service enforces the limit in the README. The ag
 
 Items are named by subjects: `gh:` for GitHub items, `kaneo:&lt;slug&gt;/&lt;taskId&gt;` for Kaneo cards, `grist:&lt;docId&gt;/Roadmap/&lt;recId&gt;` for roadmap rows, plus `session:` and `orch:` subjects. A link records that two subjects are counterparts. The link registry is served over HTTP:
 
-| Route | What it does |
-|---|---|
-| `GET /links` | Read the registry |
-| `POST /links` | Add a link |
-| `DELETE /links` | Remove a link |
-| `GET /items` | Read projected items |
-| `GET /comments` | Read comments |
+| Route                           | What it does                             |
+| ------------------------------- | ---------------------------------------- |
+| `GET /links`                    | Read the registry                        |
+| `POST /links`                   | Add a link                               |
+| `DELETE /links`                 | Remove a link                            |
+| `GET /items`                    | Read projected items                     |
+| `GET /comments`                 | Read comments                            |
 | `GET /subjects/&lt;subject&gt;` | Read one subject: its links and activity |
 
 The store's schema is `pm-stack/projector/schema.sql`. Its inventory (survey top-up 1, T2) is 10 tables and 2 views:
 
-| Table | What it holds |
-|---|---|
-| `pmp_items` | GitHub issues and PRs keyed by repo-qualified ref `owner/repo#N` — the join key everywhere |
-| `pmp_item_deletions` | Durable deletion markers keyed by ref; makes item deletion absorbing against stale replays (#6782) |
-| `pmp_comments` | Comments across all repos, including PR reviews and review line comments Kaneo never syncs; primary key `(id, kind)`; `deleted` is the tombstone flag |
-| `pmp_links` | The link registry: subject↔GitHub ref relations (`tracks` &#124; `implements` &#124; `relates`), human/agent-written through the registry routes. The map calls it the only non-rebuildable cross-service relationship in the projector schema |
-| `pmp_deliveries` | Webhook deliveries; the GitHub delivery GUID is the unique key, so a redelivered webhook is applied at most once |
-| `pmp_delivery_errors` | The first failed attempt per delivery, kept separately so a successful retry does not erase the original failure evidence |
-| `pmp_sync_state` | Reconciliation cursors, one per `(repo, stream)`; streams are `issues`, `prs`, `issue_comments`, `review_comments`, `reviews` |
-| `pmp_push_events` | Push events recorded for audit and later exec-strip aggregation; the projector does not write back to GitHub |
-| `pmp_hot_events` | The append-only normalised change ledger over the webhook stream (#5204); `seq` is the monotonic cursor consumers paginate on |
-| `pmp_consumer_checkpoints` | Per-consumer sweep checkpoints over `pmp_hot_events.seq`; a checkpoint only ever moves forward |
+| Table                      | What it holds                                                                                                                                                                                                                                  |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pmp_items`                | GitHub issues and PRs keyed by repo-qualified ref `owner/repo#N` — the join key everywhere                                                                                                                                                     |
+| `pmp_item_deletions`       | Durable deletion markers keyed by ref; makes item deletion absorbing against stale replays (#6782)                                                                                                                                             |
+| `pmp_comments`             | Comments across all repos, including PR reviews and review line comments Kaneo never syncs; primary key `(id, kind)`; `deleted` is the tombstone flag                                                                                          |
+| `pmp_links`                | The link registry: subject↔GitHub ref relations (`tracks` &#124; `implements` &#124; `relates`), human/agent-written through the registry routes. The map calls it the only non-rebuildable cross-service relationship in the projector schema |
+| `pmp_deliveries`           | Webhook deliveries; the GitHub delivery GUID is the unique key, so a redelivered webhook is applied at most once                                                                                                                               |
+| `pmp_delivery_errors`      | The first failed attempt per delivery, kept separately so a successful retry does not erase the original failure evidence                                                                                                                      |
+| `pmp_sync_state`           | Reconciliation cursors, one per `(repo, stream)`; streams are `issues`, `prs`, `issue_comments`, `review_comments`, `reviews`                                                                                                                  |
+| `pmp_push_events`          | Push events recorded for audit and later exec-strip aggregation; the projector does not write back to GitHub                                                                                                                                   |
+| `pmp_hot_events`           | The append-only normalised change ledger over the webhook stream (#5204); `seq` is the monotonic cursor consumers paginate on                                                                                                                  |
+| `pmp_consumer_checkpoints` | Per-consumer sweep checkpoints over `pmp_hot_events.seq`; a checkpoint only ever moves forward                                                                                                                                                 |
 
 Two SQL views are the projection surface: `pmp_v_links_items`, every link joined to the linked item's live state and title, and `pmp_v_subject_activity`, one unified activity stream per subject, newest first. A projection, in this service's vocabulary, is a derived read built from the registry — links joined to the items they connect, and activity rolled up per subject — not a copy of any source's own tables.
 

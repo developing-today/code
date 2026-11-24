@@ -387,6 +387,8 @@ pub(super) fn cmd_show(rest: &[String]) -> i32 {
         "claim_refused",
         "released",
         "parked",
+        "reprioritized",
+        "reprioritize_sync_pending",
         "failed",
         "cancelled",
     ] {
@@ -946,6 +948,8 @@ pub(super) fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
         "claim_refused",
         "released",
         "parked",
+        "reprioritized",
+        "reprioritize_sync_pending",
         "failed",
         "cancelled",
     ] {

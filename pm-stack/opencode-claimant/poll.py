@@ -610,7 +610,9 @@ def _server_get(path, *, include_envelope=False, raise_http_errors=False):
     token = base64.b64encode(f"opencode:{credential}".encode()).decode()
     req.add_header("Authorization", f"Basic {token}")
     try:
-        with urllib.request.urlopen(req, timeout=_poll_timeout(SERVER_READ_TIMEOUT_S)) as res:
+        with urllib.request.urlopen(
+            req, timeout=_poll_timeout(SERVER_READ_TIMEOUT_S)
+        ) as res:
             data = json.loads(res.read() or "null")
     except urllib.error.HTTPError:
         if raise_http_errors:
@@ -706,7 +708,9 @@ def _broker_post(path, body):
     if url.startswith("unix://"):
         # Same HTTP API/auth as TCP, but the URL suffix is a literal socket
         # path, not an HTTP base URL. Never append /list to that filename.
-        conn = _UnixHTTPConnection(url[len("unix://") :], timeout=_poll_timeout(BROKER_READ_TIMEOUT_S))
+        conn = _UnixHTTPConnection(
+            url[len("unix://") :], timeout=_poll_timeout(BROKER_READ_TIMEOUT_S)
+        )
         try:
             conn.request("POST", path, body=payload, headers=headers)
             with conn.getresponse() as res:
@@ -729,7 +733,9 @@ def _broker_post(path, body):
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=_poll_timeout(BROKER_READ_TIMEOUT_S)) as res:
+        with urllib.request.urlopen(
+            req, timeout=_poll_timeout(BROKER_READ_TIMEOUT_S)
+        ) as res:
             data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
         raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
@@ -1055,9 +1061,7 @@ def main():
     # census), not submission order.
     with ThreadPoolExecutor(max_workers=2 + 2 * len(QUEUES)) as pool:
         sessions_f = pool.submit(_timed_read, "session list", fetch_sessions)
-        active_f = pool.submit(
-            _timed_read, "active session ids", fetch_active_ids
-        )
+        active_f = pool.submit(_timed_read, "active session ids", fetch_active_ids)
         row_futures = {
             q: (
                 pool.submit(
@@ -1082,15 +1086,11 @@ def main():
         for q in QUEUES:
             rows = row_futures[q][0].result()
             handed_off_rows = row_futures[q][1].result()
-            shaped = get_candidates(rows) + get_handed_off_candidates(
-                handed_off_rows
-            )
+            shaped = get_candidates(rows) + get_handed_off_candidates(handed_off_rows)
             per_queue[q] = (rows, handed_off_rows, shaped)
             shaped_ids.extend(r.get("id") for r in shaped)
         _poll_phase("ledger_read")
-        bindings = _timed_read(
-            "ledger bindings", fetch_ledger_bindings, shaped_ids
-        )
+        bindings = _timed_read("ledger bindings", fetch_ledger_bindings, shaped_ids)
         _poll_phase("snapshot")
         sessions = sessions_f.result()
         _poll_phase("active_sessions")

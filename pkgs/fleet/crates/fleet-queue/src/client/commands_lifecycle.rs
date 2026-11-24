@@ -679,7 +679,10 @@ pub(super) fn cmd_lane(rest: &[String]) -> i32 {
             "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
-    print_json(&served_row(require_row(&resp, "assign_repo_task_lane"), "lane"));
+    print_json(&served_row(
+        require_row(&resp, "assign_repo_task_lane"),
+        "lane",
+    ));
     0
 }
 
@@ -927,6 +930,36 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
         unbound_append(&opt_worker(&args), row, "park");
     }
     row_or_ledger(&resp, "park_task", "park");
+    0
+}
+
+/// Change a task's queue priority and request the broker's linked
+/// GitHub synchronization.
+pub(super) fn cmd_reprioritize(rest: &[String]) -> i32 {
+    let args = parse_verb_args("reprioritize", rest, &["worker", "reason"], &[]);
+    reject_extra_pos("reprioritize", &args, 2);
+    let id = args.pos_i64(0, "task_id");
+    let raw = args
+        .pos(1)
+        .unwrap_or_else(|| die(2, "reprioritize: priority is required"));
+    let v: Value = match raw.parse::<i64>() {
+        Ok(n) => json!(n),
+        Err(_) => json!(raw),
+    };
+    let to = match crate::validate::resolve_priority(&v, "priority") {
+        Ok(n) => n,
+        Err(e) => die(2, &e),
+    };
+    // The actor is the authenticated caller identity: the worker id
+    // presented over the broker's X-Agent-Token channel (opt_worker
+    // default), exactly like the other lifecycle verbs. No free-form
+    // actor string is accepted — it would be spoofable.
+    let body = json!({"task_id": id, "priority": to, "worker": opt_worker(&args), "reason": args.get("reason")});
+    let resp = unwrap_ok(call("/reprioritize", &body));
+    print_json(&served_row(
+        require_row(&resp, "reprioritize_task"),
+        "reprioritize",
+    ));
     0
 }
 
@@ -1311,7 +1344,10 @@ pub(super) fn cmd_dep_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/dep-recheck", &body));
-    print_json(&served_row(require_row(&resp, "dep_recheck"), "dep-recheck"));
+    print_json(&served_row(
+        require_row(&resp, "dep_recheck"),
+        "dep-recheck",
+    ));
     0
 }
 

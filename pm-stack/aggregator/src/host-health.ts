@@ -162,9 +162,11 @@ export function normalizeHostBackupRecord(parsed: unknown): HostBackupRecord | n
   // are unavailable restore points, never a green status.
   if (
     b.result === "complete" &&
-    (typeof b.archiveSha256 !== "string" || !b.archiveSha256 ||
+    (typeof b.archiveSha256 !== "string" ||
+      !b.archiveSha256 ||
       ["local", "r2", "drive"].some((leg) => destRaw[leg] !== "ok"))
-  ) return null;
+  )
+    return null;
   const destinations: Record<string, string> = {};
   for (const [k, v] of Object.entries(destRaw)) {
     if (typeof v === "string") destinations[k] = v;

@@ -37,43 +37,43 @@ under a groups/delegation spike). The top-level list is the useful census.
 
 Dated folders/files:
 
-| Path in `doc/` | Kind in name |
-|---|---|
-| `2026-10-29T11-27-00Z_investigation_bridge_semantics_hosted_native/` | investigation — bridge |
-| `2026-11-03T15-10-56Z_design_task-placement-framework-v1/` (+ `placement-policy.yaml`) | design — placement |
-| `2026-11-04T11-45-48Z_design_fleet_multicall_binary/` | design — fleet |
-| `2026-11-08T06-40-00Z_design_pm-stack_quota-throughput-contract.md` | design — quota (file, not folder) |
-| `2026-11-08T13-55-51Z_design_agent_note_placement/` | design — agent-note placement |
-| `2026-11-09_design_id6300_agents_in_worlds_v1.md` | design — agents (ID program, not fleet binary) |
-| `2026-11-09T05-00-00Z_feature_mqtt_device_bridge_id_device_v1/` | feature — bridge (ID device) |
-| `2026-11-10_design_id6301_agents_as_citizens_v2_outline.md` | design — agents (ID) |
-| `2026-11-10_design_queue_task_data_model_3424.md` | design — queue |
-| `2026-11-10T20-00-00Z_design_agent_note_placement.md` | design — agent-note placement (file) |
-| `2026-11-11_design_id8579_queue_schema_wipe_test_audit.md` | design/audit — queue schema |
-| `2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/` (`note.md` + `sources/`) | design — fleet CA / credentials / secrets |
-| `2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/` | design — PM-stack + fleet orchestration |
-| `2026-11-14_design_id6302_shared_agent_worlds_v3_outline.md` | design — agents (ID) |
-| `2026-11-14T18-05-00Z_design_fleet_quota_admission/` | design — fleet quota |
-| `2026-11-16_design_id6303_hosted_agent_services_v4_outline.md` | design — hosted agent services (ID) |
-| `2026-11-16T09-20-00Z_inventory_legacy_agent_notes_7718/` (`manifest.json`, `manifest.md`) | inventory — agent notes |
-| `2026-11-20T13-35-00Z_design_id10662_hosted_agent_service_listing/` | design — hosted agent service |
-| `2026-11-21T11-30-00Z_design_fleet-agent-front-door/` | design — fleet agent |
-| `2026-11-22T14-28-45Z_design_fleet-tool-workers-edition/` | design — fleet tool, Workers edition |
-| `2026-11-22T22-35-00Z_design_quota-plane-stage-3/` | design — quota plane |
-| `2026-11-23_design_id1067-account-quotas.md` | design — account quotas (ID F12.10) |
-| `2026-11-23T05-00-00Z_design_bridge_v1_implementation/` | design — bridge v1 implementation |
+| Path in `doc/`                                                                             | Kind in name                                   |
+| ------------------------------------------------------------------------------------------ | ---------------------------------------------- |
+| `2026-10-29T11-27-00Z_investigation_bridge_semantics_hosted_native/`                       | investigation — bridge                         |
+| `2026-11-03T15-10-56Z_design_task-placement-framework-v1/` (+ `placement-policy.yaml`)     | design — placement                             |
+| `2026-11-04T11-45-48Z_design_fleet_multicall_binary/`                                      | design — fleet                                 |
+| `2026-11-08T06-40-00Z_design_pm-stack_quota-throughput-contract.md`                        | design — quota (file, not folder)              |
+| `2026-11-08T13-55-51Z_design_agent_note_placement/`                                        | design — agent-note placement                  |
+| `2026-11-09_design_id6300_agents_in_worlds_v1.md`                                          | design — agents (ID program, not fleet binary) |
+| `2026-11-09T05-00-00Z_feature_mqtt_device_bridge_id_device_v1/`                            | feature — bridge (ID device)                   |
+| `2026-11-10_design_id6301_agents_as_citizens_v2_outline.md`                                | design — agents (ID)                           |
+| `2026-11-10_design_queue_task_data_model_3424.md`                                          | design — queue                                 |
+| `2026-11-10T20-00-00Z_design_agent_note_placement.md`                                      | design — agent-note placement (file)           |
+| `2026-11-11_design_id8579_queue_schema_wipe_test_audit.md`                                 | design/audit — queue schema                    |
+| `2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/` (`note.md` + `sources/`)       | design — fleet CA / credentials / secrets      |
+| `2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/`                                | design — PM-stack + fleet orchestration        |
+| `2026-11-14_design_id6302_shared_agent_worlds_v3_outline.md`                               | design — agents (ID)                           |
+| `2026-11-14T18-05-00Z_design_fleet_quota_admission/`                                       | design — fleet quota                           |
+| `2026-11-16_design_id6303_hosted_agent_services_v4_outline.md`                             | design — hosted agent services (ID)            |
+| `2026-11-16T09-20-00Z_inventory_legacy_agent_notes_7718/` (`manifest.json`, `manifest.md`) | inventory — agent notes                        |
+| `2026-11-20T13-35-00Z_design_id10662_hosted_agent_service_listing/`                        | design — hosted agent service                  |
+| `2026-11-21T11-30-00Z_design_fleet-agent-front-door/`                                      | design — fleet agent                           |
+| `2026-11-22T14-28-45Z_design_fleet-tool-workers-edition/`                                  | design — fleet tool, Workers edition           |
+| `2026-11-22T22-35-00Z_design_quota-plane-stage-3/`                                         | design — quota plane                           |
+| `2026-11-23_design_id1067-account-quotas.md`                                               | design — account quotas (ID F12.10)            |
+| `2026-11-23T05-00-00Z_design_bridge_v1_implementation/`                                    | design — bridge v1 implementation              |
 
 Undated / non-dated top-level entries:
 
-| Path | Notes |
-|---|---|
-| `doc/agents/` | Directory — see §1.4 |
-| `doc/agent-stack-notes.md` | Agent stack notes (opencode/OpenChamber/etc.) |
-| `doc/fleet/` | Directory — see §1.4 |
-| `doc/fleet-execution-handoff.md` | Fleet command execution / handoff |
-| `doc/fleet-machine-registry.yaml` | Machine registry data |
-| `doc/fleet-schedule-registry.md` | Schedule registry |
-| `doc/placement-intake/` | `fleet-place.reference`, `fleet-surfaces.reference.json`, `placement.md` |
+| Path                              | Notes                                                                    |
+| --------------------------------- | ------------------------------------------------------------------------ |
+| `doc/agents/`                     | Directory — see §1.4                                                     |
+| `doc/agent-stack-notes.md`        | Agent stack notes (opencode/OpenChamber/etc.)                            |
+| `doc/fleet/`                      | Directory — see §1.4                                                     |
+| `doc/fleet-execution-handoff.md`  | Fleet command execution / handoff                                        |
+| `doc/fleet-machine-registry.yaml` | Machine registry data                                                    |
+| `doc/fleet-schedule-registry.md`  | Schedule registry                                                        |
+| `doc/placement-intake/`           | `fleet-place.reference`, `fleet-surfaces.reference.json`, `placement.md` |
 
 Related but outside the name grep, found in the recursive pass and relevant
 to the coordinator: `doc/2026-10-30T11-55-00Z_design_grant_lifecycle.md`
@@ -86,7 +86,7 @@ to the coordinator: `doc/2026-10-30T11-55-00Z_design_grant_lifecycle.md`
 `doc/living/saas-service-id-atlas-fleet.md`.
 
 **Caution on names:** `*_agent_note_placement*` and `*_agents_in_worlds / as_citizens / shared_agent_worlds*`
-are **not** fleet-binary placement. The former is about where agent *notes*
+are **not** fleet-binary placement. The former is about where agent _notes_
 live (see §1.3 #15); the latter are ID-program world designs. Name-grep alone
 over-counts “fleet placement”.
 
@@ -95,7 +95,7 @@ over-counts “fleet placement”.
 Heads read: first ~30 lines of the main `.md` in each folder/file.
 
 1. **`2026-11-04T11-45-48Z_design_fleet_multicall_binary/2026-11-04T11-45-48Z_design_fleet_multicall_binary.md`**
-   — *“One `fleet` multicall binary: search, queue, dispatch, proxy”*
+   — _“One `fleet` multicall binary: search, queue, dispatch, proxy”_
    — Design record 2026-11-04, “Step 0 of epic developing-today/code#5412 —
    Drew's 2026-11-04 ruling to consolidate the fleet's tools into ONE
    multicall binary, `fleet`”; the founding design `pkgs/fleet/README.md`
@@ -103,13 +103,13 @@ Heads read: first ~30 lines of the main `.md` in each folder/file.
    decision list (§8).
 
 2. **`2026-11-03T15-10-56Z_design_task-placement-framework-v1/…md`** (+ `placement-policy.yaml`)
-   — *“Design: task-placement framework v1 — decision rules and a shared-pool efficiency model”*
+   — _“Design: task-placement framework v1 — decision rules and a shared-pool efficiency model”_
    — Issue #2024 (epic #2055); decision rules for where tasks run, with a
    v1.1 amendment 2026-11-22 adding the machine dimension; states the POOL
    MAP wins over this doc on any disagreement.
 
 3. **`2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/`** — `main.md`:
-   *“PM Stack & Fleet orchestration — package guide”* (package #9196)
+   _“PM Stack & Fleet orchestration — package guide”_ (package #9196)
    — The largest fleet design package in the archive: two coordinated tracks
    (A: priority/urgency/PM visibility/dispatch #9199–#9204; B: work-item
    lifecycle/hydration/dependencies/journal/leases/outbox #9206–#9209),
@@ -119,7 +119,7 @@ Heads read: first ~30 lines of the main `.md` in each folder/file.
    including `issues/bodies/DOC-01.md` — the source package DOC-01 came from.
 
 4. **`2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets/note.md`**
-   — *“Fleet CA, credentials & secrets — v0.3 design mill: intake note”*
+   — _“Fleet CA, credentials & secrets — v0.3 design mill: intake note”_
    — Program epic #9155, domain starters #9156–#9167; canonical in-repo home
    of the v0.3 intake, with `sources/` holding the governing spec verbatim
    (`fleet_architecture_spec_v0_3.md`, §§0–49 + Appendix A),
@@ -128,69 +128,69 @@ Heads read: first ~30 lines of the main `.md` in each folder/file.
    are stated in `note.md`.
 
 5. **`2026-11-21T11-30-00Z_design_fleet-agent-front-door/…md`**
-   — *“Fleet agent front door: one way in for every agent”*
+   — _“Fleet agent front door: one way in for every agent”_
    — Date 2026-11-21, “design, implemented in the same change”; code
    `pkgs/fleet/crates/fleet-agent` (`fleet agent`, `fleet shell`), rests on
    FDR-0013; one onboarding/task-intake ladder for every agent kind, with
    `fleet` as the only binary an agent talks to.
 
 6. **`2026-11-14T18-05-00Z_design_fleet_quota_admission/…md`**
-   — *“Fleet quota admission: protect capacity before launching work”*
+   — _“Fleet quota admission: protect capacity before launching work”_
    — “Status: implementation proposal, not deployed policy. Tracks: #2732.”
    Pre-launch quota admission projection (stopped / walled / pace_hold /
    unknown / eligible), complementing the reactive breaker in #9950; all
    windows bind, unknown is never treated as zero/available.
 
 7. **`2026-11-22T22-35-00Z_design_quota-plane-stage-3/…md`**
-   — *“Design (quota plane, Stage 3): predictive, self-tuning quota operations”*
+   — _“Design (quota plane, Stage 3): predictive, self-tuning quota operations”_
    — Issue #1177, under epic #1149 and Stage-3 epic #12694; pace forecasting
    driving placement, pool re-weighting **proposals as PRs, never silent
    config edits**, anomaly detection, weekly design review.
 
 8. **`2026-11-08T06-40-00Z_design_pm-stack_quota-throughput-contract.md`**
-   — *“pm-stack quota/throughput design contract (#851, #3933)”*
+   — _“pm-stack quota/throughput design contract (#851, #3933)”_
    — The joined model the pm-stack aggregator renders: one `QuotaView`,
    pools/windows, burn rate + active sessions, burn history, and
    `quota.choices` guidance (`hasHeadroom`, `burnBeforeReset`, `doNotStart`).
 
 9. **`2026-11-10_design_queue_task_data_model_3424.md`**
-   — *“Design brief: durable repo-queue task data model”*
+   — _“Design brief: durable repo-queue task data model”_
    — Design-mill intake brief for #3424 (not the design itself): six pieces
    including absolute `not_before` for parks and blockers as typed links
    (to tasks/PRs/issues) rather than text; companion claim-side issue #3418.
 
 10. **`2026-11-11_design_id8579_queue_schema_wipe_test_audit.md`**
-    — *“Wipe-test audit of the fleet-queue database schema”*
+    — _“Wipe-test audit of the fleet-queue database schema”_
     — Issue #8579, parent design #8575; audits the 9 tables of the
     fleet-queue Turso store (schema of record in
     `pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`) and classifies every
     field as Coordination / Durable truth / GitHub mirror cache.
 
 11. **`2026-11-22T14-28-45Z_design_fleet-tool-workers-edition/…md`**
-    — *“Design (component C): fleet tool, Workers/TypeScript equivalent — hosted Metadata stamping/query, session provenance, sync tools”*
+    — _“Design (component C): fleet tool, Workers/TypeScript equivalent — hosted Metadata stamping/query, session provenance, sync tools”_
     — Issue #9081, component C of hosted-editions epic #9078; hosted/native
     parity-or-deliberate-divergence for the fleet tool, both tiers tier 1.
 
 12. **`2026-10-29T11-27-00Z_investigation_bridge_semantics_hosted_native/…md`**
-    — *“Investigation: Bridge Semantics — Hosted (HTTPS/WS) Edition Syncing with Native Iroh Nodes”*
+    — _“Investigation: Bridge Semantics — Hosted (HTTPS/WS) Edition Syncing with Native Iroh Nodes”_
     — Issue #2058 (ID wave-1). Verdict: “The bridge is a sync peer, not a
     translator and not a proxy.” Fleet-relevant because `fleet bridge` is
     the client domain; the semantics ruling itself is ID-side.
 
 13. **`2026-11-23T05-00-00Z_design_bridge_v1_implementation/…md`**
-    — *“The hosted signed-object bridge v1 — implementation record (#3818)”*
+    — _“The hosted signed-object bridge v1 — implementation record (#3818)”_
     — Production shape of #12, in `pkgs/id/hosted-worker`; restates the
     sync-peer ruling; the #2276 PoC is the semantic oracle.
 
 14. **`doc/fleet-execution-handoff.md`** (undated)
-    — *“Fleet command execution and handoff”*, “Current handoff reference:
+    — _“Fleet command execution and handoff”_, “Current handoff reference:
     2026-11-22” — `fleet queue dispatch` / `repo-queue dispatch` dry-run
     unless `--dispatch`, runner workflow `.github/workflows/fleet-command.yml`,
     standard image `ghcr.io/dezren39/fleet-build:full`. This is the operational
     companion to `pkgs/fleet/doc/agents/remote-build-and-test.md` (§2).
 
 15. **`2026-11-08T13-55-51Z_design_agent_note_placement/…md`**
-    — *“Design: where agent notes live — scratch, memory, repo, Zettelkasten, or ID graph”* (issue #6022)
+    — _“Design: where agent notes live — scratch, memory, repo, Zettelkasten, or ID graph”_ (issue #6022)
     — Included to disambiguate: this is **note** placement, not task
     placement. Rule: choose the canonical home by what must remain
     authoritative — ID object / repo document / Zettelkasten / scratch-memory.
@@ -199,46 +199,46 @@ Heads read: first ~30 lines of the main `.md` in each folder/file.
 
 **`doc/fleet/`** (16 entries + 1 subdir, from `ls`):
 
-- `2026-10-19-reliability-review.md` — *“Reliability review, 2026-10-19”*:
+- `2026-10-19-reliability-review.md` — _“Reliability review, 2026-10-19”_:
   dated snapshot of one session (what broke/changed), state at commit
   `e509884`; durable mechanisms live in `services.md` / `mcp.md`.
-- `agent-events-turso.md` — *“agent.events — Turso sink, coupling verdict,
-  and cutover (#5690)”*: companion to the queue Turso cutover.
+- `agent-events-turso.md` — _“agent.events — Turso sink, coupling verdict,
+  and cutover (#5690)”_: companion to the queue Turso cutover.
 - `archer-slack/` — `aster-usage-log.md`, `dot-archer-authority.md`,
   `slack-agent-design.md`, `slack-app-manifest.json`,
   `socket-mode-collector.md`. **[gist unverified — directory listed, files not read]**
 - `creation-outbox.md` — **[unverified — listed, not read]**
 - `generic-containers.md` — **[unverified — listed, not read]**
-- `gh-credential-lifecycle.md` — *“fleet gh: credential lifecycle and current
-  limitations”*: current behaviour as implemented, source of truth
+- `gh-credential-lifecycle.md` — _“fleet gh: credential lifecycle and current
+  limitations”_: current behaviour as implemented, source of truth
   `pkgs/fleet/crates/fleet/src/gh.rs` + `fleet-secrets`; closes #10744.
   (Also republished inside the package as `pkgs/fleet/docs/fleet-gh-credentials.md`.)
-- `mcp.md` — *“MCP servers”*: every MCP server runs under mcpx; wiring,
+- `mcp.md` — _“MCP servers”_: every MCP server runs under mcpx; wiring,
   auth, inventory as of its heading date.
 - `mcpx-extraction.md`, `mcpx-identity-transport.md`,
   `mcpx-oauth-authorization-server.md`, `mcpx-opencode-plan.md` —
   **[unverified — listed, not read]**
-- `queue-fallback-mode.md` — *“Queue fallback mode — GitHub-native claiming
-  when the backend is down”*: status ACTIVE whenever the backend is
+- `queue-fallback-mode.md` — _“Queue fallback mode — GitHub-native claiming
+  when the backend is down”_: status ACTIVE whenever the backend is
   unreachable (Drew's order 2026-11-06); tooling `fleet queue fallback`.
-- `queue-turso-cutover.md` — *“Queue core on Turso — cutover runbook
-  (#6741)”*: “CUTOVER EXECUTED 2026-11-07T05:10Z”; production broker runs
+- `queue-turso-cutover.md` — _“Queue core on Turso — cutover runbook
+  (#6741)”_: “CUTOVER EXECUTED 2026-11-07T05:10Z”; production broker runs
   the Turso backend against `fleet-queue`.
 - `repo-universe.yaml`, `restore-procedure.md`, `services.md`
-  (*“The long-running services: OpenChamber, OpenCode, mcpx”*, written
+  (_“The long-running services: OpenChamber, OpenCode, mcpx”_, written
   2026-10-19), `turso-databases.md` — services/databases/restore are
   **[listed; only `services.md` head read]**.
 
 **`doc/agents/`** (9 files, from `ls`):
 
-- `fleet-command-channel.md` — *“Central commands: the fleet command
-  channel”*: Central can send any fleet agent a message/command via the
+- `fleet-command-channel.md` — _“Central commands: the fleet command
+  channel”_: Central can send any fleet agent a message/command via the
   bridge mailboxes; client is `fleet bridge`; short way is `fleet agent next`.
 - `gh-cache-daemon.md` — **[unverified — listed, not read]**
-- `onboarding-an-agent.md` — *“Onboarding an agent to the fleet”*: every
+- `onboarding-an-agent.md` — _“Onboarding an agent to the fleet”_: every
   agent joins the same way (`fleet agent kinds` / `enroll` / `next`);
   design link to the fleet-agent-front-door record (§1.3 #5).
-- `one-queue-claiming-work.md` — *“The one queue: claiming work”* (moved
+- `one-queue-claiming-work.md` — _“The one queue: claiming work”_ (moved
   verbatim from `AGENTS.md` by task 15116 / #8430): “There is ONE fleet
   queue (one broker, one tasks table)”; default claim is unfiltered.
 - `operator-script-argument-contract.md`, `owner-preferences.md`,
@@ -248,22 +248,22 @@ Heads read: first ~30 lines of the main `.md` in each folder/file.
 **`doc/decisions/`** — the Fleet Decision Records (FDR) index home:
 `README.md`, `TEMPLATE.md`, `FDR-0001-resume-by-session.md` through
 `FDR-0013-no-owner-decision-gates.md`. Heads read for two:
-FDR-0004 *“Manual-only queue items: a first-class flag, not a park or a low
-priority”* (2026-11-17, accepted) and FDR-0005 *“Fleet init/run identity,
-GitHub carriage, and a backed-up transaction log”* (2026-11-17, proposed —
+FDR-0004 _“Manual-only queue items: a first-class flag, not a park or a low
+priority”_ (2026-11-17, accepted) and FDR-0005 _“Fleet init/run identity,
+GitHub carriage, and a backed-up transaction log”_ (2026-11-17, proposed —
 “not adopted by filing”). Full FDR list is from `ls`; other FDR gists
 **[unverified]**.
 
-**`doc/living/` fleet-relevant:** `one-queue-model.md` (*“One-queue model —
-gap analysis and designation (2026-11-10)”*, status: shipped, PR #8438),
-`quota-full-utilization-burn-plan.md` (*“Quota full-utilization program +
-burn plan”*, first edition code#2173, built 2026-10-29), plus
+**`doc/living/` fleet-relevant:** `one-queue-model.md` (_“One-queue model —
+gap analysis and designation (2026-11-10)”_, status: shipped, PR #8438),
+`quota-full-utilization-burn-plan.md` (_“Quota full-utilization program +
+burn plan”_, first edition code#2173, built 2026-10-29), plus
 `fleet-roles-minder-catcher-advocate.md`, `fleet-sweep-review-job-family.md`,
 `opencode-2-fleet-migration.md`, `saas-service-id-atlas-fleet.md`
 **[listed, not read]**.
 
-**`doc/placement-intake/placement.md`** — *“Fleet placement: where build jobs
-run”*; header warns: “Current operational instructions live in
+**`doc/placement-intake/placement.md`** — _“Fleet placement: where build jobs
+run”_; header warns: “Current operational instructions live in
 [doc/fleet-execution-handoff.md]… several status notes below are historical.”
 
 ---
@@ -286,12 +286,12 @@ live elsewhere: `pkgs/fleet/docs/verbs.md` and
 
 ### 2.2 One-line gist each
 
-- **`pkgs/fleet/doc/agents/documentation.md`** — *“Documentation: the fleet
-  book is part of the change”*: the agent-facing statement of DOC-01
+- **`pkgs/fleet/doc/agents/documentation.md`** — _“Documentation: the fleet
+  book is part of the change”_: the agent-facing statement of DOC-01
   extended to the book (full text in §3.3); also gives build/preview
   commands and notes deployment is combined with the mcpx book's.
-- **`pkgs/fleet/doc/agents/remote-build-and-test.md`** — *“Remote builds and
-  tests through Fleet”*: the dispatch-first runbook, summarised in §2.3.
+- **`pkgs/fleet/doc/agents/remote-build-and-test.md`** — _“Remote builds and
+  tests through Fleet”_: the dispatch-first runbook, summarised in §2.3.
 
 Both are cited from `pkgs/fleet/README.md`'s Layout section:
 `fleet-bridge` → “Runbook: doc/agents/fleet-command-channel.md” is in the
@@ -308,7 +308,7 @@ the laptop.” Builds/tests/CPU-heavy work run on dispatched GitHub Actions
 runners; the flow is push → dispatch → track asynchronously.
 
 - **Submit/track:** `fleet queue dispatch --repo <owner/name> --ref <ref>
-  --command '<cmd>' --dispatch --json` (dry run without `--dispatch`);
+--command '<cmd>' --dispatch --json` (dry run without `--dispatch`);
   track with `fleet queue session status/result <HANDLE>`; full log via
   `gh run view <RUN_ID> --repo <RUNNER_REPO> --log`. Keep `handle`,
   `run_id`, `runner_repo`, `portable_id` (`OWNER/REPO#RUN_ID`), `run_url`.
@@ -357,10 +357,10 @@ pm-orchestration design (§1.3 #3); “A machine check ties it to the registry:
 `pmo_operator_docs_match_registered_help_inventory`
 (`crates/fleet-registry/tests/pmo_operator_docs.rs`).”
 
-Subsections: *The inventory is the registry* / *Designed spellings — not yet
-in the registry* / *Dependency semantics — typed edges only* / *Authority and
-attribution* / *Privacy posture — private by default* / *Honesty contracts* /
-*Contributor contract*.
+Subsections: _The inventory is the registry_ / _Designed spellings — not yet
+in the registry_ / _Dependency semantics — typed edges only_ / _Authority and
+attribution_ / _Privacy posture — private by default_ / _Honesty contracts_ /
+_Contributor contract_.
 
 ### 3.2 Operative text — the book-chapter rule (verbatim, short excerpt)
 
@@ -407,9 +407,10 @@ this chapter wins for book-scope questions”.
   It adds: a follow-up issue promising to update the book later “does not
   satisfy the rule”, and enumerates the concrete per-change updates
   (verb/flag → reference chapter + `verbs.md`; new domain → register-a-domain
-  + layout; changed default → every chapter stating the old default; changed
-  procedure → matching operations chapter; changed book deployment → the
-  deploying chapter).
+  - layout; changed default → every chapter stating the old default; changed
+    procedure → matching operations chapter; changed book deployment → the
+    deploying chapter).
+
 - **Contributor contract (README, DOC-01's last subsection), in substance:**
   keep the command contract together — registry + `docs/verbs.md` updated in
   the same change, including nested leaves and examples; never present a
@@ -674,6 +675,7 @@ book.toml is the config of record.]**
   split is #10956). Resulting URLs: mcpx at
   `https://developing-today.github.io/code/`, fleet at
   `https://developing-today.github.io/code/fleet/`.
+
 - There is **no** `pages.yml` / `*page*` workflow (verified by `ls`).
   The authoritative prose for all of this is the book chapter
   `pkgs/fleet/book/operations/deploying-this-book.md`, which also records
@@ -713,7 +715,7 @@ In `pkgs/fleet/` top level, the only Markdown file is **`README.md`**
 - **No `ARCHITECTURE.md`** in `pkgs/fleet/` (`ls pkgs/fleet/ARCH*` → no such file).
 - **No `ROADMAP.md`** in `pkgs/fleet/` (`ls pkgs/fleet/ROADMAP*` → no such file).
 - **No charter file** of any name found; `grep -rn -i "charter\|roadmap"
-  pkgs/fleet/README.md pkgs/fleet/book/` returned **no hits**.
+pkgs/fleet/README.md pkgs/fleet/book/` returned **no hits**.
 - **No single fleet charter exists.** **[Explicit finding, per the brief.]**
 
 ### 7.2 What plays the charter/roadmap role instead

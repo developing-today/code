@@ -34,10 +34,7 @@ export function resolveFilterSelector(url: URL): FilterSelector {
 // Pass-through until the enforcement spec lands; the selector is
 // threaded through now so enforcement can be added here without
 // touching the router or the proxy.
-export function filterMcpResponse(
-  response: Response,
-  selector: FilterSelector,
-): Response {
+export function filterMcpResponse(response: Response, selector: FilterSelector): Response {
   void selector;
   return response;
 }
