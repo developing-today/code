@@ -94,3 +94,46 @@ Invariants pinned by `test/collector.test.ts`:
   exactly one conditional request and writes nothing.
 - **Writer provenance.** Landed snapshots record `writer='hosted'`
   and the board's writer-lease epoch (design §5/§7).
+
+## Slice 3 — Hosted read API parity (#12828)
+
+`src/read-api/` serves the #9060 §6 shapes from the tenant DB —
+the hosted half of design §4's parity list. Read-only throughout:
+the store layer issues SELECTs only, and no token is read, minted,
+or persisted on this path (E §2.3).
+
+- `genealogy.ts` — the genealogy read model (#9060 §6), ported from
+  the laptop aggregator's #9070 implementation: `ancestors[]`
+  (parent / historical-parent / primary-parent / spawned-by /
+  roadmap / priority), the release derivation, the sentence
+  renderer, and the roadmap-row enrichment. A port, not a redesign;
+  chain breaks render honestly ("with no epic yet"), never as
+  fabricated links.
+- `releases.ts` — milestone close-out accounting (#9060 §4), ported
+  from the laptop's #9067 implementation: program milestones get
+  retroactive counts; release milestones get the close-out record
+  (counts split closed / carried-over, the release date, the
+  description line). Plus the assembler that serves a stored
+  `pm_release_snapshots` row in the same shape.
+- `store.ts` — the tenant-DB reads: board summaries (registry +
+  latest snapshot audit per board), the merged pool (current
+  `pm_items` rows), roadmap rows (stored genealogy overlay wins
+  per-field where set; unset fields derive over the pool), and
+  release snapshots (stored records first, computed retroactive
+  accounting for the rest).
+- `api.ts` — the four endpoints and their fetch handler:
+  `/api/projects.json` (`projects[]` + per-board audit + the merged
+  pool), `/api/item/<id>.json` (item + `ancestors[]` + `release` +
+  the genealogy sentence; unknown ref → structured 404),
+  `/api/roadmap.json` (rows with `priority`/`afterRefs`/
+  `releaseRef`), `/api/releases.json` (milestone snapshots).
+
+Invariants pinned by `test/read-api.test.ts`:
+
+- **The §8 worked example renders end-to-end.** The crate-split
+  chain (step #4403 → epic #3447 → design #3195 → roadmap item
+  #2056) serves its full ancestor chain, its release, and the
+  genealogy sentence through `/api/item/<id>.json`.
+- **Honest absence.** A board with no snapshot serves null audit; an
+  item with no chain serves empty ancestors and the chain-break
+  sentence; an unknown ref 404s. Nothing is fabricated.
