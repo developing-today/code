@@ -12,7 +12,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use rsa::{pkcs1::EncodeRsaPrivateKey, RsaPrivateKey};
 use samael::{
     crypto::{CertificateDer, Crypto, CryptoProvider},
-    signature::Signature,
+    signature::{DigestAlgorithm, Signature},
     traits::ToXml,
 };
 
@@ -65,10 +65,14 @@ impl MetadataSigner {
         let issuer = xml_escape(&self.issuer);
         let cert = B64.encode(&self.certificate_der);
         let id = format!("_{}", crate::registry::random_b64url(18));
-        let signature =
-            Signature::template(&id, &CertificateDer::from(self.certificate_der.clone()))
-                .to_string()
-                .map_err(|e| format!("SAML metadata signature template failed: {e:?}"))?;
+        let mut signature_template =
+            Signature::template(&id, &CertificateDer::from(self.certificate_der.clone()));
+        for reference in &mut signature_template.signed_info.reference {
+            reference.digest_method.algorithm = DigestAlgorithm::Sha256;
+        }
+        let signature = signature_template
+            .to_string()
+            .map_err(|e| format!("SAML metadata signature template failed: {e:?}"))?;
         let unsigned = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
              <md:EntityDescriptor xmlns:md=\"urn:oasis:names:tc:SAML:2.0:metadata\" xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\" ID=\"{id}\" entityID=\"{issuer}\">\
@@ -148,6 +152,8 @@ mod tests {
         assert!(signed.contains(HTTP_REDIRECT));
         assert!(signed.contains(HTTP_POST));
         assert!(signed.contains("https://idp.example/saml/sso"));
+        assert!(signed.contains("http://www.w3.org/2001/04/xmlenc#sha256"));
+        assert!(!signed.contains("http://www.w3.org/2000/09/xmldsig#sha1"));
     }
 
     #[test]
