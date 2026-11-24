@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+use unicode_normalization::is_nfc;
 
 use crate::error::{Error, Result};
 
@@ -34,12 +35,19 @@ pub struct AtlasVersionRow {
     pub batch_id: String,
 }
 
-/// An unsigned `tag.set` payload. The actual event id is assigned when signed.
+/// The subject binding for an unsigned tag in a publication unit.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub enum ProjectedSubject {
+    /// Bind to the `document.put` event ID after that event is signed.
+    DocumentPut,
+}
+
+/// An unsigned `tag.set` payload. The actual event ID is assigned when signed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProjectedTag {
     pub kind: String,
-    /// The document content hash, which is the ID document identity.
-    pub subject: String,
+    /// The subject is symbolic until the corresponding `document.put` is signed.
+    pub subject: ProjectedSubject,
     pub name: String,
     /// JSON text, as required for Atlas claims by the publication design.
     pub value: String,
@@ -64,21 +72,22 @@ fn refuse(message: impl std::fmt::Display) -> Error {
 /// Project one Atlas version row to a document and deterministic Atlas claims.
 ///
 /// The document identity follows ID's BLAKE3 document hash. `atlas.version`
-/// carries the Atlas key and row metadata; `atlas.wasGeneratedBy` carries the
-/// batch reference. Both claim values are serialized from the input row, so a
-/// verifier can recompute them without projector state.
+/// carries the keying §2.1 puts in the publication event or its claims
+/// (`file_id`, `version_seq`, path, locator, ingestion time); §7 permits
+/// appending a name without redefining a v1 name. `atlas.wasGeneratedBy` is
+/// the §3 relation to the ingest batch. Both claim values are serialized from
+/// the input row, so a verifier can recompute them without projector state.
 pub fn project_version(row: &AtlasVersionRow) -> Result<ProjectedVersion> {
     if row.file_id.trim().is_empty() || row.version_seq == 0 || row.batch_id.trim().is_empty() {
         return Err(refuse(
             "file_id, positive version_seq, and batch_id are required",
         ));
     }
-    if row.media_type.is_empty() || row.media_type.len() > 128 {
-        return Err(refuse("media_type must contain 1 to 128 bytes"));
+    if row.media_type.is_empty() || row.media_type.len() > 128 || !is_nfc(&row.media_type) {
+        return Err(refuse("media_type must be 1 to 128 bytes of NFC text"));
     }
     let content = row.content.as_bytes().to_vec();
     let content_hash = blake3::hash(&content).to_hex().to_string();
-    let subject = content_hash.clone();
     let version_value = serde_json::to_string(&serde_json::json!({
         "file_id": row.file_id,
         "version_seq": row.version_seq,
@@ -107,13 +116,13 @@ pub fn project_version(row: &AtlasVersionRow) -> Result<ProjectedVersion> {
         claims: vec![
             ProjectedTag {
                 kind: "tag.set".to_owned(),
-                subject: subject.clone(),
+                subject: ProjectedSubject::DocumentPut,
                 name: "atlas.version".to_owned(),
                 value: version_value,
             },
             ProjectedTag {
                 kind: "tag.set".to_owned(),
-                subject,
+                subject: ProjectedSubject::DocumentPut,
                 name: "atlas.wasGeneratedBy".to_owned(),
                 value: batch_value,
             },
@@ -163,7 +172,7 @@ mod tests {
         assert_eq!(projected.claims.len(), 2);
         for claim in &projected.claims {
             assert_eq!(claim.kind, "tag.set");
-            assert_eq!(claim.subject, hash);
+            assert_eq!(claim.subject, ProjectedSubject::DocumentPut);
         }
         let version: serde_json::Value = serde_json::from_str(&projected.claims[0].value).unwrap();
         assert_eq!(projected.claims[0].name, "atlas.version");
