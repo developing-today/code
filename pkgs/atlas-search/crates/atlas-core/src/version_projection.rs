@@ -76,7 +76,8 @@ pub struct ProjectedNoteEventRef {
 /// ID's blob reference shape; this is not a `document.put` event reference.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProjectedDocumentRef {
-    pub content_hash: String,
+    /// BLAKE3 blob hash (ID's `DocumentRef.content`, not an event ID).
+    pub content: String,
     pub media_type: String,
     pub size: u64,
 }
@@ -212,7 +213,7 @@ pub fn project_head_versions(rows: &[AtlasVersionRow]) -> Result<Vec<ProjectedHe
                 version_seq: row.version_seq,
             };
             let content = ProjectedDocumentRef {
-                content_hash: document.content_hash.clone(),
+                content: document.content_hash.clone(),
                 media_type: document.media_type.clone(),
                 size: document.size,
             };
@@ -333,7 +334,7 @@ mod tests {
             version_seq: row.version_seq,
         };
         let content = ProjectedDocumentRef {
-            content_hash: blake3::hash(row.content.as_bytes()).to_hex().to_string(),
+            content: blake3::hash(row.content.as_bytes()).to_hex().to_string(),
             media_type: row.media_type.clone(),
             size: row.content.len() as u64,
         };
@@ -360,6 +361,16 @@ mod tests {
         };
         assert_eq!(output.note, expected);
         let wire = serde_json::to_value(&output.note).unwrap();
+        // Contract oracle: ID DocumentRef has exactly these fields (and denies
+        // unknown fields); it names the blob as `content`, not `content_hash`.
+        assert_eq!(
+            wire["content"],
+            serde_json::json!({
+                "content": blake3::hash(row.content.as_bytes()).to_hex().to_string(),
+                "media_type": row.media_type,
+                "size": row.content.len() as u64,
+            })
+        );
         match expected {
             ProjectedNote::Create { .. } => {
                 assert_eq!(wire["kind"], "note.create");
