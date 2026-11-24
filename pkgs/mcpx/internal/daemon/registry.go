@@ -2051,7 +2051,7 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 		return scored
 	}
 
-	embedder := r.Embedder()
+	embedder, vIdx, gen := r.embedderSnapshot()
 	ctx, cancel := context.WithTimeout(context.Background(), defaults.EmbeddingsSearchTimeout)
 	defer cancel()
 
@@ -2072,12 +2072,11 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 		keywordScores[t.Function] = t.Score
 	}
 
-	vIdx := r.VectorIndex()
 	scored := make([]ToolInfo, 0, len(all))
 	for _, t := range all {
 		var tVec catalog.Vector
 		if vIdx != nil {
-			tVec, _ = vIdx.Get(t.Function)
+			tVec, _ = vIdx.GetIfCurrent(t.Function, gen)
 		}
 		if len(tVec) == 0 {
 			var err error
@@ -2092,8 +2091,8 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 				tVec = catalog.Embed(t.Namespace + " " + t.Tool + " " + t.Description)
 			}
 			if vIdx != nil && len(tVec) > 0 {
-				if err := vIdx.Put(t.Function, tVec); err != nil {
-					log.Printf("mcpx: semantic search: cache vector for %s: %v", t.Function, err)
+				if !vIdx.PutIfCurrent(t.Function, tVec, gen) {
+					log.Printf("mcpx: semantic search: cache vector for %s skipped: embedding generation changed", t.Function)
 				}
 			}
 		}
@@ -2102,7 +2101,15 @@ func (r *Registry) SearchSemanticOpts(query string, limit int, semantic bool, ta
 		// Combined hybrid score: 60% semantic cosine, 40% keyword
 		combined := float32(kwScore)*0.4 + (sim*100.0)*0.6
 		if fb := r.FeedbackStore(); fb != nil {
-			execMult, retrMult := fb.ToolFeedbackAdjustment(t.Function)
+			// Feedback recorded by the call path is keyed by the server
+			// identity, while ranking asks by this view's function name;
+			// pass the server identity as an alias so both spellings of
+			// the same tool share one feedback history.
+			alias := ""
+			if t.Server != "" {
+				alias = t.Server + "." + t.Tool
+			}
+			execMult, retrMult := fb.ToolFeedbackAdjustment(t.Function, alias)
 			combined = combined * retrMult * (0.5 + 0.5*execMult)
 		}
 		if combined > 15.0 || kwScore > 0 {
@@ -3238,19 +3245,83 @@ func (r *Registry) UseSettings(set *settings.Set) {
 	defer r.mu.Unlock()
 	r.set = set
 	if set != nil {
-		backend := set.String("embeddings.backend")
-		var remote *catalog.RemoteEmbedder
-		if u := set.String("embeddings.url"); u != "" {
-			remote = catalog.NewRemoteEmbedder(u, set.String("embeddings.apiKey"), set.String("embeddings.model"))
+		emb, err := buildCascadeEmbedder(context.Background(), set)
+		if err != nil {
+			// Startup must not fail for a bad model path: keep serving
+			// on the fallback tiers and log, while the settings PUT
+			// path refuses the same value with rollback (SwapEmbedder).
+			log.Printf("mcpx: embeddings: %v; serving without wasm", err)
+			emb = catalog.NewCascadeEmbedder(set.String("embeddings.backend"), nil, nil)
 		}
-		var wasm *catalog.WasmEmbedder
-		if p := set.String("embeddings.wasmPath"); p != "" {
-			if w, err := catalog.NewWasmEmbedder(context.Background(), p); err == nil {
-				wasm = w
-			}
-		}
-		r.embedder = catalog.NewCascadeEmbedder(backend, remote, wasm)
+		r.embedder = emb
 	}
+}
+
+// buildCascadeEmbedder constructs the cascade embedder from live settings.
+// Unlike the startup path it returns a wasm load/compile error instead of
+// swallowing it, so the settings PUT handler can refuse the change.
+func buildCascadeEmbedder(ctx context.Context, set *settings.Set) (*catalog.CascadeEmbedder, error) {
+	backend := set.String("embeddings.backend")
+	var remote *catalog.RemoteEmbedder
+	if u := set.String("embeddings.url"); u != "" {
+		remote = catalog.NewRemoteEmbedder(u, set.String("embeddings.apiKey"), set.String("embeddings.model"))
+	}
+	var wasm *catalog.WasmEmbedder
+	if p := set.String("embeddings.wasmPath"); p != "" {
+		w, err := catalog.NewWasmEmbedder(ctx, p)
+		if err != nil {
+			return nil, fmt.Errorf("embeddings.wasmPath %q: %w", p, err)
+		}
+		wasm = w
+	}
+	return catalog.NewCascadeEmbedder(backend, remote, wasm), nil
+}
+
+// SwapEmbedder rebuilds the cascade embedder from the live settings set and
+// atomically replaces the active one, flushing the persistent vector cache
+// so new-model queries never score against old-model tool vectors (#13616).
+// The build and wasm compile happen outside the registry lock; only the
+// pointer swap and cache flush hold it. The retired wasm runtime is closed
+// after the swap, outside the lock, so in-flight embeds drain first via the
+// wasm mutex. A build failure leaves the active embedder and cache untouched.
+func (r *Registry) SwapEmbedder(set *settings.Set) error {
+	fresh, err := buildCascadeEmbedder(context.Background(), set)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	old := r.embedder
+	vIdx := r.vectorIdx
+	if vIdx != nil {
+		if err := vIdx.Flush(); err != nil {
+			r.mu.Unlock()
+			fresh.CloseWasm(context.Background())
+			return err
+		}
+	}
+	r.embedder = fresh
+	r.mu.Unlock()
+	if old, ok := old.(*catalog.CascadeEmbedder); ok {
+		old.CloseWasm(context.Background())
+	}
+	return nil
+}
+
+// embedderSnapshot captures the active embedder, vector index and cache
+// generation under one lock, so a search runs its whole pass in one
+// embedding space even across a concurrent swap.
+func (r *Registry) embedderSnapshot() (catalog.Embedder, *catalog.VectorIndex, uint64) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	emb := r.embedder
+	if emb == nil {
+		emb = &catalog.SubwordEmbedder{}
+	}
+	var gen uint64
+	if r.vectorIdx != nil {
+		gen = r.vectorIdx.Generation()
+	}
+	return emb, r.vectorIdx, gen
 }
 
 func (r *Registry) leaseTTL() time.Duration {

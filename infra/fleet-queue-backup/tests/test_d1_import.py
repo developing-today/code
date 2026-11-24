@@ -54,22 +54,30 @@ class ImportFlowTest(unittest.TestCase):
             action = payload["action"]
             if action == "init":
                 self.assertEqual(payload, {"action": "init", "etag": self.digest})
-                return {"success": True, "result": {
-                    "upload_url": "https://upload.example/put",
-                    "filename": "import.sql"}}
+                return {
+                    "success": True,
+                    "result": {
+                        "upload_url": "https://upload.example/put",
+                        "filename": "import.sql",
+                    },
+                }
             if action == "ingest":
-                self.assertEqual(payload, {
-                    "action": "ingest", "etag": self.digest,
-                    "filename": "import.sql"})
+                self.assertEqual(
+                    payload,
+                    {"action": "ingest", "etag": self.digest, "filename": "import.sql"},
+                )
                 return {"success": True, "result": {"at_bookmark": "bm-1"}}
             if action == "poll":
-                self.assertEqual(payload, {
-                    "action": "poll", "current_bookmark": "bm-1"})
+                self.assertEqual(
+                    payload, {"action": "poll", "current_bookmark": "bm-1"}
+                )
                 self.poll_count += 1
                 if self.poll_count < 2:
                     return {"success": True, "result": {"status": "running"}}
-                return {"success": True, "result": {
-                    "status": "complete", "result": {"num_queries": 2}}}
+                return {
+                    "success": True,
+                    "result": {"status": "complete", "result": {"num_queries": 2}},
+                }
             raise AssertionError("unexpected action " + action)
 
         def fake_urlopen(req, timeout=None):
@@ -101,19 +109,24 @@ class ImportFlowTest(unittest.TestCase):
         def failing_http_json(method, url, token, payload=None, timeout=None):
             action = payload["action"]
             if action == "init":
-                return {"success": True, "result": {
-                    "upload_url": "https://upload.example/put",
-                    "filename": "import.sql"}}
+                return {
+                    "success": True,
+                    "result": {
+                        "upload_url": "https://upload.example/put",
+                        "filename": "import.sql",
+                    },
+                }
             if action == "ingest":
                 return {"success": True, "result": {"at_bookmark": "bm-1"}}
-            return {"success": True, "result": {
-                "status": "error", "error": "near line 1: no such table"}}
+            return {
+                "success": True,
+                "result": {"status": "error", "error": "near line 1: no such table"},
+            }
 
         with mock.patch.object(fq_common, "http_json", failing_http_json):
             client = fq_common.D1Client("token", "acct")
             with self.assertRaises(RuntimeError):
                 client.import_sql("db-id", self.sql)
-
 
     def test_upload_failure_reinits_and_retries(self):
         attempts = {"n": 0}
@@ -121,17 +134,16 @@ class ImportFlowTest(unittest.TestCase):
         def flaky_urlopen(req, timeout=None):
             attempts["n"] += 1
             if attempts["n"] == 1:
-                raise fq_common.urllib.error.URLError(
-                    "write operation timed out")
+                raise fq_common.urllib.error.URLError("write operation timed out")
             return self._good_urlopen(req, timeout=timeout)
 
-        with mock.patch.object(
-                fq_common.urllib.request, "urlopen", flaky_urlopen):
+        with mock.patch.object(fq_common.urllib.request, "urlopen", flaky_urlopen):
             client = fq_common.D1Client("token", "acct")
             result = client.import_sql("db-id", self.sql)
         self.assertEqual(result["status"], "complete")
         actions = [c[2]["action"] for c in self.calls]
         self.assertEqual(actions, ["init", "init", "ingest", "poll", "poll"])
+
 
 if __name__ == "__main__":
     unittest.main()

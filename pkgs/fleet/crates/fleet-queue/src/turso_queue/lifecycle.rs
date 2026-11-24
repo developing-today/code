@@ -551,13 +551,11 @@ pub(crate) fn claim_pick_once(
 /// the quarantine rechecker's releases.
 pub const MAX_CLAIM_QUARANTINES_PER_CALL: usize = 512;
 
-/// The most tasks one batch claim may take (#8217). A batch is
-/// only legitimate paired with immediate per-item dispatch, and
-/// the dispatcher must launch + verify-bind every item inside one
-/// touch before leases age: five dedicated launches fit that
-/// window with margin, and a bigger batch would recreate the
-/// claimed-and-idle pile the single-session design forbids.
-pub const BATCH_CLAIM_MAX: i64 = 5;
+/// The batch-claim bound (#8217) is defined at the crate root so
+/// the client surface validates `--count` against the same value
+/// the broker enforces here; re-exported so this module's parse
+/// path and the `turso_queue::BATCH_CLAIM_MAX` path keep working.
+pub use crate::BATCH_CLAIM_MAX;
 
 /// Parse a claim request's batch count (#8217): absent means the
 /// single claim (1); anything outside 1..=BATCH_CLAIM_MAX is a

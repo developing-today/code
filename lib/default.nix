@@ -545,6 +545,57 @@ let
               };
               # Import shared configuration (same as shell.nix)
               nixCommon = import ../nix-common.nix { inherit pkgs; };
+
+              # Bun pinned to the pristine official 1.4.5 build
+              # (#13337) — the upstream release binary, installed
+              # untouched. The nixpkgs package is a patchelf repack,
+              # and the repacked binary crashes vitest workers at
+              # startup on the fleet runner hosts (both x86_64 flavors,
+              # at 1.4.2 and 1.4.5), while the pristine 1.4.5 binary
+              # passes the same suite in the same runner; the evidence
+              # table is recorded on #13337. 1.4.5 is also the
+              # fleet-build Containerfile's pin. The pristine binary
+              # needs the system loader at runtime (/lib64/ld-linux or
+              # nix-ld, both present on the fleet's machines and in the
+              # fleet-build container); shells only. Bump version +
+              # hashes together, deliberately.
+              bunPinned =
+                let
+                  zips = {
+                    "x86_64-linux" = {
+                      file = "bun-linux-x64.zip";
+                      hash = "sha256-WCYOHQDhVan4VY5fXl1miwZQ3hNxCUnMeutJdXx0kFY=";
+                    };
+                    "aarch64-linux" = {
+                      file = "bun-linux-aarch64.zip";
+                      hash = "sha256-EkeG+qsv7hosvxqyHtkjizI8eDF5TW5hFYvHbw4SFpQ=";
+                    };
+                    "aarch64-darwin" = {
+                      file = "bun-darwin-aarch64.zip";
+                      hash = "sha256-mNY87B6ZYhDS4b8MDp+pR/7fnXvLes4A0kUdokvavwk=";
+                    };
+                  };
+                  zip = zips.${pkgs.stdenv.hostPlatform.system};
+                in
+                pkgs.stdenvNoCC.mkDerivation {
+                  pname = "bun";
+                  version = "1.4.5";
+                  src = pkgs.fetchzip {
+                    url = "https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/${zip.file}";
+                    inherit (zip) hash;
+                  };
+                  installPhase = ''
+                    runHook preInstall
+                    install -Dm 755 bun $out/bin/bun
+                    ln -s bun $out/bin/bunx
+                    runHook postInstall
+                  '';
+                  meta = {
+                    description = "Incredibly fast JavaScript runtime, bundler, test runner, and package manager (pristine upstream binary)";
+                    homepage = "https://bun.sh";
+                    license = pkgs.lib.licenses.mit;
+                  };
+                };
             in
             {
               default = pkgs.mkShell {
@@ -607,7 +658,7 @@ let
                   go_1_27
                   gopls
                   deno
-                  bun
+                  bunPinned
                   nodejs
                   git
                   python3
@@ -635,7 +686,7 @@ let
                   jq
                   ripgrep
                   go_1_27
-                  bun
+                  bunPinned
                   nodejs
                   zig
                 ]);
@@ -766,6 +817,9 @@ let
       fleetDocs = pkgs.callPackage ../pkgs/fleet/docs.nix { };
       atlasDocs = pkgs.callPackage ../pkgs/atlas-search/docs.nix { };
       idDocs = pkgs.callPackage ../pkgs/id/docs.nix { };
+      pmDocs = pkgs.callPackage ../pm-stack/docs.nix { };
+      codeDocs = pkgs.callPackage ../pkgs/code-book/docs.nix { };
+      labDocs = pkgs.callPackage ../pkgs/lab/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
       pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
@@ -821,6 +875,9 @@ let
         fleet-docs = fleetDocs;
         atlas-docs = atlasDocs;
         id-docs = idDocs;
+        pm-docs = pmDocs;
+        code-docs = codeDocs;
+        lab-docs = labDocs;
         mcpx-real-servers = mcpxRealServers;
         mcpx-container = mcpxContainer;
         identity-image = identityImage;

@@ -822,10 +822,7 @@ impl TursoBackend {
     /// #13146: several statements in one pipeline request (the
     /// placement-sync batch insert). Same per-statement results as
     /// repeated `exec` calls, one round trip.
-    pub(crate) fn exec_batch(
-        &self,
-        stmts: &[(&str, Vec<Arg>)],
-    ) -> Result<Vec<StmtResult>, TErr> {
+    pub(crate) fn exec_batch(&self, stmts: &[(&str, Vec<Arg>)]) -> Result<Vec<StmtResult>, TErr> {
         self.pipeline(stmts)
     }
 
@@ -951,6 +948,38 @@ impl TursoBackend {
                 &[],
             )?;
         }
+        // #13774 (ACTIONS-EXEC-3): the tiered-extension columns
+        // (ext_count / ext_total_s / ext_tier / ext_decide_after /
+        // ext_reason) and the session context land the same
+        // additive way for actions_exec_sessions tables created
+        // before them. No backfill: existing rows read the column
+        // default / NULL, which the verbs read as "no extensions
+        // yet, no context recorded".
+        let aecols = self.query_objs(
+            "SELECT name FROM pragma_table_info('actions_exec_sessions')",
+            &[],
+            &[],
+        )?;
+        if !aecols.is_empty() {
+            for (col, ty) in [
+                ("ext_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("ext_total_s", "INTEGER NOT NULL DEFAULT 0"),
+                ("ext_tier", "INTEGER"),
+                ("ext_decide_after", "TEXT"),
+                ("ext_reason", "TEXT"),
+                ("context", "TEXT"),
+            ] {
+                let has = aecols
+                    .iter()
+                    .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
+                if !has {
+                    self.exec(
+                        &format!("ALTER TABLE actions_exec_sessions ADD COLUMN {col} {ty}"),
+                        &[],
+                    )?;
+                }
+            }
+        }
         // #8210: the ledger's platform-limitation columns (a
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
@@ -986,7 +1015,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 20] = [
+pub(crate) const SCHEMA: [&str; 25] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1073,6 +1102,13 @@ pub(crate) const SCHEMA: [&str; 20] = [
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS placement_sessions_created \
         ON placement_sessions(created_at)",
+    // #13774: actions exec sessions — DDL of record in the
+    // actions_exec module.
+    crate::turso_queue::ACTIONS_EXEC_DDL_SESSIONS,
+    crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS,
+    crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS_IDX,
+    crate::turso_queue::ACTIONS_EXEC_DDL_IO,
+    crate::turso_queue::ACTIONS_EXEC_DDL_IO_IDX,
 ];
 
 // ---------------------------------------------------------------------------

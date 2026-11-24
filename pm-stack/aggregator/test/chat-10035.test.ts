@@ -135,7 +135,7 @@ describe("the chat page (#10035)", () => {
 
   test("every page carries the hidden nav unread badge and its client script", () => {
     const html = renderChat([], PROV);
-    expect(html).toContain('data-prompt-unread hidden');
+    expect(html).toContain("data-prompt-unread hidden");
     expect(html).toContain("data-prompt-unread-count");
     expect(html).toContain("/assets/prompt-badge.js");
     expect(html).toContain('href="/chat" data-prompt-unread');

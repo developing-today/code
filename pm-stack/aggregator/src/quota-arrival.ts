@@ -54,10 +54,11 @@ import { renderPredictionRange } from "./quota-downtime.ts";
 /** Methodology version for the arrival kind (design §6; the
  * c4-methodology-log.jsonl entry of the same name): every record
  * this module emits names it, so a score is always attributable
- * to the method that produced it. c4-meth:2 (#13408) unified the
- * stored rendering on the one shared §4 formatter; c4-meth:1
- * records rendered with this module's own duration/day-only copy. */
-export const ARRIVAL_METHODOLOGY_VERSION = "c4-meth:2";
+ * to the method that produced it. c4-meth:3 (#13536) dates
+ * far-out calendar bounds; c4-meth:2 (#13408) unified the stored
+ * rendering on the one shared §4 formatter; c4-meth:1 records
+ * rendered with this module's own duration/day-only copy. */
+export const ARRIVAL_METHODOLOGY_VERSION = "c4-meth:3";
 
 /** Ledger source the live wiring mirrors arrival records under
  * (design §1) — distinct from S1's "quota-forecast"; C4 records
@@ -234,7 +235,10 @@ export function buildArrivalRecords(input: ArrivalBuildInput): ArrivalPrediction
       const earliest = last + minI;
       const latest = last + maxI;
       records.push(
-        makeRecord(input, issuedMs, "detector_history",
+        makeRecord(
+          input,
+          issuedMs,
+          "detector_history",
           `${instants.length} plan-change arrivals recorded for ${input.subject.pool} between ${iso(instants[0])} and ${iso(last)}; ${intervals.length} intervals, shortest ${dur(minI)}, longest ${dur(maxI)}`,
           {
             inputs: {
@@ -251,16 +255,15 @@ export function buildArrivalRecords(input: ArrivalBuildInput): ArrivalPrediction
             },
             state: "predicted",
             state_reason: undefined,
-          }),
+          },
+        ),
       );
     } else if (intervals.length >= 2) {
       reasons.push(
         `detector_history: ${intervals.length} intervals between ${instants.length} arrivals are all identical (${dur(minI)}) — no measured spread, so a range cannot be bounded`,
       );
     } else {
-      reasons.push(
-        "detector_history: one interval between 2 arrivals — a sample of one, no spread measurable",
-      );
+      reasons.push("detector_history: one interval between 2 arrivals — a sample of one, no spread measurable");
     }
   } else {
     reasons.push(
@@ -276,7 +279,9 @@ export function buildArrivalRecords(input: ArrivalBuildInput): ArrivalPrediction
     const anchorMs = Date.parse(cad.lastArrivalAt);
     if (!Number.isFinite(anchorMs)) {
       evidenceSeen = true;
-      reasons.push(`vendor_cadence: the cadence recorded in ${cad.recordedIn} anchors on an unparseable instant (${cad.lastArrivalAt})`);
+      reasons.push(
+        `vendor_cadence: the cadence recorded in ${cad.recordedIn} anchors on an unparseable instant (${cad.lastArrivalAt})`,
+      );
     } else if (cad.periodMs <= 0) {
       evidenceSeen = true;
       reasons.push(`vendor_cadence: the cadence recorded in ${cad.recordedIn} has no positive period`);
@@ -292,7 +297,10 @@ export function buildArrivalRecords(input: ArrivalBuildInput): ArrivalPrediction
       const earliest = anchorMs + k * cad.periodMs - cad.spreadMs;
       const latest = anchorMs + k * cad.periodMs + cad.spreadMs;
       records.push(
-        makeRecord(input, issuedMs, "vendor_cadence",
+        makeRecord(
+          input,
+          issuedMs,
+          "vendor_cadence",
           `cadence recorded in ${cad.recordedIn}: period ${dur(cad.periodMs)}, spread ±${dur(cad.spreadMs)}, anchored on the arrival at ${cad.lastArrivalAt} (${cad.samples} arrivals behind it); occurrence ${k} projected`,
           {
             inputs: {
@@ -309,7 +317,8 @@ export function buildArrivalRecords(input: ArrivalBuildInput): ArrivalPrediction
             },
             state: "predicted",
             state_reason: undefined,
-          }),
+          },
+        ),
       );
     }
   }

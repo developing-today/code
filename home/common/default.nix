@@ -1093,10 +1093,10 @@ in
     };
     Service = {
       ExecStart = toString (
-        pkgs.writeShellScript "desktop-commander-bridge-start" 
+        pkgs.writeShellScript "desktop-commander-bridge-start" ''
           export PATH="/run/current-system/sw/bin:/run/wrappers/bin:/etc/profiles/per-user/$USER/bin:$HOME/.nix-profile/bin:$PATH"
           exec ${supergateway}/bin/supergateway --stdio ${desktop-commander}/bin/desktop-commander --outputTransport streamableHttp --streamableHttpPath /mcp --port 8931 --host 127.0.0.1 --stateful --healthEndpoint /healthz --logFormat json
-        
+        ''
       );
       Restart = "on-failure";
       RestartSec = 5;

@@ -46,12 +46,27 @@ func TestScriptCwdIsReachableFromTheEnvironment(t *testing.T) {
 	defer func() { e.envVars = saved }()
 
 	out := e.run("run", script)
-	// The dispatch notice shares the stream; the script's pwd is the
-	// last line it printed.
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	got, _ := filepath.EvalSymlinks(strings.TrimSpace(lines[len(lines)-1]))
+	// The dispatch notice shares the stream and is written to stderr, so
+	// its position against the script's own stdout output is not
+	// ordered (observed in the flake-binary leg of run 45251429763,
+	// where the notice followed the pwd). Find the pwd by value instead
+	// of assuming it is the last line: a run that stayed in the caller's
+	// directory prints that directory and matches nothing here.
 	want, _ := filepath.EvalSymlinks(sub)
+	var got string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		cand := strings.TrimSpace(line)
+		if !filepath.IsAbs(cand) {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(cand)
+		if err != nil || resolved != want {
+			continue
+		}
+		got = resolved
+		break
+	}
 	if got != want {
-		t.Fatalf("MCPX_SCRIPT_CWD=script: pwd = %q, want %q\n%s", got, want, out)
+		t.Fatalf("MCPX_SCRIPT_CWD=script: no output line is the script directory %q\n%s", want, out)
 	}
 }

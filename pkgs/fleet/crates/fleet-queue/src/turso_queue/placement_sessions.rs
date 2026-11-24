@@ -266,7 +266,9 @@ mod tests {
                         json!({"cols": [], "rows": [],
                                "affected_row_count": 1, "last_insert_rowid": null})
                     };
-                    results.push(json!({"type": "ok", "response": {"type": "execute", "result": result}}));
+                    results.push(
+                        json!({"type": "ok", "response": {"type": "execute", "result": result}}),
+                    );
                 }
                 let resp_body = json!({"results": results}).to_string();
                 let resp = format!(
@@ -317,8 +319,14 @@ mod tests {
         assert_eq!(out["handle"], "fp_abc123", "{out}");
         let bodies = captured.lock().unwrap();
         assert_eq!(bodies.len(), 1, "{bodies:?}");
-        assert!(bodies[0].contains("INSERT INTO placement_sessions"), "{bodies:?}");
-        assert!(bodies[0].contains("ON CONFLICT(handle) DO UPDATE"), "{bodies:?}");
+        assert!(
+            bodies[0].contains("INSERT INTO placement_sessions"),
+            "{bodies:?}"
+        );
+        assert!(
+            bodies[0].contains("ON CONFLICT(handle) DO UPDATE"),
+            "{bodies:?}"
+        );
         assert!(bodies[0].contains("fp_abc123"), "{bodies:?}");
     }
 
@@ -377,7 +385,10 @@ mod tests {
         assert_eq!(out["received"], 2, "{out}");
         assert_eq!(out["inserted"], 2, "{out}");
         let bodies = captured.lock().unwrap();
-        assert!(bodies[0].contains("INSERT OR IGNORE INTO placement_sessions"), "{bodies:?}");
+        assert!(
+            bodies[0].contains("INSERT OR IGNORE INTO placement_sessions"),
+            "{bodies:?}"
+        );
         assert!(!bodies[0].contains("ON CONFLICT"), "{bodies:?}");
     }
 

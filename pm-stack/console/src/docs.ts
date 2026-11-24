@@ -311,6 +311,13 @@ export class Docs {
       .map((s) => Math.max(0, now - s.goodAt - s.ttlMs));
     const asOf = now - Math.max(0, ...overdue);
     out.read = Object.fromEntries(names.map((n) => [n, section(n).at ? new Date(section(n).at).toISOString() : null]));
+    // `read` is when each was last tried, which a failed try moves on
+    // as much as a good one. `good` is when what is shown of each was
+    // read: a failed try leaves it where it was, so it is how old the
+    // copy on the screen is.
+    out.good = Object.fromEntries(
+      names.map((n) => [n, section(n).goodAt ? new Date(section(n).goodAt).toISOString() : null]),
+    );
     return { etag, body: JSON.stringify(out), asOf };
   }
 }

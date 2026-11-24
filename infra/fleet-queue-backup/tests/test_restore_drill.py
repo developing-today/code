@@ -138,9 +138,7 @@ class TestD1IntegerValue(unittest.TestCase):
 class TestKeysetPaging(unittest.TestCase):
     def test_int_pk_table_pages_by_key(self):
         source = sqlite3.connect(":memory:")
-        source.execute(
-            "CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT)"
-        )
+        source.execute("CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT)")
         source.executemany(
             "INSERT INTO big VALUES (?,?)",
             [(i, "row-%d" % i) for i in range(1, 2601)],
@@ -174,9 +172,7 @@ class TestKeysetPaging(unittest.TestCase):
             target_conn.execute("SELECT count(*) FROM big").fetchone()[0], 2600
         )
         self.assertEqual(
-            target_conn.execute(
-                "SELECT v FROM big WHERE id = 2600"
-            ).fetchone()[0],
+            target_conn.execute("SELECT v FROM big WHERE id = 2600").fetchone()[0],
             "row-2600",
         )
 
@@ -184,9 +180,7 @@ class TestKeysetPaging(unittest.TestCase):
 class TestRestore(unittest.TestCase):
     def test_restore_round_trips_int64_max(self):
         source = sqlite3.connect(":memory:")
-        source.execute(
-            "CREATE TABLE seq (name TEXT PRIMARY KEY, max INTEGER)"
-        )
+        source.execute("CREATE TABLE seq (name TEXT PRIMARY KEY, max INTEGER)")
         source.executemany(
             "INSERT INTO seq VALUES (?,?)",
             [("tasks", 9223372036854775807), ("events", 21500)],
@@ -205,9 +199,7 @@ class TestRestore(unittest.TestCase):
         os.environ["CLOUDFLARE_ACCOUNT_ID"] = "test"
         os.environ["TURSO_TARGET_TOKEN"] = "test"
         try:
-            restore_drill.restore(
-                fq_common.DEFAULT_D1_NAME, "https://scratch.invalid"
-            )
+            restore_drill.restore(fq_common.DEFAULT_D1_NAME, "https://scratch.invalid")
         finally:
             for name in (
                 "CLOUDFLARE_API_TOKEN",

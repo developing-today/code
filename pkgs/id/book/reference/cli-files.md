@@ -36,7 +36,7 @@ Aliases: `in`, `add`, `store`, `import`.
 Behaviour notes:
 
 - Each `FILES` entry is a path. The form `path:name` renames the file during storage: the bytes come from `path` and the stored name is `name`.
-- With `--content`, the single positional argument is the stored name, not a path. Supplying zero or more than one name fails with `--content requires exactly one name argument`. Discrepancy CLI-14: the `--help` summary line for `--content` ("Read content from stdin instead of file paths") omits the one-name requirement; the requirement is stated in the field documentation and enforced by the handler.
+- With `--content`, the single positional argument is the stored name, not a path. Supplying zero or more than one name fails with `--content requires exactly one name argument`. The `--help` summary line for `--content` states the requirement ("Read content from stdin instead of file paths (requires exactly one name argument)"); an earlier summary line omitted it (discrepancy CLI-14, resolved). The requirement is also stated in the field documentation and enforced by the handler.
 - With no files and no stdin input, `put` fails with `no files provided`.
 - When several files are stored and some fail, the failures are collected into one aggregated error, `some puts failed:` followed by the individual failures, and the command exits 1.
 
@@ -204,7 +204,7 @@ id list [NODE]
 Behaviour notes:
 
 - Lists all stored files (names) in the local store, or in the remote node's store when `NODE` (a 64-character hex node ID) is given.
-- Discrepancy CLI-1: `list` has no `ls` alias in the clap parser. `id ls` fails with `error: unrecognized subcommand 'ls'` and the tip "a similar subcommand exists: 'list'" (exit 2), even though the README command table lists `ls` as an alias. The `ls` spelling exists only inside the REPL, and as the alias of `tag list` (see [The tag family](cli-tags.md)).
+- `list` has no `ls` alias in the clap parser. `id ls` fails with `error: unrecognized subcommand 'ls'` and the tip "a similar subcommand exists: 'list'" (exit 2). The README command table once listed `ls` as an alias (discrepancy CLI-1, resolved — the table no longer does). The `ls` spelling exists only inside the REPL, and as the alias of `tag list` (see [The tag family](cli-tags.md)).
 
 Worked example (toy data):
 
@@ -250,7 +250,7 @@ Failure shapes: a store that cannot be opened is a handler error (exit 1).
 
 - Queries are case-insensitive and match against both names and hashes.
 - Match quality is ordered: exact match ranks above prefix match, which ranks above contains (substring) match.
-- Discrepancy CLI-8: there is no glob or wildcard matching anywhere in the search implementation. A query of `*.rs` is the literal two-character substring `*.` followed by `rs`; in practice it matches nothing, despite the README usage example `id find "*.rs"` being labelled "Find files by pattern".
+- There is no glob or wildcard matching anywhere in the search implementation. A query of `*.rs` is the literal two-character substring `*.` followed by `rs`; in practice it matches nothing. The README usage example once labelled `id find "*.rs"` "Find files by pattern" (discrepancy CLI-8, resolved — the example now uses a substring query).
 - `--first [N]` and `--last [N]` are optional-value flags on all four commands. Each takes zero or one value (`num_args = 0..=1`); a bare `--first` or `--last` means `1`. The two flags conflict with each other. A value of `0` is rejected by the value parser with `zero is not a valid limit: use at least 1` (clap error, exit 2); a non-numeric value fails in the same parser.
 - `--exclude <PAT>` is repeatable on all four commands and drops matches whose name or hash contains the pattern.
 - `--name` is accepted by all four commands and makes name matches rank above hash matches.
@@ -267,7 +267,7 @@ Failure shapes: a store that cannot be opened is a handler error (exit 1).
 | `group` | Matches grouped by query. |
 | `union` | Matches deduplicated by hash. |
 
-The clap default is `tag`. Discrepancy CLI-11: the REPL's `find` and `search` default to `union`, because the REPL hand parser enters with `union` as its default format. The same query therefore prints tag-grouped output from the command line and union-deduplicated output in the REPL, and neither side's help mentions the other's default.
+The clap default is `tag`. The REPL's `find` and `search` default to `union`, because the REPL hand parser enters with `union` as its default format. The same query therefore prints tag-grouped output from the command line and union-deduplicated output in the REPL. Each side's help now names the other's default (discrepancy CLI-11, resolved).
 
 ## `find`
 

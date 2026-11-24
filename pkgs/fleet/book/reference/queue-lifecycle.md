@@ -290,11 +290,11 @@ $ fleet queue quarantine-recheck
 usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]
 ```
 
-| Flag                     | Argument  | Default            | Meaning                                              |
-| ------------------------ | --------- | ------------------ | ---------------------------------------------------- |
-| `<task-id>` (positional) | task id   | required           | The quarantined / malformed task to repair in place. |
-| `--worker`               | worker id | `repo-worker-code` | Caller identity; recorded as the repair's operator.  |
-| `--reason`               | text      | empty string       | Why the task is repaired; recorded with the repair.  |
+| Flag                     | Argument  | Default            | Meaning                                                    |
+| ------------------------ | --------- | ------------------ | ---------------------------------------------------------- |
+| `<task-id>` (positional) | task id   | required           | The quarantined / malformed task to repair in place.       |
+| `--worker`               | worker id | `repo-worker-code` | Caller identity; recorded as the repair's operator.        |
+| `--reason`               | text      | empty string       | Why the task is repaired; recorded with the repair.        |
 | `--dry-run`              | —         | off                | Report the defects and the planned repairs; write nothing. |
 
 **Behaviour.** Repairs a stored packet that is malformed, in place — the gap the neighbouring verbs leave: the claim path quarantines such a row on every claim, `quarantine-recheck` can only release a row whose error no longer reproduces, and `unblock` refuses to clear a packet defect. (Worked example: a `payload.dedupe` missing its `checked_at`/`basis` stamp.) The broker re-runs the packet validators — `validate_packet` plus the claim-guard reason — applies the deterministic repairs whose correct value can be re-derived, re-validates the repaired packet in memory, and only then writes: one status-guarded update clears the quarantine and restores the task claimable (`queued`, or `blocked` with its deps intact when dep-blocked). A `repaired` timeline entry names the verb, the operator, the defects and the repairs. Output: the repaired row.

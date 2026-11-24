@@ -299,8 +299,7 @@ def _value_chunks(kind, value, first_budget=None):
     chunks = [value[:limit]]
     rest = value[limit:]
     chunks.extend(
-        rest[i : i + SPLIT_CHUNK_BYTES]
-        for i in range(0, len(rest), SPLIT_CHUNK_BYTES)
+        rest[i : i + SPLIT_CHUNK_BYTES] for i in range(0, len(rest), SPLIT_CHUNK_BYTES)
     )
     return [c for c in chunks if c] or [b""]
 
@@ -468,9 +467,7 @@ def _split_row_insert(table, colnames, row, pk_cols, splits):
         first_budget = max(1024, byte_len - overflow)
         chunks = _value_chunks(kind, value, first_budget)
         if len(chunks) < 2:
-            raise RuntimeError(
-                f"{table}: oversized cell did not split into chunks"
-            )
+            raise RuntimeError(f"{table}: oversized cell did not split into chunks")
         split_cells[target] = (kind, value, chunks)
         cells[target] = _render_literal(kind, chunks[0])
     if key_idx is None:
@@ -554,9 +551,7 @@ def build_dump(client, exported_at):
             if len(stmt.encode("utf-8")) <= MAX_IMPORT_STATEMENT_BYTES:
                 lines.append(stmt)
             else:
-                lines.extend(
-                    _split_row_insert(name, colnames, row, pk_cols, splits)
-                )
+                lines.extend(_split_row_insert(name, colnames, row, pk_cols, splits))
     for kind, _name, _t, sql in schema:
         if kind in ("index", "view", "trigger"):
             lines.append(sql.rstrip().rstrip(";") + ";")
@@ -679,7 +674,7 @@ class D1Client:
                 {"action": "poll", "current_bookmark": bookmark},
             )
             if poll.get("error"):
-                raise RuntimeError(f"D1 import failed: {poll["error"]}")
+                raise RuntimeError(f"D1 import failed: {poll['error']}")
             if poll.get("status") == "complete":
                 return poll
             time.sleep(5)

@@ -93,11 +93,11 @@ export function detectNoSubscription(quota, banner) {
 export const NO_SUBSCRIPTION_DETAIL =
   "no active Muse Code subscription on this team: subscription-quota is empty and the billing banner offers a subscription";
 
-/** Parse a subscription-quota payload into export windows. Throws on
- * any shape drift — fail-closed, never partial zeros. The one tolerated
- * absence is a not-yet-started window (used = 0) whose reset the
- * console returns as null or omits: that window is emitted with
- * resetAt: null instead of failing the whole export (#1301). */
+/** Parse a subscription-quota payload into export windows. Invalid shared
+ * fields fail closed; a malformed reset drops only its own window so one
+ * provider window cannot poison a healthy sibling (#2490). A not-yet-started
+ * window (used = 0) whose reset is null or omitted remains valid with
+ * resetAt: null (#1301). */
 export function parseSubscriptionQuota(payload) {
   const q = payload?.subscription_quota;
   if (!q || typeof q !== "object") {
@@ -161,8 +161,6 @@ export function parseSubscriptionQuota(payload) {
     }
     return epochSecondsField(num(raw), label);
   };
-  const windowReset = resetField(q.window_resets_at, windowUsed, "windowReset");
-  const weeklyReset = resetField(q.weekly_resets_at, weeklyUsed, "weeklyReset");
   if (windowLimit === 0 || weeklyLimit === 0) {
     throw new ExportError("unparseable", 6, "subscription-quota: zero limit");
   }
@@ -180,13 +178,28 @@ export function parseSubscriptionQuota(payload) {
   if (!(asOfRaw === null || asOfRaw === undefined || (typeof asOfRaw === "string" && asOfRaw.trim() === ""))) {
     consoleAsOf = iso(epochSecondsField(num(asOfRaw), "as_of"));
   }
+  // A malformed reset invalidates only its own window. Keep the healthy
+  // sibling window (and the rest of the export) instead of failing the
+  // entire pool; if neither window can be trusted, preserve the existing
+  // fail-closed behavior.
+  const windows = [];
+  const windowErrors = [];
+  for (const [name, used, limit, rawReset, label] of [
+    [shortName, windowUsed, windowLimit, q.window_resets_at, "windowReset"],
+    ["weekly", weeklyUsed, weeklyLimit, q.weekly_resets_at, "weeklyReset"],
+  ]) {
+    try {
+      const reset = resetField(rawReset, used, label);
+      windows.push({ name, usedPct: round2((used / limit) * 100), resetAt: reset === null ? null : iso(reset) });
+    } catch (error) {
+      windowErrors.push(error);
+    }
+  }
+  if (windows.length === 0) throw windowErrors[0];
   return {
     tier: typeof q.tier === "string" ? q.tier : null,
     consoleAsOf,
-    windows: [
-      { name: shortName, usedPct: round2((windowUsed / windowLimit) * 100), resetAt: windowReset === null ? null : iso(windowReset) },
-      { name: "weekly", usedPct: round2((weeklyUsed / weeklyLimit) * 100), resetAt: weeklyReset === null ? null : iso(weeklyReset) },
-    ],
+    windows,
   };
 }
 

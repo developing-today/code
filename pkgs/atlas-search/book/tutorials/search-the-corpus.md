@@ -26,10 +26,7 @@ Standalone is the default and is complete: the query is embedded in-process and 
    {
      "query_id": "&lt;uuidv7 minted for this search&gt;",
      "notes": [],
-     "results": [
-       { "chunk_id": 900001, "score": 0.181818,
-         "text": "toy note: a model sailboat stays upright because its ballast sits low…" }
-     ]
+     "results": [{ "chunk_id": 900001, "score": 0.181818, "text": "toy note: a model sailboat stays upright because its ballast sits low…" }]
    }
    ```
 
@@ -95,7 +92,8 @@ The hosted Worker exposes exactly one MCP tool, `search`, over stateless Streama
 
    ```json
    {
-     "jsonrpc": "2.0", "id": 2,
+     "jsonrpc": "2.0",
+     "id": 2,
      "result": {
        "content": [{ "type": "text", "text": "{ …the same envelope, as JSON text… }" }],
        "structuredContent": {
@@ -103,8 +101,7 @@ The hosted Worker exposes exactly one MCP tool, `search`, over stateless Streama
          "key": "&lt;64-hex-char cache key&gt;",
          "query": "how does a toy sailboat stay upright",
          "result": { "…": "the service's search result, passed through" },
-         "meta": { "hit_count": 1, "dims": 768,
-                   "model": "Snowflake/snowflake-arctic-embed-m-v2.0" }
+         "meta": { "hit_count": 1, "dims": 768, "model": "Snowflake/snowflake-arctic-embed-m-v2.0" }
        },
        "isError": false
      }

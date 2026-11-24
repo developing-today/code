@@ -114,7 +114,7 @@ id world diff <NODE> --file <FILE> --capability <CAP>
 | `--file` | file path | required | Path to the `world.toml` to compare against. |
 | `--capability` | capability string | required (env `ID_WORLD_CAPABILITY`) | A guest capability, enough to read the world. No admin token is needed or accepted for this command. |
 
-Behaviour: prints the drift report and stays informational: drift alone does not fail the command. If the manifest's plan is one an `apply` would refuse (the schedule-horizon check), `diff` prints `warning: \`world apply\` would refuse this manifest: <error>` to stderr and still exits `0`.
+Behaviour: prints the drift report and stays informational: drift alone does not fail the command. If the manifest's plan is one an `apply` would refuse (the schedule-horizon check), `diff` prints ``warning: `world apply` would refuse this manifest: <error>`` to stderr and still exits `0`.
 
 Example:
 

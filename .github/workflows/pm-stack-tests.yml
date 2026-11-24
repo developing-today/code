@@ -71,6 +71,18 @@ jobs:
           fi
           bun test
 
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install the console's type-check tools
+        working-directory: pm-stack/console/edge
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check the console
+        working-directory: pm-stack/console/edge
+        run: npx tsc --noEmit -p ../tsconfig.json
+
       - name: Test console
         working-directory: pm-stack/console
         run: |
@@ -155,6 +167,31 @@ jobs:
           fi
           echo "tailnet-bindings script suite passed."
 
+      # Fencing and cutover suites for #6816: pm-stack/scripts/
+      # fence-check.test.sh proves the fencing rule (old writer fenced
+      # before promotion, fail closed when state is unreadable) and
+      # kaneo-cutover.test.sh proves the promotion gate built on it —
+      # refuse while unfenced and touch nothing, demand exact table/row
+      # parity, and refuse to report PASS otherwise. Both were run by no
+      # workflow. Files are named explicitly and asserted to exist first,
+      # so a green run cannot be a silently skipped suite.
+      - name: Test fence-check and kaneo-cutover script suites
+        run: |
+          fail=0
+          for t in pm-stack/scripts/fence-check.test.sh pm-stack/scripts/kaneo-cutover.test.sh; do
+            if [ ! -f "$t" ]; then
+              echo "::error::Missing suite file $t — the pm-stack fencing/cutover suites were not run."
+              fail=1
+              continue
+            fi
+            bash "$t" || fail=1
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::pm-stack fencing/cutover suites failed (see above)."
+            exit 1
+          fi
+          echo "fence-check and kaneo-cutover script suites passed."
+
       # Python suites for #5951: pm-stack/opencode-claimant/test_poll.py
       # (36 tests, the #3026 claimant session-cap gate) and
       # pm-stack/grist/test_update_choice_options.py (7 tests) were run
@@ -213,6 +250,12 @@ jobs:
             exit 1
           fi
           echo "scheduled-history collector suite passed."
+
+      # Host-health collector projection and backup restore-point reader
+      # (#3989 criterion 6). Run explicitly: this suite is not otherwise
+      # discovered by the aggregator or Python test jobs.
+      - name: Test host-health collector Python suite
+        run: python3 -m unittest discover -s pm-stack/tests -p 'test_host_health_collector.py'
 
       # Required inputs are explicit so discovery cannot silently drop a suite.
       - name: Test claimant launch, handoff, and batch dispatch (#9877)
@@ -279,7 +322,7 @@ jobs:
       # finding on PR #6928, verified against the suite at lines
       # 52-68 of opencode-usage-export.test.mjs.)
       - name: Set up Node 24 for the quota exporter suites
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
 
@@ -334,6 +377,20 @@ jobs:
         run: |
           if [ ! -d test ] || ! ls test/*.test.ts >/dev/null 2>&1; then
             echo "::error::Missing decision-events-worker test suite — pm-stack/decision-events-worker/test has no *.test.ts files; the suite was not run."
+            exit 1
+          fi
+          bun test
+
+      # Bun suite for #12825: pm-stack/pm-service/test/
+      # (tenant-store.test.ts, the component A PM tenant store
+      # schema + migrations conformance suite) must not be a
+      # silently skipped suite either. It needs only bun
+      # (bun:sqlite is built in), no install step.
+      - name: Test pm-service tenant-store suite
+        working-directory: pm-stack/pm-service
+        run: |
+          if [ ! -d test ] || ! ls test/*.test.ts >/dev/null 2>&1; then
+            echo "::error::Missing pm-service test suite — pm-stack/pm-service/test has no *.test.ts files; the suite was not run."
             exit 1
           fi
           bun test

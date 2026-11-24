@@ -213,7 +213,10 @@ export type SnapshotOutcome = "stored" | "duplicate" | "regression";
  * DO keeps only the highest seq; an equal seq is an idempotent
  * retry of the same snapshot (ack it, change nothing); a lower
  * seq is a regression, rejected loudly by the caller. */
-export function applySnapshot(state: RelayState, snapshot: SubscriptionSnapshot): { state: RelayState; outcome: SnapshotOutcome } {
+export function applySnapshot(
+  state: RelayState,
+  snapshot: SubscriptionSnapshot,
+): { state: RelayState; outcome: SnapshotOutcome } {
   const current = state.snapshot?.snapshotSeq ?? 0;
   if (snapshot.snapshotSeq < current) return { state, outcome: "regression" };
   if (snapshot.snapshotSeq === current) return { state, outcome: "duplicate" };

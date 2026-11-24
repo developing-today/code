@@ -12,6 +12,11 @@ derives its watchdog items from:
 
   - the opencode claimant mode file (~/.local/state/opencode-claimant/mode):
     missing / unreadable / invalid contents, or the live|shadow value;
+  - the active host name, so a watchdog card names which host it saw;
+  - the pm-dashboard-backup run record (~/backups/dashboard/.last-run.json):
+    the newest generation's date, finish time, result, failing step,
+    archive sha, and per-leg outcomes — the restore point the watchdog
+    names when a generation fails (#3989 criterion 6);
   - user unit states: pm-git-sync (the deploy-by-merge path, #8171),
     pm-projector-reconcile, pm-kaneo-sync-guard (#10137), and
     pm-dashboard-backup (daily ~04:30 cadence; last success recorded so
@@ -39,6 +44,7 @@ Run on the laptop:
 import argparse
 import json
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -48,6 +54,7 @@ from pathlib import Path
 HOME = Path.home()
 DEFAULT_OUTPUT = HOME / ".local" / "state" / "pm-aggregator" / "host-health.json"
 DEFAULT_MODE_FILE = HOME / ".local" / "state" / "opencode-claimant" / "mode"
+DEFAULT_RUN_RECORD = HOME / "backups" / "dashboard" / ".last-run.json"
 
 UNITS = [
     "pm-git-sync",
@@ -89,6 +96,12 @@ def parse_args(argv):
         default=str(DEFAULT_MODE_FILE),
         metavar="PATH",
         help="claimant mode file (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--run-record",
+        default=str(DEFAULT_RUN_RECORD),
+        metavar="PATH",
+        help="pm-dashboard-backup JSON run record (default: %(default)s).",
     )
     return parser.parse_args(argv)
 
@@ -207,11 +220,87 @@ def read_claimant_mode(mode_file):
     }
 
 
+def read_host_name():
+    """Active host name for the snapshot (#3989 criterion 6).
+
+    socket.gethostname() cannot fail loudly here: an empty value reads
+    as unknown, never as a blank host the watchdog would trust."""
+    try:
+        name = socket.gethostname().strip()
+    except Exception as exc:
+        return {"state": "unknown", "detail": f"hostname unreadable: {exc}"}
+    if not name:
+        return {"state": "unknown", "detail": "hostname is empty"}
+    return {"host": name}
+
+
+BACKUP_RESULTS = ("complete", "failed")
+
+
+def read_backup_record(run_record):
+    """Newest verified backup generation (#3989 criterion 6).
+
+    Passes through the pm-dashboard-backup run record
+    (~/backups/dashboard/.last-run.json): generation date, finish
+    time, result, failing step, archive sha, and per-leg outcomes —
+    the restore point the watchdog names. A missing, unreadable,
+    unparseable, or shapeless record reads as state "unknown" WITH
+    the reason: this collector never invents a generation."""
+    path = Path(run_record)
+    try:
+        raw = path.read_text()
+    except Exception as exc:
+        return {"state": "unknown", "detail": f"run record unreadable: {exc}"}
+    try:
+        parsed = json.loads(raw)
+    except Exception as exc:
+        return {"state": "unknown", "detail": f"run record unparseable: {exc}"}
+    if not isinstance(parsed, dict):
+        return {"state": "unknown", "detail": "run record is not a JSON object"}
+    result = parsed.get("result")
+    date = parsed.get("date")
+    finished_at = parsed.get("finished_at")
+    if result not in BACKUP_RESULTS or not isinstance(date, str) or not date:
+        return {
+            "state": "unknown",
+            "detail": "run record has no complete|failed result with a date",
+        }
+    if not isinstance(finished_at, str) or not finished_at:
+        return {
+            "state": "unknown",
+            "detail": "run record has no finished_at timestamp",
+        }
+    destinations = parsed.get("destinations")
+    if not isinstance(destinations, dict):
+        destinations = {}
+    # Snapshot convention is camelCase (cf. show_unit translating
+    # ActiveState -> activeState); translate once, at this boundary.
+    started = parsed.get("started_at")
+    finished = parsed.get("finished_at")
+    failing = parsed.get("failing_step")
+    sha = parsed.get("archive_sha256")
+    exit_code = parsed.get("exit_code")
+    return {
+        "date": date,
+        "startedAt": started if isinstance(started, str) else None,
+        "finishedAt": finished,
+        "result": result,
+        "exitCode": exit_code if isinstance(exit_code, int) else None,
+        "failingStep": failing if isinstance(failing, str) else None,
+        "archiveSha256": sha if isinstance(sha, str) else None,
+        "destinations": {
+            str(k): str(v) for k, v in destinations.items()
+        },
+    }
+
+
 def main(argv=None):
     args = parse_args(argv)
     snapshot = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "host": read_host_name(),
         "claimantMode": read_claimant_mode(args.mode_file),
+        "backup": read_backup_record(args.run_record),
         "units": {},
         "timers": {},
     }

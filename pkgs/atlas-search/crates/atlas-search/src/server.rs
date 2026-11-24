@@ -33,7 +33,7 @@ use atlas_core::{
     JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
     SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
     VectorBackend as CoreVectorBackend, chunk_classification, feedback_for, load_feedback_dir,
-    record_feedback, run_get_chunk, run_search_with_executor_traced,
+    record_feedback, run_get_chunk_with_context, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -775,8 +775,23 @@ where
         if !allowed || excluded {
             return Err(not_found());
         }
-        run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
-            .map_err(|e| ServerError::from_core(&e))
+        // The explicit-id gate keeps its documented form (a
+        // by-id lookup with no caller ceiling; the LocalOwner
+        // context applies, exactly like the Python), while the
+        // caller's actual ceiling is threaded through so the
+        // occurrence provenance is bounded by it — never by the
+        // destination context's standalone ceiling (P1: a
+        // personal-capped caller must not receive secret-tier
+        // source locators, and a personal-only service must not
+        // request a secret-tier fan-out).
+        run_get_chunk_with_context(
+            self.backend.as_ref(),
+            chunk_id,
+            neighbors,
+            DisclosureContext::LocalOwner,
+            core_sensitivity(ceiling),
+        )
+        .map_err(|e| ServerError::from_core(&e))
     }
 
     fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {

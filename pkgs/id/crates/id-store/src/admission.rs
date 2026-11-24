@@ -262,7 +262,7 @@ impl FollowUpSink {
     pub fn request(&self, operation_id: OperationId, envelope: Envelope) {
         self.queued
             .lock()
-            .expect("follow-up sink poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(QueuedOperation {
                 operation_id,
                 envelope,
@@ -270,7 +270,12 @@ impl FollowUpSink {
     }
 
     fn drain(&self) -> Vec<QueuedOperation> {
-        std::mem::take(&mut *self.queued.lock().expect("follow-up sink poisoned"))
+        std::mem::take(
+            &mut *self
+                .queued
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 }
 
@@ -438,7 +443,7 @@ impl OperationLedger for MemoryOperationLedger {
     fn entry(&self, operation_id: &OperationId) -> Option<LedgerEntry> {
         self.entries
             .lock()
-            .expect("operation ledger poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(operation_id)
             .cloned()
     }
@@ -446,7 +451,7 @@ impl OperationLedger for MemoryOperationLedger {
     fn record(&self, operation_id: OperationId, entry: LedgerEntry) {
         self.entries
             .lock()
-            .expect("operation ledger poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(operation_id, entry);
     }
 }
@@ -500,14 +505,14 @@ impl OutboxJournal for MemoryOutboxJournal {
         let key = (pending.event_id.clone(), pending.hook_id.clone());
         self.pending
             .lock()
-            .expect("outbox journal poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(key, pending);
     }
 
     fn pending(&self) -> Vec<PendingDelivery> {
         self.pending
             .lock()
-            .expect("outbox journal poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
             .cloned()
             .collect()
@@ -516,7 +521,7 @@ impl OutboxJournal for MemoryOutboxJournal {
     fn clear(&self, event_id: &str, hook_id: &HookId) {
         self.pending
             .lock()
-            .expect("outbox journal poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&(event_id.to_owned(), hook_id.clone()));
     }
 }
@@ -695,7 +700,7 @@ impl Drop for InFlightGuard<'_> {
     fn drop(&mut self) {
         self.set
             .lock()
-            .expect("in-flight set poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&self.operation_id);
     }
 }
@@ -781,7 +786,10 @@ impl AdmissionPipeline {
         commit: impl FnOnce(&CommitInput<'_>) -> Result<(), String>,
     ) -> Result<PipelineOutcome, LifecycleRejection> {
         {
-            let mut in_flight = self.in_flight.lock().expect("in-flight set poisoned");
+            let mut in_flight = self
+                .in_flight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !in_flight.insert(operation_id.clone()) {
                 return Err(LifecycleRejection::ReentrantOperation { operation_id });
             }

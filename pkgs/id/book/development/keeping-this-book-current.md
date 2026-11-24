@@ -11,7 +11,7 @@ A book that drifts from the system is worse than no book: agents and operators s
 Concretely, in the same change as the code:
 
 1. A new or changed command or flag → its reference chapter, plus [Add a command](add-a-verb.md) if the change alters the pattern that chapter teaches.
-2. A new or changed MCP tool → [The MCP bridge](../reference/mcp.md). A new or changed web route → [The web UI: pages and HTTP API](../reference/web-ui.md) or [WebSocket protocols](../reference/websockets.md), whichever serves it. A new or changed hosted Worker route → [The hosted Worker API](../reference/hosted-worker.md).
+2. A new or changed MCP tool → [The MCP bridge](../reference/mcp.md). A new or changed web route → [The web UI: pages and HTTP API](../reference/web-ui.md) or [WebSocket protocols](../reference/websockets.md), whichever serves it. A new or changed hosted Worker route → [The hosted Worker API](../reference/hosted-worker.md). A new or changed mail Worker route, caller grant, template, limit or binding (in `nixos/services/id-mail/worker/config.json` and its sources) → [The mail Worker API](../reference/mail-worker.md).
 3. A changed default → **every** chapter that states the old default. Search the book for the value; defaults are stated in more places than you remember.
 4. A new or changed config key or environment variable → [Configuration and environment](../reference/configuration.md).
 5. A schema or data-format change → [Data stores and schemas](../reference/data-stores.md). A new format version is described beside the old one, never written over it: the old version's readers are still in the field during a rollout, per [Release and rollout](release-and-rollout.md).

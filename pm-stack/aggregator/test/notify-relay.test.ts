@@ -85,7 +85,9 @@ async function makeClient(
 }
 
 const okHandler = (call: RecordedCall) =>
-  call.url.endsWith("/heartbeat") ? { status: 200, body: { ok: true, pendingAnswers: 0 } } : { status: 200, body: { ok: true } };
+  call.url.endsWith("/heartbeat")
+    ? { status: 200, body: { ok: true, pendingAnswers: 0 } }
+    : { status: 200, body: { ok: true } };
 
 describe("snapshot + heartbeat bodies (design §1 shapes)", () => {
   test("the snapshot carries only delivery fields, under the given seq", () => {

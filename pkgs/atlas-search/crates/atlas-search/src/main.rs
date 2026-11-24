@@ -1035,8 +1035,14 @@ fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
     // The Python's get-chunk takes no vector args: pick_backend
     // sees the defaults (getattr fallbacks in its main()).
     let backend = pick_backend(&args.backend, atlas_core::DEFAULT_VEC_TABLE, 0)?;
-    let mut out = run_get_chunk_with_context(backend.as_ref(), args.chunk_id, neighbors, context)
-        .map_err(|e| map_get_chunk_err(e, args.chunk_id))?;
+    let mut out = run_get_chunk_with_context(
+        backend.as_ref(),
+        args.chunk_id,
+        neighbors,
+        context,
+        context.ceiling(),
+    )
+    .map_err(|e| map_get_chunk_err(e, args.chunk_id))?;
     if let Some(note) = note {
         push_note(&mut out, note);
     }

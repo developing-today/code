@@ -314,7 +314,7 @@ describe("who is the owner", () => {
       { host: "127.0.0.1:4872", "cf-connecting-ip": "203.0.113.9" },
       { host: "127.0.0.1:4872", "x-forwarded-for": "203.0.113.9" },
       { host: "127.0.0.1:4872", "cdn-loop": "cloudflare" },
-    ]) {
+    ] as Record<string, string>[]) {
       await expect(identify(local(headers), cfg, here)).rejects.toThrow(/sign-in required/);
     }
   });
@@ -564,7 +564,7 @@ describe("operations", () => {
     const r = recorder(() => "secret-token\n");
     const sent: { url: string; body: { requests: { stmt?: { sql: string; args: unknown[] } }[] }; auth: string }[] = [];
     const ops = new Ops(CFG, r.run, async (url, init) => {
-      sent.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization });
+      sent.push({ url, body: JSON.parse(init.body as string), auth: init.headers.Authorization });
       return {
         ok: true,
         status: 200,
@@ -663,14 +663,14 @@ describe("operations", () => {
         : JSON.stringify({ labels: [{ name: "now" }] }),
     );
     await expect(new Ops(CFG, failing.run).setRank("12279", "next")).rejects.toThrow(/502/);
-    expect(failing.calls.map((c) => c.argv[4])).toEqual([undefined, "POST", "DELETE"]);
+    expect(failing.calls.map((c): string | undefined => c.argv[4])).toEqual([undefined, "POST", "DELETE"]);
     // A rank the issue already has is not added again; "none" only removes.
     const same = recorder(() => JSON.stringify({ labels: [{ name: "now" }, { name: "next" }] }));
     await new Ops(CFG, same.run).setRank("12279", "now");
-    expect(same.calls.map((c) => c.argv[4])).toEqual([undefined, "DELETE"]);
+    expect(same.calls.map((c): string | undefined => c.argv[4])).toEqual([undefined, "DELETE"]);
     const none = recorder(() => JSON.stringify({ labels: [{ name: "now" }] }));
     await new Ops(CFG, none.run).setRank("12279", "none");
-    expect(none.calls.map((c) => c.argv[4])).toEqual([undefined, "DELETE"]);
+    expect(none.calls.map((c): string | undefined => c.argv[4])).toEqual([undefined, "DELETE"]);
     await expect(ops.setRank("12279", "urgent")).rejects.toThrow(/rank/);
     await expect(ops.setRank("12279/labels", "now")).rejects.toThrow(OpError);
   });
@@ -1365,7 +1365,7 @@ describe("HTTP surface", () => {
       { origin: "https://evil.example" },
       { origin: "null" },
       { origin: "https://pm.security.cab", "sec-fetch-site": "cross-site" },
-    ]) {
+    ] as Record<string, string>[]) {
       expect((await handle(post("/api/cards/7/move", { to: "done" }, headers), d)).status).toBe(403);
     }
     expect(d.sent.length).toBe(before + 1);
@@ -1387,10 +1387,14 @@ describe("HTTP surface", () => {
       expect(readConfig({ HOME: "/h" }).androidApk).toBe("/h/.local/state/pm-console/android/pm-console.apk");
       const owner = { ...deps("owner"), cfg };
       // No build yet: the page is told so, and the link answers 404.
-      expect((await (await handle(get("/console/api/me"), owner)).json()).androidApp).toBe(false);
+      expect(((await (await handle(get("/console/api/me"), owner)).json()) as { androidApp: boolean }).androidApp).toBe(
+        false,
+      );
       expect((await handle(get("/console/pm-console.apk"), owner)).status).toBe(404);
       writeFileSync(join(dir, "pm-console.apk"), "PK\u0003\u0004 signed apk bytes");
-      expect((await (await handle(get("/console/api/me"), owner)).json()).androidApp).toBe(true);
+      expect(((await (await handle(get("/console/api/me"), owner)).json()) as { androidApp: boolean }).androidApp).toBe(
+        true,
+      );
       const res = await handle(get("/console/pm-console.apk"), owner);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("application/vnd.android.package-archive");
@@ -1427,7 +1431,7 @@ describe("HTTP surface", () => {
     };
     const refused = await handle(post("/console/api/prs/12240/merge", {}), d);
     expect(refused.status).toBe(502);
-    expect((await refused.json()).error).toContain("not taken");
+    expect(((await refused.json()) as { error: string }).error).toContain("not taken");
     expect(r.calls.length).toBe(1);
 
     // The record of the outcome cannot be written: the merge happened, and

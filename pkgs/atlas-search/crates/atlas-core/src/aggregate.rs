@@ -216,10 +216,11 @@ fn next_shard_part(shard_dir: &Path, tier: Tier, topic: &str) -> Result<u32> {
         let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        if let Some((t, tp, part)) = crate::shards::parse_shard_name(stem) {
-            if t == tier && tp == topic {
-                next = next.max(part + 1);
-            }
+        if let Some((t, tp, part)) = crate::shards::parse_shard_name(stem)
+            && t == tier
+            && tp == topic
+        {
+            next = next.max(part + 1);
         }
     }
     Ok(next)
