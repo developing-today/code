@@ -4910,6 +4910,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-bevy-bridge"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "id-caps"
 version = "0.1.0"
 dependencies = [
