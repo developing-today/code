@@ -48,7 +48,18 @@ LONG_TIMEOUT_SECONDS = 3600
 
 def _run(argv, timeout=LONG_TIMEOUT_SECONDS):
     try:
-        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        # stdin is DEVNULL, never inherited: git pack-objects reads
+        # object names from stdin when its revision arguments run out,
+        # so an inherited stdin that never reaches EOF hangs the
+        # publish forever (found live 2026-11-24: two proof runs
+        # blocked at 0 CPU until killed).
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"{argv[0]} timed out") from exc
     if result.returncode:
