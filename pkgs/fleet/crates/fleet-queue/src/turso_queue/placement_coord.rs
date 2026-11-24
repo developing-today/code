@@ -631,6 +631,508 @@ pub(crate) fn verb_placement_load(t: &TursoBackend, _req: &Value) -> Value {
     }
 }
 
+use std::collections::{HashMap, HashSet};
+
+// ---------------------------------------------------------------------------
+// Coordinator worker (slice 2): the broker thread's sweep.
+// ---------------------------------------------------------------------------
+
+/// How often the broker's coordinator thread runs the sweep.
+pub(crate) const COORD_SWEEP_INTERVAL_SECS: u64 = 20;
+
+/// The sweep's GitHub surface: load counts and run states over the
+/// runner-host repos — the same reads `build_ctx` makes. The
+/// production implementation lives in queue_broker.rs (broker-owned
+/// token, full-coverage host); tests substitute a fake.
+pub(crate) trait CoordGh {
+    /// (running, queued) totals for one host repo.
+    fn load_counts(&self, repo: &str) -> Result<(i64, i64), String>;
+    /// Live (in_progress or queued) run ids for one host repo.
+    fn live_run_ids(&self, repo: &str) -> Result<Vec<i64>, String>;
+    /// Terminal runs resolve to their billable minutes; live runs
+    /// resolve to None. Errors leave the claim alone.
+    fn run_actual_minutes(&self, repo: &str, run_id: i64) -> Result<Option<f64>, String>;
+}
+
+/// Runner-host repos per owner — the same derivation `build_ctx`
+/// reads load over: github-actions and blacksmith surfaces with a
+/// repo. Sorted per owner for deterministic sweeps.
+fn coord_hosts(registry: &Value) -> HashMap<String, Vec<String>> {
+    let mut hosts: HashMap<String, Vec<String>> = HashMap::new();
+    for s in registry
+        .get("surfaces")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
+        let kind = s.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let repo = s.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+        let owner = s.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+        if (kind == "github-actions" || kind == "blacksmith") && !repo.is_empty() && !owner.is_empty()
+        {
+            let repos = hosts.entry(owner.to_string()).or_default();
+            if !repos.contains(&repo.to_string()) {
+                repos.push(repo.to_string());
+            }
+        }
+    }
+    for repos in hosts.values_mut() {
+        repos.sort();
+    }
+    hosts
+}
+
+fn coord_cap(registry: &Value, owner: &str) -> i64 {
+    registry
+        .get("owners")
+        .and_then(|o| o.get(owner))
+        .and_then(|o| o.get("concurrent_jobs_cap"))
+        .and_then(|c| c.as_i64())
+        .unwrap_or(0)
+}
+
+fn coord_surface_repo(registry: &Value, surface: &str) -> String {
+    registry
+        .get("surfaces")
+        .and_then(|s| s.as_array())
+        .and_then(|ss| {
+            ss.iter()
+                .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(surface))
+        })
+        .and_then(|s| s.get("repo"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+// Placement rows and the coordinator's own stamps are the same
+// `YYYY-MM-DDTHH:MM:SSZ` shape `build_ctx` parses (private there,
+// mirrored here so the sweep never depends on client features).
+fn coord_days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400) as u64;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as u64;
+    let doy = (153 * mp + 2) / 5 + d as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe as i64 - 719_468
+}
+
+fn coord_parse_iso(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[19] != b'Z' {
+        return None;
+    }
+    let num = |a: usize, n: usize| s.get(a..a + n)?.parse::<i64>().ok();
+    let days = coord_days_from_civil(num(0, 4)?, num(5, 2)? as u32, num(8, 2)? as u32);
+    Some(days * 86_400 + num(11, 2)? * 3600 + num(14, 2)? * 60 + num(17, 2)?)
+}
+
+fn coord_civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn coord_iso_from_epoch(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (y, m, d) = coord_civil_from_days(days);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// Billable minutes between two GitHub timestamps: whole minutes
+/// rounded up, at least one. None when either stamp is malformed.
+pub(crate) fn coord_minutes_between(start: &str, end: &str) -> Option<f64> {
+    let secs = coord_parse_iso(end)? - coord_parse_iso(start)?;
+    Some(1.0f64.max((secs as f64 / 60.0).ceil()))
+}
+
+/// The sweep: refresh the true load view, expire stale holds,
+/// settle finished Blacksmith runs, recompute the counters from
+/// the claims table (self-healing), and grant the waitlist FIFO
+/// while occupancy leaves room. Every leg is failure-tolerant —
+/// a GitHub outage freezes the counts it cannot read and records
+/// the error, but expiry, recompute, and grants still run, and a
+/// bad row never aborts the pass. Returns the pass summary (the
+/// broker thread logs it).
+pub(crate) fn coordinator_sweep(t: &TursoBackend, gh: &dyn CoordGh, now: &str) -> Value {
+    let mut errors: Vec<Value> = Vec::new();
+    let mut refreshed: i64 = 0;
+    let mut expired: i64 = 0;
+    let mut settled: i64 = 0;
+    let mut granted: i64 = 0;
+    let registry = match coord_registry() {
+        Ok(r) => r,
+        Err(e) => return json!({"ok": false, "error": e}),
+    };
+    let hosts = coord_hosts(&registry);
+    let month = now.get(..7).unwrap_or("").to_string();
+    // (1) Load refresh: each owner's GitHub counts plus the live
+    // run-id set (the confirmed-but-observed-live double-count
+    // guard in step 4). An owner whose repos cannot be read keeps
+    // its last counts — the gate still enforces on those.
+    let mut live_by_owner: HashMap<String, HashSet<i64>> = HashMap::new();
+    let owners: Vec<String> = {
+        let mut os: Vec<String> = registry
+            .get("owners")
+            .and_then(|o| o.as_object())
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        os.sort();
+        os
+    };
+    for owner in &owners {
+        let cap = coord_cap(&registry, owner);
+        if let Err(e) = ensure_owner(t, owner, cap) {
+            errors.push(json!(format!("owner {owner}: {e}")));
+            continue;
+        }
+        let repos = hosts.get(owner).cloned().unwrap_or_default();
+        if repos.is_empty() {
+            continue;
+        }
+        let mut running: i64 = 0;
+        let mut queued: i64 = 0;
+        let mut live: HashSet<i64> = HashSet::new();
+        let mut failed: Option<String> = None;
+        for repo in &repos {
+            match gh.load_counts(repo) {
+                Ok((r, q)) => {
+                    running += r;
+                    queued += q;
+                }
+                Err(e) => {
+                    failed = Some(format!("{repo}: {e}"));
+                    break;
+                }
+            }
+            match gh.live_run_ids(repo) {
+                Ok(ids) => {
+                    live.extend(ids);
+                }
+                Err(e) => {
+                    failed = Some(format!("{repo}: {e}"));
+                    break;
+                }
+            }
+        }
+        if let Some(e) = failed {
+            errors.push(json!(format!("owner {owner}: {e}")));
+            continue;
+        }
+        live_by_owner.insert(owner.clone(), live);
+        let upd = t.exec(
+            "UPDATE placement_owner_state SET gh_running = ?, gh_queued = ?, \
+            load_read_at = ?, load_source = ?, updated_at = ? WHERE owner = ?",
+            &[
+                Arg::Int(running),
+                Arg::Int(queued),
+                Arg::Text(now.to_string()),
+                Arg::Text(
+                    "broker coordinator sweep (live GitHub Actions run counts over fleet runner hosts)"
+                        .to_string(),
+                ),
+                Arg::Text(now.to_string()),
+                Arg::Text(owner.clone()),
+            ],
+        );
+        match upd {
+            Ok(_) => refreshed += 1,
+            Err(e) => errors.push(json!(format!("owner {owner}: {e}"))),
+        }
+    }
+    // (2) Expiry: claimed/granted holds past their TTL give the
+    // slot back, and Blacksmith holds unreserve the estimate.
+    let stale = t.query_objs(
+        "SELECT handle, owner, kind, est_minutes, budget_month, surface, state \
+        FROM placement_claims WHERE state IN ('claimed', 'granted') \
+        AND expires_at IS NOT NULL AND expires_at < ?",
+        &[Arg::Text(now.to_string())],
+        &[],
+    );
+    match stale {
+        Ok(rows) => {
+            for row in rows {
+                let handle = row.get("handle").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let owner = row.get("owner").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let kind = row.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let est = row.get("est_minutes").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let bmonth = row
+                    .get("budget_month")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let surface = row.get("surface").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let step: Result<(), TErr> = (|| {
+                    t.exec(
+                        "UPDATE placement_claims SET state = 'expired', expires_at = NULL, \
+                        updated_at = ? WHERE handle = ?",
+                        &[Arg::Text(now.to_string()), Arg::Text(handle.clone())],
+                    )?;
+                    if !owner.is_empty() {
+                        t.exec(
+                            "UPDATE placement_owner_state \
+                            SET claims_active = CASE WHEN claims_active > 0 \
+                            THEN claims_active - 1 ELSE 0 END, updated_at = ? WHERE owner = ?",
+                            &[Arg::Text(now.to_string()), Arg::Text(owner.clone())],
+                        )?;
+                    }
+                    if kind == "blacksmith" && !bmonth.is_empty() {
+                        t.exec(
+                            "UPDATE placement_budgets \
+                            SET reserved_minutes = CASE WHEN reserved_minutes > ? \
+                            THEN reserved_minutes - ? ELSE 0 END, updated_at = ? \
+                            WHERE month = ? AND surface = ?",
+                            &[
+                                Arg::Float(est),
+                                Arg::Float(est),
+                                Arg::Text(now.to_string()),
+                                Arg::Text(bmonth.clone()),
+                                Arg::Text(surface.clone()),
+                            ],
+                        )?;
+                    }
+                    Ok(())
+                })();
+                match step {
+                    Ok(()) => expired += 1,
+                    Err(e) => errors.push(json!(format!("expire {handle}: {e}"))),
+                }
+            }
+        }
+        Err(e) => errors.push(json!(format!("expire scan: {e}"))),
+    }
+    // (3) Settle: confirmed Blacksmith claims whose runs are
+    // terminal convert the reservation to actual use.
+    let done = t.query_objs(
+        "SELECT handle, surface, run_id, est_minutes, budget_month \
+        FROM placement_claims WHERE state = 'confirmed' AND kind = 'blacksmith' \
+        AND run_id IS NOT NULL",
+        &[],
+        &[],
+    );
+    match done {
+        Ok(rows) => {
+            for row in rows {
+                let handle = row.get("handle").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let surface = row.get("surface").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let run_id = row.get("run_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let est = row.get("est_minutes").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let bmonth = row
+                    .get("budget_month")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let repo = coord_surface_repo(&registry, &surface);
+                if repo.is_empty() || run_id <= 0 || bmonth.is_empty() {
+                    continue;
+                }
+                match gh.run_actual_minutes(&repo, run_id) {
+                    Ok(Some(actual)) => {
+                        let step: Result<(), TErr> = (|| {
+                            t.exec(
+                                "UPDATE placement_claims SET state = 'settled', updated_at = ? \
+                                WHERE handle = ?",
+                                &[Arg::Text(now.to_string()), Arg::Text(handle.clone())],
+                            )?;
+                            t.exec(
+                                "UPDATE placement_budgets \
+                                SET reserved_minutes = CASE WHEN reserved_minutes > ? \
+                                THEN reserved_minutes - ? ELSE 0 END, \
+                                used_minutes = used_minutes + ?, updated_at = ? \
+                                WHERE month = ? AND surface = ?",
+                                &[
+                                    Arg::Float(est),
+                                    Arg::Float(est),
+                                    Arg::Float(actual),
+                                    Arg::Text(now.to_string()),
+                                    Arg::Text(bmonth.clone()),
+                                    Arg::Text(surface.clone()),
+                                ],
+                            )?;
+                            Ok(())
+                        })();
+                        match step {
+                            Ok(()) => settled += 1,
+                            Err(e) => errors.push(json!(format!("settle {handle}: {e}"))),
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => errors.push(json!(format!("run {repo}/{run_id}: {e}"))),
+                }
+            }
+        }
+        Err(e) => errors.push(json!(format!("settle scan: {e}"))),
+    }
+    // (4) Recompute: claims_active from the claims table, so a
+    // crashed or partitioned broker heals instead of leaking
+    // slots. Confirmed claims whose run is observed live stop
+    // counting — GitHub carries them then (no double count).
+    for owner in &owners {
+        let live = live_by_owner.get(owner).cloned().unwrap_or_default();
+        let rows = t.query_objs(
+            "SELECT state, run_id FROM placement_claims \
+            WHERE owner = ? AND state IN ('claimed', 'granted', 'confirmed')",
+            &[Arg::Text(owner.clone())],
+            &[],
+        );
+        let active: i64 = match rows {
+            Ok(rs) => {
+                rs.iter()
+                    .filter(|r| {
+                        let st = r.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                        if st == "claimed" || st == "granted" {
+                            return true;
+                        }
+                        if st != "confirmed" {
+                            return false;
+                        }
+                        match r.get("run_id").and_then(|v| v.as_i64()) {
+                            Some(id) => !live.contains(&id),
+                            None => true,
+                        }
+                    })
+                    .count() as i64
+            }
+            Err(e) => {
+                errors.push(json!(format!("recompute {owner}: {e}")));
+                continue;
+            }
+        };
+        if let Err(e) = t.exec(
+            "UPDATE placement_owner_state SET claims_active = ?, updated_at = ? WHERE owner = ?",
+            &[
+                Arg::Int(active),
+                Arg::Text(now.to_string()),
+                Arg::Text(owner.clone()),
+            ],
+        ) {
+            errors.push(json!(format!("recompute {owner}: {e}")));
+        }
+    }
+    // (5) Grants: the waitlist, FIFO per owner, while occupancy
+    // (GitHub counts plus still-held claims) leaves room. The
+    // head of the line blocks the owner (no skipping): a queued
+    // Blacksmith claim the budget cannot cover waits.
+    for owner in &owners {
+        let cap = coord_cap(&registry, owner);
+        loop {
+            let view = match owner_view(t, owner) {
+                Ok(v) => v,
+                Err(e) => {
+                    errors.push(json!(format!("grant view {owner}: {e}")));
+                    break;
+                }
+            };
+            let occupancy = view.get("occupancy").and_then(|v| v.as_i64()).unwrap_or(i64::MAX);
+            if occupancy >= cap {
+                break;
+            }
+            let next = t.query_objs(
+                "SELECT handle, surface, kind, est_minutes, budget_month \
+                FROM placement_claims WHERE owner = ? AND state = 'queued' \
+                ORDER BY created_at, handle LIMIT 1",
+                &[Arg::Text(owner.clone())],
+                &[],
+            );
+            let head = match next {
+                Ok(mut rs) => {
+                    if rs.is_empty() {
+                        break;
+                    }
+                    rs.remove(0)
+                }
+                Err(e) => {
+                    errors.push(json!(format!("grant scan {owner}: {e}")));
+                    break;
+                }
+            };
+            let handle = head.get("handle").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let surface = head.get("surface").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let kind = head.get("kind").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let est = head.get("est_minutes").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let bmonth = head
+                .get("budget_month")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // Blacksmith heads reserve at grant time (queued
+            // claims never reserved at claim time).
+            if kind == "blacksmith" && !bmonth.is_empty() && bmonth == month {
+                let reserve = t.exec(
+                    "UPDATE placement_budgets \
+                    SET reserved_minutes = reserved_minutes + ?, updated_at = ? \
+                    WHERE month = ? AND surface = ? \
+                    AND used_minutes + reserved_minutes + ? <= budget_minutes",
+                    &[
+                        Arg::Float(est),
+                        Arg::Text(now.to_string()),
+                        Arg::Text(bmonth.clone()),
+                        Arg::Text(surface.clone()),
+                        Arg::Float(est),
+                    ],
+                );
+                match reserve {
+                    Ok(r) if r.affected == 0 => break,
+                    Ok(_) => {}
+                    Err(e) => {
+                        errors.push(json!(format!("grant reserve {handle}: {e}")));
+                        break;
+                    }
+                }
+            }
+            let grant_at = coord_parse_iso(now)
+                .map(|base| coord_iso_from_epoch(base + GRANT_TTL_SECS))
+                .unwrap_or_else(|| now.to_string());
+            let step: Result<(), TErr> = (|| {
+                t.exec(
+                    "UPDATE placement_claims SET state = 'granted', expires_at = ?, \
+                    updated_at = ? WHERE handle = ? AND state = 'queued'",
+                    &[
+                        Arg::Text(grant_at),
+                        Arg::Text(now.to_string()),
+                        Arg::Text(handle.clone()),
+                    ],
+                )?;
+                t.exec(
+                    "UPDATE placement_owner_state SET claims_active = claims_active + 1, \
+                    updated_at = ? WHERE owner = ?",
+                    &[Arg::Text(now.to_string()), Arg::Text(owner.clone())],
+                )?;
+                Ok(())
+            })();
+            match step {
+                Ok(()) => granted += 1,
+                Err(e) => {
+                    errors.push(json!(format!("grant {handle}: {e}")));
+                    break;
+                }
+            }
+        }
+    }
+    json!({
+        "ok": true,
+        "refreshed": refreshed,
+        "expired": expired,
+        "settled": settled,
+        "granted": granted,
+        "errors": errors,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Proof-bar tests 1–3 (#13765 slice 1): claim gate, budget refuse,
 // confirm/release — against a rusqlite-backed fake of the Turso
@@ -972,5 +1474,96 @@ mod placement_coord_tests {
         assert_eq!(dt["claims_active"], 1, "{load}");
         assert_eq!(dt["cap"], 20, "{load}");
         assert_eq!(load["owners"].as_array().unwrap().len(), 3, "{load}");
+    }
+
+    struct FakeGh {
+        loads: HashMap<String, (i64, i64)>,
+        live: HashMap<String, Vec<i64>>,
+        terminal: HashMap<(String, i64), f64>,
+    }
+
+    impl CoordGh for FakeGh {
+        fn load_counts(&self, repo: &str) -> Result<(i64, i64), String> {
+            Ok(self.loads.get(repo).copied().unwrap_or((0, 0)))
+        }
+        fn live_run_ids(&self, repo: &str) -> Result<Vec<i64>, String> {
+            Ok(self.live.get(repo).cloned().unwrap_or_default())
+        }
+        fn run_actual_minutes(&self, repo: &str, run_id: i64) -> Result<Option<f64>, String> {
+            Ok(self.terminal.get(&(repo.to_string(), run_id)).copied())
+        }
+    }
+
+    /// Test 4: saturation queues, and the sweep grants FIFO as
+    /// slots free; a grant made on one seat resolves from another,
+    /// and stale holds expire with their slots freed. developing-today
+    /// fills to its cap of 20, two waiters queue, a release opens
+    /// one slot, and the sweep grants exactly the older waiter.
+    #[test]
+    fn sweep_grants_fifo_and_expires_stale_holds() {
+        let t = fake_backend();
+        for i in 0..20 {
+            let out = claim(&t, &format!("s{i:02}"), "fleet-org", json!({}));
+            assert_eq!(out["status"], "claimed", "{i}: {out}");
+        }
+        let q1 = claim(&t, "sq-1", "fleet-org", json!({}));
+        let q2 = claim(&t, "sq-2", "fleet-org", json!({}));
+        assert_eq!(q1["status"], "queued", "{q1}");
+        assert_eq!(q2["status"], "queued", "{q2}");
+        // One slot frees.
+        let r = verb_placement_release(&t, &json!({"handle": "s00"}));
+        assert_eq!(r["state"], "released", "{r}");
+        let gh = FakeGh {
+            loads: HashMap::new(),
+            live: HashMap::new(),
+            terminal: HashMap::new(),
+        };
+        let now = now_iso();
+        let sum = coordinator_sweep(&t, &gh, &now);
+        assert_eq!(sum["ok"], true, "{sum}");
+        assert_eq!(sum["refreshed"], 3, "{sum}");
+        assert_eq!(sum["expired"], 0, "{sum}");
+        assert_eq!(sum["settled"], 0, "{sum}");
+        assert_eq!(sum["granted"], 1, "{sum}");
+        assert!(sum["errors"].as_array().unwrap().is_empty(), "{sum}");
+        // Exactly the older waiter holds the grant; the younger
+        // still waits. The grant resolves cross-seat (the status
+        // verb carries no seat — any seat reads the same row).
+        let g1 = verb_placement_claim_status(&t, &json!({"handle": "sq-1"}));
+        assert_eq!(g1["claim"]["state"], "granted", "{g1}");
+        assert!(g1["claim"]["expires_at"].as_str().unwrap() > now.as_str(), "{g1}");
+        let g2 = verb_placement_claim_status(&t, &json!({"handle": "sq-2"}));
+        assert_eq!(g2["claim"]["state"], "queued", "{g2}");
+        // A stale held slot (TTL lapsed) expires on the next pass
+        // and its slot frees: free one more live slot, craft one
+        // directly past its TTL, and the sweep expires the stale
+        // hold and grants the remaining waiter.
+        let r2 = verb_placement_release(&t, &json!({"handle": "s01"}));
+        assert_eq!(r2["state"], "released", "{r2}");
+        t.exec(
+            "INSERT INTO placement_claims \
+            (handle, owner, surface, kind, seat, state, est_minutes, \
+            created_at, expires_at, updated_at) \
+            VALUES ('stale-1', 'developing-today', 'fleet-org', 'github-actions', \
+            'seat-9', 'claimed', 10, '2020-01-01T00:00:00Z', '2020-01-01T00:05:00Z', \
+            '2020-01-01T00:00:00Z')",
+            &[],
+        )
+        .unwrap();
+        t.exec(
+            "UPDATE placement_owner_state SET claims_active = claims_active + 1 \
+            WHERE owner = 'developing-today'",
+            &[],
+        )
+        .unwrap();
+        let sum2 = coordinator_sweep(&t, &gh, &now_iso());
+        assert_eq!(sum2["expired"], 1, "{sum2}");
+        let st = verb_placement_claim_status(&t, &json!({"handle": "stale-1"}));
+        assert_eq!(st["claim"]["state"], "expired", "{st}");
+        // The freed slot went to the remaining waiter: sq-2 is now
+        // granted and the owner is back at cap.
+        let g2b = verb_placement_claim_status(&t, &json!({"handle": "sq-2"}));
+        assert_eq!(g2b["claim"]["state"], "granted", "{g2b} {sum2}");
+        assert_eq!(g2b["owner_load"]["claims_active"], 20, "{g2b} {sum2}");
     }
 }
