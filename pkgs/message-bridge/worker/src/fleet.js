@@ -34,6 +34,37 @@
 //   POST /api/<owner>/fleet/send       {body, to, kind?, sender?}: one
 //                                      inbound row per recipient
 //
+// Offers: claim-style distribution (design §4.2, #14371). A fan-out
+// send cannot express "the next task goes to the next N agents who
+// pick it up", so a sender can instead post an offer — stored once in
+// fleet_offer, never fanned out:
+//
+//   POST /api/<owner>/fleet/offer      {body, to, kind?, slots, sender?,
+//                                      ttl_seconds?}: post an offer
+//   GET  /api/<owner>/fleet/offers     every offer with its claims
+//                                      (agent, time, delivered row)
+//   POST /fleet/<fleet token>/offer    {agent, body, to, kind?, slots,
+//                                      ttl_seconds?}: an agent posts one
+//   GET  /fleet/<fleet token>/offers   ?agent=&groups=: the open offers
+//                                      this agent may claim (the inbox
+//                                      response carries the same list in
+//                                      its "offers" section)
+//   POST /fleet/<fleet token>/claim    {agent, offer_id}: claim one
+//
+// Eligibility is the offer's address (a name, glob, group or all)
+// matched against the registry at claim time. A claim is one atomic
+// store op: while slots remain it delivers a normal mailbox row to the
+// claimer — on the offer's batch, so the claimer's reply threads onto
+// the batch and the owner reads claims and replies together (the
+// offer list above, and the pipeline filtered by batch) — and records
+// the claim in fleet_offer_claim. Past the last slot a claim gets a
+// definite "filled" answer and no row; an expired offer (ttl_seconds)
+// answers "expired", a second claim by the same agent "already
+// claimed", and an agent outside the address can neither see nor
+// claim the offer. A command offer reaches its claimers with no
+// sender, like every command (commandForAgent); the owner still sees
+// who posted it.
+//
 // Per-agent credentials and bootstrap enrollment (#14368, design §4.5):
 // the routes above also answer to a per-agent credential in place of
 // the fleet token (/fleet/<credential>/...). A credential is a random
@@ -102,6 +133,7 @@ import { relay, replyAddress } from "./relay.js";
 export const FLEET_KINDS = ["message", "command"];
 export const FLEET_DIRECTIONS = ["inbound", "outbound"];
 export const MAX_RECIPIENTS = 200;
+export const OFFER_MAX_TTL_SECONDS = 30 * 24 * 3600;
 export const MAX_GROUPS = 16;
 export const FLEET_DEFAULT_LIMIT = 50;
 export const FLEET_MAX_LIMIT = 200;
@@ -331,6 +363,34 @@ export function normalizeFleetOp(op, a = {}) {
         from_addr: normalizeFromAddr(a.from_addr),
         exclude: a.exclude === undefined || a.exclude === null ? null : normalizeName(a.exclude),
       };
+    case "offer": {
+      const slots = intParam(a.slots, "slots", { min: 1 });
+      if (slots === null) throw new InputError("slots must be an integer >= 1");
+      if (slots > MAX_RECIPIENTS) throw new InputError(`slots must be at most ${MAX_RECIPIENTS}`);
+      const ttl = intParam(a.ttl_seconds, "ttl_seconds", { min: 1 });
+      if (ttl !== null && ttl > OFFER_MAX_TTL_SECONDS) {
+        throw new InputError(`ttl_seconds must be at most ${OFFER_MAX_TTL_SECONDS}`);
+      }
+      return {
+        body: normalizeBody(a.body),
+        targets: parseTargets(a.to),
+        kind: normalizeFleetKind(a.kind),
+        sender: normalizeSender(a.sender),
+        from_addr: normalizeFromAddr(a.from_addr),
+        pattern: rawPattern(a.to),
+        slots,
+        ttl_seconds: ttl,
+      };
+    }
+    case "offers":
+      return { agent: normalizeName(a.agent), groups: normalizeGroups(a.groups) };
+    case "claim": {
+      const offer_id = intParam(a.offer_id, "offer_id", { min: 1 });
+      if (offer_id === null) throw new InputError("offer_id must be a positive integer");
+      return { agent: normalizeName(a.agent), offer_id };
+    }
+    case "offer-list":
+      return {};
     case "origin":
       return { agent: normalizeName(a.agent), id: intParam(a.id, "id", { min: 1 }) };
     case "agents":
@@ -420,6 +480,30 @@ export function fleetSchema(sql) {
     delivered TEXT NOT NULL,
     ts TEXT NOT NULL
   )`);
+  // Offer pool (design §4.2): an offer is stored once, not fanned out;
+  // a claim (fleet_offer_claim, one row per claimer) is what delivers
+  // a mailbox row. state is 'open' until the last slot is claimed
+  // ('filled'); expiry is derived from expires_at at read time.
+  sql.exec(`CREATE TABLE IF NOT EXISTS fleet_offer (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch TEXT NOT NULL,
+    body TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('message', 'command')),
+    pattern TEXT,
+    slots INTEGER NOT NULL,
+    sender TEXT,
+    sender_addr TEXT,
+    ts TEXT NOT NULL,
+    expires_at TEXT,
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'filled'))
+  )`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS fleet_offer_claim (
+    offer_id INTEGER NOT NULL,
+    agent TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    message_id INTEGER,
+    PRIMARY KEY (offer_id, agent)
+  )`);
 }
 
 /** Records (or replaces) one send's distribution; matched/delivered are name lists. */
@@ -442,6 +526,92 @@ export function getDistribution(sql, batch) {
   const r = sql.exec("SELECT * FROM bridge_distribution WHERE batch = ?", batch).toArray()[0];
   if (!r) return null;
   return { ...r, matched: JSON.parse(r.matched), delivered: JSON.parse(r.delivered) };
+}
+
+// ---- offers (design §4.2) ----
+
+/** One offer's claims, oldest first: [{agent, claimed_at, message_id}]. */
+function offerClaims(sql, offer_id) {
+  return sql
+    .exec("SELECT agent, claimed_at, message_id FROM fleet_offer_claim WHERE offer_id = ? ORDER BY claimed_at, agent", offer_id)
+    .toArray()
+    .map((r) => ({ ...r }));
+}
+
+/** An offer's state as of now: the stored state, or "expired" past its expiry. */
+function offerState(offer, claimed, now) {
+  if (offer.state === "filled" || claimed >= offer.slots) return "filled";
+  if (offer.expires_at && offer.expires_at <= now) return "expired";
+  return "open";
+}
+
+/** The owner's view of one offer: real sender, claims named. */
+function offerForOwner(sql, offer, now) {
+  const claims = offerClaims(sql, offer.id);
+  return {
+    ...offer,
+    state: offerState(offer, claims.length, now),
+    claimed: claims.length,
+    remaining: offer.slots - claims.length,
+    claims,
+  };
+}
+
+/**
+ * An eligible agent's view of one offer. A command offer names no
+ * sender here either (the anonymity rule, §4.3): the claimer treats
+ * it as Drew's, exactly like a delivered command.
+ */
+function offerForAgent(offer, claimed, now) {
+  const command = offer.kind === "command";
+  return {
+    id: offer.id,
+    batch: offer.batch,
+    body: offer.body,
+    kind: offer.kind,
+    slots: offer.slots,
+    claimed,
+    remaining: offer.slots - claimed,
+    ts: offer.ts,
+    expires_at: offer.expires_at,
+    state: offerState(offer, claimed, now),
+    sender: command ? null : offer.sender,
+    from_addr: command ? null : offer.sender_addr,
+  };
+}
+
+/**
+ * Whether the offer's address names this agent, matched against the
+ * registry row at claim time (design §4.2): a glob over its name, one
+ * of its groups, an exact name, or all. The poster never claims its
+ * own offer.
+ */
+function offerEligible(offer, agent) {
+  if (offer.sender_addr === `agent:${agent.name}`) return false;
+  let targets;
+  try {
+    targets = parseTargets(offer.pattern);
+  } catch {
+    return false;
+  }
+  if (targets.all) return true;
+  if (targets.groups.some((g) => agent.groups.includes(g))) return true;
+  return targets.agents.some((t) => (isGlob(t) ? globMatch(t, agent.name) : t === agent.name));
+}
+
+/** The open offers this agent may still claim, oldest first, in agent projection. */
+function openOffersFor(sql, agent, now) {
+  const me = agentRow(sql.exec("SELECT * FROM fleet_agent WHERE name = ?", agent).toArray()[0]);
+  if (!me) return [];
+  const out = [];
+  for (const offer of sql.exec("SELECT * FROM fleet_offer WHERE state = 'open' ORDER BY id ASC").toArray()) {
+    const claims = offerClaims(sql, offer.id);
+    if (claims.some((c) => c.agent === agent)) continue;
+    if (offerState(offer, claims.length, now) !== "open") continue;
+    if (!offerEligible(offer, me)) continue;
+    out.push(offerForAgent(offer, claims.length, now));
+  }
+  return out;
 }
 
 const rows = (cursor) => cursor.toArray().map((r) => ({ ...r }));
@@ -555,7 +725,7 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
           }
         }
       }
-      return { agent, messages, next_since_id: next, stats: mailboxStats(sql, a.agent) };
+      return { agent, messages, next_since_id: next, stats: mailboxStats(sql, a.agent), offers: openOffersFor(sql, a.agent, now) };
     }
     case "ack": {
       let acked = 0;
@@ -717,6 +887,97 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
         recipients,
         remaining: matched.length - delivered.length,
       };
+    }
+    case "offer": {
+      const batch = randomBatch();
+      const expires_at = a.ttl_seconds ? new Date(Date.parse(now) + a.ttl_seconds * 1000).toISOString() : null;
+      const offer = {
+        ...sql
+          .exec(
+            `INSERT INTO fleet_offer (batch, body, kind, pattern, slots, sender, sender_addr, ts, expires_at, state)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open') RETURNING *`,
+            batch,
+            a.body,
+            a.kind,
+            a.pattern,
+            a.slots,
+            a.sender,
+            a.from_addr,
+            now,
+            expires_at,
+          )
+          .toArray()[0],
+      };
+      return { offer: offerForOwner(sql, offer, now) };
+    }
+    case "offers": {
+      touch(sql, a.agent, a.groups, now);
+      return { offers: openOffersFor(sql, a.agent, now) };
+    }
+    case "claim": {
+      touch(sql, a.agent, null, now);
+      const offer = sql.exec("SELECT * FROM fleet_offer WHERE id = ?", a.offer_id).toArray()[0];
+      if (!offer) return { error: `offer ${a.offer_id} does not exist` };
+      const me = agentRow(sql.exec("SELECT * FROM fleet_agent WHERE name = ?", a.agent).toArray()[0]);
+      if (!offerEligible(offer, me)) return { error: `${a.agent} is not eligible for offer ${offer.id}` };
+      const claims = offerClaims(sql, offer.id);
+      if (claims.some((c) => c.agent === a.agent)) return { error: `${a.agent} has already claimed offer ${offer.id}` };
+      if (offer.expires_at && offer.expires_at <= now) return { error: `offer ${offer.id} has expired` };
+      if (offer.state !== "open" || claims.length >= offer.slots) return { error: `offer ${offer.id} is filled` };
+      // The claim itself is one conditional insert: it lands only
+      // while a slot remains on an open offer and this agent has not
+      // claimed — so racing claims cannot oversubscribe the slots,
+      // whatever order the store runs them in.
+      const landed = sql
+        .exec(
+          `INSERT INTO fleet_offer_claim (offer_id, agent, claimed_at, message_id)
+           SELECT ?, ?, ?, NULL
+           WHERE (SELECT COUNT(*) FROM fleet_offer_claim WHERE offer_id = ?) < (SELECT slots FROM fleet_offer WHERE id = ? AND state = 'open')
+             AND NOT EXISTS (SELECT 1 FROM fleet_offer_claim WHERE offer_id = ? AND agent = ?)
+           RETURNING offer_id`,
+          offer.id,
+          a.agent,
+          now,
+          offer.id,
+          offer.id,
+          offer.id,
+          a.agent,
+        )
+        .toArray();
+      if (!landed.length) {
+        const again = offerClaims(sql, offer.id);
+        if (again.some((c) => c.agent === a.agent)) return { error: `${a.agent} has already claimed offer ${offer.id}` };
+        return { error: `offer ${offer.id} is filled` };
+      }
+      const message = {
+        ...sql
+          .exec(
+            `INSERT INTO fleet_message (ts, agent, direction, kind, sender, body, batch, from_addr)
+             VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?) RETURNING *`,
+            now,
+            a.agent,
+            offer.kind,
+            offer.sender,
+            offer.body,
+            offer.batch,
+            offer.sender_addr,
+          )
+          .toArray()[0],
+      };
+      sql.exec("UPDATE fleet_offer_claim SET message_id = ? WHERE offer_id = ? AND agent = ?", message.id, offer.id, a.agent);
+      const claimed = offerClaims(sql, offer.id).length;
+      if (claimed >= offer.slots) sql.exec("UPDATE fleet_offer SET state = 'filled' WHERE id = ?", offer.id);
+      return {
+        offer: offerForAgent(offer, claimed, now),
+        message,
+        claimed,
+        remaining: offer.slots - claimed,
+        stats: mailboxStats(sql, a.agent),
+      };
+    }
+    case "offer-list": {
+      const offers = rows(sql.exec("SELECT * FROM fleet_offer ORDER BY id ASC")).map((r) => offerForOwner(sql, r, now));
+      return { offers };
     }
     case "origin": {
       const orig = sql
@@ -1135,6 +1396,41 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     }
     return json(await agentSend(store, d, delivered), 201);
   }
+  if (what === "offers") {
+    if (request.method !== "GET") return notAllowed("GET");
+    if (cred && (!scoped("inbox") || credOwnName(url.searchParams.get("agent"), cred) === null)) return notFound();
+    return json(await store.fleet("offers", query(url)));
+  }
+  if (what === "offer") {
+    if (request.method !== "POST") return notAllowed("POST");
+    const d = await readJson(request);
+    if (cred) {
+      if (!scoped("send") || credOwnName(d.agent, cred) === null) return notFound();
+      // from_addr is fixed to agent:<this name>; the sender label
+      // follows it, whatever the body claims (as on send).
+      d.sender = cred.agent;
+    }
+    const agent = normalizeName(d.agent);
+    const out = await store.fleet("offer", {
+      body: d.body,
+      to: d.to,
+      kind: d.kind,
+      slots: d.slots,
+      ttl_seconds: d.ttl_seconds,
+      sender: d.sender ?? agent,
+      from_addr: `agent:${agent}`,
+    });
+    return json(out, 201);
+  }
+  if (what === "claim") {
+    if (request.method !== "POST") return notAllowed("POST");
+    const d = await readJson(request);
+    if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
+    const out = await store.fleet("claim", d);
+    // The delivered row is projected like any inbox row: a claimed
+    // command names no sender.
+    return json({ ...out, message: commandForAgent(out.message) });
+  }
   return notFound();
 }
 
@@ -1158,6 +1454,24 @@ async function ownerRoute(request, store, what, url, delivered) {
     const out = await store.fleet("send", { body: d.body, to: d.to, kind: d.kind, sender: d.sender, limit: d.limit });
     delivered({ messages: [], fleet: out.messages });
     return json(out, 201);
+  }
+  if (what === "offer") {
+    if (request.method !== "POST") return notAllowed("POST");
+    const d = await readJson(request);
+    // An offer delivers nothing yet, so there is nobody to wake.
+    const out = await store.fleet("offer", {
+      body: d.body,
+      to: d.to,
+      kind: d.kind,
+      sender: d.sender,
+      slots: d.slots,
+      ttl_seconds: d.ttl_seconds,
+    });
+    return json(out, 201);
+  }
+  if (what === "offers") {
+    if (request.method !== "GET") return notAllowed("GET");
+    return json(await store.fleet("offer-list", {}));
   }
   return notFound();
 }
