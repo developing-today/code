@@ -956,3 +956,20 @@ a search, a full answer every time, drawn on the search allowance and
 not the hour's. Not yet seen: GitHub's "not modified" to the deployed
 Worker. Nothing has asked for a kept list a second time; the next
 check of its own reads is at 03:39Z.
+
+**Seen in service, 03:42Z: "not modified".** The next check of its own
+reads ran at 03:42:46, on a later deploy (`92e3463a139d`, the rest of
+#14001 from a fleet lane, #14045). Health went from
+`answers: 5, unchanged: 0, kept: 3` to `answers: 9, unchanged: 2`, and
+a minute later `answers: 11, unchanged: 3`, with three kept
+throughout. The object that asked had started at 03:34:44; the tags it
+asked by were stored at 02:39:26 by another, two deploys back. GitHub
+answers the deployed Worker's tagged reads "not modified", so the
+saving that was claimed on 2026-11-23 and was not real then is real
+now, within the two bounds already said: a search carries no tag, and
+a list that has changed is a full answer.
+
+One small thing seen with it: the check's time moved from 03:42:46 to
+03:42:49 between two reads of health. Two health reads arrived while
+the hourly check was due, and each ran it. At most a few reads of
+GitHub once an hour, and nothing shown wrongly; noted and left.
