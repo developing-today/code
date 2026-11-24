@@ -560,6 +560,50 @@ describe("operations", () => {
     ).resolves.toEqual({ issue: 201, queued: true });
   });
 
+  // The second half of a question or a standing instruction the edge
+  // filed: the machine files the task for what it is. The oracle is the
+  // packet handed to the queue's own command.
+  test("a held prompt is queued as the kind it was sent as, and a kind that is none of them is refused", async () => {
+    type Packet = { title: string; payload: { timebox_minutes: number; issue: { title: string } } };
+    const packets: Packet[] = [];
+    // The packet is a file for as long as the queue's command runs: read then.
+    const run: Run = async (argv) => {
+      if (argv[1] === "queue" && argv[2] === "enqueue") packets.push(JSON.parse(readFileSync(argv[3], "utf8")));
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const table = actions(new Ops(CFG, run), {} as never);
+    const queuedAs = async (intent?: unknown) => {
+      await table["prompt.enqueue"].run({
+        issue: 201,
+        text: "Why did it stall?",
+        at: "2026-11-22T12:00:00Z",
+        ...(intent === undefined ? {} : { intent }),
+      });
+      const packet = packets.at(-1) as Packet;
+      return [packet.title, packet.payload.issue.title, packet.payload.timebox_minutes];
+    };
+    expect(await queuedAs("question")).toEqual([
+      "Owner question developing-today/code#201: Why did it stall?",
+      "Owner asks: Why did it stall?",
+      30,
+    ]);
+    expect(await queuedAs("directive")).toEqual([
+      "Owner directive developing-today/code#201: Why did it stall?",
+      "Owner directs: Why did it stall?",
+      60,
+    ]);
+    // From an edge that says nothing of the kind (an older one): something to do, as before.
+    expect(await queuedAs()).toEqual(await queuedAs("task"));
+    expect((await queuedAs())[0]).toBe("Owner prompt developing-today/code#201: Why did it stall?");
+    const filed = packets.length;
+    for (const intent of ["rant", "", 7, null]) {
+      await expect(
+        table["prompt.enqueue"].run({ issue: 201, text: "x", at: "2026-11-22T12:00:00Z", intent }),
+      ).rejects.toThrow(/intent: one of task, question, directive/);
+    }
+    expect(packets.length).toBe(filed);
+  });
+
   test("the queue is read with bound parameters and never written", async () => {
     const r = recorder(() => "secret-token\n");
     const sent: { url: string; body: { requests: { stmt?: { sql: string; args: unknown[] } }[] }; auth: string }[] = [];
@@ -594,6 +638,63 @@ describe("operations", () => {
     await ops.queueCounts();
     expect(r.calls.length).toBe(1); // the token is fetched once
     await expect(ops.queueList("done", "", "")).rejects.toThrow(/status/);
+  });
+
+  // Oracle: the store's own wire format (Hrana over HTTP, as Turso
+  // documents it). A whole number is sent as text marked as an integer,
+  // because the wire carries 64 bits and a JSON number does not. Seen
+  // live on 2026-11-24: an issue's number arrived as "7920", and a
+  // screen that wanted a number showed no issue at all.
+  test("a whole number comes from the store as marked text and is read as the number it is", async () => {
+    const r = recorder(() => "secret-token\n");
+    const ops = new Ops(CFG, r.run, async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        results: [
+          {
+            type: "ok",
+            response: {
+              result: {
+                cols: ["id", "big", "below", "title", "ratio", "nothing", "odd", "empty", "bare"].map((name) => ({
+                  name,
+                })),
+                rows: [
+                  [
+                    { type: "integer", value: "7920" },
+                    // One more than a number can hold exactly: it stays the text it came as.
+                    { type: "integer", value: "9007199254740993" },
+                    { type: "integer", value: "-3" },
+                    // Text that looks like a number is text.
+                    { type: "text", value: "123" },
+                    { type: "float", value: 0.5 },
+                    { type: "null" },
+                    // Marked as an integer and not one: passed on as it came, not made into nonsense.
+                    { type: "integer", value: "seven" },
+                    { type: "integer", value: "" },
+                    // Not marked at all (a stand-in, or another store): as it came.
+                    { value: "7" },
+                  ],
+                ],
+              },
+            },
+          },
+        ],
+      }),
+    }));
+    expect(await ops.sql("SELECT 1", [])).toEqual([
+      {
+        id: 7920,
+        big: "9007199254740993",
+        below: -3,
+        title: "123",
+        ratio: 0.5,
+        nothing: null,
+        odd: "seven",
+        empty: "",
+        bare: "7",
+      },
+    ]);
   });
 
   test("a rotated queue token is fetched again, once", async () => {

@@ -3,7 +3,7 @@ name = "id-import-notion"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "Notion importer manifest, inventory, and page/block conversion primitives (slices 1-2, #8419/#13522)"
+description = "Notion importer manifest, inventory, page/block conversion, and database schema-claim primitives (slices 1-3, #8419/#13522/#13523)"
 license = "MIT OR Apache-2.0"
 
 [dependencies]

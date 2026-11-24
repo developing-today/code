@@ -305,7 +305,7 @@ p {
 }
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
   gap: 8px;
   margin-bottom: 4px;
 }
@@ -313,7 +313,7 @@ p {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 10px 6px;
+  padding: 10px 2px;
   text-align: center;
   color: var(--text);
   min-height: 0;

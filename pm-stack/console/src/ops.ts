@@ -34,6 +34,19 @@ export type Fetch = (
   headers?: { get(name: string): string | null };
 }>;
 export type Row = Record<string, string | number | null>;
+
+/** A value as the queue's store sends it. A whole number comes as text
+ * marked as an integer (the wire carries 64 bits, and a JSON number
+ * does not): it is read as the number it is, where a number can hold
+ * it exactly. Anything else is passed on as it came. */
+function fromStore(cell: { type?: string; value?: string | number | null } | undefined): string | number | null {
+  const value = cell?.value ?? null;
+  if (cell?.type === "integer" && typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+    const n = Number(value);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  return value;
+}
 /** How long the queue store has to answer one asking, body and all. */
 export const QUEUE_ASK_MS = 20_000;
 /** Queue priorities, most urgent first (the queue's design scale). */
@@ -255,7 +268,7 @@ export class Ops {
         response?: {
           result?: {
             cols: { name: string }[];
-            rows: { value?: string | number | null }[][];
+            rows: { type?: string; value?: string | number | null }[][];
             affected_row_count?: number;
           };
         };
@@ -310,7 +323,7 @@ export class Ops {
       if (!/^\s*select\b/i.test(st.sql)) throw new Error("the console only reads the queue store");
     }
     return (await this.pipeline(statements)).map((result) =>
-      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, row[i]?.value ?? null]))),
+      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, fromStore(row[i])]))),
     );
   }
 

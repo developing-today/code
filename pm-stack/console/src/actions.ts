@@ -10,7 +10,7 @@ import { OpError } from "./errors.ts";
 import type { Ops } from "./ops.ts";
 import { laterPacket, Plan } from "./plan.ts";
 import type { Push } from "./push.ts";
-import { promptPacket, type Work } from "./work.ts";
+import { ASK_INTENTS, type AskIntent, promptPacket, type Work } from "./work.ts";
 
 type Args = Record<string, unknown>;
 export interface Action {
@@ -107,7 +107,7 @@ export function actions(
       touch: ["board"],
       audit: ids("issue", "rank"),
     },
-    "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: () => ({}) },
+    "ask.send": { run: (a) => work.ask(a), touch: ["asks", "board"], audit: ids("intent") },
     "ask.reply": { run: (a) => work.askReply(a), touch: ["asks", "board"], audit: ids("issue") },
     "ask.close": { run: (a) => work.askClose(a), touch: ["asks"], audit: ids("issue") },
     // The second half of a prompt the edge filed while the laptop was
@@ -123,11 +123,18 @@ export function actions(
         if (typeof a.text !== "string" || a.text.trim() === "" || a.text.length > 8000)
           throw new OpError(400, "text: required, at most 8000 characters");
         if (typeof a.at !== "string" || a.at === "") throw new OpError(400, "at: required");
+        // What kind of prompt it was, where the edge says (one that does
+        // not say is something to do, as all were before there were kinds).
+        if (a.intent !== undefined && !ASK_INTENTS.includes(a.intent as AskIntent)) {
+          throw new OpError(400, `intent: one of ${ASK_INTENTS.join(", ")}`);
+        }
         // A failed enqueue is thrown, not answered as "not queued": this
         // runs late, so nobody is listening for the answer, and a
         // `queued: false` would be recorded done and the held prompt
         // acknowledged as sent with no queue task behind it.
-        const queued = await ops.enqueue(promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at));
+        const queued = await ops.enqueue(
+          promptPacket(ops.cfg.repo, ops.cfg.queue, issue, a.text, a.at, (a.intent as AskIntent | undefined) ?? "task"),
+        );
         if (queued.code !== 0) {
           throw new OpError(
             502,
@@ -154,7 +161,8 @@ export function actions(
       touch: ["questions", "questionCount"],
       audit: ids("set"),
     },
-    "hands.done": { run: (a) => work.handsDone(a), touch: [], audit: ids("ref") },
+    // The item leaves what needs the owner: that list is read again.
+    "hands.done": { run: (a) => work.handsDone(a), touch: ["census"], audit: ids("ref") },
     "need.comment": { run: (a) => work.needComment(a), touch: [], audit: ids("ref") },
     "task.move": { run: (a) => work.moveTask(a), touch: ["board"], audit: ids("task", "to") },
     "task.unblock": {

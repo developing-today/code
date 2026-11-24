@@ -74,11 +74,11 @@ mod tests {
 
     /// The full backend source, concatenated across the #8589
     /// module split (parent file last, so the cfg(test) marker
-    /// still terminates the production text). Production-only
-    /// modules come first; modules with inline test mods
-    /// (staleness, work_identity, closed_bound) come after, so
-    /// the first `#[cfg(test)]` in the concat stays behind every
-    /// production module the source-content tests read.
+    /// still terminates the production text). Each file is
+    /// truncated at its own first `#[cfg(test)]` so inline test
+    /// modules (staleness, work_identity, closed_bound, lifecycle
+    /// reprioritize_tests) never hide a later file's production
+    /// text from the source-content oracles.
     fn test_source() -> String {
         [
             include_str!("turso_queue/core.rs"),
@@ -92,6 +92,9 @@ mod tests {
             include_str!("turso_queue/closed_bound.rs"),
             include_str!("turso_queue.rs"),
         ]
+        .iter()
+        .map(|s| s.split("#[cfg(test)]").next().unwrap_or(""))
+        .collect::<Vec<_>>()
         .concat()
     }
     use super::*;

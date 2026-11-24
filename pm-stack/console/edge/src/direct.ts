@@ -26,7 +26,7 @@ import { timed } from "../../src/timed.ts";
 import { Work } from "../../src/work.ts";
 
 /** Sections the edge reads itself. */
-export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census"] as const;
+export const DIRECT_READ_SECTIONS = ["board", "prs", "priorities", "asks", "census", "done"] as const;
 /** Actions the edge runs itself: each is one or a few calls to GitHub
  * or the queue store, and needs nothing a machine has. */
 export const DIRECT_ACTIONS = [
@@ -35,6 +35,7 @@ export const DIRECT_ACTIONS = [
   "ask.close",
   "issue.comment",
   "need.comment",
+  "hands.done",
   "issue.rank",
   "task.move",
   "pr.merge",
@@ -67,6 +68,7 @@ export const READ_FROM: Record<(typeof DIRECT_READ_SECTIONS)[number], Outward["t
   priorities: ["github"],
   asks: ["github", "queue"],
   census: ["github"],
+  done: ["queue", "github"],
 };
 
 export interface DirectSecrets {
@@ -805,6 +807,8 @@ export async function directRead(section: string, ops: Ops, work: Work): Promise
       return work.asks();
     case "census":
       return work.censusDirect();
+    case "done":
+      return work.done();
     default:
       throw new Error(`not a section the edge reads itself: ${section}`);
   }

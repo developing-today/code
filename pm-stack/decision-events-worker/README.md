@@ -45,9 +45,57 @@ Turso. Credentials are resolved **by name** only:
 - Turso token: `turso.fleet-platform-rw-token`
 - Webhook secret: `cloudflare.decision-events.webhook-secret`
 
-## Deploy
+## GitHub Actions release (#9335 Track B)
 
 Production code deploys run from `.github/workflows/decision-events-worker-deploy.yml` on changes to this Worker on `main`, or by manually dispatching that workflow on `main`. The workflow tests and type-checks the Worker, deploys with `VERSION` set to the full `GITHUB_SHA`, and fails unless `/health` reports that exact SHA. Cloudflare Actions secrets are `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+
+Alongside the automatic deploy, a manual versioned release path exists:
+`.github/workflows/decision-events-worker-release.yml` from `main`. It
+builds and checks the Worker offline, uploads a version with
+`cf workers versions create`, and optionally promotes the selected
+version to 100% with `cf workers deployments create`. The `promote`
+workflow input defaults to false, so a run can upload a version without
+changing the active deployment.
+
+The release uses `cf@1.0.0-rc.2` and Wrangler `4.163.0`, the compatible
+Build Output toolchain pinned in this package. The programmatic
+`cloudflare.config.ts` is the deployment declaration; `wrangler.toml`
+continues to support local Wrangler development and tests. Both retain
+Worker `decision-events`, compatibility date `2025-09-15`,
+`workers_dev = true`, D1 binding `DB` to database ID
+`68ade85e-6835-46a8-af6a-a9f2f2d966ae`, DO binding `SET_EVENTS` to class
+`DecisionSetEvents`, and SQLite storage. `wrangler.toml` retains the
+existing `v1` migration declaration; the release's offline parity check
+asserts that it is unchanged. The Worker has no custom domain or custom
+route configured.
+
+### GitHub environment prerequisites
+
+Configure the protected GitHub Environment `decision-events-production`
+with:
+
+- Variable `CLOUDFLARE_ACCOUNT_ID`, set to the account that already owns
+  the `decision-events` Worker and the configured D1 database.
+- Secret `CLOUDFLARE_API_TOKEN`, scoped to that account and permitted to
+  read Worker/D1 identity, upload Worker versions, and create Worker
+  deployments.
+- Required reviewers before any version upload or promotion.
+
+The Worker and D1 database must already exist in that account. This
+workflow deliberately does not create either resource or alter D1 schema
+or Durable Object migration state. If the Worker does not exist,
+`cf workers versions create` cannot bootstrap it; stop and handle that
+separately. `WEBHOOK_SECRET` must already be installed on the Worker
+before producer cutover, and its value stays in the secret store.
+
+The release changes the Worker version/deployment only. It does not
+submit decision events, change producer settings, apply SQL, modify
+custom routes/domains, or retire the Turso sink. Producer cutover still
+requires a separate decision: verify `/health` reports the secret
+configured, check the aggregator outbox/state with `--dry-run`, confirm
+the exact `workers.dev` URL and credentials, then explicitly approve
+the first real sync. With the webhook URL set, the aggregator defaults
+to writing to both Turso and this Worker.
 
 Initial database provisioning and the webhook secret remain operator setup:
 
@@ -65,6 +113,10 @@ fleet secrets get cloudflare.decision-events.webhook-secret | \
 ## Tests
 
 ```sh
-bun test          # contract tests for src/events.ts (no CF runtime needed)
-bunx tsc --noEmit # typecheck (needs bun install for workers-types)
+bun test                 # contract tests for src/events.ts (no CF runtime needed)
+npm run typecheck        # TypeScript types from generated config
+npm run test:release     # offline target/version selection tests
+./node_modules/.bin/cf workers versions create --worker decision-events \
+  --tag offline-local --message "offline Build Output check" --dry-run
+npm run check:build-output # checks D1, DO, migration, and route invariants
 ```

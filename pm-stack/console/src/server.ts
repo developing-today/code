@@ -551,6 +551,7 @@ export function loaders(
     questions: { ttlMs: 15_000, load: () => work.questions() },
     prs: { ttlMs: 45_000, load: () => ops.prs() },
     priorities: { ttlMs: 120_000, load: () => ops.priorities() },
+    done: { ttlMs: 60_000, load: () => work.done() },
     agents: { ttlMs: 30_000, load: () => ops.agents() },
     services: { ttlMs: 20_000, load: () => ops.services() },
     more: { ttlMs: 3_600_000, load: async () => more },

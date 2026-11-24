@@ -50,6 +50,18 @@ if (process.argv.length > 2) {
 }
 const EDGE = process.env.EDGE ?? "http://localhost:8799";
 const cfg = readConfig({ HOME: "/tmp/pm-edge-smoke", PM_CONSOLE_OWNER_EMAILS: "owner@example.com" });
+/** What the stand-in host tells the Worker in place of main's settings,
+ * as a console on some other checkout would. Every one is marked, so
+ * that anything asked of GitHub or the queue store by one of them is
+ * found out. */
+const TOLD = {
+  repo: "told-by/the-machine",
+  queue: "told-by-the-machine",
+  queueDbUrl: "https://told-by-the-machine.invalid",
+  queueTokenName: "told.by.the.machine",
+  androidPackage: "told.by.the.machine",
+  promptLabel: "told/by-the-machine",
+};
 cfg.issuers = [
   {
     name: "smoke-sign-in",
@@ -90,6 +102,12 @@ const data: Record<string, unknown> = {
   questions: big,
   prs: [],
   priorities: { issues: [], truncated: false },
+  // The stand-in machine's own copy says nothing was finished.
+  done: {
+    tasks: { day: 0, kinds: [], latest: [] },
+    merged: { day: 0, more: false, latest: [] },
+    closed: { day: 0, more: false, latest: [] },
+  },
   agents: [],
   services: [],
   more: [],
@@ -112,18 +130,22 @@ const link = new EdgeLink({
   done: memoryStore(),
   docs,
   phones: deps.phones!.devices,
+  // Who may sign in is the host's to tell. The repository's settings it
+  // tells too, and here it tells others than main's for every one the
+  // Worker goes by its own for (a console on some other checkout): the
+  // Worker has to do everything below by its own all the same.
   config: async () => ({
     owners: cfg.owners,
     certNames: [],
     issuers: cfg.issuers,
-    repo: cfg.repo,
-    queue: cfg.queue,
-    androidPackage: cfg.androidPackage,
+    repo: TOLD.repo,
+    queue: TOLD.queue,
+    androidPackage: TOLD.androidPackage,
     androidFingerprints: [],
     androidApp: false,
-    queueDbUrl: cfg.queueDbUrl,
-    queueTokenName: cfg.queueTokenName,
-    promptLabel: cfg.promptLabel,
+    queueDbUrl: TOLD.queueDbUrl,
+    queueTokenName: TOLD.queueTokenName,
+    promptLabel: TOLD.promptLabel,
     needsRepos: cfg.needsRepos,
   }),
   run: heldRunner(deps),
@@ -138,6 +160,9 @@ const outside: {
   path: string;
   auth: string | null;
   agent: string | null;
+  /** Whether what was asked named anything the host told in place of
+   * main's settings (see TOLD). */
+  told?: boolean;
   /** The tag a read of GitHub was asked by, what it was answered, and
    * the tag of what GitHub would say. */
   tag?: string | null;
@@ -146,6 +171,9 @@ const outside: {
   /** How GitHub was asked: a read, or something written. */
   method?: string;
 }[] = [];
+/** The one thing in the stand-in that needs the owner's hands, and
+ * whether it still carries the label that says so. */
+const hands = { labelled: true };
 /** GitHub turning every call away as one too many, until this second
  * (as it says it: nothing left of the allowance, and when it is back). */
 const spent = { until: 0 };
@@ -194,6 +222,7 @@ const server = Bun.serve({
       const path = url.pathname.slice("/github/".length);
       const entry: (typeof outside)[number] = {
         to: "github",
+        told: /told[-./]by/.test(decodeURIComponent(url.pathname + url.search)),
         path,
         auth: req.headers.get("authorization"),
         agent: req.headers.get("user-agent"),
@@ -250,12 +279,75 @@ const server = Bun.serve({
           },
         ]);
       }
+      if (path === "repos/developing-today/code/issues" && url.searchParams.get("state") === "closed") {
+        // What GitHub lists as closed: a pull request merged an hour ago
+        // and an issue closed two hours ago, as it sends them.
+        const hoursAgo = (hours: number) =>
+          new Date(Date.now() - hours * 3_600_000).toISOString().replace(/\.\d+Z$/, "Z");
+        return tagged(req, entry, [
+          {
+            number: 41,
+            title: "fix: smoke merged",
+            html_url: "https://github.com/developing-today/code/pull/41",
+            closed_at: hoursAgo(1),
+            updated_at: hoursAgo(1),
+            user: { login: "smoke-lane" },
+            pull_request: { merged_at: hoursAgo(1) },
+          },
+          {
+            number: 42,
+            title: "Smoke closed",
+            html_url: "https://github.com/developing-today/code/issues/42",
+            closed_at: hoursAgo(2),
+            updated_at: hoursAgo(2),
+            state_reason: "completed",
+            user: { login: "owner" },
+          },
+        ]);
+      }
+      if (path === "repos/developing-today/code/issues" && url.searchParams.get("labels") === "user/escalated") {
+        // Something only the owner's hands can do, for as long as it carries the label.
+        return tagged(
+          req,
+          entry,
+          hands.labelled
+            ? [
+                {
+                  number: 32,
+                  title: "Smoke hands",
+                  body: 'A person is needed.\n<!-- hands:v1 kind=physical action="Plug it in." -->',
+                  state: "open",
+                  html_url: "https://github.com/developing-today/code/issues/32",
+                  updated_at: "2026-11-23T09:30:00Z",
+                  labels: [{ name: "user/escalated" }],
+                },
+              ]
+            : [],
+        );
+      }
+      if (req.method === "DELETE" && path === "repos/developing-today/code/issues/32/labels/user%2Fescalated") {
+        // The label taken off, as GitHub answers it: what is left on the
+        // issue, or that the label was not there.
+        if (!hands.labelled) {
+          entry.status = 404;
+          return Response.json({ message: "Label does not exist", status: "404" }, { status: 404 });
+        }
+        hands.labelled = false;
+        entry.status = 200;
+        return Response.json([]);
+      }
       if (path.endsWith("/issues")) return tagged(req, entry, []);
       return tagged(req, entry, { message: "Not Found" }, 404);
     }
     if (url.pathname === "/queue/v2/pipeline") {
-      outside.push({ to: "queue", path: url.pathname, auth: req.headers.get("authorization"), agent: null });
       const asked = (await req.json()) as { requests: { type: string }[] };
+      outside.push({
+        to: "queue",
+        path: url.pathname,
+        auth: req.headers.get("authorization"),
+        agent: null,
+        told: /told[-./]by/.test(JSON.stringify(asked)),
+      });
       // No rows for anything asked: an empty queue.
       return Response.json({
         results: asked.requests.map((r) =>
@@ -349,6 +441,17 @@ try {
     after.configured === true && typeof after.hostSeen === "number",
     JSON.stringify(after),
   );
+  // The Worker carries the repository's settings in its own bundle. The
+  // host here told others for the six the Worker goes by its own for,
+  // and main's list of repositories: exactly those six are said, so the
+  // list in the bundle as deployed is the one this console has.
+  check(
+    "the Worker says in which settings the host told it others than main's, by name",
+    before.machineSettingsDiffer === null &&
+      JSON.stringify(after.machineSettingsDiffer) ===
+        JSON.stringify(["repo", "queue", "queueDbUrl", "queueTokenName", "androidPackage", "promptLabel"]),
+    JSON.stringify({ before: before.machineSettingsDiffer, after: after.machineSettingsDiffer }),
+  );
   const second = await link.once();
   check(
     "a second report is accepted and nothing is asked for again",
@@ -360,7 +463,7 @@ try {
   const wanted = process.env.SMOKE_PRIMARY === "1";
   if (wanted || after.directEnabled === true) {
     check(
-      "the Worker says it does the core itself, now that it knows where things are",
+      "the Worker says it does the core itself, now that a machine has said who may sign in",
       after.directEnabled === true && after.primary === true && before.primary === false,
       JSON.stringify({ before: before.primary, after: after.primary, enabled: after.directEnabled }),
     );
@@ -381,8 +484,15 @@ try {
       `${github.length} to GitHub (${[...new Set(github.map((o) => o.path))].join(", ")}), ${queue.length} to the queue store`,
     );
     check(
+      "and they were of main's repository, queue and label: nothing the host named in their place was asked for",
+      outside.length > 0 &&
+        outside.every((o) => o.told === false) &&
+        github.some((o) => o.path.startsWith(`repos/${cfg.repo}/`)),
+      `${outside.filter((o) => o.told).length} of ${outside.length} named what the host told`,
+    );
+    check(
       "and it told the host what it reads itself, so the host stops sending it",
-      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks", "census"]),
+      JSON.stringify(second?.owns) === JSON.stringify(["board", "prs", "priorities", "asks", "census", "done"]),
       JSON.stringify(second?.owns),
     );
 
@@ -723,6 +833,104 @@ try {
         needsAsked.length >= 8,
       `${JSON.stringify(needs)}; ${needsAsked.length} list reads`,
     );
+    // What was finished lately is read by the Worker itself too: GitHub's
+    // list of what is closed and the queue's own events (none, here),
+    // in this runtime, with no machine asked.
+    const finished = (await (await asOwner("/console/api/doc/done")).json()) as {
+      done?: {
+        tasks?: { day: number; latest: unknown[] };
+        merged?: { day: number; latest: { number: number; by: string }[] };
+        closed?: { day: number; latest: { number: number; reason: string | null }[] };
+      };
+      health?: { done?: { ok: boolean; error: string | null } };
+    };
+    check(
+      "what was finished lately is read by the Worker itself: the pull request merged and the issue closed",
+      finished.health?.done?.ok === true &&
+        JSON.stringify(finished.done?.merged?.latest.map((m) => [m.number, m.by])) ===
+          JSON.stringify([[41, "smoke-lane"]]) &&
+        JSON.stringify(finished.done?.closed?.latest.map((c) => [c.number, c.reason])) ===
+          JSON.stringify([[42, "completed"]]) &&
+        finished.done?.merged?.day === 1 &&
+        finished.done?.tasks?.day === 0,
+      JSON.stringify(finished).slice(0, 400),
+    );
+    // The app connected to be told of changes: a real WebSocket, held by
+    // this runtime's own object. Only the platform can make one, so
+    // only here is it known to work. A stranger is not connected.
+    const liveAt = `${EDGE.replace(/^http/, "ws")}/console/api/events`;
+    const liveSaid: string[] = [];
+    const stranger = await fetch(`${EDGE}/console/api/events`, {
+      headers: { upgrade: "websocket" },
+      redirect: "manual",
+    });
+    await stranger.body?.cancel();
+    const liveWs = new WebSocket(liveAt, { headers: { "cf-access-jwt-assertion": await ownerToken() } } as never);
+    const liveOpened = await new Promise<boolean>((resolve) => {
+      liveWs.onopen = () => resolve(true);
+      liveWs.onerror = () => resolve(false);
+      setTimeout(() => resolve(false), 8000);
+    });
+    liveWs.onmessage = (event) => liveSaid.push(String(event.data));
+    if (liveOpened) liveWs.send("ping");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const listening = ((await (await get("/console/health")).json()) as { listening?: number }).listening;
+    check(
+      "the owner's app is connected to be told of changes, a stranger is not, and the platform answers its ping",
+      liveOpened && stranger.status !== 101 && listening === 1 && liveSaid.includes("pong"),
+      `opened ${liveOpened}, a stranger got ${stranger.status}, listening ${listening}, said ${JSON.stringify(liveSaid)}`,
+    );
+    liveSaid.length = 0;
+    // "Done" on what needed his hands, by the Worker itself: the label
+    // taken off, then the fleet told, and the list read again so the
+    // item is gone from the next look.
+    const handsBefore = (
+      (await (await asOwner("/console/api/doc/core")).json()) as { census?: { hands?: { ref: string }[] } }
+    ).census?.hands?.map((i) => i.ref);
+    const wroteFrom = outside.length;
+    const askedHostFrom = seen.length;
+    const handsDone = (await (
+      await actAsOwner("hands.done", { ref: "developing-today/code#32", note: "smoke" })
+    ).json()) as {
+      ok?: boolean;
+      result?: { done?: boolean };
+    };
+    const handsWrote = outside
+      .slice(wroteFrom)
+      .filter((o) => o.to === "github" && o.method !== "GET")
+      .map((o) => `${o.method} ${o.path} ${o.status} ${o.auth === "Bearer smoke-github"}`);
+    const handsAfter = (
+      (await (await asOwner("/console/api/doc/core")).json()) as { census?: { hands?: { ref: string }[] } }
+    ).census?.hands?.map((i) => i.ref);
+    check(
+      "done on what needed the owner's hands is done by the Worker: the label off, then the fleet told, and it leaves the list",
+      JSON.stringify(handsBefore) === JSON.stringify(["developing-today/code#32"]) &&
+        handsDone.ok === true &&
+        handsDone.result?.done === true &&
+        JSON.stringify(handsWrote) ===
+          JSON.stringify([
+            "DELETE repos/developing-today/code/issues/32/labels/user%2Fescalated 200 true",
+            "POST repos/developing-today/code/issues/32/comments 201 true",
+          ]) &&
+        JSON.stringify(handsAfter) === JSON.stringify([]) &&
+        !seen.slice(askedHostFrom).some((s) => s.includes("/console/api/act")),
+      `before ${JSON.stringify(handsBefore)}, did ${JSON.stringify(handsDone)}, wrote ${JSON.stringify(handsWrote)}, after ${JSON.stringify(handsAfter)}`,
+    );
+    // What he did changed what the app shows: the connected app was
+    // told so, by name of the document, without asking.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const toldOf = liveSaid
+      .filter((text) => text.startsWith("{"))
+      .map((text) => JSON.parse(text) as { t: string; docs: string[] });
+    check(
+      "and the connected app was told that the core document changed",
+      toldOf.length >= 1 && toldOf.every((m) => m.t === "changed") && toldOf.some((m) => m.docs.includes("core")),
+      JSON.stringify(liveSaid),
+    );
+    liveWs.close();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const stillListening = ((await (await get("/console/health")).json()) as { listening?: number }).listening;
+    check("and once the app goes away nobody is connected", stillListening === 0, String(stillListening));
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const readsBefore = outside.filter((o) => o.to === "github").length;
     let readsAfter = readsBefore;

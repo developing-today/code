@@ -477,7 +477,7 @@ async function act(kind, args, done, button) {
 // ---- now ---------------------------------------------------------------
 
 function taskCard(t, extra) {
-  const who = [t.worker, t.lane, t.model].filter(Boolean).join(" · ");
+  const who = [t.worker, laneSaid(t.lane), t.model].filter(Boolean).join(" · ");
   const when = t.claimed ? `claimed ${ago(t.claimed)}` : `queued ${ago(t.created)}`;
   return card(
     h(
@@ -494,6 +494,46 @@ function taskCard(t, extra) {
       : null,
     extra,
   );
+}
+
+/** What the owner can do about a task that is being worked on, from
+ * its card: say something on its issue (which whoever works it reads,
+ * and Cloudflare posts itself), or say it to the agent that has it. */
+function steer(t) {
+  const registered = Array.isArray(docs.ops?.agents) ? new Set(docs.ops.agents.map((a) => a.name)) : null;
+  const agent = taskAgent(t, registered);
+  const buttons = [];
+  if (t.issue) {
+    buttons.push(
+      h(
+        "button",
+        {
+          class: "small ghost",
+          onclick: async (e) => {
+            const text = await ask({ title: `Comment on #${t.issue}`, text: t.title, label: "What to say", okLabel: "Post", required: true });
+            if (text) act("issue.comment", { issue: Number(t.issue), text }, "Comment posted", e.target);
+          },
+        },
+        "Comment",
+      ),
+    );
+  }
+  if (agent) {
+    buttons.push(
+      h(
+        "button",
+        {
+          class: "small ghost",
+          onclick: async (e) => {
+            const text = await ask({ title: `Message ${agent}`, text: t.title, label: "What to tell it", okLabel: "Send", required: true });
+            if (text) act("message.send", { to: [agent], text: `About task ${t.id}${t.issue ? ` (#${t.issue})` : ""}: ${text}` }, "Sent", e.target);
+          },
+        },
+        "Message its agent",
+      ),
+    );
+  }
+  return buttons.length ? h("div", { class: "row end" }, ...buttons) : null;
 }
 
 /** What to say when the laptop has not reported for a while. With
@@ -586,7 +626,8 @@ function viewNow() {
   const c = docs.core;
   const b = c.board || { counts: {}, now: [], next: [], blockedWhy: [] };
   const s = c.sessions || { moving: [], waiting: [] };
-  const needs = needCounts();
+  const lead = needsLead(needCounts());
+  const finished = doneSaid(docs.done?.done);
   const stat = (value, label, to) =>
     h("button", { class: "stat", onclick: () => go(to) }, h("b", {}, String(value ?? "–")), h("span", {}, label));
   const out = [
@@ -595,12 +636,13 @@ function viewNow() {
       { class: "stats" },
       stat(b.counts.claimed ?? 0, "in progress", "now"),
       stat(b.counts.queued ?? 0, "queued", "next"),
-      stat(needs.total, "need you", "needs"),
+      stat(lead.tile, lead.tileLabel, "needs"),
       stat(b.counts.blocked ?? 0, "blocked", "more/queue"),
+      stat(finished ? finished.tiles[0].n : "–", "done in 24h", "now/done"),
     ),
     ...notices(c),
     h("h2", {}, "In progress"),
-    ...(b.now.length ? b.now.map((t) => taskCard(t)) : [empty("No task is claimed right now.")]),
+    ...(b.now.length ? b.now.map((t) => taskCard(t, steer(t))) : [empty("No task is claimed right now.")]),
   ];
   if (s.moving.length) {
     out.push(
@@ -619,11 +661,12 @@ function viewNow() {
       ),
     );
   }
-  if ((b.counts.blocked ?? 0) > 0 && b.blockedWhy?.length) {
+  const blocked = blockedSaid(b.blockedKinds ?? b.blockedWhy);
+  if ((b.counts.blocked ?? 0) > 0 && blocked.length) {
     out.push(
       h("h2", {}, `Why ${b.counts.blocked} tasks are blocked`),
       card(
-        ...b.blockedWhy.map((w) => h("p", {}, h("b", {}, `${w.n} `), h("span", { class: "meta" }, String(w.why)))),
+        ...blocked.map((w) => h("p", {}, h("b", {}, `${w.n} `), h("span", { class: "meta" }, w.text))),
         h("div", { class: "row end" }, h("button", { class: "ghost small", onclick: () => go("more/queue") }, "Open blocked tasks")),
       ),
     );
@@ -641,6 +684,149 @@ function viewNow() {
           ),
         ),
       ),
+    );
+  }
+  return out;
+}
+
+// ---- done --------------------------------------------------------------
+
+const DONE_NOUNS = {
+  tasks: ["task finished", "tasks finished"],
+  merged: ["pull request merged", "pull requests merged"],
+  closed: ["issue closed", "issues closed"],
+};
+
+/** What was finished in the last day, in numbers: tasks the queue says
+ * are done, pull requests merged, issues closed. `more` on a count says
+ * GitHub's page was full of things touched within the day, so there
+ * may be more than were counted: "at least". Null when it has not been
+ * read, or comes from a console that does not read it: nothing is said
+ * then, not zeros.
+ * @param {any} done */
+export function doneSaid(done) {
+  const parts = ["tasks", "merged", "closed"].map((key) => {
+    const part = done?.[key];
+    return Number.isSafeInteger(part?.day) && part.day >= 0 ? { key, n: part.day, more: part.more === true } : null;
+  });
+  if (parts.some((part) => part === null)) return null;
+  const noun = (part) => DONE_NOUNS[part.key][part.n === 1 ? 0 : 1];
+  const tiles = parts.map((part) => ({ n: `${part.n}${part.more ? "+" : ""}`, label: noun(part) }));
+  const counted = parts.filter((part) => part.n > 0).map((part) => `${part.more ? "at least " : ""}${part.n} ${noun(part)}`);
+  const uncounted = parts.filter((part) => part.n === 0 && part.more).map(noun);
+  if (counted.length === 0 && uncounted.length === 0) return { tiles, line: "Nothing was finished in the last day." };
+  const rest = uncounted.length ? `; ${listed(uncounted)} could not all be counted` : "";
+  return { tiles, line: `In the last day: ${counted.length ? counted.join(", ") : "nothing counted"}${rest}.` };
+}
+
+/** The day's finished tasks by their kind, the most first, in a line.
+ * @param {any} kinds */
+export function doneKindsSaid(kinds) {
+  return (Array.isArray(kinds) ? kinds : [])
+    .filter((k) => k && Number.isSafeInteger(k.n) && k.n > 0)
+    .map((k) => `${k.n} ${k.kind ? String(k.kind).replace(/_/g, " ") : "of no kind"}`)
+    .join(" · ");
+}
+
+/** What the queue's record says came of a finished task (the verdicts
+ * are the queue's own: fleet-queue's disposition.rs). */
+const VERDICT_SAID = {
+  merged_verified: "merged",
+  closed_verified: "issue closed",
+  open_draft_with_followup: "left as a draft, with a follow-up",
+  open_draft_superseded: "its draft was superseded",
+  invalid_no_work: "no work came of it",
+};
+
+/** A finished task's card, in words: what kind it was and what came of
+ * it, where its pull request and issue are, who did it and when.
+ * @param {any} task
+ * @param {number} [now] */
+export function doneTaskSaid(task, now = Date.now()) {
+  const chips = [];
+  if (task.kind) chips.push(String(task.kind).replace(/_/g, " "));
+  if (task.verdict) chips.push(VERDICT_SAID[task.verdict] || String(task.verdict).replace(/_/g, " "));
+  const links = [];
+  if (task.pr && task.prUrl) links.push({ text: `#${task.pr}`, url: task.prUrl });
+  if (task.issue && task.url) links.push({ text: `issue #${task.issue}`, url: task.url });
+  const when = ago(task.at, now);
+  return {
+    chips,
+    links,
+    meta: [`task ${task.id}`, laneSaid(task.lane), task.model, when ? `finished ${when}` : ""].filter(Boolean).join(" · "),
+  };
+}
+
+function viewDone(sub) {
+  const doc = docs.done;
+  if (!doc) return [empty("Reading what was finished…")];
+  const done = doc.done;
+  const said = doneSaid(done);
+  const out = [...notices(doc, ["done"])];
+  if (!said) return [...out, empty("What was finished has not been read yet.")];
+  const which = ["merged", "tasks", "closed"].includes(sub) ? sub : "merged";
+  const seg = (name, label, tile) =>
+    h("button", { "aria-pressed": String(which === name), onclick: () => go(`now/done/${name}`) }, `${label} ${tile.n}`);
+  out.push(
+    h("p", { class: "meta" }, said.line),
+    h(
+      "div",
+      { class: "seg" },
+      seg("merged", "Merged", said.tiles[1]),
+      seg("tasks", "Tasks", said.tiles[0]),
+      seg("closed", "Issues", said.tiles[2]),
+    ),
+  );
+  const older = (list) => (list.length ? [h("p", { class: "meta" }, `The latest ${list.length} of the last week, newest first.`)] : []);
+  if (which === "merged") {
+    const list = done.merged.latest || [];
+    const byWhom = mergedBySaid(list);
+    out.push(
+      h("h2", {}, "Pull requests merged"),
+      ...older(list),
+      ...(list.length
+        ? list.map((p) => card(h("h3", {}, p.title), h("p", { class: "meta" }, ext(p.url, `#${p.number}`), ` · ${[byWhom ? p.by : "", `merged ${ago(p.at)}`].filter(Boolean).join(" · ")}`)))
+        : [empty("No pull request was merged in the last week.")]),
+    );
+  } else if (which === "tasks") {
+    const list = done.tasks.latest || [];
+    const kinds = doneKindsSaid(done.tasks.kinds);
+    const taskCardOf = (t) => {
+      const s = doneTaskSaid(t);
+      return card(
+        h(
+          "div",
+          { class: "row" },
+          ...s.chips.map((c, i) => chip(c, i > 0 && t.verdict === "merged_verified" ? "good" : "")),
+          ...s.links.map((l) => ext(l.url, l.text)),
+        ),
+        h("h3", {}, t.title),
+        h("p", { class: "meta" }, s.meta),
+      );
+    };
+    // What a task came to is on its record or it is not: those with a
+    // result first, since a day's finished tasks are mostly passes over
+    // an issue that leave no record of one.
+    const withResult = list.filter((t) => t.verdict);
+    const rest = list.filter((t) => !t.verdict);
+    if (kinds) out.push(h("p", { class: "meta" }, `Tasks finished in the last day: ${kinds}.`));
+    out.push(...older(list));
+    if (!list.length) out.push(h("h2", {}, "Tasks finished"), empty("No task was finished in the last week."));
+    if (withResult.length) out.push(h("h2", {}, "With a result on record"), ...withResult.map(taskCardOf));
+    if (rest.length) out.push(h("h2", {}, withResult.length ? "The rest" : "Tasks finished"), ...rest.map(taskCardOf));
+  } else {
+    const list = done.closed.latest || [];
+    out.push(
+      h("h2", {}, "Issues closed"),
+      ...older(list),
+      ...(list.length
+        ? list.map((i) =>
+            card(
+              h("h3", {}, i.title),
+              h("p", { class: "meta" }, ext(i.url, `#${i.number}`), ` · ${[i.reason === "not_planned" ? "closed as not planned" : i.reason === "duplicate" ? "closed as a duplicate" : "closed", ago(i.at)].join(" ")}`),
+            ),
+          )
+        : [empty("No issue was closed in the last week.")]),
     );
   }
   return out;
@@ -720,6 +906,130 @@ function issueCard(i) {
 }
 
 // ---- needs me ----------------------------------------------------------
+
+/** Why tasks are blocked, in lines that add up to all of them: by the
+ * kind of reason (`kind`, as the board counts them now), a time waited
+ * for said with how many of those times have passed. Rows from a
+ * console older than the counting (`why`: each reason's own text, the
+ * commonest few) are said as they were. */
+export function blockedSaid(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const count = (kind) => list.filter((r) => r?.kind === kind).reduce((n, r) => n + (Number(r.n) || 0), 0);
+  const one = (n, single, many) => (n === 1 ? single : many);
+  const out = [];
+  const reason = count("reason");
+  if (reason) out.push({ n: reason, text: one(reason, "has a reason written on it", "have a reason written on them") });
+  const tasks = count("tasks");
+  if (tasks) out.push({ n: tasks, text: one(tasks, "waits on other tasks", "wait on other tasks") });
+  const past = count("time-past");
+  const timed = past + count("time");
+  if (timed) {
+    const passed = !past ? "" : timed === 1 ? ": it has already passed" : `: for ${past} of them it has already passed`;
+    out.push({ n: timed, text: `${one(timed, "waits for a time", "wait for a time")}${passed}` });
+  }
+  const none = count("none");
+  if (none) out.push({ n: none, text: one(none, "has no reason recorded", "have no reason recorded") });
+  const known = new Set(["reason", "tasks", "time-past", "time", "none"]);
+  for (const r of list) {
+    if (typeof r?.kind === "string" && !known.has(r.kind)) out.push({ n: Number(r.n) || 0, text: r.kind });
+    else if (r?.kind === undefined && r?.why !== undefined) out.push({ n: Number(r.n) || 0, text: String(r.why) });
+  }
+  return out;
+}
+
+/** What leads where what needs the owner is counted: what only he can
+ * do. The first screen's count is that; the badge adds the reviews
+ * asked of him; questions the fleet has put (most with an answer it
+ * recommends) are on the Needs screen and are not counted as waiting
+ * on him. The Needs screen opens on the first list that has anything. */
+export function needsLead(counts) {
+  const hands = Number(counts?.hands) || 0;
+  const reviews = Number(counts?.reviews) || 0;
+  const questions = Number(counts?.questions) || 0;
+  return {
+    badge: hands + reviews,
+    tile: hands,
+    tileLabel: "only you",
+    opens: hands ? "hands" : reviews ? "reviews" : questions ? "questions" : "hands",
+  };
+}
+
+/** What accepting every recommendation came to, from how each set
+ * went: answered now, kept or held to be sent or done later like
+ * anything else the owner does, or not accepted. */
+export function acceptAllSaid(outs) {
+  let answered = 0;
+  let waiting = 0;
+  let failed = 0;
+  for (const out of Array.isArray(outs) ? outs : []) {
+    if (out?.state === "done") answered += Number(out.result?.applied) || 0;
+    else if (out?.state === "held" || out?.state === "kept") waiting++;
+    else failed++;
+  }
+  const parts = [];
+  if (answered || (!waiting && !failed)) parts.push(`${answered} answered`);
+  if (waiting) parts.push(`${waiting} ${waiting === 1 ? "set waits" : "sets wait"} to be sent or done`);
+  if (failed) parts.push(`${failed} ${failed === 1 ? "set" : "sets"} could not be accepted`);
+  return parts.join("; ");
+}
+
+/** A unit's state in a word or two: systemd's two (`active`, `sub`),
+ * said once where they are the same word ("failed", not "failed ·
+ * failed"). */
+export function unitStateSaid(unit) {
+  const active = String(unit?.active ?? "");
+  const sub = String(unit?.sub ?? "");
+  return active === sub || sub === "" ? active : `${active} · ${sub}`;
+}
+
+/** A lane the pool made up for itself ("any-" and a long run of
+ * letters) is nobody's name. */
+const POOLED_LANE = /^any-[a-z]{20,}$/;
+
+/** A lane as it is said on a card: a named one by its name, one the
+ * pool made up as what it is.
+ * @param {string | null | undefined} lane */
+export function laneSaid(lane) {
+  if (typeof lane !== "string" || lane === "") return "";
+  return POOLED_LANE.test(lane) ? "a pooled lane" : lane;
+}
+
+/** Whether to say who each pull request in a list is by: only when
+ * they are not all by the same one, since then it tells nothing.
+ * @param {any} list */
+export function mergedBySaid(list) {
+  return new Set((Array.isArray(list) ? list : []).map((p) => p?.by)).size > 1;
+}
+
+/** Who a task's agent is, to send it a message: its lane where that is
+ * a registered agent's name, else its worker where that is. `names` is
+ * the registered agents' names where the app has them; without them
+ * the lane is taken unless it is one of the pool's made-up ones
+ * ("any-" and a long run of letters), which is nobody's name. Null
+ * where there is nobody to send to.
+ * @param {{ lane?: string | null, worker?: string | null } | null | undefined} task
+ * @param {Set<string> | null} [names] */
+export function taskAgent(task, names = null) {
+  const lane = typeof task?.lane === "string" ? task.lane : "";
+  const worker = typeof task?.worker === "string" ? task.worker : "";
+  if (names) return names.has(lane) ? lane : names.has(worker) ? worker : null;
+  if (lane && !POOLED_LANE.test(lane)) return lane;
+  return worker || null;
+}
+
+/** The sets of open questions that have a recommended answer to
+ * accept, each once in the order they come, and how many questions
+ * accepting them all answers. */
+export function recommendedSets(open) {
+  const sets = [];
+  let questions = 0;
+  for (const q of Array.isArray(open) ? open : []) {
+    if (!Array.isArray(q?.recommended) || q.recommended.length === 0) continue;
+    questions++;
+    if (!sets.includes(q.set)) sets.push(q.set);
+  }
+  return { sets, questions };
+}
 
 function needCounts() {
   const c = docs.core || {};
@@ -902,6 +1212,47 @@ function viewQuestions() {
   const all = doc.questions?.open || [];
   const out = [...notices(doc)];
   if (!all.length) return [...out, empty("No open questions.")];
+  // Every recommendation at once: the fleet put these with an answer it
+  // recommends, and one word from the owner takes them all. Done a set
+  // at a time, as accepting one set is, so whatever cannot go now is
+  // kept and sent like anything else he does.
+  const rec = recommendedSets(all);
+  if (rec.sets.length > 1) {
+    out.push(
+      card(
+        h("h3", {}, `${rec.questions} of these ${all.length} questions have a recommended answer`),
+        h("p", { class: "meta" }, "Take the recommendation on all of them, and the fleet carries on. The rest stay here for you."),
+        h(
+          "div",
+          { class: "row end" },
+          h(
+            "button",
+            {
+              onclick: async (e) => {
+                const yes = await ask({
+                  title: `Accept all ${rec.questions} recommended answers?`,
+                  text: `In ${rec.sets.length} sets. Every open question that has a recommendation gets the recommended option.`,
+                  okLabel: "Accept them all",
+                });
+                if (yes === null) return;
+                e.target.disabled = true;
+                const outs = [];
+                for (const [i, set] of rec.sets.entries()) {
+                  e.target.textContent = `Accepting… ${i + 1} of ${rec.sets.length}`;
+                  outs.push(await submit("questions.accept", { set }).catch(() => null));
+                }
+                await readKept();
+                toast(acceptAllSaid(outs), outs.some((out) => !out || !["done", "held", "kept"].includes(out.state)));
+                await loadDoc("questions").catch(() => {});
+                draw();
+              },
+            },
+            "Decide them all for me",
+          ),
+        ),
+      ),
+    );
+  }
   let lastSet = null;
   for (const q of all.slice(0, shown)) {
     if (q.set !== lastSet) {
@@ -1019,16 +1370,16 @@ function viewNeeds(sub) {
   const counts = needCounts();
   const census = docs.core.census || { hands: [], reviews: [], other: [] };
   const waiting = (docs.core.sessions?.waiting || []).map((w) => ({ ref: w.ref.replace(/^gh:/, ""), title: w.title, why: w.why, action: w.title, url: null }));
-  const which = sub || (counts.questions ? "questions" : counts.hands ? "hands" : counts.reviews ? "reviews" : "questions");
+  const which = sub || needsLead(counts).opens;
   const seg = (name, label, n) =>
     h("button", { "aria-pressed": String(which === name), onclick: () => go(`needs/${name}`) }, `${label} ${n}`);
   const out = [
     h(
       "div",
       { class: "seg" },
-      seg("questions", "Questions", counts.questions),
       seg("hands", "Only you can do", counts.hands),
       seg("reviews", "Reviews", counts.reviews),
+      seg("questions", "Questions", counts.questions),
       seg("other", "Escalated", counts.other),
     ),
     ...notices(docs.core).slice(0, 2),
@@ -1060,6 +1411,62 @@ const STATUS = {
   done: ["Done", "good"],
 };
 let draft = "";
+/** What he says he is sending: kept while he moves about the app. */
+let askIntent = "task";
+
+/** The kinds of thing the owner can send, as the platform takes them
+ * (ASK_INTENTS in src/work.ts), each with its own words: the button
+ * that chooses it, what the box invites, the button that sends it, and
+ * the mark it carries in the list. */
+export const ASK_KINDS = [
+  {
+    intent: "task",
+    label: "Do this",
+    placeholder: "Say what you want done, in your own words. An agent picks it up, does it, and reports back here.",
+    send: "Send",
+    sent: "Sent",
+    chip: "",
+  },
+  {
+    intent: "question",
+    label: "Answer this",
+    placeholder: "Ask a question, in your own words. An agent answers it here, with what the answer rests on, and changes nothing.",
+    send: "Ask",
+    sent: "Asked",
+    chip: "Question",
+  },
+  {
+    intent: "directive",
+    label: "From now on",
+    placeholder: "Say how you want work done from now on. It is written where every agent reads it, and work under way is brought in line.",
+    send: "Set",
+    sent: "Set",
+    chip: "Standing instruction",
+  },
+];
+
+/** The kind for an intent; anything that is not one is something to do.
+ * @param {unknown} intent */
+export function askKind(intent) {
+  return ASK_KINDS.find((kind) => kind.intent === intent) || ASK_KINDS[0];
+}
+
+/** What is sent with a prompt: the words, and the kind where it is not
+ * simply something to do (so that one is sent as it always was).
+ * @param {string} text
+ * @param {unknown} intent */
+export function askArgs(text, intent) {
+  const kind = askKind(intent).intent;
+  return { text: text.trim(), ...(kind === "task" ? {} : { intent: kind }) };
+}
+
+/** What he is told when it has gone.
+ * @param {unknown} intent
+ * @param {{ issue: number, queued?: boolean, note?: string }} result */
+export function askSent(intent, result) {
+  if (result.queued) return `${askKind(intent).sent} as #${result.issue}; first in the queue`;
+  return `Filed as #${result.issue}.${result.note ? ` ${result.note}` : ""}`;
+}
 
 function viewAsk(sub) {
   // Words handed over by the Android app (shared or selected text, or
@@ -1072,10 +1479,11 @@ function viewAsk(sub) {
     }
     history.replaceState(null, "", "#ask");
   }
+  const kind = askKind(askIntent);
   const box = h("textarea", {
     rows: 3,
-    placeholder: "Say what you want, in your own words. An agent picks it up, does it, and reports back here.",
-    "aria-label": "Your instruction",
+    placeholder: kind.placeholder,
+    "aria-label": kind.intent === "question" ? "Your question" : "Your instruction",
     oninput: (e) => {
       draft = e.target.value;
     },
@@ -1118,25 +1526,54 @@ function viewAsk(sub) {
       onclick: async (e) => {
         const text = box.value.trim();
         if (!text) return toast("Write what you want first", true);
-        const r = await act("ask.send", { text }, (x) => (x.queued ? `Sent as #${x.issue}; first in the queue` : `Filed as #${x.issue}. ${x.note || ""}`), e.target);
+        const r = await act("ask.send", askArgs(text, kind.intent), (x) => askSent(kind.intent, x), e.target);
         if (r) {
           draft = "";
           draw();
         }
       },
     },
-    "Send",
+    kind.send,
+  );
+  // What he is sending: something to do, a question, or how he wants
+  // work done from now on. Choosing keeps what is typed.
+  const kinds = h(
+    "div",
+    { class: "seg", role: "group", "aria-label": "What you are sending" },
+    ...ASK_KINDS.map((k) =>
+      h(
+        "button",
+        {
+          "aria-pressed": String(k.intent === kind.intent),
+          onclick: () => {
+            draft = box.value;
+            askIntent = k.intent;
+            draw();
+          },
+        },
+        k.label,
+      ),
+    ),
   );
   const asks = docs.core.asks || [];
   return [
-    h("div", { class: "card composer" }, box, h("div", { class: "row end" }, mic, send)),
+    h("div", { class: "card composer" }, kinds, box, h("div", { class: "row end" }, mic, send)),
     ...notices(docs.core).slice(0, 1),
     h("h2", {}, "What you have asked"),
     ...(asks.length
       ? asks.map((a) => {
           const [label, tone] = STATUS[a.status] || [a.status, ""];
           return card(
-            h("div", { class: "row" }, chip(label, tone), ext(a.url, `#${a.issue}`), h("span", { class: "meta" }, `${ago(a.updated)}`), a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null),
+            h(
+              "div",
+              { class: "row" },
+              chip(label, tone),
+              // A question or a standing instruction is marked as one.
+              askKind(a.intent).chip ? chip(askKind(a.intent).chip) : null,
+              ext(a.url, `#${a.issue}`),
+              h("span", { class: "meta" }, `${ago(a.updated)}`),
+              a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null,
+            ),
             h("div", { class: "bubble you" }, h("b", {}, "You"), a.text),
             ...a.replies.map((r) => h("div", { class: `bubble${r.you ? " you" : ""}` }, h("b", {}, `${r.you ? "You" : "Fleet"} · ${ago(r.at)}`), r.text)),
             h(
@@ -1942,6 +2379,7 @@ const REFUSED_SAID = {
   "ask.close": "closing a prompt",
   "issue.comment": "commenting on an issue",
   "need.comment": "commenting on something that needs you",
+  "hands.done": "marking something for your hands done",
   "issue.rank": "ranking an issue",
   "task.move": "moving a task",
   "pr.merge": "merging",
@@ -1951,6 +2389,8 @@ const REFUSED_SAID = {
   "read.prs": "reading the pull requests",
   "read.priorities": "reading the ranked issues",
   "read.asks": "reading your prompts",
+  "read.census": "reading what needs you",
+  "read.done": "reading what was finished",
 };
 
 /** What the edge says of doing the core itself, read from its public
@@ -1966,13 +2406,14 @@ export function awayState(health) {
   const lacks = [];
   if (on && health.githubTokenConfigured !== true) lacks.push("the repository token");
   if (on && health.queueTokenConfigured !== true) lacks.push("the queue store token");
-  if (on && health.configured !== true) lacks.push("a machine's first report, which says where things are");
+  if (on && health.configured !== true) lacks.push("a machine's first report, which says who may sign in");
   return {
     served: true,
     on,
-    // On, holding both tokens, and told where things are: it does the
-    // core itself, with or without a machine. (An edge from before this
-    // was said under `primary` says it under `directReady`.)
+    // On, holding both tokens, and told who may sign in: it does the
+    // core itself, with or without a machine (where things are it knows
+    // by itself). (An edge from before this was said under `primary`
+    // says it under `directReady`.)
     ready: on && (health.primary === true || health.directReady === true),
     lacks,
     // What its token was refused for lately, in the owner's words: the
@@ -2125,6 +2566,7 @@ const SECTION_SAID = {
   questions: "questions",
   prs: "pull requests",
   priorities: "ranked issues",
+  done: "what was finished",
   agents: "agents",
   services: "its units",
   more: "the dashboard's pages",
@@ -2133,24 +2575,58 @@ const SECTION_SAID = {
 /** A list in words: "a, b and c". */
 export const listed = (items) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
 
+/** What each of the platform's settings is, where one is said. */
+const SETTING_SAID = {
+  repo: "the repository",
+  queue: "the queue",
+  queueDbUrl: "where the queue's store answers",
+  queueTokenName: "what the queue store's token is called",
+  androidPackage: "the Android app's package",
+  promptLabel: "the label that marks an instruction",
+  needsRepos: "the repositories looked in for what needs you",
+};
+
+/** One of the platform's settings a machine runs with another value
+ * of, in a sentence: what it says, what main says, and which of the
+ * two Cloudflare goes by (main's for all but the list of repositories,
+ * for now, and why is said with it). */
+export function differsSaid(d) {
+  const what = typeof d?.name === "string" && Object.hasOwn(SETTING_SAID, d.name) ? SETTING_SAID[d.name] : String(d?.name ?? "a setting");
+  const show = (value) => {
+    if (Array.isArray(value)) return value.length ? listed(value.map(String)) : "none";
+    return value === null || value === undefined || value === "" ? "nothing" : String(value);
+  };
+  if (d?.goesBy !== "machine") return `For ${what} it says ${show(d?.machine)}. Cloudflare goes by main's: ${show(d?.platform)}.`;
+  const why = d.name === "needsRepos" ? ": a machine takes a reply only for a repository on its own list" : "";
+  return `For ${what} it says ${show(d.machine)}, and main says ${show(d.platform)}. Cloudflare goes by this machine's until it runs main's${why}.`;
+}
+
 /** One machine as the Machines screen says it: whether it is
  * reporting, what it runs, and what only it reports and does. What the
  * platform does itself (`platform`, null when nothing is in front of
- * the machine) is not counted as the machine's. */
-export function machineSaid(machine, platform, now = Date.now()) {
+ * the machine) is not counted as the machine's. `serving` is the
+ * commit Cloudflare runs, where that is known: a machine on another is
+ * said to be.
+ * @param {string | null} [serving] */
+export function machineSaid(machine, platform, now = Date.now(), serving = null) {
   const theirs = new Set(platform?.sections || []);
   const done = new Set(platform?.actions || []);
   const words = (names, said) => [...new Set(names.map((name) => (name in said ? said[name] : name)).filter(Boolean))];
   const when = machine.seen === null ? "" : ago(new Date(machine.seen).toISOString(), now);
+  const version = machine.version ? String(machine.version).slice(0, 7) : "";
+  const cloud = serving ? String(serving).slice(0, 7) : "";
   return {
     name: machine.name,
     reporting: machine.seen !== null && !machine.quiet,
     state: machine.seen === null ? "It has never reported." : machine.quiet ? `Not reporting. Last heard from ${when}.` : `Reporting. Last heard from ${when}.`,
-    version: machine.version ? String(machine.version).slice(0, 7) : "",
+    version,
     reports: words((machine.sections || []).filter((name) => !theirs.has(name)), SECTION_SAID),
     does: words((machine.actions || []).filter((kind) => !done.has(kind)), CAN_SAID),
     // A console older than this screen does not say what it can do.
     said: (machine.actions || []).length + (machine.sections || []).length > 0,
+    otherCode: version && cloud && version !== cloud ? `Cloudflare runs ${cloud}: the two are on different code.` : "",
+    // The platform's settings it runs with others of, each in a sentence.
+    differs: (Array.isArray(machine.differs) ? machine.differs : []).map(differsSaid),
   };
 }
 
@@ -2170,6 +2646,7 @@ export function machinesMark(m, now = Date.now()) {
       (x.actions || []).length,
       (x.sections || []).length,
       x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
+      Array.isArray(x.differs) ? x.differs : [],
     ]),
     // Who each waits for is drawn too, and changes while it waits.
     held: (m?.held || []).map((item) => [item.id, item.waits ?? ""]),
@@ -2191,7 +2668,15 @@ export function heldWaitsSaid(waits) {
 /** Machines: the platform's own part, each machine that reports and
  * what only it can do, and what waits to be done. */
 async function viewMachines() {
-  const m = await api("machines");
+  // The commit Cloudflare runs is in its health answer, which anyone
+  // may read; without it (no connection) a machine's is said alone.
+  const [m, health] = await Promise.all([
+    api("machines"),
+    fetch("/console/health", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .catch(() => null),
+  ]);
+  const serving = health?.edge === true && typeof health.version === "string" ? health.version : null;
   machinesDrawn = machinesMark(m);
   const platform = m.platform;
   const held = Array.isArray(m.held) ? m.held : [];
@@ -2220,6 +2705,13 @@ async function viewMachines() {
             ? "Does the core itself, with a machine connected or not. A machine reports what only it has and does what only it can."
             : "Serves the app and keeps what you send. A machine does the rest.",
       ),
+      platform === null
+        ? null
+        : h(
+            "p",
+            { class: "meta" },
+            `Which repository and queue it works by, and where the queue's store answers, are main's${serving ? ` (it runs ${String(serving).slice(0, 7)})` : ""}: no machine changes them. Who may sign in is as the machine that set the hostname up says.`,
+          ),
       platform?.refused?.length ? h("p", { class: "why" }, `Turned away lately for ${listed(platform.refused.map((kind) => REFUSED_SAID[kind] || String(kind)))}: a machine does that for now.`) : null,
       platform === null ? null : h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: () => go("more/away") }, "What it does")),
     ),
@@ -2227,12 +2719,20 @@ async function viewMachines() {
   ];
   if (m.machines.length === 0) out.push(card(h("p", { class: "meta" }, "No machine has reported yet.")));
   for (const machine of m.machines) {
-    const s = machineSaid(machine, platform);
+    const s = machineSaid(machine, platform, Date.now(), serving);
     out.push(
       card(
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
-        h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : ""].filter(Boolean).join(" ")),
+        h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
+        s.differs.length
+          ? h(
+              "details",
+              { open: true },
+              h("summary", {}, `It runs with ${s.differs.length === 1 ? "one setting" : `${s.differs.length} settings`} that ${s.differs.length === 1 ? "is" : "are"} not main's`),
+              h("ul", { class: "plain" }, s.differs.map((line) => h("li", {}, line))),
+            )
+          : null,
         !s.said
           ? h("p", { class: "meta" }, "It has not said what it can do: its console is older than this screen.")
           : platform === null
@@ -2933,7 +3433,7 @@ function viewServices() {
     return h(
       "div",
       { class: `card${u.active === "failed" ? " flag" : ""}` },
-      h("div", { class: "row" }, h("h3", {}, u.unit), chip(`${u.active} · ${u.sub}`, u.active === "active" ? "good" : u.active === "failed" ? "warn" : "")),
+      h("div", { class: "row" }, h("h3", {}, u.unit), chip(unitStateSaid(u), u.active === "active" ? "good" : u.active === "failed" ? "warn" : "")),
       h("p", { class: "meta" }, u.description),
       log,
       h(
@@ -2982,7 +3482,8 @@ const TABS = [
   ["more", "More", "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"],
 ];
 const VIEWS = {
-  now: ["Now", viewNow],
+  now: ["Now", viewNow, "done"],
+  "now/done": ["Done", viewDone, "done"],
   next: ["Next", viewNext, "ops"],
   needs: ["Needs me", viewNeeds, "questions"],
   ask: ["Ask", viewAsk],
@@ -3046,7 +3547,7 @@ function drawTabs() {
   const fresh = (docs.core?.asks || []).filter((a) => a.status === "answered").length;
   tabsEl.replaceChildren(
     ...TABS.map(([name, label, d]) => {
-      const count = name === "needs" ? n.total : name === "ask" ? fresh : 0;
+      const count = name === "needs" ? needsLead(n).badge : name === "ask" ? fresh : 0;
       return h(
         "button",
         { "aria-current": route.split("/")[0] === name ? "page" : null, onclick: () => go(name) },
@@ -3065,11 +3566,92 @@ export function freshSaid(state, now = Date.now()) {
   if (state.signedOut) return { text: "signed out", tone: "down" };
   if (state.offline) return { text: since ? `offline · ${since}` : "offline", tone: "stale" };
   if (age === null) return { text: "", tone: "" };
+  // Connected to be told of changes: what is shown is current until
+  // something is said, however long ago it was read.
+  if (state.live) return { text: "live", tone: "" };
   return age < 45 ? { text: "live", tone: "" } : { text: `as of ${since}`, tone: age > 180 ? "stale" : "" };
 }
 
+// ---- live: told when something changes -----------------------------------
+// Cloudflare holds a connection open to the app and says which
+// documents have changed; the app reads them again at once (by their
+// tags, so being told of nothing new costs one "not modified"). What
+// the owner does still goes by its own requests, which are kept and
+// sent again when there is no connection. With no live connection (a
+// machine serving the app by itself, a network that will not carry
+// one) the app looks every twenty seconds, as it always did.
+
+const LIVE_DOCS = ["core", "questions", "ops", "done"];
+
+/** What a message over the live connection asks for: the documents to
+ * read again. Anything that is not such a message asks for nothing. */
+export function liveMessage(text) {
+  let msg = null;
+  try {
+    msg = typeof text === "string" ? JSON.parse(text) : null;
+  } catch {
+    msg = null;
+  }
+  if (msg?.t !== "changed" || !Array.isArray(msg.docs)) return { docs: [] };
+  return { docs: msg.docs.filter((doc) => LIVE_DOCS.includes(doc)) };
+}
+
+/** How long to wait before connecting again after the connection
+ * dropped `tries` times running. */
+export function liveDelay(tries) {
+  return Math.min(30_000, 1_000 * 2 ** Math.max(0, Math.min(tries, 10) - 1));
+}
+
+/** Where the live connection is, for a page at `at`. */
+export function liveUrl(at) {
+  return `${at.protocol === "https:" ? "wss:" : "ws:"}//${at.host}${API}events`;
+}
+
+let live = null;
+let liveTries = 0;
+let liveTimer = null;
+let livePing = null;
+const liveOpen = () => live !== null && live.readyState === 1;
+
+function connectLive() {
+  clearTimeout(liveTimer);
+  liveTimer = null;
+  // Only where Cloudflare is in front (a machine serving the app by
+  // itself holds no connections), and only while someone is looking.
+  if (live || !me?.edge || signedOut || typeof WebSocket === "undefined" || document.visibilityState !== "visible") return;
+  let ws;
+  try {
+    ws = new WebSocket(liveUrl(location));
+  } catch {
+    return;
+  }
+  live = ws;
+  ws.onopen = () => {
+    liveTries = 0;
+    // The platform answers "ping" itself; saying it keeps the
+    // connection from being dropped as idle.
+    livePing = setInterval(() => liveOpen() && ws.send("ping"), 45_000);
+    drawFresh();
+    // What changed while nothing was connected.
+    refresh(false);
+  };
+  ws.onmessage = (event) => {
+    if (liveMessage(event.data).docs.length > 0) refresh(false);
+  };
+  const ended = () => {
+    if (live !== ws) return;
+    live = null;
+    clearInterval(livePing);
+    liveTries++;
+    drawFresh();
+    liveTimer = setTimeout(connectLive, liveDelay(liveTries));
+  };
+  ws.onclose = ended;
+  ws.onerror = ended;
+}
+
 function drawFresh() {
-  const said = freshSaid({ asOf: asOf.core, offline, signedOut });
+  const said = freshSaid({ asOf: asOf.core, offline, signedOut, live: liveOpen() });
   freshEl.className = `fresh${said.tone ? ` ${said.tone}` : ""}`;
   freshEl.textContent = said.text;
 }
@@ -3222,16 +3804,26 @@ if (typeof document !== "undefined" && view) {
     if (document.visibilityState === "hidden") flushPending();
     else {
       refresh(false);
+      connectLive();
       // Back from the Android app after linking: show the phone it added.
       if (route === "more/phone") draw();
     }
   });
   addEventListener("pagehide", flushPending);
-  setInterval(() => document.visibilityState === "visible" && refresh(false), 20_000);
+  // Looking every twenty seconds is what keeps the screen current with
+  // no live connection. With one, a change is said as it happens, and
+  // this is only a look every minute in case something was missed.
+  let looks = 0;
+  setInterval(() => {
+    looks++;
+    if (document.visibilityState !== "visible") return;
+    if (!liveOpen() || looks % 3 === 0) refresh(false);
+  }, 20_000);
   setInterval(drawFresh, 10_000);
   api("me")
     .then((m) => {
       me = m;
+      connectLive();
     })
     .catch(() => {});
   // The worker shows notifications, keeps the app and what it last saw

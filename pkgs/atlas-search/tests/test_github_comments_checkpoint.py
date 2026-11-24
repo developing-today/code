@@ -41,7 +41,10 @@ for row in rows:
 
 def exercise(directory, cli):
     gh = directory / "gh"
-    gh.write_text(FAKE_GH)
+    # Absolute interpreter: the Nix build sandbox has no /usr/bin/env, so a
+    # "#!/usr/bin/env python3" fake fails to exec there (ENOENT) and the CLI
+    # under test reports "gh: spawn failed" instead of exercising the fixture.
+    gh.write_text(FAKE_GH.replace("#!/usr/bin/env python3", "#!" + sys.executable, 1))
     gh.chmod(0o700)
     state = directory / "state.json"
     output = directory / "records.jsonl"
