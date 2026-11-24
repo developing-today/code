@@ -238,6 +238,63 @@ describe("the edge's run: the bridge through its binding", () => {
     ]);
   });
 
+  test("the composer's verbs cross the same binding: a limited send, a broaden, an offer, the offers list", async () => {
+    const h = bridgeHarness();
+    // A pattern send with a limit: the limit rides the body, and the
+    // bridge's match report comes back as the run's output.
+    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-1"], remaining: 1 };
+    const sent = await h.run(["fleet", "bridge", "send", "--to", "agent:f*", "--command", "--limit", "1", "-"], {
+      stdin: "do the thing",
+    });
+    expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:f*"],
+      body: "do the thing",
+      kind: "command",
+      limit: 1,
+    });
+    expect(JSON.parse(sent.stdout)).toMatchObject({ matched: 2, delivered: 1, remaining: 1 });
+    // A broaden names only the batch: no text, no targets.
+    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 };
+    await h.run(["fleet", "bridge", "send", "--broaden", "b9"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(JSON.parse(h.calls[1].init.body ?? "{}")).toEqual({ agent: "pm-stack", broaden: "b9" });
+    // An offer posts to the offer route with its slots.
+    h.answer.body = { offer: { id: 7, state: "open" } };
+    await h.run(["fleet", "bridge", "offer", "--to", "agent:f*", "--slots", "2", "--command", "-"], {
+      stdin: "take the next task",
+    });
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/offer");
+    expect(JSON.parse(h.calls[2].init.body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["agent:f*"],
+      body: "take the next task",
+      kind: "command",
+      slots: 2,
+    });
+    // The offers list is a read of the same binding.
+    h.answer.status = 200;
+    h.answer.body = { offers: [{ id: 7, claims: [{ agent: "felix-1" }] }] };
+    const offers = await h.run(["fleet", "bridge", "offers"]);
+    expect(h.calls[3].url).toBe("https://bridge.internal/fleet/pm-cred-test/offers");
+    expect(h.calls[3].init.method).toBe("GET");
+    expect(JSON.parse(offers.stdout)).toEqual({ offers: [{ id: 7, claims: [{ agent: "felix-1" }] }] });
+    expect(h.seen.map((c) => [c.to, c.write, c.status])).toEqual([
+      ["bridge", true, 201],
+      ["bridge", true, 201],
+      ["bridge", true, 201],
+      ["bridge", false, 200],
+    ]);
+    // The classes run the same verbs through the same translation.
+    const { ops } = directClasses(edgeConfig, h.secrets);
+    h.answer.status = 201;
+    h.answer.body = { batch: "b9", messages: [], unregistered: [], matched: 2, delivered: 1, recipients: ["felix-2"], remaining: 0 };
+    const widened = await ops.broaden("b9");
+    expect(widened).toMatchObject({ matched: 2, delivered: 1, remaining: 0 });
+    h.answer.body = { offers: [{ id: 7, claims: [] }] };
+    expect(await ops.offers()).toEqual([{ id: 7, claims: [] }]);
+  });
+
   test("a credential the bridge no longer knows is said plainly, as a failed call", async () => {
     const h = bridgeHarness();
     h.answer.ok = false;
@@ -263,8 +320,19 @@ describe("the edge's run: the bridge through its binding", () => {
   test("the classes send and read through the bridge unchanged", async () => {
     const h = bridgeHarness();
     const { ops } = directClasses(edgeConfig, h.secrets);
+    // A send's answer is the bridge's match report (#14375).
+    h.answer.body = { batch: "b1", messages: [], unregistered: [], matched: 1, delivered: 1, recipients: ["felix-1"], remaining: 0 };
     const sent = await ops.send(["agent:felix-1"], "hello there", true);
-    expect(sent).toEqual({ to: ["agent:felix-1"], command: true });
+    expect(sent).toEqual({
+      to: ["agent:felix-1"],
+      command: true,
+      batch: "b1",
+      matched: 1,
+      delivered: 1,
+      recipients: ["felix-1"],
+      remaining: 0,
+      unregistered: [],
+    });
     expect(JSON.parse(h.calls[0].init.body ?? "{}")).toEqual({
       agent: "pm-stack",
       to: ["agent:felix-1"],

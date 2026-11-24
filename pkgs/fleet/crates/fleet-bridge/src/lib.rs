@@ -85,10 +85,21 @@ usage: fleet bridge <verb> [options]
 Send and receive through the message bridge's fleet mailboxes.
 
 central (owner token):
-  send --to <targets> [--command] [--sender NAME] <text | ->
+  send --to <targets> [--command] [--sender NAME] [--limit N] <text | ->
         targets: agent:<name> (or a bare name), group:<name>, all;
-        repeat --to or separate with commas. --command marks it a
-        command (default: a plain message). '-' reads the text from stdin.
+        repeat --to or separate with commas. A name may be a glob
+        (agent:f*); --limit caps how many of the matches receive it.
+        The answer is the match report: matched, delivered, the
+        recipients, and how many matched agents remain.
+  send --broaden <batch> [--limit N]
+        deliver a pattern send's original text to the matched agents
+        its limit left over — the same batch, never a duplicate.
+  offer --to <targets> --slots N [--command] [--sender NAME]
+        [--ttl SECS] <text | ->
+        post the text as a claim offer instead of delivering it: the
+        next N eligible agents to claim it are delivered a row on the
+        offer's batch (#14371).
+  offers                       every offer with its claims
   agents                       registered agents, groups, unread counts
   log [--agent A] [--direction inbound|outbound] [--kind message|command]
       [--since-id N] [--before-id N] [--limit N] [--order asc|desc]
@@ -182,12 +193,35 @@ pub fn verb_usage(verb: &str) -> Option<String> {
     let section = match verb {
         "send" => {
             "\
-usage: fleet bridge send --to <targets> [--command] [--sender NAME] <text | ->
+usage: fleet bridge send --to <targets> [--command] [--sender NAME] [--limit N] <text | ->
+       fleet bridge send --broaden <batch> [--limit N]
 
 central (owner token). targets: agent:<name> (or a bare name),
-group:<name>, all; repeat --to or separate with commas. --command
+group:<name>, all; repeat --to or separate with commas. A name may be
+a glob (agent:f*); --limit caps how many of the matches receive it,
+and the answer is the match report (matched, delivered, recipients,
+remaining). --broaden delivers a pattern send's original text to the
+matched agents its limit left over, on the same batch. --command
 marks it a command (default: a plain message). '-' reads the text
 from stdin."
+        }
+        "offer" => {
+            "\
+usage: fleet bridge offer --to <targets> --slots N [--command] [--sender NAME] [--ttl SECS] <text | ->
+
+central (owner token). Post the text as a claim offer (#14371)
+instead of delivering it: the next N eligible agents to claim it are
+delivered a row on the offer's batch, and their replies thread onto
+it. targets are the send grammar (names, globs, groups, all);
+--slots is how many claims land. --ttl bounds how long the offer
+stands open, in seconds."
+        }
+        "offers" => {
+            "\
+usage: fleet bridge offers
+
+central (owner token). Every offer with its claims: who claimed,
+when, and the row each claim delivered."
         }
         "agents" => {
             "\
@@ -789,11 +823,13 @@ const VALUE_FLAGS: &[&str] = &[
     "--interval",
     "--reply-to",
     "--up-to",
+    "--broaden",
+    "--slots",
     "--state",
     "--task",
     "--bootstrap",
-    "--scopes",
     "--ttl",
+    "--scopes",
     "--notes-identity",
     "--token-hash",
     "--addr",
@@ -1125,7 +1161,28 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
     };
     match verb.as_str() {
         "send" => {
-            let a = parse(rest, &["--command"], &["--to", "--sender", "--kind"])?;
+            let a = parse(
+                rest,
+                &["--command"],
+                &["--to", "--sender", "--kind", "--limit", "--broaden"],
+            )?;
+            let limit = a.uint("--limit")?;
+            // A broaden names the pattern send's batch and carries no
+            // text or targets of its own: the bridge re-delivers the
+            // original body to the matched agents the limit left over.
+            if let Some(batch) = a.last("--broaden") {
+                a.no_positional("send --broaden")?;
+                let token = owner_token(ctx)?;
+                let mut payload = json!({ "broaden": batch });
+                if let Some(n) = limit {
+                    payload["limit"] = json!(n);
+                }
+                return client_with(ctx, &token).call(
+                    "POST",
+                    &format!("/api/{token}/fleet/send"),
+                    Some(&payload),
+                );
+            }
             let to: Vec<String> = a.all("--to").iter().flat_map(|t| split_list(t)).collect();
             if to.is_empty() {
                 return Err(usage(
@@ -1143,11 +1200,55 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             if let Some(s) = a.last("--sender") {
                 payload["sender"] = json!(s);
             }
+            if let Some(n) = limit {
+                payload["limit"] = json!(n);
+            }
             client_with(ctx, &token).call(
                 "POST",
                 &format!("/api/{token}/fleet/send"),
                 Some(&payload),
             )
+        }
+        "offer" => {
+            let a = parse(
+                rest,
+                &["--command"],
+                &["--to", "--sender", "--kind", "--slots", "--ttl"],
+            )?;
+            let to: Vec<String> = a.all("--to").iter().flat_map(|t| split_list(t)).collect();
+            if to.is_empty() {
+                return Err(usage(
+                    "offer needs --to (agent:NAME, group:NAME or all)",
+                ));
+            }
+            let Some(slots) = a.uint("--slots")? else {
+                return Err(usage("offer needs --slots N (how many claims land)"));
+            };
+            let kind = if a.has("--command") {
+                "command".to_string()
+            } else {
+                a.last("--kind").unwrap_or_else(|| "message".to_string())
+            };
+            let body = text_of(&a, ctx.stdin)?;
+            let token = owner_token(ctx)?;
+            let mut payload = json!({ "body": body, "to": to, "kind": kind, "slots": slots });
+            if let Some(s) = a.last("--sender") {
+                payload["sender"] = json!(s);
+            }
+            if let Some(ttl) = a.uint("--ttl")? {
+                payload["ttl_seconds"] = json!(ttl);
+            }
+            client_with(ctx, &token).call(
+                "POST",
+                &format!("/api/{token}/fleet/offer"),
+                Some(&payload),
+            )
+        }
+        "offers" => {
+            let a = parse(rest, &[], &[])?;
+            a.no_positional("offers")?;
+            let token = owner_token(ctx)?;
+            client_with(ctx, &token).call("GET", &format!("/api/{token}/fleet/offers"), None)
         }
         "agents" => {
             let a = parse(rest, &[], &[])?;
