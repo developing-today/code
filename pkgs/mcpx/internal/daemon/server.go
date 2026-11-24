@@ -925,6 +925,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "POST /v1/batch", s.handleBatch)
 	s.route(mux, "POST /v1/resource", s.handleResource)
 	s.route(mux, "POST /v1/session/release", s.handleRelease)
+	s.route(mux, "POST /v1/session/kill", s.handleKill)
 	s.route(mux, "POST /v1/refresh", s.handleRefresh)
 	s.route(mux, "POST /v1/reload", s.handleReload)
 	s.route(mux, "POST /v1/restart", s.handleRestart)
@@ -1549,6 +1550,31 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 		req.Session = r.Header.Get("X-Mcpx-Session")
 	}
 	writeJSON(w, 200, map[string]any{"released": s.reg.ReleaseCaller(req.Session)})
+}
+
+// handleKill ends the instances a caller session created, even when busy
+// (#1931 slice 2). The address is the caller session handle, the same lease
+// key release takes: release detaches and stops only what is already idle,
+// kill ends every owned instance. An unknown handle is a typed refusal, so
+// a caller cannot mistake a misspelled session for an empty success.
+func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit))).Decode(&req)
+	if req.Session == "" {
+		req.Session = r.Header.Get("X-Mcpx-Session")
+	}
+	if req.Session == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("session is required"))
+		return
+	}
+	killed, found := s.reg.KillCaller(req.Session)
+	if !found {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("unknown session %q", req.Session))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"killed": killed})
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
