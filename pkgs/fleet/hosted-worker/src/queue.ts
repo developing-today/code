@@ -1870,7 +1870,7 @@ async function notClaimedReason(store: QueueStore, row: TaskRow | null, worker: 
     const events = (await store.eventsForTask(row.id)).filter((e) => e.kind === "claimed" || e.kind === "lease_expired");
     const last = events[events.length - 1];
     if (last && last.kind === "lease_expired" && last.worker_id === worker) {
-      base += `; ${worker}'s lease expired at ${last.created_at} and the task went back to the queue, so claim it again before completing it (heartbeat or checkpoint to keep a lease)`;
+      base += `; ${worker}'s lease expired at ${last.created_at} and the task went back to the queue, so claim it again before completing it (heartbeat to keep a lease; checkpoint saves progress but does not renew it)`;
     }
   }
   return base;
