@@ -468,3 +468,26 @@ $ fleet queue verify-disposition 13165 --repo developing-today/code --json
 {"checked_at": "2026-11-23T04:24:00Z", "source": "github-readback", "issue": {"number": 13165, "state": "open", "state_reason": null, "closed_at": null, "closed_by": null}, "pulls": [], "verdict": "invalid_no_work", "follow_up": null}
 (exit 1 — no merged pull and no follow-up on record; a completion carrying this record would be rejected)
 ```
+
+## fleet queue reprioritize
+
+```text
+usage: repo-queue reprioritize <task-id> <new-priority> [--reason <text>] [--worker <id>]
+```
+
+| Flag                   | Argument        | Default  | Meaning                                                                                                    |
+| ---------------------- | --------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `<task-id>` (positional) | task id       | required | The queued task whose priority changes.                                                                    |
+| `<new-priority>` (positional) | priority value | required | A number, or a category name the validator maps to one (`validate::resolve_priority`). Missing or unresolvable → exit 2. |
+| `--reason`             | text            | unset    | Why the priority changed; recorded with the change.                                                         |
+| `--worker`             | worker id       | the authenticated caller identity | The acting worker. The actor is the authenticated caller identity presented over the broker's token channel; no free-form actor string is accepted. |
+
+**Behaviour.** Calls the broker's `POST /reprioritize`; the broker
+applies the new priority in the Turso queue store and syncs the task's
+GitHub category to match. Prints the served task row as JSON. Landed in
+#14100 (PR #14203). Note: the verb is a client/broker verb — it is not
+in the registry's subcommand inventory, so domain help does not list it
+(situation at 2026-11-24).
+
+Exit codes: 0 success · 2 usage (including a missing or unresolvable
+priority).
