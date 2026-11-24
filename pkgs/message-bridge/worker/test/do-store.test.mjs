@@ -56,7 +56,7 @@ function sqlite() {
 function harness() {
   const object = new MessageStore({ storage: { sql: sqlite() }, waitUntil: () => {} }, {});
   const env = {
-    ACCESS_TOKEN: <redacted>,
+    ACCESS_TOKEN: OWNER,
     MESSAGES: { idFromName: (name) => name, get: () => object },
   };
   const ctx = { waitUntil: () => {} };
