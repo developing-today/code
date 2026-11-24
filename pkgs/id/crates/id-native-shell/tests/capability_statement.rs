@@ -83,7 +83,14 @@ fn statement_is_well_formed_and_names_the_contract() {
     let contract = contract();
     assert_eq!(statement["statement"], json!("shell-capability-statement"));
     assert_eq!(statement["shell"], json!("id-native-shell"));
-    assert_eq!(statement["platform"], json!("linux-desktop"));
+    // Oracle: the recorded capability statement names the desktop target
+    // whose binary and checks are being built.
+    let expected_platform = if cfg!(target_os = "macos") {
+        "macos-desktop"
+    } else {
+        "linux-desktop"
+    };
+    assert_eq!(statement["platform"], json!(expected_platform));
     assert_eq!(
         statement["contract"]["name"], contract["contract"],
         "statement must name the contract it is a statement against"
