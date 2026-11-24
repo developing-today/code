@@ -18,7 +18,10 @@ use crate::error::{Error, Result};
 use crate::filters::{Filters, Sensitivity};
 use crate::fusion::{FusedEntry, fts_match_expr, fuse_with_parameters};
 use crate::trace::{TraceContext, TraceSink, build_trace_record, new_query_id};
-use crate::types::{BranchPools, BranchQuery, ChunkDetail, DEFAULT_MODEL, VectorBackend, round6};
+use crate::types::{
+    BranchPools, BranchQuery, ChunkDetail, DEFAULT_MODEL, NeighborRow, VectorBackend, round6,
+};
+use crate::{classify::sha256_hex, shards::TierCeiling};
 
 /// The Python's `MESSAGE_TEXT_CAP`.
 pub const MESSAGE_TEXT_CAP: usize = 50_000;
@@ -374,29 +377,29 @@ fn run_search_impl(
     // paged payloads inherit the same filter. Details are
     // resolved for every ranked candidate (the traced path
     // already pays this) because a candidate's classification
-    // is a property of its detail row.
+    // is a property of its detail row. Full-content payloads
+    // (the parent message, hydration) carry text beyond the
+    // admitted chunk, so at render time they are additionally
+    // span-filtered per sibling chunk (#12624,
+    // `span_filter_payload`).
     let all_ids: Vec<i64> = ranked.iter().map(|e| e.chunk_id).collect();
     let all_details = details_map(backend, &all_ids)?;
     let mut permitted: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut withheld = 0usize;
     for e in &ranked {
-        match all_details.get(&e.chunk_id) {
-            Some(d) => {
-                let class = chunk_classification(d.eff_sensitivity.as_deref());
-                if opts
-                    .context
-                    .permits_with_grant(class, filters.max_sensitivity)
-                {
-                    permitted.insert(e.chunk_id);
-                } else {
-                    withheld += 1;
-                }
+        // No detail row: the candidate renders nowhere (the
+        // flat/grouped paths already skip it), and it is not a
+        // disclosure decision, so it is not counted as withheld.
+        if let Some(d) = all_details.get(&e.chunk_id) {
+            let class = chunk_classification(d.eff_sensitivity.as_deref());
+            if opts
+                .context
+                .permits_with_grant(class, filters.max_sensitivity)
+            {
+                permitted.insert(e.chunk_id);
+            } else {
+                withheld += 1;
             }
-            // No detail row: the candidate renders nowhere
-            // (the flat/grouped paths already skip it), and it
-            // is not a disclosure decision, so it is not
-            // counted as withheld.
-            None => {}
         }
     }
     if withheld > 0 {
@@ -458,6 +461,7 @@ fn run_search_impl(
         // filter-before-serve rule the branch queries apply
         // to the caller ceiling).
         let mut results = Vec::new();
+        let mut span_record = SpanRecord::default();
         for e in &ranked {
             if results.len() >= opts.k {
                 break;
@@ -468,13 +472,32 @@ fn run_search_impl(
             let Some(d) = all_details.get(&e.chunk_id) else {
                 continue;
             };
-            let mut entry = result_entry(backend, opts, filters.max_sensitivity, e, d, &vec_dist)?;
+            let mut entry = result_entry(
+                backend,
+                opts,
+                filters.max_sensitivity,
+                e,
+                d,
+                &vec_dist,
+                &mut span_record,
+            )?;
             // Hydration: the first `hydrate` RENDERED results
             // (details present) gain full content — except on a
             // public surface, where full-content payloads are
-            // withheld outright (see the disclosure pass above).
-            if !withhold_full_content && results.len() < opts.parameters.hydrate {
-                let hydrated = hydrate_entry(backend, d)?;
+            // withheld outright (see the disclosure pass above),
+            // and except a payload the span filter cannot make
+            // safe (#12624), which is omitted whole and counted
+            // in the notes below.
+            if !withhold_full_content
+                && results.len() < opts.parameters.hydrate
+                && let Some(hydrated) = hydrate_entry(
+                    backend,
+                    d,
+                    opts.context,
+                    filters.max_sensitivity,
+                    &mut span_record,
+                )?
+            {
                 entry
                     .as_object_mut()
                     .expect("result entry is an object")
@@ -482,6 +505,7 @@ fn run_search_impl(
             }
             results.push(entry);
         }
+        span_record.push_notes(&mut notes, opts.context, filters.max_sensitivity);
         let mut env = envelope(backend, opts, filters, Json::Array(results), &notes);
         if opts.parameters.raw_mode == RawMode::Ungrouped {
             env.as_object_mut()
@@ -560,10 +584,10 @@ fn collect_served(v: Option<&Json>, acc: &mut Vec<i64>) {
             }
         }
         Some(Json::Object(map)) => {
-            if let Some(id) = map.get("chunk_id").and_then(Json::as_i64) {
-                if !acc.contains(&id) {
-                    acc.push(id);
-                }
+            if let Some(id) = map.get("chunk_id").and_then(Json::as_i64)
+                && !acc.contains(&id)
+            {
+                acc.push(id);
             }
             for val in map.values() {
                 if val.is_array() {
@@ -582,20 +606,44 @@ fn collect_served(v: Option<&Json>, acc: &mut Vec<i64>) {
 /// the shard path the tier content stores hydrate separately,
 /// #6664; this covers the monolith backends, whose message store
 /// IS the content store.)
-fn hydrate_entry(backend: &dyn SearchBackend, d: &ChunkDetail) -> Result<Json> {
+///
+/// The message text is a full-content payload, so it is
+/// span-filtered per sibling chunk (#12624, see
+/// [`span_filter_payload`]). `None` means the payload could not
+/// be safely filtered and is withheld whole: the caller omits
+/// the `hydrated` field, and the withholding is tallied in
+/// `record` for the envelope notes.
+fn hydrate_entry(
+    backend: &dyn SearchBackend,
+    d: &ChunkDetail,
+    context: DisclosureContext,
+    grant: Sensitivity,
+    record: &mut SpanRecord,
+) -> Result<Option<Json>> {
     let message = match backend.message(&d.message_id)? {
-        Some(m) => json!({
-            "id": m.id,
-            "role": m.role,
-            "text": m.text,
-            "truncated": false,
-        }),
+        Some(m) => {
+            match span_filter_payload(backend, &d.message_id, &m.text, &m.text, context, grant)? {
+                Some((text, withheld)) => {
+                    record.spans_withheld += withheld;
+                    json!({
+                        "id": m.id,
+                        "role": m.role,
+                        "text": text,
+                        "truncated": false,
+                    })
+                }
+                None => {
+                    record.payloads_withheld += 1;
+                    return Ok(None);
+                }
+            }
+        }
         None => Json::Null,
     };
-    Ok(json!({
+    Ok(Some(json!({
         "chunk_text": d.text,
         "message": message,
-    }))
+    })))
 }
 
 /// The Python's `run_get_chunk`: a by-id lookup with NO caller
@@ -606,7 +654,13 @@ fn hydrate_entry(backend: &dyn SearchBackend, d: &ChunkDetail) -> Result<Json> {
 /// `excluded_personal_life` content, ineligible in every
 /// context (design section 4).
 pub fn run_get_chunk(backend: &dyn SearchBackend, chunk_id: i64, neighbors: usize) -> Result<Json> {
-    run_get_chunk_with_context(backend, chunk_id, neighbors, DisclosureContext::LocalOwner)
+    run_get_chunk_with_context(
+        backend,
+        chunk_id,
+        neighbors,
+        DisclosureContext::LocalOwner,
+        Sensitivity::SecretBearing,
+    )
 }
 
 /// `run_get_chunk` under an explicit disclosure context: the
@@ -614,11 +668,19 @@ pub fn run_get_chunk(backend: &dyn SearchBackend, chunk_id: i64, neighbors: usiz
 /// chunk reads exactly like a missing one — the lookup must not
 /// confirm that classified content exists), and neighbor
 /// expansion is filtered by each neighbor's own classification.
+///
+/// `grant` is the caller's sensitivity ceiling. `get-chunk` stays
+/// an explicit-id tool with no caller ceiling on the chunk gate
+/// (the context alone decides, as the Python did), but every
+/// derived payload — occurrence provenance and neighbor
+/// expansion — is bounded by grant ∩ context, so a narrower
+/// caller never learns higher-ceiling source locators.
 pub fn run_get_chunk_with_context(
     backend: &dyn SearchBackend,
     chunk_id: i64,
     neighbors: usize,
     context: DisclosureContext,
+    grant: Sensitivity,
 ) -> Result<Json> {
     let details = backend.chunk_details(&[chunk_id])?;
     let Some(d) = details.iter().find(|d| d.chunk_id == chunk_id) else {
@@ -627,6 +689,7 @@ pub fn run_get_chunk_with_context(
     if !context.permits(chunk_classification(d.eff_sensitivity.as_deref())) {
         return Err(Error::fatal(format!("chunk {chunk_id} not found")));
     }
+    let effective = context.effective_ceiling(grant);
     let mut msg = Map::new();
     msg.insert("id".into(), Json::String(d.message_id.clone()));
     msg.insert(
@@ -643,10 +706,28 @@ pub fn run_get_chunk_with_context(
     out.insert("message".into(), Json::Object(msg));
     out.insert("session".into(), session_obj(d));
     out.insert("session_id".into(), Json::String(d.session_id.clone()));
+    // #3125 rule 3 read side: every recorded place this chunk's
+    // content was found. The lookup key is the canonical hash
+    // (content identity, not the per-shard chunk id); the caller's
+    // ceiling gates which tiers may contribute, exactly as the
+    // vector fan-out enforces it. Backends with no registry
+    // (monolith, local publish) report none, and the field is
+    // then absent rather than empty — same shape rule as `notes`.
+    let occurrences = backend.occurrences(
+        &sha256_hex(d.text.as_bytes()),
+        TierCeiling::from_sensitivity(effective),
+        effective,
+    )?;
+    if !occurrences.is_empty() {
+        out.insert(
+            "occurrences".into(),
+            Json::Array(occurrences.iter().map(|o| o.to_json()).collect()),
+        );
+    }
     if neighbors > 0 {
         out.insert(
             "context".into(),
-            neighbor_map(backend, d, neighbors, context, context.ceiling())?,
+            neighbor_map(backend, d, neighbors, context, effective)?,
         );
     }
     let notes = backend.notes();
@@ -723,6 +804,7 @@ fn session_obj(d: &ChunkDetail) -> Json {
     Json::Object(s)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn result_entry(
     backend: &dyn SearchBackend,
     opts: &SearchOptions,
@@ -730,6 +812,7 @@ fn result_entry(
     e: &FusedEntry,
     d: &ChunkDetail,
     vec_dist: &HashMap<i64, Option<f64>>,
+    record: &mut SpanRecord,
 ) -> Result<Json> {
     let mut entry = Map::new();
     entry.insert("chunk_id".into(), json!(e.chunk_id));
@@ -738,12 +821,13 @@ fn result_entry(
     entry.insert("rank_sources".into(), e.rank_sources_json());
     entry.insert("text".into(), Json::String(d.text.clone()));
     entry.insert("session".into(), session_obj(d));
-    entry_chunk_extras(backend, opts, grant, e, d, vec_dist, &mut entry)?;
+    entry_chunk_extras(backend, opts, grant, e, d, vec_dist, &mut entry, record)?;
     Ok(Json::Object(entry))
 }
 
 /// vector_distance / context / message — the trailing fields
 /// shared by flat result entries and grouped chunk entries.
+#[allow(clippy::too_many_arguments)]
 fn entry_chunk_extras(
     backend: &dyn SearchBackend,
     opts: &SearchOptions,
@@ -752,6 +836,7 @@ fn entry_chunk_extras(
     d: &ChunkDetail,
     vec_dist: &HashMap<i64, Option<f64>>,
     entry: &mut Map<String, Json>,
+    record: &mut SpanRecord,
 ) -> Result<()> {
     if let Some(Some(dist)) = vec_dist.get(&e.chunk_id) {
         entry.insert("vector_distance".into(), json!(round6(*dist)));
@@ -766,9 +851,13 @@ fn entry_chunk_extras(
     // text beyond the classified chunk, so on a public surface
     // it is withheld outright (design section 4). Other
     // contexts gate it on the served chunk's own classification
-    // via the disclosure pass that admitted the chunk.
+    // via the disclosure pass that admitted the chunk, and
+    // span-filter it per sibling chunk (#12624).
     if opts.with_message && opts.context != DisclosureContext::PublicSurface {
-        entry.insert("message".into(), message_obj(backend, d)?);
+        entry.insert(
+            "message".into(),
+            message_obj(backend, d, opts.context, grant, record)?,
+        );
     }
     Ok(())
 }
@@ -809,19 +898,197 @@ fn neighbor_map(
     Ok(json!({"before": before, "after": after}))
 }
 
-/// The Python's `message_obj` (null when the message is gone).
-fn message_obj(backend: &dyn SearchBackend, d: &ChunkDetail) -> Result<Json> {
+/// The span filter's running tally for one search: how many
+/// message spans were omitted from full-content payloads, and
+/// how many payloads were withheld whole because they could
+/// not be safely filtered (#12624). Rendered into the envelope
+/// notes by [`SpanRecord::push_notes`] — withholding is on the
+/// record, never silent (the #12404 note idiom).
+#[derive(Debug, Default)]
+struct SpanRecord {
+    spans_withheld: usize,
+    payloads_withheld: usize,
+}
+
+impl SpanRecord {
+    fn push_notes(&self, notes: &mut Vec<String>, context: DisclosureContext, grant: Sensitivity) {
+        if self.spans_withheld > 0 {
+            notes.push(format!(
+                "disclosure: context {} withheld {} message span(s) (context ceiling {}, caller ceiling {})",
+                context.name(),
+                self.spans_withheld,
+                context.ceiling().name(),
+                grant.name(),
+            ));
+        }
+        if self.payloads_withheld > 0 {
+            notes.push(format!(
+                "disclosure: context {} withheld {} message payload(s) that could not be span-filtered (context ceiling {}, caller ceiling {})",
+                context.name(),
+                self.payloads_withheld,
+                context.ceiling().name(),
+                grant.name(),
+            ));
+        }
+    }
+}
+
+/// Span-level disclosure filtering for full-content payloads
+/// (#12624): the rule for `--with-message` and hydration
+/// payloads under the non-public contexts. (A public surface
+/// withholds these payloads outright — see the disclosure pass
+/// in `run_search_impl`.)
+///
+/// A payload is the whole text of the served chunk's message,
+/// and a message spans every chunk cut from it. Chunk
+/// classification is per-chunk, so the payload can carry text
+/// belonging to sibling chunks that classify higher than the
+/// served chunk. The rule: every chunk of the message is
+/// classified from its detail row and tested with the same
+/// grant ∩ context intersection the disclosure pass applies
+/// to candidates ([`DisclosureContext::permits_with_grant`] —
+/// so `excluded_personal_life` text never crosses, in any
+/// context, and a chunk with no detail row fails closed). The
+/// text of a chunk that fails is a withheld span: every
+/// occurrence of it in the message text is omitted from the
+/// served text (omission is this codebase's withholding idiom;
+/// the count is recorded in the envelope notes). Text that
+/// belongs to no chunk — measured at roughly two-thirds of
+/// message text in the publish corpus, the chunker is
+/// selective — is not a sibling chunk's text and rides on the
+/// served chunk's own gate, as #12404 established.
+///
+/// Corpus measurement (2026-11-22, the publish corpus:
+/// 107,639 chunks over 71,551 messages with chunks, 6,044 of
+/// them multi-chunk): zero messages mix classifications today
+/// — per-chunk sensitivity is uniform within every message —
+/// so this filter is a guard for the day per-embed
+/// classification (#12408) starts diverging inside a message,
+/// not a fix for a live leak.
+///
+/// Returns `Some((served_text, spans_withheld))`, or `None`
+/// when the payload cannot be safely filtered: a failing
+/// chunk whose text occurs nowhere in the message text (a
+/// store inconsistency — its span cannot be proven absent in
+/// the form the payload carries) withholds the payload whole,
+/// per design section 4's rule for outputs that cannot be
+/// safely filtered. `served` is the exact text about to be
+/// served (the capped prefix for `--with-message`, the full
+/// text for hydration) and must be a prefix of `full_text`;
+/// spans are located in `full_text`, and only the part inside
+/// `served` is filtered or counted.
+fn span_filter_payload(
+    backend: &dyn SearchBackend,
+    message_id: &str,
+    full_text: &str,
+    served: &str,
+    context: DisclosureContext,
+    grant: Sensitivity,
+) -> Result<Option<(String, usize)>> {
+    let chunks = backend.message_chunks(message_id)?;
+    if chunks.is_empty() {
+        return Ok(Some((served.to_string(), 0)));
+    }
+    let ids: Vec<i64> = chunks.iter().map(|c| c.chunk_id).collect();
+    let details = details_map(backend, &ids)?;
+    // The message's chunks that fail the intersection. A chunk
+    // with no detail row is withheld (fail-closed), matching
+    // neighbor_map's rule for unclassified neighbors.
+    let failing: Vec<&NeighborRow> = chunks
+        .iter()
+        .filter(|c| {
+            !details.get(&c.chunk_id).is_some_and(|d| {
+                context
+                    .permits_with_grant(chunk_classification(d.eff_sensitivity.as_deref()), grant)
+            })
+        })
+        .collect();
+    if failing.is_empty() {
+        return Ok(Some((served.to_string(), 0)));
+    }
+    // Locate every occurrence of every failing chunk's text in
+    // the message text: those byte ranges may not cross. (All
+    // occurrences, not one located span per chunk — a failing
+    // chunk's text can repeat in the message, and a repeat is
+    // the same classified text.)
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for c in &failing {
+        if c.text.is_empty() {
+            // An empty chunk contributes no text to withhold.
+            continue;
+        }
+        let mut found = false;
+        let mut from = 0usize;
+        while let Some(off) = full_text[from..].find(c.text.as_str()) {
+            let start = from + off;
+            ranges.push((start, start + c.text.len()));
+            found = true;
+            from = start + 1;
+        }
+        if !found {
+            return Ok(None);
+        }
+    }
+    // Merge the ranges against the served prefix and rebuild
+    // the text without them. Ranges are byte ranges on char
+    // boundaries (each is a found &str occurrence), and
+    // `served` is a prefix of `full_text` ending on a char
+    // boundary, so every slice below is boundary-safe.
+    ranges.sort_unstable();
+    let limit = served.len();
+    let mut out = String::with_capacity(limit);
+    let mut cursor = 0usize;
+    let mut withheld = 0usize;
+    for (start, end) in ranges {
+        if start >= limit {
+            break;
+        }
+        let end = end.min(limit);
+        if start > cursor {
+            out.push_str(&full_text[cursor..start]);
+        }
+        if end > cursor {
+            withheld += 1;
+            cursor = end;
+        }
+    }
+    if cursor < limit {
+        out.push_str(&full_text[cursor..limit]);
+    }
+    Ok(Some((out, withheld)))
+}
+
+/// The Python's `message_obj` (null when the message is gone —
+/// or when its payload cannot be safely span-filtered, #12624:
+/// a withheld payload reads exactly like an absent one, and
+/// the withholding is tallied in `record`).
+fn message_obj(
+    backend: &dyn SearchBackend,
+    d: &ChunkDetail,
+    context: DisclosureContext,
+    grant: Sensitivity,
+    record: &mut SpanRecord,
+) -> Result<Json> {
     let Some(m) = backend.message(&d.message_id)? else {
         return Ok(Json::Null);
     };
     let truncated = m.text.chars().count() > MESSAGE_TEXT_CAP;
-    let text: String = m.text.chars().take(MESSAGE_TEXT_CAP).collect();
-    Ok(json!({
-        "id": m.id,
-        "role": m.role,
-        "text": text,
-        "truncated": truncated,
-    }))
+    let capped: String = m.text.chars().take(MESSAGE_TEXT_CAP).collect();
+    match span_filter_payload(backend, &d.message_id, &m.text, &capped, context, grant)? {
+        Some((text, withheld)) => {
+            record.spans_withheld += withheld;
+            Ok(json!({
+                "id": m.id,
+                "role": m.role,
+                "text": text,
+                "truncated": truncated,
+            }))
+        }
+        None => {
+            record.payloads_withheld += 1;
+            Ok(Json::Null)
+        }
+    }
 }
 
 struct Group {
@@ -901,6 +1168,7 @@ fn grouped_output(
     });
     sorted.truncate(opts.k);
     let mut results = Vec::new();
+    let mut span_record = SpanRecord::default();
     for g in &sorted {
         let mut chunks = Vec::new();
         for (e, d) in g.chunks.iter().take(5) {
@@ -917,6 +1185,7 @@ fn grouped_output(
                 d,
                 vec_dist,
                 &mut ce,
+                &mut span_record,
             )?;
             chunks.push(Json::Object(ce));
         }
@@ -928,12 +1197,14 @@ fn grouped_output(
         entry.insert("chunks".into(), Json::Array(chunks));
         results.push(Json::Object(entry));
     }
+    let mut notes = notes.to_vec();
+    span_record.push_notes(&mut notes, opts.context, filters.max_sensitivity);
     Ok(envelope(
         backend,
         opts,
         filters,
         Json::Array(results),
-        notes,
+        &notes,
     ))
 }
 

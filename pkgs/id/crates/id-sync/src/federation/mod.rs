@@ -7,4 +7,5 @@
 
 pub mod exchange_net;
 pub mod record_join;
+pub mod record_store;
 pub mod slices;

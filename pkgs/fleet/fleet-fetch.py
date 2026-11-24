@@ -16,8 +16,14 @@ Writes go through the libSQL HTTP pipeline to fleet-queue (token by
 name: turso.fleet-queue-rw-token). Failure of one repo never fails
 the others; exit is non-zero only if ALL repos fail.
 
-Snapshots/watermarks and the snapshot_refresh event all live in the
-fleet-queue Turso DB (doc/fleet/agent-events-turso.md).
+History: snapshots/watermarks lived in Supabase muse-dev
+(agent.repo_snapshots / agent.watermarks) until 2026-11-07, when the
+#5693 ci re-home moved them to fleet-queue alongside the github-ci
+Worker (which advances head_sha in the same table on push). The
+snapshot_refresh event's sink (#5690, AGENT_EVENTS_SINK) had already
+flipped to turso; the PG event leg is retired with this repoint —
+the event now always lands in the fleet-queue events table.
+Cutover: doc/fleet/agent-events-turso.md in developing-today/code.
 """
 
 import json

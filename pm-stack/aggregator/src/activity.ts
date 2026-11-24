@@ -667,6 +667,10 @@ export class IngestionStore {
           kind: d.kind,
           ref: d.ref,
           summary: capUnits(d.link ? `${d.summary} — ${d.link}` : d.summary, 500),
+          source: {
+            identity: `pm-stack/aggregator/activity/${d.source}`,
+            ...(d.link ? { link: d.link } : {}),
+          },
         });
       } catch (err) {
         failed++;

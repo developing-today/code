@@ -219,9 +219,12 @@ describe("GitHub hot-list consumer (#7084)", () => {
       "activity:github:delivery:3",
     ]);
     expect(stream.every((event) => event.kind === "github-event")).toBe(true);
-    expect(stream.find((event) => event.id === "activity:github:delivery:1")?.summary).toContain(
-      "https://github.com/developing-today/code/issues/1",
-    );
+    const first = stream.find((event) => event.id === "activity:github:delivery:1");
+    expect(first?.summary).toContain("https://github.com/developing-today/code/issues/1");
+    expect(first?.source).toEqual({
+      identity: "pm-stack/aggregator/activity/github",
+      link: "https://github.com/developing-today/code/issues/1",
+    });
   });
 
   test("an oversized push ref falls back to the repo ref instead of stalling the sweep", async () => {

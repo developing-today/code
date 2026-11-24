@@ -18,7 +18,7 @@
  * forever.
  */
 import { embedQuery, searchService, type ServiceEnv } from "./service";
-import { EMBED_DIMS, EMBED_MODEL, type DisclosureContext } from "./space";
+import { EMBED_DIMS, EMBED_MODEL } from "./space";
 
 interface EntryRow {
   [key: string]: SqlStorageValue;
@@ -79,8 +79,8 @@ export class QueryCache {
     const url = new URL(req.url);
     try {
       if (req.method === "POST" && url.pathname === "/query") {
-        const body = (await req.json()) as { query: string; k: number; context: DisclosureContext };
-        return Response.json(await this.query(body.query, body.k, body.context));
+        const body = (await req.json()) as { query: string; k: number };
+        return Response.json(await this.query(body.query, body.k));
       }
       if (req.method === "GET" && url.pathname === "/inspect") {
         return Response.json(this.inspect());
@@ -97,7 +97,7 @@ export class QueryCache {
     }
   }
 
-  private async query(query: string, k: number, context: DisclosureContext): Promise<QueryOutcome> {
+  private async query(query: string, k: number): Promise<QueryOutcome> {
     let row = this.row();
     if (row?.result_json) {
       const stored = row.result_json;
@@ -129,7 +129,7 @@ export class QueryCache {
       row = this.row()!;
     }
 
-    const { result, ms } = await searchService(this.env, query, k, context);
+    const { result, ms } = await searchService(this.env, query, k);
     const searchedAt = new Date().toISOString();
     this.state.storage.sql.exec(
       "UPDATE entry SET result_json = ?, searched_at = ?, search_ms = ? WHERE id = 1",

@@ -65,6 +65,122 @@ describe("handleLaunchFailure", () => {
     expect(calls.closes).toHaveLength(0);
   });
 
+  test("reports the exact worktree retained after an uncertain session-creation outcome", async () => {
+    const { calls, queue, github } = stubs();
+    const retirements: { worktree: string; removed: boolean; reason: string }[] = [];
+    let retirementChecked = false;
+    const retireWorktree = async (sessionId?: string | null) => {
+      retirementChecked = true;
+      expect(sessionId).toBe(null);
+      return {
+        worktree: "/trees/task-7",
+        removed: false,
+        reason: "session creation is unbound or uncertain; retained",
+      };
+    };
+    const error = new Error("createSession timed out");
+    const msg = await handleLaunchFailure(
+      queue,
+      github,
+      "developing-today/code",
+      7,
+      null,
+      error,
+      null,
+      undefined,
+      retireWorktree,
+      (outcome) => retirements.push(outcome),
+    );
+    expect(msg).toBe(error.message);
+    expect(retirementChecked).toBe(true);
+    expect(retirements).toEqual([
+      {
+        worktree: "/trees/task-7",
+        removed: false,
+        reason: "session creation is unbound or uncertain; retained",
+      },
+    ]);
+    expect(calls.cancels).toHaveLength(1);
+    expect(calls.comments).toHaveLength(0);
+  });
+
+  test("reports retained retirement after confirmed session deletion without replacing launch error", async () => {
+    const { calls, queue, github } = stubs();
+    const events: string[] = [];
+    const error = new Error("prompt failed");
+    const msg = await handleLaunchFailure(
+      queue,
+      github,
+      "developing-today/code",
+      7,
+      9,
+      error,
+      "ses-failed",
+      async () => {
+        events.push("delete");
+      },
+      async () => {
+        events.push("retire");
+        throw new Error("git worktree remove failed");
+      },
+      (outcome) => events.push(`report:${outcome.reason}`),
+    );
+    expect(msg).toBe(error.message);
+    expect(events).toEqual(["delete", "retire", "report:git worktree remove failed"]);
+    expect(calls.comments[0][2]).toContain("worktree unknown was retained: git worktree remove failed");
+  });
+
+  test("retires after successful session deletion and reports a retained outcome", async () => {
+    const { calls, queue, github } = stubs();
+    const events: string[] = [];
+    const msg = await handleLaunchFailure(
+      queue,
+      github,
+      "developing-today/code",
+      7,
+      9,
+      new Error("prompt failed"),
+      "ses-failed",
+      async () => {
+        events.push("delete");
+      },
+      async () => {
+        events.push("retire");
+        return { worktree: "/trees/task-7", removed: false, reason: "worktree is dirty" };
+      },
+      (outcome) => events.push(`report:${outcome.reason}`),
+    );
+    expect(msg).toBe("prompt failed");
+    expect(events).toEqual(["delete", "retire", "report:worktree is dirty"]);
+    expect(calls.comments[0][2]).toContain("worktree /trees/task-7 was retained: worktree is dirty");
+  });
+
+  test("reports the retained worktree when session deletion fails", async () => {
+    const { calls, queue, github } = stubs();
+    const reported: string[] = [];
+    const msg = await handleLaunchFailure(
+      queue,
+      github,
+      "developing-today/code",
+      7,
+      9,
+      new Error("prompt failed"),
+      "ses-live",
+      async () => {
+        throw new Error("delete unavailable");
+      },
+      async (sessionId) => {
+        expect(sessionId).toBe("ses-live");
+        return { worktree: "/trees/task-7", removed: false, reason: "session still exists" };
+      },
+      (outcome) => reported.push(outcome.worktree),
+    );
+    expect(msg).toBe("prompt failed");
+    expect(reported).toEqual(["/trees/task-7"]);
+    expect(calls.comments[0][2]).toContain("may still be live; session cleanup failed: delete unavailable");
+    expect(calls.comments[0][2]).toContain("worktree /trees/task-7 was retained: session still exists");
+  });
+
   test("still notes the issue when the cancellation itself fails", async () => {
     const { calls, queue, github } = stubs(true);
     const msg = await handleLaunchFailure(queue, github, "developing-today/code", 7, 9, "string failure");
@@ -141,7 +257,7 @@ describe("handleLaunchFailure", () => {
   async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim") {
     const sessionId = "session/created-42";
     const launchError = new Error(`${stage} failed`);
-    const context = { sessionId: null as string | null };
+    const context = { sessionId: null as string | null, worktree: null as string | null };
     const calls = {
       deleted: [] as string[],
       cancels: [] as [number, string][],

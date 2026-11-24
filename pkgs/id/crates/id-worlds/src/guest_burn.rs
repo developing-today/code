@@ -28,6 +28,18 @@
 //! the charge record the per-account quota criterion hangs off:
 //! when world→account ownership is decided (see the issue), keys
 //! aggregate by account without touching this admission path.
+//!
+//! Ownership is now decided, and the account dimension is here
+//! (design: `doc/2026-11-23_design_id1067-account-quotas.md`): a
+//! call is charged to a key *and* an account — the account resolved
+//! by [`crate::account_charge`] — and a budget may carry a
+//! per-account concurrency bound beside the process-wide one. The
+//! bound queues, never refuses, exactly like the global one, and
+//! grant eligibility is per waiter, so one account at its bound
+//! queues only its own calls. Grant order is least attained
+//! service by account first, then by key: across accounts, a heavy
+//! account queues behind a light one; within one account the
+//! per-key order above is unchanged.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
@@ -70,12 +82,18 @@ pub struct GuestBurnKeySnapshot {
 pub struct GuestBurnSnapshot {
     /// The concurrency bound.
     pub max_concurrent: usize,
+    /// The per-account concurrency bound, when one is configured.
+    pub max_concurrent_per_account: Option<usize>,
     /// Calls executing right now, across all keys.
     pub in_flight: usize,
     /// High-water mark of `in_flight`.
     pub in_flight_max: usize,
     /// Charge counters by key.
     pub keys: BTreeMap<String, GuestBurnKeySnapshot>,
+    /// Charge counters by charged account (see
+    /// [`crate::account_charge`]); a call through the pre-account
+    /// [`GuestBurnBudget::acquire`] counts its key as its account.
+    pub accounts: BTreeMap<String, GuestBurnKeySnapshot>,
 }
 
 #[derive(Default)]
@@ -96,8 +114,7 @@ impl KeyCharge {
             return self.attained;
         };
         let elapsed = now.saturating_duration_since(at).as_secs_f64();
-        self.attained
-            * 0.5_f64.powf(elapsed / ATTAINED_HALF_LIFE.as_secs_f64())
+        self.attained * 0.5_f64.powf(elapsed / ATTAINED_HALF_LIFE.as_secs_f64())
     }
 
     /// Fold a settled spend into attained service.
@@ -111,6 +128,7 @@ impl KeyCharge {
 struct Waiter {
     ticket: u64,
     key: String,
+    account: String,
 }
 
 #[derive(Default)]
@@ -118,7 +136,9 @@ struct BudgetState {
     in_flight: usize,
     in_flight_max: usize,
     next_ticket: u64,
+    max_concurrent_per_account: Option<usize>,
     keys: BTreeMap<String, KeyCharge>,
+    accounts: BTreeMap<String, KeyCharge>,
     waiters: VecDeque<Waiter>,
 }
 
@@ -127,19 +147,39 @@ impl BudgetState {
         self.keys.entry(key.to_owned()).or_default()
     }
 
-    /// The ticket entitled to the next permit: least attained
-    /// service first, arrival order breaking ties.
+    fn account_mut(&mut self, account: &str) -> &mut KeyCharge {
+        self.accounts.entry(account.to_owned()).or_default()
+    }
+
+    /// Whether one more call charged to `account` fits the
+    /// per-account bound (always true when none is configured).
+    fn account_has_room(&self, account: &str) -> bool {
+        self.max_concurrent_per_account.map_or(true, |bound| {
+            self.accounts
+                .get(account)
+                .map_or(0, |charge| charge.in_flight)
+                < bound
+        })
+    }
+
+    /// The ticket entitled to the next permit: among waiters whose
+    /// account has room under the per-account bound, least attained
+    /// service first — by account, then by key — with arrival order
+    /// breaking ties. A waiter whose account is at its bound is
+    /// skipped, never granted and never blocking the others.
     fn next_grant(&self, now: Instant) -> Option<u64> {
         self.waiters
             .iter()
+            .filter(|waiter| self.account_has_room(&waiter.account))
             .min_by(|a, b| {
-                let attained = |w: &Waiter| {
-                    self.keys
-                        .get(&w.key)
+                let attained = |charges: &BTreeMap<String, KeyCharge>, name: &str| {
+                    charges
+                        .get(name)
                         .map_or(0.0, |charge| charge.attained_at(now))
                 };
-                attained(a)
-                    .total_cmp(&attained(b))
+                attained(&self.accounts, &a.account)
+                    .total_cmp(&attained(&self.accounts, &b.account))
+                    .then(attained(&self.keys, &a.key).total_cmp(&attained(&self.keys, &b.key)))
                     .then(a.ticket.cmp(&b.ticket))
             })
             .map(|waiter| waiter.ticket)
@@ -173,6 +213,39 @@ impl GuestBurnBudget {
             state: Mutex::new(BudgetState::default()),
             available: Condvar::new(),
         }
+    }
+
+    /// A budget with a per-account concurrency bound beside the
+    /// process-wide one: at most `max_concurrent_per_account` calls
+    /// charged to any one account execute at once. The per-account
+    /// bound is clamped to at least one for the same reason as the
+    /// global bound — a zero bound would refuse-by-deadlock.
+    pub fn new_with_account_bound(
+        max_concurrent: usize,
+        max_concurrent_per_account: usize,
+    ) -> Self {
+        let budget = Self::new(max_concurrent);
+        budget.set_account_bound(Some(max_concurrent_per_account));
+        budget
+    }
+
+    /// Set (or clear, with `None`) the per-account concurrency
+    /// bound on a live budget — the serve path's configuration
+    /// point for the shared budget, whose construction it does not
+    /// own. A bound of `0` clamps to one, as in
+    /// [`Self::new_with_account_bound`]. Raising the bound wakes
+    /// every waiter, since calls queued behind the old bound may
+    /// now be grantable.
+    pub fn set_account_bound(&self, max_concurrent_per_account: Option<usize>) {
+        let mut state = self.lock_state();
+        state.max_concurrent_per_account = max_concurrent_per_account.map(|bound| bound.max(1));
+        drop(state);
+        self.available.notify_all();
+    }
+
+    /// The configured per-account concurrency bound, if any.
+    pub fn account_bound(&self) -> Option<usize> {
+        self.lock_state().max_concurrent_per_account
     }
 
     /// The process-wide default budget, sized by
@@ -218,24 +291,49 @@ impl GuestBurnBudget {
     /// if the bound is reached. `fuel_allowance` is the call's
     /// worst-case burn (its fuel limit), charged if the call never
     /// settles with a measured spend.
+    ///
+    /// The pre-account entry point: the key is its own account, so
+    /// the per-account counters mirror the per-key ones and a
+    /// per-account bound, if one is configured, applies per key.
     pub fn acquire(self: &Arc<Self>, key: &str, fuel_allowance: u64) -> GuestBurnPermit {
+        self.acquire_charged(key, key, fuel_allowance)
+    }
+
+    /// Admit one guest call charged to `key` and to `account` (the
+    /// account [`crate::account_charge::resolve_charge_account`]
+    /// resolved for the call), waiting for a permit if either the
+    /// process-wide bound or the caller's per-account bound is
+    /// reached. Waiting is per account: an account at its bound
+    /// queues its own calls and no one else's.
+    pub fn acquire_charged(
+        self: &Arc<Self>,
+        key: &str,
+        account: &str,
+        fuel_allowance: u64,
+    ) -> GuestBurnPermit {
         let mut state = self.lock_state();
-        if state.waiters.is_empty() && state.in_flight < self.max_concurrent {
-            Self::admit(&mut state, key);
+        if state.waiters.is_empty()
+            && state.in_flight < self.max_concurrent
+            && state.account_has_room(account)
+        {
+            Self::admit(&mut state, key, account);
         } else {
             let ticket = state.next_ticket;
             state.next_ticket += 1;
             state.key_mut(key).waits += 1;
+            state.account_mut(account).waits += 1;
             state.waiters.push_back(Waiter {
                 ticket,
                 key: key.to_owned(),
+                account: account.to_owned(),
             });
             loop {
                 if state.in_flight < self.max_concurrent
+                    && state.account_has_room(account)
                     && state.next_grant(Instant::now()) == Some(ticket)
                 {
                     state.waiters.retain(|waiter| waiter.ticket != ticket);
-                    Self::admit(&mut state, key);
+                    Self::admit(&mut state, key, account);
                     break;
                 }
                 state = self
@@ -247,23 +345,30 @@ impl GuestBurnBudget {
         GuestBurnPermit {
             budget: Arc::clone(self),
             key: key.to_owned(),
+            account: account.to_owned(),
             fuel_allowance,
             settled: false,
         }
     }
 
-    fn admit(state: &mut BudgetState, key: &str) {
+    fn admit(state: &mut BudgetState, key: &str, account: &str) {
         state.in_flight += 1;
         state.in_flight_max = state.in_flight_max.max(state.in_flight);
         let charge = state.key_mut(key);
         charge.in_flight += 1;
         charge.admitted += 1;
+        let charge = state.account_mut(account);
+        charge.in_flight += 1;
+        charge.admitted += 1;
     }
 
-    fn release(&self, key: &str, fuel_charged: u64) {
+    fn release(&self, key: &str, account: &str, fuel_charged: u64) {
         let mut state = self.lock_state();
         state.in_flight = state.in_flight.saturating_sub(1);
         let charge = state.key_mut(key);
+        charge.in_flight = charge.in_flight.saturating_sub(1);
+        charge.settle(fuel_charged, Instant::now());
+        let charge = state.account_mut(account);
         charge.in_flight = charge.in_flight.saturating_sub(1);
         charge.settle(fuel_charged, Instant::now());
         drop(state);
@@ -274,12 +379,8 @@ impl GuestBurnBudget {
     /// quota layer.
     pub fn snapshot(&self) -> GuestBurnSnapshot {
         let state = self.lock_state();
-        GuestBurnSnapshot {
-            max_concurrent: self.max_concurrent,
-            in_flight: state.in_flight,
-            in_flight_max: state.in_flight_max,
-            keys: state
-                .keys
+        let counters = |charges: &BTreeMap<String, KeyCharge>| {
+            charges
                 .iter()
                 .map(|(key, charge)| {
                     (
@@ -292,7 +393,15 @@ impl GuestBurnBudget {
                         },
                     )
                 })
-                .collect(),
+                .collect()
+        };
+        GuestBurnSnapshot {
+            max_concurrent: self.max_concurrent,
+            max_concurrent_per_account: state.max_concurrent_per_account,
+            in_flight: state.in_flight,
+            in_flight_max: state.in_flight_max,
+            keys: counters(&state.keys),
+            accounts: counters(&state.accounts),
         }
     }
 
@@ -310,6 +419,7 @@ impl GuestBurnBudget {
 pub struct GuestBurnPermit {
     budget: Arc<GuestBurnBudget>,
     key: String,
+    account: String,
     fuel_allowance: u64,
     settled: bool,
 }
@@ -318,6 +428,7 @@ impl std::fmt::Debug for GuestBurnPermit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GuestBurnPermit")
             .field("key", &self.key)
+            .field("account", &self.account)
             .field("fuel_allowance", &self.fuel_allowance)
             .field("settled", &self.settled)
             .finish_non_exhaustive()
@@ -327,7 +438,7 @@ impl std::fmt::Debug for GuestBurnPermit {
 impl GuestBurnPermit {
     /// Record the call's actual spent fuel and release the permit.
     pub fn settle(mut self, fuel_spent: u64) {
-        self.budget.release(&self.key, fuel_spent);
+        self.budget.release(&self.key, &self.account, fuel_spent);
         self.settled = true;
     }
 }
@@ -335,7 +446,8 @@ impl GuestBurnPermit {
 impl Drop for GuestBurnPermit {
     fn drop(&mut self) {
         if !self.settled {
-            self.budget.release(&self.key, self.fuel_allowance);
+            self.budget
+                .release(&self.key, &self.account, self.fuel_allowance);
         }
     }
 }
@@ -467,5 +579,122 @@ mod tests {
             ["light", "heavy"],
             "the least-attained key is granted before the earlier heavy waiter"
         );
+    }
+
+    #[test]
+    fn an_account_at_its_bound_queues_while_another_account_is_admitted() {
+        // Oracle (#1067 per-account quotas): the per-account bound
+        // isolates accounts — acct-a holding its one permit queues
+        // acct-a's next call, but acct-b's call is admitted against
+        // the still-free global pool instead of queueing behind it.
+        let budget = Arc::new(GuestBurnBudget::new_with_account_bound(4, 1));
+        let held_a = budget.acquire_charged("world-a1", "acct-a", 100);
+
+        let (a2_tx, a2_rx) = std::sync::mpsc::channel();
+        let budget_a2 = Arc::clone(&budget);
+        let a2 = thread::spawn(move || {
+            let permit = budget_a2.acquire_charged("world-a2", "acct-a", 100);
+            a2_tx.send(()).unwrap();
+            permit.settle(100);
+        });
+        wait_until(|| budget.waiting() == 1);
+
+        let (b_tx, b_rx) = std::sync::mpsc::channel();
+        let budget_b = Arc::clone(&budget);
+        let b = thread::spawn(move || {
+            let permit = budget_b.acquire_charged("world-b", "acct-b", 100);
+            b_tx.send(()).unwrap();
+            permit.settle(100);
+        });
+        b_rx.recv_timeout(Duration::from_secs(10))
+            .expect("acct-b admitted while acct-a was at its bound");
+        b.join().unwrap();
+        assert!(
+            a2_rx.try_recv().is_err(),
+            "acct-a's second call still waits for its own account bound"
+        );
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.accounts["acct-a"].in_flight, 1);
+        assert_eq!(snapshot.accounts["acct-a"].waits, 1);
+        assert_eq!(snapshot.accounts["acct-b"].admitted, 1);
+
+        held_a.settle(100);
+        a2_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("acct-a's queued call admitted once its account freed a permit");
+        a2.join().unwrap();
+        let snapshot = budget.snapshot();
+        assert_eq!(snapshot.accounts["acct-a"].admitted, 2);
+        assert_eq!(snapshot.in_flight, 0);
+    }
+
+    #[test]
+    fn grant_order_prefers_the_least_attained_account_over_an_earlier_heavy_account() {
+        // Oracle (#1067): fairness is per account — a waiter from
+        // an account that has burned heavily queues behind a waiter
+        // from a fresh account, even though it arrived first and
+        // its own key is new.
+        let budget = Arc::new(GuestBurnBudget::new(1));
+        budget
+            .acquire_charged("world-heavy-1", "acct-heavy", 20_000_000)
+            .settle(20_000_000);
+        let held = budget.acquire_charged("world-holder", "acct-holder", 20_000_000);
+
+        let grants = Arc::new(Mutex::new(Vec::new()));
+        let spawn_waiter = |key: &'static str, account: &'static str| {
+            let budget = Arc::clone(&budget);
+            let grants = Arc::clone(&grants);
+            thread::spawn(move || {
+                let permit = budget.acquire_charged(key, account, 20_000_000);
+                grants.lock().unwrap().push(account);
+                permit.settle(20_000_000);
+            })
+        };
+        let heavy = spawn_waiter("world-heavy-2", "acct-heavy");
+        wait_until(|| budget.waiting() == 1);
+        let light = spawn_waiter("world-light", "acct-light");
+        wait_until(|| budget.waiting() == 2);
+
+        held.settle(20_000_000);
+        heavy.join().unwrap();
+        light.join().unwrap();
+        assert_eq!(
+            *grants.lock().unwrap(),
+            ["acct-light", "acct-heavy"],
+            "the least-attained account is granted before the earlier heavy account"
+        );
+    }
+
+    #[test]
+    fn account_charges_settle_by_actual_fuel_and_an_unsettled_permit_charges_its_allowance() {
+        let budget = Arc::new(GuestBurnBudget::new(4));
+        budget
+            .acquire_charged("world-1", "acct-a", 10_000)
+            .settle(120);
+        budget
+            .acquire_charged("world-2", "acct-a", 10_000)
+            .settle(80);
+        // Dropped without settling: the allowance is the charge.
+        drop(budget.acquire_charged("world-3", "acct-a", 500));
+
+        let snapshot = budget.snapshot();
+        let account = &snapshot.accounts["acct-a"];
+        assert_eq!(account.admitted, 3);
+        assert_eq!(account.settled_fuel, 700);
+        assert_eq!(snapshot.in_flight, 0);
+        assert_eq!(snapshot.max_concurrent_per_account, None);
+    }
+
+    #[test]
+    fn the_account_bound_clamps_to_at_least_one_and_clears() {
+        let budget = GuestBurnBudget::new_with_account_bound(2, 0);
+        assert_eq!(budget.account_bound(), Some(1));
+        assert_eq!(
+            budget.snapshot().max_concurrent_per_account,
+            Some(1),
+            "the snapshot reports the effective bound"
+        );
+        budget.set_account_bound(None);
+        assert_eq!(budget.account_bound(), None);
     }
 }

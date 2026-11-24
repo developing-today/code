@@ -22,6 +22,7 @@
 
 pub mod abuse;
 pub mod access;
+pub mod admission_gate;
 pub mod append_list;
 pub mod append_list_client;
 pub mod array_address;
@@ -36,6 +37,7 @@ pub mod content_id;
 pub mod discovery;
 pub mod durable_write;
 pub mod frames;
+pub mod freshness;
 pub mod graph;
 pub mod hash_profile;
 pub mod hex;
@@ -50,7 +52,9 @@ pub mod ip_evidence;
 pub mod iroh_hash;
 pub mod json_unique;
 pub mod key_envelope;
+pub mod location_ref;
 pub mod membership;
+pub mod migration_control;
 pub mod namespace_definition;
 pub mod numeric_order;
 pub mod numeric_value;
@@ -80,9 +84,9 @@ pub mod test_forgeries;
 #[cfg(feature = "world")]
 pub mod petname;
 #[cfg(feature = "world")]
-pub mod world_presentation;
-#[cfg(feature = "world")]
 pub mod screen_codec;
+#[cfg(feature = "world")]
+pub mod world_presentation;
 
 #[cfg(feature = "web")]
 pub mod qr;

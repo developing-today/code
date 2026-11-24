@@ -1,6 +1,8 @@
 //! atlas-eval — the offline ranking-evaluation runner (#5741).
 //!
-//! Usage: `atlas-eval <eval.json> <dev|test>`
+//! Usage: `atlas-eval <eval.json> <dev|test>`; `atlas-eval
+//! --help` prints the usage line and `--version` the version,
+//! both exit 0.
 //!
 //! Reads an `atlas-eval/v1` document (queries, qrels, and saved
 //! rankings from any signals) and prints the `atlas-eval-report/v1`
@@ -13,6 +15,11 @@
 //! held-out test split is refused by `atlas_core::eval::
 //! select_best_signal`; this binary prints test reports for the
 //! final, single scoring pass the #5741 protocol allows.
+//!
+//! Exit status is the eval's verdict: 0 when every signal passes,
+//! 1 when the report contains ceiling/scope or provenance
+//! violations (#8627 — the report is still printed first, as the
+//! evidence), 2 on usage errors.
 
 use std::process::ExitCode;
 
@@ -21,6 +28,14 @@ use atlas_core::eval::{EvalData, Split, evaluate};
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let (path, split) = match args.as_slice() {
+        [_, flag] if flag == "--help" || flag == "-h" => {
+            println!("usage: atlas-eval <eval.json> <dev|test>");
+            return ExitCode::SUCCESS;
+        }
+        [_, flag] if flag == "--version" || flag == "-V" => {
+            println!("atlas-eval {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
         [_, path, split] => {
             let split = match split.as_str() {
                 "dev" => Split::Dev,
@@ -57,7 +72,24 @@ fn main() -> ExitCode {
                 "{}",
                 serde_json::to_string_pretty(&report).expect("report serializes")
             );
-            ExitCode::SUCCESS
+            if report.passed() {
+                return ExitCode::SUCCESS;
+            }
+            for signal in &report.signals {
+                if let Some(first) = signal.violations.first() {
+                    eprintln!(
+                        "atlas-eval: FAIL signal {:?}: {} constraint violation(s); \
+                         first: query {:?} doc {:?} at rank {} ({:?})",
+                        signal.signal,
+                        signal.violations.len(),
+                        first.query,
+                        first.doc,
+                        first.rank,
+                        first.kind,
+                    );
+                }
+            }
+            ExitCode::FAILURE
         }
         Err(error) => {
             eprintln!("atlas-eval: {error}");

@@ -11,7 +11,7 @@
  * service token (the two `CF-Access-*` headers); the service's own
  * client bearer token rides `Authorization`.
  */
-import { CEILING, validateEmbed, type DisclosureContext, type EmbedResponse } from "./space";
+import { CEILING, CONTEXT, validateEmbed, type EmbedResponse } from "./space";
 
 export interface ServiceEnv {
   SERVICE_BASE: string;
@@ -71,7 +71,9 @@ export async function embedQuery(env: ServiceEnv, query: string): Promise<{ embe
 }
 
 /**
- * Run one fan-out search under the personal ceiling. The service
+ * Run one fan-out search under the personal ceiling, stating
+ * this surface's disclosure context (#12622) so the service
+ * never resolves its own default for the request. The service
  * clamps the requested ceiling to this client's cap; we still
  * verify the reported effective ceiling before the result may be
  * cached — a result computed above `personal` must never enter a
@@ -81,14 +83,13 @@ export async function searchService(
   env: ServiceEnv,
   query: string,
   k: number,
-  context: DisclosureContext,
 ): Promise<{ result: Record<string, unknown>; ms: number }> {
   const t0 = Date.now();
   const raw: unknown = await postJson(env, "/v1/search", {
     query,
     ceiling: CEILING,
+    context: CONTEXT,
     k,
-    context,
   });
   // The response is untrusted until validated, exactly like the embed
   // door (validateEmbed in space.ts): a JSON null 200 cannot even be

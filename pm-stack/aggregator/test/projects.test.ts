@@ -17,6 +17,7 @@ import {
   projectDisagreement,
   PROJECT_QUERY,
   resolveEpicRefs,
+  resolveSpawnRollups,
 } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
@@ -760,6 +761,122 @@ describe("collector graph edges (#2399 contract)", () => {
     ]);
     expect(loop[0]?.epicRef).toBeUndefined();
     expect(loop[1]?.epicRef).toBeUndefined();
+  });
+
+  test("resolveSpawnRollups uses direct native children, summary completion, Status, and blocking edges", () => {
+    const base = parseProjectItems(GQL)[0]!;
+    const parent = {
+      ...base,
+      id: "design-parent",
+      ref: "developing-today/code#3000",
+      number: 3000,
+      title: "Design parent",
+      labels: ["design", "design/parent"],
+      subIssuesSummary: { total: 3, completed: 1 },
+      blockedBy: ["developing-today/code#3003", "developing-today/code#3004"],
+    };
+    const children = [
+      {
+        ...base,
+        id: "done",
+        ref: "developing-today/code#3001",
+        number: 3001,
+        parentRef: parent.ref,
+        state: "closed" as const,
+        status: "Done",
+      },
+      {
+        ...base,
+        id: "active",
+        ref: "developing-today/code#3002",
+        number: 3002,
+        parentRef: parent.ref,
+        status: "In Progress",
+      },
+      {
+        ...base,
+        id: "blocking",
+        ref: "developing-today/code#3003",
+        number: 3003,
+        parentRef: parent.ref,
+        status: "Todo",
+      },
+      {
+        ...base,
+        id: "resolved-blocker",
+        ref: "developing-today/code#3004",
+        number: 3004,
+        parentRef: parent.ref,
+        state: "closed" as const,
+        status: "Done",
+      },
+    ];
+
+    const resolved = resolveSpawnRollups([parent, ...children]);
+    expect(resolved[0]?.spawnRollup).toEqual({
+      total: 3,
+      done: 1,
+      inProgress: 1,
+      blocking: ["developing-today/code#3003"],
+    });
+    expect(resolved[1]?.spawnRollup).toBeUndefined();
+  });
+
+  test("resolveSpawnRollups deduplicates children across boards and recognizes existing design markers", () => {
+    const base = parseProjectItems(GQL)[0]!;
+    const parent = {
+      ...base,
+      id: "design-parent",
+      ref: "developing-today/code#3100",
+      number: 3100,
+      labels: ["kind/design"],
+      kind: "Task",
+      subIssuesSummary: { total: 1, completed: 0 },
+    };
+    const child = {
+      ...base,
+      id: "active-board-a",
+      ref: "developing-today/code#3101",
+      number: 3101,
+      parentRef: parent.ref,
+      status: "In Progress",
+    };
+    const duplicate = { ...child, id: "active-board-b", boardId: "another-board" };
+
+    expect(resolveSpawnRollups([parent, child, duplicate])[0]?.spawnRollup).toEqual({
+      total: 1,
+      done: 0,
+      inProgress: 1,
+      blocking: [],
+    });
+
+    const projectKindDesign = {
+      ...parent,
+      id: "project-kind-design",
+      ref: "developing-today/code#3102",
+      number: 3102,
+      labels: [],
+      kind: "Design",
+    };
+    expect(resolveSpawnRollups([projectKindDesign])[0]?.spawnRollup).toEqual({
+      total: 1,
+      done: 0,
+      inProgress: 0,
+      blocking: [],
+    });
+  });
+
+  test("PROJECT_QUERY and parser carry GitHub sub-issue summary without fabricating missing counts", () => {
+    expect(PROJECT_QUERY).toContain("subIssuesSummary { total completed }");
+    const response = structuredClone(GQL) as unknown as {
+      data: { node: { items: { nodes: Array<{ content: Record<string, unknown> }> } } };
+    };
+    const item = response.data.node.items.nodes[0];
+    if (!item) throw new Error("fixture has no project item");
+    item.content.subIssuesSummary = { total: 4, completed: 2 };
+    const [parent] = parseProjectItems(response);
+    expect(parent?.subIssuesSummary).toEqual({ total: 4, completed: 2 });
+    expect(parseProjectItems(GQL)[0]?.subIssuesSummary).toBeUndefined();
   });
 });
 

@@ -6,6 +6,7 @@ import { applyEvent, type ProjectorStore } from "./projector";
 import { validSignature, readBoundedBody, jsonResponse } from "./webhook";
 import * as store from "./store";
 import { reconcileRepos } from "./reconcile";
+import { operationEnvelopeFor, type FleetOperationSink, type OperationReceipt } from "./operation-forwarder";
 
 export interface ServerEnv extends Record<string, string | undefined> {
   GITHUB_WEBHOOK_SECRET?: string;
@@ -201,6 +202,11 @@ export interface ServerDeps {
    *  serve(): beginReconcile returns false while a pass is in flight. */
   beginReconcile?: () => boolean;
   endReconcile?: () => void;
+  /** DSP-01 (#9445) Fleet operation authority sink. When set, signed
+   *  webhook events carrying a /fleet command are forwarded for
+   *  canonical command acceptance; when absent, forwarding is inert
+   *  and webhook behavior is exactly the projection-only behavior. */
+  operationSink?: FleetOperationSink;
 }
 
 /** A point-in-time row-count snapshot served by /health (#9850 round 2). */
@@ -325,10 +331,6 @@ async function routeRequest(req: Request, db: Client, env: ServerEnv, deps: Serv
     if (!(await validSignature(body, signature, env.GITHUB_WEBHOOK_SECRET))) {
       return jsonResponse(401, { error: "invalid_signature" });
     }
-    const already = await store.deliveryApplied(db, deliveryId);
-    if (already) {
-      return jsonResponse(200, { status: "duplicate" });
-    }
     let payload: Record<string, any>;
     try {
       payload = JSON.parse(new TextDecoder().decode(body));
@@ -336,8 +338,32 @@ async function routeRequest(req: Request, db: Client, env: ServerEnv, deps: Serv
       await store.recordDelivery(db, { deliveryId, event, outcome: "error", detail: "invalid_json" });
       return jsonResponse(400, { error: "invalid_json" });
     }
+    // DSP-01 (#9445): a signed event may also carry a Fleet command.
+    // Projection delivery dedupe is not command acceptance, so the
+    // forward runs on every verified delivery — including a redelivery
+    // whose projection is already applied — and the Fleet sink's
+    // semantic idempotency key, not this delivery GUID, decides
+    // whether the command effect repeats. No sink is configured in
+    // the default wiring yet; forwarding is inert until the Fleet
+    // authority adapter is attached (no second ingress is created).
+    const envelope = deps.operationSink ? operationEnvelopeFor({ deliveryId, event, payload }) : null;
+    const forwardOperation = async (): Promise<OperationReceipt | null> => {
+      if (!envelope || !deps.operationSink) return null;
+      return deps.operationSink.accept(envelope);
+    };
+    const already = await store.deliveryApplied(db, deliveryId);
+    if (already) {
+      let receipt: OperationReceipt | null;
+      try {
+        receipt = await forwardOperation();
+      } catch {
+        return jsonResponse(500, { error: "operation_forward_failed" });
+      }
+      return jsonResponse(200, receipt ? { status: "duplicate", operation: receipt } : { status: "duplicate" });
+    }
+    let result: Awaited<ReturnType<typeof applyEvent>>;
     try {
-      const result = await applyEvent(libsqlStore(db), event, payload, repos(env), deliveryId);
+      result = await applyEvent(libsqlStore(db), event, payload, repos(env), deliveryId);
       if (result.wrote && result.refs.length > 0) {
         // Append before recording this delivery as applied. If the
         // aggregator is unavailable, GitHub's retry re-applies the
@@ -359,11 +385,25 @@ async function routeRequest(req: Request, db: Client, env: ServerEnv, deps: Serv
         outcome: result.wrote ? "applied" : "ignored",
         detail: result.wrote ? undefined : "no_writes",
       });
-      return jsonResponse(200, { status: result.wrote ? "applied" : "ignored", refs: result.refs });
     } catch (e) {
       await store.recordDelivery(db, { deliveryId, event, outcome: "error", detail: String((e as Error).message) });
       return jsonResponse(500, { error: "apply_failed" });
     }
+    let receipt: OperationReceipt | null;
+    try {
+      receipt = await forwardOperation();
+    } catch {
+      // The projection is recorded applied. GitHub's redelivery of
+      // this same delivery re-enters through the already-applied
+      // branch above, which retries the forward instead of letting
+      // the delivery shortcut suppress it.
+      return jsonResponse(500, { error: "operation_forward_failed" });
+    }
+    return jsonResponse(200, {
+      status: result.wrote ? "applied" : "ignored",
+      refs: result.refs,
+      ...(receipt ? { operation: receipt } : {}),
+    });
   }
 
   // -- read: items ----------------------------------------------------------

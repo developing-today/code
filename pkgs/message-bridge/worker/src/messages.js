@@ -181,6 +181,56 @@ export class MemoryStore {
     this.subs = new Map();
     this.hooks = new Map();
     this.wakes = [];
+    this.noteCounters = new Map();
+    this.noteTokens = new Map();
+    this.noteRows = [];
+    this.noteNextId = 1;
+  }
+  // Class/name notes (notes.js), same semantics as the Durable Object.
+  async noteRegister({ identity, token_hash, can_send, can_inbox }) {
+    if (!this.noteCounters.has(identity)) this.noteCounters.set(identity, 0);
+    this.noteTokens.set(token_hash, { identity, can_send, can_inbox });
+    return { identity, can_send, can_inbox };
+  }
+  async noteAuth(token_hash) {
+    const a = this.noteTokens.get(token_hash);
+    return a ? { ...a } : null;
+  }
+  async noteIdentities() {
+    return [...this.noteCounters.keys()].sort();
+  }
+  async noteDeliver({ from, recipients, note }) {
+    const notes = [];
+    for (const recipient of recipients) {
+      if (!this.noteCounters.has(recipient)) continue;
+      const row = { id: this.noteNextId++, ts: this.now(), recipient, from, note, ack_at: null };
+      this.noteRows.push(row);
+      this.noteCounters.set(recipient, this.noteCounters.get(recipient) + 1);
+      notes.push({ id: row.id, recipient, from, note, ts: row.ts });
+    }
+    return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
+  }
+  async noteInbox(identity) {
+    return this.noteRows
+      .filter((r) => r.recipient === identity && r.ack_at === null)
+      .map((r) => ({ id: r.id, from: r.from, note: r.note, ts: r.ts }));
+  }
+  async noteAck(identity, { ids, up_to_id }) {
+    const ts = this.now();
+    let acked = 0;
+    for (const r of this.noteRows) {
+      if (r.recipient !== identity || r.ack_at !== null) continue;
+      if ((up_to_id !== null && r.id <= up_to_id) || ids.includes(r.id)) {
+        r.ack_at = ts;
+        acked++;
+      }
+    }
+    return { acked };
+  }
+  async noteSignal(identity) {
+    return this.noteCounters.has(identity)
+      ? { registered: true, counter: this.noteCounters.get(identity) }
+      : { registered: false, counter: 0 };
   }
   // Wake hooks (wake.js), same semantics as the Durable Object.
   async wakeHookGet(address) {

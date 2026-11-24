@@ -11,9 +11,10 @@
 //! - A **link** is the ticket in URL form, `id:join?group=G&ticket=T&by=K`. `G` is the group ID,
 //!   `K` the inviter's account key, both 64 hex characters. `by` is the trust anchor: an event
 //!   counts as verified only when it is signed by `K`.
-//! - An **invite event** is signed by the inviter. It names the group, the role, the expiry, and
-//!   the ticket (by digest). It is stored in the inviter's chain and fetched by the joiner; it is
-//!   not pasted.
+//! - An **invite event** is signed by the inviter. It names the target (a group, or a world
+//!   and its fronting group), the role, the expiry, the delegation terms (use cap, depth,
+//!   parent, redeemer pin, capability pin), and the ticket (by digest). It is stored in the inviter's chain
+//!   and fetched by the joiner; it is not pasted.
 //!
 //! # What an address exposes (N30)
 //!
@@ -46,8 +47,12 @@ mod invitation;
 use anyhow::{Result, ensure};
 use iroh_tickets::endpoint::EndpointTicket;
 
-pub use event::{InviteBody, InviteEvent};
-pub use invitation::Invitation;
+pub use event::{
+    CapabilityPin, InviteBody, InviteEvent, InviteSource, InviteTarget, InviteTerms,
+    LINK_DEFAULT_LIFETIME_MS, LINK_DEFAULT_USES_CAP, MAX_BODY_LEN, MAX_SOURCE_DEPTH, PinRedemption,
+    ReleaseMessageSetLookup,
+};
+pub use invitation::{Invitation, MAX_PASTE_CHARS};
 
 use event::ticket_digest;
 
@@ -94,7 +99,7 @@ pub fn check_route(
     event.verify_signature()?;
     if let Invitation::Link { group, .. } = invitation {
         ensure!(
-            event.body.group == *group,
+            event.body.group() == *group,
             "the invite event is for another group"
         );
     }

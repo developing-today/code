@@ -1,8 +1,10 @@
 name: production-line-guard
 
 # F11.10 regression guard (#1411): no production .rs file under pkgs/
-# (or apps/) may exceed 2,500 production lines. Pure bash/awk - no
-# nix, no toolchain - so this stays a seconds-long basic check.
+# (or apps/), and no production .ts file under a pm-stack src/
+# directory (#12671), may exceed 2,500 production lines. Pure
+# bash/awk - no nix, no toolchain - so this stays a seconds-long
+# basic check.
 
 on:
   schedule:

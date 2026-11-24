@@ -606,7 +606,7 @@ fn pointer_and_hover_frames_conform_to_the_input_event_model() {
     // (class event), hover is ephemeral, refusals name a reason from
     // the design's table, and scroll deltas are signed cell units.
     let contract = contract();
-    assert_eq!(contract.revision, 11);
+    assert_eq!(contract.revision, 16);
     assert_eq!(contract.client_frames["pointer"].class, FrameClass::Event);
     assert_eq!(contract.client_frames["hover"].class, FrameClass::Ephemeral);
     assert_eq!(
@@ -719,7 +719,7 @@ fn agent_profile_frames_conform_and_are_additive() {
     // stale-decision token on agent input frames. Human shells, which
     // never set the flag or send the new frames, are unaffected.
     let contract = contract();
-    assert_eq!(contract.revision, 11);
+    assert_eq!(contract.revision, 16);
     assert_eq!(
         contract.client_frames["screen_subscribe"].class,
         FrameClass::Ephemeral
@@ -792,4 +792,227 @@ fn a_duplicated_key_is_refused_in_the_contract_and_the_transcript() {
         r#"{"from": "server", "from": "client", "frame": {"type": "info", "capability": "c"}}"#;
     assert!(check_transcript(contract(), &line.replacen(r#""from": "server", "#, "", 1)).is_ok());
     assert!(check_transcript(contract(), line).is_err());
+}
+
+/// Read a file from `pkgs/id/contract/` (the crate root is
+/// `crates/id-worlds`, so the contract directory is two levels up).
+fn contract_dir_file(path: &str) -> String {
+    let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../contract")
+        .join(path);
+    std::fs::read_to_string(&full)
+        .unwrap_or_else(|error| panic!("read {}: {error}", full.display()))
+}
+
+fn statement(sends: &[&str], presents: &[&str], workflow: &[&str]) -> CapabilityStatement {
+    CapabilityStatement {
+        sends: sends.iter().map(ToString::to_string).collect(),
+        presents: presents.iter().map(ToString::to_string).collect(),
+        providers: Vec::new(),
+        workflow: workflow.iter().map(ToString::to_string).collect(),
+    }
+}
+
+#[test]
+fn the_shipped_suite_manifest_parses_and_names_every_v1_shell() {
+    let suite = ShellSuite::embedded().unwrap();
+    assert_eq!(suite.version, 1);
+    let names: BTreeSet<&str> = suite
+        .shells
+        .iter()
+        .map(|shell| shell.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        BTreeSet::from(["browser", "hardware", "native", "terminal"])
+    );
+    // Every v1 shell must state its capabilities; the manifest is
+    // the record, so a shell without a statement fails here first.
+    for shell in &suite.shells {
+        assert!(
+            shell.statement.is_some(),
+            "shell `{}` has no capability statement in the shipped suite manifest",
+            shell.name
+        );
+    }
+}
+
+#[test]
+fn the_shipped_suite_passes_on_its_recorded_sessions() {
+    let suite = ShellSuite::embedded().unwrap();
+    let mut sessions = std::collections::BTreeMap::new();
+    for shell in &suite.shells {
+        if let Some(path) = &shell.session {
+            sessions.insert(shell.name.clone(), contract_dir_file(path));
+        }
+    }
+    let entries: Vec<SuiteEntry<'_>> = suite
+        .shells
+        .iter()
+        .map(|shell| SuiteEntry {
+            name: &shell.name,
+            statement: shell.statement.as_ref(),
+            session: match sessions.get(&shell.name) {
+                Some(text) => SessionSource::Recorded(text),
+                None => SessionSource::Unrecorded,
+            },
+        })
+        .collect();
+    let verdicts = check_suite(contract(), &entries);
+    for verdict in &verdicts {
+        assert!(
+            verdict.passed(),
+            "shell `{}` failed the shipped suite: {:?}",
+            verdict.name,
+            verdict.failures
+        );
+    }
+    let recorded: BTreeSet<&str> = verdicts
+        .iter()
+        .filter(|verdict| verdict.recorded)
+        .map(|verdict| verdict.name.as_str())
+        .collect();
+    assert_eq!(recorded, BTreeSet::from(["native", "terminal"]));
+}
+
+#[test]
+fn the_suite_fails_a_shell_with_no_capability_statement() {
+    let entries = [SuiteEntry {
+        name: "mystery",
+        statement: None,
+        session: SessionSource::Unrecorded,
+    }];
+    let verdicts = check_suite(contract(), &entries);
+    assert_eq!(verdicts.len(), 1);
+    assert!(!verdicts[0].passed());
+    assert!(
+        verdicts[0].failures[0].contains("no capability statement"),
+        "{:?}",
+        verdicts[0].failures
+    );
+}
+
+#[test]
+fn the_suite_fails_a_statement_that_claims_frames_the_contract_does_not_name() {
+    let statement = statement(&["join", "teleport"], &["view"], &["join"]);
+    let entries = [SuiteEntry {
+        name: "dreamer",
+        statement: Some(&statement),
+        session: SessionSource::Unrecorded,
+    }];
+    let verdicts = check_suite(contract(), &entries);
+    assert!(!verdicts[0].passed());
+    assert!(
+        verdicts[0]
+            .failures
+            .iter()
+            .any(|failure| failure.contains("teleport")),
+        "{:?}",
+        verdicts[0].failures
+    );
+}
+
+#[test]
+fn the_suite_fails_a_session_that_sends_outside_its_statement() {
+    let statement = statement(&["join"], &["snapshot", "view"], &["join"]);
+    let session = [
+        r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
+        r#"{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}"#,
+        r#"{"from": "client", "frame": {"type": "chat", "text": "undeclared"}}"#,
+    ]
+    .join("\n");
+    let entries = [SuiteEntry {
+        name: "chatty",
+        statement: Some(&statement),
+        session: SessionSource::Recorded(&session),
+    }];
+    let verdicts = check_suite(contract(), &entries);
+    assert!(!verdicts[0].passed());
+    assert!(
+        verdicts[0].failures.iter().any(|failure| failure
+            .contains("outside its capability statement")
+            && failure.contains("chat")),
+        "{:?}",
+        verdicts[0].failures
+    );
+}
+
+#[test]
+fn the_suite_fails_a_thin_session_that_never_exercises_its_workflow() {
+    let statement = statement(
+        &["join", "resize"],
+        &["snapshot", "view"],
+        &["join", "resize"],
+    );
+    let session = [
+        r#"{"from": "client", "frame": {"type": "join", "capability": "c"}}"#,
+        r#"{"from": "server", "frame": {"type": "snapshot", "snapshot": {}}}"#,
+    ]
+    .join("\n");
+    let entries = [SuiteEntry {
+        name: "thin",
+        statement: Some(&statement),
+        session: SessionSource::Recorded(&session),
+    }];
+    let verdicts = check_suite(contract(), &entries);
+    assert!(!verdicts[0].passed());
+    assert!(
+        verdicts[0]
+            .failures
+            .iter()
+            .any(|failure| failure.contains("never exercises") && failure.contains("resize")),
+        "{:?}",
+        verdicts[0].failures
+    );
+}
+
+#[test]
+fn the_suite_fails_a_session_that_violates_the_contract() {
+    let statement = statement(&["chat", "join"], &["snapshot", "view"], &["join"]);
+    let session = r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#;
+    let entries = [SuiteEntry {
+        name: "early",
+        statement: Some(&statement),
+        session: SessionSource::Recorded(session),
+    }];
+    let verdicts = check_suite(contract(), &entries);
+    assert!(!verdicts[0].passed());
+    assert!(
+        verdicts[0]
+            .failures
+            .iter()
+            .any(|failure| failure.contains("frame 0 (client)")),
+        "{:?}",
+        verdicts[0].failures
+    );
+}
+
+#[test]
+fn the_suite_fails_an_unreadable_recorded_session_and_passes_an_unrecorded_shell() {
+    let statement = statement(&["join"], &["snapshot"], &["join"]);
+    let entries = [
+        SuiteEntry {
+            name: "lost",
+            statement: Some(&statement),
+            session: SessionSource::Unreadable("no such file"),
+        },
+        SuiteEntry {
+            name: "pending",
+            statement: Some(&statement),
+            session: SessionSource::Unrecorded,
+        },
+    ];
+    let verdicts = check_suite(contract(), &entries);
+    assert!(!verdicts[0].passed());
+    assert!(verdicts[0].recorded);
+    assert!(
+        verdicts[0]
+            .failures
+            .iter()
+            .any(|failure| failure.contains("could not be read")),
+        "{:?}",
+        verdicts[0].failures
+    );
+    assert!(verdicts[1].passed());
+    assert!(!verdicts[1].recorded);
 }

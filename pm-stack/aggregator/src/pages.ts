@@ -105,6 +105,15 @@ export const PAGES: PageDef[] = [
     nav: "primary",
   },
   {
+    id: "reports",
+    title: "Reports",
+    route: "/reports",
+    api: "/api/reports.json",
+    blurb: "Review report versions and resolve prose conflicts without overwriting stored text.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
     id: "board",
     title: "Board",
     route: "/board",
@@ -193,6 +202,16 @@ export const PAGES: PageDef[] = [
     api: "/api/comments/queue.json",
     blurb:
       "Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.",
+    group: "work",
+    nav: "dropdown",
+  },
+  {
+    id: "chat",
+    title: "Chat",
+    route: "/chat",
+    api: "/api/prompt/threads",
+    blurb:
+      "The prompt chat/session surface (#10035): every prompt submission in its thread — reply, cross-references, archive — plus the unread count behind the nav badge.",
     group: "work",
     nav: "dropdown",
   },

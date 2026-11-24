@@ -216,16 +216,56 @@ pub struct Binding {
 }
 
 impl Binding {
-    pub fn from_env() -> Binding {
-        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    /// Build a binding with a session id resolved for this operation. The
+    /// caller may provide a live worktree-marker result; `None` keeps the
+    /// environment-only behavior for callers without that resolution step.
+    pub fn from_resolved_session_id(session_id: Option<String>) -> Binding {
+        Self::from_session_id(session_id, true)
+    }
+
+    /// Construct a binding after session resolution failed. In that case the
+    /// unresolved environment values must not be used as a fallback.
+    pub fn from_failed_session_resolution() -> Binding {
+        Self::from_session_id(None, false)
+    }
+
+    fn from_session_id(session_id: Option<String>, allow_env_fallback: bool) -> Binding {
+        let get = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
         Binding {
             worker: get("FLEET_WORKER"),
             lane: get("FLEET_LANE"),
             task_id: get("FLEET_TASK_ID"),
-            session_id: get("OPENCODE_SESSION_ID").or_else(|| get("FLEET_SESSION_ID")),
+            session_id: session_binding(
+                session_id,
+                allow_env_fallback,
+                get("FLEET_SESSION_ID"),
+                get("OPENCODE_SESSION_ID"),
+            ),
             user: get("USER"),
         }
     }
+}
+
+fn preferred_session_id(fleet: Option<String>, opencode: Option<String>) -> Option<String> {
+    fleet.or(opencode)
+}
+
+fn session_binding(
+    resolved: Option<String>,
+    allow_env_fallback: bool,
+    fleet: Option<String>,
+    opencode: Option<String>,
+) -> Option<String> {
+    resolved.or_else(|| {
+        allow_env_fallback
+            .then(|| preferred_session_id(fleet, opencode))
+            .flatten()
+    })
 }
 
 pub fn log_path() -> PathBuf {
@@ -391,6 +431,44 @@ mod tests {
         assert_eq!(r["at_unix"], 1700000000u64);
         assert_eq!(r["binding"]["task_id"], "20372");
         assert!(r["binding"]["run_id"].is_null());
+    }
+
+    #[test]
+    fn resolved_fleet_session_id_precedes_opencode_for_provenance() {
+        assert_eq!(
+            preferred_session_id(Some("ses_explicit".into()), Some("ses_open".into())),
+            Some("ses_explicit".into())
+        );
+        assert_eq!(
+            preferred_session_id(None, Some("ses_open".into())),
+            Some("ses_open".into())
+        );
+        let binding = Binding::from_resolved_session_id(Some("ses_marker".into()));
+        assert_eq!(binding.session_id.as_deref(), Some("ses_marker"));
+    }
+
+    #[test]
+    fn failed_session_resolution_never_falls_back_to_unvalidated_environment() {
+        assert_eq!(
+            session_binding(
+                None,
+                false,
+                Some("not-a-session-id".into()),
+                Some("ses_open".into())
+            ),
+            None,
+            "resolution failure must not stamp either raw environment value"
+        );
+        assert_eq!(
+            session_binding(
+                None,
+                true,
+                Some("ses_fleet".into()),
+                Some("ses_open".into())
+            ),
+            Some("ses_fleet".into()),
+            "ordinary environment-only callers retain their documented fallback"
+        );
     }
 
     #[test]

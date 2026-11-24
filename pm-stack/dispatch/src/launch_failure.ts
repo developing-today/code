@@ -73,7 +73,21 @@ export async function compensateOrphanedIssue(
 /** Mutable context shared by launchSession and its failure handler. */
 export interface LaunchFailureContext {
   sessionId: string | null;
+  /** The dispatch worktree created for this launch, if any (#12217).
+   * Set the moment the tree exists — before the session — so a failure
+   * at session creation can still clean the tree up. */
+  worktree: string | null;
 }
+
+/** Run once the launch's session is CONFIRMED gone (dispatch itself
+ * deleted it), or — when no session was ever recorded — after the
+ * failure was established. Returns the cleanup outcome for the note,
+ * or null when there is nothing to retire. Never throws: a worktree
+ * outcome must not mask the launch failure being reported. */
+export type RetireWorktree = (
+  sessionId?: string | null,
+) => Promise<{ worktree: string; removed: boolean; reason: string } | null>;
+export type ReportRetirement = (outcome: { worktree: string; removed: boolean; reason: string }) => void;
 
 /**
  * Run the part of a launch that follows successful session creation.
@@ -98,8 +112,38 @@ export async function handleLaunchFailure(
   e: unknown,
   sessionId: string | null = null,
   deleteSession?: (sessionId: string) => Promise<void>,
+  retireWorktree?: RetireWorktree,
+  reportRetirement: ReportRetirement = (outcome) => {
+    if (!outcome.removed) {
+      console.warn(`[pm-dispatch] task worktree ${outcome.worktree} retained: ${outcome.reason}`);
+    }
+  },
 ): Promise<string> {
   const msg = e instanceof Error ? e.message : String(e);
+  // #12217: best-effort worktree retirement, reported, never thrown —
+  // and never attempted while the session may still be live.
+  const retireSafely = async (
+    retiredSessionId: string | null = sessionId,
+  ): Promise<{ worktree: string; removed: boolean; reason: string } | null> => {
+    if (!retireWorktree) return null;
+    try {
+      const outcome = await retireWorktree(retiredSessionId);
+      if (outcome && !outcome.removed) safelyReportRetirement(outcome);
+      return outcome;
+    } catch (re) {
+      const reason = re instanceof Error ? re.message : String(re);
+      const outcome = { worktree: "unknown", removed: false, reason };
+      safelyReportRetirement(outcome);
+      return outcome;
+    }
+  };
+  const safelyReportRetirement = (outcome: { worktree: string; removed: boolean; reason: string }) => {
+    try {
+      reportRetirement(outcome);
+    } catch {
+      /* reporting must not mask the original launch failure */
+    }
+  };
   if (e instanceof ClaimLostError) {
     // Lost the claim race (#10737): the task and its issue now belong
     // to the worker that claimed it, so neither is cancelled, noted or
@@ -107,8 +151,11 @@ export async function handleLaunchFailure(
     if (sessionId != null && deleteSession) {
       try {
         await deleteSession(sessionId);
+        await retireSafely(sessionId);
       } catch {
-        /* best-effort: the session never received the task's claim */
+        // Deletion may have failed while the session is still live. Run
+        // the fail-closed evidence check so the retained worktree is visible.
+        await retireSafely(sessionId);
       }
     }
     return msg;
@@ -122,14 +169,43 @@ export async function handleLaunchFailure(
     cancelError = ce instanceof Error ? ce.message : String(ce);
   }
   let cleanupError: string | null = null;
-  if (sessionId != null) {
-    if (!deleteSession) {
-      cleanupError = "session deletion callback unavailable";
-    } else {
-      try {
-        await deleteSession(sessionId);
-      } catch (de) {
-        cleanupError = de instanceof Error ? de.message : String(de);
+  let worktreeNote = "";
+  if (sessionId == null) {
+    // createSession can time out or lose its response after the server
+    // accepted the request. The session may still come up later, so the
+    // tree cannot be retired on an empty session-list snapshot.
+    const outcome = retireWorktree
+      ? ((await retireSafely(null)) ?? {
+          worktree: "unknown",
+          removed: false,
+          reason: "session creation outcome is unknown; a session may still be live",
+        })
+      : null;
+    if (outcome) {
+      worktreeNote = outcome.removed
+        ? `\n\nTask worktree ${outcome.worktree} was removed after the failed launch.`
+        : `\n\nTask worktree ${outcome.worktree} was retained: ${outcome.reason}.`;
+    }
+  } else if (!deleteSession) {
+    cleanupError = "session deletion callback unavailable";
+  } else {
+    try {
+      await deleteSession(sessionId);
+      // The session is confirmed gone: only now may the worktree be
+      // considered for retirement (#12217).
+      const outcome = await retireSafely();
+      if (outcome) {
+        worktreeNote = outcome.removed
+          ? `\n\nTask worktree ${outcome.worktree} was removed after the failed launch.`
+          : `\n\nTask worktree ${outcome.worktree} was retained: ${outcome.reason}.`;
+      }
+    } catch (de) {
+      cleanupError = de instanceof Error ? de.message : String(de);
+      const outcome = await retireSafely(sessionId);
+      if (outcome) {
+        worktreeNote = outcome.removed
+          ? `\n\nTask worktree ${outcome.worktree} was removed after the failed launch.`
+          : `\n\nTask worktree ${outcome.worktree} was retained: ${outcome.reason}.`;
       }
     }
   }
@@ -142,8 +218,8 @@ export async function handleLaunchFailure(
           : `\n\nOpenCode session ${sessionId} may still be live; session cleanup failed: ${cleanupError}`;
     const note =
       cancelError == null
-        ? `Dispatch launch FAILED and queue task #${taskId} was cancelled.${sessionNote}\n\nError: ${msg}`
-        : `Dispatch launch FAILED and cancelling queue task #${taskId} FAILED — the task may still be queued or claimed and needs cleanup.${sessionNote}\n\nError: ${msg}\nCancellation error: ${cancelError}`;
+        ? `Dispatch launch FAILED and queue task #${taskId} was cancelled.${sessionNote}${worktreeNote}\n\nError: ${msg}`
+        : `Dispatch launch FAILED and cancelling queue task #${taskId} FAILED — the task may still be queued or claimed and needs cleanup.${sessionNote}${worktreeNote}\n\nError: ${msg}\nCancellation error: ${cancelError}`;
     try {
       await github.comment(repo, issueNumber, note);
     } catch {

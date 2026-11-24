@@ -7,6 +7,9 @@
 #                             (per-run .out/.err logs excluded; #10298)
 #   ~/secrets/*.sops.yaml     sops-encrypted secrets (ciphertext only)
 #   ~/.ssh                    SSH keys + known_hosts (irreplaceable)
+#   ~/.config/sops/age/keys.txt
+#                             sops age private key (decrypts the above;
+#                             restic repo is encrypted; #10295)
 #
 # DESIGN: restic with content-defined chunking + dedup, snapshotting
 # the source paths directly — the repo-archive-backup.sh
@@ -87,10 +90,11 @@ SOURCES=()
 [ -d "$HOME/.local/state/opencode" ] && SOURCES+=("$HOME/.local/state/opencode")
 [ -d "$HOME/.local/state/opencode-claimant" ] && SOURCES+=("$HOME/.local/state/opencode-claimant")
 [ -d "$HOME/.ssh" ] && SOURCES+=("$HOME/.ssh")
+[ -f "$HOME/.config/sops/age/keys.txt" ] && SOURCES+=("$HOME/.config/sops/age/keys.txt")
 for f in "$HOME"/secrets/*.sops.yaml; do
   [ -f "$f" ] && SOURCES+=("$f")
 done
-[ "${#SOURCES[@]}" -gt 0 ] || fail "no source paths present (opencode state, opencode-claimant state, .ssh, secrets/*.sops.yaml all missing)"
+[ "${#SOURCES[@]}" -gt 0 ] || fail "no source paths present (opencode state, opencode-claimant state, .ssh, sops age key, secrets/*.sops.yaml all missing)"
 # claimant per-run stdout/stderr logs are excluded: disposable, ~10M of churn.
 # mode, config, fires.jsonl and probe history are kept (#10298).
 EXCLUDES=()

@@ -105,6 +105,13 @@ adds, in dependency order after it:
 | `public.agg_usage_snapshots`    | append-only usage observations, dedupe key `service\|metric\|ts\|value`                                         |
 | `public.agg_store_documents`    | aggregator-owned JSON documents (`aa-last-good`; namespaced C7 report events use an append-only typed contract) |
 
+`migrations/20261122_0001_shared_comments.up.sql` (#1744, Move 1 step 2)
+adds, after those:
+
+| Table                    | Holds                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `public.shared_comments` | dashboard comments (the DashComment record), the shared cross-service comment table of #1744 |
+
 Each paired `.down.sql` refuses to drop a non-empty table; the #6815 down
 migration drops its tables in reverse dependency order. The refusal is
 deliberate protection against an accidental data-loss rollback.
@@ -118,8 +125,10 @@ The migration test proves the paired PostgreSQL DDL and rollback on a
 disposable PostgreSQL 16 instance; it does not connect to any remote
 database.
 
-This supplies reversible DDL for the #6815 slice. It does **not** finish the
-remaining `agg_*` / `shared_*` contracts, decide the projector's P1 location,
+This supplies reversible DDL for the #6815 slice plus the
+`shared_comments` contract. It does **not** finish the
+remaining `agg_*` / `shared_*` contracts (views, roadmap annotations,
+the projector's `pmp_*` groups), decide the projector's P1 location,
 or complete P1 / Move 1; #1744 acceptance criterion 3 remains unchecked.
 
 ## Disposable test
@@ -130,10 +139,11 @@ Run from the repository root:
 bash pm-stack/shared-schema/test-migration.sh
 ```
 
-The script starts its own temporary PostgreSQL 16 container, applies both up
+The script starts its own temporary PostgreSQL 16 container, applies the up
 migrations in order, proves key/foreign-key/check/idempotency behavior
-(including legacy-null compatibility and the #6815 store-table constraints),
+(including legacy-null compatibility, the #6815 store-table constraints,
+and the #1744 shared_comments constraints),
 proves each down migration refuses non-empty tables, clears only its
-disposable fixtures, applies both down migrations in reverse, and verifies
+disposable fixtures, applies the down migrations in reverse, and verifies
 the tables are gone. It does not connect to Turso or the PM Compose
 database.

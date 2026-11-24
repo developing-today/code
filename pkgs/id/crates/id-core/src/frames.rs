@@ -18,7 +18,10 @@ use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 /// Largest accepted or emitted frame, in bytes (1 MiB).
 ///
 /// The Iroh frame readers refuse longer frames, and every WebSocket endpoint
-/// sets `max_message_size(MAX_FRAME_BYTES)`.
+/// sets `max_message_size(MAX_WS_MESSAGE_BYTES)` (`MAX_FRAME_BYTES + 4`,
+/// the #5811 §3.2 correction: one binary message carries the whole
+/// length-prefixed frame, so a maximum-size valid frame needs the 4-byte
+/// prefix on top of the payload ceiling).
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Write one frame.
@@ -59,6 +62,30 @@ pub async fn write_frame_to<W: AsyncWrite + Unpin>(send: &mut W, payload: &[u8])
     send.write_all(&framed).await.context("write frame")?;
     send.flush().await.context("flush frame")?;
     Ok(())
+}
+
+/// First byte of a binary frame body on a length-prefixed transport
+/// (F12.11 phase 3, #12242). Text frames are JSON objects and always
+/// start with `{`; a leading NUL therefore marks a frame body as
+/// binary unambiguously, without changing the v1 text envelope bytes.
+/// Only sessions that negotiated binary frames ever emit one, and a
+/// receiver that did not negotiate treats the body as malformed input,
+/// exactly like a non-UTF-8 body.
+pub const BINARY_FRAME_MARKER: u8 = 0;
+
+/// The frame body for `payload` as a binary frame: the marker byte
+/// followed by the payload.
+pub fn mark_binary_frame(payload: &[u8]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(1 + payload.len());
+    body.push(BINARY_FRAME_MARKER);
+    body.extend_from_slice(payload);
+    body
+}
+
+/// The binary payload of a frame body, when the body carries the
+/// binary marker; `None` for text bodies.
+pub fn unmark_binary_frame(body: &[u8]) -> Option<&[u8]> {
+    body.strip_prefix(&[BINARY_FRAME_MARKER])
 }
 
 /// Read one frame from any byte stream. `Ok(None)` means the peer finished
@@ -314,6 +341,16 @@ pub async fn read_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_frame_marking_round_trips_and_leaves_text_alone() {
+        let marked = mark_binary_frame(&[0x82, 0xa7, b'v']);
+        assert_eq!(unmark_binary_frame(&marked), Some(&[0x82, 0xa7, b'v'][..]));
+        assert_eq!(unmark_binary_frame(&[]), None);
+        assert_eq!(unmark_binary_frame(br#"{"type":"view"}"#), None);
+        // An empty binary payload is still a binary frame.
+        assert_eq!(unmark_binary_frame(&mark_binary_frame(&[])), Some(&[][..]));
+    }
 
     #[tokio::test]
     async fn the_byte_stream_framing_round_trips_and_ends_cleanly() {

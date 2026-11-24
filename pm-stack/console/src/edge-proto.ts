@@ -20,7 +20,14 @@
 import type { Issuer } from "./config.ts";
 
 /** What the edge needs to know to recognise the owner. It comes from the
- * host in every sync, so there is one place it is set. */
+ * host in every sync, so there is one place it is set. The last four
+ * fields are what the edge needs to read and write by itself: where the
+ * queue store is and which token opens it, how the owner's prompts are
+ * marked, and which repositories hold his needs-me items. They are
+ * absent from configs stored or reported before the edge could do that:
+ * those still validate, with the fields empty, and the edge does not do
+ * the core itself until a config carries them (see
+ * Edge.directConfigReady). */
 export interface EdgeConfig {
   owners: string[];
   certNames: string[];
@@ -31,6 +38,10 @@ export interface EdgeConfig {
   androidFingerprints: string[];
   /** Whether the host has a signed Android build to hand out. */
   androidApp: boolean;
+  queueDbUrl: string;
+  queueTokenName: string;
+  promptLabel: string;
+  needsRepos: string[];
 }
 
 export interface SyncSection {
@@ -46,6 +57,19 @@ export interface SyncRequest {
   v: 1;
   /** Milliseconds, later than every sync before it. */
   at: number;
+  /** The signed Android build the host has, if it has one: its
+   * fingerprint, size and date, and the build itself (base64) only in a
+   * report that follows the edge asking for it. The edge keeps a copy,
+   * so the app can be downloaded while the host is away. */
+  apk?: ApkReport;
+  /** The commit the host's console is running. The edge says it in its
+   * health answer, so whether a merge has reached the host can be seen
+   * from anywhere, without reaching the host. */
+  version?: string;
+  /** What this machine is called and what it can do. Absent from a
+   * console older than this: the edge then knows it only as a machine
+   * that reports. */
+  machine?: MachineReport;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
@@ -57,6 +81,80 @@ export interface SyncRequest {
   have: Record<string, { hash: string; at: number; error?: string | null }>;
   /** What became of the held actions the host was given. */
   acks: { id: string; ok: boolean; error?: string }[];
+  /** Linked-phone hashes and metadata only; never phone tokens. */
+  phones: PhoneLinks;
+}
+
+/** What a machine says of itself in each report. A machine is anything
+ * that reports to the edge under a key the edge knows. It reports the
+ * state only it has (`sections`) and does what only it can (`actions`,
+ * by kind); everything else the platform does without it. */
+export interface MachineReport {
+  name: string;
+  actions: string[];
+  sections: string[];
+}
+
+// A letter or digit first, never a blank last (two names that differ
+// only by one would look the same on the screen), 63 at most.
+const MACHINE_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,61}[A-Za-z0-9._-])?$/;
+const MACHINE_CAN = /^[A-Za-z][A-Za-z0-9._-]{0,47}$/;
+/** How many kinds of action, or sections, one machine may say it has. */
+const MACHINE_CAN_MAX = 200;
+
+/** A name fit to show for a machine, from whatever it is called
+ * locally; empty when nothing of it is. */
+export function machineName(value: unknown): string {
+  const name = String(value ?? "")
+    .trim()
+    .replace(/[^A-Za-z0-9 ._-]+/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .slice(0, 63)
+    // The cut may land just after a blank.
+    .trimEnd();
+  return MACHINE_NAME.test(name) ? name : "";
+}
+
+/** A machine's account of itself as a report may give it, or null. */
+export function machineReport(value: unknown): MachineReport | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.name !== "string" || !MACHINE_NAME.test(v.name)) return null;
+  const list = (given: unknown): string[] | null => {
+    if (!Array.isArray(given) || given.length > MACHINE_CAN_MAX) return null;
+    if (!given.every((item) => typeof item === "string" && MACHINE_CAN.test(item))) return null;
+    return [...new Set(given as string[])].sort();
+  };
+  const actions = list(v.actions);
+  const sections = list(v.sections);
+  return actions && sections ? { name: v.name, actions, sections } : null;
+}
+
+/** What the Machines screen is drawn from: the platform's own part,
+ * each machine that reports, and what is held for one. */
+export interface MachinesAnswer {
+  /** Who answered: the edge, or a machine serving the app by itself. */
+  served: "edge" | "machine";
+  /** What the platform does with no machine: null when it is not in
+   * front, and an empty list of each when it only serves and waits. */
+  platform: { primary: boolean; actions: string[]; sections: string[]; refused: string[] } | null;
+  machines: {
+    name: string;
+    /** When it last reported, in milliseconds; null if it never has. */
+    seen: number | null;
+    /** It has not reported for long enough to be taken for away. */
+    quiet: boolean;
+    version: string | null;
+    actions: string[];
+    sections: string[];
+  }[];
+  /** What the owner did that waits for a machine, oldest first. */
+  held: Held[];
+}
+
+export interface PhoneLinks {
+  devices: { id: string; name: string; hash: string; createdAt: string; seenAt: string | null }[];
+  removed: { hash: string; at: string }[];
 }
 
 /** An action the owner took while the host could not be reached. */
@@ -69,6 +167,69 @@ export interface Held {
   at: string;
 }
 
+export interface ApkReport {
+  sha256: string;
+  size: number;
+  /** When the build was put in place on the host, in milliseconds. */
+  at: number;
+  data?: string;
+}
+
+/** The largest Android build that is carried in a report. */
+export const APK_LIMIT = 5 * 1024 * 1024;
+/** What the host keeps a report under, with room to spare below what
+ * the edge refuses as too large (8 MiB). A report that would carry the
+ * build past this carries the build alone, and the sections follow in
+ * the next one. */
+export const REPORT_ROOM = 7.5 * 1024 * 1024;
+
+/** A build's description as a report may give it, or null. */
+export function apkReport(value: unknown): ApkReport | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(v.sha256)) return null;
+  if (typeof v.size !== "number" || !Number.isSafeInteger(v.size) || v.size <= 0 || v.size > APK_LIMIT) return null;
+  if (typeof v.at !== "number" || !Number.isFinite(v.at)) return null;
+  return {
+    sha256: v.sha256,
+    size: v.size,
+    at: v.at,
+    ...(typeof v.data === "string" ? { data: v.data } : {}),
+  };
+}
+
+/** A released build of the Android app, as the version.json beside it
+ * in the GitHub release describes it (android/release.sh writes it). */
+export interface AndroidRelease {
+  name: string;
+  code: number;
+  sha256: string;
+  size: number;
+  /** When it was released, as an ISO time. */
+  built: string;
+}
+
+/** The largest released build that is passed on. */
+export const RELEASE_LIMIT = 32 * 1024 * 1024;
+
+/** A release's description as GitHub may serve it, or null. */
+export function androidRelease(value: unknown): AndroidRelease | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.name !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(v.name)) return null;
+  if (typeof v.code !== "number" || !Number.isSafeInteger(v.code) || v.code <= 0) return null;
+  if (typeof v.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(v.sha256)) return null;
+  if (typeof v.size !== "number" || !Number.isSafeInteger(v.size) || v.size <= 0 || v.size > RELEASE_LIMIT) return null;
+  if (typeof v.built !== "string" || Number.isNaN(Date.parse(v.built))) return null;
+  return {
+    name: v.name,
+    code: v.code,
+    sha256: v.sha256,
+    size: v.size,
+    built: new Date(Date.parse(v.built)).toISOString(),
+  };
+}
+
 export interface SyncResponse {
   ok: true;
   /** Someone has the app open: keep every section fresh. */
@@ -79,11 +240,18 @@ export interface SyncResponse {
   /** Sections the edge lacks and wants sent whole. */
   want: string[];
   commands: Held[];
+  /** The edge's merged phone-link state, containing hashes only. */
+  phones: PhoneLinks;
+  /** Sections the edge reads itself, and so need not be sent to it.
+   * Absent from an edge that reads none. */
+  owns?: string[];
 }
 
 /** Actions that may be done late, when the host is back. The rest act on
  * something that may have changed by then (a merge, a unit, a task's
- * state), so they are refused while the host cannot be reached. */
+ * state), so they are refused while the host cannot be reached.
+ * `prompt.enqueue` is the second half of a prompt the edge filed itself:
+ * the issue already exists, so only the queue task is left to do. */
 export const HOLDABLE = new Set([
   "ask.send",
   "ask.reply",
@@ -97,7 +265,50 @@ export const HOLDABLE = new Set([
   "issue.rank",
   "task.move",
   "message.send",
+  "prompt.enqueue",
+  // What the owner says is never lost for want of a machine: it is
+  // kept and filed when one is back (or filed here, when the edge can).
+  "intake.send",
+  "triage.enqueue",
 ]);
+/** What an action is about, where the order of two matters: a rank set
+ * twice, a task moved twice. Two about one thing are done in the order
+ * the owner did them: one that may be done late goes behind an earlier
+ * one about the same thing that is still held for a machine. Null: it
+ * stands alone. (The device keeps the same order for what it has not
+ * sent yet: `subject` in public/outbox.js says the same, and a test
+ * holds the two together.) */
+export function subjectOf(kind: string, args: Record<string, unknown> | null | undefined): string | null {
+  const a = args ?? {};
+  const of = (what: string, value: unknown) => {
+    const said = typeof value === "string" || typeof value === "number" ? String(value) : "";
+    return said === "" ? null : `${what}:${said}`;
+  };
+  switch (kind) {
+    case "ask.reply":
+    case "ask.close":
+    case "issue.comment":
+    case "issue.rank":
+      return of("issue", a.issue);
+    case "task.move":
+    case "task.cancel":
+    case "task.unblock":
+      return of("task", a.task);
+    case "hands.done":
+    case "need.comment":
+      return of("ref", a.ref);
+    case "question.answer":
+    case "question.defer":
+    case "questions.accept":
+      return of("questions", a.set);
+    case "pr.merge":
+      return of("pr", a.pr);
+    case "unit.act":
+      return of("unit", a.unit);
+    default:
+      return null;
+  }
+}
 /** A held action older than this is dropped, and said to have been. */
 export const HELD_FOR_MS = 24 * 60 * 60_000;
 /** A sync whose time is further than this from the edge's clock is refused. */
@@ -111,7 +322,7 @@ const b64u = (bytes: ArrayBuffer | Uint8Array): string => {
   for (const b of new Uint8Array(bytes as ArrayBuffer)) bin += String.fromCharCode(b);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
-const unb64u = (text: string): Uint8Array => {
+const unb64u = (text: string): Uint8Array<ArrayBuffer> => {
   if (!/^[A-Za-z0-9_-]*$/.test(text)) throw new Error("not base64url");
   const bin = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -148,11 +359,11 @@ export async function newKeyPair(): Promise<{ publicJwk: PublicKey; privateJwk: 
 
 export async function sign(privateJwk: JsonWebKey, body: Uint8Array): Promise<string> {
   const key = await crypto.subtle.importKey("jwk", privateJwk, CURVE, false, ["sign"]);
-  return b64u(await crypto.subtle.sign(SIGN, key, body));
+  return b64u(await crypto.subtle.sign(SIGN, key, body as BufferSource));
 }
 
 export async function verify(key: PublicKey, body: Uint8Array, signature: string): Promise<boolean> {
-  let sig: Uint8Array;
+  let sig: Uint8Array<ArrayBuffer>;
   try {
     sig = unb64u(signature);
   } catch {
@@ -160,7 +371,7 @@ export async function verify(key: PublicKey, body: Uint8Array, signature: string
   }
   if (sig.length !== 64) return false;
   const imported = await crypto.subtle.importKey("jwk", key, CURVE, false, ["verify"]);
-  return crypto.subtle.verify(SIGN, imported, sig, body);
+  return crypto.subtle.verify(SIGN, imported, sig, body as BufferSource);
 }
 
 const strings = (value: unknown): value is string[] =>
@@ -189,6 +400,13 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     });
   }
   if (typeof v.repo !== "string" || typeof v.queue !== "string" || typeof v.androidPackage !== "string") return null;
+  // The fields the edge acts by: present ones must be well-formed,
+  // absent ones are a config from before it could, which still validates.
+  if (v.queueDbUrl !== undefined && (typeof v.queueDbUrl !== "string" || !/^https:\/\//.test(v.queueDbUrl)))
+    return null;
+  if (v.queueTokenName !== undefined && typeof v.queueTokenName !== "string") return null;
+  if (v.promptLabel !== undefined && typeof v.promptLabel !== "string") return null;
+  if (v.needsRepos !== undefined && !strings(v.needsRepos)) return null;
   return {
     owners: v.owners.map((o) => o.toLowerCase()),
     certNames: v.certNames,
@@ -198,5 +416,9 @@ export function edgeConfig(value: unknown): EdgeConfig | null {
     androidPackage: v.androidPackage,
     androidFingerprints: v.androidFingerprints,
     androidApp: v.androidApp === true,
+    queueDbUrl: typeof v.queueDbUrl === "string" ? v.queueDbUrl : "",
+    queueTokenName: typeof v.queueTokenName === "string" ? v.queueTokenName : "",
+    promptLabel: typeof v.promptLabel === "string" ? v.promptLabel : "",
+    needsRepos: strings(v.needsRepos) ? v.needsRepos : [],
   };
 }

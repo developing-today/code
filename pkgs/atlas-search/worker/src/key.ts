@@ -3,10 +3,16 @@
  *
  * One DO per distinct (normalized query, effective config). The
  * key material pins everything that changes what a correct answer
- * is — ceiling, embedding space (model revision + vector table),
- * result depth — so a cached entry can never be served across a
- * different ceiling or space (the same rule the search service
- * applies to its job dedupe).
+ * is — ceiling, disclosure context (#12622), embedding space
+ * (model revision + vector table), result depth — so a cached
+ * entry can never be served across a different ceiling, context,
+ * or space (the same rule the search service applies to its job
+ * dedupe).
+ *
+ * KEY_SCHEMA 2 (#12622): the material gains the resolved
+ * disclosure context. Keys change, so entries cached under v1
+ * names are orphaned — never served again, retained per the
+ * no-eviction policy (cache_do.ts).
  */
 import { CEILING, MODEL_REV, VEC_TABLE, type DisclosureContext } from "./space";
 
@@ -19,8 +25,9 @@ export function normalizeQuery(q: string): string {
 
 export interface KeyParts {
   q: string;
-  k: number;
+  /** The resolved disclosure context the answer is bound for. */
   context: DisclosureContext;
+  k: number;
 }
 
 /** The canonical key material (field order is part of the key). */
@@ -28,8 +35,8 @@ export function keyMaterial(parts: KeyParts): string {
   return JSON.stringify({
     v: KEY_SCHEMA,
     q: parts.q,
-    context: parts.context,
     ceiling: CEILING,
+    context: parts.context,
     model_rev: MODEL_REV,
     vec_table: VEC_TABLE,
     k: parts.k,

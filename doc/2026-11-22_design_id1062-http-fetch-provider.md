@@ -59,7 +59,13 @@ front of it, and both default to closed.
   any connection is made. Matching is exact on the normalized
   host (lowercase, one trailing dot stripped): listing
   `example.com` does not admit `api.example.com`, and there are
-  no wildcards — an admin who wants a subdomain lists it.
+  no wildcards — an admin who wants a subdomain lists it. Ports
+  are part of the match (#12659): a bare host admits only the
+  scheme's default port (80 for `http`, 443 for `https`), and an
+  entry spelled `host:port` admits that port only, under either
+  scheme. Listing `example.com` does not open
+  `example.com:8443`. Redirect hops pass the same host-and-port
+  check.
 
 Either gate alone keeps the provider closed; a fetch needs both
 open, for that host.

@@ -458,6 +458,11 @@ mod tests {
 
     #[tokio::test]
     async fn records_replicate_peer_to_peer_and_keep_syncing() {
+        if crate::test_transport::skip_if_no_udp_loopback(
+            "world_records::tests::records_replicate_peer_to_peer_and_keep_syncing",
+        ) {
+            return;
+        }
         // Host: a world whose program publishes records.
         let host = Node::spawn().await;
         let world = WorldHandle::spawn_with_program(

@@ -20,6 +20,7 @@ stdenvNoCC.mkDerivation {
       ./deploy.mjs # its argument check is tested
       ./deploy-args.mjs
       ./deploy-probe.mjs
+      ./bridge.mjs
       ./package.json
       ./wrangler.jsonc
     ];
@@ -34,7 +35,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p $out
-    cp -r src cloudflare.config.ts package.json wrangler.jsonc $out/
+    cp -r src cloudflare.config.ts package.json wrangler.jsonc bridge.mjs $out/
     runHook postInstall
   '';
   meta = {

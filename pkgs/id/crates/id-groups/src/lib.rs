@@ -14,8 +14,8 @@
 //! - [`blob_gate`]: who may fetch or observe a blob — the gate's
 //!   policy, verdicts and provider event wiring over the
 //!   [`blob_gate::WorldAccess`] trait from `id-events`. The
-//!   `FoldedWorlds` implementation of that trait stays in the facade
-//!   with `groups::worlds` until step 5 extracts `id-worlds`.
+//!   `FoldedWorlds` implementation of that trait lives in `id-worlds`
+//!   (`id_worlds::blob_gate`) and is re-exported at the facade path.
 //! - [`encryption`]: group encryption on the `DataScheme` of
 //!   `p2panda-encryption` — the session adapter, causal ordering,
 //!   history modes and welcome chunking. Its one upward reference was

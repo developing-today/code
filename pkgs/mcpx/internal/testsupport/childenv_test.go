@@ -14,6 +14,7 @@ func TestChildEnvIsAnAllowlist(t *testing.T) {
 		"LANG=C.UTF-8",
 		"LC_ALL=C",
 		"TERM=xterm-256color",
+		"TZ=UTC",
 		"SYSTEMROOT=C:\\Windows",
 		"DENO_DIR=/cache/deno",
 		"BUN_INSTALL_CACHE_DIR=/cache/bun",
@@ -36,7 +37,7 @@ func TestChildEnvIsAnAllowlist(t *testing.T) {
 
 	env := envMap(got)
 	for _, name := range []string{
-		"PATH", "TMPDIR", "LANG", "LC_ALL", "TERM", "SYSTEMROOT",
+		"PATH", "TMPDIR", "LANG", "LC_ALL", "TERM", "TZ", "SYSTEMROOT",
 		"DENO_DIR", "BUN_INSTALL_CACHE_DIR", "NPM_CONFIG_CACHE",
 		"HOME", "MCPX_CONFIG",
 	} {

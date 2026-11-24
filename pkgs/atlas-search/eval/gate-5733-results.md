@@ -44,6 +44,15 @@ set-size geometry alone. The signal as designed cannot deliver the
   the bake-off's recorded production-hybrid numbers for golden-311
   **exactly**: recall@10 183/311, MRR 0.3640. No number below was
   trusted until this reproduced.
+- **Configuration naming (#13283):** the row above belongs to this
+  gate's eval-lineage base (branch depth 30, RRF k=60, trunc-384).
+  It is not the production configuration: the production shape
+  decided 2026-10-31 (`../atlas_search.py` header;
+  `crates/atlas-proto/query-parameters-v1.json`) fuses at RRF k=10
+  with pool 100 per branch at full 768 width, and its recorded best
+  row is 189 hits@10 / MRR 0.3894. Both are golden-311 numbers; they
+  differ because the configurations differ, and neither row should
+  be cited as "the production hybrid" without its configuration.
 
 ## Corpus disclosure
 

@@ -12,11 +12,7 @@
 //! to the next token in the rotation instead of failing the caller.
 //!
 //! The rotation, in order:
-//!   1. the personal token: Drew's `gh` OAuth token, parsed out of
-//!      the broker secret named `github-cli.hosts-yml` (the hosts
-//!      file itself, stored by name — the value never leaves the
-//!      resolver);
-//!   2. installation tokens of the fleet's THREE GitHub Apps, in
+//!   1. installation tokens of the fleet's THREE GitHub Apps, in
 //!      App order, minted in-process per owner: the fleet App
 //!      ("developing.today fleet", App ID 5612056), the
 //!      developing.today App, and the developing-today-backup App
@@ -32,6 +28,11 @@
 //!      When the call names a repo or org, that owner's installation
 //!      moves to the front of each App leg — an installation token
 //!      only sees its own installation's scope.
+//!   2. the personal token, LAST (Drew, 2026-11-23, code#13310):
+//!      Drew's `gh` OAuth token, parsed out of the broker secret
+//!      named `github-cli.hosts-yml` (the hosts file itself, stored
+//!      by name — the value never leaves the resolver). It is the
+//!      final fallback, not the first identity tried.
 //!
 //! The App leg's own HTTPS validates against the PLATFORM root
 //! store (ureq's platform-verifier), not webpki-roots alone: hosts
@@ -66,9 +67,16 @@
 //! request before processing it — rate-limit rejections (the limiter
 //! answers before the mutation runs) and permission/scope rejections
 //! (INSUFFICIENT_SCOPES, "Resource not accessible by …") are both
-//! pre-execution refusals. Any other failure of a write is returned
-//! as-is: the request may have landed, and repeating it could
-//! double-post. Reads repeat on any failure class.
+//! pre-execution refusals. A "Could not resolve to a node" error is
+//! NOT one: GraphQL executes mutation fields serially, so a batched
+//! mutation may already have run an earlier field (e.g. an
+//! `addComment`) before a later field's node fails to resolve — the
+//! response can carry partial results alongside the error. Replaying
+//! the whole mutation would duplicate the part that landed, so
+//! node-resolution failures repeat only read-only calls, like any
+//! other failure. Any other failure of a write is returned as-is:
+//! the request may have landed, and repeating it could double-post.
+//! Reads repeat on any failure class.
 //!
 //! Tokens are never printed, logged, or written to a file: provider
 //! errors name the source and stage only, never values. Attempts
@@ -98,12 +106,37 @@
 //!                       beating fleet config's `[gh]` table
 //!   FLEET_GH_CACHE_BIND bind address for `cache-serve`
 //!                       (default 127.0.0.1:4802)
+//!
+//! Close guard (#9177): `issue close` and `issue edit` with an
+//! `--add-label status:done` are refused when the queue broker has a
+//! claimed or parked task bound to that repo#issue, unless the bound
+//! task's completion record (a `fleet-closure/v1` close record
+//! carrying its task id) is presented with
+//! `--completion-record <path>` — a wrapper-only flag, stripped
+//! before gh runs. An issue without a live bound task is unaffected.
+//! A guard refusal exits 2 and never reaches the token rotation.
+//! The queue query fails open (a broker outage must not block every
+//! close — the queue sweep's detective check is the net), and a
+//! build without the queue client skips the guard the same way.
+//!
+//! Metadata create path (#9073, design §12–§15): `issue create` and
+//! `pr create` bodies are stamped with the fleet Metadata block
+//! (gh_metadata.rs) before the rotation runs, and the full record
+//! is inserted into the metadata store after a successful create.
+//! A malformed caller block refuses the create before any write;
+//! a failed insert never loses the item (the miss is reported on
+//! stderr and ingestion heals it). Controls: FLEET_METADATA_DB
+//! (store path), FLEET_GH_STAMP_KEY_ID (stamp signing key id; the
+//! key material is resolved by name from the secrets broker).
 
 use crate::gh_cache;
 use crate::gh_closure;
+use crate::gh_guard;
+use crate::gh_metadata;
+use crate::gh_sync;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -137,12 +170,14 @@ Usage: fleet gh <gh args...>
        fleet gh tiers
        fleet gh cache-serve [--bind <addr>]
        fleet gh cache-status
+       fleet gh closures [<item>]
        fleet gh [--cache-addr <addr>...] [--no-cache] <gh args...>
        fleet gh --raw <gh args...>
 
 Run the real `gh` CLI with every argument passed through unchanged,
-under a token selected from the fleet rotation (personal token, then
-the fleet's three GitHub Apps' installation tokens). A rate-limit or
+under a token selected from the fleet rotation (the fleet's three
+GitHub Apps' installation tokens, then the personal token last).
+A rate-limit or
 permission failure fails over to the next token; the caller sees only
 the final attempt's output and exit code. `fleet gh tiers` lists each
 rotation source with its rate-limit headroom. `fleet gh --raw` (or
@@ -158,7 +193,20 @@ FLEET_GH_CACHE as a comma list; an address without a port gets port
 `fleet gh cache-status` probes the configured daemons. `--cache-addr`
 overrides every daemon address for one call; `--no-cache` resolves
 in-process. When no daemon answers, the call resolves in-process and
-says so on stderr — never silently.";
+says so on stderr — never silently.
+
+Sync verbs (code#10973, step 2.2 of #9016): the `sync-*` shadow
+verbs are the typed Queue/GitHub sync surface for scripted flows
+(pm-stack dispatch's fallback, the opencode claimant, job bodies).
+Each declares its whole command line, validates it strictly, and
+rewrites to the canonical gh call before the guard, closure and
+metadata layers run, inheriting the rotation and the retry-safety
+rule. `fleet gh sync-labels --repo OWNER/REPO <issue|pr> <n>` prints
+an item's label names as JSON; `sync-view` prints labels,state,title
+JSON; `sync-comment` posts a comment (`--body` or `--body-file`);
+`sync-issue-create`, `sync-issue-get`, `sync-labels-add`,
+`sync-label-ensure` and `sync-issue-close` (fleet closure reasons)
+cover the issue writes dispatch composes. See gh_sync.rs.";
 
 /// The fleet's GitHub Apps, in rotation order. Each carries its
 /// private key (and, except the fleet App whose ID is a public
@@ -255,6 +303,13 @@ enum FailureClass {
     /// Authorization refused the request before processing it
     /// (missing scope, resource not accessible to this identity).
     Permission,
+    /// A node the identity cannot see failed to resolve ("Could not
+    /// resolve to a node"). GitHub hides inaccessible nodes this
+    /// way, but resolution is per-field, not a whole-operation
+    /// pre-execution check: in a batched mutation an earlier field
+    /// may already have executed, so this class repeats only
+    /// read-only calls (#12154 review).
+    NodeResolution,
     /// Anything else: the request may or may not have landed.
     Other,
 }
@@ -272,6 +327,14 @@ fn classify_failure(output: &str) -> FailureClass {
         || lower.contains("http 429")
     {
         return FailureClass::RateLimit;
+    }
+    // GraphQL hides nodes the identity cannot see as unresolvable
+    // rather than inaccessible — but resolution is per-field, not a
+    // whole-operation pre-execution check, so a batched mutation may
+    // already have partially executed (#12154 review). This class
+    // repeats read-only calls only; see may_retry.
+    if lower.contains("could not resolve to a node") {
+        return FailureClass::NodeResolution;
     }
     if lower.contains("missing required scopes")
         || lower.contains("insufficient_scopes")
@@ -695,12 +758,13 @@ impl Owners {
     }
 }
 
-/// The rotation for one invocation: personal first, then each
-/// App's owners with the hinted owner (if any) leading each App leg.
-/// `FLEET_GH_ORDER` replaces the whole order when set.
+/// The rotation for one invocation: each App's owners with the
+/// hinted owner (if any) leading each App leg, then the personal
+/// token LAST. `FLEET_GH_ORDER` replaces the whole order when set.
 /// Oracle: code#8887's rotation definition as extended by Drew
 /// 2026-11-12 (personal + all three fleet Apps' installations),
-/// hint-first per the installation-scope fact.
+/// hint-first per the installation-scope fact; personal moved last
+/// by Drew 2026-11-23 (code#13310).
 fn rotation(args: &[String]) -> Vec<TokenSource> {
     let order_env = std::env::var("FLEET_GH_ORDER").ok();
     rotation_with(args, order_env.as_deref(), &Owners::from_env())
@@ -732,7 +796,7 @@ fn rotation_with(
         }
     }
     let hint = owner_hint(args);
-    let mut out = vec![TokenSource::Personal];
+    let mut out = Vec::new();
     for app in GhApp::ALL {
         let mut owners = owners_env.for_app(app);
         if let Some(hint) = &hint {
@@ -743,6 +807,9 @@ fn rotation_with(
         }
         out.extend(owners.into_iter().map(|o| TokenSource::app(app, &o)));
     }
+    // Drew 2026-11-23 (code#13310): the personal token is the final
+    // fallback, never the first identity tried.
+    out.push(TokenSource::Personal);
     out
 }
 
@@ -757,7 +824,9 @@ fn may_retry(class: FailureClass, read_only: bool, attempts_left: bool) -> bool 
     }
     match class {
         FailureClass::RateLimit | FailureClass::Permission => true,
-        FailureClass::Other => read_only,
+        // Node resolution (and anything else) may have partially
+        // executed: repeat only when the call cannot have landed.
+        FailureClass::NodeResolution | FailureClass::Other => read_only,
     }
 }
 
@@ -1208,6 +1277,22 @@ fn run_with_provider<P: TokenProvider>(
     sources: &[TokenSource],
     trace: bool,
 ) -> i32 {
+    run_with_provider_capturing(provider, gh_bin, args, sources, trace, false).0
+}
+
+/// run_with_provider, additionally handing back the final attempt's
+/// stdout when `capture_stdout` is set (the Metadata create path
+/// reads the created item's URL from it, #9073). The capture is a
+/// clone taken only on the path that asked for it, so the hot
+/// passthrough pays nothing.
+fn run_with_provider_capturing<P: TokenProvider>(
+    provider: &mut P,
+    gh_bin: &str,
+    args: &[String],
+    sources: &[TokenSource],
+    trace: bool,
+    capture_stdout: bool,
+) -> (i32, Option<Vec<u8>>) {
     let read_only = is_read_call(args);
     let mut last: Option<Attempt> = None;
     let mut provider_errors: Vec<String> = Vec::new();
@@ -1229,12 +1314,13 @@ fn run_with_provider<P: TokenProvider>(
             Ok(a) => a,
             Err(e) => {
                 eprintln!("fleet gh: failed to run '{gh_bin}': {e}");
-                return EXIT_UNRESOLVED;
+                return (EXIT_UNRESOLVED, None);
             }
         };
         if attempt.code == 0 {
+            let captured = capture_stdout.then(|| attempt.stdout.clone());
             emit(&attempt);
-            return EXIT_OK;
+            return (EXIT_OK, captured);
         }
         let combined = format!(
             "{}{}",
@@ -1251,6 +1337,7 @@ fn run_with_provider<P: TokenProvider>(
                     match class {
                         FailureClass::RateLimit => "rate limit",
                         FailureClass::Permission => "permission/scope refusal",
+                        FailureClass::NodeResolution => "node-resolution error on a read-only call",
                         FailureClass::Other => "error on a read-only call",
                     }
                 );
@@ -1258,22 +1345,24 @@ fn run_with_provider<P: TokenProvider>(
             last = Some(attempt);
             continue;
         }
+        let captured = capture_stdout.then(|| attempt.stdout.clone());
         emit(&attempt);
-        return attempt.code;
+        return (attempt.code, captured);
     }
     // No attempt produced output: either every source failed to
     // resolve, or the last failover had no successor. Prefer showing
     // the caller the real gh failure over our own summary.
     if let Some(attempt) = last {
         let code = attempt.code;
+        let captured = capture_stdout.then(|| attempt.stdout.clone());
         emit(&attempt);
-        return code;
+        return (code, captured);
     }
     for e in &provider_errors {
         eprintln!("fleet gh: {e}");
     }
     eprintln!("fleet gh: no token source could be resolved");
-    EXIT_UNRESOLVED
+    (EXIT_UNRESOLVED, None)
 }
 
 /// Write an attempt's captured bytes to the real stdout/stderr,
@@ -1286,6 +1375,20 @@ fn emit(attempt: &Attempt) {
     let _ = err.write_all(&attempt.stderr);
     let _ = err.flush();
 }
+
+const TIERS_USAGE: &str = "\
+Usage: fleet gh tiers
+
+Probe every token-rotation source (the fleet's three GitHub Apps'
+installation tokens, then the personal token) and print each one's
+rate-limit headroom. Takes no arguments.";
+
+const CLOSURES_USAGE: &str = "\
+Usage: fleet gh closures [<item>]
+
+Print the close-guard closure records, one JSON object per line,
+optionally only those for one item number. Takes no other
+arguments.";
 
 /// `fleet gh tiers`: probe every rotation source and print its
 /// core and GraphQL rate-limit headroom. Labels and numbers only —
@@ -1375,6 +1478,19 @@ fn run_raw(gh_bin: &str, args: &[String]) -> i32 {
     }
 }
 
+fn closure_binding(
+    initialize: impl FnOnce() -> Result<Option<String>, String>,
+) -> gh_closure::Binding {
+    let resolved_session_id = match initialize() {
+        Ok(id) => id,
+        Err(error) => {
+            eprintln!("fleet gh: {error}; closure record will omit the session id");
+            return gh_closure::Binding::from_failed_session_resolution();
+        }
+    };
+    gh_closure::Binding::from_resolved_session_id(resolved_session_id)
+}
+
 pub fn run(config: &Config, args: &[String]) -> i32 {
     // Cache flags come first: leading `--cache-addr` (repeatable)
     // and `--no-cache` are fleet's own, stripped before anything
@@ -1402,6 +1518,10 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     // subcommands: real `gh` has no such verbs, so intercepting
     // them cannot shadow a passthrough call.
     if args.first().is_some_and(|a| a == "tiers") {
+        if args.len() == 2 && matches!(args[1].as_str(), "--help" | "-h") {
+            println!("{TIERS_USAGE}");
+            return EXIT_OK;
+        }
         if args.len() > 1 {
             return usage_error(&format!(
                 "unexpected argument '{}' for 'fleet gh tiers'",
@@ -1419,7 +1539,42 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     if args.first().is_some_and(|a| a == "closures") {
         return run_closures(&args[1..]);
     }
-    let intent = match gh_closure::parse(args) {
+    // Sync verbs (#10973, step 2.2 of #9016): strictly-parsed typed
+    // verbs that rewrite to the canonical gh call. The rewrite is
+    // applied here, before the close guard, the closure layer and
+    // the metadata create path parse the arguments, so a sync call
+    // inherits every passthrough control — and the rotation below —
+    // exactly as the hand-written call it replaces would have.
+    let sync_rewrite;
+    let args: &[String] = match gh_sync::parse(args) {
+        Ok(Some(canonical)) => {
+            sync_rewrite = canonical;
+            &sync_rewrite
+        }
+        Ok(None) => args,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    let guard_intent = match gh_guard::parse(args) {
+        Ok(intent) => intent,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    if let Some(intent) = &guard_intent {
+        if let Err(e) = gh_guard::check(intent) {
+            eprintln!("fleet gh close guard: {e}");
+            return EXIT_USAGE;
+        }
+    }
+    let parsed_args = guard_intent
+        .as_ref()
+        .map(|intent| intent.gh_args.as_slice())
+        .unwrap_or(args);
+    let intent = match gh_closure::parse(parsed_args) {
         Ok(intent) => intent,
         Err(e) => {
             eprintln!("{e}");
@@ -1428,13 +1583,37 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     };
     let call_args = match &intent {
         Some(i) => i.gh_args_with_reason(),
-        None => args.clone(),
+        None => parsed_args.to_vec(),
+    };
+    // Metadata create path (#9073): stamp an issue/pr create's body
+    // before the rotation runs and remember the stamped block for
+    // the post-create record insert. A refusal (a malformed caller
+    // Metadata block, an unreadable --body-file) happens before any
+    // GitHub write and never reaches the rotation.
+    let prepared_create =
+        match gh_metadata::prepare_create(config, &call_args, std::io::stdin().is_terminal()) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                eprintln!("fleet gh: {e}");
+                return EXIT_USAGE;
+            }
+        };
+    let call_args = match &prepared_create {
+        Some(prepared) => prepared.args.clone(),
+        None => call_args,
     };
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
     let sources = rotation(&call_args);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
-    let code = run_with_provider(&mut provider, &gh_bin, &call_args, &sources, trace);
+    let (code, final_stdout) = run_with_provider_capturing(
+        &mut provider,
+        &gh_bin,
+        &call_args,
+        &sources,
+        trace,
+        prepared_create.is_some(),
+    );
     // Durable audit trail for App-token writes (#9177 control 3):
     // record the caller/session identity, the call, and its outcome
     // so an App-identity write is attributable to a component. Gated
@@ -1465,7 +1644,11 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
         }
     }
     if let Some(i) = intent.filter(|_| code == EXIT_OK) {
-        let record = i.record(&gh_closure::Binding::from_env(), gh_closure::now_unix());
+        // Only a successfully parsed and completed Fleet-owned closure
+        // operation consumes recovered worktree identity. This is deliberately
+        // not a global startup hook or a scan of passthrough `gh` arguments.
+        let binding = closure_binding(|| crate::session_state::initialize(None));
+        let record = i.record(&binding, gh_closure::now_unix());
         if let Err(e) = gh_closure::append(&gh_closure::log_path(), &record) {
             eprintln!(
                 "fleet gh: {} done, but the closure record was not written: {e}",
@@ -1474,12 +1657,48 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             return EXIT_UNRESOLVED;
         }
     }
+    // Metadata create path (#9073): the create succeeded, so insert
+    // the full record into the metadata store. The item already
+    // exists and gh's exit code stands either way — a failed insert
+    // is reported on stderr and ingestion (§16) heals the miss.
+    if let Some(prepared) = &prepared_create {
+        if code == EXIT_OK {
+            let store = gh_metadata::SqliteMetadataStore::new(
+                gh_metadata::SqliteMetadataStore::default_path(),
+            );
+            let stdout = final_stdout
+                .as_deref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                .unwrap_or_default();
+            match gh_metadata::finish_create(&store, &stdout, &prepared.block) {
+                gh_metadata::CreateOutcome::Inserted(_) => {}
+                gh_metadata::CreateOutcome::InsertFailed { item, error } => {
+                    eprintln!(
+                        "fleet gh: created {}, but its Metadata record was not \
+                         inserted ({error}); the ingestion sweeper will heal the miss",
+                        item.url
+                    );
+                }
+                gh_metadata::CreateOutcome::NoUrl => {
+                    eprintln!(
+                        "fleet gh: the create succeeded but gh's output carried \
+                         no item URL; its Metadata record was not inserted; \
+                         the ingestion sweeper will heal the miss"
+                    );
+                }
+            }
+        }
+    }
     code
 }
 
 /// `fleet gh closures [<item>]`: print closure records, one JSON
 /// object per line, optionally only those for one item number.
 fn run_closures(tail: &[String]) -> i32 {
+    if tail.len() == 1 && matches!(tail[0].as_str(), "--help" | "-h") {
+        println!("{CLOSURES_USAGE}");
+        return EXIT_OK;
+    }
     if tail.len() > 1 {
         return usage_error(&format!(
             "unexpected argument '{}' for 'fleet gh closures'",
@@ -1717,6 +1936,24 @@ fn summarize_status(resp: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn successful_closure_binding_consumes_resolved_worktree_session() {
+        let mut initialized = false;
+        let binding = closure_binding(|| {
+            initialized = true;
+            Ok(Some("ses_from_worktree".to_owned()))
+        });
+        assert!(
+            initialized,
+            "closure binding initializes session resolution"
+        );
+        assert_eq!(
+            binding.session_id.as_deref(),
+            Some("ses_from_worktree"),
+            "the resolved worktree identity reaches the closure binding"
+        );
+    }
+
+    #[test]
     fn clustered_short_options_are_never_reads() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         // -i then -t (which takes "graphql"): the endpoint is the issues URL.
@@ -1769,6 +2006,12 @@ mod tests {
             FailureClass::Permission
         );
         assert_eq!(
+            classify_failure(
+                "GraphQL: Could not resolve to a node with the global id of 'PVT_kwHOA123'"
+            ),
+            FailureClass::NodeResolution
+        );
+        assert_eq!(
             classify_failure("gh: Not Found (HTTP 404)"),
             FailureClass::Other
         );
@@ -1785,6 +2028,9 @@ mod tests {
     fn retry_gate_matches_the_rule() {
         assert!(may_retry(FailureClass::RateLimit, false, true));
         assert!(may_retry(FailureClass::Permission, false, true));
+        assert!(!may_retry(FailureClass::NodeResolution, false, true));
+        assert!(may_retry(FailureClass::NodeResolution, true, true));
+        assert!(!may_retry(FailureClass::NodeResolution, true, false));
         assert!(!may_retry(FailureClass::Other, false, true));
         assert!(may_retry(FailureClass::Other, true, true));
         assert!(!may_retry(FailureClass::RateLimit, false, false));
@@ -2054,10 +2300,11 @@ mod tests {
     }
 
     // oracle: code#8887's rotation definition as extended by Drew
-    // 2026-11-12 — personal first, then the installations of all
-    // three fleet Apps (fleet: 3 owners, developing.today: 2,
-    // backup: 1); a call naming an owner leads each App leg with
-    // that owner's installation where the App has one.
+    // 2026-11-12 — the installations of all three fleet Apps
+    // (fleet: 3 owners, developing.today: 2, backup: 1), with the
+    // personal token LAST (Drew 2026-11-23, code#13310); a call
+    // naming an owner leads each App leg with that owner's
+    // installation where the App has one.
     #[test]
     fn rotation_order_and_owner_hint() {
         let args: Vec<String> = ["api", "repos/developing-today/code"]
@@ -2066,8 +2313,18 @@ mod tests {
             .collect();
         assert_eq!(owner_hint(&args).as_deref(), Some("developing-today"));
         let order = rotation_with(&args, None, &Owners::default());
-        assert_eq!(order[0], TokenSource::Personal);
-        assert_eq!(order[1], TokenSource::app(GhApp::Fleet, "developing-today"));
+        assert_eq!(
+            order,
+            vec![
+                TokenSource::app(GhApp::Fleet, "developing-today"),
+                TokenSource::app(GhApp::Fleet, "developing-today-forks"),
+                TokenSource::app(GhApp::Fleet, "dezren39"),
+                TokenSource::app(GhApp::DevToday, "developing-today"),
+                TokenSource::app(GhApp::DevToday, "dezren39"),
+                TokenSource::app(GhApp::Backup, "developing-today"),
+                TokenSource::Personal,
+            ]
+        );
         assert_eq!(order.len(), 7);
         assert!(order.contains(&TokenSource::app(GhApp::DevToday, "dezren39")));
         assert!(order.contains(&TokenSource::app(GhApp::Backup, "developing-today")));
@@ -2079,9 +2336,10 @@ mod tests {
             .collect();
         let order = rotation_with(&fork_args, None, &Owners::default());
         assert_eq!(
-            order[1],
+            order[0],
             TokenSource::app(GhApp::Fleet, "developing-today-forks")
         );
+        assert_eq!(order[6], TokenSource::Personal);
 
         let fixed = rotation_with(
             &fork_args,
@@ -2106,6 +2364,21 @@ mod tests {
             vec![
                 TokenSource::app(GhApp::DevToday, "developing-today"),
                 TokenSource::app(GhApp::Backup, "developing-today")
+            ]
+        );
+        // Drew 2026-11-23 (code#13310): an operator-specified
+        // order wins over the default exactly as given — personal
+        // first included.
+        let fixed3 = rotation_with(
+            &fork_args,
+            Some("personal,app:dezren39"),
+            &Owners::default(),
+        );
+        assert_eq!(
+            fixed3,
+            vec![
+                TokenSource::Personal,
+                TokenSource::app(GhApp::Fleet, "dezren39")
             ]
         );
         assert_eq!(
@@ -2192,6 +2465,10 @@ mod tests {
              if [ \"$GH_TOKEN\" = \"tok-boom\" ]; then\n\
              \techo 'some unclassifiable failure' >&2\n\
              \texit 7\n\
+             fi\n\
+             if [ \"$GH_TOKEN\" = \"tok-node\" ]; then\n\
+             \techo 'GraphQL: Could not resolve to a node with the global id of PVT_kwHOA123' >&2\n\
+             \texit 1\n\
              fi\n\
              echo 'fake gh output'\n\
              exit 0\n",
@@ -2281,6 +2558,62 @@ mod tests {
             1,
             "write attempted exactly once: {calls}"
         );
+    }
+
+    // oracle: the #12154 review — a batched GraphQL mutation whose
+    // later field fails node resolution may already have executed an
+    // earlier field, so the mutation is NOT replayed under the next
+    // token; the same failure on a read IS retried.
+    #[test]
+    fn write_not_repeated_on_node_resolution_failure() {
+        struct NodeProvider;
+        impl TokenProvider for NodeProvider {
+            fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
+                match source {
+                    TokenSource::Personal => Ok("tok-node".to_string()),
+                    other => Ok(format!("tok-{}", other.label())),
+                }
+            }
+        }
+        let sources = vec![
+            TokenSource::Personal,
+            TokenSource::app(GhApp::Fleet, "developing-today"),
+        ];
+        // A batched mutation: addComment first, a node reference second.
+        let mutation: Vec<String> = [
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation{addComment(input:{subjectId:\"x\",body:\"y\"}){clientMutationId} node(id:\"PVT_kwHOA123\"){id}}",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(!is_read_call(&mutation));
+        let (dir, script) = fake_gh("write-node");
+        let log = format!("{dir}/calls.log");
+        let mut provider = NodeProvider;
+        let code = run_with_provider(&mut provider, &script, &mutation, &sources, false);
+        assert_eq!(code, 1, "the first attempt's exit code is propagated");
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            calls.lines().count(),
+            1,
+            "mutation attempted exactly once: {calls}"
+        );
+        // The same failure on a read fails over to the next token.
+        let query: Vec<String> = ["api", "graphql", "-f", "query=query{viewer{login}}"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(is_read_call(&query));
+        let (dir2, script2) = fake_gh("read-node");
+        let log2 = format!("{dir2}/calls.log");
+        let mut provider = NodeProvider;
+        let code = run_with_provider(&mut provider, &script2, &query, &sources, false);
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&log2).unwrap();
+        assert_eq!(calls.lines().count(), 2, "both tokens attempted: {calls}");
     }
 
     // oracle: Drew's 2026-11-14 raw-mode contract — a LEADING

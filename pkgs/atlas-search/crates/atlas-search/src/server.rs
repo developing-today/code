@@ -21,7 +21,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,7 @@ use atlas_core::{
     JsonlFeedbackSink, JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode,
     SearchOptions, Sensitivity as CoreSensitivity, TraceContext,
     VectorBackend as CoreVectorBackend, chunk_classification, feedback_for, load_feedback_dir,
-    record_feedback, run_get_chunk, run_search_with_executor_traced,
+    record_feedback, run_get_chunk_with_context, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -270,7 +270,10 @@ pub fn default_service_config_path() -> PathBuf {
 }
 
 pub fn resolve_service_config_path(flag: Option<&Path>) -> PathBuf {
-    if let Some(p) = flag {
+    // An empty flag value counts as absent (same reasoning as
+    // service::base_url: the clap env binding on --config passes a
+    // set-but-empty ATLAS_SEARCH_SERVICE_CONFIG through as a value).
+    if let Some(p) = flag.filter(|p| !p.as_os_str().is_empty()) {
         return p.to_path_buf();
     }
     if let Ok(p) = std::env::var("ATLAS_SEARCH_SERVICE_CONFIG")
@@ -772,8 +775,23 @@ where
         if !allowed || excluded {
             return Err(not_found());
         }
-        run_get_chunk(self.backend.as_ref(), chunk_id, neighbors)
-            .map_err(|e| ServerError::from_core(&e))
+        // The explicit-id gate keeps its documented form (a
+        // by-id lookup with no caller ceiling; the LocalOwner
+        // context applies, exactly like the Python), while the
+        // caller's actual ceiling is threaded through so the
+        // occurrence provenance is bounded by it — never by the
+        // destination context's standalone ceiling (P1: a
+        // personal-capped caller must not receive secret-tier
+        // source locators, and a personal-only service must not
+        // request a secret-tier fan-out).
+        run_get_chunk_with_context(
+            self.backend.as_ref(),
+            chunk_id,
+            neighbors,
+            DisclosureContext::LocalOwner,
+            core_sensitivity(ceiling),
+        )
+        .map_err(|e| ServerError::from_core(&e))
     }
 
     fn embed_query(&self, text: &str, trunc: usize) -> Result<Vec<f32>, ServerError> {
@@ -2045,210 +2063,9 @@ fn parse_cursor(cursor: &str) -> Result<usize, ServerError> {
 
 // -------------------------------------------------------------- HTTP ----
 
-struct HttpRequest {
-    method: String,
-    path: String,
-    query: HashMap<String, String>,
-    headers: HashMap<String, String>,
-    body: Vec<u8>,
-}
+mod server_http;
 
-impl HttpRequest {
-    fn bearer(&self) -> Option<&str> {
-        let h = self.headers.get("authorization")?;
-        h.strip_prefix("Bearer ")
-            .or_else(|| h.strip_prefix("bearer "))
-    }
-
-    fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, ServerError> {
-        serde_json::from_slice(&self.body)
-            .map_err(|e| ServerError::bad_request(format!("invalid JSON body: {e}")))
-    }
-}
-
-struct HttpResponse {
-    status: u16,
-    body: Json,
-    retry_after_seconds: Option<u64>,
-}
-
-impl HttpResponse {
-    fn json(status: u16, body: Json) -> HttpResponse {
-        HttpResponse {
-            status,
-            body,
-            retry_after_seconds: None,
-        }
-    }
-
-    fn from_error(e: &ServerError) -> HttpResponse {
-        HttpResponse {
-            status: e.status,
-            body: serde_json::to_value(&e.body).unwrap_or_else(
-                |_| json!({"error": {"code": "internal", "message": "unserializable error"}}),
-            ),
-            retry_after_seconds: e.body.error.retry_after_seconds,
-        }
-    }
-}
-
-fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        202 => "Accepted",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        409 => "Conflict",
-        410 => "Gone",
-        429 => "Too Many Requests",
-        500 => "Internal Server Error",
-        504 => "Gateway Timeout",
-        _ => "Response",
-    }
-}
-
-fn url_decode(s: &str) -> String {
-    let mut out = Vec::new();
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(b) => {
-                        out.push(b);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn read_request(stream: &mut TcpStream) -> Result<Option<HttpRequest>, ServerError> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(60)))
-        .map_err(|e| ServerError::new(500, "internal", e.to_string()))?;
-    let mut buf: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 8192];
-    let header_end = loop {
-        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
-            break pos + 4;
-        }
-        if buf.len() > 64 * 1024 {
-            return Err(ServerError::bad_request("request headers too large"));
-        }
-        let n = stream
-            .read(&mut chunk)
-            .map_err(|e| ServerError::new(400, "bad_request", format!("read failed: {e}")))?;
-        if n == 0 {
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            return Err(ServerError::bad_request("connection closed mid-request"));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-    let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
-    let mut lines = head.lines();
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("").to_string();
-    if method.is_empty() || target.is_empty() {
-        return Err(ServerError::bad_request("malformed request line"));
-    }
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            headers.insert(k.trim().to_ascii_lowercase(), v.trim().to_string());
-        }
-    }
-    if headers
-        .get("expect")
-        .map(|v| v.to_ascii_lowercase().contains("100-continue"))
-        .unwrap_or(false)
-    {
-        let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
-    }
-    let content_length: usize = headers
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if content_length > 4 * 1024 * 1024 {
-        return Err(ServerError::bad_request("request body too large"));
-    }
-    let mut body: Vec<u8> = buf[header_end..].to_vec();
-    while body.len() < content_length {
-        let n = stream
-            .read(&mut chunk)
-            .map_err(|e| ServerError::new(400, "bad_request", format!("read failed: {e}")))?;
-        if n == 0 {
-            return Err(ServerError::bad_request("connection closed mid-body"));
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_length);
-    let (path, query) = match target.split_once('?') {
-        Some((p, q)) => {
-            let mut map = HashMap::new();
-            for pair in q.split('&').filter(|s| !s.is_empty()) {
-                let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-                map.insert(url_decode(k), url_decode(v));
-            }
-            (url_decode(p), map)
-        }
-        None => (url_decode(&target), HashMap::new()),
-    };
-    Ok(Some(HttpRequest {
-        method,
-        path,
-        query,
-        headers,
-        body,
-    }))
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn write_response(stream: &mut TcpStream, resp: &HttpResponse) {
-    let body = serde_json::to_string(&resp.body).unwrap_or_else(|_| "{}".to_string());
-    let mut head = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        resp.status,
-        reason(resp.status),
-        body.len()
-    );
-    if resp.status == 401 {
-        head.push_str("WWW-Authenticate: Bearer\r\n");
-    }
-    if let Some(secs) = resp.retry_after_seconds {
-        head.push_str(&format!("Retry-After: {secs}\r\n"));
-    }
-    head.push_str("\r\n");
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body.as_bytes());
-    let _ = stream.flush();
-}
+use server_http::*;
 
 // ---------------------------------------------------------- feedback ----
 
@@ -2532,6 +2349,7 @@ mod tests {
     use super::*;
     use atlas_core::types::{BranchHit, ChunkDetail, MessageRow, NeighborRow};
     use atlas_core::{FixedEmbedder, SearchBackend};
+    use std::net::TcpStream;
     use std::sync::Condvar;
 
     // ----- stub backend -------------------------------------------------

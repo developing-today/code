@@ -1,7 +1,8 @@
 # Laptop state backup set — inventory (developing-today/code#10298)
 
 The set definition is `laptop-state-backup.sh` (restic, daily ~05:40,
-`laptop-backups.nix`). Verified 2026-11-17 by names, paths and sizes only.
+`laptop-backups.nix`). Verified 2026-11-17 by names, paths and sizes only;
+acceptance evidence re-verified 2026-11-23 (see gap 3, resolved).
 No secret contents were read, printed or archived to produce this note.
 
 ## Backed-up sources (in the set)
@@ -12,6 +13,7 @@ No secret contents were read, printed or archived to produce this note.
 | `~/.local/state/opencode-claimant` | backed up directly (added #10298). Kept: `mode`, config, `fires.jsonl`, probe/poll/shadow JSON history. Excluded: per-run `*.out` / `*.err` logs (disposable, most of ~11M). |
 | `~/secrets/*.sops.yaml`            | backed up directly (ciphertext only)                                                                                                                                         |
 | `~/.ssh`                           | backed up directly                                                                                                                                                           |
+| `~/.config/sops/age/keys.txt`      | backed up directly (added #10295; sops age private key — restic repo is encrypted, so the key at rest is protected by restic encryption)                                     |
 
 ## Rendered and local files in `~/pm-stack` and `~/secrets`
 
@@ -42,14 +44,22 @@ Docker data stores (Kaneo Postgres, Grist sqlite, Pad sqlite + attachments
 
 ## Gaps (flagged, not fixed)
 
-1. **sops age key** `~/.config/sops/age/keys.txt` (75 bytes) is in **no backup
-   set**. The `*.sops.yaml` ciphertext is backed up, but without this key it
-   cannot be decrypted. Adding it is a decision (it is a private key); Drew
-   to decide. Vault copies of most values mitigate this.
+1. **sops age key vault copy** — `~/.config/sops/age/keys.txt` now rides the
+   restic set (this change; #10295 slice 1), so a disk loss is recoverable
+   from the encrypted restic snapshots. A named Bitwarden vault copy
+   (`sops.age-private-key-laptop` or equivalent) is still missing — vault
+   holds only `sops.age-private-key-sandbox` (verified by name only,
+   2026-11-23). Storing the laptop private key needs the dedicated secrets
+   flow (key file piped directly to the vault, value never printed); left
+   for the next slice.
 2. **Bare mirror rebuild** is an untested inference, per the 2026-11-14 audit.
-3. **Snapshot evidence** (acceptance 1): not yet produced. The installed unit
-   runs the nix-store copy of the script, so the new source appears only
-   after the flake is rebuilt and the next daily run completes.
+3. **Snapshot evidence** (acceptance 1): RESOLVED 2026-11-23. The deployed
+   unit's nix-store script includes the claimant source, the daily run's
+   last-success marker reads 2026-11-22 05:44:57 CST, and local restic
+   snapshot `bbbcb3d6` (2026-11-22 05:44:05 -0600, tag `laptop-state-daily`)
+   was listed back with `restic ls`: its paths include
+   `/home/user/.local/state/opencode-claimant/mode` and `fires.jsonl`
+   (names only; no contents read).
 
 ## Projector boundary (unchanged)
 

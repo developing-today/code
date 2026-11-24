@@ -42,7 +42,10 @@ export function parseArgs(args: string[]): Command {
     throw new Error("--as-of must be a canonical ISO-8601 timestamp");
   }
   // Resolve now so bad/implicit period identities fail before any store I/O.
-  reportPeriod(kind, identity);
+  const period = reportPeriod(kind, identity);
+  if (Date.parse(asOf) < Date.parse(period.periodStart) || Date.parse(asOf) >= Date.parse(period.periodEnd)) {
+    throw new Error("--as-of must fall within the report period");
+  }
   const store = values.get("--store")?.trim();
   if (values.has("--store") && !store) throw new Error("--store must not be empty");
   return { kind, identity, asOf, ...(store ? { store } : {}) };

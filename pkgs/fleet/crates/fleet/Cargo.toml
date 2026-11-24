@@ -36,7 +36,16 @@ fleet-bridge = { workspace = true, optional = true }
 # verbs (enroll, doctor, next, shortlist) and `fleet shell`; a
 # working-seat client, so full only.
 fleet-agent = { workspace = true, optional = true }
+# The cert domain (code#9157): PKI/X.509 roots, issuers, leaves,
+# chains and bundles over the fleet-cert library crate.
+fleet-cert = { workspace = true, optional = true }
 serde_json = { workspace = true }
+# The OpenCode session liveness probe (session_state.rs) only;
+# optional so the connect variant stays under the D7 size gate.
+base64 = { version = "0.23", optional = true }
+# The actions domain's R2 egress helper (#13774): SigV4 signing
+# over the workspace SHA-256.
+sha2 = { workspace = true, optional = true }
 # The gh domain (code#8887) mints App installation tokens over the
 # GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
 # native-tls). Only the JSON-free surface is needed: bodies are read
@@ -45,6 +54,16 @@ ureq = { version = "3", default-features = false, features = [
   "rustls",
   "platform-verifier",
 ], optional = true }
+# The gh domain's Metadata create path (code#9073): Ed25519 stamp
+# signatures over the canonical provenance form. Deterministic
+# RFC 8032 signing is the conformance surface — the hosted edition's
+# golden vectors (pkgs/fleet/hosted-worker/test/stamp-sig.test.ts)
+# must reproduce byte-exact — so signing is a library call, not a
+# subprocess. Same major version as pkgs/id's id-worlds.
+ed25519-dalek = { version = "3", optional = true }
+# The gh domain's Metadata store (code#9073): #9074's pm_metadata
+# schema over SQLite. Same pin as fleet-queue.
+rusqlite = { version = "0.42", features = ["bundled"], optional = true }
 # Direct dep for the SIGPIPE disposition reset in main (#5569);
 # already in the workspace lockfile as a transitive dependency.
 [target.'cfg(unix)'.dependencies]
@@ -67,10 +86,17 @@ full = [
   "dispatch",
   "dispatch-test",
   "laptop-agent",
+  "commander",
+  "http",
+  "ssh",
+  "laptop",
   "secrets",
   "gh",
   "bridge",
   "agent",
+  "cert",
+  "actions",
+  "opencode-probe",
 ]
 # The serve variant's set, as one feature for the nix build.
 serve = [
@@ -79,6 +105,7 @@ serve = [
   "secrets-broker",
   "search-serve",
   "secrets",
+  "opencode-probe",
 ]
 proxy-serve = ["fleet-proxy/serve"]
 queue = ["dep:fleet-secrets", "dep:fleet-queue", "fleet-queue/client"]
@@ -107,8 +134,39 @@ secrets = ["dep:fleet-secrets"]
 # The gh passthrough (code#8887): a working-seat client tool, so
 # full only — the serve build's daemons shell out to it externally
 # if ever needed, it is not a daemon role.
-gh = ["dep:fleet-secrets", "dep:ureq"]
+gh = [
+  "dep:fleet-secrets",
+  "dep:ureq",
+  "dep:base64",
+  "dep:ed25519-dalek",
+  "dep:rusqlite",
+]
 laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
+# The laptop route forms (developing-today/code#13717): T1 commander
+# (an MCP client over ureq; the bearer comes from fleet-secrets), T2
+# http (the daemon client, HTTP legs only), T3 ssh (no deps: the
+# binary owns the ssh argv), T0 the tiered walker composing T1-T3.
+commander = ["dep:fleet-secrets", "dep:ureq"]
+http = ["dep:fleet-laptop-agent"]
+ssh = []
+laptop = ["commander", "http", "ssh"]
+# The actions domain (#13774): live exec sessions inside Actions
+# runners — seat verbs over the queue client, the runner-side
+# agent, and the R2 egress helper (SigV4 over sha2). Full only.
+actions = [
+  "dep:fleet-secrets",
+  "dep:fleet-queue",
+  "fleet-queue/client",
+  "dep:ureq",
+  "dep:sha2",
+]
+# Ask the local OpenCode server whether a worktree's recorded session
+# is live before reusing it (session_state.rs). In full and serve;
+# never in connect, where ureq+rustls would break the D7 2 MiB gate
+# and no local OpenCode server is expected. Without it a recorded
+# session is treated as not live, the same answer as an unreachable
+# server.
+opencode-probe = ["dep:ureq", "dep:base64"]
 # Fleet messaging through the message bridge: central sends messages or
 # commands; agents read, answer and ack. Full only (a client, not a role).
 bridge = ["dep:fleet-bridge"]
@@ -116,6 +174,9 @@ bridge = ["dep:fleet-bridge"]
 # It runs the other domains' verbs through this same binary, so it links
 # only fleet-config. Full only.
 agent = ["dep:fleet-agent"]
+# The cert domain: a working-seat PKI client surface, so full only —
+# never in serve (no daemon role) or connect (size gate).
+cert = ["dep:fleet-cert"]
 
 [dev-dependencies]
 # Property tests for the gh read classifier (AGENTS.md testing

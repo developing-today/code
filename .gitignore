@@ -112,6 +112,8 @@ terraform.rc
 .env.local
 .claude/settings.local.json
 .opencode/worktree-session-state.json
+# Fleet's per-worktree session marker is runtime state, not source.
+.fleet-session-id
 *_ses_*.json
 ses_*.json
 **/*_ses_*.json
@@ -185,6 +187,16 @@ codedb.snapshot
 
 # pm-stack aggregator runtime event log (written by the live service; tracking it blocks pm-git-sync fast-forward — #4906)
 pm-stack/aggregator/events.json
+
+# Zig guest SDK build outputs (#12596): `zig build` writes its cache and
+# install tree next to build.zig; they are regenerable and must never be
+# committed.
+/.zig-cache/
+/zig-out/
+pkgs/id/examples/zig-sdk/.zig-cache/
+pkgs/id/examples/zig-sdk/zig-out/
+pkgs/id/examples/zig-counter/.zig-cache/
+pkgs/id/examples/zig-counter/zig-out/
 
 # mcpx tooling run from the checkout writes its schema cache in-tree
 # (.cache/mcpx/schemas-<hash>.json); untracked, it made pm-git-sync's
