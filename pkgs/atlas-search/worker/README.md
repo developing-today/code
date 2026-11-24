@@ -34,6 +34,12 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   revision, vector table, and k. A cached entry is never served
   across ceilings, disclosure contexts, or embedding spaces;
   entries keyed under schema v1 are orphaned, never served.
+- `src/measurement.ts` — the D1 hot-cache measurement report
+  (#13107; design #9134 §7): the §7 counters (hits, skips,
+  revalidations per class and tenant; stale_serves, expected
+  zero; estimated Turso cost avoided; D1 bytes per tenant vs
+  quota) rendered as a report for #9098's economics prototype.
+  Pure accumulator + renderer, fed by the read path (follow-on 4).
 
 ## Endpoints
 
@@ -82,8 +88,8 @@ wired into the request path at all: nothing in the Worker calls
 it outside tests, so the flag alone does not activate the cache —
 with the flag on and the binding present, the Worker still never
 touches D1 and the read path is unchanged. Freshness
-(#13101), admission/eviction (#13103), and read-path integration
-(#13105) are separate follow-ons. The committed `database_id` is a
+(#13101), admission/eviction (#13103), measurement (#13107),
+and read-path integration (#13105) are separate follow-ons. The committed `database_id` is a
 local placeholder: the real `atlas-hot-cache` database is created at
 deploy time and its id replaces the placeholder in both
 `wrangler.toml` and `cloudflare.config.ts`.
