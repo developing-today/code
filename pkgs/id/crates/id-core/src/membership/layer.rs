@@ -943,7 +943,7 @@ mod tests {
             member_keys(&layer, 30),
             vec![AuthId::Key(key(1)), AuthId::Key(key(2))]
         );
-        assert_eq!(layer.members(id(10)), [] as [(membership::AuthId, p2panda_auth::Access); 0]);
+        assert_eq!(layer.members(id(10)), [] as [(crate::membership::AuthId, p2panda_auth::Access); 0]);
     }
 
     #[test]

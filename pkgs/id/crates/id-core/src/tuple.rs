@@ -1175,7 +1175,7 @@ mod tests {
     #[test]
     fn test_decode_empty() {
         let vals = decode(&[]).unwrap();
-        assert_eq!(vals, [] as [tuple::TupleValue; 0]);
+        assert_eq!(vals, [] as [crate::tuple::TupleValue; 0]);
     }
 
     #[test]

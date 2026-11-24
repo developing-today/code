@@ -1825,7 +1825,7 @@ mod tests {
         let eval = evaluator();
         assert_eq!(
             eval.counters().snapshot_directional(),
-            [] as [(([u8; 32], [u8; 32]), abuse::DirectionalCounters); 0]
+            [] as [(([u8; 32], [u8; 32]), crate::abuse::DirectionalCounters); 0]
         );
     }
 }
@@ -1886,7 +1886,7 @@ mod budget_tests {
         );
         assert_eq!(
             policy.counterparty_overrides,
-            [] as [([u8; 32], std::vec::Vec<abuse::BudgetLimit>); 0]
+            [] as [([u8; 32], std::vec::Vec<crate::abuse::BudgetLimit>); 0]
         );
     }
 
@@ -2105,7 +2105,7 @@ mod budget_tests {
         .expect("unconfigured budgets never refuse");
         assert_eq!(
             eval.budget_usage(0),
-            [] as [(abuse::BudgetScope, abuse::BudgetLimit, abuse::BudgetUsage); 0]
+            [] as [(crate::abuse::BudgetScope, crate::abuse::BudgetLimit, crate::abuse::BudgetUsage); 0]
         );
     }
 }

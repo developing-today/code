@@ -600,7 +600,7 @@ mod tests {
         assert_eq!(server.read(ATTR, None, None).unwrap(), []);
         assert_eq!(
             server.pending(ATTR, &key(1).verifying_key()).unwrap(),
-            [] as [&append_list::PendingSubmission; 0]
+            [] as [&crate::append_list::PendingSubmission; 0]
         );
         assert_eq!(server.own_state(ATTR, &public, &hash), Ok(None));
     }
@@ -619,7 +619,7 @@ mod tests {
         server.open(ATTR, &key(1).verifying_key()).unwrap();
         assert_eq!(
             server.pending(ATTR, &key(1).verifying_key()).unwrap(),
-            [] as [&append_list::PendingSubmission; 0]
+            [] as [&crate::append_list::PendingSubmission; 0]
         );
         assert_eq!(server.read(ATTR, None, None).unwrap(), []);
     }
