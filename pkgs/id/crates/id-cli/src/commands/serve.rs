@@ -90,6 +90,14 @@ use id_groups::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
 use id_groups::groups::warnings::{Evaluator, Observation, Warning};
 use id_store::store::{load_or_create_keypair, open_store};
 use id_store::tags::TagStore;
+#[cfg(feature = "web")]
+use id_sync::forwarding_sink::ForwardingSink;
+#[cfg(feature = "web")]
+use id_sync::graph_frontier::GraphFrontier;
+#[cfg(feature = "web")]
+use id_sync::relay_gate::RelayGate;
+#[cfg(feature = "web")]
+use id_sync::relay_ingest::{CHAINED_RELAY_ALPN, ChainedRelayProtocol};
 
 mod gossip;
 mod startup;
@@ -1835,6 +1843,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         }
         None => router_builder,
     };
+    // Relay authorization uses the same signed-graph store as LocalEvents.
+    // Serve has no neighbour-discovery view at this layer yet, so this slice
+    // serves the gated ALPN with an empty fan-out set.
+    #[cfg(feature = "web")]
+    let router_builder = match &event_events {
+        Some(events) => {
+            let store = events.lock().await.shared_store();
+            let frontier = GraphFrontier::new(store);
+            let relay_key = ed25519_dalek::SigningKey::from_bytes(&key.to_bytes());
+            let sink =
+                ForwardingSink::fanning_out(node_id.to_string(), endpoint.clone(), Vec::new());
+            let protocol = ChainedRelayProtocol::new(RelayGate::new(&relay_key, frontier), sink);
+            router_builder.accept(CHAINED_RELAY_ALPN, protocol)
+        }
+        None => router_builder,
+    };
     let router = router_builder.spawn();
     info!("serve startup: router spawned (#190 breadcrumb)");
 
@@ -2352,8 +2376,22 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         status!(
             "world ssh over iroh: `id world ssh-tunnel <node-id>` then `ssh -p 2222 <world>@127.0.0.1`"
         );
+        // #787 Slice E: kitty keyboard negotiation is opt-in per server,
+        // for worlds compiled with the extended Key module; every other
+        // world keeps the legacy input semantics by default.
+        let kitty_keyboard = std::env::var("ID_WORLD_SSH_KITTY_KEYBOARD")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        if kitty_keyboard {
+            status!(
+                "world ssh kitty keyboard: enabled (kitty-disambiguate-v1, negotiated per session)"
+            );
+        }
+        let options = id_worlds::world_ssh::SshServeOptions { kitty_keyboard };
         tokio::spawn(async move {
-            if let Err(e) = id_worlds::world_ssh::serve(listener, hub, host_key, blobs).await {
+            if let Err(e) =
+                id_worlds::world_ssh::serve_with_options(listener, hub, host_key, blobs, options)
+                    .await
+            {
                 tracing::error!("world ssh server error: {}", e);
             }
         })

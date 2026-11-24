@@ -122,8 +122,7 @@ function pageSigningPreimage(body: PageEnvelope["body"]): Uint8Array {
 }
 
 function requireIdentity(tenant: unknown, subject: unknown): asserts tenant is string {
-  if (typeof tenant !== "string" || tenant.length === 0 ||
-      typeof subject !== "string" || subject.length === 0) {
+  if (typeof tenant !== "string" || tenant.length === 0 || typeof subject !== "string" || subject.length === 0) {
     throw new Error("tenant and subject are required");
   }
 }
@@ -158,9 +157,14 @@ export class RecommendationAccumulator {
       return Response.json({ error: { code: "not_found", message: "no route" } }, { status: 404 });
     } catch (error) {
       const code = (error as { code?: string }).code ?? "recommendation_failed";
-      const status = code === "RecommendationPartitionMismatch" ? 403 :
-        code === "CursorExpired" || code === "RecommendationReplayExpired" ? 410 :
-        code === "recommendation_failed" ? 500 : 400;
+      const status =
+        code === "RecommendationPartitionMismatch"
+          ? 403
+          : code === "CursorExpired" || code === "RecommendationReplayExpired"
+            ? 410
+            : code === "recommendation_failed"
+              ? 500
+              : 400;
       return Response.json({ error: { code, message: (error as Error).message } }, { status });
     }
   }
@@ -177,12 +181,19 @@ export class RecommendationAccumulator {
     let signature: Uint8Array;
     if (typeof signatureHex === "string" && /^(?:[0-9a-f]{2})+$/.test(signatureHex)) {
       signature = hexToBytes(signatureHex);
-    } else if (Array.isArray(rawSignature) && rawSignature.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) {
+    } else if (
+      Array.isArray(rawSignature) &&
+      rawSignature.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)
+    ) {
       signature = new Uint8Array(rawSignature as number[]);
     } else if (typeof rawSignature === "object" && rawSignature !== null && !Array.isArray(rawSignature)) {
-      const indexed = Object.entries(rawSignature as Record<string, unknown>)
-        .sort(([a], [b]) => Number(a) - Number(b));
-      if (indexed.every(([key, value], index) => key === String(index) && Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 255)) {
+      const indexed = Object.entries(rawSignature as Record<string, unknown>).sort(([a], [b]) => Number(a) - Number(b));
+      if (
+        indexed.every(
+          ([key, value], index) =>
+            key === String(index) && Number.isInteger(value) && Number(value) >= 0 && Number(value) <= 255,
+        )
+      ) {
         signature = new Uint8Array(indexed.map(([, value]) => Number(value)));
       } else {
         throw new Error("parent signature must be byte data or signature_hex");
@@ -258,14 +269,19 @@ export class RecommendationAccumulator {
       throw new RecommendationPartitionError();
     }
 
-    const cursor = raw.cursor === undefined
-      ? { parent_snapshot_id: stored.parent_snapshot_id, position: 0 }
-      : objectBody(raw.cursor) as unknown as PageCursor;
+    const cursor =
+      raw.cursor === undefined
+        ? { parent_snapshot_id: stored.parent_snapshot_id, position: 0 }
+        : (objectBody(raw.cursor) as unknown as PageCursor);
     if (cursor.parent_snapshot_id !== stored.parent_snapshot_id) {
       // Use the canonical state-machine error and keep parent binding in one place.
       await pageFromCursor(
-        { parent: stored.parent, parent_snapshot_id: stored.parent_snapshot_id,
-          ordered: stored.ordered, page_size: PAGE_SIZE },
+        {
+          parent: stored.parent,
+          parent_snapshot_id: stored.parent_snapshot_id,
+          ordered: stored.ordered,
+          page_size: PAGE_SIZE,
+        },
         cursor,
         "00",
       );
@@ -276,8 +292,12 @@ export class RecommendationAccumulator {
     }
     if (cursor.expires_at !== undefined && Date.now() >= cursor.expires_at) {
       await pageFromCursor(
-        { parent: stored.parent, parent_snapshot_id: stored.parent_snapshot_id,
-          ordered: stored.ordered, page_size: PAGE_SIZE },
+        {
+          parent: stored.parent,
+          parent_snapshot_id: stored.parent_snapshot_id,
+          ordered: stored.ordered,
+          page_size: PAGE_SIZE,
+        },
         cursor,
         "00",
       );

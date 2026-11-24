@@ -110,6 +110,7 @@ pub mod doc;
 pub mod gallery;
 pub mod groups;
 pub mod match_audit;
+pub mod petname;
 pub mod tag;
 pub mod walk;
 pub mod world;
@@ -120,6 +121,7 @@ pub use doc::DocCommand;
 pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 pub use match_audit::MatchAuditCommand;
+pub use petname::PetnameCommand;
 pub use tag::TagCommand;
 pub use walk::WalkCommand;
 pub use world::{
@@ -1396,6 +1398,15 @@ pub enum Command {
     /// Administer a program gallery directory: removals, appeals, review,
     /// posture and operator tags, all on the public transparency list.
     Gallery(GalleryArgs),
+    /// List the petnames one owner gave, read-only, from a petnames journal.
+    Petname {
+        /// Print JSON instead of lines.
+        #[arg(long, global = true)]
+        json: bool,
+        /// The petname action to run.
+        #[command(subcommand)]
+        command: PetnameCommand,
+    },
     /// Export and verify signed match-audit v0 logs.
     #[command(subcommand)]
     MatchAudit(MatchAuditCommand),

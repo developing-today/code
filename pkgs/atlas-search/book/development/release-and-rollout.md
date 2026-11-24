@@ -35,6 +35,7 @@ day is [Running the service and the Worker](../operations/services.md).
    crates, not the dependency tree; the build's check phase runs the
    test suite and its install check runs the smoke script, so a green
    build is already a tested artefact.
+
 2. **Deploy through home configuration.** The service package is
    `pkgs.callPackage ../../pkgs/atlas-search { … }` in
    `home/common/default.nix`, with the toolchain read from
@@ -64,7 +65,7 @@ day is [Running the service and the Worker](../operations/services.md).
    serve path is debugging the rollback, not the live service.
 5. **Verify in place, by surface.** `GET /health` on the loopback port
    answers without auth — `{status: "ok", embedder_state,
-   queue_depth, …}` — and the embedder state must reach ready; then one
+queue_depth, …}` — and the embedder state must reach ready; then one
    real search through the surface the change touched (the CLI, the
    service, or `fleet search`), checked against what the change was
    supposed to do. A version string alone is not verification.

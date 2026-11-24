@@ -1387,10 +1387,14 @@ describe("HTTP surface", () => {
       expect(readConfig({ HOME: "/h" }).androidApk).toBe("/h/.local/state/pm-console/android/pm-console.apk");
       const owner = { ...deps("owner"), cfg };
       // No build yet: the page is told so, and the link answers 404.
-      expect(((await (await handle(get("/console/api/me"), owner)).json()) as { androidApp: boolean }).androidApp).toBe(false);
+      expect(((await (await handle(get("/console/api/me"), owner)).json()) as { androidApp: boolean }).androidApp).toBe(
+        false,
+      );
       expect((await handle(get("/console/pm-console.apk"), owner)).status).toBe(404);
       writeFileSync(join(dir, "pm-console.apk"), "PK\u0003\u0004 signed apk bytes");
-      expect(((await (await handle(get("/console/api/me"), owner)).json()) as { androidApp: boolean }).androidApp).toBe(true);
+      expect(((await (await handle(get("/console/api/me"), owner)).json()) as { androidApp: boolean }).androidApp).toBe(
+        true,
+      );
       const res = await handle(get("/console/pm-console.apk"), owner);
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe("application/vnd.android.package-archive");

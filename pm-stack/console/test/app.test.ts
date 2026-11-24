@@ -36,6 +36,7 @@ import {
   servingSaid,
   subscriptionState,
   testSaid,
+  unreadSaid,
   whySaid,
   workerSaid,
 } from "../public/app.js";
@@ -395,11 +396,23 @@ test("what a form on a plan screen sends is the owner's words and only the choic
 });
 
 test("a change form names a phase only when moving, and a name only when adding under", () => {
-  expect(changeAsked({ action: "move", to: "now", itemTitle: "left over from before" }) as { action: string; to?: string; title?: string }).toEqual({
+  expect(
+    changeAsked({ action: "move", to: "now", itemTitle: "left over from before" }) as {
+      action: string;
+      to?: string;
+      title?: string;
+    },
+  ).toEqual({
     action: "move",
     to: "now",
   });
-  expect(changeAsked({ action: "add-under", to: "now", itemTitle: "Tiles" }) as { action: string; to?: string; title?: string }).toEqual({
+  expect(
+    changeAsked({ action: "add-under", to: "now", itemTitle: "Tiles" }) as {
+      action: string;
+      to?: string;
+      title?: string;
+    },
+  ).toEqual({
     action: "add-under",
     title: "Tiles",
   });
@@ -960,9 +973,106 @@ test("why something could not be read is said in the owner's words where the rea
   );
   // None of the raw answer is shown: no JSON, no request number, no user number.
   expect(/[{}"]|request ID|11225574/.test(said)).toBe(false);
-  expect(whySaid("You have exceeded a secondary rate limit")).toBe(said);
+  // Turned away for going too fast is not the hour's allowance, and is not said to be.
+  const fast = "GitHub turned this account away for asking too often just now";
+  expect(whySaid("You have exceeded a secondary rate limit")).toBe(`${fast}; it is asked again every few minutes`);
+  // Where Cloudflare was the one turned away, why starts with the time GitHub gave, and that
+  // time is said as the clock on this device shows it.
+  const now = Date.UTC(2026, 10, 23, 17, 20, 0);
+  const back = Date.UTC(2026, 10, 23, 18, 0, 0);
+  const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const then = (at: number) => `GitHub says it answers again at ${clock(at)}, and it is not asked before then`;
+  const asked = (at: number, why: string) => `GitHub says to ask again at ${new Date(at).toISOString()}: ${why}`;
+  const hour = "GitHub's allowance for the hour is used up on this account, which the agents share";
+  const timed = `fleet gh failed (exit 1): ${asked(back, limited)}`;
+  expect(whySaid(timed, now)).toBe(`${hour}; ${then(back)}`);
+  expect(/[{}"]|request ID|11225574|2026-11-23T/.test(whySaid(timed, now))).toBe(false);
+  // What Cloudflare says of a call it did not make, GitHub having said not to ask yet: the same.
+  expect(whySaid(asked(back, `not asked again since GitHub answered: ${limited}`), now)).toBe(whySaid(timed, now));
+  // Read after the time has come (the notice is older than the wait): no time already past is promised.
+  expect(whySaid(timed, back + 1)).toBe(
+    `${hour}; the time GitHub gave for asking again has come, and it is being asked`,
+  );
+  expect(whySaid(timed, back)).toBe(whySaid(timed, back + 1));
+  // Going too fast, with a time.
+  expect(whySaid(asked(back, "You have exceeded a secondary rate limit"), now)).toBe(`${fast}; ${then(back)}`);
+  // GitHub says "rate limit exceeded" of searches too, which it counts by the minute: a wait
+  // of a minute or two is not the hour's allowance, whatever the words.
+  expect(whySaid(asked(now + 40_000, limited), now)).toBe(`${fast}; ${then(now + 40_000)}`);
+  expect(whySaid(asked(now + 120_000, limited), now)).toBe(`${fast}; ${then(now + 120_000)}`);
+  expect(whySaid(asked(now + 120_001, limited), now)).toBe(`${hour}; ${then(now + 120_001)}`);
+  // Turned away with a time and no words at all.
+  expect(whySaid(asked(back, "GitHub answered http 429"), now)).toBe(`${fast}; ${then(back)}`);
+  // A time that is not one is not read as one.
+  expect(whySaid("GitHub says to ask again at teatime: API rate limit exceeded", now)).toBe(said);
   // Anything else is said as it came, and nothing is said as "no reason given".
   expect(whySaid("connection refused")).toBe("connection refused");
   expect(whySaid("  timed out \n")).toBe("timed out");
   for (const none of ["", null, undefined, "   "]) expect([none, whySaid(none)]).toEqual([none, "no reason given"]);
+});
+
+test("each list that could not be read is said on the screens that show it, with why and how old the copy is", () => {
+  const now = Date.UTC(2026, 10, 23, 17, 20, 0);
+  const limited =
+    'fleet gh failed (exit 1): {"message":"API rate limit exceeded for user ID 11225574.","status":"403"}';
+  const doc = {
+    health: {
+      prs: { ok: false, error: limited },
+      priorities: { ok: true, error: null },
+      agents: { ok: false, error: "bridge: connection refused" },
+      services: { ok: false, error: "systemctl: timed out" },
+      // Not read, and no reason given: nothing is made up for it.
+      more: { ok: false, error: null },
+    },
+    // When each was last tried: just now, and failing. Not how old what is shown is.
+    read: {
+      prs: new Date(now - 20_000).toISOString(),
+      agents: new Date(now - 20_000).toISOString(),
+      services: new Date(now - 20_000).toISOString(),
+    },
+    // When what is shown of each was read.
+    good: {
+      prs: new Date(now - 12 * 60_000).toISOString(),
+      agents: null,
+      services: new Date(now - 2 * 3600_000).toISOString(),
+    },
+  };
+  const hour =
+    "GitHub's allowance for the hour is used up on this account, which the agents share; it is asked again every few minutes and answers when the hour turns";
+  // A screen that shows all of a document's lists is told of each, in the document's order.
+  expect(unreadSaid(doc, null, now)).toEqual([
+    `Could not read pull requests just now: ${hour}. Showing the last good copy, read 12 min ago.`,
+    "Could not read agents just now: bridge: connection refused. Showing the last good copy.",
+    "Could not read the machine's units just now: systemctl: timed out. Showing the last good copy, read 2 h ago.",
+  ]);
+  // A screen that shows one list is told of that one, and of no other's trouble.
+  expect(unreadSaid(doc, ["prs"], now)).toEqual([
+    `Could not read pull requests just now: ${hour}. Showing the last good copy, read 12 min ago.`,
+  ]);
+  expect(unreadSaid(doc, ["priorities"], now)).toEqual([]);
+  expect(unreadSaid(doc, ["agents", "services"], now)).toHaveLength(2);
+  // A copy of the document from before it said when each list was read (one kept on a
+  // device) gives no age, and none is made up from when reading was last tried.
+  expect(unreadSaid({ health: doc.health, read: doc.read }, ["prs"], now)).toEqual([
+    `Could not read pull requests just now: ${hour}. Showing the last good copy.`,
+  ]);
+  // A document with nothing wrong, or none yet, says nothing.
+  expect(unreadSaid({ health: { prs: { ok: true, error: null } } }, null, now)).toEqual([]);
+  for (const none of [null, undefined, {}]) expect(unreadSaid(none, ["prs"], now)).toEqual([]);
+  // Every screen drawn from the operations document names its own list, so that none shows
+  // an old copy with nothing said (the Pull requests screen did, until this was written).
+  const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  for (const [view, list] of [
+    ["viewPrs", "prs"],
+    ["viewIssues", "priorities"],
+    ["viewAgents", "agents"],
+    ["viewServices", "services"],
+  ]) {
+    const at = source.indexOf(`function ${view}(`);
+    const body = source.slice(
+      at,
+      source.indexOf("\nfunction ", at + 10) > 0 ? source.indexOf("\nfunction ", at + 10) : undefined,
+    );
+    expect([view, at > 0 && body.includes(`...notices(docs.ops, ["${list}"])`)]).toEqual([view, true]);
+  }
 });

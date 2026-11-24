@@ -98,9 +98,15 @@ fn atlas_metadata_version_conformance_fixtures() {
         // And it must still parse as the fixture's object: usable, not
         // merely stored.
         let parsed: Value = serde_json::from_str(meta).unwrap();
-        assert_eq!(parsed, case["object"], "{id}: meta parses to the fixture object");
+        assert_eq!(
+            parsed, case["object"],
+            "{id}: meta parses to the fixture object"
+        );
 
         let _ = std::fs::remove_dir_all(db.parent().unwrap());
     }
-    assert!(executed >= 4, "expected at least 4 executable cases, ran {executed}");
+    assert!(
+        executed >= 4,
+        "expected at least 4 executable cases, ran {executed}"
+    );
 }

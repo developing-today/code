@@ -39,12 +39,12 @@ pkgs/atlas-search/
 The workspace members, declared in the root `Cargo.toml` (edition 2024,
 `rust-version` 1.96, licence MIT OR Apache-2.0):
 
-| Crate | What it holds |
-|---|---|
-| `crates/atlas-core` | Search semantics as a library: filters and sensitivity ceilings, the FTS and vector branches, RRF fusion, the result envelope, the Turso and local backends, plus staging, classification, the ingest gate, evaluation and trace machinery. It also carries four of the six binaries, auto-discovered from `src/bin/`: `atlas-classify`, `atlas-eval`, `atlas-github-comments` and `atlas-sweep`. See [atlas-core: the engine as a library](../library/atlas-core.md). |
-| `crates/atlas-embed` | The Snowflake Arctic embedder: dynamically loaded ONNX Runtime plus the model's own Unigram tokenizer. A single `src/lib.rs`, plus the Gate A parity test. See [atlas-embed: embeddings as a library](../library/atlas-embed.md). |
-| `crates/atlas-proto` | The wire contract shared by the service and its clients: the job-protocol types and `query-parameters-v1.json`, the versioned file the query defaults are derived from. See [atlas-proto: the wire contract](../library/atlas-proto.md). |
-| `crates/atlas-search` | The `atlas-search` binary: the CLI, the via-service client and `serve`, in `src/main.rs`, `src/server.rs` (with `src/server/` submodules), `src/service.rs` and `src/fetch_model.rs`, plus the Python-shaped JSON writer (`src/pyjson.rs`) and envelope renderer (`src/render.rs`). One extra binary lives here: `atlas-stage`, from `src/bin/atlas-stage.rs`. |
+| Crate                 | What it holds                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crates/atlas-core`   | Search semantics as a library: filters and sensitivity ceilings, the FTS and vector branches, RRF fusion, the result envelope, the Turso and local backends, plus staging, classification, the ingest gate, evaluation and trace machinery. It also carries four of the six binaries, auto-discovered from `src/bin/`: `atlas-classify`, `atlas-eval`, `atlas-github-comments` and `atlas-sweep`. See [atlas-core: the engine as a library](../library/atlas-core.md). |
+| `crates/atlas-embed`  | The Snowflake Arctic embedder: dynamically loaded ONNX Runtime plus the model's own Unigram tokenizer. A single `src/lib.rs`, plus the Gate A parity test. See [atlas-embed: embeddings as a library](../library/atlas-embed.md).                                                                                                                                                                                                                                      |
+| `crates/atlas-proto`  | The wire contract shared by the service and its clients: the job-protocol types and `query-parameters-v1.json`, the versioned file the query defaults are derived from. See [atlas-proto: the wire contract](../library/atlas-proto.md).                                                                                                                                                                                                                               |
+| `crates/atlas-search` | The `atlas-search` binary: the CLI, the via-service client and `serve`, in `src/main.rs`, `src/server.rs` (with `src/server/` submodules), `src/service.rs` and `src/fetch_model.rs`, plus the Python-shaped JSON writer (`src/pyjson.rs`) and envelope renderer (`src/render.rs`). One extra binary lives here: `atlas-stage`, from `src/bin/atlas-stage.rs`.                                                                                                         |
 
 The full crate inventory is [The crates](../library/crates.md).
 
@@ -100,7 +100,7 @@ runs as its install check.
 
 One file today: `content-hash-v1.json`, pinning the classification
 manifest's content hash with known-answer vectors — and recording, just as
-explicitly, that the chunk `content_hash` producer is *not* pinned there
+explicitly, that the chunk `content_hash` producer is _not_ pinned there
 and that interop claims for it are forbidden until it is.
 
 ### `onnxruntime/` — the vendored runtime

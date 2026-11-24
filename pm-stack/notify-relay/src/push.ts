@@ -65,9 +65,7 @@ export async function encryptPayload(target: PushTarget, plaintext: Uint8Array):
   const local = (await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, [
     "deriveBits",
   ])) as CryptoKeyPair;
-  const localPublic = new Uint8Array(
-    (await crypto.subtle.exportKey("raw", local.publicKey)) as ArrayBuffer,
-  );
+  const localPublic = new Uint8Array((await crypto.subtle.exportKey("raw", local.publicKey)) as ArrayBuffer);
   // The casts in this function are for the workers-types surface:
   // its exportKey returns an ArrayBuffer|JsonWebKey union and its
   // deriveBits params type predates the standard ECDH params
@@ -184,7 +182,12 @@ export async function sendPush(targets: PushTarget[], payload: unknown, opts: Se
       }
     })();
     try {
-      const authorization = await vapidAuthorization(target.endpoint, signer, now(), opts.vapidPublicKey ?? VAPID_PUBLIC_KEY);
+      const authorization = await vapidAuthorization(
+        target.endpoint,
+        signer,
+        now(),
+        opts.vapidPublicKey ?? VAPID_PUBLIC_KEY,
+      );
       const res = await poster(target.endpoint, {
         method: "POST",
         headers: {

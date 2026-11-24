@@ -373,7 +373,12 @@ export function runMetadataCheck(item: IngestionItem, context: MetadataCheckCont
     const { candidateSlugs } = resolveAscertainedParent(item, context.epicSlugs);
     return {
       kind: "needs-triage",
-      evidence: triageEvidence(item, ["existing metadata block is unparseable; ascertainment insufficient"], candidateSlugs, true),
+      evidence: triageEvidence(
+        item,
+        ["existing metadata block is unparseable; ascertainment insufficient"],
+        candidateSlugs,
+        true,
+      ),
     };
   }
 
@@ -435,11 +440,7 @@ function ascertain(
  * fields the broker validates (schema, kind, problem, priority_reason,
  * non-empty evidence/acceptance/tests, scope, risk, timebox, attempts).
  */
-export function buildTriagePacket(
-  evidence: TriageEvidence,
-  ingestedBy: string,
-  at: string,
-): Record<string, unknown> {
+export function buildTriagePacket(evidence: TriageEvidence, ingestedBy: string, at: string): Record<string, unknown> {
   const problem = [
     `Dual ingestion (${ingestedBy}) could not ascertain sufficient Metadata for ${evidence.repo}#${evidence.number} (${evidence.kind}):`,
     ...evidence.reasons.map((reason) => `- ${reason}`),
@@ -485,7 +486,10 @@ export function buildTriagePacket(
         "Dual-ingestion forward: item lacks an ascertainable Metadata parent, so full triage owns it (resolved to 30 on the queue design scale).",
       timebox_minutes: 20,
       max_attempts: 1000,
-      dedupe: { checked_at: at, basis: `Dual-ingestion forward for ${evidence.repo}#${evidence.number}; canonical triage key anchors to the item.` },
+      dedupe: {
+        checked_at: at,
+        basis: `Dual-ingestion forward for ${evidence.repo}#${evidence.number}; canonical triage key anchors to the item.`,
+      },
     },
   };
 }

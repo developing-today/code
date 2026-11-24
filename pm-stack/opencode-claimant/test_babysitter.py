@@ -188,6 +188,28 @@ class TestVerdicts(unittest.TestCase):
         self.assertEqual(v["verdict"], "stalled")
         self.assertEqual(v["task_id"], 101)
 
+    def test_bound_progressing_session_carries_full_binding(self):
+        # #2140 criterion 2 (via #1656 AC1): the round output
+        # identifies queue-spawned sessions with their task/issue
+        # binding - not just the task id. Oracle: build_bindings'
+        # binding shape, carried through public_binding.
+        s = session("ses_a", updated=NOW - 1 * MIN)
+        bound = binding(repo="developing-today/code")
+        record, _ = round_of(
+            [s], active_ids={"ses_a"}, bindings={"ses_a": bound}
+        )
+        v = record["verdicts"]["ses_a"]
+        self.assertEqual(v["verdict"], "progressing")
+        self.assertEqual(
+            v["binding"],
+            {
+                "task_id": 101,
+                "queue": "repo-health-code-pilot",
+                "issue_number": 4242,
+                "repo": "developing-today/code",
+            },
+        )
+
     def test_error_stopped_bound_session_is_retryable_with_binding(self):
         s = session("ses_a", idle=NOW, outcome="error")
         bound = binding(repo="developing-today/code")

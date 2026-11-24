@@ -16,18 +16,18 @@
 The stage-1 audit's paths predate the pkgs/id crate split (#4405–#4408).
 The surface now lives at:
 
-| Piece | Location |
-|---|---|
-| CLI group commands (`cmd_delegate`, `cmd_revoke`) | `pkgs/id/crates/id-cli/src/commands/group.rs` |
-| CLI arg shapes (`DelegateArgs`, `RevokeArgs`) | `pkgs/id/crates/id-cli/src/cli/groups.rs` L108 / L129 |
-| Delegation judge: grants, chains, vetoes, attenuation | `pkgs/id/crates/id-events/src/groups/delegation.rs` |
-| Fold / settlement engine, `Refusal` vocabulary | `pkgs/id/crates/id-events/src/groups/fold.rs` |
-| Group events / wire forms | `pkgs/id/crates/id-events/src/groups/event.rs` |
-| Policy incl. delegation + removal modes | `pkgs/id/crates/id-events/src/groups/policy.rs` |
-| Actions (`delegate`, `revoke` = veto, device ops) | `pkgs/id/crates/id-groups/src/groups/actions.rs` |
-| Group log, legacy wire decoding | `pkgs/id/crates/id-groups/src/groups/log.rs` |
-| Event-store ingest (signature verification) | `pkgs/id/crates/id-events/src/event_store/ingest.rs` |
-| Keypair load/create | `pkgs/id/crates/id-store/src/store.rs` |
+| Piece                                                 | Location                                              |
+| ----------------------------------------------------- | ----------------------------------------------------- |
+| CLI group commands (`cmd_delegate`, `cmd_revoke`)     | `pkgs/id/crates/id-cli/src/commands/group.rs`         |
+| CLI arg shapes (`DelegateArgs`, `RevokeArgs`)         | `pkgs/id/crates/id-cli/src/cli/groups.rs` L108 / L129 |
+| Delegation judge: grants, chains, vetoes, attenuation | `pkgs/id/crates/id-events/src/groups/delegation.rs`   |
+| Fold / settlement engine, `Refusal` vocabulary        | `pkgs/id/crates/id-events/src/groups/fold.rs`         |
+| Group events / wire forms                             | `pkgs/id/crates/id-events/src/groups/event.rs`        |
+| Policy incl. delegation + removal modes               | `pkgs/id/crates/id-events/src/groups/policy.rs`       |
+| Actions (`delegate`, `revoke` = veto, device ops)     | `pkgs/id/crates/id-groups/src/groups/actions.rs`      |
+| Group log, legacy wire decoding                       | `pkgs/id/crates/id-groups/src/groups/log.rs`          |
+| Event-store ingest (signature verification)           | `pkgs/id/crates/id-events/src/event_store/ingest.rs`  |
+| Keypair load/create                                   | `pkgs/id/crates/id-store/src/store.rs`                |
 
 Findings state, re-verified in the current tree:
 
@@ -211,14 +211,14 @@ the cut is auditable after the fact.
 
 ## 6. What remains of #6379 after this record
 
-| Acceptance item | State |
-|---|---|
-| Security audit completed | Done — stage 1 (task 14441) |
-| All security-critical code reviewed | Done for the delegation core (stage 1); F3/F4 end-to-end verification is #13531 |
-| Documentation of security guarantees | Done — this record |
-| Test coverage for security scenarios | Fold layer done; CLI layer is #13532 |
-| Migration path for deprecated features | #13533 |
-| F1/F2 implementation | #13534, gated on this record |
+| Acceptance item                        | State                                                                           |
+| -------------------------------------- | ------------------------------------------------------------------------------- |
+| Security audit completed               | Done — stage 1 (task 14441)                                                     |
+| All security-critical code reviewed    | Done for the delegation core (stage 1); F3/F4 end-to-end verification is #13531 |
+| Documentation of security guarantees   | Done — this record                                                              |
+| Test coverage for security scenarios   | Fold layer done; CLI layer is #13532                                            |
+| Migration path for deprecated features | #13533                                                                          |
+| F1/F2 implementation                   | #13534, gated on this record                                                    |
 
 #6379 closes when #13531–#13534 have landed or reported, or by a later
 triage that re-homes them.

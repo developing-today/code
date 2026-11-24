@@ -1055,6 +1055,18 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/outbox-metrics" => verb_outbox_metrics(t, req),
         "/sweep" => verb_sweep(t, req),
         "/coverage" => verb_coverage(t, req),
+        "/actions-exec-open" => verb_actions_exec_open(t, req),
+        "/actions-exec-bind" => verb_actions_exec_bind(t, req),
+        "/actions-exec-register" => verb_actions_exec_register(t, req),
+        "/actions-exec-poll" => verb_actions_exec_poll(t, req),
+        "/actions-exec-command" => verb_actions_exec_command(t, req),
+        "/actions-exec-io" => verb_actions_exec_io(t, req),
+        "/actions-exec-result" => verb_actions_exec_result(t, req),
+        "/actions-exec-stream" => verb_actions_exec_stream(t, req),
+        "/actions-exec-renew" => verb_actions_exec_renew(t, req),
+        "/actions-exec-extend-request" => verb_actions_exec_extend_request(t, req),
+        "/actions-exec-extend-decide" => verb_actions_exec_extend_decide(t, req),
+        "/actions-exec-close" => verb_actions_exec_close(t, req),
         _ => fail(2, format!("unknown command {path}")),
     }
 }

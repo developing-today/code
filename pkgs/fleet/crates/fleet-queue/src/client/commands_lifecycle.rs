@@ -377,11 +377,11 @@ pub(super) fn batch_count_flag(n: Option<i64>) -> Result<i64, String> {
     match n {
         None => Ok(1),
         Some(n) if n == 1 => Ok(1),
-        Some(n) if (2..=crate::turso_queue::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
+        Some(n) if (2..=crate::BATCH_CLAIM_MAX).contains(&n) => Ok(n),
         Some(n) => Err(format!(
             "claim --count {n} is out of range: a batch claim takes \
              1..={} items (#8217)",
-            crate::turso_queue::BATCH_CLAIM_MAX
+            crate::BATCH_CLAIM_MAX
         )),
     }
 }

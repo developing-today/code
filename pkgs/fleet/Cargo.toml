@@ -29,6 +29,7 @@ members = [
   "crates/fleet-bridge",
   "crates/fleet-agent",
   "crates/fleet-kv",
+  "crates/fleet-cert",
   "crates/fleet",
 ]
 resolver = "2"
@@ -52,6 +53,7 @@ fleet-laptop-agent = { path = "crates/fleet-laptop-agent" }
 fleet-search = { path = "crates/fleet-search", default-features = false }
 fleet-bridge = { path = "crates/fleet-bridge" }
 fleet-agent = { path = "crates/fleet-agent" }
+fleet-cert = { path = "crates/fleet-cert" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"

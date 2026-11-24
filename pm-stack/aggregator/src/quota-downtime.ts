@@ -94,7 +94,12 @@ interface WallInterval {
 // their short form.
 
 const CHICAGO = "America/Chicago";
-const dayKeyFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, year: "numeric", month: "2-digit", day: "2-digit" });
+const dayKeyFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: CHICAGO,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 const weekdayFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, weekday: "long" });
 const monthDayFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, month: "short", day: "numeric" });
 const hourFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, hour: "numeric", hourCycle: "h23" });
@@ -230,7 +235,9 @@ export function deriveDowntimeWindowRecords(
   );
   const unknownIds = providers.filter((p) => p.unknown).map((p) => p.providerId);
 
-  const record = (over: Partial<C4PredictionRecord> & Pick<C4PredictionRecord, "id" | "state">): C4PredictionRecord => ({
+  const record = (
+    over: Partial<C4PredictionRecord> & Pick<C4PredictionRecord, "id" | "state">,
+  ): C4PredictionRecord => ({
     record_version: 1,
     kind: "downtime_window",
     subject: { pools: providerIds },
@@ -241,7 +248,12 @@ export function deriveDowntimeWindowRecords(
         "complete-downtime interval intersected from the Stage-3 per-pool pace projections (quota-forecast.json, #12695): " +
         "every routing pool's predicted wall has passed and the earliest reopening (any pool's reset) has not yet arrived",
     },
-    inputs: { series: "quota-forecast.json", samples: totalSamples, span: { from: spanFrom, to: issuedAt }, adjustments: [] },
+    inputs: {
+      series: "quota-forecast.json",
+      samples: totalSamples,
+      span: { from: spanFrom, to: issuedAt },
+      adjustments: [],
+    },
     prediction: null,
     methodology_version: C4_METHODOLOGY_VERSION,
     state_reason: null,
@@ -282,7 +294,9 @@ export function deriveDowntimeWindowRecords(
       if (runStart === null) runStart = t;
       if (i === points.length - 1) {
         const end = Math.min(
-          ...providers.map((p) => Math.min(...p.intervals.filter((iv) => iv.start <= t && t < iv.end).map((iv) => iv.end))),
+          ...providers.map((p) =>
+            Math.min(...p.intervals.filter((iv) => iv.start <= t && t < iv.end).map((iv) => iv.end)),
+          ),
         );
         if (end > runStart) overlaps.push({ start: runStart, end });
         runStart = null;

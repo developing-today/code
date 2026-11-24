@@ -2,6 +2,8 @@
 
 This chapter is the programme record for the ID book (tracking issue #13332). It states the roadmap as the design archive records it, maps the epics and trackers the records name, and then gives the full design-record index: all 408 ID design records in the repo-root `doc/` archive, each mapped to exactly one design chapter of this book. The index is the coverage proof for the design-record dimension of the book. Counts in this chapter come from the archive survey for this book, verified in the tree at checkout `1ccb4a19457` on 2026-11-23: the archive holds 570 top-level entries and 2,917 paths in total; 408 entries are ID-programme records; 162 entries belong to other programmes (Atlas, Fleet, the PM stack, the home cluster) or are standing non-record material, and are excluded from the index.
 
+The [Current ID issue map](../research/current-issue-map.md) records open issues, blockers, ownership evidence and the date of its census. The [Integrated implementation plan](../research/implementation-plan.md) connects the research proposals and their acceptance criteria to that work.
+
 ## The roadmap in phases
 
 The archive's own phase records are the roadmap's spine. Twenty records are homed in this chapter: the phase records, the remaining-work record, the platform-completion brief, the programme essay answers, the Phase 12 exit audits, the walking-skeleton record, and the investigation charter that commissioned this book.
