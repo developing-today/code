@@ -189,6 +189,7 @@ fn lookup_finds_every_occurrence_across_shards_and_skips_legacy_shards() {
         TierCeiling(Tier::Internal),
         Sensitivity::LocalOnly,
         HASH,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -202,6 +203,7 @@ fn lookup_finds_every_occurrence_across_shards_and_skips_legacy_shards() {
                 span_start: 0,
                 span_end: 17,
                 observed_at: NOW.into(),
+                root_id: None,
             },
             ChunkOccurrence {
                 shard: "atlas-core-internal-work-01".into(),
@@ -211,6 +213,7 @@ fn lookup_finds_every_occurrence_across_shards_and_skips_legacy_shards() {
                 span_start: 0,
                 span_end: 17,
                 observed_at: NOW.into(),
+                root_id: None,
             },
         ],
         "internal rows only, ordered by shard; legacy shard contributes nothing and no error"
@@ -222,6 +225,7 @@ fn lookup_finds_every_occurrence_across_shards_and_skips_legacy_shards() {
         TierCeiling(Tier::Secret),
         Sensitivity::SecretBearing,
         HASH,
+        None,
     )
     .unwrap();
     assert_eq!(secret.len(), 3, "secret ceiling adds the secret-tier row");
@@ -232,7 +236,8 @@ fn lookup_finds_every_occurrence_across_shards_and_skips_legacy_shards() {
             &set,
             TierCeiling(Tier::Internal),
             Sensitivity::LocalOnly,
-            "00"
+            "00",
+            None,
         )
         .unwrap()
         .is_empty()
@@ -418,6 +423,7 @@ fn occurrence_rows_are_filtered_by_their_own_chunk_sensitivity_not_just_shard_ti
         TierCeiling(Tier::Internal),
         Sensitivity::Personal,
         HASH,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -434,6 +440,7 @@ fn occurrence_rows_are_filtered_by_their_own_chunk_sensitivity_not_just_shard_ti
         TierCeiling(Tier::Internal),
         Sensitivity::LocalOnly,
         HASH,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -450,4 +457,135 @@ fn _unused(_r: &Mutex<()>) -> BranchHit {
         chunk_id: 0,
         dist: None,
     }
+}
+
+/// An in-memory source registry holding one root (`repo`, based at
+/// `repo@abc:`) with one registered locator; any other locator is
+/// unregistered by construction.
+fn registry_with_one_root() -> rusqlite::Connection {
+    use atlas_core::source_registry::{register_locator, register_source_root};
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory registry");
+    register_source_root(&conn, "repo", "repo@abc:", NOW).expect("root");
+    register_locator(&conn, "repo", "repo@abc:infra/dns/a.yaml", NOW).expect("locator");
+    conn
+}
+
+#[test]
+fn lookup_attributes_occurrences_to_registered_roots_only() {
+    // #3125 slice 6: with a registry attached, the occurrence whose
+    // source locator is registered resolves to its root; the
+    // unregistered locator stays unattributed (None), never guessed.
+    // Oracle: slice 5's exact-match resolution contract — the
+    // registry answers "which root holds this locator", and the
+    // lookup carries that answer onto the row.
+    let dir = temp_dir("attribution");
+    fixture(
+        &dir,
+        "atlas-core-internal-work-01",
+        &[
+            ("repo@abc:infra/dns/a.yaml", 0, 17),
+            ("repo@abc:infra/dns/b.yaml", 0, 17),
+        ],
+        false,
+    );
+    let set = discover_set(&dir, Tier::Internal);
+    let registry = registry_with_one_root();
+
+    let found = lookup_by_hash(
+        &set,
+        TierCeiling(Tier::Internal),
+        Sensitivity::LocalOnly,
+        HASH,
+        Some(&registry),
+    )
+    .unwrap();
+    assert_eq!(found.len(), 2, "both shard rows surface under the ceiling");
+    let by_source: std::collections::HashMap<&str, &ChunkOccurrence> =
+        found.iter().map(|o| (o.source.as_str(), o)).collect();
+    assert_eq!(
+        by_source["repo@abc:infra/dns/a.yaml"].root_id.as_deref(),
+        Some("repo"),
+        "registered locator attributes to its root"
+    );
+    assert_eq!(
+        by_source["repo@abc:infra/dns/b.yaml"].root_id, None,
+        "unregistered locator stays unattributed, never misattributed"
+    );
+
+    // Without a registry the same lookup is unattributed and the
+    // wire form carries no root_id key at all.
+    let plain = lookup_by_hash(
+        &set,
+        TierCeiling(Tier::Internal),
+        Sensitivity::LocalOnly,
+        HASH,
+        None,
+    )
+    .unwrap();
+    assert!(
+        plain.iter().all(|o| o.root_id.is_none()),
+        "no registry means no attribution"
+    );
+    assert!(
+        plain.iter().all(|o| o.to_json().get("root_id").is_none()),
+        "unattributed occurrences keep the pre-registry wire shape"
+    );
+}
+
+#[test]
+fn sharded_backend_with_registry_serves_attribution_in_get_chunk() {
+    // End to end: a registry-attached ShardedBackend reports
+    // root_id on the registered occurrence through get-chunk, and
+    // omits the key on the unregistered one; without the
+    // attachment neither row carries the key.
+    let dir = temp_dir("attribchunk");
+    fixture(
+        &dir,
+        "atlas-core-internal-work-01",
+        &[("repo@abc:infra/dns/a.yaml", 0, 17)],
+        false,
+    );
+    fixture(
+        &dir,
+        "atlas-core-internal-media-01",
+        &[("repo@abc:infra/dns/b.yaml", 4, 21)],
+        false,
+    );
+    let set = std::sync::Arc::new(discover_set(&dir, Tier::Secret));
+
+    let plain = ShardedBackend::new(Monolith { chunk_id: 7 }, set.clone());
+    let out = run_get_chunk(&plain, 7, 0).unwrap();
+    let occ = out.get("occurrences").unwrap().as_array().unwrap();
+    assert!(
+        occ.iter().all(|o| o.get("root_id").is_none()),
+        "no registry attached: wire shape unchanged"
+    );
+
+    let registry = registry_with_one_root();
+    let attributed =
+        ShardedBackend::new(Monolith { chunk_id: 7 }, set).with_source_registry(registry);
+    let out = run_get_chunk(&attributed, 7, 0).unwrap();
+    let occ = out
+        .get("occurrences")
+        .expect("occurrences present")
+        .as_array()
+        .unwrap();
+    assert_eq!(occ.len(), 2);
+    let by_source: std::collections::HashMap<&str, &serde_json::Value> = occ
+        .iter()
+        .map(|o| (o.get("source").and_then(|s| s.as_str()).unwrap(), o))
+        .collect();
+    assert_eq!(
+        by_source["repo@abc:infra/dns/a.yaml"]
+            .get("root_id")
+            .and_then(|v| v.as_str()),
+        Some("repo"),
+        "registered occurrence resolves through get-chunk"
+    );
+    assert!(
+        by_source["repo@abc:infra/dns/b.yaml"]
+            .get("root_id")
+            .is_none(),
+        "unregistered occurrence keeps the old wire shape"
+    );
 }

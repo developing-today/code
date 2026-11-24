@@ -60,7 +60,9 @@ mod tests {
         {
             let mut store = Petnames::open(&path).unwrap();
             store.set(OWNER, ALICE, "Ali", std::iter::empty()).unwrap();
-            store.set(OTHER, ALICE, "Alice", std::iter::empty()).unwrap();
+            store
+                .set(OTHER, ALICE, "Alice", std::iter::empty())
+                .unwrap();
         }
         let before = std::fs::read(&path).unwrap();
         let store = Petnames::open(&path).unwrap();

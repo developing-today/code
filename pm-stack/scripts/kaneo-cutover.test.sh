@@ -152,8 +152,8 @@ set_counts '45 90139' '45 90139'
 reset_log
 if out="$(run --mode promote --receipt "$TMP/r5.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" "${common[@]}")"; then
   case "$out" in
-    *'PROMOTE OK'*FENCED*) pass 'promote passes when fenced and parity holds' ;;
-    *) fail "promote passes when fenced and parity holds (got: $out)" ;;
+  *'PROMOTE OK'*FENCED*) pass 'promote passes when fenced and parity holds' ;;
+  *) fail "promote passes when fenced and parity holds (got: $out)" ;;
   esac
   if grep -q 'Fence: FENCED' "$TMP/r5.md" && grep -q '45 90139' "$TMP/r5.md"; then
     pass 'promote receipt records the fence and the counts'

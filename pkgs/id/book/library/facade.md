@@ -10,34 +10,34 @@ Two scope warnings belong at the front. First, the crate's self-description is s
 
 These are `pub mod` declarations with code in `pkgs/id/src/`. Feature gates are noted; unmarked modules are unconditional.
 
-| Module | Gate | Content |
-|---|---|---|
-| `artifact` | `world` | Shim over the split artifact owners |
-| `backup` | — | Backup and restore |
-| `blob_gate` | — | Blob gate at its historical path, over `id-store` / `id-groups` / `id-worlds` owners |
-| `boards` | `world` | Game posts; runs guest packages through `id::sandbox` |
-| `conversion` | — | Format conversion |
-| `currency` | — | Currency surface; composes `id-currency-registry` |
-| `currency_poc` | — | TigerBeetle proof-of-concept harness for #2289 |
-| `device_bridge` | — | Device bridge |
-| `didit` | — | The did-it counted view |
-| `encryption` | `world` | Encryption at its historical path |
-| `envelope_net` | `world` | Envelope networking, over `id-sync` owners |
-| `envelope_outbox` | `world` | Envelope outbox, over `id-sync` owners |
-| `fileops` | — | File operations at their historical path, over `id-sync` |
-| `foreign_libsql` | — | Foreign libSQL access |
-| `grant_service` | — | Grant service |
-| `grants` | — | Grants |
-| `groups` | — | Group facade: `src/groups/mod.rs` re-exports from `id_events::groups`, `id_groups::groups`, and `id_worlds::groups::worlds` |
-| `hosted_binding` | — | Hosted-edition binding ceremony |
-| `hosted_export` | — | Hosted export |
-| `hosted_ingest` | — | Hosted ingest |
-| `input_framing` | — | Input framing |
-| `pull_policy` | — | Pull policy at its historical path, over `id-events` |
-| `references` | — | References |
-| `serve_proxy` | — | Serve proxy |
-| `store_traits` | — | Store traits at their historical path, over `id-store` |
-| `structured_logging` | — | Structured logging configuration |
+| Module               | Gate    | Content                                                                                                                     |
+| -------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `artifact`           | `world` | Shim over the split artifact owners                                                                                         |
+| `backup`             | —       | Backup and restore                                                                                                          |
+| `blob_gate`          | —       | Blob gate at its historical path, over `id-store` / `id-groups` / `id-worlds` owners                                        |
+| `boards`             | `world` | Game posts; runs guest packages through `id::sandbox`                                                                       |
+| `conversion`         | —       | Format conversion                                                                                                           |
+| `currency`           | —       | Currency surface; composes `id-currency-registry`                                                                           |
+| `currency_poc`       | —       | TigerBeetle proof-of-concept harness for #2289                                                                              |
+| `device_bridge`      | —       | Device bridge                                                                                                               |
+| `didit`              | —       | The did-it counted view                                                                                                     |
+| `encryption`         | `world` | Encryption at its historical path                                                                                           |
+| `envelope_net`       | `world` | Envelope networking, over `id-sync` owners                                                                                  |
+| `envelope_outbox`    | `world` | Envelope outbox, over `id-sync` owners                                                                                      |
+| `fileops`            | —       | File operations at their historical path, over `id-sync`                                                                    |
+| `foreign_libsql`     | —       | Foreign libSQL access                                                                                                       |
+| `grant_service`      | —       | Grant service                                                                                                               |
+| `grants`             | —       | Grants                                                                                                                      |
+| `groups`             | —       | Group facade: `src/groups/mod.rs` re-exports from `id_events::groups`, `id_groups::groups`, and `id_worlds::groups::worlds` |
+| `hosted_binding`     | —       | Hosted-edition binding ceremony                                                                                             |
+| `hosted_export`      | —       | Hosted export                                                                                                               |
+| `hosted_ingest`      | —       | Hosted ingest                                                                                                               |
+| `input_framing`      | —       | Input framing                                                                                                               |
+| `pull_policy`        | —       | Pull policy at its historical path, over `id-events`                                                                        |
+| `references`         | —       | References                                                                                                                  |
+| `serve_proxy`        | —       | Serve proxy                                                                                                                 |
+| `store_traits`       | —       | Store traits at their historical path, over `id-store`                                                                      |
+| `structured_logging` | —       | Structured logging configuration                                                                                            |
 
 The binary entry point `src/main.rs` also stays in this package and consumes the library through `id::` paths exactly like an external consumer.
 

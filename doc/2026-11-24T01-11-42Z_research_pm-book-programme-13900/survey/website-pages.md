@@ -96,6 +96,7 @@ Console edge Worker routes: `pm-stack/console/edge/src/worker.ts` + `entry.ts` +
 ## F. Question sets — every question/answer-back surface
 
 ### F1. Decision sets (aggregator) — the main batched question set
+
 - Model: `pm-stack/aggregator/src/decisions.ts`. A set mirrors a group of items from the Muse-side decisions ledger (`pending-questions.json` per that file's header); a set has items (`ledgerId`), an item has 1–16 questions, a question has `qid` (= `<ledgerId>#<1-based index>`), 0–12 options (`{id,label,tags?,combinationOf?}`), `mode: single|multi` (v1 defaults single), `recommendedOptionIds`, context/description/detail, group/order, and version history (`DecisionQuestionVersion`, #9335 v2). Free-text-only questions (0 options) are legitimate.
 - Surfaces: index `/decisions`, per-set page `/decisions/<setId>?t=<token>`, console `#needs/questions` (same sets, read from the decisions file by `console/src/work.ts` `Work.questions()` — open questions only, newest set first, context clipped to 280 chars in list, full context via `Work.question()`).
 - Answers: on the aggregator page, client JS in `server.ts` POSTs `/api/decisions/<setId>/submit` `{submissions}`, `/defer`, `/request-info`, and draft/edit events to `/api/decisions/<setId>/events` (also aliased `/api/decision-sets/<setId>/events`). Resolution kinds (`DecisionResolution` in `decisions.ts`): `answered` (optionId/optionIds + freeText + comment), `deferred` (with lean `none|skeptical|approve`), `request-info`. First resolution wins per question; drafts are deleted when a question resolves (`pruneResolvedDrafts`).
@@ -103,29 +104,36 @@ Console edge Worker routes: `pm-stack/console/edge/src/worker.ts` + `entry.ts` +
 - Bulk answers: page submit-all; console "Accept <n> recommended" per set (`Work.acceptRecommended`, batched at 200, dashboard cap 256/request noted in code).
 
 ### F2. Needs-Drew single questions (aggregator, #8568)
+
 - A raised needs-Drew question rides its notification candidate (`NotificationCandidate.needsDrew = {ledgerId, question, options}` in `src/notifications.ts`); the push's first two options become notification actions (`src/sw-source.ts`).
-- Answer page + endpoint: `POST /api/needs-drew/<ledgerId>/answer` `{token, optionId}` — the per-question token in the answer-page URL is the authority (client code generated in `server.ts` ~line 884; service-worker tap path in `sw-source.ts`). Write-back is the same decisions-ledger resolution machinery as F1 (the ledger item's question resolves; see `decisions.ts` header: sets and the per-question store in `needs-drew.ts` are explicitly *not* the same store — UNVERIFIED: the exact file the single-question answer writes, beyond `src/needs-drew.ts` being named "the question store" there).
+- Answer page + endpoint: `POST /api/needs-drew/<ledgerId>/answer` `{token, optionId}` — the per-question token in the answer-page URL is the authority (client code generated in `server.ts` ~line 884; service-worker tap path in `sw-source.ts`). Write-back is the same decisions-ledger resolution machinery as F1 (the ledger item's question resolves; see `decisions.ts` header: sets and the per-question store in `needs-drew.ts` are explicitly _not_ the same store — UNVERIFIED: the exact file the single-question answer writes, beyond `src/needs-drew.ts` being named "the question store" there).
 
 ### F3. Needs-Drew census sets (console `#needs`)
+
 - Source: `GET /api/needs-drew.json` (aggregator census, `src/needs-drew.ts`): open issues/PRs labelled `user/review` or `user/escalated` across the fleet repos, deduped, with `hands:v1` markers (`kind: physical|interactive-login|payment|signature`).
 - Console splits it (`Work.census()` in `console/src/work.ts`) into three sets: **hands** (a `hands:v1` action), **reviews** (`user/review`, no hands marker), **other/escalated** (no stated action — "the fleet's to decide"). Plus session-derived waiting items from `/api/attention.json` (`Work.sessions()`, tier `needs-drew`).
 - Answers: **Reply** (`act("need.comment")` → `Work.needComment` → GitHub issue comment with `<!-- owner-reply:v1 -->`) and, for hands items, **I did it** (`act("hands.done")` → `Work.handsDone` → GitHub comment "Done by the owner…" + deletes the `user/escalated` label). See `disagreements.md` D4: the aggregator census itself never writes labels; the console does.
 
 ### F4. Prompt / chat questions (aggregator `/chat`, console `#ask`)
+
 - Aggregator: `src/prompts.ts`, `prompt-ws.ts`, `prompt-notify.ts`, `prompt-widget.ts`, `prompt-attachments.ts`. Routes: `POST /api/prompt`, `GET /api/prompt`, `GET /api/prompt/threads`, `GET /api/prompt/thread/<id>`, `GET /api/prompt/<id>`, attachments `GET /api/prompt/<id>/attachments/…`, `PATCH /api/prompt/<id>`, `GET /api/prompt/unread-count`, WS `/ws/prompt/<id>`. A prompt submitted with notifications on gets a `prompt`-class push when it is answered or fails (`notifications.ts` class `prompt`, #10035).
 - Console `#ask` is the owner-facing version of the same idea against GitHub+queue, not the aggregator store: `act("ask.send")` files an issue and enqueues a top-band (priority 10) triage packet (`promptPacket`/`notePacket` patterns in `console/src/work.ts`/`plan.ts`, marker `<!-- owner-prompt:v1 -->`); replies are read back from the issue (`ask.reply`, `ask.close` actions in `console/src/actions.ts`).
 
 ### F5. Dashboard comments / discuss (aggregator)
+
 - `POST /api/comments` (dashboard-native comment; store `src/comments.ts`), `POST /api/comments/triage`, `POST /api/comments/github-result` (the external poster reports the GitHub result back), `GET /api/comments.json`, queue page `/comments`. The dashboard itself never writes GitHub — a fleet job applies/posts and reports back (`src/actions.ts` header). This is a question/answer-back surface in the loose sense: a comment on an item is answered by the applying run's outcome.
 
 ### F6. Dashboard actions (aggregator) — structured answers on tier items
+
 - `POST /api/actions`, `POST /api/actions/batch`, consumers poll `GET /api/actions.json?state=new`, outcomes return via `POST /api/actions/result` `{id, outcome: applied|rejected, byRun, note}` (`src/actions.ts`). Kinds: `triage` (acknowledge / snooze / escalate / de-escalate / **answer** / delegate / dismiss), `status-request`, `session` (poke/**answer**/stop, consumed by the fast session-action consumer for `opencode-laptop`), `preference` (set-delegation-default). The triage `answer` verb is an answer-back: "the pass delivers payload text/option/answers like its own classifications" (`actions.ts` header).
 - Outage queue variant: `GET /api/actions/outage-queue.json`, `POST /api/actions/outage-queue/confirm`, `…/reject` (`server.ts`, `src/outage-queue.ts`).
 
 ### F7. Console generic actions (`POST /console/api/act`)
+
 - Action table in `console/src/actions.ts` (`ownActions` + `actions(...)` + `perform`): includes the question actions `questions.answer`, `questions.defer` ("Decide for me", lean default `approve`), `questions.accept`, `need.comment`, `hands.done`, `ask.send`, `ask.reply`, `ask.close`, plus queue/priority/issue/service/PR actions. Every action is audit-logged before it is taken ("one that cannot be recorded is not taken", `console/src/server.ts` edge-held path); when the laptop is unreachable the edge holds the action and replays it through the same table.
 
 ### F8. Reports, roadmap annotations, alerts — smaller answer-backs
+
 - Reports: `POST /api/reports/resolve` (resolve a prose conflict choosing a stored version), `POST /api/reports/late-update` (`server.ts`).
 - Roadmap: `POST /api/roadmap/annotations`, `POST /api/roadmap/annotations/alias` (`server.ts`, `src/roadmap-annotations.ts`) — annotations write back onto roadmap rows.
 - Alerts: ack/close on `/alerts` (incident lifecycle `open|acked|closed` in `src/alerts.ts`); preferences toggles on `/alerts/preferences` write the subscription's class map that the engine reads on its next tick (`src/notifications.ts` header on `NOTIFICATION_CLASSES`).

@@ -14,10 +14,9 @@ junk, not people.
 ### A.1 Direction in one paragraph
 
 The public-data protocol is declared "broadly complete" by its own team and
-is being handed to formal governance: an IETF working group (chartered March
-2026) for the repository/sync core, and an independent Swiss association for
+is being handed to formal governance: an IETF working group (chartered March 2026) for the repository/sync core, and an independent Swiss association for
 the PLC identity directory. The protocol team's active frontier has moved to
-**permissioned data** — "Spaces", an access-controlled (explicitly *not*
+**permissioned data** — "Spaces", an access-controlled (explicitly _not_
 encrypted) second data protocol, in alpha since August 2026 — plus account
 experience inside the PDS. OAuth grew from app-password-equivalent access
 into a granular permission system (shipped early 2026). Bluesky-the-company
@@ -34,7 +33,7 @@ by account share.
   Mallory Knodel, Shuping Peng). Charter scope is deliberately narrow:
   the public repository data structure, the sync mechanism (firehose), the
   AT URI scheme, and requirements for account-identifier resolution systems
-  with a registry of recommended systems (PLC, `did:web`). Explicitly *not*
+  with a registry of recommended systems (PLC, `did:web`). Explicitly _not_
   in the initial charter: non-public data, Lexicon, the OAuth profile, auth
   scopes, PLC itself, the handle system. Major changes to public-data sync
   are now expected to happen inside the IETF process.
@@ -45,7 +44,7 @@ by account share.
   announced as a **registered Swiss Association** on 2026-09-28, with a board
   drawn from outside Bluesky (Richard Barnes, Thyla van der Merwe, Wendy
   Seltzer, Filippo Valsorda, plus Bluesky's Bryan Newbold), bootstrap-funded
-  by Bluesky Social PBC. It is *preparing* to take over directory assets and
+  by Bluesky Social PBC. It is _preparing_ to take over directory assets and
   operations; as of the latest sources it does not operate the directory
   yet — plc.directory still runs under Bluesky by default.
   ([PLC Org first steps](https://blog.plcred.org/3mwlphq42d227))
@@ -66,7 +65,7 @@ vocabulary:
   **PAR** (pushed authorization requests) and **DPoP with mandatory server
   nonces** (tokens are bound to a client-instance key, not pure bearer).
   There is no shared `client_secret` and no RFC 7591 dynamic registration:
-  a `client_id` *is* an HTTPS URL pointing at a public client-metadata JSON
+  a `client_id` _is_ an HTTPS URL pointing at a public client-metadata JSON
   document, fetched by the authorization server. Confidential clients
   authenticate with `private_key_jwt` (ES256 recommended) against a JWKS
   published in their metadata; refresh tokens are bound to that key, and
@@ -98,16 +97,16 @@ vocabulary:
 **How this compares to capability tokens (UCAN/Biscuit/Meadowcap), for the
 #13779 decision:**
 
-| Axis | ATProto OAuth + permissions | Capability tokens (UCAN/Biscuit) |
-| --- | --- | --- |
-| Where authority lives | The PDS (authorization server) issues and validates; enforcement is server-side on every request | The token itself; any verifier checks the chain offline |
-| Delegation | One hop: user → client, at interactive consent time. No client→sub-client re-delegation, no attenuation by the holder after issuance | Arbitrary depth, holder-side attenuation, designed for agent→agent chains |
-| Revocation | Session/token revocation at the PDS; JWKS key removal for confidential clients. Immediate and central | Deny-lists or short expiry; the known weak axis of token systems |
-| Offline / p2p use | None — requires reaching the account's PDS/AS | Native |
-| Consent legibility | Strong: permission sets are lexicon-published, titled, localised; the consent screen is the product surface | Weak-to-none standardised; DIY |
-| Fit to our estate | Mirrors what our IdP + Cloudflare doors already do (interactive OAuth, server-checked scopes) | Matches the fleet's seat→runner delegation problem, which OAuth does not reach |
+| Axis                  | ATProto OAuth + permissions                                                                                                          | Capability tokens (UCAN/Biscuit)                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| Where authority lives | The PDS (authorization server) issues and validates; enforcement is server-side on every request                                     | The token itself; any verifier checks the chain offline                        |
+| Delegation            | One hop: user → client, at interactive consent time. No client→sub-client re-delegation, no attenuation by the holder after issuance | Arbitrary depth, holder-side attenuation, designed for agent→agent chains      |
+| Revocation            | Session/token revocation at the PDS; JWKS key removal for confidential clients. Immediate and central                                | Deny-lists or short expiry; the known weak axis of token systems               |
+| Offline / p2p use     | None — requires reaching the account's PDS/AS                                                                                        | Native                                                                         |
+| Consent legibility    | Strong: permission sets are lexicon-published, titled, localised; the consent screen is the product surface                          | Weak-to-none standardised; DIY                                                 |
+| Fit to our estate     | Mirrors what our IdP + Cloudflare doors already do (interactive OAuth, server-checked scopes)                                        | Matches the fleet's seat→runner delegation problem, which OAuth does not reach |
 
-Verdict for the comparison: Bluesky validated the *permission vocabulary*
+Verdict for the comparison: Bluesky validated the _permission vocabulary_
 idea — resource-typed, parameterised, bundleable grants described in the
 same schema language as the data — but deliberately stayed inside
 server-mediated OAuth. It is evidence that a legible permission layer is
@@ -174,7 +173,7 @@ Design facts that matter for us:
   capable), addressing, and resolution path. Each record is in exactly
   one space.
 - **Access control, not confidentiality** — stated repeatedly and without
-  hedging: data is *not* end-to-end encrypted; any member, app, or server
+  hedging: data is _not_ end-to-end encrypted; any member, app, or server
   handling it can read it. E2EE is explicitly out of scope, "may be layered
   on top by an application."
 - Access credentials are **bound to the application** (a key held by the
@@ -244,8 +243,8 @@ proposes write support, account creation, or Spaces.
      fork choice only if the chain is verified; a plain document fetch
      trusts it for content too.
    - `did:web` — GET `https://<host>/.well-known/did.json`; trust = DNS+TLS.
-   From the document: the `#atproto` verification method (repo signing key)
-   and the `#atproto_pds` service endpoint.
+     From the document: the `#atproto` verification method (repo signing key)
+     and the `#atproto_pds` service endpoint.
 3. **Record reads (light path)**: XRPC against the account's PDS —
    `com.atproto.repo.describeRepo`, `com.atproto.repo.listRecords`,
    `com.atproto.repo.getRecord`. Unauthenticated for public data. This path
@@ -263,10 +262,10 @@ proposes write support, account creation, or Spaces.
      CBOR, signed with the account signing key (secp256k1 or P-256;
      the key and curve come from the DID document — the commit itself
      does not say which key signed it, and rotation makes verification of
-     *old* commits ambiguous; the current commit must verify against the
+     _old_ commits ambiguous; the current commit must verify against the
      current document);
    - check `rev` (TID) monotonicity against previously seen state.
-   ([repository spec](https://atproto.com/specs/repository))
+     ([repository spec](https://atproto.com/specs/repository))
 5. **Live follow (optional, later)**: subscribe to a relay's
    `com.atproto.sync.subscribeRepos` and apply `#commit` diffs. The spec's
    verification chain is elegant and cheap: each `#commit` carries the op
@@ -275,7 +274,7 @@ proposes write support, account creation, or Spaces.
    only (DID → rev, root CID) per repo instead of full MSTs. `#identity`
    events invalidate cached DID documents; `#account` events carry hosting
    status (takendown/suspended/deleted are hop-by-hop authoritative).
-   The full-network firehose is a high-volume stream; a *filtered*
+   The full-network firehose is a high-volume stream; a _filtered_
    consumption shape (Jetstream-style, or per-account `getRepo` polling
    with `since`) is the realistic starting point for id.
    ([sync spec](https://atproto.com/specs/sync))
@@ -326,7 +325,7 @@ should follow it:
   provenance (DID, collection, rkey, CID, commit rev) into id's existing
   store/events shapes.
 - Explicitly **not** in `id-core` (no core model changes for a foreign
-  protocol) and **not** in `id-sync` (that crate is id's *own* log-sync /
+  protocol) and **not** in `id-sync` (that crate is id's _own_ log-sync /
   meta protocol; atproto ingest is foreign-protocol import, and overloading
   the name would blur exactly the boundary the crate split created).
 - The open modelling question: are ingested records mapped into id's object
@@ -353,7 +352,7 @@ should follow it:
   specced for single-digit millions of records, typically far fewer). The
   firehose is network-scale; following "bsky" wholesale is an indexing
   product (that is what AppViews are), not an importer feature. Scope must
-  say which one id wants: *accounts* (tractable) or *the network* (an
+  say which one id wants: _accounts_ (tractable) or _the network_ (an
   AppView programme).
 - **Deletions and takedowns**: repos are tombstone-free by design; mirrors
   are expected to honour deletions and `#account` status promptly. An id

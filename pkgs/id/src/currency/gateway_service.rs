@@ -358,7 +358,10 @@ impl GatewayIntent {
             currency_id: self.currency_id.clone(),
             currency: self.currency_key.clone(),
             ledger_id: self.ledger_id,
-            transfer_id: self.transfer.as_ref().map(|t| hex_encode(&t.id.to_be_bytes())),
+            transfer_id: self
+                .transfer
+                .as_ref()
+                .map(|t| hex_encode(&t.id.to_be_bytes())),
             graph_object: self.graph_object.clone(),
         }
     }
@@ -673,8 +676,7 @@ fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     fs::File::open(&tmp)
         .and_then(|file| file.sync_all())
         .map_err(|error| format!("fsync {}: {error}", tmp.display()))?;
-    fs::rename(&tmp, path)
-        .map_err(|error| format!("rename to {}: {error}", path.display()))?;
+    fs::rename(&tmp, path).map_err(|error| format!("rename to {}: {error}", path.display()))?;
     if let Some(parent) = path.parent() {
         fs::File::open(parent)
             .and_then(|dir| dir.sync_all())
@@ -841,8 +843,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
                     }
                 }
                 "grant_minter" => {
-                    if let (Some(currency_id), Some(minter)) =
-                        (&intent.currency_id, &intent.minter)
+                    if let (Some(currency_id), Some(minter)) = (&intent.currency_id, &intent.minter)
                     {
                         minters
                             .entry(currency_id.clone())
@@ -864,8 +865,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         registrations.sort_by_key(|intent| intent.ledger_id.unwrap_or(u32::MAX));
         let mut registry = Registry::new(InMemoryStore::new());
         for intent in registrations {
-            let (Some(currency_id), Some(params)) =
-                (&intent.currency_id, &intent.registration)
+            let (Some(currency_id), Some(params)) = (&intent.currency_id, &intent.registration)
             else {
                 continue;
             };
@@ -1001,10 +1001,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
     /// The registry record for a currency key, once its
     /// definition is recorded.
     #[must_use]
-    pub fn registry_record(
-        &self,
-        key: &[u8; 32],
-    ) -> Option<id_currency_registry::CurrencyRecord> {
+    pub fn registry_record(&self, key: &[u8; 32]) -> Option<id_currency_registry::CurrencyRecord> {
         self.currency_ids
             .get(key)
             .and_then(|currency_id| self.registry.resolve(currency_id).cloned())
@@ -1203,7 +1200,10 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
     /// transfer under the same ID. Present but different — the
     /// ID was reused by another writer; that is a conflict to
     /// surface, never to overwrite.
-    fn recover_recorded(&mut self, mut intent: GatewayIntent) -> Result<SignedReceipt, ServiceError> {
+    fn recover_recorded(
+        &mut self,
+        mut intent: GatewayIntent,
+    ) -> Result<SignedReceipt, ServiceError> {
         let transfer = intent.transfer.clone().ok_or_else(|| {
             ServiceError::IntentStore(format!(
                 "recorded intent {:032x} carries no transfer",
@@ -1211,9 +1211,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             ))
         })?;
         match self.backend.try_lookup_transfer(transfer.id) {
-            Ok(Some(found)) if found == transfer => {
-                self.finalize_posted(&mut intent, true)
-            }
+            Ok(Some(found)) if found == transfer => self.finalize_posted(&mut intent, true),
             Ok(Some(_)) => Err(ServiceError::IntentConflict(format!(
                 "transfer {} exists with contents other than intent {:032x} recorded",
                 transfer.id, intent.idempotency
@@ -1249,9 +1247,7 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
         fresh: bool,
     ) -> Result<SignedReceipt, ServiceError> {
         if intent.op == "issue" && fresh {
-            if let (Some(currency_id), Some(transfer)) =
-                (&intent.currency_id, &intent.transfer)
-            {
+            if let (Some(currency_id), Some(transfer)) = (&intent.currency_id, &intent.transfer) {
                 *self.issued.entry(currency_id.clone()).or_default() += transfer.amount;
             }
         }
@@ -1300,7 +1296,12 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
             let mut cluster = BackendCluster::new(&mut self.backend);
             Factory::ensure_currency_accounts(&mut cluster, &record, &authorized.account, &[])?
         };
-        self.index_account(&record, accounts.issuer, &record.issuer_id, AccountKind::Issuer)?;
+        self.index_account(
+            &record,
+            accounts.issuer,
+            &record.issuer_id,
+            AccountKind::Issuer,
+        )?;
         self.index_account(
             &record,
             accounts.fee,
@@ -1710,36 +1711,38 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
                         op: intent.op.clone(),
                     });
                 }
-                IntentState::Posted => {
-                    match self.backend.try_lookup_transfer(transfer.id) {
-                        Ok(Some(found)) if found == *transfer => {}
-                        Ok(Some(_)) => {
-                            report.findings.push(IntentFinding::PostedIntentTransferMismatch {
+                IntentState::Posted => match self.backend.try_lookup_transfer(transfer.id) {
+                    Ok(Some(found)) if found == *transfer => {}
+                    Ok(Some(_)) => {
+                        report
+                            .findings
+                            .push(IntentFinding::PostedIntentTransferMismatch {
                                 idempotency: intent.idempotency,
                                 transfer_id: transfer.id,
                             });
-                        }
-                        Ok(None) => {
-                            report.findings.push(IntentFinding::PostedIntentMissingTransfer {
-                                idempotency: intent.idempotency,
-                                transfer_id: transfer.id,
-                            });
-                        }
-                        Err(error) => return Err(ServiceError::Backend(error.to_string())),
                     }
-                }
-                IntentState::Failed => {
-                    match self.backend.try_lookup_transfer(transfer.id) {
-                        Ok(Some(_)) => {
-                            report.findings.push(IntentFinding::FailedIntentTransferPresent {
+                    Ok(None) => {
+                        report
+                            .findings
+                            .push(IntentFinding::PostedIntentMissingTransfer {
                                 idempotency: intent.idempotency,
                                 transfer_id: transfer.id,
                             });
-                        }
-                        Ok(None) => {}
-                        Err(error) => return Err(ServiceError::Backend(error.to_string())),
                     }
-                }
+                    Err(error) => return Err(ServiceError::Backend(error.to_string())),
+                },
+                IntentState::Failed => match self.backend.try_lookup_transfer(transfer.id) {
+                    Ok(Some(_)) => {
+                        report
+                            .findings
+                            .push(IntentFinding::FailedIntentTransferPresent {
+                                idempotency: intent.idempotency,
+                                transfer_id: transfer.id,
+                            });
+                    }
+                    Ok(None) => {}
+                    Err(error) => return Err(ServiceError::Backend(error.to_string())),
+                },
             }
         }
         // The orphan direction: ledger transfers carrying a
@@ -1766,11 +1769,13 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
                     && self.graph.resolve(transfer.user_data_128).is_some()
                     && !intent_transfer_ids.contains(&transfer.id)
                 {
-                    report.findings.push(IntentFinding::LedgerTransferWithoutIntent {
-                        transfer_id: transfer.id,
-                        ledger_id: ledger,
-                        user_data_128: transfer.user_data_128,
-                    });
+                    report
+                        .findings
+                        .push(IntentFinding::LedgerTransferWithoutIntent {
+                            transfer_id: transfer.id,
+                            ledger_id: ledger,
+                            user_data_128: transfer.user_data_128,
+                        });
                 }
             }
         }
@@ -1792,9 +1797,9 @@ impl<B: LedgerBackend, I: IntentStore> GatewayService<B, I> {
 mod tests {
     use super::*;
     use crate::currency::gateway::{
-        Balance as GwBalance, CurrencyRequest, Freeze as GwFreeze,
-        GrantMinter as GwGrantMinter, Issue as GwIssue, RegisterCurrency as GwRegister,
-        Sunset as GwSunset, Transfer as GwTransfer, sign_request,
+        Balance as GwBalance, CurrencyRequest, Freeze as GwFreeze, GrantMinter as GwGrantMinter,
+        Issue as GwIssue, RegisterCurrency as GwRegister, Sunset as GwSunset,
+        Transfer as GwTransfer, sign_request,
     };
     use crate::currency::gateway_poc::verify_receipt;
     use crate::currency::graph::{SupplyCap, sign_definition, sign_issue, sign_transfer};
@@ -2139,7 +2144,12 @@ mod tests {
         // (granted in the previous life) presenting the same
         // class of object issues successfully.
         for (device_key, account, is_minter, client_request_id) in [
-            (fx.bob.device_key.clone(), fx.bob.account.clone(), false, 9_u128),
+            (
+                fx.bob.device_key.clone(),
+                fx.bob.account.clone(),
+                false,
+                9_u128,
+            ),
             (
                 fx.alice.device_key.clone(),
                 fx.alice.account.clone(),
@@ -2259,10 +2269,18 @@ mod tests {
         };
         let idem = idempotency_id(&fx.alice.account, &request);
         let record = fx.svc.registry_record(&key).expect("record");
-        let from_spec =
-            id_currency_registry::account_spec(record.ledger_id, AccountKind::Holder, &fx.alice.account, "");
-        let to_spec =
-            id_currency_registry::account_spec(record.ledger_id, AccountKind::Holder, &fx.bob.account, "");
+        let from_spec = id_currency_registry::account_spec(
+            record.ledger_id,
+            AccountKind::Holder,
+            &fx.alice.account,
+            "",
+        );
+        let to_spec = id_currency_registry::account_spec(
+            record.ledger_id,
+            AccountKind::Holder,
+            &fx.bob.account,
+            "",
+        );
         let stamp = GraphLog::stamp_of(&event);
         let intent = GatewayIntent {
             idempotency: idem,
@@ -2289,7 +2307,9 @@ mod tests {
             receipt: None,
             failure: None,
         };
-        store_handle(&dir).put(&intent).expect("recorded intent writes");
+        store_handle(&dir)
+            .put(&intent)
+            .expect("recorded intent writes");
 
         // The retry resubmits the stored transfer under the same
         // ID and finalizes.
@@ -2300,7 +2320,10 @@ mod tests {
         assert_eq!(fx.svc.holder_balance(&key, &fx.alice.account), Some(70));
         assert_eq!(fx.svc.holder_balance(&key, &fx.bob.account), Some(30));
         let stored = store_handle(&dir).all().expect("intents read");
-        let intent = stored.iter().find(|i| i.idempotency == idem).expect("intent");
+        let intent = stored
+            .iter()
+            .find(|i| i.idempotency == idem)
+            .expect("intent");
         assert_eq!(intent.state, IntentState::Posted);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2385,9 +2408,16 @@ mod tests {
 
         let mut store = store_handle(&dir);
         let all = store.all().expect("intents read");
-        let issue_intent = all.iter().find(|i| i.op == "issue").expect("issue intent").clone();
-        let transfer_intent =
-            all.iter().find(|i| i.op == "transfer").expect("transfer intent").clone();
+        let issue_intent = all
+            .iter()
+            .find(|i| i.op == "issue")
+            .expect("issue intent")
+            .clone();
+        let transfer_intent = all
+            .iter()
+            .find(|i| i.op == "transfer")
+            .expect("transfer intent")
+            .clone();
 
         // (a) The stored transfer disagrees with the ledger's.
         let mut tampered = transfer_intent.clone();

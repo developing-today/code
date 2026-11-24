@@ -88,11 +88,7 @@ import {
 } from "./session-resolution.ts";
 import { isValidSessionId } from "./sessions.ts";
 import type { FlowSyncResponse, ProjectSyncResponse } from "./sync.ts";
-import {
-  parseFlowSyncCliArgs,
-  parseProjectSyncCliArgs,
-  renderSyncResponse,
-} from "./sync-cli.ts";
+import { parseFlowSyncCliArgs, parseProjectSyncCliArgs, renderSyncResponse } from "./sync-cli.ts";
 
 export const TOKEN_ENV = "FLEET_HOSTED_TOKEN";
 export const WORKER_ENV = "FLEET_WORKER";
@@ -136,11 +132,7 @@ export function resolveCallerToken(sources: {
   env: (name: string) => string | null | undefined;
   stored?: string | null;
 }): string | null {
-  return (
-    nonempty(sources.explicit) ??
-    nonempty(sources.env(TOKEN_ENV)) ??
-    nonempty(sources.stored ?? null)
-  );
+  return nonempty(sources.explicit) ?? nonempty(sources.env(TOKEN_ENV)) ?? nonempty(sources.stored ?? null);
 }
 
 function usage(message: string): FailClosed {
@@ -200,10 +192,18 @@ class ServiceClient {
     try {
       doc = await res.json();
     } catch {
-      throw new FailClosed(502, "service_unreachable", `fleet-hosted service answered HTTP ${res.status} with a non-JSON body`);
+      throw new FailClosed(
+        502,
+        "service_unreachable",
+        `fleet-hosted service answered HTTP ${res.status} with a non-JSON body`,
+      );
     }
     if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
-      throw new FailClosed(502, "service_unreachable", `fleet-hosted service answered HTTP ${res.status} with a non-object body`);
+      throw new FailClosed(
+        502,
+        "service_unreachable",
+        `fleet-hosted service answered HTTP ${res.status} with a non-object body`,
+      );
     }
     const record = doc as Record<string, unknown>;
     if (!res.ok) {
@@ -224,11 +224,7 @@ class ServiceClient {
  * stale error — not a silent fallback — is what a dead stored id
  * produces. Returns null when no level supplies a session (an
  * uncited call, which the doors accept where the design does). */
-async function carriedSessionId(
-  deps: CliDeps,
-  client: ServiceClient,
-  explicit: string | null,
-): Promise<string | null> {
+async function carriedSessionId(deps: CliDeps, client: ServiceClient, explicit: string | null): Promise<string | null> {
   const env = deps.env;
   const supplied =
     nonempty(explicit) !== null ||
@@ -263,10 +259,7 @@ async function carriedSessionId(
  * liveness demand — the registry's own answer (200, or 409 when
  * already closed) is the authority on the session's state. */
 function closableSessionId(deps: CliDeps, explicit: string | null): string | null {
-  const resolution = resolveSessionId(
-    { explicit, env: deps.env, stored: deps.store.read() },
-    () => true,
-  );
+  const resolution = resolveSessionId({ explicit, env: deps.env, stored: deps.store.read() }, () => true);
   return resolution.kind === "session" ? resolution.sessionId : null;
 }
 

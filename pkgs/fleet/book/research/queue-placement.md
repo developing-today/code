@@ -16,12 +16,12 @@ Use the published queue repair workflow to preview candidate changes, check the 
 
 For an ageing quarantine, expose the defect class, affected fields, detecting validator revision, first unresolved event, last substantive transition and permitted repair route. A fairness sweep can touch a row without changing the disposition. An operator needs an unknown-age result when the necessary event has expired. Treat a missing dedupe stamp, absent repository, ambiguous priority, live holder and exhausted attempts as different defects. Only the first can acquire a new attestation solely from a successful live dedupe check. An authoritative producer can supply missing scope or priority. Preserve refusals with the responsible party and next observation.
 
-| Failure injected | Observable acceptance result |
-|---|---|
-| Lost grant response, broker restart, same request retried | One committed grant and one receipt for the request. |
-| Two processes use one display name, first process resumes after transfer | A late heartbeat or completion leaves the new grant and checkpoint intact. |
-| Final dependency resolves twice while work is parked on a separate condition | One dependency transition. Independent condition remains active. |
-| Previously completed issue re-enters via a new packet key | Recorded disposition and intentional revival policy decide eligibility. |
+| Failure injected                                                             | Observable acceptance result                                               |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Lost grant response, broker restart, same request retried                    | One committed grant and one receipt for the request.                       |
+| Two processes use one display name, first process resumes after transfer     | A late heartbeat or completion leaves the new grant and checkpoint intact. |
+| Final dependency resolves twice while work is parked on a separate condition | One dependency transition. Independent condition remains active.           |
+| Previously completed issue re-enters via a new packet key                    | Recorded disposition and intentional revival policy decide eligibility.    |
 
 At the inspected source revision, a normal lease starts at 45 minutes while `agent next` uses four hours for work that can last hours without automatic renewal. The default heartbeat computes an absolute deadline 15 minutes from receipt. At minute five this can shorten a four-hour grant by 220 minutes. A proposed normal-renewal rule preserves the later of the existing deadline and the permitted new deadline. Collect heartbeat gaps, abandoned-grant recovery, false reclaims and write cost before changing the defaults. Introduce epoch-aware callers alongside old seats and enforce fencing after outstanding old grants drain. [Intake rationale](https://github.com/developing-today/code/blob/4cfceaa/pkgs/fleet/crates/fleet-agent/src/next.rs) · [Lifecycle](https://github.com/developing-today/code/blob/4cfceaa/pkgs/fleet/crates/fleet-queue/src/turso_queue/lifecycle.rs)
 

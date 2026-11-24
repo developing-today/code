@@ -112,14 +112,20 @@ class BatchLogTests(unittest.TestCase):
             gate.append_log(
                 path,
                 gate.log_record(
-                    1, [101, 102], "cargo check --workspace", "green",
+                    1,
+                    [101, 102],
+                    "cargo check --workspace",
+                    "green",
                     consecutive_green=1,
                 ),
             )
             gate.append_log(
                 path,
                 gate.log_record(
-                    2, [103], "cargo check --workspace", "red",
+                    2,
+                    [103],
+                    "cargo check --workspace",
+                    "red",
                     consecutive_green=0,
                 ),
             )
@@ -154,9 +160,7 @@ class BatchLogTests(unittest.TestCase):
         self.assertEqual(record["probe"], True)
         self.assertIsNone(record["consecutive_green"])
         with self.assertRaises(ValueError):
-            gate.log_record(
-                1, [101], "cmd", "green", probe=True, consecutive_green=1
-            )
+            gate.log_record(1, [101], "cmd", "green", probe=True, consecutive_green=1)
 
     def test_landed_record_without_a_count_is_a_usage_error(self) -> None:
         with self.assertRaises(ValueError):
@@ -167,9 +171,7 @@ class BatchLogTests(unittest.TestCase):
             path = Path(tmp) / "gate-log.jsonl"
             first = gate.append_batch_record(path, 1, [101], "cmd", "green")
             second = gate.append_batch_record(path, 2, [102], "cmd", "green")
-            probe = gate.append_batch_record(
-                path, 3, [103], "cmd", "green", probe=True
-            )
+            probe = gate.append_batch_record(path, 3, [103], "cmd", "green", probe=True)
             third = gate.append_batch_record(path, 3, [103, 104], "cmd", "red")
             fourth = gate.append_batch_record(path, 4, [105], "cmd", "green")
             # The probe never counted as a landed batch; read the count
@@ -186,9 +188,7 @@ class BatchLogTests(unittest.TestCase):
         records = [
             gate.log_record(1, [101], "cmd", "green", consecutive_green=1),
             gate.log_record(2, [102], "cmd", "green", consecutive_green=2),
-            gate.log_record(
-                3, [103], "cmd", "red", probe=True, consecutive_green=None
-            ),
+            gate.log_record(3, [103], "cmd", "red", probe=True, consecutive_green=None),
             gate.log_record(3, [103], "cmd", "red", consecutive_green=0),
         ]
         status = gate.gate_status(records)
@@ -198,9 +198,7 @@ class BatchLogTests(unittest.TestCase):
         self.assertEqual(status["complete"], False)
 
         done = [
-            gate.log_record(
-                b, [100 + b], "cmd", "green", consecutive_green=b
-            )
+            gate.log_record(b, [100 + b], "cmd", "green", consecutive_green=b)
             for b in range(1, 11)
         ]
         self.assertEqual(gate.gate_status(done)["complete"], True)
@@ -418,11 +416,16 @@ class StatusCommandTests(unittest.TestCase):
             rc = gate.main(
                 [
                     "log",
-                    "--file", str(path),
-                    "--batch", "1",
-                    "--prs", "101",
-                    "--command", "cmd",
-                    "--result", "green",
+                    "--file",
+                    str(path),
+                    "--batch",
+                    "1",
+                    "--prs",
+                    "101",
+                    "--command",
+                    "cmd",
+                    "--result",
+                    "green",
                 ]
             )
             (record,) = gate.read_log(path)

@@ -8,10 +8,10 @@ ID has no versioned release process of its own: no release workflow, no tag-and-
 
 The packages live in the `packages` set of `pkgs/id/flake.nix`. Both are `pkgs.rustPlatform.buildRustPackage` derivations over the whole `pkgs/id` source tree, both are version `0.1.0`, and both install the same single binary as `bin/id`.
 
-| Package | Flake name | Feature set | Notes |
-|---|---|---|---|
-| `id-web` | `pname = "id"` | `buildFeatures = ["web", "sandbox", "ssh", "world"]` | The primary product and the flake's `default` package. Its build installs the web dependencies offline through the bun2nix hook (`bunRoot = "web"`), builds the web assets in its `preBuild` step, and builds the Roc platform's Wasm host. |
-| `id-lib` | `pname = "id-lib"` | `buildNoDefaultFeatures = true`, `buildFeatures = ["sandbox", "world"]` | The library variant: no web UI, no Bun in its build inputs, no `ssh`. Its feature set is the Cargo default set; the split between the two builds is explained in [Building and testing](building.md). |
+| Package  | Flake name         | Feature set                                                             | Notes                                                                                                                                                                                                                                       |
+| -------- | ------------------ | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id-web` | `pname = "id"`     | `buildFeatures = ["web", "sandbox", "ssh", "world"]`                    | The primary product and the flake's `default` package. Its build installs the web dependencies offline through the bun2nix hook (`bunRoot = "web"`), builds the web assets in its `preBuild` step, and builds the Roc platform's Wasm host. |
+| `id-lib` | `pname = "id-lib"` | `buildNoDefaultFeatures = true`, `buildFeatures = ["sandbox", "world"]` | The library variant: no web UI, no Bun in its build inputs, no `ssh`. Its feature set is the Cargo default set; the split between the two builds is explained in [Building and testing](building.md).                                       |
 
 Build either package from `pkgs/id/`:
 

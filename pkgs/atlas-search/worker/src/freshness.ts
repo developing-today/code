@@ -95,9 +95,7 @@ export interface CacheEntryFacts {
  * read. There is deliberately no third state — unknown is
  * unavailable, and unavailable only ever narrows the bound.
  */
-export type WatermarkRead =
-  | { status: "ok"; currentWatermark: string }
-  | { status: "unavailable" };
+export type WatermarkRead = { status: "ok"; currentWatermark: string } | { status: "unavailable" };
 
 /** Everything the evaluator needs about the moment of the read. */
 export interface FreshnessContext {

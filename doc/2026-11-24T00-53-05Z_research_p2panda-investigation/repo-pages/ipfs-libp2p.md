@@ -37,13 +37,13 @@ The surrounding infrastructure had already been retreating:
   implementations.
 
 None of this means IPFS content disappears (content addressing is
-content addressing; anyone can run the code). It means: the *maintained
-centre* that an adopter in 2023 would have relied on — reference node,
+content addressing; anyone can run the code). It means: the _maintained
+centre_ that an adopter in 2023 would have relied on — reference node,
 JS stack, gateways, hosted pinning — has dissolved within one funding
 decision. For an estate choosing infrastructure to build a decade on,
 this is the data point: **the risk was never the protocol's elegance; it
 was a single funder's renewal.** (Contrast, within this same
-investigation: p2panda's grant-to-grant smallness is at least *visible*
+investigation: p2panda's grant-to-grant smallness is at least _visible_
 and plural; libp2p's maintenance is anchored by infrastructure users —
 below.)
 
@@ -62,10 +62,10 @@ libp2p the library is in a different position from IPFS the product:
   rewriting, the library is a commons, not a platform.
 
 The technical judgement matches the organisational one. libp2p is a
-*menu*: multiaddr addressing, multihash/multicodec registries, a dozen
+_menu_: multiaddr addressing, multihash/multicodec registries, a dozen
 transports, pluggable muxers, Kademlia, gossipsub, relay, AutoNAT,
 DCUtR hole-punching — assembled per deployment. That assembly is the
-famous tax: NAT traversal in libp2p is *assembled* (AutoNAT to learn
+famous tax: NAT traversal in libp2p is _assembled_ (AutoNAT to learn
 your situation + Circuit Relay v2 for fallback + DCUtR to upgrade to
 direct), provider/DHT behaviour varies by configuration, and two
 libp2p applications interoperate only after agreeing on most of the
@@ -82,18 +82,18 @@ landscape argues for unmaking it.
   files are the best-developed vocabulary in the field for "name data by
   its hash and verify it anywhere," and pieces of that vocabulary are
   already inside this programme (UCAN's CIDs are IPFS CIDs; p2panda
-  interops with the same hashing world). Adopting the *vocabulary* is
+  interops with the same hashing world). Adopting the _vocabulary_ is
   free and already done; it does not require adopting the network.
 - **Discovery/replication economics are the measured weak point.** DHT
   provider records expire at **48 hours** (content must be perpetually
-  re-announced by *someone*), and measurement studies of the public
+  re-announced by _someone_), and measurement studies of the public
   network find only **2.71% of files replicated more than 5 times** and
   **5% of peers hosting over 80% of content** — the public network is, in
   practice, a small set of pinning services and gateways wearing a p2p
   protocol. The one bright spot: **Provide Sweep** (default since Kubo
   0.39) substantially fixed provider-record scaling, with a claimed 97%
   reduction in DHT lookups for large providers — evidence the design
-  *can* be repaired, arriving in the same season its maintainers left.
+  _can_ be repaired, arriving in the same season its maintainers left.
 - **IPNS** (mutable naming) is a single signed pointer register: one key,
   one current value, sequence-numbered. Fine as a "latest version"
   pointer; it is not a sync protocol and has no multi-writer story.
@@ -111,7 +111,7 @@ Exactly one use survives the judgement: **IPFS as an optional public
 artefact-distribution mirror.** If the estate ever wants release
 artefacts, public datasets, or documentation mirrored in a
 content-addressed public network (fetchable by CID, verifiable offline,
-hostable by anyone), publishing *to* IPFS is a reasonable distribution
+hostable by anyone), publishing _to_ IPFS is a reasonable distribution
 decision — with eyes open about pinning (you are your own pinning
 service now; the hosted ones left) and about stewardship (pin the Kubo
 version you test against; the maintenance centre is gone). That is a

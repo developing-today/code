@@ -81,9 +81,8 @@ fn snapshot(
 }
 
 fn location_ref() -> LocationRef {
-    let locator = TypedLocator::from(
-        R2Locator::new("acct-1", "bucket-1", "objects/thing-1").unwrap(),
-    );
+    let locator =
+        TypedLocator::from(R2Locator::new("acct-1", "bucket-1", "objects/thing-1").unwrap());
     // A NamespaceId has its own grammar (a letter followed by
     // letters, digits or hyphens) — unlike the sidecar body's
     // free-text namespace label above.
@@ -105,10 +104,7 @@ fn sample_links() -> Vec<RelatedLink> {
             LinkTarget::PathRef(PathRef::new("docs/guide.md").unwrap()),
         ),
         RelatedLink::new("located-at", LinkTarget::LocationRef(location_ref())),
-        RelatedLink::new(
-            "part-of",
-            LinkTarget::ContentRef(content(b"target-other")),
-        ),
+        RelatedLink::new("part-of", LinkTarget::ContentRef(content(b"target-other"))),
     ]
 }
 
@@ -188,7 +184,10 @@ fn path_ref_rejects_leading_slash_and_bad_segments() {
 #[test]
 fn path_ref_cap_is_resource_limit_not_truncation() {
     let at_cap = "a".repeat(MAX_PATH_REF_BYTES);
-    assert_eq!(PathRef::new(&at_cap).unwrap().as_str().len(), MAX_PATH_REF_BYTES);
+    assert_eq!(
+        PathRef::new(&at_cap).unwrap().as_str().len(),
+        MAX_PATH_REF_BYTES
+    );
 
     // A multi-segment path exactly at the cap is also fine.
     let segmented = format!("{}/{}", "a".repeat(2048), "b".repeat(2047));
@@ -239,10 +238,7 @@ fn unknown_target_kind_is_unsupported_target_kind() {
     // not path-link changes (design §4, Q1).
     for kind in ["url", "blob"] {
         let value = Value::Map(vec![
-            (
-                Value::Text("kind".to_owned()),
-                Value::Text(kind.to_owned()),
-            ),
+            (Value::Text("kind".to_owned()), Value::Text(kind.to_owned())),
             (
                 Value::Text("url".to_owned()),
                 Value::Text("https://example.com/x".to_owned()),
@@ -304,7 +300,13 @@ fn canonical_order_sorts_by_relation_then_target_bytes_and_collapses_duplicates(
     let relations: Vec<&str> = canonical.iter().map(|l| l.relation.as_str()).collect();
     assert_eq!(
         relations,
-        ["derived-from", "located-at", "part-of", "see-also", "see-also"]
+        [
+            "derived-from",
+            "located-at",
+            "part-of",
+            "see-also",
+            "see-also"
+        ]
     );
     assert!(matches!(canonical[3].target, LinkTarget::ContentRef(_)));
     assert!(matches!(canonical[4].target, LinkTarget::PathRef(_)));
@@ -341,7 +343,10 @@ fn adding_a_link_changes_the_snapshot_but_not_the_subject() {
     assert_eq!(bare.body.subject_content_id, subject());
     assert_eq!(linked.body.subject_content_id, subject());
     assert_ne!(bare.snapshot_id().unwrap(), linked.snapshot_id().unwrap());
-    assert_eq!(envelope_links(&linked).unwrap(), canonical_links(&sample_links()).unwrap());
+    assert_eq!(
+        envelope_links(&linked).unwrap(),
+        canonical_links(&sample_links()).unwrap()
+    );
     assert!(envelope_links(&bare).unwrap().is_empty());
 }
 
@@ -425,14 +430,14 @@ fn dangling_links_survive_rewrite() {
 fn resolution_is_per_target_and_read_only() {
     let links = sample_links();
     let present = content(b"target-content");
-    let resolutions = resolve_links(&links, |target| {
-        matches!(target, LinkTarget::ContentRef(id) if *id == present)
-    });
+    let resolutions = resolve_links(
+        &links,
+        |target| matches!(target, LinkTarget::ContentRef(id) if *id == present),
+    );
     assert_eq!(resolutions.len(), links.len());
     for (link, resolution) in links.iter().zip(&resolutions) {
         assert_eq!(resolution.target(), &link.target);
-        let should_resolve =
-            matches!(&link.target, LinkTarget::ContentRef(id) if *id == present);
+        let should_resolve = matches!(&link.target, LinkTarget::ContentRef(id) if *id == present);
         assert_eq!(!resolution.is_dangling(), should_resolve, "link {link:?}");
     }
     // Resolution changed nothing: the links still read back whole.

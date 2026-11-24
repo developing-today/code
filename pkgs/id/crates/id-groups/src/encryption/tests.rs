@@ -161,6 +161,7 @@ impl Cast {
             author: id(by),
             after,
             group,
+            at: None,
             body,
         });
         let view = self.view();
@@ -179,6 +180,7 @@ impl Cast {
             author: id(by),
             after: Vec::new(),
             group: None,
+            at: None,
             body: Body::Create(Create {
                 template: Template::Custom,
                 policy: scheme_policy(SCHEME_V1),

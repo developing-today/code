@@ -66,14 +66,14 @@ $ fleet queue bind 19479 --worker repo-worker-code --session-id ses_01J9EXAMPLE0
 usage: repo-queue heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]
 ```
 
-| Flag                     | Argument        | Default                          | Meaning                                                                                                           |
-| ------------------------ | --------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `<task-id>` (positional) | task id         | required                         | The claimed task whose lease to refresh.                                                                          |
-| `--worker`               | worker id       | `repo-worker-code`               | Holder identity.                                                                                                  |
-| `--lane`                 | lane id         | env `REPO_QUEUE_LANE`, else null | Holder lane check.                                                                                                |
-| `--extend-seconds`       | integer seconds | 900 (15 min)                     | Minimum renewal window from now. Range 1..=86400, exit 2 outside. |
-| `--progress`             | text/JSON       | unset                            | Progress value merged into the row. Mutually exclusive with `--progress-file`.                                    |
-| `--progress-file`        | file path       | unset                            | File whose text is read as the progress value. Mutually exclusive with `--progress`.                              |
+| Flag                     | Argument        | Default                          | Meaning                                                                              |
+| ------------------------ | --------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| `<task-id>` (positional) | task id         | required                         | The claimed task whose lease to refresh.                                             |
+| `--worker`               | worker id       | `repo-worker-code`               | Holder identity.                                                                     |
+| `--lane`                 | lane id         | env `REPO_QUEUE_LANE`, else null | Holder lane check.                                                                   |
+| `--extend-seconds`       | integer seconds | 900 (15 min)                     | Minimum renewal window from now. Range 1..=86400, exit 2 outside.                    |
+| `--progress`             | text/JSON       | unset                            | Progress value merged into the row. Mutually exclusive with `--progress-file`.       |
+| `--progress-file`        | file path       | unset                            | File whose text is read as the progress value. Mutually exclusive with `--progress`. |
 
 **Behaviour.** The Turso broker keeps the later of the current deadline and `now + extend_seconds`. It writes the resulting deadline to the task and its lease in one SQLite statement and refreshes `heartbeat_at`, including on an early heartbeat. A changed claim observed during renewal returns exit 5. Brokers built before [#13553](https://github.com/developing-today/code/issues/13553) replace the deadline with `now + extend_seconds` and can shorten a longer lease. Check the serving broker revision when interpreting older observations. `--progress`/`--progress-file` optionally merge a progress value into the row. Heartbeat goes through the fallback-switch path: a primary-store failure switches the work to the GitHub fallback, exit 6 (see [the fallback queue](queue-fallback.md)). Prints the row + `mode_line`.
 

@@ -158,9 +158,7 @@ def build_manifest(database, sqlite_path, dump_bytes, exported_at):
     try:
         for table in _table_names(conn):
             rows, content = _table_rows_and_hash(conn, table)
-            manifest["tables"].append(
-                {"name": table, "rows": rows, "sha256": content}
-            )
+            manifest["tables"].append({"name": table, "rows": rows, "sha256": content})
     finally:
         conn.close()
     return manifest

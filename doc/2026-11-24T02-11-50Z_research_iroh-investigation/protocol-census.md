@@ -1,11 +1,11 @@
 # Iroh Protocol Census
 
-*Compiled 2026-11-23. Companion to the auth+transport programme
+_Compiled 2026-11-23. Companion to the auth+transport programme
 ([developing-today/code#13779](https://github.com/developing-today/code/issues/13779))
 and the fleet transport design
 ([#13752](https://github.com/developing-today/code/issues/13752)).
 Every factual claim is linked to a primary source (n0-computer repos, iroh.computer,
-crates.io, project repos) unless marked as third-party commentary.*
+crates.io, project repos) unless marked as third-party commentary._
 
 ---
 
@@ -36,15 +36,15 @@ by n0's ramfox, per the
 [crates.io record for `iroh`](https://crates.io/api/v1/crates/iroh)
 (4.68M all-time downloads at census time):
 
-| Version | Date | Headline changes |
-|---|---|---|
-| 1.0.0 | 2026-06-15 | Stable wire + API; FFI bindings; QUIC multipath; QUIC NAT traversal; custom transports |
-| 1.1.0 | 2026-08-25 | Minor release ([crates.io](https://crates.io/api/v1/crates/iroh)) |
-| 1.2.0 | 2026-09-09 | Minor release ([crates.io](https://crates.io/api/v1/crates/iroh)) |
-| 1.3.0 | 2026-09-28 | Minor release ([crates.io](https://crates.io/api/v1/crates/iroh)) |
-| 1.4.0 | 2026-10-20 | rustls RUSTSEC fixes; relay sends `X-Iroh-Endpoint-Id` header (NodeId header deprecated); faster relay startup; better local-only networking ([release notes](https://github.com/n0-computer/iroh/releases/tag/v1.4.0)) |
-| 1.4.1 | 2026-10-21 | Test/CI timeout fixes; rustls-webpki dep update ([changelog](https://raw.githubusercontent.com/n0-computer/iroh/main/CHANGELOG.md)) |
-| 1.4.2 | 2026-11-19 | "Security Fixes for Relays and Endpoints" ([blog index](https://www.iroh.computer/blog)) |
+| Version   | Date           | Headline changes                                                                                                                                                                                                                                                                                         |
+| --------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1.0.0     | 2026-06-15     | Stable wire + API; FFI bindings; QUIC multipath; QUIC NAT traversal; custom transports                                                                                                                                                                                                                   |
+| 1.1.0     | 2026-08-25     | Minor release ([crates.io](https://crates.io/api/v1/crates/iroh))                                                                                                                                                                                                                                        |
+| 1.2.0     | 2026-09-09     | Minor release ([crates.io](https://crates.io/api/v1/crates/iroh))                                                                                                                                                                                                                                        |
+| 1.3.0     | 2026-09-28     | Minor release ([crates.io](https://crates.io/api/v1/crates/iroh))                                                                                                                                                                                                                                        |
+| 1.4.0     | 2026-10-20     | rustls RUSTSEC fixes; relay sends `X-Iroh-Endpoint-Id` header (NodeId header deprecated); faster relay startup; better local-only networking ([release notes](https://github.com/n0-computer/iroh/releases/tag/v1.4.0))                                                                                  |
+| 1.4.1     | 2026-10-21     | Test/CI timeout fixes; rustls-webpki dep update ([changelog](https://raw.githubusercontent.com/n0-computer/iroh/main/CHANGELOG.md))                                                                                                                                                                      |
+| 1.4.2     | 2026-11-19     | "Security Fixes for Relays and Endpoints" ([blog index](https://www.iroh.computer/blog))                                                                                                                                                                                                                 |
 | **1.5.0** | **2026-11-19** | Exposes `noq::SendStream::set_affinity` (pin streams to paths), path wait helpers, relay handshake connection-leak fix; blog title: "Stream Affinity, Then Heads Down" ([changelog](https://raw.githubusercontent.com/n0-computer/iroh/main/CHANGELOG.md), [blog index](https://www.iroh.computer/blog)) |
 
 ### 1.2 The road to 1.0 (the 0.9x line, for context)
@@ -166,25 +166,25 @@ application adds explicitly — iroh core no longer bundles or privileges them
 (["Let them have crates"](https://www.iroh.computer/blog/iroh-0-28-let-them-have-crates),
 ["net is the new iroh"](https://www.iroh.computer/blog/iroh-0-29-net-is-the-new-iroh)).
 
-| Project | What it does | ALPN | Maturity / latest |
-|---|---|---|---|
-| **iroh-blobs** | Content-addressed blob transfer: BLAKE3-verified streaming (via `bao-tree`), resumable downloads, multi-provider download, persistent + in-memory stores, hash-and-format tickets | `/iroh-bytes/4` | 0.103.0 shipped aligned with iroh 1.0 (2026-06-15); the most production-hardened of the family ([source survey](https://sparkles.petar-kirov.dev/research/iroh/), [migration record](https://github.com/axpdev-lab/aeroftp/blob/HEAD/docs/security-evidence/IROH-PEER-L0-ADVISORIES-2026-06.md)) |
-| **iroh-gossip** | Topic-based broadcast overlay: HyParView partial-view membership + PlumTree eager/lazy-push broadcast tree | `/iroh-gossip/1` | 0.101.0 (2026-06-15), 0.102.0 (2026-11-03), **0.103.0 (2026-11-16)**; explicitly on "the road to 1.0" ([docs.rs version list](https://docs.rs/crate/iroh-gossip/0.21.0), [blog index](https://www.iroh.computer/blog)) |
-| **iroh-docs** | Multi-writer, eventually consistent key-value sync ("Documents" on the registry page): entries keyed by (namespace, author, key), values stored as blobs, replicas reconcile via range-fingerprint set reconciliation | `/iroh-sync/1` | 0.101.0 (2026-06-15), incl. a redb 2.x store migration fix; the least-frequently released of the three core protocols ([changelog](https://github.com/n0-computer/iroh-docs/blob/HEAD/CHANGELOG.md), [source survey](https://sparkles.petar-kirov.dev/research/iroh/)) |
-| **iroh-relay** | The relay server (and client) implementation; WebSocket-based relay protocol after the pre-1.0 overhaul | — (relay protocol, not an app ALPN) | Ships inside the iroh workspace and versions with core (1.5.0); this is the code n0 runs for the public relays ([iroh repo README](https://raw.githubusercontent.com/PaulOlteanu/iroh/main/README.md)) |
-| **iroh-willow** | Implementation of the [Willow protocol](https://willowprotocol.org) (data model + Meadowcap + Confidential Sync) using iroh for transport and iroh-blobs for payloads | (Willow sync ALPNs) | **Experimental / stale — see §2.1.** Crate 0.28.0 on docs.rs carries "This work is not released yet" ([docs.rs](https://docs.rs/iroh-willow/latest/iroh_willow/)) |
-| **iroh-roq** | RTP over QUIC as an iroh protocol — packetises RTP media over QUIC streams/datagrams | (roq ALPN) | Registry-listed protocol; the media building block under the `callme` demo ([protocol registry](https://www.iroh.computer/proto), [streaming docs](https://docs.iroh.computer/protocols/streaming)) |
-| **iroh-live** | Live audio/video streaming over iroh using Media over QUIC: `iroh-moq` adapts iroh connections to MoQ sessions (via a WebTransport bridge), with publish/subscribe broadcasts and 1:1 "call" sugar | (MoQ ALPNs) | Active n0 repo (media livestreaming over iroh); the current home of n0's "iroh-calls" line of work — the earlier calls experiments were rebuilt as MoQ-based live streaming ([n0 org](https://github.com/n0-computer), [iroh-live deep dive](https://deepwiki.com/n0-computer/iroh-live/1.2-protocol-stack)) |
-| **callme** | Demo app for iroh-roq: Opus voice calls, `callme-cli` + `callme-egui` (desktop/Android) clients | `/callme/rtc/0` | n0 demo, shows the roq stack end-to-end ([streaming docs](https://docs.iroh.computer/protocols/streaming), [callme architecture](https://deepwiki.com/n0-computer/callme/4.1-core-library-architecture)) |
-| **iroh-content-discovery** | "Iroh Content Discovery": a tracker protocol so blob providers/consumers can find each other for iroh-blobs content | (own ALPN) | Registry-listed protocol ([protocol registry](https://www.iroh.computer/proto)) |
-| **iroh-ping** | Minimal ping protocol for iroh endpoints — the canonical "smallest real protocol" example | (own ALPN) | Registry-listed; example-grade by design ([protocol registry](https://www.iroh.computer/proto)) |
-| **dumbpipe** | "Netcat over iroh": pipes stdin/stdout between endpoints by ticket; also `listen-tcp`/`connect-tcp` and `listen-unix`/`connect-unix` forwarding, `generate-ticket` for stable listeners | (own ALPN) | Standalone n0 tool, packaged widely (Homebrew, Nix, Termux packaging in progress); versions in lockstep with sendme (0.37.x line) ([Termux packaging issue](https://github.com/termux/termux-packages/issues/30605), [n0 org](https://github.com/n0-computer)) |
-| **sendme** | File/directory transfer CLI on iroh-blobs: `sendme send <path>` prints a ticket, `sendme receive <ticket>` fetches with BLAKE3-verified, resumable streaming | (blobs) | **0.37.1** current; on Homebrew/Nix/Arch/Scoop/winget; the family's flagship end-user tool ([sendme page](https://www.iroh.computer/sendme), [docs.rs](https://docs.rs/crate/sendme/latest)) |
-| **iroh-doctor** | Standalone connectivity diagnostics CLI ("Iroh Doctor") | — | Released as its own tool per the roadmap ([roadmap](https://www.iroh.computer/roadmap)) |
-| **iroh-dns-server** | The server behind `dns.iroh.link`: a pkarr relay + DNS resolver (see §3) | — | Ships in the iroh workspace; self-hostable ([address lookup docs](https://github.com/n0-computer/docs.iroh.computer/blob/HEAD/concepts/address-lookup.mdx)) |
-| **iroh-ffi** | Official bindings: Python, Node.js, Swift, Kotlin | — | Rebuilt on the stable 1.0 API and officially supported ([1.0 post](https://github.com/n0-computer/iroh.computer/blob/HEAD/src/app/blog/v1/page.mdx)) |
-| **noq** | n0's QUIC implementation (quinn fork): multipath, QAD, QNT | — | Separate n0 repo; versions with iroh (noq 1.5.0) ([n0 org](https://github.com/n0-computer), [blog index](https://www.iroh.computer/blog)) |
-| **net-tools / netwatch / portmapper** | Cross-platform networking utilities factored out of iroh (netcheck, port mapping, interface watching) | — | Separate n0 repos/crates ([n0 org](https://github.com/n0-computer), [roadmap](https://www.iroh.computer/roadmap)) |
+| Project                               | What it does                                                                                                                                                                                                          | ALPN                                | Maturity / latest                                                                                                                                                                                                                                                                                            |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **iroh-blobs**                        | Content-addressed blob transfer: BLAKE3-verified streaming (via `bao-tree`), resumable downloads, multi-provider download, persistent + in-memory stores, hash-and-format tickets                                     | `/iroh-bytes/4`                     | 0.103.0 shipped aligned with iroh 1.0 (2026-06-15); the most production-hardened of the family ([source survey](https://sparkles.petar-kirov.dev/research/iroh/), [migration record](https://github.com/axpdev-lab/aeroftp/blob/HEAD/docs/security-evidence/IROH-PEER-L0-ADVISORIES-2026-06.md))             |
+| **iroh-gossip**                       | Topic-based broadcast overlay: HyParView partial-view membership + PlumTree eager/lazy-push broadcast tree                                                                                                            | `/iroh-gossip/1`                    | 0.101.0 (2026-06-15), 0.102.0 (2026-11-03), **0.103.0 (2026-11-16)**; explicitly on "the road to 1.0" ([docs.rs version list](https://docs.rs/crate/iroh-gossip/0.21.0), [blog index](https://www.iroh.computer/blog))                                                                                       |
+| **iroh-docs**                         | Multi-writer, eventually consistent key-value sync ("Documents" on the registry page): entries keyed by (namespace, author, key), values stored as blobs, replicas reconcile via range-fingerprint set reconciliation | `/iroh-sync/1`                      | 0.101.0 (2026-06-15), incl. a redb 2.x store migration fix; the least-frequently released of the three core protocols ([changelog](https://github.com/n0-computer/iroh-docs/blob/HEAD/CHANGELOG.md), [source survey](https://sparkles.petar-kirov.dev/research/iroh/))                                       |
+| **iroh-relay**                        | The relay server (and client) implementation; WebSocket-based relay protocol after the pre-1.0 overhaul                                                                                                               | — (relay protocol, not an app ALPN) | Ships inside the iroh workspace and versions with core (1.5.0); this is the code n0 runs for the public relays ([iroh repo README](https://raw.githubusercontent.com/PaulOlteanu/iroh/main/README.md))                                                                                                       |
+| **iroh-willow**                       | Implementation of the [Willow protocol](https://willowprotocol.org) (data model + Meadowcap + Confidential Sync) using iroh for transport and iroh-blobs for payloads                                                 | (Willow sync ALPNs)                 | **Experimental / stale — see §2.1.** Crate 0.28.0 on docs.rs carries "This work is not released yet" ([docs.rs](https://docs.rs/iroh-willow/latest/iroh_willow/))                                                                                                                                            |
+| **iroh-roq**                          | RTP over QUIC as an iroh protocol — packetises RTP media over QUIC streams/datagrams                                                                                                                                  | (roq ALPN)                          | Registry-listed protocol; the media building block under the `callme` demo ([protocol registry](https://www.iroh.computer/proto), [streaming docs](https://docs.iroh.computer/protocols/streaming))                                                                                                          |
+| **iroh-live**                         | Live audio/video streaming over iroh using Media over QUIC: `iroh-moq` adapts iroh connections to MoQ sessions (via a WebTransport bridge), with publish/subscribe broadcasts and 1:1 "call" sugar                    | (MoQ ALPNs)                         | Active n0 repo (media livestreaming over iroh); the current home of n0's "iroh-calls" line of work — the earlier calls experiments were rebuilt as MoQ-based live streaming ([n0 org](https://github.com/n0-computer), [iroh-live deep dive](https://deepwiki.com/n0-computer/iroh-live/1.2-protocol-stack)) |
+| **callme**                            | Demo app for iroh-roq: Opus voice calls, `callme-cli` + `callme-egui` (desktop/Android) clients                                                                                                                       | `/callme/rtc/0`                     | n0 demo, shows the roq stack end-to-end ([streaming docs](https://docs.iroh.computer/protocols/streaming), [callme architecture](https://deepwiki.com/n0-computer/callme/4.1-core-library-architecture))                                                                                                     |
+| **iroh-content-discovery**            | "Iroh Content Discovery": a tracker protocol so blob providers/consumers can find each other for iroh-blobs content                                                                                                   | (own ALPN)                          | Registry-listed protocol ([protocol registry](https://www.iroh.computer/proto))                                                                                                                                                                                                                              |
+| **iroh-ping**                         | Minimal ping protocol for iroh endpoints — the canonical "smallest real protocol" example                                                                                                                             | (own ALPN)                          | Registry-listed; example-grade by design ([protocol registry](https://www.iroh.computer/proto))                                                                                                                                                                                                              |
+| **dumbpipe**                          | "Netcat over iroh": pipes stdin/stdout between endpoints by ticket; also `listen-tcp`/`connect-tcp` and `listen-unix`/`connect-unix` forwarding, `generate-ticket` for stable listeners                               | (own ALPN)                          | Standalone n0 tool, packaged widely (Homebrew, Nix, Termux packaging in progress); versions in lockstep with sendme (0.37.x line) ([Termux packaging issue](https://github.com/termux/termux-packages/issues/30605), [n0 org](https://github.com/n0-computer))                                               |
+| **sendme**                            | File/directory transfer CLI on iroh-blobs: `sendme send <path>` prints a ticket, `sendme receive <ticket>` fetches with BLAKE3-verified, resumable streaming                                                          | (blobs)                             | **0.37.1** current; on Homebrew/Nix/Arch/Scoop/winget; the family's flagship end-user tool ([sendme page](https://www.iroh.computer/sendme), [docs.rs](https://docs.rs/crate/sendme/latest))                                                                                                                 |
+| **iroh-doctor**                       | Standalone connectivity diagnostics CLI ("Iroh Doctor")                                                                                                                                                               | —                                   | Released as its own tool per the roadmap ([roadmap](https://www.iroh.computer/roadmap))                                                                                                                                                                                                                      |
+| **iroh-dns-server**                   | The server behind `dns.iroh.link`: a pkarr relay + DNS resolver (see §3)                                                                                                                                              | —                                   | Ships in the iroh workspace; self-hostable ([address lookup docs](https://github.com/n0-computer/docs.iroh.computer/blob/HEAD/concepts/address-lookup.mdx))                                                                                                                                                  |
+| **iroh-ffi**                          | Official bindings: Python, Node.js, Swift, Kotlin                                                                                                                                                                     | —                                   | Rebuilt on the stable 1.0 API and officially supported ([1.0 post](https://github.com/n0-computer/iroh.computer/blob/HEAD/src/app/blog/v1/page.mdx))                                                                                                                                                         |
+| **noq**                               | n0's QUIC implementation (quinn fork): multipath, QAD, QNT                                                                                                                                                            | —                                   | Separate n0 repo; versions with iroh (noq 1.5.0) ([n0 org](https://github.com/n0-computer), [blog index](https://www.iroh.computer/blog))                                                                                                                                                                    |
+| **net-tools / netwatch / portmapper** | Cross-platform networking utilities factored out of iroh (netcheck, port mapping, interface watching)                                                                                                                 | —                                   | Separate n0 repos/crates ([n0 org](https://github.com/n0-computer), [roadmap](https://www.iroh.computer/roadmap))                                                                                                                                                                                            |
 
 ### 2.1 iroh-willow: state, and why it is stale
 
@@ -199,7 +199,7 @@ nothing has changed that picture:
   `willow-store`, plus a feature branch of iroh-blobs
   ([DeepWiki analysis](https://deepwiki.com/n0-computer/iroh-willow)) — the
   signature of a co-development snapshot, not a maintained release line.
-- The version number (0.28) is keyed to the *old* iroh numbering: there is no
+- The version number (0.28) is keyed to the _old_ iroh numbering: there is no
   iroh-willow release aligned with iroh 0.9x, the 1.0 RCs, or 1.x, while
   blobs/gossip/docs all made that migration
   ([iroh-docs changelog](https://github.com/n0-computer/iroh-docs/blob/HEAD/CHANGELOG.md)).
@@ -260,7 +260,7 @@ restricts it to addresses. In practice the ecosystem uses it as a tiny,
 globally resolvable, self-certifying data channel:
 
 - **Pubky** publishes each user's homeserver pointer as a `_pubky` record in
-  their packet; resolving a person *is* resolving their pkarr packet
+  their packet; resolving a person _is_ resolving their pkarr packet
   ([pubky SDK docs](https://fastly-app.crates.io/crates/pubky)).
 - **pkdns** (pubky/pkdns) publishes whole DNS zone files as pkarr packets,
   making public keys function as resolvable domains for ordinary DNS clients
@@ -278,7 +278,7 @@ third party can carry without being trusted.
 ### 3.3 Role two: the initial discovery / relay bootstrap
 
 This is the role iroh productionised. The problem: an `EndpointId` is all you
-have; you need a *dialable* address, and the endpoint's IP changes constantly.
+have; you need a _dialable_ address, and the endpoint's IP changes constantly.
 
 - The endpoint signs a pkarr packet containing its **relay URL** and publishes
   it via HTTP PUT to a pkarr relay — by default **n0's own**
@@ -330,7 +330,7 @@ is actively maintained independently of n0's fork.
 ### 4.1 RPC frameworks
 
 - **irpc** (n0-computer/irpc): not strictly third-party — n0's own
-  request-response RPC framework built *for* iroh protocols (blobs/gossip/docs
+  request-response RPC framework built _for_ iroh protocols (blobs/gossip/docs
   internals run on it). **irpc 1.0 shipped 2026-11-10** — "irpc 1.0 - Stable
   RPC for the iroh ecosystem" — making it a stable public building block for
   anyone writing an iroh protocol ([blog index](https://www.iroh.computer/blog)).
@@ -345,7 +345,7 @@ is actively maintained independently of n0's fork.
   iroh + iroh-gossip to power **webxdc realtime channels** (live collaborative
   mini-apps inside chats) since Delta Chat 1.48 (2024-11-20), after ~2 years
   of collaboration with n0; iroh is also behind Delta Chat's multi-device
-  setup path. Bootstrap is deliberately *not* pkarr/DHT: an Iroh ticket rides
+  setup path. Bootstrap is deliberately _not_ pkarr/DHT: an Iroh ticket rides
   inside an end-to-end encrypted email message, so the existing chat graph is
   the discovery network. Implementation: `deltachat::peer_channels`
   ([Delta Chat announcement](https://delta.chat/en/2024-11-20-webxdc-realtime),
@@ -353,7 +353,7 @@ is actively maintained independently of n0's fork.
 - **Subduction / Keyhive (Ink & Switch)** — the transport story the parent
   programme's KEYHIVE lane tracked. `subduction_iroh` implements
   Subduction's `Transport` trait over iroh, with its own signed handshake
-  (sender binding, timestamp, challenge, endpoint-id continuity) *above*
+  (sender binding, timestamp, challenge, endpoint-id continuity) _above_
   iroh's TLS layer, because Subduction's threat model doesn't delegate
   identity to the transport
   ([PR #63](https://github.com/inkandswitch/subduction/pull/63),
@@ -375,19 +375,19 @@ From the community index [awesome-iroh](https://github.com/n0-computer/awesome-i
 (~414 stars; PR activity through Nov 2026, e.g.
 [PR #99](https://github.com/n0-computer/awesome-iroh/pull/99)) and the n0 org:
 
-| Project | What | Notes |
-|---|---|---|
-| **iroh-ssh** (rustonbsd) | SSH over iroh | Community tool; the "just give me a shell" niche |
-| **pai-sho** (cablehead) | Multi-port forwarding over iroh with reconnects | The tooling niche dumbpipe doesn't cover (persistent forwards) |
-| **ha-iroh** | Home Assistant integration | Iroh as remote-access for HA |
-| **Godot iroh** | Iroh bindings/protocol for the Godot engine | Listed on n0's protocol registry page ([registry](https://www.iroh.computer/proto)) |
-| **Bones** | Game engine with iroh networking | Games vertical |
-| **Pigg** | Raspberry Pi GPIO over the network, iroh transport | Embedded/IoT vertical |
-| **iroh-esp32-example** | iroh on ESP32 (n0) | Embedded proof-point for custom transports |
-| **Oku** | Distributed web browser on iroh | Browser vertical |
-| **Codux / Datum / Edky** | Dev tools / data platforms on iroh | Listed in awesome-iroh |
-| **Prime Intellect, Psyche, Tandemn** | Distributed AI training/inference on iroh | The AI/ML cluster in awesome-iroh; largest-scale non-n0 usage signal |
-| **iroh-automerge experiments** | Automerge documents over iroh transports | Predecessor line to the Subduction/Keyhive work in §4.2 |
+| Project                              | What                                               | Notes                                                                               |
+| ------------------------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| **iroh-ssh** (rustonbsd)             | SSH over iroh                                      | Community tool; the "just give me a shell" niche                                    |
+| **pai-sho** (cablehead)              | Multi-port forwarding over iroh with reconnects    | The tooling niche dumbpipe doesn't cover (persistent forwards)                      |
+| **ha-iroh**                          | Home Assistant integration                         | Iroh as remote-access for HA                                                        |
+| **Godot iroh**                       | Iroh bindings/protocol for the Godot engine        | Listed on n0's protocol registry page ([registry](https://www.iroh.computer/proto)) |
+| **Bones**                            | Game engine with iroh networking                   | Games vertical                                                                      |
+| **Pigg**                             | Raspberry Pi GPIO over the network, iroh transport | Embedded/IoT vertical                                                               |
+| **iroh-esp32-example**               | iroh on ESP32 (n0)                                 | Embedded proof-point for custom transports                                          |
+| **Oku**                              | Distributed web browser on iroh                    | Browser vertical                                                                    |
+| **Codux / Datum / Edky**             | Dev tools / data platforms on iroh                 | Listed in awesome-iroh                                                              |
+| **Prime Intellect, Psyche, Tandemn** | Distributed AI training/inference on iroh          | The AI/ML cluster in awesome-iroh; largest-scale non-n0 usage signal                |
+| **iroh-automerge experiments**       | Automerge documents over iroh transports           | Predecessor line to the Subduction/Keyhive work in §4.2                             |
 
 Maturity read: the community layer is broad but shallow — many single-purpose
 tools and integrations, few with release trains. The centre of gravity is
