@@ -7,8 +7,8 @@
 #
 # What it does, in order:
 #   1. Interlocks (any failure = refuse to start, nothing is touched):
-#      - an flock on the drill lock (a second drill, manual or scheduled,
-#        cannot overlap this one);
+#      - a shared flock on the drill lock (the age-feed and kill-collector
+#        drills, manual or scheduled, cannot overlap one another);
 #      - an incident flag file ($PM_DRILL_INCIDENT_FLAG) must not exist —
 #        during a real incident the stack is not a drill canvas;
 #      - the legacy collector timer must be inactive and the feed must currently
@@ -83,7 +83,7 @@ HOST="$(hostname -s)"
 [ "$HOST" = "amd" ] || die "must run on laptop host 'amd'; refusing on '$HOST'"
 
 # --- interlock: one drill at a time ---------------------------------------
-exec 9>"$STATE_DIR/kill-collector.lock"
+exec 9>"$STATE_DIR/pm-drills.lock"
 if ! flock -n 9; then
   die "another kill-collector drill holds the lock; not starting"
 fi

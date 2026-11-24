@@ -10,8 +10,8 @@
 #
 # What it does, in order:
 #   1. Interlocks (any failure = refuse to start, nothing is touched):
-#      - flock on the drill lock (a second drill, manual or scheduled,
-#        cannot overlap this one);
+#      - shared flock on the drill lock (the age-feed and kill-collector
+#        drills, manual or scheduled, cannot overlap one another);
 #      - the incident flag file ($PM_DRILL_INCIDENT_FLAG) must not exist —
 #        during a real incident the stack is not a drill canvas;
 #      - the legacy collector timer must be inactive (pm-core owns
@@ -113,7 +113,7 @@ die() {
 }
 
 # --- interlock: one drill at a time ---------------------------------------
-exec 9>"$STATE_DIR/age-feed.lock"
+exec 9>"$STATE_DIR/pm-drills.lock"
 if ! flock -n 9; then
   die "another age-feed drill holds the lock; not starting"
 fi

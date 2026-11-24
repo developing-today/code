@@ -13,8 +13,10 @@
  * own argv. The quota gatherer loads the same way for symmetry —
  * startup stays free of script module side effects.
  */
+import { execFile } from "node:child_process";
 import { access, appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import {
   createPmCoreScheduler,
   type JobResult,
@@ -32,6 +34,8 @@ export interface PmCoreJobDeps {
   env?: Record<string, string | undefined>;
   /** A present file pauses collector ticks for the laptop chaos drill. */
   feedPauseFile?: string;
+  /** Refresh the collector's credentials immediately before each collection. */
+  refreshFleetFeedCredentials?: () => Promise<void>;
   /** Injectable for tests; defaults to the gatherer's own main(). */
   loadQuotaMain?: () => Promise<() => Promise<number>>;
   /** Injectable for tests; defaults to the collector's own main(). */
@@ -44,6 +48,13 @@ export function createPmCoreJobs(options: { feedFile: string } & PmCoreJobDeps):
   const loadQuotaMain = options.loadQuotaMain ?? (async () => (await import("../scripts/gather-quota.ts")).main);
   const loadFleetFeedMain =
     options.loadFleetFeedMain ?? (async () => (await import("../scripts/collect-fleet-feed.ts")).main);
+  const refreshFleetFeedCredentials =
+    options.refreshFleetFeedCredentials ??
+    (async () => {
+      const helper = env.PM_CORE_FEED_CREDENTIAL_REFRESH;
+      if (!helper) return;
+      await promisify(execFile)(helper, { env: env as NodeJS.ProcessEnv });
+    });
 
   return {
     /** The gatherer's main() reports a failed tick as a non-zero exit
@@ -69,6 +80,7 @@ export function createPmCoreJobs(options: { feedFile: string } & PmCoreJobDeps):
       // The board reads cfg.feedFile; the in-process collector must
       // publish exactly there. An operator-provided pin always wins.
       if (!env.FLEET_FEED_OUT) env.FLEET_FEED_OUT = options.feedFile;
+      await refreshFleetFeedCredentials();
       const main = await loadFleetFeedMain();
       await main();
     },

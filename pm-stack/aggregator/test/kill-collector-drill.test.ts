@@ -122,7 +122,7 @@ printf '{"feed":{"generatedAt":"%s"},"degraded":false}' "$(cat "${base}/gen-at")
 
   let lockHolder: ReturnType<typeof Bun.spawn> | null = null;
   if (scn.holdLock) {
-    lockHolder = Bun.spawn(["flock", join(state, "kill-collector.lock"), "sleep", "15"], {
+    lockHolder = Bun.spawn(["flock", join(state, "pm-drills.lock"), "sleep", "15"], {
       stdout: "ignore",
       stderr: "ignore",
     });

@@ -160,6 +160,23 @@ describe("pm-core wiring (#8570)", () => {
     expect(collectorCalls).toBe(1);
   });
 
+  test("the fleet-feed job refreshes credentials before collecting", async () => {
+    const calls: string[] = [];
+    const jobs = createPmCoreJobs({
+      feedFile: "/state/fleet-feed.json",
+      refreshFleetFeedCredentials: async () => {
+        calls.push("refresh");
+      },
+      loadFleetFeedMain: async () => async () => {
+        calls.push("collect");
+      },
+    });
+
+    await jobs.runFleetFeed();
+
+    expect(calls).toEqual(["refresh", "collect"]);
+  });
+
   test("the fleet-feed pause file skips collection without loading the collector", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pm-core-feed-pause-"));
     const pauseFile = join(dir, "fleet-feed.pause");
