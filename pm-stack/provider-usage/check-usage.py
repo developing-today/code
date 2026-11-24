@@ -8,6 +8,7 @@ a failover model, and prints a compact human summary.
 Snapshot: ~/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-usage-snapshot.json
 Registry: ~/workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md
 """
+
 import json
 import os
 import sys
@@ -163,7 +164,10 @@ def main():
             "rate_limit"
         ) or {}
         window_names = {604800: "7-day", 18000: "5-hour"}
-        for window in (rate_limit.get("primary_window"), rate_limit.get("secondary_window")):
+        for window in (
+            rate_limit.get("primary_window"),
+            rate_limit.get("secondary_window"),
+        ):
             if not isinstance(window, dict):
                 continue
             metric = window_names.get(window.get("limit_window_seconds"))

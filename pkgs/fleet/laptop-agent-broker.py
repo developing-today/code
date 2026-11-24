@@ -29,6 +29,7 @@ names the file whose contents are sent as X-Agent-Token for that
 service (read per request, never stored); without it the laptop-agent
 token is used. Pools are kept per port.
 """
+
 import http.client
 import importlib.util
 import json
@@ -49,8 +50,10 @@ def log(msg):
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     print(f"{ts} laptop-agent broker: {msg}", flush=True)
 
+
 spec = importlib.util.spec_from_file_location(
-    "la", str(Path.home() / "tools/laptop-agent.py"))
+    "la", str(Path.home() / "tools/laptop-agent.py")
+)
 la = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(la)
 
@@ -62,11 +65,11 @@ KEEPALIVE_S = 180
 
 _pools = {}
 _pool_lock = threading.Lock()
-_last_used = time.time()       # client requests only; keepalive must not
-                               # reset this or the idle exit never fires
+_last_used = time.time()  # client requests only; keepalive must not
+# reset this or the idle exit never fires
 
 
-_inflight = {}               # client unix-sock -> tracker dict with "tun"
+_inflight = {}  # client unix-sock -> tracker dict with "tun"
 _inflight_lock = threading.Lock()
 _watch_started = False
 
@@ -125,8 +128,7 @@ def _inflight_watchdog():
                     pass
 
 
-TUNNEL_CONNECT_TIMEOUT_S = float(
-    os.environ.get("LAPTOP_AGENT_TUNNEL_TIMEOUT", "5"))
+TUNNEL_CONNECT_TIMEOUT_S = float(os.environ.get("LAPTOP_AGENT_TUNNEL_TIMEOUT", "5"))
 
 
 def broker_tunnel_socket(port, timeout_s=None):
@@ -144,29 +146,32 @@ def broker_tunnel_socket(port, timeout_s=None):
     surfaces as a fast, logged OSError instead."""
     import base64
     import urllib.parse
+
     # The recorded tailnet proxy beats the ambient env (#12426): a
     # broker auto-started from a sandbox shell otherwise inherits the
     # platform egress proxy and every tunnel fails while it looks
     # alive. la is the deployed client; an older copy without the
     # resolver leaves the ambient env in charge.
     resolver = getattr(la, "tailnet_https_proxy", None)
-    raw = (resolver() if resolver is not None else None) \
-        or os.environ.get("HTTPS_PROXY")
+    raw = (resolver() if resolver is not None else None) or os.environ.get(
+        "HTTPS_PROXY"
+    )
     if not raw:
         raise OSError("HTTPS_PROXY must be set")
     u = urllib.parse.urlparse(raw)
     user = urllib.parse.unquote(u.username or "")
     pw = urllib.parse.unquote(u.password or "")
     timeout = TUNNEL_CONNECT_TIMEOUT_S if timeout_s is None else timeout_s
-    sock = socket.create_connection((u.hostname, la.PROXY_PORT),
-                                    timeout=timeout)
+    sock = socket.create_connection((u.hostname, la.PROXY_PORT), timeout=timeout)
     try:
         sock.settimeout(timeout)
         auth = base64.b64encode(f"{user}:{pw}".encode()).decode()
-        req = (f"CONNECT {la.TARGET_HOST}:{port} HTTP/1.1\r\n"
-               f"Host: {la.TARGET_HOST}:{port}\r\n"
-               f"Proxy-Authorization: Basic {auth}\r\n"
-               f"Proxy-Connection: Keep-Alive\r\n\r\n")
+        req = (
+            f"CONNECT {la.TARGET_HOST}:{port} HTTP/1.1\r\n"
+            f"Host: {la.TARGET_HOST}:{port}\r\n"
+            f"Proxy-Authorization: Basic {auth}\r\n"
+            f"Proxy-Connection: Keep-Alive\r\n\r\n"
+        )
         sock.sendall(req.encode())
         buf = b""
         while b"\r\n\r\n" not in buf:
@@ -241,8 +246,12 @@ def _attempt_plan(port, pref, cf_ok):
     is the fallback leg (auto) and the only leg for other ports or
     when pinned. A pooled attempt precedes at most one fresh attempt
     per transport."""
-    cf_in_play = (port == CF_PORT and cf_ok and pref in ("auto", "cf")
-                  and la._cf_access_available())
+    cf_in_play = (
+        port == CF_PORT
+        and cf_ok
+        and pref in ("auto", "cf")
+        and la._cf_access_available()
+    )
     if cf_in_play:
         plan = [("cf", "pool"), ("cf", "fresh")]
         if pref == "auto":
@@ -251,9 +260,19 @@ def _attempt_plan(port, pref, cf_ok):
     return [("ts", "pool"), ("ts", "fresh")]
 
 
-def do_request(method, path, body, port=4799, token_file=None, client=True,
-               trip=None, deadline_s=None, tracker=None,
-               pref="auto", cf_ok=True):
+def do_request(
+    method,
+    path,
+    body,
+    port=4799,
+    token_file=None,
+    client=True,
+    trip=None,
+    deadline_s=None,
+    tracker=None,
+    pref="auto",
+    cf_ok=True,
+):
     """One request on a pooled warm connection; retries per the
     transport attempt plan (stale pooled connection -> fresh one;
     Cloudflare failure -> Tailscale fallback). The socket timeout is
@@ -292,8 +311,7 @@ def do_request(method, path, body, port=4799, token_file=None, client=True,
                 tracker["tun"] = conn.sock
             if conn.sock is not None:
                 conn.sock.settimeout(timeout_s)
-            headers = {"X-Agent-Token": token,
-                       "Content-Type": "application/json"}
+            headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
             if transport == "cf":
                 headers.update(la._cf_access_headers())
             if trip:
@@ -301,19 +319,22 @@ def do_request(method, path, body, port=4799, token_file=None, client=True,
             conn.request(method, path, body=payload, headers=headers)
             resp = conn.getresponse()
             data = resp.read()
-            if transport == "cf" \
-                    and resp.status in CF_EDGE_ERROR_STATUSES \
-                    and i < len(plan) - 1:
+            if (
+                transport == "cf"
+                and resp.status in CF_EDGE_ERROR_STATUSES
+                and i < len(plan) - 1
+            ):
                 # The edge answered but the tunnel origin is down:
                 # drop the connection and take the fallback leg.
                 try:
                     conn.close()
                 except Exception:
                     pass
-                last_err = OSError(
-                    f"cloudflare edge status {resp.status}")
-                log(f"request port={port} via cf: edge status "
-                    f"{resp.status} (tunnel origin down; falling back)")
+                last_err = OSError(f"cloudflare edge status {resp.status}")
+                log(
+                    f"request port={port} via cf: edge status "
+                    f"{resp.status} (tunnel origin down; falling back)"
+                )
                 continue
             pool_put(port, conn, transport)
             return resp.status, json.loads(data or b"{}"), transport
@@ -321,9 +342,11 @@ def do_request(method, path, body, port=4799, token_file=None, client=True,
             last_err = e
             if not from_pool:
                 fresh_failed.add(transport)
-            log(f"request attempt {i + 1} port={port} "
+            log(
+                f"request attempt {i + 1} port={port} "
                 f"transport={transport} failed: "
-                f"{type(e).__name__}: {e} (connection dropped, not repooled)")
+                f"{type(e).__name__}: {e} (connection dropped, not repooled)"
+            )
             if tracker is not None:
                 tracker["tun"] = None
             if conn is not None:
@@ -367,13 +390,14 @@ def keepalive_loop():
             do_request("GET", "/health", None, client=False)
             if down:
                 down = False
-                log("keepalive health recovered (a transport path is "
-                    "reachable again)")
+                log("keepalive health recovered (a transport path is reachable again)")
         except Exception as e:
             if not down:
                 down = True
-                log(f"keepalive health FAILED: {type(e).__name__}: {e} "
-                    "(both transport paths may be wedged; #9611)")
+                log(
+                    f"keepalive health FAILED: {type(e).__name__}: {e} "
+                    "(both transport paths may be wedged; #9611)"
+                )
 
 
 def read_msg(conn):
@@ -422,21 +446,30 @@ class Handler(socketserver.BaseRequestHandler):
                     if isinstance(ts, (int, float)):
                         deadline_s = float(ts) + 15.0
                 status, body, transport = do_request(
-                    req["method"], req["path"], body_in,
+                    req["method"],
+                    req["path"],
+                    body_in,
                     port=int(req.get("port", 4799)),
                     token_file=req.get("token_file"),
                     trip=req.get("trip"),
                     deadline_s=deadline_s,
                     tracker=tracker,
                     pref=req.get("transport", "auto"),
-                    cf_ok=req.get("cf_ok", True))
-                write_msg(self.request, {"status": status, "body": body,
-                                         "transport": transport})
+                    cf_ok=req.get("cf_ok", True),
+                )
+                write_msg(
+                    self.request,
+                    {"status": status, "body": body, "transport": transport},
+                )
             except Exception as e:
                 try:
-                    write_msg(self.request, {
-                        "status": 502,
-                        "body": {"error": f"broker: {type(e).__name__}: {e}"}})
+                    write_msg(
+                        self.request,
+                        {
+                            "status": 502,
+                            "body": {"error": f"broker: {type(e).__name__}: {e}"},
+                        },
+                    )
                 except OSError:
                     pass  # client already gone — nothing to answer
             finally:
@@ -468,8 +501,10 @@ def main():
     # 1 is tracked on issue #9611.
     try:
         import fcntl
-        _singleton_lock_fd = os.open(str(SOCK_DIR / "broker.lock"),
-                                     os.O_CREAT | os.O_RDWR, 0o600)
+
+        _singleton_lock_fd = os.open(
+            str(SOCK_DIR / "broker.lock"), os.O_CREAT | os.O_RDWR, 0o600
+        )
         fcntl.flock(_singleton_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return  # another Python broker holds the singleton lock

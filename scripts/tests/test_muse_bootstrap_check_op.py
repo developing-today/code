@@ -41,6 +41,7 @@ case "${1:-} ${2:-}" in
   "secrets get"|"secrets list")
     ;;
   "bridge hello")
+    exit "${FAKE_BRIDGE_HELLO_RC:-0}"
     ;;
   "bridge inbox")
     printf '%s\\n' '[]'
@@ -165,12 +166,49 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
         self.sys_bin = base / "sysbin"
         self.sys_bin.mkdir()
         for name in (
-            "bash", "sh", "env", "uname", "id", "curl", "tar", "python3",
-            "sha256sum", "sed", "grep", "cut", "tr", "ls", "cat", "chmod",
-            "mv", "rm", "mkdir", "dirname", "mktemp", "wc", "head", "tail",
-            "sort", "readlink", "realpath", "basename", "sleep", "awk",
-            "find", "xargs", "date", "hostname", "touch", "ln", "cp",
+            "bash",
+            "sh",
+            "env",
+            "uname",
+            "id",
+            "curl",
+            "tar",
+            "python3",
+            "sha256sum",
+            "sed",
+            "grep",
+            "cut",
+            "tr",
+            "ls",
+            "cat",
+            "chmod",
+            "mv",
+            "rm",
+            "mkdir",
+            "dirname",
+            "mktemp",
+            "wc",
+            "head",
+            "tail",
+            "sort",
+            "readlink",
+            "realpath",
+            "basename",
+            "sleep",
+            "awk",
+            "find",
+            "xargs",
+            "date",
+            "hostname",
+            # `timeout` bounds the check-phase bridge hello/inbox calls
+            # (#13045); without it on PATH the bridge leg fails with
+            # "command not found" and the check hard-fails (#13674).
+            "timeout",
+            "touch",
+            "ln",
+            "cp",
             "stat",
+            "timeout",
         ):
             resolved = shutil.which(name)
             if resolved:
@@ -199,7 +237,9 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
         path.write_text(content)
         path.chmod(0o755)
 
-    def run_bootstrap(self, skip: str) -> subprocess.CompletedProcess[str]:
+    def run_bootstrap(
+        self, skip: str, extra_env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         env = {
             "HOME": str(self.home),
             "PATH": f"{self.tools_bin}:{self.sys_bin}",
@@ -210,8 +250,12 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
             "FAKE_BWS_FIXTURE": str(self.fixture),
             "TS_STATE": str(self.ts_state),
         }
+        if extra_env:
+            env.update(extra_env)
         if shutil.which("op", path=env["PATH"]):
-            self.skipTest("an `op` binary is on the test PATH; cannot stage its absence")
+            self.skipTest(
+                "an `op` binary is on the test PATH; cannot stage its absence"
+            )
         return subprocess.run(
             ["bash", str(BOOTSTRAP), "--skip", skip],
             env=env,
@@ -231,6 +275,17 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
         result = self.run_bootstrap(SKIP_ALL_BUT_RESTORE_CHECK)
         self.assertIn(HARD_FAILURE, result.stderr)
         self.assertNotIn(WARNING, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_bridge_hello_failure_fails_check_when_restore_skipped(self) -> None:
+        # The bridge leg still gates the check even when restore is
+        # skipped: a genuine bridge-hello failure must hard-fail (#13674).
+        result = self.run_bootstrap(
+            SKIP_ALL_BUT_CHECK, {"FAKE_BRIDGE_HELLO_RC": "1"}
+        )
+        self.assertIn("bridge hello failed", result.stderr)
+        self.assertIn(WARNING, result.stderr)
+        self.assertNotIn(HARD_FAILURE, result.stderr)
         self.assertEqual(result.returncode, 1, result.stderr)
 
 

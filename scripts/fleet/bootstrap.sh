@@ -82,7 +82,7 @@ need_value() {
     [ $# -ge 4 ] || die_usage "$flag requires a value"
     local next="$4"
     case "$next" in
-      ""|-*) die_usage "$flag requires a non-empty value (got '${next}')" ;;
+    "" | -*) die_usage "$flag requires a non-empty value (got '${next}')" ;;
     esac
   fi
 }
@@ -97,23 +97,23 @@ i=0
 while [ $i -lt ${#RAW_ARGS[@]} ]; do
   arg="${RAW_ARGS[$i]}"
   case "$arg" in
-    --seat=*)
-      val="${arg#--seat=}"
-      [ -n "$val" ] || die_usage "--seat requires a non-empty value"
-      [ -z "$SEAT" ] || die_usage "duplicate --seat"
-      SEAT="$val"
-      ;;
-    --seat)
-      [ $((i + 1)) -lt ${#RAW_ARGS[@]} ] || die_usage "--seat requires a value"
-      val="${RAW_ARGS[$((i + 1))]}"
-      case "$val" in ""|-*) die_usage "--seat requires a value" ;; esac
-      [ -z "$SEAT" ] || die_usage "duplicate --seat"
-      SEAT="$val"
-      i=$((i + 1))
-      ;;
-    *)
-      MUSE_PASSTHROUGH+=("$arg")
-      ;;
+  --seat=*)
+    val="${arg#--seat=}"
+    [ -n "$val" ] || die_usage "--seat requires a non-empty value"
+    [ -z "$SEAT" ] || die_usage "duplicate --seat"
+    SEAT="$val"
+    ;;
+  --seat)
+    [ $((i + 1)) -lt ${#RAW_ARGS[@]} ] || die_usage "--seat requires a value"
+    val="${RAW_ARGS[$((i + 1))]}"
+    case "$val" in "" | -*) die_usage "--seat requires a value" ;; esac
+    [ -z "$SEAT" ] || die_usage "duplicate --seat"
+    SEAT="$val"
+    i=$((i + 1))
+    ;;
+  *)
+    MUSE_PASSTHROUGH+=("$arg")
+    ;;
   esac
   i=$((i + 1))
 done
@@ -128,167 +128,167 @@ SEAT=""
 while [ $# -gt 0 ]; do
   arg="$1"
   case "$arg" in
-    -h|--help)
-      usage 0
-      ;;
-    --dry-run)
-      DRY_RUN=1
-      shift
-      ;;
-    --no-next)
-      NO_NEXT=1
-      shift
-      ;;
-    --seat=*)
-      val="${arg#--seat=}"
-      [ -n "$val" ] || die_usage "--seat requires a non-empty value"
-      [ -z "$SEAT" ] || die_usage "duplicate --seat"
-      SEAT="$val"
-      shift
-      ;;
-    --seat)
-      [ $# -ge 2 ] || die_usage "--seat requires a value"
-      case "$2" in ""|-*) die_usage "--seat requires a non-empty value" ;; esac
-      [ -z "$SEAT" ] || die_usage "duplicate --seat"
-      SEAT="$2"
-      shift 2
-      ;;
-    --kind=*)
-      val="${arg#--kind=}"
-      [ -n "$val" ] || die_usage "--kind requires a non-empty value"
-      [ -z "$KIND" ] || die_usage "duplicate --kind"
-      KIND="$val"
-      shift
-      ;;
-    --kind)
-      [ $# -ge 2 ] || die_usage "--kind requires a value"
-      case "$2" in ""|-*) die_usage "--kind requires a non-empty value" ;; esac
-      [ -z "$KIND" ] || die_usage "duplicate --kind"
-      KIND="$2"
-      shift 2
-      ;;
-    --name=*)
-      val="${arg#--name=}"
-      [ -n "$val" ] || die_usage "--name requires a non-empty value"
-      [ -z "$NAME" ] || die_usage "duplicate --name"
-      NAME="$val"
-      shift
-      ;;
-    --name)
-      [ $# -ge 2 ] || die_usage "--name requires a value"
-      case "$2" in ""|-*) die_usage "--name requires a non-empty value" ;; esac
-      [ -z "$NAME" ] || die_usage "duplicate --name"
-      NAME="$2"
-      shift 2
-      ;;
-    --groups=*)
-      val="${arg#--groups=}"
-      [ -n "$val" ] || die_usage "--groups requires a non-empty value"
-      [ -z "$AGENT_GROUPS" ] || die_usage "duplicate --groups"
-      AGENT_GROUPS="$val"
-      shift
-      ;;
-    --groups)
-      [ $# -ge 2 ] || die_usage "--groups requires a value"
-      case "$2" in ""|-*) die_usage "--groups requires a non-empty value" ;; esac
-      [ -z "$AGENT_GROUPS" ] || die_usage "duplicate --groups"
-      AGENT_GROUPS="$2"
-      shift 2
-      ;;
-    --bin-dir=*)
-      val="${arg#--bin-dir=}"
-      [ -n "$val" ] || die_usage "--bin-dir requires a non-empty value"
-      [ -z "$BIN_DIR" ] || die_usage "duplicate --bin-dir"
-      BIN_DIR="$val"
-      shift
-      ;;
-    --bin-dir)
-      [ $# -ge 2 ] || die_usage "--bin-dir requires a value"
-      case "$2" in ""|-*) die_usage "--bin-dir requires a non-empty value" ;; esac
-      [ -z "$BIN_DIR" ] || die_usage "duplicate --bin-dir"
-      BIN_DIR="$2"
-      shift 2
-      ;;
-    --fleet-url=*)
-      val="${arg#--fleet-url=}"
-      [ -n "$val" ] || die_usage "--fleet-url requires a non-empty value"
-      [ -z "$FLEET_URL" ] || die_usage "duplicate --fleet-url"
-      FLEET_URL="$val"
-      shift
-      ;;
-    --fleet-url)
-      [ $# -ge 2 ] || die_usage "--fleet-url requires a value"
-      case "$2" in ""|-*) die_usage "--fleet-url requires a non-empty value" ;; esac
-      [ -z "$FLEET_URL" ] || die_usage "duplicate --fleet-url"
-      FLEET_URL="$2"
-      shift 2
-      ;;
-    --fleet-sha256=*)
-      val="${arg#--fleet-sha256=}"
-      [ -n "$val" ] || die_usage "--fleet-sha256 requires a non-empty value"
-      [ -z "$FLEET_SHA256" ] || die_usage "duplicate --fleet-sha256"
-      FLEET_SHA256="$val"
-      shift
-      ;;
-    --fleet-sha256)
-      [ $# -ge 2 ] || die_usage "--fleet-sha256 requires a value"
-      case "$2" in ""|-*) die_usage "--fleet-sha256 requires a non-empty value" ;; esac
-      [ -z "$FLEET_SHA256" ] || die_usage "duplicate --fleet-sha256"
-      FLEET_SHA256="$2"
-      shift 2
-      ;;
-    --profile=*)
-      val="${arg#--profile=}"
-      [ -n "$val" ] || die_usage "--profile requires a non-empty value"
-      [ -z "$PROFILE" ] || die_usage "duplicate --profile"
-      PROFILE="$val"
-      shift
-      ;;
-    --profile)
-      [ $# -ge 2 ] || die_usage "--profile requires a value"
-      case "$2" in ""|-*) die_usage "--profile requires a non-empty value" ;; esac
-      [ -z "$PROFILE" ] || die_usage "duplicate --profile"
-      PROFILE="$2"
-      shift 2
-      ;;
-    --max-iterations=*)
-      val="${arg#--max-iterations=}"
-      [ -n "$val" ] || die_usage "--max-iterations requires a non-empty value"
-      [ -z "$MAX_ITERATIONS" ] || die_usage "duplicate --max-iterations"
-      MAX_ITERATIONS="$val"
-      shift
-      ;;
-    --max-iterations)
-      [ $# -ge 2 ] || die_usage "--max-iterations requires a value"
-      case "$2" in ""|-*) die_usage "--max-iterations requires a non-empty value" ;; esac
-      [ -z "$MAX_ITERATIONS" ] || die_usage "duplicate --max-iterations"
-      MAX_ITERATIONS="$2"
-      shift 2
-      ;;
-    --)
-      shift
-      [ $# -eq 0 ] || die_usage "unexpected positional argument: $1"
-      ;;
-    -*)
-      die_usage "unknown option: $arg"
-      ;;
-    *)
-      die_usage "unexpected positional argument: $arg"
-      ;;
+  -h | --help)
+    usage 0
+    ;;
+  --dry-run)
+    DRY_RUN=1
+    shift
+    ;;
+  --no-next)
+    NO_NEXT=1
+    shift
+    ;;
+  --seat=*)
+    val="${arg#--seat=}"
+    [ -n "$val" ] || die_usage "--seat requires a non-empty value"
+    [ -z "$SEAT" ] || die_usage "duplicate --seat"
+    SEAT="$val"
+    shift
+    ;;
+  --seat)
+    [ $# -ge 2 ] || die_usage "--seat requires a value"
+    case "$2" in "" | -*) die_usage "--seat requires a non-empty value" ;; esac
+    [ -z "$SEAT" ] || die_usage "duplicate --seat"
+    SEAT="$2"
+    shift 2
+    ;;
+  --kind=*)
+    val="${arg#--kind=}"
+    [ -n "$val" ] || die_usage "--kind requires a non-empty value"
+    [ -z "$KIND" ] || die_usage "duplicate --kind"
+    KIND="$val"
+    shift
+    ;;
+  --kind)
+    [ $# -ge 2 ] || die_usage "--kind requires a value"
+    case "$2" in "" | -*) die_usage "--kind requires a non-empty value" ;; esac
+    [ -z "$KIND" ] || die_usage "duplicate --kind"
+    KIND="$2"
+    shift 2
+    ;;
+  --name=*)
+    val="${arg#--name=}"
+    [ -n "$val" ] || die_usage "--name requires a non-empty value"
+    [ -z "$NAME" ] || die_usage "duplicate --name"
+    NAME="$val"
+    shift
+    ;;
+  --name)
+    [ $# -ge 2 ] || die_usage "--name requires a value"
+    case "$2" in "" | -*) die_usage "--name requires a non-empty value" ;; esac
+    [ -z "$NAME" ] || die_usage "duplicate --name"
+    NAME="$2"
+    shift 2
+    ;;
+  --groups=*)
+    val="${arg#--groups=}"
+    [ -n "$val" ] || die_usage "--groups requires a non-empty value"
+    [ -z "$AGENT_GROUPS" ] || die_usage "duplicate --groups"
+    AGENT_GROUPS="$val"
+    shift
+    ;;
+  --groups)
+    [ $# -ge 2 ] || die_usage "--groups requires a value"
+    case "$2" in "" | -*) die_usage "--groups requires a non-empty value" ;; esac
+    [ -z "$AGENT_GROUPS" ] || die_usage "duplicate --groups"
+    AGENT_GROUPS="$2"
+    shift 2
+    ;;
+  --bin-dir=*)
+    val="${arg#--bin-dir=}"
+    [ -n "$val" ] || die_usage "--bin-dir requires a non-empty value"
+    [ -z "$BIN_DIR" ] || die_usage "duplicate --bin-dir"
+    BIN_DIR="$val"
+    shift
+    ;;
+  --bin-dir)
+    [ $# -ge 2 ] || die_usage "--bin-dir requires a value"
+    case "$2" in "" | -*) die_usage "--bin-dir requires a non-empty value" ;; esac
+    [ -z "$BIN_DIR" ] || die_usage "duplicate --bin-dir"
+    BIN_DIR="$2"
+    shift 2
+    ;;
+  --fleet-url=*)
+    val="${arg#--fleet-url=}"
+    [ -n "$val" ] || die_usage "--fleet-url requires a non-empty value"
+    [ -z "$FLEET_URL" ] || die_usage "duplicate --fleet-url"
+    FLEET_URL="$val"
+    shift
+    ;;
+  --fleet-url)
+    [ $# -ge 2 ] || die_usage "--fleet-url requires a value"
+    case "$2" in "" | -*) die_usage "--fleet-url requires a non-empty value" ;; esac
+    [ -z "$FLEET_URL" ] || die_usage "duplicate --fleet-url"
+    FLEET_URL="$2"
+    shift 2
+    ;;
+  --fleet-sha256=*)
+    val="${arg#--fleet-sha256=}"
+    [ -n "$val" ] || die_usage "--fleet-sha256 requires a non-empty value"
+    [ -z "$FLEET_SHA256" ] || die_usage "duplicate --fleet-sha256"
+    FLEET_SHA256="$val"
+    shift
+    ;;
+  --fleet-sha256)
+    [ $# -ge 2 ] || die_usage "--fleet-sha256 requires a value"
+    case "$2" in "" | -*) die_usage "--fleet-sha256 requires a non-empty value" ;; esac
+    [ -z "$FLEET_SHA256" ] || die_usage "duplicate --fleet-sha256"
+    FLEET_SHA256="$2"
+    shift 2
+    ;;
+  --profile=*)
+    val="${arg#--profile=}"
+    [ -n "$val" ] || die_usage "--profile requires a non-empty value"
+    [ -z "$PROFILE" ] || die_usage "duplicate --profile"
+    PROFILE="$val"
+    shift
+    ;;
+  --profile)
+    [ $# -ge 2 ] || die_usage "--profile requires a value"
+    case "$2" in "" | -*) die_usage "--profile requires a non-empty value" ;; esac
+    [ -z "$PROFILE" ] || die_usage "duplicate --profile"
+    PROFILE="$2"
+    shift 2
+    ;;
+  --max-iterations=*)
+    val="${arg#--max-iterations=}"
+    [ -n "$val" ] || die_usage "--max-iterations requires a non-empty value"
+    [ -z "$MAX_ITERATIONS" ] || die_usage "duplicate --max-iterations"
+    MAX_ITERATIONS="$val"
+    shift
+    ;;
+  --max-iterations)
+    [ $# -ge 2 ] || die_usage "--max-iterations requires a value"
+    case "$2" in "" | -*) die_usage "--max-iterations requires a non-empty value" ;; esac
+    [ -z "$MAX_ITERATIONS" ] || die_usage "duplicate --max-iterations"
+    MAX_ITERATIONS="$2"
+    shift 2
+    ;;
+  --)
+    shift
+    [ $# -eq 0 ] || die_usage "unexpected positional argument: $1"
+    ;;
+  -*)
+    die_usage "unknown option: $arg"
+    ;;
+  *)
+    die_usage "unexpected positional argument: $arg"
+    ;;
   esac
 done
 
 SEAT="${SEAT:-linux}"
 case "$SEAT" in
-  linux|codespace|laptop-service) ;;
-  *) die_usage "unknown --seat '$SEAT' (expected: linux, codespace, laptop-service, muse)" ;;
+linux | codespace | laptop-service) ;;
+*) die_usage "unknown --seat '$SEAT' (expected: linux, codespace, laptop-service, muse)" ;;
 esac
 
 if [ -z "$KIND" ]; then
   case "$SEAT" in
-    linux) KIND="generic" ;;
-    codespace) KIND="generic" ;;
-    laptop-service) KIND="laptop" ;;
+  linux) KIND="generic" ;;
+  codespace) KIND="generic" ;;
+  laptop-service) KIND="laptop" ;;
   esac
 fi
 
@@ -297,31 +297,31 @@ if [ -z "$NAME" ]; then
     NAME="$FLEET_AGENT"
   else
     case "$SEAT" in
-      linux) NAME="$KIND" ;;
-      codespace) NAME="codespace" ;;
-      laptop-service) NAME="laptop" ;;
+    linux) NAME="$KIND" ;;
+    codespace) NAME="codespace" ;;
+    laptop-service) NAME="laptop" ;;
     esac
   fi
 fi
 
-if ! [[ "$NAME" =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]]; then
+if ! [[ $NAME =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]]; then
   die_usage "invalid --name '$NAME' (must match ^[a-z0-9][a-z0-9._-]{0,62}$)"
 fi
 
-if ! [[ "$KIND" =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]]; then
+if ! [[ $KIND =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]]; then
   die_usage "invalid --kind '$KIND'"
 fi
 
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 FLEET_URL="${FLEET_URL:-${FLEET_URL_ENV:-$DEFAULT_FLEET_URL}}"
 FLEET_SHA256="${FLEET_SHA256:-${FLEET_SHA256_ENV:-$DEFAULT_FLEET_SHA256}}"
-if ! [[ "$FLEET_SHA256" =~ ^[0-9a-fA-F]{64}$ ]]; then
+if ! [[ $FLEET_SHA256 =~ ^[0-9a-fA-F]{64}$ ]]; then
   die_usage "invalid --fleet-sha256 '$FLEET_SHA256' (expected 64 hex chars)"
 fi
 FLEET_SHA256="${FLEET_SHA256,,}"
 
 MAX_ITERATIONS="${MAX_ITERATIONS:-1}"
-if ! [[ "$MAX_ITERATIONS" =~ ^[0-9]+$ ]]; then
+if ! [[ $MAX_ITERATIONS =~ ^[0-9]+$ ]]; then
   die_usage "invalid --max-iterations '$MAX_ITERATIONS' (expected non-negative integer)"
 fi
 
@@ -368,7 +368,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "[fleet-bootstrap] dry-run complete (enroll exit $enroll_rc)"
   echo "[fleet-bootstrap] next loop:"
   echo "  $FLEET_BIN agent next --agent $NAME"
-  echo "  # do the task it returns, then run its \`then\` lines"
+  echo '  # do the task it returns, then run its `then` lines'
   echo "  # repeat while the run has budget"
   exit "$enroll_rc"
 fi
@@ -393,7 +393,7 @@ fi
 # ---- 4. Three-line loop ----
 echo "[fleet-bootstrap] loop:"
 echo "  $FLEET_BIN agent next --agent $NAME    # exit 5 = no work on any rung"
-echo "  # do the task it returns, then run its \`then\` lines"
+echo '  # do the task it returns, then run its `then` lines'
 echo "  # repeat while the run has budget"
 
 if [ "$NO_NEXT" = "1" ] || [ "$MAX_ITERATIONS" -eq 0 ]; then

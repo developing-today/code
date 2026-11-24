@@ -388,11 +388,11 @@ fn push_highlight(highlights: &mut Vec<Range<usize>>, range: Range<usize>) {
     if range.is_empty() {
         return;
     }
-    if let Some(last) = highlights.last_mut() {
-        if range.start <= last.end {
-            last.end = last.end.max(range.end);
-            return;
-        }
+    if let Some(last) = highlights.last_mut()
+        && range.start <= last.end
+    {
+        last.end = last.end.max(range.end);
+        return;
     }
     highlights.push(range);
 }

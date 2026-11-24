@@ -242,10 +242,7 @@ pub fn caller_owned_defaults() -> Map<String, Value> {
 /// exactly as parsed; absent ones take the required-field defaults.
 /// Every other caller top-level key is preserved; `pm_meta` is
 /// pinned to 1.
-pub fn assemble_stamped_block(
-    caller_block: Option<&Value>,
-    signed_provenance: Value,
-) -> Value {
+pub fn assemble_stamped_block(caller_block: Option<&Value>, signed_provenance: Value) -> Value {
     let mut out: Map<String, Value> = caller_block
         .and_then(Value::as_object)
         .cloned()
@@ -405,9 +402,7 @@ pub fn signer_from_pkcs8_base64(key_id: &str, encoded: &str) -> Result<StampSign
         return Err(format!("stamp key id '{key_id}' is not a valid key id"));
     }
     let der = b64url_decode(encoded.trim())?;
-    if der.len() != PKCS8_ED25519_PREFIX.len() + 32
-        || !der.starts_with(&PKCS8_ED25519_PREFIX)
-    {
+    if der.len() != PKCS8_ED25519_PREFIX.len() + 32 || !der.starts_with(&PKCS8_ED25519_PREFIX) {
         return Err("stamp signing key is not an Ed25519 PKCS#8 key".to_string());
     }
     let mut seed = [0u8; 32];
@@ -595,14 +590,17 @@ pub fn assemble_provenance(facts: &StampFacts) -> Value {
     );
     prov.insert("lane".to_string(), opt_string(queue.lane));
     prov.insert("host".to_string(), opt_string(facts.host.clone()));
-    prov.insert(
-        "worktree".to_string(),
-        opt_string(facts.worktree.clone()),
-    );
+    prov.insert("worktree".to_string(), opt_string(facts.worktree.clone()));
     prov.insert("model".to_string(), opt_string(queue.model));
     prov.insert(
         "lane_start_issues".to_string(),
-        Value::Array(queue.lane_start_issues.iter().map(|n| Value::from(*n)).collect()),
+        Value::Array(
+            queue
+                .lane_start_issues
+                .iter()
+                .map(|n| Value::from(*n))
+                .collect(),
+        ),
     );
     prov.insert(
         "workspace_ref".to_string(),
@@ -679,7 +677,10 @@ pub fn queue_record_from_rows(rows: &[Value], session_id: &str) -> Option<QueueR
         };
         key(a).cmp(&key(b))
     })?;
-    let mut issues: Vec<i64> = mine.iter().filter_map(|row| row_issue_number(row)).collect();
+    let mut issues: Vec<i64> = mine
+        .iter()
+        .filter_map(|row| row_issue_number(row))
+        .collect();
     issues.sort_unstable();
     issues.dedup();
     let str_field = |name: &str| {
@@ -697,10 +698,7 @@ pub fn queue_record_from_rows(rows: &[Value], session_id: &str) -> Option<QueueR
         picked_up_at: str_field("claimed_at"),
         work_started_at: primary
             .get("progress")
-            .and_then(|p| {
-                p.get("work_started_at")
-                    .or_else(|| p.get("started_at"))
-            })
+            .and_then(|p| p.get("work_started_at").or_else(|| p.get("started_at")))
             .and_then(Value::as_str)
             .and_then(|v| nonempty_str(Some(v))),
         lane: str_field("lane_id"),
@@ -858,8 +856,12 @@ pub fn extract(metadata: &Value) -> Extracted {
                 let mut index_link = Map::new();
                 let mut row = LinkRow::default();
                 let target = raw.get("target");
-                let target_repo = target.and_then(|t| t.get("repo")).and_then(nonempty_json_str);
-                let target_number = target.and_then(|t| t.get("number")).and_then(positive_json_int);
+                let target_repo = target
+                    .and_then(|t| t.get("repo"))
+                    .and_then(nonempty_json_str);
+                let target_number = target
+                    .and_then(|t| t.get("number"))
+                    .and_then(positive_json_int);
                 let relation = raw.get("relation").and_then(nonempty_json_str);
                 let status = raw.get("status").and_then(nonempty_json_str);
                 let well_shaped = raw.is_object()
@@ -869,8 +871,7 @@ pub fn extract(metadata: &Value) -> Extracted {
                     && relation.is_some()
                     && status.is_some();
                 if !well_shaped {
-                    out.extras
-                        .insert(format!("links.{position}"), raw.clone());
+                    out.extras.insert(format!("links.{position}"), raw.clone());
                 }
                 if let Some(repo) = &target_repo {
                     index_link.insert("targetRepo".to_string(), Value::String(repo.clone()));
@@ -1465,12 +1466,7 @@ fn hostname() -> Option<String> {
         let mut buf = [0u8; 256];
         // SAFETY: gethostname writes a NUL-terminated string into
         // the buffer or fails; the buffer outlives the call.
-        let rc = unsafe {
-            libc::gethostname(
-                buf.as_mut_ptr() as *mut libc::c_char,
-                buf.len(),
-            )
-        };
+        let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
         if rc == 0 {
             let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
             return String::from_utf8(buf[..len].to_vec())
@@ -1491,11 +1487,7 @@ fn git_output(args: &[&str]) -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    if text.is_empty() { None } else { Some(text) }
 }
 
 fn repo_from_git_remote() -> Option<String> {
@@ -1529,9 +1521,7 @@ fn agent_identity() -> Option<String> {
 fn gather_facts(repo_flag: Option<&str>) -> StampFacts {
     let session_id = nonempty_str(std::env::var("FLEET_SESSION_ID").ok().as_deref())
         .or_else(|| crate::session_state::initialize(None).ok().flatten());
-    let queue = session_id
-        .as_deref()
-        .and_then(queue_record_for_session);
+    let queue = session_id.as_deref().and_then(queue_record_for_session);
     let host = hostname();
     let worktree = git_output(&["rev-parse", "--show-toplevel"]);
     let repo = nonempty_str(repo_flag)
@@ -1700,11 +1690,7 @@ pub enum CreateOutcome {
 /// After a successful create: insert the full record into the
 /// metadata store. The outcome is reported, never fatal — the
 /// GitHub item already exists and gh's exit code stands.
-pub fn finish_create(
-    store: &dyn MetadataStore,
-    stdout: &str,
-    block: &Value,
-) -> CreateOutcome {
+pub fn finish_create(store: &dyn MetadataStore, stdout: &str, block: &Value) -> CreateOutcome {
     let Some(item) = parse_created_url(stdout) else {
         return CreateOutcome::NoUrl;
     };
@@ -1768,15 +1754,13 @@ mod tests {
     // sign and verify each other's stamps.
 
     const HOSTED_KID: &str = "hosted-2026-11";
-    const HOSTED_PKCS8: &str =
-        "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
+    const HOSTED_PKCS8: &str = "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f";
     const HOSTED_PUB: &str = "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg";
     const HOSTED_CANONICAL: &str = "{\"auth_subject\":\"9f2c1a44b7e54d0f8c3a5b6d7e8f9012\",\"created_at\":\"2026-11-22T14:31:09Z\",\"host\":\"fleet-hosted\",\"lane\":\"code\",\"lane_start_issues\":[12584,12586],\"model\":\"claude-opus-4-5\",\"picked_up_at\":\"2026-11-22T14:31:02Z\",\"queue_id\":21092,\"session_id\":\"ses_0123456789abcdef0123456789abcdef\",\"stamped_by\":\"fleet-hosted@0.1.0\",\"work_started_at\":\"2026-11-22T14:31:05Z\",\"workspace_ref\":{\"branch\":null,\"id\":\"fleet-hosted\",\"kind\":\"worker\",\"repo\":\"developing-today/code\",\"sha\":null},\"worktree\":null}";
     const HOSTED_STAMP_SIG: &str = "v1.ed25519.hosted-2026-11.NiP0TffLEBFw6qLqVfQlRajtgwKghveQNSoqcIpxMuo8sYYVSFw1Qi1-zBhZIG1usHSz5tL1-oO64fBS84EeAA";
 
     const NATIVE_KID: &str = "native-2026-11";
-    const NATIVE_PKCS8: &str =
-        "MC4CAQAwBQYDK2VwBCIEIKChoqOkpaanqKmhChGhKhOhShWhahehihmiCiGiKiOi";
+    const NATIVE_PKCS8: &str = "MC4CAQAwBQYDK2VwBCIEIKChoqOkpaanqKmhChGhKhOhShWhahehihmiCiGiKiOi";
     const NATIVE_PUB: &str = "C0rwl7rmIyCh6BbtAC971q4Cep4qVSKBtRZpZOCR1Ss";
     const NATIVE_CANONICAL: &str = "{\"auth_subject\":\"9f2c1a44b7e54d0f8c3a5b6d7e8f9012\",\"created_at\":\"2026-11-22T15:02:14Z\",\"host\":\"amd-6\",\"lane\":\"code\",\"lane_start_issues\":[],\"model\":\"claude-opus-4-5\",\"picked_up_at\":null,\"queue_id\":null,\"session_id\":\"ses_fedcba9876543210fedcba9876543210\",\"stamped_by\":\"fleet 0.9.1 (native)\",\"work_started_at\":\"2026-11-22T15:02:11Z\",\"worktree\":\"/home/user/code-12586\"}";
     const NATIVE_STAMP_SIG: &str = "v1.ed25519.native-2026-11.TNCmecEcLsL9SgyxUPg8cJ_affdmD3RYYu3Ukuyqzb107E9mbm_EfIwHjW_FJBVtxjWrGCYfbmP64OOmpjGaDQ";
@@ -1824,7 +1808,10 @@ mod tests {
 
     fn verify_keys(kid: &str, pub_b64: &str) -> HashMap<String, [u8; 32]> {
         let raw = b64url_decode(pub_b64).unwrap();
-        HashMap::from([(kid.to_string(), <[u8; 32]>::try_from(raw.as_slice()).unwrap())])
+        HashMap::from([(
+            kid.to_string(),
+            <[u8; 32]>::try_from(raw.as_slice()).unwrap(),
+        )])
     }
 
     #[test]
@@ -1906,7 +1893,10 @@ mod tests {
             }
         );
         // Malformed signature payloads.
-        for bad in ["v1.ed25519.hosted-2026-11.!!!", "v1.ed25519.hosted-2026-11.AAAA"] {
+        for bad in [
+            "v1.ed25519.hosted-2026-11.!!!",
+            "v1.ed25519.hosted-2026-11.AAAA",
+        ] {
             let mut forged = hosted_provenance();
             forged["stamp_sig"] = json!(bad);
             assert_eq!(
@@ -1969,7 +1959,10 @@ mod tests {
     #[test]
     fn block_parse_refusals() {
         for (body, needle) in [
-            ("text <!-- pm-metadata:end -->", "end marker without a start"),
+            (
+                "text <!-- pm-metadata:end -->",
+                "end marker without a start",
+            ),
             (
                 "<!-- pm-metadata:start -->\n```json\n{}\n```\n",
                 "start marker without an end",
@@ -2438,6 +2431,111 @@ mod tests {
         match finish_create(&FakeStore { fail: false }, "no url here", &block) {
             CreateOutcome::NoUrl => {}
             _ => panic!("expected NoUrl"),
+        }
+    }
+
+    // -- #9095 version conformance ------------------------------------
+    //
+    // Oracle: the hand-authored fixture set. The canonical copy lives
+    // under the schema v1 design folder at
+    // doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/
+    // pm-metadata-v1.json; the executable copy this test reads is
+    // vendored at tests/fixtures/pm-metadata-v1.json because the
+    // fleet nix source closure (pkgs/fleet/default.nix fleetSrc,
+    // rooted at pkgs/) does not contain repo-root doc/ — a
+    // CARGO_MANIFEST_DIR-anchored walk to the repo root breaks under
+    // the nix sandbox (code#13617). Where the design copy is present
+    // (normal checkouts) the test asserts both copies are byte-equal
+    // so the vendored copy cannot drift from the oracle; under the
+    // sandbox only the vendored copy is enforced, never skipped.
+    // Each `ok` case must parse and preserve its declared keys
+    // through parse and through the stamp assembly round-trip; each
+    // `reject` case must fail closed. Doctrine-projection
+    // expectations in the fixture are the oracle for design §7 slice
+    // 2 and are not asserted here.
+    #[test]
+    fn pm_metadata_version_conformance_fixtures() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/pm-metadata-v1.json"
+        );
+        let raw = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("conformance fixture set unreadable at {path}: {e}"));
+        // Drift guard: the design-folder copy is the canonical
+        // oracle. It is absent from the nix source closure, so only
+        // compare when it exists; the conformance assertions below
+        // always run against the vendored copy.
+        let design_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../../doc/2026-11-21T17-56-24Z_design_atlas_metadata_schema_v1/fixtures/pm-metadata-v1.json"
+        );
+        if std::path::Path::new(design_path).exists() {
+            let design_raw = std::fs::read_to_string(design_path)
+                .unwrap_or_else(|e| panic!("design oracle unreadable at {design_path}: {e}"));
+            assert_eq!(
+                raw, design_raw,
+                "vendored fixture diverged from the design oracle; sync tests/fixtures/pm-metadata-v1.json from {design_path}"
+            );
+        }
+        let set: Value = serde_json::from_str(&raw).expect("fixture set is valid JSON");
+        let cases = set["cases"].as_array().expect("fixture set carries cases");
+        assert!(!cases.is_empty(), "fixture set must not be empty");
+        for case in cases {
+            let id = case["id"].as_str().expect("case id");
+            let body = case["body"].as_str().expect("case body");
+            let parsed = parse_metadata_block(body);
+            match case["reader_parse"].as_str().expect("reader_parse") {
+                "reject" => {
+                    assert!(parsed.is_err(), "{id}: expected fail-closed rejection");
+                }
+                "ok" => {
+                    let parsed =
+                        parsed.unwrap_or_else(|e| panic!("{id}: expected parse success, got: {e}"));
+                    if case["block"].as_str() == Some("absent") {
+                        assert!(parsed.block.is_none(), "{id}: expected no block");
+                        continue;
+                    }
+                    let block = parsed
+                        .block
+                        .unwrap_or_else(|| panic!("{id}: expected a block"));
+                    let keys = case["preserved_keys"]
+                        .as_array()
+                        .expect("preserved_keys")
+                        .iter()
+                        .map(|k| k.as_str().expect("key"))
+                        .collect::<Vec<_>>();
+                    for key in &keys {
+                        assert!(block.get(key).is_some(), "{id}: key {key} lost at parse");
+                    }
+                    // Stamp round-trip: re-stamping with the block's own
+                    // provenance must preserve every preserved key's
+                    // value exactly.
+                    let provenance = block
+                        .get("provenance")
+                        .cloned()
+                        .unwrap_or_else(|| json!({}));
+                    let assembled = assemble_stamped_block(Some(&block), provenance);
+                    for key in &keys {
+                        // pm_meta is the one key assembly rewrites on
+                        // purpose: it pins the integer current version
+                        // (a float 1.0 input normalizes to 1).
+                        if *key == "pm_meta" {
+                            continue;
+                        }
+                        assert_eq!(
+                            assembled.get(key),
+                            block.get(key),
+                            "{id}: key {key} changed by stamp assembly"
+                        );
+                    }
+                    assert_eq!(
+                        assembled.get("pm_meta"),
+                        Some(&json!(1)),
+                        "{id}: stamp assembly must pin pm_meta to integer 1"
+                    );
+                }
+                other => panic!("{id}: unknown reader_parse expectation {other}"),
+            }
         }
     }
 }

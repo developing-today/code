@@ -36,7 +36,12 @@ describe("PM Metadata schema v1 adapter", () => {
   });
 
   test("preserves optional absence and relocates wrong-typed registered values to extras", () => {
-    const result = parsePmMetadata({ pm_meta: 1, direct_parent: false, provenance: { lane: 7, future_flag: true }, links: ["bad-link"] });
+    const result = parsePmMetadata({
+      pm_meta: 1,
+      direct_parent: false,
+      provenance: { lane: 7, future_flag: true },
+      links: ["bad-link"],
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.indexes.directParentRepo).toBeUndefined();
@@ -72,15 +77,20 @@ describe("PM Metadata schema v1 adapter", () => {
       expect(names.has("metadata_json")).toBe(true);
       expect(names.has("extras_json")).toBe(true);
       const indexes = db.query("PRAGMA index_list(pm_metadata_items)").all() as { name: string }[];
-      expect(new Set(indexes.map((index) => index.name))).toEqual(new Set([
-        "pm_metadata_parent_idx", "pm_metadata_session_idx", "pm_metadata_lane_idx",
-        "pm_metadata_host_idx", "pm_metadata_queue_idx", "sqlite_autoindex_pm_metadata_items_1",
-      ]));
+      expect(new Set(indexes.map((index) => index.name))).toEqual(
+        new Set([
+          "pm_metadata_parent_idx",
+          "pm_metadata_session_idx",
+          "pm_metadata_lane_idx",
+          "pm_metadata_host_idx",
+          "pm_metadata_queue_idx",
+          "sqlite_autoindex_pm_metadata_items_1",
+        ]),
+      );
       const linkIndexes = db.query("PRAGMA index_list(pm_metadata_links)").all() as { name: string }[];
-      expect(new Set(linkIndexes.map((index) => index.name))).toEqual(new Set([
-        "pm_metadata_link_status_idx", "pm_metadata_link_target_idx",
-        "sqlite_autoindex_pm_metadata_links_1",
-      ]));
+      expect(new Set(linkIndexes.map((index) => index.name))).toEqual(
+        new Set(["pm_metadata_link_status_idx", "pm_metadata_link_target_idx", "sqlite_autoindex_pm_metadata_links_1"]),
+      );
     } finally {
       db.close();
     }

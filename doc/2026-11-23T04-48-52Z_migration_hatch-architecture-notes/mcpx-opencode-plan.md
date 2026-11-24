@@ -37,11 +37,12 @@ inputs.dezren39-nix.url = "github:dezren39/nix";
   name; `"disabled": true` drops an inherited server.
 - Minimal example:
   ```jsonc
-  { "mcpServers": {
-      "a": { "command": "x", "args": ["1"] },                          // stdio
-      "b": { "url": "https://example.com/mcp",
-             "auth": { "type": "bearer", "token": "${VAR}" } }          // http
-  } }
+  {
+    "mcpServers": {
+      "a": { "command": "x", "args": ["1"] }, // stdio
+      "b": { "url": "https://example.com/mcp", "auth": { "type": "bearer", "token": "${VAR}" } }, // http
+    },
+  }
   ```
   `${VAR}` expansion keeps secrets out of the file; unset vars are reported up
   front and `Describe()` never prints literals.
@@ -54,6 +55,7 @@ inputs.dezren39-nix.url = "github:dezren39/nix";
 The string "lootbin" appears **nowhere** in `dezren39/nix`, `dezren39/hatch`, or
 GitHub code search scoped to owner `dezren39`. The repo's only MCP-serving host
 is **lootbox** — Drew's Mac:
+
 - launchd user agent `lootbox` (`configuration.nix:718-755`, `KeepAlive`,
   `RunAtLoad`), running a Deno/Hono server on port 9420.
 - Server list in `lootbox.config.json` (`mcpServers`): `codebase-memory`,

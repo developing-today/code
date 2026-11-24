@@ -28,6 +28,12 @@ export { QueryCache };
 
 export interface Env {
   QUERY_CACHE: DurableObjectNamespace;
+  /** D1 tenant hot cache binding (#9134 §5, #13100); optional so a
+   * deploy without the database provisioned still typechecks and
+   * runs the pre-cache path. */
+  HOT_CACHE?: D1Database;
+  /** Hot-cache master flag; only the literal "true" enables it. */
+  HOT_CACHE_ENABLED?: string;
   GATE_TOKEN: string;
   SERVICE_BASE: string;
   SERVICE_TOKEN: string;

@@ -727,10 +727,12 @@ impl CollabState {
         self.note_log.lock().await.events().to_vec()
     }
 
-    /// The effective access policy of every note in the checkpoint
-    /// log, in note ID order (#3819): the durable form of the
-    /// policies, to persist alongside [`Self::note_events`] and
-    /// re-state with [`Self::seed_note_policies`] after a rebuild.
+    /// The recorded access policy of every note that has one, in
+    /// note ID order (#3819): the durable form of the policies, to
+    /// persist alongside [`Self::note_events`] and re-state with
+    /// [`Self::seed_note_policies`] after a rebuild. A note with no
+    /// recorded policy contributes no record — it reads as public
+    /// through the fall-through, and must not be re-stated as one.
     ///
     /// # Errors
     ///
@@ -3249,11 +3251,12 @@ mod tests {
             .unwrap();
 
         // The mutations reached the file: it parses as a snapshot
-        // holding both notes' events and both policies.
+        // holding both notes' events and the one recorded policy —
+        // the public note has none, so it contributes no record.
         let persisted: NoteCheckpointSnapshot =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(persisted.events.len(), 2);
-        assert_eq!(persisted.policies.len(), 2);
+        assert_eq!(persisted.policies.len(), 1);
         let heads_before = live.note_heads(note).await.unwrap();
 
         // Restart: a fresh state over the same file.
@@ -3329,9 +3332,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_seed_note_policies_before_events_is_refused() {
+        use id_store::note_checkpoints::{NoteGrant, NotePrincipal, NoteRole};
+
         // Policies name notes; a policy for a note the log has no
         // create event for is a failed restart, never a note
-        // silently reopened to public.
+        // silently reopened to public. The live note needs a
+        // recorded policy for the snapshot to carry a record at
+        // all — a plain note contributes none.
         let note = Hash::from_bytes([43u8; 32]);
         let key = note_session_key(&note);
         let owner: AuthorKey = [7u8; 32];
@@ -3339,6 +3346,16 @@ mod tests {
         live.get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
             .await;
         live.publish_note_checkpoint(&key, owner).await.unwrap();
+        live.set_note_access(
+            note,
+            owner,
+            NoteAccess::Scoped(vec![NoteGrant {
+                principal: NotePrincipal::User(owner),
+                role: NoteRole::Read,
+            }]),
+        )
+        .await
+        .unwrap();
         let policies = live.note_policies().await.unwrap();
 
         let restarted = CollabState::new();

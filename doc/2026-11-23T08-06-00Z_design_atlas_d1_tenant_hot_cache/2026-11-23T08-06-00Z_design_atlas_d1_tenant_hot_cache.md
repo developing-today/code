@@ -42,11 +42,11 @@ Freshness is defined **per data class**, because the classes differ
 in mutability, and one bound for all of them would be either unsafe
 or useless:
 
-| Class | Contents | Freshness rule |
-| ----- | -------- | -------------- |
-| A — content-addressed payloads | Chunk/document bodies keyed by content hash | Fresh indefinitely. The hash is the version: a body whose hash matches the request cannot be stale. No TTL, no watermark check. Eviction is capacity-only (§5). |
-| B — query result sets | Ordered result id lists + scores for a (tenant, query, flags) key | Fresh iff `source_watermark` equals the tenant's current watermark **or** age ≤ TTL_B, whichever fails first. Default TTL_B = **60 s**. A watermark advance makes the entry stale by rule even inside the TTL. |
-| C — tenant aggregates | Counts, facets, and other derived per-tenant summaries | Fresh iff age ≤ TTL_C **and** no invalidation event for the tenant post-dates the entry. Default TTL_C = **15 min**. |
+| Class                          | Contents                                                          | Freshness rule                                                                                                                                                                                                 |
+| ------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A — content-addressed payloads | Chunk/document bodies keyed by content hash                       | Fresh indefinitely. The hash is the version: a body whose hash matches the request cannot be stale. No TTL, no watermark check. Eviction is capacity-only (§5).                                                |
+| B — query result sets          | Ordered result id lists + scores for a (tenant, query, flags) key | Fresh iff `source_watermark` equals the tenant's current watermark **or** age ≤ TTL_B, whichever fails first. Default TTL_B = **60 s**. A watermark advance makes the entry stale by rule even inside the TTL. |
+| C — tenant aggregates          | Counts, facets, and other derived per-tenant summaries            | Fresh iff age ≤ TTL_C **and** no invalidation event for the tenant post-dates the entry. Default TTL_C = **15 min**.                                                                                           |
 
 Two cross-class rules:
 
@@ -230,7 +230,7 @@ measured hit/skip ratios, and the re-tuned values are recorded on
 2. Freshness evaluator: the §1 class rules, watermark read, TTL
    logic, and fail-safe degradation. Oracle: property tests over
    generated (watermark, age, class, event) sequences asserting the
-   invariant *no serve outside the bound*.
+   invariant _no serve outside the bound_.
 3. Admission policy: heat counters, heavy-query immediate admission,
    per-tenant quota + LRU eviction sweep (§3, §5).
 4. Read-path integration: Class B result-set skip and Class A
@@ -243,13 +243,13 @@ measured hit/skip ratios, and the re-tuned values are recorded on
 
 ## 9. Open questions (with chosen defaults — work proceeds on the defaults)
 
-| # | Question | Chosen default | Revisit when |
-| - | -------- | -------------- | ------------ |
-| Q1 | Class B bound: TTL-only, watermark-only, or both? | **Both** (§1): watermark equality or 60 s TTL, whichever fails first | Measured revalidation cost shows the watermark read dominates the saving |
-| Q2 | Dedicated invalidation transport vs piggyback? | **Piggyback** on ingest completion records for v1 (§4) | Event lag measurably delays Class C correctness past TTL_C |
-| Q3 | One D1 database per tenant? | **No** — shared DB, tenant in the key (§5) | A tenant tier gains a hard isolation requirement #9083 does not already meet by key scoping |
-| Q4 | Serve-stale on source outage? | **No** — degrade the bound, never serve outside it (§1, §6) | An availability incident review explicitly accepts bounded staleness as a mode |
-| Q5 | Does the DO query cache merge into this tier? | **No** for v1 — different key space (query vs tenant data); revisit after both have counters | §7 counters show the two caches double-storing the same payloads at scale |
+| #   | Question                                          | Chosen default                                                                               | Revisit when                                                                                |
+| --- | ------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Q1  | Class B bound: TTL-only, watermark-only, or both? | **Both** (§1): watermark equality or 60 s TTL, whichever fails first                         | Measured revalidation cost shows the watermark read dominates the saving                    |
+| Q2  | Dedicated invalidation transport vs piggyback?    | **Piggyback** on ingest completion records for v1 (§4)                                       | Event lag measurably delays Class C correctness past TTL_C                                  |
+| Q3  | One D1 database per tenant?                       | **No** — shared DB, tenant in the key (§5)                                                   | A tenant tier gains a hard isolation requirement #9083 does not already meet by key scoping |
+| Q4  | Serve-stale on source outage?                     | **No** — degrade the bound, never serve outside it (§1, §6)                                  | An availability incident review explicitly accepts bounded staleness as a mode              |
+| Q5  | Does the DO query cache merge into this tier?     | **No** for v1 — different key space (query vs tenant data); revisit after both have counters | §7 counters show the two caches double-storing the same payloads at scale                   |
 
 ## 10. Acceptance mapping (issue #9134)
 

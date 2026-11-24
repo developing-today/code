@@ -15,11 +15,7 @@ import { test } from "node:test";
 
 import { authenticate } from "../src/auth.ts";
 import { configFromEnv, type HostedEnv } from "../src/config.ts";
-import {
-  inspectDirectReadToken,
-  mintDirectReadToken,
-  type DirectReadConfig,
-} from "../src/direct-read.ts";
+import { inspectDirectReadToken, mintDirectReadToken, type DirectReadConfig } from "../src/direct-read.ts";
 import { FailClosed } from "../src/errors.ts";
 import { parseJwt } from "../src/jwt.ts";
 import { BINDING_A, BINDING_B, makeHarness } from "./helpers.ts";
@@ -67,9 +63,7 @@ async function signRaw(
   const enc = new TextEncoder();
   const head = b64url(enc.encode(JSON.stringify(header ?? { alg: "EdDSA", typ: "JWT", kid: KEY_ID })));
   const body = b64url(enc.encode(JSON.stringify(payload)));
-  const sig = new Uint8Array(
-    await crypto.subtle.sign({ name: "Ed25519" }, privateKey, enc.encode(`${head}.${body}`)),
-  );
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, enc.encode(`${head}.${body}`)));
   return `${head}.${body}.${b64url(sig)}`;
 }
 
@@ -86,10 +80,7 @@ test("config: a complete direct-read env parses; gaps fail closed to null", asyn
   assert.equal(configFromEnv({ ...noQueue.env, QUEUE_DB_ID: undefined }).directRead, null);
   // The metadata and queue DBs must be distinct, or the scope is a lie.
   assert.equal(configFromEnv({ ...noQueue.env, QUEUE_DB_ID: METADATA_DB_ID }).directRead, null);
-  assert.equal(
-    configFromEnv({ ...noQueue.env, DIRECT_READ_SIGNING_KEY_PKCS8: "AAAA" }).directRead,
-    null,
-  );
+  assert.equal(configFromEnv({ ...noQueue.env, DIRECT_READ_SIGNING_KEY_PKCS8: "AAAA" }).directRead, null);
   assert.equal(configFromEnv({}).directRead, null);
 });
 
@@ -242,8 +233,5 @@ test("service: a minted direct-read token is refused as service authentication (
   const req = new Request("https://fleet-hosted.test/stamp", {
     headers: { authorization: `Bearer ${token}` },
   });
-  await assert.rejects(
-    authenticate(req, harness.deps),
-    failClosedWith("data_plane_credential_refused"),
-  );
+  await assert.rejects(authenticate(req, harness.deps), failClosedWith("data_plane_credential_refused"));
 });
