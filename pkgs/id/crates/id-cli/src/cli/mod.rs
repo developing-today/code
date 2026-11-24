@@ -33,6 +33,7 @@
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
 //!   gallery      Administer a program gallery directory (removals, appeals, review)
+//!   petname      List the petnames one owner gave, read-only, from a petnames journal
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   walk       The #9106 walking skeleton, driven by hand (stored nodes, sync, reports)
 //!   group        Groups: create, policy, add, remove, set roles, list, join

@@ -426,8 +426,8 @@ are diagnostic and do not add to the combined percentile, as with
    storage service.
 
 This is the #557 disease in a second form: there, actor tasks
-*parked* workers on a blocking journal wait (fixed by
-`block_in_place`, #12499); here, guest execution *burns* workers
+_parked_ workers on a blocking journal wait (fixed by
+`block_in_place`, #12499); here, guest execution _burns_ workers
 with CPU-bound synchronous calls, so the remedy is placement, not
 unparking — guest calls must run where they cannot starve the
 runtime (dedicated execution threads or a bounded blocking pool),

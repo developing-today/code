@@ -124,9 +124,10 @@ func (links chapterLinks) markdown(content, origin, output string) string {
 				out.WriteString(piece)
 			}
 			ticks := line[run[0]:run[1]]
-			if span == ticks {
+			switch span {
+			case ticks:
 				span = ""
-			} else if span == "" {
+			case "":
 				span = ticks
 			}
 			out.WriteString(ticks)

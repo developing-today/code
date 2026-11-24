@@ -22,6 +22,11 @@ Implements the fleet architecture spec v0.3
 - `fleet cert chain build|test` — signature-verified path building
   (shortest path, path-length pruned) and validation under
   all/classical/PQ trust selections.
+- `fleet cert ocsp sign|inspect|test` — RFC 6960 responses from
+  issuer bundles: direct issuer signing or a delegated responder
+  certificate (leaf profile `ocsp-responder`: EKU id-kp-OCSPSigning
+  + NoCheck, 30d default), verified against the crate chain code.
+  This is the §4.3 functional responder core; it embeds no OCSP URL.
 - `fleet cert bundle inspect`, `trust export|inspect|pin|verify|install-plan`,
   `profile list|show`, `algorithms list|describe`, `explain`, `doctor`.
   Trust assembly admits only signature-proven self-signed roots;
@@ -32,7 +37,7 @@ Implements the fleet architecture spec v0.3
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
-`ocsp`, `publish`, `dns`, `key`, `format`, profile
+`publish`, `dns`, `key`, `format`, profile
 validate/scaffold, algorithm benchmark/doctor, `batch`,
 `inventory`, renew/rotate verbs, bundle pack/unpack/diff/migrate.
 
@@ -77,11 +82,12 @@ validate/scaffold, algorithm benchmark/doctor, `batch`,
 
 `cargo test -p fleet-cert` — 19 unit tests (registry, time
 grammar, naming, graph arithmetic, profiles, bundle round-trip)
-and 9 integration tests in `tests/hierarchy.rs`, each naming its
-oracle: spec inventory arithmetic (§§3.2/24.2), the crate
+and 9 hierarchy integration tests plus 3 OCSP integration tests in
+`tests/`, each naming its oracle: spec inventory arithmetic (§§3.2/24.2), the crate
 validator, the system `openssl` as an independent implementation
 (classical, PQ, and cross-signed paths), trust-bundle membership,
 pin and store drift, export hash/PEM round-trip, the §24.1/§24.3
-policy gates, §5.4 clamping, and §7.1 tamper rejection. A PQ-policy
+policy gates, §5.4 clamping, §7.1 tamper rejection, and RFC 6960
+response checks. A PQ-policy
 negative test proves a classical leaf is rejected under PQ-only
 trust while an all-ML-DSA path validates.

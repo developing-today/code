@@ -1,10 +1,10 @@
 # Observability & Operations — CNCF Landscape Research
 
-*Lane CNCF-OBSERVE · researched 2026-11-23 · sources linked inline throughout*
+_Lane CNCF-OBSERVE · researched 2026-11-23 · sources linked inline throughout_
 
 **Scope.** The observability slice of the cloud-native landscape: metrics, logs, traces,
 profiles, dashboards, cost, feature flags, chaos, and the AI-SRE newcomer — what each
-project is, what state it is actually in, and whether it belongs in *our* estate.
+project is, what state it is actually in, and whether it belongs in _our_ estate.
 
 **Our estate, for the "should we" verdicts.** NixOS hosts today; Talos-based Kubernetes
 planned; Cozystack as the platform layer on top of that Kubernetes; the fleet / id /
@@ -18,8 +18,8 @@ VictoriaTraces and a per-tenant OpenTelemetry Collector for tracing
 Where Cozystack has already decided, the honest question is not "which tool is best"
 but "is the built-in choice good enough that fighting it would be a mistake."
 
-**How to read this doc.** Each project gets: *what it is* → *current state* (with CNCF
-status labelled: graduated / incubating / sandbox / not CNCF) → *should we use it*.
+**How to read this doc.** Each project gets: _what it is_ → _current state_ (with CNCF
+status labelled: graduated / incubating / sandbox / not CNCF) → _should we use it_.
 A maturity verdict is given per project. Claims are linked; vendor benchmark numbers
 are flagged as vendor numbers where that matters.
 
@@ -32,7 +32,7 @@ Chaos Mesh, Thanos, Cortex, Fluent Bit, Perses, Kepler.
 
 ## The three headline answers
 
-### 1. Should we still use Prometheus? — Yes, but mostly as a *language and a model*, not always as the server
+### 1. Should we still use Prometheus? — Yes, but mostly as a _language and a model_, not always as the server
 
 Prometheus the project is healthy and still the centre of gravity: CNCF graduated,
 on the 3.x line (3.15 in September 2026, 3.16 current in late November), with
@@ -47,7 +47,7 @@ The Q3 2026 CNCF Technology Radar places Prometheus and OpenTelemetry alone in
 "Adopt" for observability
 ([CNCF Tech Radar Q3 2026](https://www.cncf.io/wp-content/uploads/2026/11/CNCF-Tech-Radar-survey-W5-261020-3.pdf)).
 
-But the *server* is no longer the automatic choice for storage. VictoriaMetrics beats
+But the _server_ is no longer the automatic choice for storage. VictoriaMetrics beats
 it on RAM and disk at every measured scale (details below), and Cozystack already runs
 VictoriaMetrics. So the estate answer is split:
 
@@ -68,7 +68,7 @@ care about has a datasource for it, and the dashboard ecosystem (thousands of pu
 dashboards) has no rival. Two posture facts to hold clearly:
 
 - **Grafana is not a CNCF project, and neither are Loki, Tempo, or Mimir.** The "LGTM
-  stack" is a *vendor* stack from Grafana Labs that happens to be open source. Grafana,
+  stack" is a _vendor_ stack from Grafana Labs that happens to be open source. Grafana,
   Loki, Tempo, Mimir, and Pyroscope are AGPL-3.0; Alloy is Apache-2.0
   ([LGTM component licences](https://docs.synedrix.io/grafana-lgtm/)). AGPL is fine for
   self-hosting; it matters if we ever embed or resell.
@@ -101,8 +101,8 @@ What exists:
   stored in ClickHouse, OpenTelemetry-native from day one, and the project that most
   deliberately copies the Datadog experience
   ([SigNoz positioning](https://www.opensourcehunter.com/datadog-alternatives/)).
-  Evaluated in its own section below; the short version is *promising, genuinely
-  usable, but pre-1.0 open-core from a small VC-backed company* — a different risk
+  Evaluated in its own section below; the short version is _promising, genuinely
+  usable, but pre-1.0 open-core from a small VC-backed company_ — a different risk
   shape than the assembled stack, not a strictly better one.
 - **Pixie** was the other single-product attempt (eBPF auto-everything, below). It
   stalled; the zero-instrumentation idea survived but moved into OpenTelemetry itself.
@@ -113,18 +113,18 @@ Anyone who tells Drew there is a drop-in open-source Datadog is selling somethin
 
 ## The estate stack this research implies
 
-| Layer | Pick | Why |
-|---|---|---|
-| Instrumentation | OpenTelemetry SDKs + semantic conventions | Graduated, vendor-neutral, every backend accepts OTLP |
-| Collection (in-cluster) | Cozystack's per-tenant OTel Collector; Fluent Bit for logs | Already shipped by the platform; Fluent Bit is the default log shipper everywhere |
-| Metrics store | VictoriaMetrics (via Cozystack); Prometheus 3.x standalone outside K8s | VM wins on resources; Prometheus wins on simplicity at small scale |
-| Logs | VictoriaLogs (via Cozystack); Loki if we ever leave Cozystack | Follows the metrics decision |
-| Traces | Jaeger v2 or Tempo — see the traces section; Cozystack offers VictoriaTraces | Either is fine; pick by which UI we standardise on |
-| Dashboards/alerts | Grafana (+ Perses on watch) | Default, shipped, ecosystem |
-| Cost visibility | OpenCost, once multi-tenant clusters make cost allocation a real question | Prometheus-native, exports into the stack above |
-| Feature flags | OpenFeature API in code; flagd as the backend | Cheap insurance against vendor lock-in; flags-in-Git fits our workflow |
-| Chaos | Chaos Mesh — later, in a staging cluster, maybe | A practice, not a product we need yet |
-| AI incident help | HolmesGPT — trial only, read-only, local models if possible | Interesting, sandbox-grade, newly acquired |
+| Layer                   | Pick                                                                         | Why                                                                               |
+| ----------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Instrumentation         | OpenTelemetry SDKs + semantic conventions                                    | Graduated, vendor-neutral, every backend accepts OTLP                             |
+| Collection (in-cluster) | Cozystack's per-tenant OTel Collector; Fluent Bit for logs                   | Already shipped by the platform; Fluent Bit is the default log shipper everywhere |
+| Metrics store           | VictoriaMetrics (via Cozystack); Prometheus 3.x standalone outside K8s       | VM wins on resources; Prometheus wins on simplicity at small scale                |
+| Logs                    | VictoriaLogs (via Cozystack); Loki if we ever leave Cozystack                | Follows the metrics decision                                                      |
+| Traces                  | Jaeger v2 or Tempo — see the traces section; Cozystack offers VictoriaTraces | Either is fine; pick by which UI we standardise on                                |
+| Dashboards/alerts       | Grafana (+ Perses on watch)                                                  | Default, shipped, ecosystem                                                       |
+| Cost visibility         | OpenCost, once multi-tenant clusters make cost allocation a real question    | Prometheus-native, exports into the stack above                                   |
+| Feature flags           | OpenFeature API in code; flagd as the backend                                | Cheap insurance against vendor lock-in; flags-in-Git fits our workflow            |
+| Chaos                   | Chaos Mesh — later, in a staging cluster, maybe                              | A practice, not a product we need yet                                             |
+| AI incident help        | HolmesGPT — trial only, read-only, local models if possible                  | Interesting, sandbox-grade, newly acquired                                        |
 
 ---
 
@@ -172,7 +172,7 @@ in-cluster store, where Cozystack's VictoriaMetrics is already better for us.
 **What it is.** A time-series database built to be a faster, cheaper Prometheus:
 accepts Prometheus scrape configs (via vmagent), remote write, and OTLP; answers
 MetricsQL, a PromQL superset; runs as a single binary or a cluster
-(vminsert/vmselect/vmstorage). It is *not* a CNCF project — it's a company-led open
+(vminsert/vmselect/vmstorage). It is _not_ a CNCF project — it's a company-led open
 source project (VictoriaMetrics Inc.) — and Drew asked for it anyway because it is
 the obvious comparison. Cozystack's monitoring is built on it
 ([Cozystack monitoring](https://deepwiki.com/cozystack/cozystack/8-development-and-deployment)).
@@ -213,7 +213,7 @@ semantics knowledge current — it's the portable skill; VM is the storage detai
 ### Long-term Prometheus storage: Thanos vs Cortex vs Mimir
 
 Only relevant if we run Prometheus servers at a scale/lifetime where local TSDB
-isn't enough *outside* the Cozystack/VictoriaMetrics world. Summary of a fast-moving
+isn't enough _outside_ the Cozystack/VictoriaMetrics world. Summary of a fast-moving
 three-way:
 
 - **Thanos** — CNCF **incubating**. Sidecars bolt onto existing Prometheus servers,
@@ -257,7 +257,7 @@ Tempo, Jaeger, SQL databases, and dozens more; dashboards as JSON, provisionable
 from Git; unified alerting across sources. It stores no telemetry itself.
 
 **Current state.** Still the unchallenged default (Grafana 13.x as of late 2026).
-What changed is the *posture around it*, covered in headline answer 2 above:
+What changed is the _posture around it_, covered in headline answer 2 above:
 open-core vendor, AGPL core, Cloud/Enterprise gravity, community taking over the
 Helm packaging. The OSS build remains fully functional for dashboarding and
 alerting, and Cozystack ships it as the visualisation layer over VictoriaMetrics
@@ -308,7 +308,7 @@ ever replaces Cozystack's, they come with it.
 
 ### Perses — CNCF **sandbox** · verdict: **watch closely; pilot for new dashboards-as-code work**
 
-**What it is.** The CNCF's dashboard project: an open dashboard *specification*
+**What it is.** The CNCF's dashboard project: an open dashboard _specification_
 plus a tool that renders it. Born at Amadeus, driven now by Red Hat, Amadeus, and
 Prometheus-community contributors. Dashboards are schema-validated data (CUE),
 written via SDKs (Go/CUE) or a UI, applied with a CLI (`percli`), statically
@@ -332,7 +332,7 @@ Perses is being built as embeddable infrastructure, not just an app.
 polish, and the 0.x model churn are real costs, and Grafana is already in the
 platform. But Perses is the most "us"-shaped project in this whole doc:
 declarative, validatable, Nix/GitOps-friendly dashboard definitions under an
-Apache licence with neutral governance. Recommended posture: any *new* dashboard
+Apache licence with neutral governance. Recommended posture: any _new_ dashboard
 estate we build by hand (fleet/id/atlas/mcpx service dashboards) is a legitimate
 Perses pilot; if it proves out, it becomes the long-term hedge against Grafana's
 open-core drift.
@@ -372,7 +372,7 @@ alerts, and dashboards in one move.
 
 **Should we use it.** Not as the platform default — Cozystack's stack is already
 assembled and shipped, and swapping it for SigNoz would trade four boring parts
-for one exciting one. It *is* the right answer to keep in the drawer for a
+for one exciting one. It _is_ the right answer to keep in the drawer for a
 greenfield, single-team deployment that wants one UI and can accept ClickHouse
 operations — e.g., if atlas or mcpx ever needs a standalone observability box
 independent of the platform. Re-evaluate at its 1.0.
@@ -524,7 +524,7 @@ InfluxDB, ClickHouse, and others, with memory/bbolt/Redis/filesystem cache backe
 [Trickster CNCF page](https://www.cncf.io/projects/trickster/)).
 
 **Does it replace Datadog?** No — it doesn't collect, store, or alert on anything.
-It makes *dashboards over an existing TSDB* load faster when many viewers load the
+It makes _dashboards over an existing TSDB_ load faster when many viewers load the
 same heavy panels. It is a cache, full stop.
 
 **Should we use it.** Only if we ever run a Prometheus/VictoriaMetrics that is
@@ -574,7 +574,7 @@ deployment, pod, container, and labels. Born at Kubecost, in the CNCF since 2022
 incubating since October 2024, aligned with the FinOps Foundation's model
 ([OpenCost CNCF page](https://www.cncf.io/projects/opencost/);
 [incubation announcement](https://opencost.io/blog/cncf-incubation/)).
-It is a *data layer*: it computes and exposes numbers (API + Prometheus metrics);
+It is a _data layer_: it computes and exposes numbers (API + Prometheus metrics);
 recommendations, budgets, and optimisation are left to you or to Kubecost on top.
 Recent work even extends it to LLM inference cost per token via vLLM metrics
 ([OpenCost 1.121 inference costing](https://www.cncf.io/blog/2026/08/05/opencost-1-121-0-first-of-a-kind-kubernetes-inference-cost-tracking/)).
@@ -591,7 +591,7 @@ a bet.
 
 ### OpenFeature + flagd — CNCF **incubating** · verdict: **adopt the API in our code; flagd is the right-sized backend**
 
-**What it is.** A standard *evaluation API* for feature flags: application code
+**What it is.** A standard _evaluation API_ for feature flags: application code
 calls `getBooleanValue("flag", default, context)` through an SDK, and a pluggable
 **provider** behind it talks to whatever actually holds the flags — a vendor
 (LaunchDarkly, Flagsmith, Unleash…), an in-house system, or **flagd**, the
@@ -642,7 +642,7 @@ This is inherent to the category, not a scandal — but it dictates deployment
 shape: staging clusters, network-restricted, never ambient in production.
 
 **Should we use it.** Not yet, and maybe not for a while. Chaos tooling pays off
-when a system is already reliable enough that *unknown* failure modes are the
+when a system is already reliable enough that _unknown_ failure modes are the
 risk — our platform is at the stage where known failure modes (backups, upgrades,
 node loss) still need basic game-day discipline, which a calendar and a script
 handle. When Cozystack tenants start depending on our SLOs, Chaos Mesh in a
@@ -656,7 +656,7 @@ logs (and now metrics/traces) from anything to anything — 70+ plugins, SQL str
 processing, native OTLP support, tiny footprint. It is the Fluentd ecosystem's
 edge agent (Fluentd itself is graduated; Fluent Bit rides under that umbrella).
 Adoption is enormous — billions of downloads, deployed millions of times daily —
-and the CNCF's Q3 2026 Technology Radar found it the *most recommended*
+and the CNCF's Q3 2026 Technology Radar found it the _most recommended_
 observability tool surveyed, treated by users as simply "the default choice for
 log collection"
 ([CNCF Tech Radar Q3 2026](https://www.cncf.io/wp-content/uploads/2026/11/CNCF-Tech-Radar-survey-W5-261020-3.pdf);
@@ -682,7 +682,7 @@ One correction to the common description: **current Kepler does not require
 eBPF** — the eBPF/model-server design is legacy (≤0.9); today's architecture is
 procfs/sysfs CPU-time attribution over measured node power. Which also means the
 honest caveat printed in its own community's material: per-pod watts are
-*attributed estimates*, not measurements — only the node total is metered
+_attributed estimates_, not measurements — only the node total is metered
 ([Kepler v0.13 state](https://github.com/depeche-io/kcd-2026/blob/HEAD/feel-the-breeze/slides/slides.md)).
 
 **Should we use it.** Our estate is unusually Kepler-shaped — bare metal, owned
@@ -700,13 +700,13 @@ Five findings from this pass that cut against what "everyone knows":
 
 1. **OpenTelemetry already graduated** (May 2026). Most practitioners still
    describe it as incubating and hedge accordingly. The hedge is out of date —
-   but its mirror image is also true: the *Collector binary is still v0.x* with
+   but its mirror image is also true: the _Collector binary is still v0.x_ with
    per-component maturity. "Graduated project, unfinished distribution" is the
    accurate one-liner, and both halves matter for planning.
 
 2. **The eBPF auto-instrumentation war is over and Pixie lost it** — not on
    technology (its capture is still the richest) but on shape: the industry chose
-   a *component* that emits OTel (OBI, ex-Beyla) over a *platform* with its own
+   a _component_ that emits OTel (OBI, ex-Beyla) over a _platform_ with its own
    query language and data silo. Sandbox since 2021, health score 32,
    contributors down 40% YoY. "CNCF project" on the tin concealed a stalled
    project; status labels lag reality by years, in both directions (see also
@@ -714,7 +714,7 @@ Five findings from this pass that cut against what "everyone knows":
 
 3. **Prometheus's strongest moat was never performance** — VictoriaMetrics beats
    it on RAM, disk, and long-range query speed in every neutral measurement we
-   found, and it *still* isn't a clean replacement, because MetricsQL's subtle
+   found, and it _still_ isn't a clean replacement, because MetricsQL's subtle
    semantic differences (e.g. `increase()` extrapolation) make "drop-in" a claim
    to verify per-dashboard, not assume. Ecosystem gravity and semantic exactness,
    not benchmarks, are what keep Prometheus central. Relatedly, Prometheus 3.x's

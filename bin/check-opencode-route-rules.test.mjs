@@ -553,3 +553,86 @@ test('a paid tail fails when either seat lacks an explicit weight', () => {
     `expected a split invariant issue for the unweighted tail: ${issues}`,
   );
 });
+
+// --- tokenMetering declarations (code#13839) ---
+import { inspectProviderMeteringRules } from './check-opencode-route-rules.mjs';
+
+function configWithMetering() {
+  const config = configWithWallSplit();
+  config.provider['paid-free'].models['free-small'] = {};
+  config.provider['paid-free'].tokenMetering = {
+    groups: {
+      large: { dailyTokens: 1000000, marginTokens: 20000, models: ['free-model'] },
+      small: { dailyTokens: 10000000, models: ['free-small'] },
+    },
+  };
+  return config;
+}
+
+test('a well-formed tokenMetering declaration passes the metering rules and the full checker', () => {
+  const config = configWithMetering();
+  assert.deepEqual(inspectProviderMeteringRules(config), []);
+  assert.deepEqual(checkRouteRules(config), []);
+});
+
+test('tokenMetering without a groups object fails, naming the provider', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering = {};
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"paid-free"') && issue.includes('"groups"')),
+    `expected a groups issue naming paid-free: ${issues}`,
+  );
+  assert.ok(checkRouteRules(config).some((issue) => issue.includes('tokenMetering')));
+});
+
+test('a non-positive dailyTokens fails, naming the group', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering.groups.large.dailyTokens = 0;
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"large"') && issue.includes('dailyTokens')),
+    `expected a dailyTokens issue naming the large group: ${issues}`,
+  );
+});
+
+test('a marginTokens at or past dailyTokens fails', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering.groups.large.marginTokens = 1000000;
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"large"') && issue.includes('marginTokens')),
+    `expected a marginTokens issue naming the large group: ${issues}`,
+  );
+});
+
+test('a model mapped to two groups fails, naming the model', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering.groups.small.models.push('free-model');
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-model"') && issue.includes('exactly one')),
+    `expected a double-mapping issue naming free-model: ${issues}`,
+  );
+});
+
+test('an unmapped catalog model fails — it could never wall', () => {
+  const config = configWithMetering();
+  delete config.provider['paid-free'].tokenMetering.groups.small;
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"free-small"') && issue.includes('unmapped')),
+    `expected an unmapped-model issue naming free-small: ${issues}`,
+  );
+});
+
+test('a mapped model outside the catalog fails, naming the model', () => {
+  const config = configWithMetering();
+  config.provider['paid-free'].tokenMetering.groups.small.models = ['not-a-model'];
+  config.provider['paid-free'].tokenMetering.groups.large.models.push('free-small');
+  const issues = inspectProviderMeteringRules(config);
+  assert.ok(
+    issues.some((issue) => issue.includes('"not-a-model"') && issue.includes('not in the provider')),
+    `expected an outside-catalog issue naming not-a-model: ${issues}`,
+  );
+});

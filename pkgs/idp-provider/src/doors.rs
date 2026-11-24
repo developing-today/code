@@ -435,12 +435,24 @@ pub async fn door_callback(
         );
     }
 
-    // Link state (#13415): active proceeds; unlinked is denied (an
-    // operator's unlink is never silently undone); never-seen is
-    // linked by this login, with the event in the identity history
-    // and the audit record.
+    // Link state (#13415/#13972): active proceeds; pending is denied
+    // without issuing a code; unlinked is denied (an operator's unlink
+    // is never silently undone); never-seen is linked by this login,
+    // with the event in the identity history and the audit record.
     match flow.identities.status(&name, &subject) {
         Ok(Some(ref s)) if s == "active" => {}
+        Ok(Some(ref s)) if s == "pending" => {
+            return denied(
+                flow,
+                &endpoint(&name),
+                "identity_pending",
+                &client_id,
+                &identity_key,
+                StatusCode::FORBIDDEN,
+                "access_denied",
+                "identity is registered and awaiting approval",
+            );
+        }
         Ok(Some(_)) => {
             return denied(
                 flow,

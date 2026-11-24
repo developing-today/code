@@ -7,11 +7,17 @@
 //! | `client`      | EC P-256   | digitalSignature                 | clientAuth | 730 days         |
 //! | `saml-signing`| RSA-2048   | digitalSignature, nonRepudiation (contentCommitment) | —          | 1095 days        |
 //! | `oidc-signing`| RSA-2048   | digitalSignature, nonRepudiation (contentCommitment) | —          | 1095 days        |
+//! | `ocsp-responder`| EC P-256 | digitalSignature                 | OCSP signing | 30 days          |
 //!
 //! All leaves carry `basicConstraints CA:false` (critical) and
 //! SKI/AKI, as idp-ca's extension files do. The `server` profile
 //! defaults its SAN to `DNS:<cn>` when no SAN is supplied, again as
 //! idp-ca does.
+//!
+//! The `ocsp-responder` profile is the delegated OCSP signer
+//! (RFC 6960 §3.2): EKU id-kp-OCSPSigning only, plus the
+//! id-pkix-ocsp-nocheck extension. It is issued through the
+//! ordinary leaf path and used by `fleet cert ocsp sign`.
 //!
 //! Validity note: the per-profile defaults above are idp-ca's. The
 //! spec's generic unprofiled leaf default is 90 days (§5.4); a
@@ -38,6 +44,11 @@ pub struct LeafProfile {
     /// idp-ca behaviour: a `server` leaf with no SANs gets
     /// `DNS:<cn>`.
     pub san_defaults_to_cn: bool,
+    /// RFC 6960 §3.2 NoCheck: a delegated OCSP signing
+    /// certificate carries id-pkix-ocsp-nocheck so verifiers do
+    /// not try to revocation-check the responder itself. Only
+    /// the `ocsp-responder` profile sets this.
+    pub ocsp_no_check: bool,
     pub notes: &'static str,
 }
 
@@ -49,6 +60,7 @@ const PROFILES: &[LeafProfile] = &[
         extended_key_usages: &[rcgen::ExtendedKeyUsagePurpose::ServerAuth],
         default_validity: CalendarDuration::days(730),
         san_defaults_to_cn: true,
+        ocsp_no_check: false,
         notes: "TLS server leaf (idp-ca `server`): P-256, serverAuth, SAN defaults to DNS:<cn>.",
     },
     LeafProfile {
@@ -58,6 +70,7 @@ const PROFILES: &[LeafProfile] = &[
         extended_key_usages: &[rcgen::ExtendedKeyUsagePurpose::ClientAuth],
         default_validity: CalendarDuration::days(730),
         san_defaults_to_cn: false,
+        ocsp_no_check: false,
         notes: "TLS client leaf (idp-ca `client`): P-256, clientAuth.",
     },
     LeafProfile {
@@ -70,6 +83,7 @@ const PROFILES: &[LeafProfile] = &[
         extended_key_usages: &[],
         default_validity: CalendarDuration::days(1095),
         san_defaults_to_cn: false,
+        ocsp_no_check: false,
         notes: "SAML signing leaf (idp-ca `saml-signing`): RSA-2048, digitalSignature + nonRepudiation (contentCommitment), no EKU.",
     },
     LeafProfile {
@@ -82,7 +96,18 @@ const PROFILES: &[LeafProfile] = &[
         extended_key_usages: &[],
         default_validity: CalendarDuration::days(1095),
         san_defaults_to_cn: false,
+        ocsp_no_check: false,
         notes: "OIDC signing leaf (idp-ca `oidc-signing`): RSA-2048, digitalSignature + nonRepudiation (contentCommitment), no EKU.",
+    },
+    LeafProfile {
+        name: "ocsp-responder",
+        key_algorithm: AlgorithmId::P256,
+        key_usages: &[rcgen::KeyUsagePurpose::DigitalSignature],
+        extended_key_usages: &[rcgen::ExtendedKeyUsagePurpose::OcspSigning],
+        default_validity: CalendarDuration::days(30),
+        san_defaults_to_cn: false,
+        ocsp_no_check: true,
+        notes: "Delegated OCSP responder (RFC 6960 §3.2): P-256, digitalSignature, EKU id-kp-OCSPSigning only, OCSP NoCheck extension, 30d default validity. Issue with `leaf issue --profile ocsp-responder`; sign with `fleet cert ocsp sign --responder`.",
     },
 ];
 

@@ -104,7 +104,8 @@
     const quoted = (text) => (short(text) ? `: “${short(text)}”` : "");
     switch (kind) {
       case "ask.send":
-        return `Prompt${quoted(a.text)}`;
+        // A question and a standing instruction are said as what they are.
+        return `${a.intent === "question" ? "Question" : a.intent === "directive" ? "Standing instruction" : "Prompt"}${quoted(a.text)}`;
       case "ask.reply":
         return `Reply on #${a.issue}${quoted(a.text)}`;
       case "ask.close":
@@ -159,6 +160,15 @@
     return { id, kind, args: args ?? {}, said: said || sayOf(kind, args), at: now, state: "waiting", note: "", tries: 0 };
   }
 
+  /** What is said of something the platform is holding, by who it
+   * waits for: either side, whichever can first; a machine only; or a
+   * machine that may already have it. */
+  const HELD_NOTES = {
+    either: "Kept: Cloudflare does it as soon as it can again, or the laptop if it is back first.",
+    machine: "Kept for the laptop, which will do it when it is back.",
+    asked: "Kept: the laptop did not answer. It may have got this, and says what became of it when it is back.",
+  };
+
   /** What became of one try at sending. `answer` is what came back:
    * `{ network: true }` when nothing did, else the status, whether the
    * body was JSON, and the body. Returns the entry's new state and what
@@ -173,7 +183,10 @@
     }
     if (status === 200 && body.ok === true) {
       if (body.held === true) {
-        return { state: "held", note: "Kept for the laptop, which will do it when it is back.", result: null };
+        // The platform says who it waits for; one that does not say is
+        // older than the saying, and holds things for the laptop only.
+        const waits = typeof body.waits === "string" && Object.hasOwn(HELD_NOTES, body.waits) ? body.waits : "machine";
+        return { state: "held", note: HELD_NOTES[waits], result: null };
       }
       // Taken, and answered "not recorded" without an error: an answer
       // to a question that was settled in the meantime. That is not

@@ -848,7 +848,7 @@ fn error_classes_are_stable() {
     for (error, class) in all {
         assert_eq!(error.class(), class);
         assert!(seen.insert(class));
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 }
 

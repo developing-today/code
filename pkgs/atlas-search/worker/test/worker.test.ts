@@ -5,6 +5,7 @@ import { CEILING, CONTEXT, EMBED_DIMS, EMBED_MODEL } from "../src/space";
 
 const GATE = { Authorization: "Bearer test-gate" };
 const counts = { embed: 0, search: 0 };
+const forwardedSearchBodies: Record<string, unknown>[] = [];
 // Raw body of the /v1/search request the Worker forwarded for
 // the #12622 context probe query (captured by its interceptor).
 let statedSearchBody: string | undefined;
@@ -33,8 +34,9 @@ function embedReply(space: "good" | "bad") {
   };
 }
 
-function searchReply() {
+function searchReply({ body }: { body: string }) {
   counts.search++;
+  forwardedSearchBodies.push(JSON.parse(body) as Record<string, unknown>);
   return {
     statusCode: 200,
     data: JSON.stringify({
@@ -115,6 +117,15 @@ describe("atlas-search worker", () => {
     const denied = await search({ query: "alpha beta" }, {});
     expect(denied.status).toBe(401);
     expect(counts.embed).toBe(embedBefore);
+  });
+
+  it("states the hosted-per-user disclosure context on the forwarded search request", async () => {
+    const before = forwardedSearchBodies.length;
+    const resp = await search({ query: "disclosure context request" });
+    expect(resp.status).toBe(200);
+    expect(forwardedSearchBodies.slice(before)).toEqual([
+      { query: "disclosure context request", ceiling: "personal", k: 10, context: "hosted-per-user" },
+    ]);
   });
 
   it("miss embeds + fans out once; the repeat is a DO hit, byte-identical", async () => {

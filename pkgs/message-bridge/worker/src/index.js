@@ -9,7 +9,20 @@
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
 import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
-import { fleetCall, fleetOp, fleetSchema } from "./fleet.js";
+import {
+  enrollTokenClaimSql,
+  enrollTokenGetSql,
+  enrollTokenMintSql,
+  enrollTokenRevokeSql,
+  fleetCall,
+  fleetCredentialAuthSql,
+  fleetCredentialPutSql,
+  fleetCredentialRevokeSql,
+  fleetOp,
+  fleetSchema,
+  getDistribution,
+  recordDistribution,
+} from "./fleet.js";
 import { route } from "./routes.js";
 
 export class MessageStore extends DurableObject {
@@ -100,12 +113,52 @@ export class MessageStore extends DurableObject {
       body TEXT NOT NULL,
       ack_at TEXT
     )`);
+    // Sends carry their distribution batch (design §4.1); rows from
+    // before pattern addressing have none.
+    const noteCols = this.sql.exec("PRAGMA table_info(note_message)").toArray();
+    if (!noteCols.some((c) => c.name === "batch")) this.sql.exec("ALTER TABLE note_message ADD COLUMN batch TEXT");
     this.sql.exec("CREATE INDEX IF NOT EXISTS note_message_inbox ON note_message (recipient, ack_at, id)");
   }
 
   /** One fleet mailbox operation over arguments fleetCall validated. */
   fleet(op, args) {
     return fleetOp(this.sql, op, args);
+  }
+
+  // Per-agent credentials and bootstrap enroll tokens (#14368): the
+  // store only ever sees SHA-256 hashes, never a token value.
+
+  fleetCredentialAuth(token_hash) {
+    return fleetCredentialAuthSql(this.sql, token_hash);
+  }
+
+  fleetCredentialPut(rec) {
+    return fleetCredentialPutSql(this.sql, rec);
+  }
+
+  fleetCredentialRevoke(agent) {
+    return fleetCredentialRevokeSql(this.sql, agent, new Date().toISOString());
+  }
+
+  enrollTokenMint(row) {
+    return enrollTokenMintSql(this.sql, row);
+  }
+
+  enrollTokenGet(token_hash) {
+    return enrollTokenGetSql(this.sql, token_hash);
+  }
+
+  enrollTokenClaim(token_hash, agent, now) {
+    return enrollTokenClaimSql(this.sql, token_hash, agent, now);
+  }
+
+  enrollTokenRevoke(token_hash) {
+    return enrollTokenRevokeSql(this.sql, token_hash, new Date().toISOString());
+  }
+
+  /** Deletes an identity's notes token(s); returns how many were revoked. */
+  noteRevoke(identity) {
+    return this.sql.exec("DELETE FROM note_token WHERE identity = ? RETURNING token_hash", identity).toArray().length;
   }
 
   /** Stores a new client; false when the table is full of clients worth keeping. */
@@ -210,7 +263,7 @@ export class MessageStore extends DurableObject {
     return this.sql.exec("SELECT identity FROM note_identity ORDER BY identity").toArray().map((r) => r.identity);
   }
 
-  noteDeliver({ from, recipients, note }) {
+  noteDeliver({ from, recipients, note, batch = null, pattern = null, limit_n = null, matched = null }) {
     const ts = new Date().toISOString();
     const notes = [];
     for (const recipient of recipients) {
@@ -218,17 +271,86 @@ export class MessageStore extends DurableObject {
       if (!known) continue;
       const row = this.sql
         .exec(
-          "INSERT INTO note_message (ts, recipient, sender, body) VALUES (?, ?, ?, ?) RETURNING id, ts, recipient, sender, body",
+          "INSERT INTO note_message (ts, recipient, sender, body, batch) VALUES (?, ?, ?, ?, ?) RETURNING id, ts, recipient, sender, body, batch",
           ts,
           recipient,
           from,
           note,
+          batch,
         )
         .one();
       this.sql.exec("UPDATE note_identity SET signal_counter = signal_counter + 1 WHERE identity = ?", recipient);
-      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts });
+      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts, batch: row.batch });
+    }
+    if (batch) {
+      recordDistribution(this.sql, {
+        batch,
+        sender_addr: from,
+        pattern,
+        limit_n,
+        matched: matched ?? notes.map((n) => n.recipient),
+        delivered: notes.map((n) => n.recipient),
+        ts,
+      });
     }
     return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
+  }
+
+  /**
+   * Broadening a notes distribution: only the original sender, only
+   * the matched-but-undelivered remainder (widened by extra_matched,
+   * which the caller resolved from the call's new address). State
+   * refusals come back as { error }, like fleet ops.
+   */
+  noteBroaden({ from, batch, extra_matched = [], pattern = null, limit = null }) {
+    const dist = getDistribution(this.sql, batch);
+    if (!dist) return { error: `no distribution recorded for batch ${batch}` };
+    if (dist.sender_addr !== from) return { error: "only the original sender can broaden this distribution" };
+    const sample = this.sql
+      .exec("SELECT sender, body FROM note_message WHERE batch = ? ORDER BY id ASC LIMIT 1", batch)
+      .toArray()[0];
+    if (!sample) return { error: `batch ${batch} has no notes to broaden` };
+    const matched = [...new Set([...dist.matched, ...extra_matched])].sort();
+    const deliveredSet = new Set(dist.delivered);
+    const pending = matched.filter((n) => !deliveredSet.has(n));
+    const recipients = limit ? pending.slice(0, limit) : pending;
+    const ts = new Date().toISOString();
+    const notes = [];
+    for (const recipient of recipients) {
+      const known = this.sql.exec("SELECT 1 FROM note_identity WHERE identity = ?", recipient).toArray().length > 0;
+      if (!known) continue;
+      const row = this.sql
+        .exec(
+          "INSERT INTO note_message (ts, recipient, sender, body, batch) VALUES (?, ?, ?, ?, ?) RETURNING id, ts, recipient, sender, body, batch",
+          ts,
+          recipient,
+          sample.sender,
+          sample.body,
+          batch,
+        )
+        .one();
+      this.sql.exec("UPDATE note_identity SET signal_counter = signal_counter + 1 WHERE identity = ?", recipient);
+      deliveredSet.add(recipient);
+      notes.push({ id: row.id, recipient: row.recipient, from: row.sender, note: row.body, ts: row.ts, batch: row.batch });
+    }
+    const delivered = [...deliveredSet].sort();
+    recordDistribution(this.sql, {
+      batch,
+      sender_addr: dist.sender_addr,
+      pattern: pattern ?? dist.pattern,
+      limit_n: limit ?? dist.limit_n,
+      matched,
+      delivered,
+      ts,
+    });
+    return {
+      batch,
+      matched: matched.length,
+      delivered: notes.length,
+      recipients: notes.map((n) => n.recipient),
+      remaining: matched.length - delivered.length,
+      notes,
+    };
   }
 
   noteInbox(identity) {
@@ -272,6 +394,53 @@ export class MessageStore extends DurableObject {
       .exec("SELECT signal_counter FROM note_identity WHERE identity = ?", identity)
       .toArray()[0];
     return row ? { registered: true, counter: row.signal_counter } : { registered: false, counter: 0 };
+  }
+
+  /** Owner read over note_message (pipeline.js); sender/receiver are exact identities. */
+  noteOwnerList(q = {}) {
+    const where = ["id > ?"];
+    const args = [q.since_id ?? 0];
+    if (q.before_id !== undefined && q.before_id !== null) {
+      where.push("id < ?");
+      args.push(q.before_id);
+    }
+    if (q.unread_only) where.push("ack_at IS NULL");
+    if (q.sender) {
+      where.push("sender = ?");
+      args.push(q.sender);
+    }
+    if (q.receiver) {
+      where.push("recipient = ?");
+      args.push(q.receiver);
+    }
+    const order = q.order === "desc" ? "DESC" : "ASC";
+    return this.sql
+      .exec(
+        `SELECT id, ts, recipient, sender, body, ack_at FROM note_message WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT ?`,
+        ...args,
+        q.limit ?? 50,
+      )
+      .toArray()
+      .map((r) => ({ ...r }));
+  }
+
+  /** Owner directory of note identities (pipeline.js): scopes folded over each identity's tokens. */
+  noteDirectory() {
+    return this.sql
+      .exec(
+        `SELECT i.identity AS identity, i.signal_counter AS signal_counter, i.created AS created,
+           COALESCE(MAX(t.can_send), 0) AS can_send, COALESCE(MAX(t.can_inbox), 0) AS can_inbox
+         FROM note_identity i LEFT JOIN note_token t ON t.identity = i.identity
+         GROUP BY i.identity ORDER BY i.identity`,
+      )
+      .toArray()
+      .map((r) => ({
+        identity: r.identity,
+        can_send: !!r.can_send,
+        can_inbox: !!r.can_inbox,
+        signal_counter: r.signal_counter,
+        created: r.created,
+      }));
   }
 
   eventSubGet(id) {
@@ -452,13 +621,26 @@ function storeFor(env) {
     wakeHooks: () => stub.wakeHooks(),
     wakeClaim: (address, now, max) => stub.wakeClaim(address, now, max),
     noteRegister: (reg) => stub.noteRegister(reg),
+    noteRevoke: (identity) => stub.noteRevoke(identity),
     noteAuth: (token_hash) => stub.noteAuth(token_hash),
     noteIdentities: () => stub.noteIdentities(),
     noteDeliver: (delivery) => stub.noteDeliver(delivery),
+    noteBroaden: (broaden) => stub.noteBroaden(broaden),
     noteInbox: (identity) => stub.noteInbox(identity),
     noteAck: (identity, sel) => stub.noteAck(identity, sel),
     noteSignal: (identity) => stub.noteSignal(identity),
+    // Owner reads (pipeline.js): the query is validated in the Worker
+    // by normalizePipelineQuery before these are called, like fleet.
+    noteOwnerList: (q) => stub.noteOwnerList(q),
+    noteDirectory: () => stub.noteDirectory(),
     fleet: (op, args) => fleetCall(stub, op, args),
+    fleetCredentialAuth: (token_hash) => stub.fleetCredentialAuth(token_hash),
+    fleetCredentialPut: (rec) => stub.fleetCredentialPut(rec),
+    fleetCredentialRevoke: (agent) => stub.fleetCredentialRevoke(agent),
+    enrollTokenMint: (row) => stub.enrollTokenMint(row),
+    enrollTokenGet: (token_hash) => stub.enrollTokenGet(token_hash),
+    enrollTokenClaim: (token_hash, agent, now) => stub.enrollTokenClaim(token_hash, agent, now),
+    enrollTokenRevoke: (token_hash) => stub.enrollTokenRevoke(token_hash),
   };
 }
 

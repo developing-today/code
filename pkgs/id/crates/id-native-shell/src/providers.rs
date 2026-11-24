@@ -1308,13 +1308,15 @@ mod notify_tests {
             adapter.offer_frame("world-a"),
             Some(json!({"type": "provider_offer", "providers": ["client.notify"]}))
         );
-        let reply = adapter.handle_request("world-a", &notify_request("n1", json!({"head": 9})), 1_000);
+        let reply =
+            adapter.handle_request("world-a", &notify_request("n1", json!({"head": 9})), 1_000);
         assert_eq!(reply["ok"], true);
         assert_eq!(reply["result_hex"], json!(""));
         assert_eq!(adapter.audit_entries()[0].outcome, "executed");
         // A second world without the grant is still refused, never offered.
         assert_eq!(adapter.offer_frame("world-b"), None);
-        let reply = adapter.handle_request("world-b", &notify_request("n2", json!({"head": 9})), 1_000);
+        let reply =
+            adapter.handle_request("world-b", &notify_request("n2", json!({"head": 9})), 1_000);
         assert_eq!(reply["error"], REFUSAL_NOT_GRANTED);
     }
 
@@ -1349,7 +1351,8 @@ mod notify_tests {
         // projection plus the host view (slice 1's catch-up seam,
         // #10927); this test pins the decision that gates that run.
         let mut adapter = notified_adapter();
-        let reply = adapter.handle_request("world-a", &notify_request("n1", json!({"head": 12})), 1_000);
+        let reply =
+            adapter.handle_request("world-a", &notify_request("n1", json!({"head": 12})), 1_000);
         assert_eq!(reply["ok"], true);
         // A shell behind the hint must re-sync on return ...
         assert!(notify_needs_resync(Some(7), Some(12)));
@@ -1362,6 +1365,11 @@ mod notify_tests {
         assert!(notify_needs_resync(Some(13), None));
         // Both deliveries are audited as executions, with no content.
         assert_eq!(adapter.audit_entries().len(), 2);
-        assert!(adapter.audit_entries().iter().all(|entry| entry.outcome == "executed"));
+        assert!(
+            adapter
+                .audit_entries()
+                .iter()
+                .all(|entry| entry.outcome == "executed")
+        );
     }
 }

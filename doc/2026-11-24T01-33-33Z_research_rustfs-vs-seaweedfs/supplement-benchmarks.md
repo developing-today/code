@@ -12,14 +12,14 @@ of 5 runs.
 
 Throughput (MiB/s):
 
-| Workload | RustFS | SeaweedFS | MinIO |
-| --- | --- | --- | --- |
-| 64 KiB PUT | 56.8 | 99.4 | 49.7 |
-| 64 KiB GET | 149.5 | 114.0 | 121.7 |
-| 8 MiB PUT | 325.5 | 106.9 | 318.8 |
-| 8 MiB GET | 455.8 | 410.3 | 426.6 |
-| 256 MiB multipart PUT | 276.4 | 125.7 | 323.8 |
-| 256 MiB GET | 1,036.3 | 580.8 | 1,279.6 |
+| Workload              | RustFS  | SeaweedFS | MinIO   |
+| --------------------- | ------- | --------- | ------- |
+| 64 KiB PUT            | 56.8    | 99.4      | 49.7    |
+| 64 KiB GET            | 149.5   | 114.0     | 121.7   |
+| 8 MiB PUT             | 325.5   | 106.9     | 318.8   |
+| 8 MiB GET             | 455.8   | 410.3     | 426.6   |
+| 256 MiB multipart PUT | 276.4   | 125.7     | 323.8   |
+| 256 MiB GET           | 1,036.3 | 580.8     | 1,279.6 |
 
 p99 latency: 64 KiB PUT — SeaweedFS 39.3 ms, RustFS 61.6 ms. 8 MiB PUT —
 RustFS 158.3 ms, SeaweedFS 580.5 ms.

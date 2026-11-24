@@ -1,0 +1,2410 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+roadmap · live
+items · live · 5m old
+Roadmap
+
+Grist's Program roadmap table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.
+
+Quarter
+Month
+Week
+Next 3 days
+Today
+Priorities
+Roadmap drift: 171 Grist rows with no matching Project epic · 25 Project epics with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in /api/roadmap.json).
+Roadmap timeline by theme
+Theme	Q4 2026	Q1 2027	Now	Next	Later	Ongoing	Ideas	Unscheduled
+Atlas (0/21 done)			
+The Atlas programme: one search and memory index over every corpus
+💬
+
+
+in-progress
+Atlas · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#8983
+issue developing-today/code#5350
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8983.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8983.
+Last activity by dezren39 at 2026-11-17T13:06:19Z (issue_comment). Evidence: developing-today/code#8983 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8983.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#5350.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5350.
+Last activity by dezren39 at 2026-11-23T18:59:31Z (issue_comment). Evidence: developing-today/code#5350 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#5350.
+Atlas as a Rust binary and a multi-client search service
+💬
+
+
+in-progress
+Atlas · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#5350
+issue developing-today/code#5351
+issue developing-today/code#5352
+issue developing-today/code#5353
+issue developing-today/code#5354
+issue developing-today/code#5355
+issue developing-today/code#5356
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#5350.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5350.
+Last activity by dezren39 at 2026-11-23T18:59:31Z (issue_comment). Evidence: developing-today/code#5350 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#5350.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#5351.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5351.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:11:05Z (actor unknown). Evidence: developing-today/code#5351.
+Next: No action — this item is done. Evidence: developing-today/code#5351.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#5352.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5352.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:11:06Z (actor unknown). Evidence: developing-today/code#5352.
+Next: No action — this item is done. Evidence: developing-today/code#5352.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#5353.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5353.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:11:07Z (actor unknown). Evidence: developing-today/code#5353.
+Next: No action — this item is done. Evidence: developing-today/code#5353.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#5354.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5354.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:11:08Z (actor unknown). Evidence: developing-today/code#5354.
+Next: No action — this item is done. Evidence: developing-today/code#5354.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#5355.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5355.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:11:09Z (actor unknown). Evidence: developing-today/code#5355.
+Next: No action — this item is done. Evidence: developing-today/code#5355.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#5356.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5356.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:11:10Z (actor unknown). Evidence: developing-today/code#5356.
+Next: No action — this item is done. Evidence: developing-today/code#5356.
+Backup mesh
+💬
+
+
+in-progress
+Atlas · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#9093
+issue developing-today/code#13455
+issue developing-today/code#13456
+issue developing-today/code#13458
+issue developing-today/code#13463
+issue developing-today/code#13457
+issue developing-today/code#13459
+issue developing-today/code#13461
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9093.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9093.
+Last activity by dezren39 at 2026-11-23T16:39:13Z (issue_comment). Evidence: developing-today/code#9093 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9093.
+Shard consumer: serve mode and replicas that persist
+💬
+
+
+in-progress
+Atlas · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#6666
+issue developing-today/code#11213
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6666.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6666.
+Last activity by dezren39 at 2026-11-23T13:46:54Z (issue_comment). Evidence: developing-today/code#6666 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6666.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#11213.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#11213.
+Last activity by dezren39 at 2026-11-23T04:07:55Z (issue_comment). Evidence: developing-today/code#11213 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#11213.
+A hot cache in D1
+💬
+
+
+in-progress
+Atlas · Now
+⚠ grist: in-progress · derived: Done
+issue developing-today/code#13106
+issue developing-today/code#13107
+Repo file ↗
+Epic & issues
+Metadata schema v1, and how it may change
+💬
+
+
+in-progress
+Atlas · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#9095
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9095.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9095.
+Last activity by dezren39 at 2026-11-23T17:44:43Z (issue_comment). Evidence: developing-today/code#9095 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9095.
+Evaluation
+💬
+
+
+in-progress
+Atlas · Now
+issue developing-today/code#13601
+issue developing-today/code#13590
+Repo file ↗
+Epic & issues
+Staging tier
+💬
+
+
+shipped
+Atlas · Now
+issue developing-today/code#5669
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#5669.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5669.
+Last activity by dezren39 at 2026-11-17T20:01:22Z (issue_comment). Evidence: developing-today/code#5669 comment.
+Next: No action — this item is done. Evidence: developing-today/code#5669.
+Ask the ledger
+💬
+
+
+shipped
+Atlas · Now
+issue developing-today/code#6266
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#6266.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6266.
+Last activity by dezren39 at 2026-11-17T03:15:34Z (issue_comment). Evidence: developing-today/code#6266 comment.
+Next: No action — this item is done. Evidence: developing-today/code#6266.
+Fleet and agent memory in Atlas: the design, and its evaluation sets
+💬
+
+
+shipped
+Atlas · Now
+issue developing-today/code#8567
+issue developing-today/code#8627
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#8567.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8567.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:09:04Z (actor unknown). Evidence: developing-today/code#8567.
+Next: No action — this item is done. Evidence: developing-today/code#8567.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#8627.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8627.
+Last activity by dezren39 at 2026-11-23T18:47:25Z (issue_comment). Evidence: developing-today/code#8627 comment.
+Next: No action — this item is done. Evidence: developing-today/code#8627.
+	
+Memory slice 1: a corpus registry and the memory connector
+💬
+
+
+planned
+Atlas · Next
+⚠ grist: planned · project: In Review
+issue developing-today/code#8622
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8622.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8622.
+Last activity by dezren39 at 2026-11-24T03:05:09Z (issue_comment). Evidence: developing-today/code#8622 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#8622 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8622 in the Project.
+Memory slice 3: the query surface over MCP
+💬
+
+
+planned
+Atlas · Next
+issue developing-today/code#8625
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8625.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8625.
+Last activity by dezren39 at 2026-11-23T18:10:49Z (issue_comment). Evidence: developing-today/code#8625 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8625.
+The projector for id
+💬
+
+
+planned
+Atlas · Next
+issue developing-today/code#11182
+issue developing-today/code#11183
+issue developing-today/code#11184
+issue developing-today/code#11185
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#11182.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#11182.
+Last activity by dezren39 at 2026-11-23T21:12:31Z (issue_comment). Evidence: developing-today/code#11182 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#11182.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#11183.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#11183.
+Last activity by dezren39 at 2026-11-23T23:31:55Z (issue_comment). Evidence: developing-today/code#11183 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#11183.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#11184.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#11184.
+Last activity by dezren39 at 2026-11-24T02:26:42Z (issue_comment). Evidence: developing-today/code#11184 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#11184.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#11185.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#11185.
+Last activity by dezren39 at 2026-11-23T21:11:20Z (issue_comment). Evidence: developing-today/code#11185 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#11185.
+Provenance registry
+💬
+
+
+planned
+Atlas · Next
+⚠ grist: planned · project: In Review
+issue developing-today/code#3125
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#3125.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#3125.
+Last activity by developing-today-fleet[bot] at 2026-11-24T02:55:10Z (issue_comment). Evidence: developing-today/code#3125 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#3125 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#3125 in the Project.
+Muse import
+💬
+
+
+planned
+Atlas · Next
+issue developing-today/code#13607
+Repo file ↗
+Epic & issues
+The Atlas book
+💬
+
+
+planned
+Atlas · Next
+issue developing-today/code#13592
+issue developing-today/code#13563
+Repo file ↗
+Epic & issues
+	
+The ingestion programme
+💬
+
+
+shaped
+Atlas · Later
+issue developing-today/code#6018
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6018.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6018.
+Last activity by dezren39 at 2026-11-17T09:48:26Z (issue_comment). Evidence: developing-today/code#6018 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6018.
+First-pass ingestion of every corpus
+💬
+
+
+planned
+Atlas · Later
+issue developing-today/code#6025
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6025.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6025.
+Last activity by dezren39 at 2026-11-23T17:27:49Z (issue_comment). Evidence: developing-today/code#6025 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6025.
+Cold tier: the restore importer
+💬
+
+
+planned
+Atlas · Later
+issue developing-today/code#8228
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8228.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8228.
+Last activity by dezren39 at 2026-11-23T15:27:25Z (issue_comment). Evidence: developing-today/code#8228 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8228.
+Boundary remediation
+💬
+
+
+planned
+Atlas · Later
+issue developing-today/code#8479
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8479.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8479.
+Last activity by dezren39 at 2026-11-24T00:09:10Z (issue_comment). Evidence: developing-today/code#8479 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8479.
+Backups of the OpenCode session database
+💬
+
+
+proposed
+Atlas · Later
+issue developing-today/code#9094
+issue developing-today/code#13462
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9094.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9094.
+Last activity by dezren39 at 2026-11-17T17:05:45Z (issue_comment). Evidence: developing-today/code#9094 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9094.
+			
+basement cluster (0/11 done)			
+Hardware inventory and first-node selection
+💬
+
+
+planned
+basement cluster · Now
+issue developing-today/code#1080
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1080.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1080.
+Last activity by dezren39 at 2026-11-22T01:09:21Z (issue_comment). Evidence: developing-today/code#1080 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1080.
+Firmware, BIOS and BMC audit
+💬
+
+
+planned
+basement cluster · Now
+issue developing-today/code#1081
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1081.
+Blocker: Blocked by developing-today/code#1080. Evidence: developing-today/code#1080.
+Last activity by dezren39 at 2026-11-23T07:07:52Z (issue_comment). Evidence: developing-today/code#1081 comment.
+Next: Resolve the blocker first: developing-today/code#1080. Evidence: developing-today/code#1080.
+Basement power and space
+💬
+
+
+planned
+basement cluster · Now
+issue developing-today/code#1083
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1083.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1083.
+Last activity by dezren39 at 2026-10-27T03:16:29Z (issue_comment). Evidence: developing-today/code#1083 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1083.
+	
+Storage assembly and design validation
+💬
+
+
+planned
+basement cluster · Next
+issue developing-today/code#1085
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1085.
+Blocker: Blocked by developing-today/code#1083, developing-today/code#1080. Evidence: developing-today/code#1083.
+Last activity by dezren39 at 2026-11-21T10:50:44Z (issue_comment). Evidence: developing-today/code#1085 comment.
+Next: Resolve the blocker first: developing-today/code#1083. Evidence: developing-today/code#1083.
+TALM and Talos bootstrap
+💬
+
+
+planned
+basement cluster · Next
+issue developing-today/code#1086
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1086.
+Blocker: Blocked by developing-today/code#1085, developing-today/code#1083, developing-today/code#1080. Evidence: developing-today/code#1085.
+Last activity by dezren39 at 2026-11-22T17:34:53Z (issue_comment). Evidence: developing-today/code#1086 comment.
+Next: Resolve the blocker first: developing-today/code#1085. Evidence: developing-today/code#1085.
+Cloud extension
+💬
+
+
+planned
+basement cluster · Next
+issue developing-today/code#1091
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1091.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1091.
+Last activity by dezren39 at 2026-11-22T03:03:07Z (issue_comment). Evidence: developing-today/code#1091 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1091.
+	
+Cozystack platform
+💬
+
+
+proposed
+basement cluster · Later
+issue developing-today/code#1087
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1087.
+Blocker: Blocked by developing-today/code#1086. Evidence: developing-today/code#1086.
+Last activity by dezren39 at 2026-11-23T03:44:48Z (issue_comment). Evidence: developing-today/code#1087 comment.
+Next: Resolve the blocker first: developing-today/code#1086. Evidence: developing-today/code#1086.
+Platform services
+💬
+
+
+proposed
+basement cluster · Later
+issue developing-today/code#1088
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1088.
+Blocker: Blocked by developing-today/code#1087, developing-today/code#1085. Evidence: developing-today/code#1087.
+Last activity by dezren39 at 2026-11-24T02:19:23Z (issue_comment). Evidence: developing-today/code#1088 comment.
+Next: Resolve the blocker first: developing-today/code#1087. Evidence: developing-today/code#1087.
+Observability, backup and recovery
+💬
+
+
+proposed
+basement cluster · Later
+issue developing-today/code#1090
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1090.
+Blocker: Blocked by developing-today/code#1088, developing-today/code#1087. Evidence: developing-today/code#1088.
+Last activity by dezren39 at 2026-11-21T10:49:05Z (issue_comment). Evidence: developing-today/code#1090 comment.
+Next: Resolve the blocker first: developing-today/code#1088. Evidence: developing-today/code#1088.
+First workload: the ID app
+💬
+
+
+proposed
+basement cluster · Later
+issue developing-today/code#1092
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1092.
+Blocker: Blocked by developing-today/code#1088, developing-today/code#1087. Evidence: developing-today/code#1088.
+Last activity by dezren39 at 2026-11-17T06:58:11Z (issue_comment). Evidence: developing-today/code#1092 comment.
+Next: Resolve the blocker first: developing-today/code#1088. Evidence: developing-today/code#1088.
+		
+ESP32 wing
+💬
+
+
+idea
+basement cluster · Ideas
+issue developing-today/code#1093
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1093.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1093.
+Last activity by dezren39 at 2026-11-17T06:57:05Z (issue_comment). Evidence: developing-today/code#1093 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1093.
+	
+Fleet (0/25 done)			
+The fleet tool: one door for coordination, mirroring and backups
+💬
+
+
+in-progress
+Fleet · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#8990
+issue developing-today/code#8575
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8990.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8990.
+Last activity by dezren39 at 2026-11-17T13:03:11Z (issue_comment). Evidence: developing-today/code#8990 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8990.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8575.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8575.
+Last activity by dezren39 at 2026-11-17T11:24:55Z (issue_comment). Evidence: developing-today/code#8575 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#8575 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8575 in the Project.
+One fleet binary: search, queue, dispatch and proxy
+💬
+
+
+shipped
+Fleet · Now
+issue developing-today/code#5412
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#5412.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#5412.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:11:20Z (actor unknown). Evidence: developing-today/code#5412.
+Next: No action — this item is done. Evidence: developing-today/code#5412.
+Unification slices 1, 2 and 4
+💬
+
+
+shipped
+Fleet · Now
+issue developing-today/code#8579
+issue developing-today/code#8580
+issue developing-today/code#8582
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#8579.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8579.
+No comment activity in the projection; last recorded item update at 2026-11-12T07:09:09Z (actor unknown). Evidence: developing-today/code#8579.
+Next: No action — this item is done. Evidence: developing-today/code#8579.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#8580.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8580.
+Last activity by dezren39 at 2026-11-14T16:37:32Z (issue_comment). Evidence: developing-today/code#8580 comment.
+Next: No action — this item is done. Evidence: developing-today/code#8580.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#8582.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8582.
+Last activity by dezren39 at 2026-11-17T11:33:57Z (issue_comment). Evidence: developing-today/code#8582 comment.
+Next: No action — this item is done. Evidence: developing-today/code#8582.
+Unification slice 3: the verb contract v2
+💬
+
+
+in-progress
+Fleet · Now
+⚠ grist: in-progress · project: In Review
+issue developing-today/code#8581
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8581.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8581.
+Last activity by dezren39 at 2026-11-23T13:44:57Z (issue_comment). Evidence: developing-today/code#8581 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#8581 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8581 in the Project.
+Unification slice 5: a local coordination replica
+💬
+
+
+in-progress
+Fleet · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#8583
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8583.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8583.
+Last activity by dezren39 at 2026-11-23T10:10:28Z (issue_comment). Evidence: developing-today/code#8583 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8583.
+Unification slice 6: backups
+💬
+
+
+in-progress
+Fleet · Now
+issue developing-today/code#8584
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8584.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8584.
+Last activity by dezren39 at 2026-11-23T15:58:09Z (issue_comment). Evidence: developing-today/code#8584 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#8584 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#8584 in the Project.
+Queue fleet reliability
+💬
+
+
+in-progress
+Fleet · Now
+issue developing-today/code#1233
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1233.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1233.
+Last activity by dezren39 at 2026-11-22T22:16:04Z (issue_comment). Evidence: developing-today/code#1233 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#1233 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1233 in the Project.
+Every lane on the intake ladder
+💬
+
+
+in-progress
+Fleet · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#12236
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12236.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12236.
+Last activity by dezren39 at 2026-11-23T12:40:42Z (issue_comment). Evidence: developing-today/code#12236 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12236.
+Ready pull requests are merged
+💬
+
+
+in-progress
+Fleet · Now
+issue developing-today/code#12280
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12280.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12280.
+Last activity by dezren39 at 2026-11-23T02:31:56Z (issue_comment). Evidence: developing-today/code#12280 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#12280 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#12280 in the Project.
+Closure records
+💬
+
+
+in-progress
+Fleet · Now
+⚠ grist: in-progress · project: In Review
+issue developing-today/code#9221
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9221.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9221.
+Last activity by dezren39 at 2026-11-22T00:42:14Z (issue_comment). Evidence: developing-today/code#9221 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#9221 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9221 in the Project.
+Feature slices in the queue
+💬
+
+
+shipped
+Fleet · Now
+issue developing-today/code#12233
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#12233.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12233.
+Last activity by dezren39 at 2026-11-23T01:42:57Z (issue_comment). Evidence: developing-today/code#12233 comment.
+Next: No action — this item is done. Evidence: developing-today/code#12233.
+Nothing parked on the owner
+💬
+
+
+shipped
+Fleet · Now
+issue developing-today/code#12234
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#12234.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12234.
+Last activity by dezren39 at 2026-11-23T03:40:39Z (issue_comment). Evidence: developing-today/code#12234 comment.
+Next: No action — this item is done. Evidence: developing-today/code#12234.
+	
+Unification slice 7: label de-mirroring and the final reconciliation
+💬
+
+
+planned
+Fleet · Next
+issue developing-today/code#8585
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#8585.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#8585.
+Last activity by dezren39 at 2026-11-17T04:17:39Z (issue_comment). Evidence: developing-today/code#8585 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#8585.
+Queue: resume by session, claim any task, manual-only items
+💬
+
+
+planned
+Fleet · Next
+issue developing-today/code#9178
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9178.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9178.
+Last activity by dezren39 at 2026-11-23T07:47:05Z (issue_comment). Evidence: developing-today/code#9178 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#9178.
+Pool and routing intelligence
+💬
+
+
+in-progress
+Fleet · Next
+issue developing-today/code#1334
+issue developing-today/code#1340
+issue developing-today/code#1342
+issue developing-today/code#2732
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1334.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1334.
+Last activity by dezren39 at 2026-11-23T22:33:56Z (issue_comment). Evidence: developing-today/code#1334 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#1334 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1334 in the Project.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1340.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1340.
+Last activity by dezren39 at 2026-11-23T14:38:04Z (issue_comment). Evidence: developing-today/code#1340 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1340.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1342.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1342.
+Last activity by dezren39 at 2026-11-23T15:43:40Z (issue_comment). Evidence: developing-today/code#1342 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#1342 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1342 in the Project.
+Fleet expansion and placement
+💬
+
+
+in-progress
+Fleet · Next
+issue developing-today/code#2055
+issue developing-today/code#2230
+issue developing-today/code#4986
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#2055.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2055.
+Last activity by dezren39 at 2026-11-23T22:58:58Z (issue_comment). Evidence: developing-today/code#2055 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#2055 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#2055 in the Project.
+Orchestration and dispatch
+💬
+
+
+shaped
+Fleet · Next
+issue developing-today/code#12950
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#12950.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#12950.
+Last activity by dezren39 at 2026-11-24T01:41:04Z (issue_comment). Evidence: developing-today/code#12950 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#12950.
+Review loop
+💬
+
+
+in-progress
+Fleet · Next
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#2025
+issue developing-today/code#2313
+issue developing-today/code#2312
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#2025.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2025.
+Last activity by dezren39 at 2026-11-24T01:43:42Z (issue_comment). Evidence: developing-today/code#2025 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#2025.
+More machines as job nodes
+💬
+
+
+in-progress
+Fleet · Next
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#2179
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#2179.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#2179.
+Last activity by dezren39 at 2026-11-23T09:06:23Z (issue_comment). Evidence: developing-today/code#2179 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#2179.
+Connection performance
+💬
+
+
+in-progress
+Fleet · Next
+issue developing-today/code#5757
+issue developing-today/code#5756
+Repo file ↗
+Epic & issues
+Fleet CA, credentials and secrets
+💬
+
+
+shaped
+Fleet · Next
+issue developing-today/code#9155
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9155.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9155.
+Last activity by dezren39 at 2026-11-24T00:11:39Z (issue_comment). Evidence: developing-today/code#9155 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#9155 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9155 in the Project.
+	
+Content-creation throttle
+💬
+
+
+planned
+Fleet · Later
+issue developing-today/code#2227
+Repo file ↗
+Epic & issues
+Shift batching and lane handoff
+💬
+
+
+planned
+Fleet · Later
+issue developing-today/code#2140
+Repo file ↗
+Epic & issues
+The SSH recovery path in the binary
+💬
+
+
+shaped
+Fleet · Later
+issue developing-today/code#5697
+Repo file ↗
+Epic & issues
+One validated and bounded contract for what the proxy reads
+💬
+
+
+shaped
+Fleet · Later
+issue developing-today/code#6582
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#6582.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#6582.
+Last activity by dezren39 at 2026-11-23T16:42:51Z (issue_comment). Evidence: developing-today/code#6582 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#6582.
+			
+id (0/42 done)			
+Many worlds per node
+💬
+
+
+in-progress
+id · Now
+⚠ grist: in-progress · project: In Review
+issue developing-today/code#557
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#557.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#557.
+Last activity by dezren39 at 2026-11-23T00:58:54Z (issue_comment). Evidence: developing-today/code#557 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#557 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#557 in the Project.
+Delta and binary frames
+💬
+
+
+planned
+id · Now
+⚠ grist: planned · project: In Review
+issue developing-today/code#805
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#805.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#805.
+Last activity by dezren39 at 2026-11-23T14:23:38Z (issue_comment). Evidence: developing-today/code#805 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#805 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#805 in the Project.
+One end-to-end slice of the signed-record substrate
+💬
+
+
+proposed
+id · Now
+issue developing-today/code#9106
+issue developing-today/code#9112
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#9106.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9106.
+Last activity by dezren39 at 2026-11-19T03:43:56Z (issue_comment). Evidence: developing-today/code#9106 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#9106 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#9106 in the Project.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#9112.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#9112.
+Last activity by dezren39 at 2026-11-21T12:07:36Z (issue_comment). Evidence: developing-today/code#9112 comment.
+Next: No action — this item is done. Evidence: developing-today/code#9112.
+id — Path to Phase 12: trusted CI, validation, journal, cost visibility
+💬
+
+
+In progress
+id · Now
+⚠ grist: In progress · derived: Done
+issue developing-today/code#534
+Grist ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#534.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#534.
+Last activity by dezren39 at 2026-11-03T14:26:09Z (issue_comment). Evidence: developing-today/code#534 comment.
+Next: No action — this item is done. Evidence: developing-today/code#534.
+	
+Sync protocol + tags/documents hardening
+💬
+
+
+proposed
+id · Next
+issue developing-today/code#194
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#194.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#194.
+Last activity by dezren39 at 2026-11-22T01:05:34Z (issue_comment). Evidence: developing-today/code#194 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#194.
+id — Phase 12: worlds as data + provider registry (F12.1–F12.6)
+💬
+
+
+Planned
+id · Next
+⚠ grist: Planned · derived: Done
+issue developing-today/code#1061
+Grist ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1061.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1061.
+Last activity by dezren39 at 2026-11-03T14:45:34Z (issue_comment). Evidence: developing-today/code#1061 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1061.
+id — Phase 12: guest languages, ABI conformance, program upgrades (F12.7–F12.9)
+💬
+
+
+Planned
+id · Next
+⚠ grist: Planned · derived: Done
+issue developing-today/code#1064
+Grist ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1064.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1064.
+Last activity by dezren39 at 2026-11-03T14:22:29Z (issue_comment). Evidence: developing-today/code#1064 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1064.
+id — Phase 12: scale and cross-node (F12.10–F12.14)
+💬
+
+
+Planned
+id · Next
+⚠ grist: Planned · project: In Review
+issue developing-today/code#1067
+Grist ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1067.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1067.
+Last activity by dezren39 at 2026-11-24T02:28:48Z (issue_comment). Evidence: developing-today/code#1067 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#1067 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1067 in the Project.
+id — Phase 12: authoring + security hardening (F12.15–F12.18)
+💬
+
+
+Planned
+id · Next
+⚠ grist: Planned · derived: Done
+issue developing-today/code#558
+Grist ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#558.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#558.
+Last activity by dezren39 at 2026-11-17T06:52:50Z (issue_comment). Evidence: developing-today/code#558 comment.
+Next: No action — this item is done. Evidence: developing-today/code#558.
+	
+Presentation capability tiers
+💬
+
+
+planned
+id · Later
+issue developing-today/code#786
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#786.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#786.
+Last activity by dezren39 at 2026-11-23T21:00:46Z (issue_comment). Evidence: developing-today/code#786 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#786.
+Kitty keyboard protocol
+💬
+
+
+planned
+id · Later
+⚠ grist: planned · derived: Done
+issue developing-today/code#787
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#787.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#787.
+Last activity by dezren39 at 2026-11-23T12:41:19Z (issue_comment). Evidence: developing-today/code#787 comment.
+Next: No action — this item is done. Evidence: developing-today/code#787.
+Native TUI client
+💬
+
+
+idea
+id · Later
+⚠ grist: idea · project: In Review
+issue developing-today/code#1071
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1071.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1071.
+Last activity by dezren39 at 2026-11-23T20:58:31Z (issue_comment). Evidence: developing-today/code#1071 comment.
+Next: Reconcile the disagreement: Project Status “In Review” vs derived “Todo”. Evidence: developing-today/code#1071 in the Project.
+⚠ Sources disagree: the Project Status says “In Review” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1071 in the Project.
+Native GUI client
+💬
+
+
+idea
+id · Later
+issue developing-today/code#1072
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1072.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1072.
+Last activity by dezren39 at 2026-11-17T01:13:41Z (issue_comment). Evidence: developing-today/code#1072 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1072.
+id — Phase 13: client shells and capability providers
+💬
+
+
+Planned
+id · Later
+⚠ grist: Planned · derived: Done
+issue developing-today/code#785
+Grist ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#785.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#785.
+Last activity by dezren39 at 2026-11-01T16:57:32Z (issue_comment). Evidence: developing-today/code#785 comment.
+Next: No action — this item is done. Evidence: developing-today/code#785.
+id — Phase 14: hosted, federated, local-first
+💬
+
+
+Planned
+id · Later
+Grist ↗
+Epic & issues
+			
+Relay kit location
+💬
+
+
+id · Unscheduled
+issue developing-today/code#238
+Repo file ↗
+Epic & issues
+Firefox E2E isolation
+💬
+
+
+id · Unscheduled
+issue developing-today/code#229
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#229.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#229.
+Last activity by dezren39 at 2026-10-27T04:35:56Z (issue_comment). Evidence: developing-today/code#229 comment.
+Next: No action — this item is done. Evidence: developing-today/code#229.
+Explain the LogSync flakes
+💬
+
+
+id · Unscheduled
+issue developing-today/code#241
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#241.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#241.
+Last activity by dezren39 at 2026-10-28T14:23:44Z (issue_comment). Evidence: developing-today/code#241 comment.
+Next: No action — this item is done. Evidence: developing-today/code#241.
+A fast lane
+💬
+
+
+id · Unscheduled
+issue developing-today/code#551
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#551.
+Blocker: Not blocked — every recorded blocker (developing-today/code#241) is closed or merged. Evidence: developing-today/code#551.
+Last activity by dezren39 at 2026-10-27T09:08:34Z (issue_comment). Evidence: developing-today/code#551 comment.
+Next: No action — this item is done. Evidence: developing-today/code#551.
+Injected time
+💬
+
+
+id · Unscheduled
+issue developing-today/code#552
+Repo file ↗
+Epic & issues
+Per-call fuel metrics and budgets
+💬
+
+
+id · Unscheduled
+PR merged developing-today/code#247
+Repo file ↗
+Epic & issues
+Host metrics and tracing
+💬
+
+
+id · Unscheduled
+issue developing-today/code#553
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#553.
+Blocker: Not blocked — every recorded blocker (developing-today/code#227) is closed or merged. Evidence: developing-today/code#553.
+Last activity by dezren39 at 2026-10-27T18:16:48Z (issue_comment). Evidence: developing-today/code#553 comment.
+Next: No action — this item is done. Evidence: developing-today/code#553.
+Benchmarks
+💬
+
+
+id · Unscheduled
+issue developing-today/code#539
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#539.
+Blocker: Not blocked — every recorded blocker (developing-today/code#553) is closed or merged. Evidence: developing-today/code#539.
+Last activity by dezren39 at 2026-10-27T19:52:08Z (issue_comment). Evidence: developing-today/code#539 comment.
+Next: No action — this item is done. Evidence: developing-today/code#539.
+Bytes per frame
+💬
+
+
+id · Unscheduled
+issue developing-today/code#542
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#542.
+Blocker: Not blocked — every recorded blocker (developing-today/code#539) is closed or merged. Evidence: developing-today/code#542.
+Last activity by dezren39 at 2026-10-27T17:36:08Z (issue_comment). Evidence: developing-today/code#542 comment.
+Next: No action — this item is done. Evidence: developing-today/code#542.
+Split the large modules, with no behavior change
+💬
+
+
+id · Unscheduled
+issue developing-today/code#540
+Repo file ↗
+Epic & issues
+One client projection
+💬
+
+
+id · Unscheduled
+issue developing-today/code#543
+Repo file ↗
+Epic & issues
+Journal format management
+💬
+
+
+id · Unscheduled
+issue developing-today/code#227
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#227.
+Blocker: Not blocked — every recorded blocker (developing-today/code#1077) is closed or merged. Evidence: developing-today/code#227.
+Last activity by dezren39 at 2026-10-27T10:59:10Z (issue_comment). Evidence: developing-today/code#227 comment.
+Next: No action — this item is done. Evidence: developing-today/code#227.
+Error taxonomy
+💬
+
+
+id · Unscheduled
+issue developing-today/code#554
+Repo file ↗
+Epic & issues
+Cheaper Screen
+💬
+
+
+id · Unscheduled
+PR merged developing-today/code#248
+Repo file ↗
+Epic & issues
+Smaller modules
+💬
+
+
+id · Unscheduled
+issue developing-today/code#555
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#555.
+Blocker: Not blocked — every recorded blocker (developing-today/code#542) is closed or merged. Evidence: developing-today/code#555.
+Last activity by dezren39 at 2026-10-27T18:16:45Z (issue_comment). Evidence: developing-today/code#555 comment.
+Next: No action — this item is done. Evidence: developing-today/code#555.
+Replay self-check
+💬
+
+
+id · Unscheduled
+issue developing-today/code#544
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#544.
+Blocker: Not blocked — every recorded blocker (developing-today/code#541) is closed or merged. Evidence: developing-today/code#544.
+Last activity by dezren39 at 2026-10-27T18:58:29Z (issue_comment). Evidence: developing-today/code#544 comment.
+Next: No action — this item is done. Evidence: developing-today/code#544.
+A view trap must not poison the world
+💬
+
+
+id · Unscheduled
+issue developing-today/code#547
+Repo file ↗
+Epic & issues
+Pinned toolchain for checked-in artifacts
+💬
+
+
+id · Unscheduled
+issue developing-today/code#541
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#541.
+Blocker: Not blocked — every recorded blocker (developing-today/code#555) is closed or merged. Evidence: developing-today/code#541.
+Last activity by dezren39 at 2026-11-03T00:38:14Z (issue_comment). Evidence: developing-today/code#541 comment.
+Next: No action — this item is done. Evidence: developing-today/code#541.
+The shell contract
+💬
+
+
+id · Unscheduled
+issue developing-today/code#783
+Repo file ↗
+Epic & issues
+SSH as a transport for the frame protocol
+💬
+
+
+id · Unscheduled
+issue developing-today/code#784
+Repo file ↗
+Epic & issues
+SSH-over-iroh reachability
+💬
+
+
+id · Unscheduled
+issue developing-today/code#785
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#785.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#785.
+Last activity by dezren39 at 2026-11-01T16:57:32Z (issue_comment). Evidence: developing-today/code#785 comment.
+Next: No action — this item is done. Evidence: developing-today/code#785.
+Presentation capability tiers
+💬
+
+
+id · Unscheduled
+issue developing-today/code#786
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#786.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#786.
+Last activity by dezren39 at 2026-11-23T21:00:46Z (issue_comment). Evidence: developing-today/code#786 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#786.
+Kitty keyboard protocol on the raw input path
+💬
+
+
+id · Unscheduled
+issue developing-today/code#787
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#787.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#787.
+Last activity by dezren39 at 2026-11-23T12:41:19Z (issue_comment). Evidence: developing-today/code#787 comment.
+Next: No action — this item is done. Evidence: developing-today/code#787.
+Native client shells
+💬
+
+
+id · Unscheduled
+issue developing-today/code#788
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#788.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#788.
+Last activity by dezren39 at 2026-11-22T19:11:36Z (issue_comment). Evidence: developing-today/code#788 comment.
+Next: No action — this item is done. Evidence: developing-today/code#788.
+Client-side capability providers
+💬
+
+
+id · Unscheduled
+issue developing-today/code#789
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#789.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#789.
+Last activity by dezren39 at 2026-11-01T17:03:05Z (issue_comment). Evidence: developing-today/code#789 comment.
+Next: No action — this item is done. Evidence: developing-today/code#789.
+Multi-server, multi-client topology; client-only mode
+💬
+
+
+id · Unscheduled
+issue developing-today/code#790
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#790.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#790.
+Last activity by dezren39 at 2026-11-03T12:46:36Z (issue_comment). Evidence: developing-today/code#790 comment.
+Next: No action — this item is done. Evidence: developing-today/code#790.
+id — Long-term ideas: group encryption, TUI/GUI clients, Workers, Datastar
+💬
+
+
+Idea
+id · Unscheduled
+⚠ grist: Idea · derived: Done
+issue developing-today/code#1070
+Grist ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1070.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1070.
+Last activity by dezren39 at 2026-10-28T19:47:53Z (issue_comment). Evidence: developing-today/code#1070 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1070.
+
+mcpx (2/23 done)			
+mcpx — single source: consumption decision + backlog re-home
+💬
+
+
+Done
+mcpx · Now
+issue developing-today/code#308
+PR merged developing-today/code#3345
+Grist ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#308.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#308.
+Last activity by dezren39 at 2026-11-01T01:15:44Z (issue_comment). Evidence: developing-today/code#308 comment.
+Next: No action — this item is done. Evidence: developing-today/code#308.
+	
+A supervisor that owns each stdio child's pipes
+💬
+
+
+idea
+mcpx · Next
+issue developing-today/code#1384
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1384.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1384.
+Last activity by dezren39 at 2026-11-19T21:10:42Z (issue_comment). Evidence: developing-today/code#1384 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1384.
+Resume upstream sessions after a cold restart
+💬
+
+
+partial
+mcpx · Next
+issue developing-today/code#1414
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1414.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1414.
+Last activity by dezren39 at 2026-11-22T00:45:56Z (issue_comment). Evidence: developing-today/code#1414 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1414.
+Script runtime follow-ups
+💬
+
+
+proposed
+mcpx · Next
+Repo file ↗
+Epic & issues
+mcpx — supervisor, session resume, ExecIdentity
+💬
+
+
+Planned
+mcpx · Next
+Grist ↗
+Epic & issues
+mcpx — JSON Schema validation of tool input and output
+💬
+
+
+Done
+mcpx · Next
+issue developing-today/code#1951
+Grist ↗
+Epic & issues
+	
+A write policy
+💬
+
+
+proposed
+mcpx · Later
+Repo file ↗
+Epic & issues
+A bearer token for /v1 and /mcp
+💬
+
+
+proposed
+mcpx · Later
+Repo file ↗
+Epic & issues
+Principals and permissions
+💬
+
+
+idea
+mcpx · Later
+Repo file ↗
+Epic & issues
+An OAuth authorization server
+💬
+
+
+idea
+mcpx · Later
+Repo file ↗
+Epic & issues
+Front codex-connectors-mcp
+💬
+
+
+idea
+mcpx · Later
+Repo file ↗
+Epic & issues
+Packaging test and Nix modules
+💬
+
+
+proposed
+mcpx · Later
+Repo file ↗
+Epic & issues
+Choose between MCP spec revisions
+💬
+
+
+idea
+mcpx · Later
+Repo file ↗
+Epic & issues
+Tool views and composed tool sets
+💬
+
+
+idea
+mcpx · Later
+Repo file ↗
+Epic & issues
+Hooks
+💬
+
+
+idea
+mcpx · Later
+Repo file ↗
+Epic & issues
+mcpx — write policy, bearer auth, principals and permissions
+💬
+
+
+Idea
+mcpx · Later
+⚠ grist: Idea · derived: Done
+issue dezren39/nix#340
+Grist ↗
+Epic & issues
+		
+WebAssembly as a sandboxed tool source
+💬
+
+
+idea
+mcpx · Ideas
+Repo file ↗
+Epic & issues
+Roc as a script language
+💬
+
+
+idea
+mcpx · Ideas
+Repo file ↗
+Epic & issues
+Reach a daemon by identity
+💬
+
+
+idea
+mcpx · Ideas
+Repo file ↗
+Epic & issues
+A sentence in, a reviewed script out
+💬
+
+
+idea
+mcpx · Ideas
+Repo file ↗
+Epic & issues
+Embedding mcpx
+💬
+
+
+idea
+mcpx · Ideas
+Repo file ↗
+Epic & issues
+A web frontend served by the daemon
+💬
+
+
+idea
+mcpx · Ideas
+Repo file ↗
+Epic & issues
+Adapter import
+💬
+
+
+idea
+mcpx · Ideas
+Repo file ↗
+Epic & issues
+	
+NixOS flake and infra (0/7 done)				
+Name an owner for NixOS and infra work
+💬
+
+
+proposed
+NixOS flake and infra · Next
+Repo file ↗
+Epic & issues
+	
+Impermanence review
+💬
+
+
+idea
+NixOS flake and infra · Later
+Repo file ↗
+Epic & issues
+Automatic upgrades
+💬
+
+
+idea
+NixOS flake and infra · Later
+Repo file ↗
+Epic & issues
+Wireless backend
+💬
+
+
+idea
+NixOS flake and infra · Later
+Repo file ↗
+Epic & issues
+Content-addressed derivations by default
+💬
+
+
+idea
+NixOS flake and infra · Later
+Repo file ↗
+Epic & issues
+Mail service on Cloudflare Workers
+💬
+
+
+idea
+NixOS flake and infra · Later
+Repo file ↗
+Epic & issues
+Infra scripts to a documented workflow
+💬
+
+
+idea
+NixOS flake and infra · Later
+Repo file ↗
+Epic & issues
+			
+PM stack (5/32 done)	
+PM stack Phase 1 — Kaneo execution board (code repo)
+💬
+
+
+Done
+PM stack · 2026-10-24
+PR merged developing-today/code#752
+Grist ↗
+Epic & issues
+PM stack Phase 2 — ready-for-agent, Pad, roadmap table layer
+💬
+
+
+Done
+PM stack · Q4 2026
+Grist ↗
+Epic & issues
+PM stack — connect opencode, openchamber, nix as Kaneo projects
+💬
+
+
+Planned
+PM stack · Q4 2026
+Grist ↗
+Epic & issues
+	
+PM stack — projector + link registry (Turso)
+💬
+
+
+Planned
+PM stack · Q1 2027
+Grist ↗
+Epic & issues
+PM stack — aggregator UI (cross-repo WIP board + roadmap view)
+💬
+
+
+In progress
+PM stack · Q1 2027
+Grist ↗
+Epic & issues
+	
+PM stack coherence: single URL, fresh data, triage-able, hierarchical
+💬
+
+
+in-progress
+PM stack · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#1184
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1184.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1184.
+Last activity by dezren39 at 2026-11-21T12:07:41Z (issue_comment). Evidence: developing-today/code#1184 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1184.
+PM platform on Cloudflare: the core without the laptop
+💬
+
+
+in-progress
+PM stack · Now
+issue developing-today/code#13504
+Repo file ↗
+Epic & issues
+The console: the fleet's verbs from one page, behind sign-in
+💬
+
+
+shipped
+PM stack · Now
+PR merged developing-today/code#12360
+Repo file ↗
+Epic & issues
+The app served from Cloudflare, and an Android app
+💬
+
+
+shipped
+PM stack · Now
+PR merged developing-today/code#12505
+Repo file ↗
+Epic & issues
+Roadmap pages, bugs and intake
+💬
+
+
+shipped
+PM stack · Now
+PR merged developing-today/code#13038
+Repo file ↗
+Epic & issues
+Cloudflare does the core itself
+💬
+
+
+shipped
+PM stack · Now
+PR merged developing-today/code#13205
+Repo file ↗
+Epic & issues
+The app works with no connection
+💬
+
+
+shipped
+PM stack · Now
+PR merged developing-today/code#13287
+Repo file ↗
+Epic & issues
+Machines
+💬
+
+
+shipped
+PM stack · Now
+PR merged developing-today/code#13471
+Repo file ↗
+Epic & issues
+Platform: every Worker in one list
+💬
+
+
+shipped
+PM stack · Now
+PR merged developing-today/code#13487
+Repo file ↗
+Epic & issues
+The edge's own GitHub allowance
+💬
+
+
+in-progress
+PM stack · Now
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#13489
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#13489.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#13489.
+Last activity by dezren39 at 2026-11-24T02:42:01Z (issue_comment). Evidence: developing-today/code#13489 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#13489.
+Queue tasks filed, cancelled and unblocked from Cloudflare
+💬
+
+
+shaped
+PM stack · Now
+issue developing-today/code#13490
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#13490.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#13490.
+Last activity by developing-today[bot] at 2026-11-23T17:09:00Z (issue_comment). Evidence: developing-today/code#13490 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#13490 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#13490 in the Project.
+Questions, what needs you and sessions with no machine
+💬
+
+
+shaped
+PM stack · Now
+issue developing-today/code#13491
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#13491.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#13491.
+Last activity by developing-today[bot] at 2026-11-23T17:08:54Z (issue_comment). Evidence: developing-today/code#13491 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#13491 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#13491 in the Project.
+PM stack coherence - single-URL, fresh data, triage-able, hierarchical (#1184)
+💬
+
+
+In progress
+PM stack · Now
+Grist ↗
+Epic & issues
+PM stack roadmap + Grist mirror reconciliation (#1216)
+💬
+
+
+Done
+PM stack · Now
+Grist ↗
+Epic & issues
+Minimum viable label adoption for opencode, openchamber, nix (#1223)
+💬
+
+
+In progress
+PM stack · Now
+Grist ↗
+Epic & issues
+Kaneo execution board anchors - GitHub App installed and connected (#1007)
+💬
+
+
+Done
+PM stack · Now
+Grist ↗
+Epic & issues
+	
+Connect opencode, openchamber, nix as Kaneo projects
+💬
+
+
+planned
+PM stack · Next
+issue developing-today/code#1184
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1184.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1184.
+Last activity by dezren39 at 2026-11-21T12:07:41Z (issue_comment). Evidence: developing-today/code#1184 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1184.
+Projector and link registry (Turso)
+💬
+
+
+planned
+PM stack · Next
+issue developing-today/code#1184
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1184.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1184.
+Last activity by dezren39 at 2026-11-21T12:07:41Z (issue_comment). Evidence: developing-today/code#1184 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1184.
+Aggregator UI: cross-repo WIP board and roadmap view
+💬
+
+
+in-progress
+PM stack · Next
+⚠ grist: in-progress · project: Todo
+issue developing-today/code#1184
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1184.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1184.
+Last activity by dezren39 at 2026-11-21T12:07:41Z (issue_comment). Evidence: developing-today/code#1184 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1184.
+A second machine under its own key
+💬
+
+
+shaped
+PM stack · Next
+issue developing-today/code#13492
+Repo file ↗
+Epic & issues
+A roadmap file for every capability, and roadmap changes made by the platform
+💬
+
+
+in-progress
+PM stack · Next
+issue developing-today/code#13497
+Repo file ↗
+Epic & issues
+The twelve hand-deployed Workers deployed from Actions
+💬
+
+
+shaped
+PM stack · Next
+issue developing-today/code#13493
+Repo file ↗
+Epic & issues
+Platform settings applied from Actions
+💬
+
+
+proposed
+PM stack · Next
+issue developing-today/code#13495
+Repo file ↗
+Epic & issues
+Apply external Grist doc changes live (#1288)
+💬
+
+
+Done
+PM stack · Next
+Grist ↗
+Epic & issues
+	
+Live two-way sync between Grist and the roadmap files
+💬
+
+
+idea
+PM stack · Later
+issue developing-today/code#1184
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1184.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1184.
+Last activity by dezren39 at 2026-11-21T12:07:41Z (issue_comment). Evidence: developing-today/code#1184 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1184.
+The stores (Turso) seen and managed from the app
+💬
+
+
+proposed
+PM stack · Later
+issue developing-today/code#13496
+Repo file ↗
+Epic & issues
+The decision events and the queue's alert folded into the console
+💬
+
+
+proposed
+PM stack · Later
+issue developing-today/code#13503
+Repo file ↗
+Epic & issues
+			
+repo-wide CI and automation (0/5 done)			
+Queue fleet reliability
+💬
+
+
+proposed
+repo-wide CI and automation · Now
+issue developing-today/code#1233
+issue developing-today/code#1130
+issue developing-today/code#1131
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1233.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1233.
+Last activity by dezren39 at 2026-11-22T22:16:04Z (issue_comment). Evidence: developing-today/code#1233 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#1233 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1233 in the Project.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1130.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1130.
+Last activity by dezren39 at 2026-11-01T14:31:41Z (issue_comment). Evidence: developing-today/code#1130 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1130.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1131.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1131.
+Last activity by dezren39 at 2026-11-01T14:22:20Z (issue_comment). Evidence: developing-today/code#1131 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1131.
+OpenChamber session dispatch + babysitter
+💬
+
+
+proposed
+repo-wide CI and automation · Now
+issue developing-today/code#1234
+issue developing-today/code#1185
+issue developing-today/code#1187
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1234.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1234.
+Last activity by dezren39 at 2026-11-23T08:01:53Z (issue_comment). Evidence: developing-today/code#1234 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1234.
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1185.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1185.
+Last activity by dezren39 at 2026-10-28T04:57:11Z (issue_comment). Evidence: developing-today/code#1185 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1185.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1187.
+Blocker: Not blocked — every recorded blocker (developing-today/code#1189, developing-today/code#1188, developing-today/code#1185) is closed or merged. Evidence: developing-today/code#1187.
+Last activity by dezren39 at 2026-11-23T06:07:22Z (issue_comment). Evidence: developing-today/code#1187 comment.
+Next: Reconcile the disagreement: Project Status “In Progress” vs derived “Todo”. Evidence: developing-today/code#1187 in the Project.
+⚠ Sources disagree: the Project Status says “In Progress” while the rest of the dashboard derives “Todo”. Both are shown; neither is preferred. Evidence: developing-today/code#1187 in the Project.
+Pool & routing intelligence
+💬
+
+
+proposed
+repo-wide CI and automation · Now
+issue developing-today/code#1343
+issue developing-today/code#1340
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#1343.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1343.
+Last activity by dezren39 at 2026-11-03T14:14:52Z (issue_comment). Evidence: developing-today/code#1343 comment.
+Next: No action — this item is done. Evidence: developing-today/code#1343.
+Derived brief (derived from the projection — not authored)
+State: Todo — open, with no orchestration reference placing it in flight. Evidence: developing-today/code#1340.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#1340.
+Last activity by dezren39 at 2026-11-23T14:38:04Z (issue_comment). Evidence: developing-today/code#1340 comment.
+Next: Pick up or schedule: not blocked and not currently in flight. Evidence: developing-today/code#1340.
+	
+Adopt the planning folder
+💬
+
+
+in-progress
+repo-wide CI and automation · Next
+Repo file ↗
+Epic & issues
+			
+Jules does not repeat a theme
+💬
+
+
+idea
+repo-wide CI and automation · Ideas
+⚠ grist: idea · derived: Done
+issue developing-today/code#310
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#310.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#310.
+Last activity by dezren39 at 2026-10-29T14:23:10Z (issue_comment). Evidence: developing-today/code#310 comment.
+Next: No action — this item is done. Evidence: developing-today/code#310.
+	
+mcpx moves to developing-today/code (0/1 done)			
+mcpx takeover and handoff on darwin
+💬
+
+
+planned
+mcpx moves to developing-today/code · Now
+⚠ grist: planned · derived: Done
+issue developing-today/code#237
+Repo file ↗
+Epic & issues
+Derived brief (derived from the projection — not authored)
+State: Done — the linked issue/PR is closed or merged. Evidence: developing-today/code#237.
+Blocker: Not blocked — no “blocked by” edges in the projection. Evidence: developing-today/code#237.
+Last activity by dezren39 at 2026-11-22T01:05:57Z (issue_comment). Evidence: developing-today/code#237 comment.
+Next: No action — this item is done. Evidence: developing-today/code#237.
+					
+Keeping agent work safe on disk (0/2 done)			
+Uncommitted work in old worktrees
+💬
+
+
+proposed
+Keeping agent work safe on disk · Now
+Repo file ↗
+Epic & issues
+	
+Free disk space keeps dropping
+💬
+
+
+proposed
+Keeping agent work safe on disk · Next
+Repo file ↗
+Epic & issues
+				
+OpenCode and OpenChamber integration (0/2 done)			
+Keep the fork pins current
+💬
+
+
+in-progress
+OpenCode and OpenChamber integration · Now
+Repo file ↗
+Epic & issues
+	
+Finish the Datadog MCP sign-in
+💬
+
+
+proposed
+OpenCode and OpenChamber integration · Next
+Repo file ↗
+Epic & issues
+				
+The darwin system (0/3 done)							
+Window manager notes
+💬
+
+
+idea
+The darwin system · Ideas
+Repo file ↗
+Epic & issues
+Sudo with Touch ID and system defaults
+💬
+
+
+idea
+The darwin system · Ideas
+Repo file ↗
+Epic & issues
+Linux builder for nix-darwin
+💬
+
+
+idea
+The darwin system · Ideas
+Repo file ↗
+Epic & issues
+	
+CI and housekeeping (0/1 done)			
+One argument contract for the scripts
+💬
+
+
+in-progress
+CI and housekeeping · Now
+Repo file ↗
+Epic & issues
+					
+Basement cluster (0/6 done)	
+Hardware inventory + firmware/BMC audit
+💬
+
+
+In progress
+Basement cluster · Q4 2026
+⚠ grist: In progress · derived: Done
+issue dezren39/nix#502
+Grist ↗
+Epic & issues
+							
+Basement cluster — 3–5 node Talos + Cozystack via TALM
+💬
+
+
+Planned
+Basement cluster · Unscheduled
+⚠ grist: Planned · derived: Done
+issue dezren39/nix#501
+Grist ↗
+Epic & issues
+Storage tiers — HDD RAID 10, NVMe RAID 100, DRBD/LINSTOR replication
+💬
+
+
+Planned
+Basement cluster · Unscheduled
+Grist ↗
+Epic & issues
+Cluster day-one services — CNPG Postgres, cloudflared, Tailscale, NATS, RustFS, FluxCD
+💬
+
+
+Planned
+Basement cluster · Unscheduled
+Grist ↗
+Epic & issues
+Spare PCs — compile/test runners and quorum witnesses
+💬
+
+
+Idea
+Basement cluster · Unscheduled
+Grist ↗
+Epic & issues
+ESP32 wing — sensors + LoRa for the ID project
+💬
+
+
+Idea
+Basement cluster · Unscheduled
+Grist ↗
+Epic & issues
+
+Cloud program (0/1 done)	
+OCI Always Free — run the technical maximum
+💬
+
+
+Blocked
+Cloud program · Q4 2026
+issue dezren39/nix#507
+Grist ↗
+Epic & issues
+							
+Repo fleet (0/4 done)						
+Repo fleet — developing-today/code
+💬
+
+
+In progress
+Repo fleet · Ongoing
+Grist ↗
+Epic & issues
+Repo fleet — developing-today/opencode
+💬
+
+
+In progress
+Repo fleet · Ongoing
+Grist ↗
+Epic & issues
+Repo fleet — developing-today/openchamber
+💬
+
+
+In progress
+Repo fleet · Ongoing
+Grist ↗
+Epic & issues
+Repo fleet — dezren39/nix
+💬
+
+
+In progress
+Repo fleet · Ongoing
+Grist ↗
+Epic & issues
+		
+Releases
+
+No release close-out snapshots are available.
+
+Releases JSON
+
+Flow analytics
+
+Flow analytics window: no item history stored yet — no cutoffs, no charts.
+
+No groups observed in this window.
+
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870

@@ -278,6 +278,19 @@ impl LocalEvents {
         }
     }
 
+    /// Runs `op` against the store under its write lock, preserving the store error and reporting
+    /// lock poisoning through the same `anyhow` boundary as [`Self::read_store`].
+    fn write_store<T>(
+        &self,
+        op: impl FnOnce(&mut EventStore) -> Result<T, StoreError>,
+    ) -> Result<T> {
+        match self.store.write(|store| Ok(op(store))) {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(error.into()),
+            Err(_poisoned) => Err(anyhow!("the event store lock is poisoned")),
+        }
+    }
+
     /// The blob references in this node's event store, for the blob gate's index
     /// (`EventStore::document_references`).
     ///
@@ -352,7 +365,7 @@ impl LocalEvents {
     /// in that case the store is unchanged (the pass is one
     /// transaction).
     pub fn compact(&mut self, policy: &crate::event_store::CompactionPolicy) -> Result<usize> {
-        Ok(self.store.compact(policy)?)
+        self.write_store(|store| store.compact(policy))
     }
 
     /// Publishes this node's identity event if its log has none (#160, Option A).
@@ -370,7 +383,9 @@ impl LocalEvents {
     /// gives for the identity event itself.
     pub fn ensure_identity_event(&mut self) -> Result<Option<Hash>> {
         let author = self.author();
-        let chain = self.read_store(|store| store.chain(&author))?.unwrap_or_default();
+        let chain = self
+            .read_store(|store| store.chain(&author))?
+            .unwrap_or_default();
         for seq in 0..chain.next_seq {
             if let Some(event) = self.read_store(|store| store.event(&author, seq))? {
                 if is_identity_kind(&event.header.extensions.kind) {
@@ -494,7 +509,10 @@ impl LocalEvents {
     pub fn send_chat(&mut self, group: Hash, message: ChatMessage) -> Result<Hash> {
         message.check()?;
         let author = self.author();
-        if !self.read_store(|store| store.roster(&group))?.contains(&author) {
+        if !self
+            .read_store(|store| store.roster(&group))?
+            .contains(&author)
+        {
             bail!(
                 "the node's key is not a member of the channel group, so its chat write is refused at admission"
             );
@@ -534,7 +552,10 @@ impl LocalEvents {
     pub fn send_anchor(&mut self, group: Hash, anchor: ChatAnchor) -> Result<Hash> {
         anchor.check()?;
         let author = self.author();
-        if !self.read_store(|store| store.roster(&group))?.contains(&author) {
+        if !self
+            .read_store(|store| store.roster(&group))?
+            .contains(&author)
+        {
             bail!(
                 "the node's key is not a member of the channel group, so its anchor write is refused at admission"
             );
@@ -1186,7 +1207,9 @@ impl LocalEvents {
     ) -> Result<Hash> {
         let author = self.author();
         let after = self.bounded_after(required)?;
-        let chain = self.read_store(|store| store.chain(&author))?.unwrap_or_default();
+        let chain = self
+            .read_store(|store| store.chain(&author))?
+            .unwrap_or_default();
         let ext = ChainExt {
             kind: kind.to_owned(),
             group,
@@ -1697,8 +1720,16 @@ mod tests {
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, id);
         assert_eq!(visible[0].scope, TagScope::Local);
-        assert!(events.read_store(|store| store.tag_claims()).unwrap().is_empty());
-        assert_eq!(events.read_store(|store| store.sync_entries()).unwrap(), before);
+        assert!(
+            events
+                .read_store(|store| store.tag_claims())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            events.read_store(|store| store.sync_entries()).unwrap(),
+            before
+        );
         assert_eq!(events.review_tags().unwrap(), visible);
         assert_eq!(
             events.search("city", Some("Oslo")).unwrap()[0].claims,
@@ -1774,7 +1805,10 @@ mod tests {
         assert_eq!(shared[0].scope, TagScope::Shared);
         assert_ne!(shared[0].id, local_id);
         assert!(events.local.claims().is_empty());
-        assert_eq!(events.read_store(|store| store.tag_claims()).unwrap(), shared);
+        assert_eq!(
+            events.read_store(|store| store.tag_claims()).unwrap(),
+            shared
+        );
 
         assert_eq!(
             events
@@ -1785,7 +1819,12 @@ mod tests {
         let local = events.tags_on(subject).unwrap();
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].scope, TagScope::Local);
-        assert!(events.read_store(|store| store.tag_claims()).unwrap().is_empty());
+        assert!(
+            events
+                .read_store(|store| store.tag_claims())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1835,7 +1874,10 @@ mod tests {
 
         assert_eq!(count, 1);
         assert!(events.tags_on(subject).unwrap().is_empty());
-        assert_eq!(events.read_store(|store| store.sync_entries()).unwrap(), before);
+        assert_eq!(
+            events.read_store(|store| store.sync_entries()).unwrap(),
+            before
+        );
     }
 
     fn open_events() -> (tempfile::TempDir, LocalEvents) {
@@ -1895,9 +1937,10 @@ mod tests {
         assert!(matches!(ingested, Ingest::Accepted { .. }), "{ingested:?}");
         let frontier = events.frontier().unwrap();
         assert!(
-            frontier.iter().any(|head| head.author
-                == *key(9).verifying_key().as_bytes()
-                && head.event == foreign.id),
+            frontier
+                .iter()
+                .any(|head| head.author == *key(9).verifying_key().as_bytes()
+                    && head.event == foreign.id),
             "the foreign event is missing from the frontier: {frontier:?}"
         );
     }
@@ -2040,9 +2083,7 @@ mod chat_tests {
     /// A node whose store already holds the channel create, as sync would have brought it.
     fn node(dir: &Path, key: SigningKey, create: &Event, body: &[u8]) -> LocalEvents {
         let mut node = LocalEvents::open(dir, key).unwrap();
-        node.store
-            .ingest(&create.bytes, Some(body), 0)
-            .unwrap();
+        node.store.ingest(&create.bytes, Some(body), 0).unwrap();
         node
     }
 
@@ -2092,7 +2133,12 @@ mod chat_tests {
         // A non-member's write is refused at admission: nothing is signed or recorded.
         let refused = node_c.send_chat(group, ChatMessage::new("carol here", Vec::new()).unwrap());
         assert!(refused.is_err());
-        assert!(node_c.read_store(|store| store.chat_records(&group)).unwrap().is_empty());
+        assert!(
+            node_c
+                .read_store(|store| store.chat_records(&group))
+                .unwrap()
+                .is_empty()
+        );
 
         let first = node_a
             .send_chat(
@@ -2257,7 +2303,9 @@ mod chat_tests {
         let policy = crate::event_store::CompactionPolicy::default();
         assert_eq!(node.compact(&policy).unwrap(), 0);
         assert!(
-            node.store.event_by_id(&chat_ids[0]).unwrap().is_some(),
+            node.read_store(|store| store.event_by_id(&chat_ids[0]))
+                .unwrap()
+                .is_some(),
             "a chat event lost its bytes without a live-kinds declaration"
         );
 
@@ -2280,18 +2328,29 @@ mod chat_tests {
         // timeline projection needs message bodies, so it cannot
         // list compacted events; presence is the residue's promise.)
         assert!(
-            node.store.roster(&group).unwrap().contains(&author),
+            node.read_store(|store| store.roster(&group))
+                .unwrap()
+                .contains(&author),
             "the roster no longer reads through the compaction residue"
         );
         for id in &chat_ids {
             assert!(
-                node.store.validity_now(id).unwrap() == crate::event_store::Validity::Applies,
+                node.read_store(|store| store.validity_now(id)).unwrap()
+                    == crate::event_store::Validity::Applies,
                 "chat {id} changed its verdict under compaction"
             );
         }
         // Durable facts keep their bytes.
-        assert!(node.store.event_by_id(&document.id).unwrap().is_some());
-        assert!(node.store.event_by_id(&anchor).unwrap().is_some());
+        assert!(
+            node.read_store(|store| store.event_by_id(&document.id))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            node.read_store(|store| store.event_by_id(&anchor))
+                .unwrap()
+                .is_some()
+        );
 
         // The node still writes after compaction: the chain head and
         // the backlink resolution are intact.
@@ -2302,7 +2361,7 @@ mod chat_tests {
             )
             .unwrap();
         assert_ne!(after, group);
-        node.store.check_invariants().unwrap();
+        node.read_store(EventStore::check_invariants).unwrap();
 
         // The store reopens with the compaction residue intact (the
         // reopen half of criterion 8): a fresh node over the same
@@ -2312,20 +2371,22 @@ mod chat_tests {
         let reopened = LocalEvents::open(dir.path(), key(61)).unwrap();
         assert!(
             reopened
-                .store
-                .roster(&group)
+                .read_store(|store| store.roster(&group))
                 .unwrap()
                 .contains(&reopened.author()),
             "the reopened store lost the roster"
         );
         assert!(
-            reopened.store.event_by_id(&after).unwrap().is_some(),
+            reopened
+                .read_store(|store| store.event_by_id(&after))
+                .unwrap()
+                .is_some(),
             "the reopened store lost the post-compaction write"
         );
         assert!(
             !reopened.chat_timeline(group).unwrap().is_empty(),
             "the reopened store lost the surviving recent chat"
         );
-        reopened.store.check_invariants().unwrap();
+        reopened.read_store(EventStore::check_invariants).unwrap();
     }
 }

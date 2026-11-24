@@ -29,15 +29,7 @@ function rotr(x: number, n: number): number {
   return ((x >>> n) | (x << (32 - n))) >>> 0;
 }
 
-function g(
-  state: Uint32Array,
-  a: number,
-  b: number,
-  c: number,
-  d: number,
-  mx: number,
-  my: number,
-): void {
+function g(state: Uint32Array, a: number, b: number, c: number, d: number, mx: number, my: number): void {
   state[a] = (state[a] + state[b] + mx) >>> 0;
   state[d] = rotr(state[d] ^ state[a], 16);
   state[c] = (state[c] + state[d]) >>> 0;
@@ -99,8 +91,7 @@ function wordsFromBlock(block: Uint8Array, offset: number): Uint32Array {
   const words = new Uint32Array(16);
   for (let i = 0; i < 16; i++) {
     const j = offset + i * 4;
-    words[i] =
-      (block[j] | (block[j + 1] << 8) | (block[j + 2] << 16) | (block[j + 3] << 24)) >>> 0;
+    words[i] = (block[j] | (block[j + 1] << 8) | (block[j + 2] << 16) | (block[j + 3] << 24)) >>> 0;
   }
   return words;
 }
@@ -124,13 +115,10 @@ interface Output {
 }
 
 function outputChainingValue(output: Output): Uint32Array {
-  return compress(
-    output.cv,
-    wordsFromBlock(output.block, 0),
-    output.counter,
-    output.blockLen,
-    output.flags,
-  ).slice(0, 8);
+  return compress(output.cv, wordsFromBlock(output.block, 0), output.counter, output.blockLen, output.flags).slice(
+    0,
+    8,
+  );
 }
 
 function outputRootBytes(output: Output, length: number): Uint8Array {
@@ -138,13 +126,7 @@ function outputRootBytes(output: Output, length: number): Uint8Array {
   let written = 0;
   let counter = 0n;
   while (written < length) {
-    const words = compress(
-      output.cv,
-      wordsFromBlock(output.block, 0),
-      counter,
-      output.blockLen,
-      output.flags | ROOT,
-    );
+    const words = compress(output.cv, wordsFromBlock(output.block, 0), counter, output.blockLen, output.flags | ROOT);
     const block = new Uint8Array(64);
     wordsToBytes(words, block, 0, 16);
     const take = Math.min(64, length - written);

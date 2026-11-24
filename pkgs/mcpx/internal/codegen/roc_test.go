@@ -89,10 +89,9 @@ func TestRocModulePassesCompiler(t *testing.T) {
 	nss := []codegen.Namespace{{Name: "demo", Server: "demo-server", Tools: []codegen.Tool{{
 		Name: "say-hi", InputSchema: []byte(`{"type":"object","properties":{"name":{"type":"string"},"count":{"type":"integer"}}}`),
 	}}}}
-	client := codegen.RocModule(nss, "http://127.0.0.1:1", "test-session")
 	main := "app [main!] { pf: platform \"https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst\", http: \"https://github.com/roc-lang/http/releases/download/1.0.0/6ZUwqYhCS8PU9Mo6MF7oV82ET2o7KYb57CLKDq4cq4sS.tar.zst\" }\n\nimport Mcpx\n\nmain! = |_args| {\n    _ = Mcpx.demo_say_hi!({ name: \"hello\", count: 1 })\n    _ = Mcpx.demo_empty!({})\n    _ = Mcpx.demo_raw!({ payload: { nested: { flag: True, count: 1, text: \"x\" } } })\n    Ok({})\n}\n"
 	nss[0].Tools = append(nss[0].Tools, codegen.Tool{Name: "empty", InputSchema: []byte(`{"type":"object"}`)}, codegen.Tool{Name: "raw", InputSchema: []byte(`{"type":"object","required":["payload"],"properties":{"payload":{"description":"any JSON value"}}}`)})
-	client = codegen.RocModule(nss, "http://127.0.0.1:1", "test-session")
+	client := codegen.RocModule(nss, "http://127.0.0.1:1", "test-session")
 	if err := os.WriteFile(filepath.Join(dir, "Mcpx.roc"), []byte(client), 0o600); err != nil {
 		t.Fatal(err)
 	}

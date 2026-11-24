@@ -1,16 +1,16 @@
 # CNCF Landscape — Data Layer
 
-*Researched 2026-11-23. Scope: databases, storage, and streaming/messaging — the data layer of the CNCF landscape, plus the non-CNCF systems you cannot honestly discuss the category without (CockroachDB, Kafka, Redpanda, FoundationDB).*
+_Researched 2026-11-23. Scope: databases, storage, and streaming/messaging — the data layer of the CNCF landscape, plus the non-CNCF systems you cannot honestly discuss the category without (CockroachDB, Kafka, Redpanda, FoundationDB)._
 
-*Estate lens used for every "should we use it" verdict: Postgres-first today (Postgres in services, Turso/SQLite in Atlas), DRBD/LINSTOR storage under Cozystack, a small team, and a standing rule that performance claims must be benchmark-proven, never asserted. Vendor benchmark numbers are labelled as vendor numbers wherever they appear.*
+_Estate lens used for every "should we use it" verdict: Postgres-first today (Postgres in services, Turso/SQLite in Atlas), DRBD/LINSTOR storage under Cozystack, a small team, and a standing rule that performance claims must be benchmark-proven, never asserted. Vendor benchmark numbers are labelled as vendor numbers wherever they appear._
 
-*Status corrections found during research, because the landscape moves fast: **NATS graduated on 2026-11-02** (announced at KubeCon NA, 2026-11-10) — it is no longer incubating. **CloudNativePG was promoted from sandbox to incubating on 2026-11-02** — it is no longer a sandbox project. **Dragonfly graduated on 2025-10-28** — it is no longer incubating. Verdicts below use the current statuses.*
+_Status corrections found during research, because the landscape moves fast: **NATS graduated on 2026-11-02** (announced at KubeCon NA, 2026-11-10) — it is no longer incubating. **CloudNativePG was promoted from sandbox to incubating on 2026-11-02** — it is no longer a sandbox project. **Dragonfly graduated on 2025-10-28** — it is no longer incubating. Verdicts below use the current statuses._
 
 ---
 
 ## Headline verdicts
 
-- **TiKV for us: no.** It is a genuinely good system with an honest Jepsen record (see below), but it is a *storage layer for a distributed SQL database*, not a database you adopt on its own — and the SQL layer on top of it (TiDB) speaks MySQL, not Postgres. Adopting it means leaving the Postgres ecosystem to solve a scale problem we do not have.
+- **TiKV for us: no.** It is a genuinely good system with an honest Jepsen record (see below), but it is a _storage layer for a distributed SQL database_, not a database you adopt on its own — and the SQL layer on top of it (TiDB) speaks MySQL, not Postgres. Adopting it means leaving the Postgres ecosystem to solve a scale problem we do not have.
 - **Postgres answer: CloudNativePG + replicas.** For our scale, a good Postgres operator with streaming replication and read replicas covers everything on our roadmap. CloudNativePG is the operator to standardise on — and it is the one Cozystack already ships for managed Postgres.
 - **NATS: yes — the plan is right, with a shape.** Core NATS for service communication and request/reply, JetStream for durable streams and work queues, the JetStream KV store for small watched state. The thing to avoid is treating JetStream as a Kafka-class infinite log; it is not built for that and doesn't claim to be.
 - **Rook vs LINSTOR: stay on LINSTOR.** Rook means running Ceph. Ceph wins at very large scale, native object storage, and ReadWriteMany file volumes; LINSTOR/DRBD wins on latency, resource footprint, and operational simplicity at our scale — which is why Cozystack ships it. Add Rook only if a specifically Ceph-shaped need appears.
@@ -62,14 +62,14 @@ TiDB is the stateless SQL layer that sits on TiKV: it parses MySQL-protocol quer
 
 TiKV alone cannot replace CockroachDB: CockroachDB is a complete SQL database, TiKV is the storage engine half of one. The comparable stack is **TiDB + TiKV + PD** versus CockroachDB. Compared honestly:
 
-| | TiDB (+ TiKV) | CockroachDB |
-|---|---|---|
-| Wire protocol / dialect | **MySQL** | **PostgreSQL** |
-| Default isolation | Snapshot isolation (allows write skew) | **Serializable** (strongest standard level; clients must handle retry errors) |
-| Licence | **Apache 2.0**, both layers | Proprietary since v24.3 (see §3) |
-| Architecture | Separate SQL, storage, and timestamp/scheduler tiers | Symmetric nodes, storage and SQL in one binary |
-| Jepsen posture | Failed in default config (2019), fixed; anomalies still found and disclosed in new features | Failed as a beta (2016), fixed pre-1.0; guarantees serializable, *not* strict serializable (§3) |
-| Extras | HTAP via TiFlash columnar replicas | Multi-region row placement, built-in changefeeds |
+|                         | TiDB (+ TiKV)                                                                               | CockroachDB                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Wire protocol / dialect | **MySQL**                                                                                   | **PostgreSQL**                                                                                  |
+| Default isolation       | Snapshot isolation (allows write skew)                                                      | **Serializable** (strongest standard level; clients must handle retry errors)                   |
+| Licence                 | **Apache 2.0**, both layers                                                                 | Proprietary since v24.3 (see §3)                                                                |
+| Architecture            | Separate SQL, storage, and timestamp/scheduler tiers                                        | Symmetric nodes, storage and SQL in one binary                                                  |
+| Jepsen posture          | Failed in default config (2019), fixed; anomalies still found and disclosed in new features | Failed as a beta (2016), fixed pre-1.0; guarantees serializable, _not_ strict serializable (§3) |
+| Extras                  | HTAP via TiFlash columnar replicas                                                          | Multi-region row placement, built-in changefeeds                                                |
 
 ### Should we use it?
 
@@ -101,7 +101,7 @@ CockroachDB's core began under Apache 2.0, moved to the Business Source License 
 
 ### What it is
 
-Vitess is a proxy and orchestration layer that makes a fleet of MySQL instances behave like one database: it shards data across MySQL servers, routes and rewrites queries, manages failover, and presents a single MySQL-protocol endpoint. The crucial thing to understand is what it is *not*: it is not a new storage engine or a new database — the data lives in ordinary MySQL, and Vitess supplies the distribution brain that MySQL never grew natively.
+Vitess is a proxy and orchestration layer that makes a fleet of MySQL instances behave like one database: it shards data across MySQL servers, routes and rewrites queries, manages failover, and presents a single MySQL-protocol endpoint. The crucial thing to understand is what it is _not_: it is not a new storage engine or a new database — the data lives in ordinary MySQL, and Vitess supplies the distribution brain that MySQL never grew natively.
 
 ### When Vitess is the answer — and why it isn't ours
 
@@ -111,7 +111,7 @@ Vitess is the answer when you already have MySQL, your data or write volume has 
 
 ## 5–7. Running Postgres in Kubernetes: the operator field
 
-This is the section with the most direct consequence for us, because it answers Drew's question — *"or just use the Postgres operator and a bunch of read replicas?"* — with: **yes, exactly that.**
+This is the section with the most direct consequence for us, because it answers Drew's question — _"or just use the Postgres operator and a bunch of read replicas?"_ — with: **yes, exactly that.**
 
 ### 5. CloudNativePG
 
@@ -145,7 +145,7 @@ This is the section with the most direct consequence for us, because it answers 
 
 **CNCF status: Graduated** (2020). **Maturity verdict: mature and widely deployed; it is the standard way to run Ceph on Kubernetes. Apache 2.0.**
 
-**What it is.** Rook is a storage *orchestrator*: it deploys, configures, and manages storage systems — above all **Ceph** — as Kubernetes-native resources. Ceph itself is a unified distributed storage system offering block (RBD), file (CephFS), and object (RGW, S3-compatible) storage from one cluster, placing data with its CRUSH algorithm across as many nodes as you have. Rook's job is to make running that famously intricate system survivable: it handles the monitors, OSDs, managers, and their upgrades as an operator ([storage overview](https://kb.ekarisky.com/storage/)).
+**What it is.** Rook is a storage _orchestrator_: it deploys, configures, and manages storage systems — above all **Ceph** — as Kubernetes-native resources. Ceph itself is a unified distributed storage system offering block (RBD), file (CephFS), and object (RGW, S3-compatible) storage from one cluster, placing data with its CRUSH algorithm across as many nodes as you have. Rook's job is to make running that famously intricate system survivable: it handles the monitors, OSDs, managers, and their upgrades as an operator ([storage overview](https://kb.ekarisky.com/storage/)).
 
 ### 9. LINSTOR / DRBD — Cozystack's storage (not CNCF)
 
@@ -155,7 +155,7 @@ This is the section with the most direct consequence for us, because it answers 
 
 **The two philosophies, and when each wins.** Independent benchmarking by Palark (a Kubernetes consultancy; treat as informed third-party, not gospel) found LINSTOR consistently among the fastest options tested, with Ceph trailing and consuming significantly more CPU and RAM per node ([Palark storage benchmarks](https://palark.com/blog/kubernetes-storage-performance-linstor-ceph-mayastor-vitastor/)). That matches the architectures: DRBD replication of a local device is a short path; Ceph's CRUSH placement, OSD daemons, and cluster-wide coordination are a longer one. Ceph's advantages are equally real: it scales to hundreds of nodes and petabytes, offers native S3 object storage and ReadWriteMany file volumes, and rebalances data across the whole cluster automatically. LINSTOR's limits are the mirror image: replication is per-volume to fixed peers, there is no built-in object store, and very large clusters mean managing many individual replication relationships. Cozystack's design reflects exactly this trade: **DRBD + LINSTOR for block storage, with disaster recovery via stretched LINSTOR clusters across sites** ([Cozystack comparison](https://github.com/livenson/talu/blob/HEAD/docs/architecture/comparison.md)), and S3 needs met by a separate object store rather than Ceph.
 
-**Would we need Rook if we're on Cozystack with DRBD/LINSTOR? No.** Rook is not a complement to LINSTOR; it is the on-ramp to a *different storage system* (Ceph) that would replace LINSTOR's role. Running both means operating two distributed storage stacks — the single most operationally expensive category of software there is — for a small team. The legitimate triggers to revisit: a genuine need for large-scale ReadWriteMany file storage, native S3 at a scale beyond what Cozystack's object options serve, or growth to a node count where per-volume replication management becomes the bottleneck. None are currently on the roadmap.
+**Would we need Rook if we're on Cozystack with DRBD/LINSTOR? No.** Rook is not a complement to LINSTOR; it is the on-ramp to a _different storage system_ (Ceph) that would replace LINSTOR's role. Running both means operating two distributed storage stacks — the single most operationally expensive category of software there is — for a small team. The legitimate triggers to revisit: a genuine need for large-scale ReadWriteMany file storage, native S3 at a scale beyond what Cozystack's object options serve, or growth to a node count where per-volume replication management becomes the bottleneck. None are currently on the roadmap.
 
 ### 10. Longhorn — the middle path
 
@@ -220,9 +220,9 @@ Both implement the Kafka protocol with object storage as the only storage tier, 
 
 **No streaming platform named "Trimmer" exists in the CNCF landscape or elsewhere that we can find.** The overwhelmingly likely referent is **Tremor** — similar name, present on the CNCF landscape in the streaming/messaging area:
 
-**Tremor** — **CNCF status: was Sandbox (accepted 2020-09-08; [CNCF project page](https://www.cncf.io/projects/tremor/)); now archived.** A Rust event-*processing* engine from Wayfair: it sits *on top of* systems like Kafka and NATS and does filtering, routing, traffic shaping, and transformation of high-volume event streams (born in observability pipelines, replacing Logstash-style tooling), with its own scripting and query languages ([CNCF annual review](https://gitea.cncfstack.com/cncf/toc/src/commit/8542f7fdc56e06bdee76acdea679b054b1052e74/reviews/2021-tremor-annual.md)). Two things matter for Drew's question: **it is not a Kafka replacement** — it is a processor that consumes from brokers, so it never competed with NATS in the first place; and **the project is effectively dormant/archived now** ([Rawkode guide](http://rawkode.academy/technology/tremor)), so even its real niche (structured event pipelines) is better served today by tools like Vector or Benthos. If "Trimmer" was instead a misreading of **Strimzi**, that's the Kafka-on-Kubernetes operator mentioned in §12 — an operator, not a broker.
+**Tremor** — **CNCF status: was Sandbox (accepted 2020-09-08; [CNCF project page](https://www.cncf.io/projects/tremor/)); now archived.** A Rust event-_processing_ engine from Wayfair: it sits _on top of_ systems like Kafka and NATS and does filtering, routing, traffic shaping, and transformation of high-volume event streams (born in observability pipelines, replacing Logstash-style tooling), with its own scripting and query languages ([CNCF annual review](https://gitea.cncfstack.com/cncf/toc/src/commit/8542f7fdc56e06bdee76acdea679b054b1052e74/reviews/2021-tremor-annual.md)). Two things matter for Drew's question: **it is not a Kafka replacement** — it is a processor that consumes from brokers, so it never competed with NATS in the first place; and **the project is effectively dormant/archived now** ([Rawkode guide](http://rawkode.academy/technology/tremor)), so even its real niche (structured event pipelines) is better served today by tools like Vector or Benthos. If "Trimmer" was instead a misreading of **Strimzi**, that's the Kafka-on-Kubernetes operator mentioned in §12 — an operator, not a broker.
 
-*(One more name in this neighbourhood: **Pravega**, a CNCF sandbox stream-storage system from Dell, still exists on the landscape but is quiet; it stores streams as first-class objects rather than topics. Not a candidate for us over NATS, for the same operability reasons as Pulsar.)*
+_(One more name in this neighbourhood: **Pravega**, a CNCF sandbox stream-storage system from Dell, still exists on the landscape but is quiet; it stores streams as first-class objects rather than topics. Not a candidate for us over NATS, for the same operability reasons as Pulsar.)_
 
 ---
 
@@ -232,7 +232,7 @@ Both implement the Kafka protocol with object storage as the only storage tier, 
 
 **CNCF status: Graduated** (2020). **Maturity verdict: one of the most dependable pieces of software in the entire landscape. Apache 2.0.**
 
-etcd is a Raft-based, strongly consistent key-value store with watches and leases — and it is already running in our estate, because it is Kubernetes' own datastore: every cluster we have trusts it with everything. Using it *directly* makes sense for small, metadata-shaped, must-be-consistent data: coordination, configuration, service discovery, leader election — by design it targets low-volume metadata and pushes back (practically, around 8 GB) against being used as a general database ([TiKV concepts](https://tikv.org/docs/3.0/concepts/overview/?__hstc=86493575.e813f5732dc462167963922d68a481da.1744540606403.1744540606403.1744540606403.1&__hssc=86493575.1.1744540606403&__hfp=2888266827)). **Verdict: already ours via Kubernetes; reach for it directly only for small coordination data, and prefer NATS KV for application-level watched state since it's the system we're already choosing to operate.**
+etcd is a Raft-based, strongly consistent key-value store with watches and leases — and it is already running in our estate, because it is Kubernetes' own datastore: every cluster we have trusts it with everything. Using it _directly_ makes sense for small, metadata-shaped, must-be-consistent data: coordination, configuration, service discovery, leader election — by design it targets low-volume metadata and pushes back (practically, around 8 GB) against being used as a general database ([TiKV concepts](https://tikv.org/docs/3.0/concepts/overview/?__hstc=86493575.e813f5732dc462167963922d68a481da.1744540606403.1744540606403.1744540606403.1&__hssc=86493575.1.1744540606403&__hfp=2888266827)). **Verdict: already ours via Kubernetes; reach for it directly only for small coordination data, and prefer NATS KV for application-level watched state since it's the system we're already choosing to operate.**
 
 ### 19. Dragonfly — ⚠️ two projects, one name
 
@@ -244,31 +244,31 @@ The CNCF's Dragonfly is a **peer-to-peer image and file distribution system**: n
 
 **CNCF status: not CNCF** (Apple's project, Apache 2.0). **Maturity verdict: exceptionally solid engineering with a famously strict testing culture; an ingredient, not a product you deploy as "the database."**
 
-FoundationDB is a distributed transactional key-value store (the original "unbundled database" design) whose claim to fame is simulation testing: its entire codebase is built to run deterministically in simulation so failure scenarios can be tested exhaustively. Apple runs it at enormous scale for iCloud, and its real role in the ecosystem is as a *substrate* — other databases and record layers are built on it (it is the reference point TiKV is most often compared against, and JuiceFS lists FDB support as in progress alongside TiKV and etcd — [JuiceFS guide](https://juicefs.com/en/blog/usage-tips/juicefs-metadata-engine-selection-guide)). **Verdict: admire it; there is no path by which this estate operates it directly — anything we'd build on it, we'd build on Postgres or TiKV-shaped layers instead, and we've already declined those.**
+FoundationDB is a distributed transactional key-value store (the original "unbundled database" design) whose claim to fame is simulation testing: its entire codebase is built to run deterministically in simulation so failure scenarios can be tested exhaustively. Apple runs it at enormous scale for iCloud, and its real role in the ecosystem is as a _substrate_ — other databases and record layers are built on it (it is the reference point TiKV is most often compared against, and JuiceFS lists FDB support as in progress alongside TiKV and etcd — [JuiceFS guide](https://juicefs.com/en/blog/usage-tips/juicefs-metadata-engine-selection-guide)). **Verdict: admire it; there is no path by which this estate operates it directly — anything we'd build on it, we'd build on Postgres or TiKV-shaped layers instead, and we've already declined those.**
 
 ---
 
 ## Summary table
 
-| Project | CNCF status | What it is, in five words | For us |
-|---|---|---|---|
-| TiKV | Graduated | Sharded transactional KV in Rust | No — a layer, not a database |
-| TiDB | Not CNCF | Distributed SQL on TiKV | No — MySQL dialect, unneeded scale |
-| CockroachDB | Not CNCF | Distributed SQL, Postgres protocol | No — proprietary licence since 2024 |
-| Vitess | Graduated | Sharding brain for MySQL fleets | No — we're Postgres-first |
-| CloudNativePG | Incubating | Postgres operator, no Patroni | **Yes — standardise on it** |
-| Zalando operator | Not CNCF | Postgres operator, Patroni/Spilo | Credible second choice |
-| Crunchy PGO | Not CNCF | Postgres operator, pgBackRest | Watch the image licence terms |
-| Rook | Graduated | Operator that runs Ceph | No — LINSTOR already fills the role |
-| LINSTOR/DRBD | Not CNCF | Per-volume replicated block storage | **Yes — already ours via Cozystack** |
-| Longhorn | Incubating | Per-volume replicated block, K8s-native | No — same job, already filled |
-| NATS | Graduated | Messaging + streaming + KV, one binary | **Yes — as planned, JetStream included** |
-| Kafka | Not CNCF (Apache) | The high-volume replayable log | Only if a true log workload appears |
-| Redpanda | Not CNCF | Kafka protocol, C++ binary | Only as the operable way to get Kafka API |
-| Pulsar | Not CNCF (Apache) | Streaming + queuing, split storage | No — heaviest to operate |
-| Redis Streams | Not CNCF | Log inside Redis | Fine where Redis already is |
-| WarpStream/Bufstream | Not CNCF | Kafka API on object storage | No — cloud-shaped, vendor turbulence |
-| Tremor ("Trimmer"?) | Archived (was Sandbox) | Rust event *processor*, not a broker | No — dormant; never a broker rival |
-| etcd | Graduated | Raft KV for metadata/coordination | Already ours via Kubernetes |
-| Dragonfly | Graduated | P2P image/file distribution | Registry lane's topic; not data storage |
-| FoundationDB | Not CNCF | Transactional KV substrate | No — an ingredient, not a product |
+| Project              | CNCF status            | What it is, in five words               | For us                                    |
+| -------------------- | ---------------------- | --------------------------------------- | ----------------------------------------- |
+| TiKV                 | Graduated              | Sharded transactional KV in Rust        | No — a layer, not a database              |
+| TiDB                 | Not CNCF               | Distributed SQL on TiKV                 | No — MySQL dialect, unneeded scale        |
+| CockroachDB          | Not CNCF               | Distributed SQL, Postgres protocol      | No — proprietary licence since 2024       |
+| Vitess               | Graduated              | Sharding brain for MySQL fleets         | No — we're Postgres-first                 |
+| CloudNativePG        | Incubating             | Postgres operator, no Patroni           | **Yes — standardise on it**               |
+| Zalando operator     | Not CNCF               | Postgres operator, Patroni/Spilo        | Credible second choice                    |
+| Crunchy PGO          | Not CNCF               | Postgres operator, pgBackRest           | Watch the image licence terms             |
+| Rook                 | Graduated              | Operator that runs Ceph                 | No — LINSTOR already fills the role       |
+| LINSTOR/DRBD         | Not CNCF               | Per-volume replicated block storage     | **Yes — already ours via Cozystack**      |
+| Longhorn             | Incubating             | Per-volume replicated block, K8s-native | No — same job, already filled             |
+| NATS                 | Graduated              | Messaging + streaming + KV, one binary  | **Yes — as planned, JetStream included**  |
+| Kafka                | Not CNCF (Apache)      | The high-volume replayable log          | Only if a true log workload appears       |
+| Redpanda             | Not CNCF               | Kafka protocol, C++ binary              | Only as the operable way to get Kafka API |
+| Pulsar               | Not CNCF (Apache)      | Streaming + queuing, split storage      | No — heaviest to operate                  |
+| Redis Streams        | Not CNCF               | Log inside Redis                        | Fine where Redis already is               |
+| WarpStream/Bufstream | Not CNCF               | Kafka API on object storage             | No — cloud-shaped, vendor turbulence      |
+| Tremor ("Trimmer"?)  | Archived (was Sandbox) | Rust event _processor_, not a broker    | No — dormant; never a broker rival        |
+| etcd                 | Graduated              | Raft KV for metadata/coordination       | Already ours via Kubernetes               |
+| Dragonfly            | Graduated              | P2P image/file distribution             | Registry lane's topic; not data storage   |
+| FoundationDB         | Not CNCF               | Transactional KV substrate              | No — an ingredient, not a product         |

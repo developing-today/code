@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Surgical patches for the fleet book commander/bridge lane. Fails loud on any miss."""
+
 import pathlib, sys
 
 root = pathlib.Path.home() / "wt-fleet-cmdr-bridge-book" / "pkgs" / "fleet" / "book"
+
 
 def patch(path, old, new, count=1):
     text = path.read_text()
@@ -12,6 +14,7 @@ def patch(path, old, new, count=1):
         sys.exit(1)
     path.write_text(text.replace(old, new))
     print(f"OK {path.name}: {old[:50]!r} -> {new[:50]!r}")
+
 
 # --- SUMMARY.md: register the commander chapter after the proxy concepts entry
 summary = root / "SUMMARY.md"
@@ -39,7 +42,11 @@ patch(
     "a group send lands in the\n  group mailbox, which you read by passing `--groups`)",
     "a group send lands as one\n  row in each registered member's own mailbox, so an agent that joins\n  the group later never sees it)",
 )
-patch(tut, "shared usage text is the reference.", "the verb's own `--help` text is the reference.")
+patch(
+    tut,
+    "shared usage text is the reference.",
+    "the verb's own `--help` text is the reference.",
+)
 
 # --- concepts/bridge.md: append the in-flight notes section
 concepts = root / "concepts" / "bridge.md"

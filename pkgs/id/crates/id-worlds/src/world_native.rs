@@ -14,8 +14,10 @@
 //!   trap.
 //!
 //! Unlike Wasm, the guarantee is the OS sandbox, not an import-free format:
-//! native modules are admin-installed and opt-in (`--world-native`), and are
-//! never offered for peer download.
+//! native modules are admin-installed and opt-in (`--world-native`).
+//! A native module stays downloadable by join-capability holders like any
+//! active module: download is not install (install needs an admin token
+//! plus a native-enabled server), and guest code cannot invoke a download.
 
 use std::io::{Read, Write};
 use std::os::fd::OwnedFd;

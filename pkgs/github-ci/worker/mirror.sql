@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS github_mirror_issues (
   latest_agent_note_id INTEGER, latest_agent_note_url TEXT,
   author TEXT, html_url TEXT,
   gh_created_at TEXT, gh_updated_at TEXT,
+  parent_number INTEGER,
   mirrored_at TEXT NOT NULL,
   PRIMARY KEY (repo, number));
 
@@ -65,3 +66,28 @@ CREATE TABLE IF NOT EXISTS github_mirror_deleted_notes (
   comment_id INTEGER NOT NULL,
   mirrored_at TEXT NOT NULL,
   PRIMARY KEY (repo, number, comment_id));
+
+-- GitHub-side change history (#14170 Q7; design
+-- doc/2026-11-24T07-23-14Z_design_queue-metadata-history §8): one
+-- append-only row per observed change the mirror's upserts would
+-- otherwise overwrite silently — body edits (hashes only, never
+-- bodies), comment-count deltas (counts only, never comment
+-- bodies), and sub-issue parent changes (parent_number above is the
+-- projection; this table is its change log). kind is one of
+-- body_edited | comment_added | comment_removed |
+-- comment_count_changed | parent_changed (linked | unlinked |
+-- state_changed are reserved vocabulary, not written by Q7).
+-- Capture is FAIL-OPEN: a failed history write never fails the
+-- mirror upsert it describes, so history reads as "as observed"
+-- and the backfill sweep's own diff rows repair missed deliveries.
+CREATE TABLE IF NOT EXISTS github_issue_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  is_pr INTEGER NOT NULL DEFAULT 0,
+  kind TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '{}',
+  actor TEXT, gh_updated_at TEXT,
+  mirrored_at TEXT NOT NULL);
+
+CREATE INDEX IF NOT EXISTS github_issue_history_issue
+  ON github_issue_history(repo, number, id);

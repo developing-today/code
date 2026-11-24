@@ -7,7 +7,7 @@
 //! redb's own `CrashBackend` does (`src/db.rs` in redb 4.6.0). The caller must stop counting work
 //! once `cut()` is true, because the process it models is dead.
 
-use redb::StorageBackend;
+use redb::{BackendError, StorageBackend};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -232,25 +232,22 @@ fn tick(st: &mut State, kind: Kind, offset: u64, len: usize) -> bool {
 }
 
 impl StorageBackend for FaultFs {
-    fn len(&self) -> Result<u64, io::Error> {
+    fn len(&self) -> Result<u64, BackendError> {
         Ok(self.lock().live.len() as u64)
     }
 
-    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), io::Error> {
+    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), BackendError> {
         let st = self.lock();
         let start = offset as usize;
         let end = start + out.len();
         if end > st.live.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "read past end",
-            ));
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "read past end").into());
         }
         out.copy_from_slice(&st.live[start..end]);
         Ok(())
     }
 
-    fn set_len(&self, len: u64) -> Result<(), io::Error> {
+    fn set_len(&self, len: u64) -> Result<(), BackendError> {
         let mut guard = self.lock();
         let st = &mut *guard;
         if st.cut {
@@ -266,7 +263,7 @@ impl StorageBackend for FaultFs {
         Ok(())
     }
 
-    fn sync_data(&self) -> Result<(), io::Error> {
+    fn sync_data(&self) -> Result<(), BackendError> {
         let mut guard = self.lock();
         let st = &mut *guard;
         if st.cut {
@@ -289,7 +286,7 @@ impl StorageBackend for FaultFs {
         Ok(())
     }
 
-    fn write(&self, offset: u64, data: &[u8]) -> Result<(), io::Error> {
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), BackendError> {
         let mut guard = self.lock();
         let st = &mut *guard;
         if st.cut {

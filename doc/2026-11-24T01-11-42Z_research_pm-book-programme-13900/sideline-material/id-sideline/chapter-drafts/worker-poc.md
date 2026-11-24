@@ -4,13 +4,13 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/id/worker-poc/wr
 
 `id-worker-poc` is a **completed proof of concept, not a product and not a production path**. This chapter exists so the Worker is covered by its exact name — the name in its `wrangler.toml` and in the `name` field of its `package.json` — and so its result is on the record in one place. [The hosted edition](../concepts/hosted.md) and [The hosted Worker API](hosted-worker.md) already state its status in passing; what follows is the whole of it.
 
-| Item | Value |
-|---|---|
-| Worker name | `id-worker-poc` |
-| Source | `pkgs/id/worker-poc/` — entry point `src/worker.ts` |
-| Compatibility date | `2024-11-01` |
-| Tracking issue | #2271, from the #2057 design |
-| Status | Complete: every acceptance box in its README is checked, dated 2026-11-01. Nothing in the package is deployed or run outside its own tests and harnesses. |
+| Item               | Value                                                                                                                                                     |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker name        | `id-worker-poc`                                                                                                                                           |
+| Source             | `pkgs/id/worker-poc/` — entry point `src/worker.ts`                                                                                                       |
+| Compatibility date | `2024-11-01`                                                                                                                                              |
+| Tracking issue     | #2271, from the #2057 design                                                                                                                              |
+| Status             | Complete: every acceptance box in its README is checked, dated 2026-11-01. Nothing in the package is deployed or run outside its own tests and harnesses. |
 
 ## What it was for, and what it proved
 
@@ -34,20 +34,20 @@ Equality is therefore claimed on state evolution only, never on execution-budget
 
 Bindings, from `wrangler.toml`:
 
-| Binding / rule | Value |
-|---|---|
-| `WORLD` | Durable Object namespace → class `WorldObject`. Migration tag `v1-sqlite`, `new_sqlite_classes = ["WorldObject"]`. |
+| Binding / rule    | Value                                                                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WORLD`           | Durable Object namespace → class `WorldObject`. Migration tag `v1-sqlite`, `new_sqlite_classes = ["WorldObject"]`.                                                                     |
 | CompiledWasm rule | `type = "CompiledWasm"`, globs `**/*.wasm`, `fallthrough = true` — it compiles the prebuilt guest the entry point imports: the unmodified `pkgs/id/examples/roc-counter/counter.wasm`. |
 
 There are no routes, no `workers.dev` setting, no secrets, no environment variables and no other bindings in the configuration. The front-door `fetch` handler forwards every request to one `WorldObject`, selected by the `?world=` query parameter (default `default`): the object is named by that parameter's value via `idFromName`.
 
 The object's routes, from `src/worker.ts`:
 
-| Method | Path | Purpose |
-|---|---|---|
-| POST | `/step` | Apply one step. Body `{participant, event}`: `participant` must be a non-negative integer and `event` a non-empty string, validated before the guest is touched; a malformed body is `400` with an error naming that requirement. On success, `{step, view, records, snapshotHash}`. |
-| POST | `/cold-start` | Drop the in-memory guest, so the next request restores from the journal. Answers `{cold: true, journaledStep}`. |
-| GET | `/state` | `{step, view, records, snapshotHash}` for the current state; `snapshotHash` is `null` when the guest exports no snapshot. |
+| Method | Path          | Purpose                                                                                                                                                                                                                                                                              |
+| ------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| POST   | `/step`       | Apply one step. Body `{participant, event}`: `participant` must be a non-negative integer and `event` a non-empty string, validated before the guest is touched; a malformed body is `400` with an error naming that requirement. On success, `{step, view, records, snapshotHash}`. |
+| POST   | `/cold-start` | Drop the in-memory guest, so the next request restores from the journal. Answers `{cold: true, journaledStep}`.                                                                                                                                                                      |
+| GET    | `/state`      | `{step, view, records, snapshotHash}` for the current state; `snapshotHash` is `null` when the guest exports no snapshot.                                                                                                                                                            |
 
 Any other method/path combination is a plain-text `404` with body `not found` — and, by the order of the handler, an unmatched request still instantiates (or restores) the guest before answering, because only `/step` and `/cold-start` are matched before the guest is loaded.
 
@@ -57,15 +57,15 @@ All request handling is serialised through a per-object promise chain, lazy gues
 
 The object's SQLite `journal` table is the source of truth, created in the constructor:
 
-| Column | Content |
-|---|---|
-| `step` | Integer primary key. |
-| `participant` | The step's participant. |
-| `event` | The step's event text. |
-| `snapshot` | The guest snapshot bytes (BLOB) after the step. |
-| `view` | The guest view after the step, as text. |
-| `records` | The guest records after the step, as text, nullable. |
-| `snapshot_hash` | SHA-256 hex of the snapshot. |
+| Column          | Content                                              |
+| --------------- | ---------------------------------------------------- |
+| `step`          | Integer primary key.                                 |
+| `participant`   | The step's participant.                              |
+| `event`         | The step's event text.                               |
+| `snapshot`      | The guest snapshot bytes (BLOB) after the step.      |
+| `view`          | The guest view after the step, as text.              |
+| `records`       | The guest records after the step, as text, nullable. |
+| `snapshot_hash` | SHA-256 hex of the snapshot.                         |
 
 The schema is unversioned — there is no schema-version constant in this package, unlike the hosted Worker's `UserDO` (see [Data stores and schemas](data-stores.md), which also lists this journal). Restoring takes the latest row's snapshot and hands it to the guest's `plaza_restore`.
 
@@ -80,13 +80,13 @@ The hosted loader (`src/manifest.ts`) enforces the two up-front refusals, each t
 
 From the package (`package.json` scripts; Node 22 or newer for the smokes, no install needed for them):
 
-| Command | What it runs |
-|---|---|
-| `npm run smoke` | The Node smokes: `counter-smoke` (seed + three increments, per-step hashes, a guest-level cold start), `participant-clamp` (the PR #3726 clamp-not-wrap pin for participant IDs above `i32::MAX`), `post-update-failure` (a one-shot post-update view failure leaves only the successful event in the journal and in cold-start restore) and `participant-validation` (the #4074 pin: participant values the native u64 host can never produce — NaN, negative infinity, negative or fractional values — are rejected, not coerced). |
-| `npm run compare` | Regenerates nothing itself: it diffs the isolate runner's per-step lines against the native reference JSONL, which is regenerated from `pkgs/id` with `WORKER_POC_REFERENCE_OUT=worker-poc/compare/native-reference.jsonl cargo test --test worker_poc_reference -- --nocapture`. |
-| `npm run do-cold-start` | The Durable Object cold-start harness under `wrangler dev` described above. |
-| `npm run typecheck` | `tsc --noEmit`. |
-| `npm run dev` | `wrangler dev` — a local harness entry point, not a deployment. |
+| Command                 | What it runs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `npm run smoke`         | The Node smokes: `counter-smoke` (seed + three increments, per-step hashes, a guest-level cold start), `participant-clamp` (the PR #3726 clamp-not-wrap pin for participant IDs above `i32::MAX`), `post-update-failure` (a one-shot post-update view failure leaves only the successful event in the journal and in cold-start restore) and `participant-validation` (the #4074 pin: participant values the native u64 host can never produce — NaN, negative infinity, negative or fractional values — are rejected, not coerced). |
+| `npm run compare`       | Regenerates nothing itself: it diffs the isolate runner's per-step lines against the native reference JSONL, which is regenerated from `pkgs/id` with `WORKER_POC_REFERENCE_OUT=worker-poc/compare/native-reference.jsonl cargo test --test worker_poc_reference -- --nocapture`.                                                                                                                                                                                                                                                    |
+| `npm run do-cold-start` | The Durable Object cold-start harness under `wrangler dev` described above.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `npm run typecheck`     | `tsc --noEmit`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `npm run dev`           | `wrangler dev` — a local harness entry point, not a deployment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 ## Where its ideas landed, and what it is not
 

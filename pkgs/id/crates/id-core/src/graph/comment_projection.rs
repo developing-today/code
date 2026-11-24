@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::social::{SocialObject, SocialObjectKind};
 use super::term::ObjectRef;
-use super::version::{ref_order_key, VersionDag};
+use super::version::{VersionDag, ref_order_key};
 
 /// Projection-side filters over comment identities.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

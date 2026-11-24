@@ -14,6 +14,7 @@ import type { Config } from "./config.ts";
 import { OpError } from "./errors.ts";
 import { plain } from "./plain.ts";
 import { WORKERS_FILE, workersList } from "./platform.ts";
+import { timed, unread } from "./timed.ts";
 
 export interface RunResult {
   code: number;
@@ -33,6 +34,24 @@ export type Fetch = (
   headers?: { get(name: string): string | null };
 }>;
 export type Row = Record<string, string | number | null>;
+/** How much of a task's reason the Queue screen is given. One that is
+ * this long was cut here, and the screen says so. */
+export const QUEUE_WHY_CHARS = 300;
+
+/** A value as the queue's store sends it. A whole number comes as text
+ * marked as an integer (the wire carries 64 bits, and a JSON number
+ * does not): it is read as the number it is, where a number can hold
+ * it exactly. Anything else is passed on as it came. */
+function fromStore(cell: { type?: string; value?: string | number | null } | undefined): string | number | null {
+  const value = cell?.value ?? null;
+  if (cell?.type === "integer" && typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+    const n = Number(value);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  return value;
+}
+/** How long the queue store has to answer one asking, body and all. */
+export const QUEUE_ASK_MS = 20_000;
 /** Queue priorities, most urgent first (the queue's design scale). */
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90] as const;
 
@@ -246,38 +265,54 @@ export class Ops {
         { type: "close" },
       ],
     };
-    const ask = async () => {
+    type Answer = {
+      results?: {
+        type?: string;
+        response?: {
+          result?: {
+            cols: { name: string }[];
+            rows: { type?: string; value?: string | number | null }[][];
+            affected_row_count?: number;
+          };
+        };
+      }[];
+    };
+    /** One asking: the answer and its body, within the time. A queue
+     * store that never answers would otherwise hold the read for as
+     * long as it liked. (The token is fetched before the time starts:
+     * on a machine that is the fleet binary's work, not the store's.) */
+    const ask = async (): Promise<{ status: number; ok: boolean; body: Answer | null }> => {
       if (this.queueToken === null) {
         this.queueToken = (await this.must([this.cfg.fleetBin, "secrets", "get", this.cfg.queueTokenName])).trim();
       }
-      return this.fetchImpl(`${this.cfg.queueDbUrl}/v2/pipeline`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${this.queueToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const bearer = this.queueToken;
+      try {
+        return await timed(QUEUE_ASK_MS, async (signal) => {
+          const res = await this.fetchImpl(`${this.cfg.queueDbUrl}/v2/pipeline`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal,
+          });
+          if (res.ok) return { status: res.status, ok: true, body: (await res.json()) as Answer };
+          unread(res);
+          return { status: res.status, ok: false, body: null };
+        });
+      } catch (error) {
+        if ((error as Error).name === "TimeoutError") {
+          throw new OpError(502, `the queue store did not answer within ${QUEUE_ASK_MS / 1000} seconds`);
+        }
+        throw error;
+      }
     };
-    let res = await ask();
-    if (res.status === 401 || res.status === 403) {
+    let answered = await ask();
+    if (answered.status === 401 || answered.status === 403) {
       // The token was rotated: fetch it again, once.
       this.queueToken = null;
-      res = await ask();
+      answered = await ask();
     }
-    if (!res.ok) throw new OpError(502, `queue store answered http ${res.status}`);
-    const results =
-      (
-        (await res.json()) as {
-          results?: {
-            type?: string;
-            response?: {
-              result?: {
-                cols: { name: string }[];
-                rows: { value?: string | number | null }[][];
-                affected_row_count?: number;
-              };
-            };
-          }[];
-        }
-      ).results ?? [];
+    if (!answered.ok) throw new OpError(502, `queue store answered http ${answered.status}`);
+    const results = answered.body?.results ?? [];
     return statements.map((_, i) => {
       const result = results[i]?.type === "ok" ? results[i].response?.result : undefined;
       if (!result) throw new OpError(502, "queue store refused the query");
@@ -291,7 +326,7 @@ export class Ops {
       if (!/^\s*select\b/i.test(st.sql)) throw new Error("the console only reads the queue store");
     }
     return (await this.pipeline(statements)).map((result) =>
-      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, row[i]?.value ?? null]))),
+      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, fromStore(row[i])]))),
     );
   }
 
@@ -334,7 +369,7 @@ export class Ops {
     const q = typeof search === "string" ? search.trim().slice(0, 100) : "";
     const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
     return this.sql(
-      "SELECT id, status, priority, title, dedupe_key, substr(updated_at,1,16) AS updated, substr(coalesce(json_extract(progress,'$.reason'), json_extract(progress,'$.blocker'), ready_condition, ''),1,300) AS why FROM tasks WHERE queue = ? AND status = ? AND title LIKE ? ESCAPE '\\' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT ?",
+      `SELECT id, status, priority, title, dedupe_key, substr(updated_at,1,16) AS updated, substr(coalesce(json_extract(progress,'$.reason'), json_extract(progress,'$.blocker'), ready_condition, ''),1,${QUEUE_WHY_CHARS}) AS why FROM tasks WHERE queue = ? AND status = ? AND title LIKE ? ESCAPE '\\' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT ?`,
       [this.cfg.queue, status as string, like, Math.min(n, 200)],
     );
   }

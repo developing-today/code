@@ -155,3 +155,107 @@ subscription, no `reactions:read` scope — reaction capture remains
 event-starved until the workspace owner amends the app manifest and
 reinstalls. S2 deploys with the subscriptions that exist (messages
 and mentions), which is what the parallel run measures.
+
+## Decision record completion (2026-11-24)
+
+### Goals and non-goals
+
+**Goals:** reduce idle review-agent wakes by collecting Slack events
+continuously; preserve the puller's SQLite event identity and dedupe
+contract; deliver the #alignment PoC with measurable fidelity before any
+cutover; keep collection deterministic and recoverable.
+
+**Non-goals:** change review policy, prompt, cadence, or authority; replace
+the puller before the parallel-run acceptance gate; expose a public webhook;
+add an LLM to collection; or enable reaction capture before the workspace
+app's scopes and subscriptions are amended.
+
+### Alternatives considered
+
+1. **Keep the 15-minute watermark poll (do nothing):** lowest operational
+   risk and remains the fallback, but retains roughly 9.6M mostly-idle input
+   tokens/day.
+2. **Slack Events API through a Cloudflare Worker:** moves the persistent
+   process off the laptop, but needs a public endpoint, signature validation,
+   deployment/secrets management, and another durable delivery path. Not
+   selected for this local-store PoC.
+3. **Socket Mode collector on the laptop (selected):** outbound WebSocket
+   avoids a public endpoint and appends directly to the review store. It
+   depends on laptop availability and service supervision; stale-heartbeat
+   fallback to polling bounds that risk.
+
+### Interfaces, data, and security contract
+
+The collector receives Socket Mode envelopes, acknowledges each
+`events_api` envelope, filters to configured watched channel IDs, and writes
+the existing `collected_events` row shape. Natural identity is
+`(channel, ts, event_type, user_id, reaction)`; retries are idempotent. The
+review-side interface is the existing SQLite store plus a freshness
+heartbeat; the collector does not invoke the reviewer or mutate review
+decisions. `ARCHER_SLACK_DB` selects the shared store and
+`ARCHER_WATCH_CHANNELS` selects the allow-list.
+
+The app-level token is fetched by secret name at service start, not placed
+in the unit environment, command line, database, or logs. Use the least
+Slack scopes/events needed for the PoC; do not subscribe to unrelated
+channels. SQLite remains local to the laptop account with its existing file
+permissions. Reconnect/backoff handles transient transport loss; fatal
+authentication/configuration errors stop visibly rather than silently
+pretending collection is healthy. The fresh-heartbeat condition is
+mandatory before the review job may skip its poll.
+
+### Dependency-ordered slices and acceptance
+
+| Slice | Depends on | Acceptance |
+| --- | --- | --- |
+| S1: collector code, tests, launcher, and this record | — | Unit tests cover message/reaction mapping, channel filtering, envelope acknowledgement, dedupe, reconnect, and fatal auth; code writes the puller's schema. |
+| S2: laptop flake package/module and schedule registry | S1 | User service starts under systemd, reads the named token, writes the reviewer's configured DB, restarts on failure, and appears in the schedule registry. |
+| S3: review wake gate | S2 | Fresh collector heartbeat plus new rows causes delta review without a pull; stale/missing heartbeat always invokes the existing puller. |
+| S4: three-day parallel run | S2 (S3 may remain disabled) | A dated report compares the collector set with puller `seen` for the same window; zero missed Aster replies, all message/thread-reply differences explained, and no unexplained capture gap. Include uptime/restarts. |
+| S5: guarded cutover | S3 and passing S4 | Quiet-day review-agent wakes attributable to polling reach zero; puller fallback remains callable and verified. |
+
+The S1/S2 implementation and PoC evidence are documented above and in the
+linked #2137 report. S3–S5 remain gated work, not implied by this design
+record.
+
+### Rollout and rollback
+
+Roll out S2 alongside the existing poller; do not disable or reschedule the
+poller during the parallel run. Verify service health and database path,
+then collect for a complete three-day window. Enable S3 only with the
+fresh-heartbeat guard and keep the puller as fallback. S5 is a separate
+change after S4 passes. To roll back, disable the wake gate first (restoring
+poll-on-schedule), then stop/disable the collector service. Preserve the
+SQLite file and collected rows for diagnosis; do not delete or rewrite the
+store. A restart or unexplained capture gap invalidates the affected run
+window and restarts the three-day acceptance window after recovery.
+
+### Verification plan
+
+- Run `python3 -m unittest discover -s pkgs/fleet/archer-slack/collector -v`
+  and the puller tests; verify package evaluation/build on the Fleet runner
+  before changing deployment.
+- On the laptop, inspect `systemctl --user status
+  archer-slack-collector` and its journal; confirm the configured DB path,
+  a fresh heartbeat, and no token disclosure.
+- During S4, compare event identities against the puller's `seen` set over
+  identical timestamps/channels, separately account for Aster replies, and
+  record service uptime/restarts. Acceptance is the table's S4 criterion,
+  not merely a successful process start.
+- After any rebuild/restart, re-check the unit and journal; interrupted or
+  unhealthy intervals cannot count toward the three-day window.
+
+### Open questions and deciders
+
+- **When to grant `reaction_added` and `reactions:read`:** workspace/app
+  owner decides and performs the app amendment/reinstall. Until then,
+  reactions are explicitly outside measured acceptance.
+- **Whether to generalize beyond #alignment:** Drew decides after the
+  #alignment S4 report; default is no expansion until fidelity passes.
+- **Whether to proceed with S5:** the issue owner decides after reviewing
+  the S4 report; default is to retain the poller as primary if any Aster
+  reply is missed or any capture gap is unexplained.
+
+The tracking issue is [#2137](https://github.com/developing-today/code/issues/2137);
+this dated record is its design reference. No deployment or cutover is
+authorized by documenting these gates.
