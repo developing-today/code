@@ -256,8 +256,10 @@ it (the laptop's, the sign-in issuer's).
   said "not modified" after. Health counts GitHub's answers and how
   many were "not modified" (`github.answers`, `github.unchanged`,
   counted since `github.since` whichever object answered) and says how
-  many answers are kept (`github.kept`). This does not give the edge
-  an allowance of its own: when the agents use the hour up, the edge
+  many answers are kept (`github.kept`). GitHub gives its search
+  answers no tag, so ranked issues (a search) are a full answer every
+  time; they draw on the search allowance, not the hour's. This does
+  not give the edge an allowance of its own: when the agents use the hour up, the edge
   is turned away with them until it turns (#13489 has what would
   change that).
 - **The object is put away whenever it is idle.** Cloudflare takes an

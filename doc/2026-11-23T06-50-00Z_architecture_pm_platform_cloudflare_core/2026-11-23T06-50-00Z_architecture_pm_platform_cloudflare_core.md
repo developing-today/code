@@ -944,3 +944,15 @@ every request; 20 more single faults planted (the gate, the queue
 store's deadline, the clock in health, the two bounds), all failing a
 test; the real-runtime check passes with the clock said by health
 (42 checks).
+
+**Seen in service, 02:39Z.** The hourly check of its own reads ran at
+02:39:26 and all four came back good. Health then said
+`answers: 5, unchanged: 0, kept: 3`, and said the same from two
+objects that started after it (02:39:58 and 02:40:28), with `since`
+still 02:39:26: what is kept, and the count, outlive the object in
+service. Two of the five answers were not kept because GitHub gives
+its search answers no tag (checked against its API): ranked issues are
+a search, a full answer every time, drawn on the search allowance and
+not the hour's. Not yet seen: GitHub's "not modified" to the deployed
+Worker. Nothing has asked for a kept list a second time; the next
+check of its own reads is at 03:39Z.
