@@ -50,6 +50,8 @@ mod saml_registration_tests {
             serde_json::json!({"entity_id": "urn:test:sp", "acs_urls": []}),
             sp("urn:test:sp", "/acs"),
             sp("urn:test:sp", "http://sp.example/acs"),
+            sp("urn:test:sp", "http://localhost.example/acs"),
+            sp("urn:test:sp", "http://[2001:db8::1]/acs"),
             sp("urn:test:sp", "ftp://sp.example/acs"),
             sp("urn:test:sp", "https://user:password@sp.example/acs"),
             sp("urn:test:sp", "https://sp.example/acs#fragment"),
@@ -61,6 +63,13 @@ mod saml_registration_tests {
         }
         let entry = sp("urn:test:sp", "https://sp.example/acs");
         assert!(load_sps(serde_json::json!([entry, entry])).is_err());
+        for acs in [
+            "http://localhost:8080/acs",
+            "http://127.0.0.2/acs",
+            "http://[::1]/acs",
+        ] {
+            assert!(load_sps(serde_json::json!([sp("local", acs)])).is_ok());
+        }
     }
 
     #[test]
@@ -102,7 +111,22 @@ mod saml_registration_tests {
         entry["require_signed_requests"] = true.into();
         assert!(load_sps(serde_json::json!([entry])).is_err());
         entry["request_signing_certificate"] = cert.into();
-        assert!(load_sps(serde_json::json!([entry])).is_ok());
+        entry["acs_urls"] =
+            serde_json::json!(["https://sp.example/acs", "https://sp.example/alternate"]);
+        entry["released_attributes"] = serde_json::json!(["roles"]);
+        let config = load_sps(serde_json::json!([entry])).unwrap();
+        let registered = config.saml_sp("urn:test:sp").unwrap();
+        assert_eq!(registered.entity_id, "urn:test:sp");
+        assert_eq!(
+            registered.acs_urls,
+            ["https://sp.example/acs", "https://sp.example/alternate"]
+        );
+        assert_eq!(
+            registered.request_signing_certificate.as_deref(),
+            Some(cert)
+        );
+        assert_eq!(registered.released_attributes, ["roles"]);
+        assert!(registered.require_signed_requests);
         entry["request_signing_certificate"] = "-----BEGIN CERTIFICATE-----\nbogus".into();
         assert!(load_sps(serde_json::json!([entry])).is_err());
         entry["request_signing_certificate"] = cert.into();
