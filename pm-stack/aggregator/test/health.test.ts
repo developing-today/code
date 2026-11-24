@@ -755,4 +755,21 @@ describe("buildHealth version marker (#1150)", () => {
     expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "  v1  " })).toBe("v1");
     expect(resolveBuildVersion({ PM_AGG_BUILD_VERSION: "   " })).toBe("unknown");
   });
+
+  test("renderHealth shows the deployed commit and boot time, matching the view", async () => {
+    const { fetcher } = fakeFetcher(allUp);
+    const sha = "abc1234deadbeef0123456789abcdef01234567";
+    const deployed = await buildHealth(inputs({ version: sha }), { fetcher, cache: createProbeCache(), now: NOW });
+    const html = renderHealth(deployed, {} as Parameters<typeof renderHealth>[1]);
+    expect(html).toContain(`<code title="${sha}">abc1234deadb</code>`);
+    expect(html).toContain(deployed.bootAt);
+    const unmarked = await buildHealth(inputs({ version: "unknown" }), {
+      fetcher,
+      cache: createProbeCache(),
+      now: NOW,
+    });
+    const unknownHtml = renderHealth(unmarked, {} as Parameters<typeof renderHealth>[1]);
+    expect(unknownHtml).toContain("<strong>unknown</strong>");
+    expect(unknownHtml).not.toContain("<code title=\"unknown\"");
+  });
 });

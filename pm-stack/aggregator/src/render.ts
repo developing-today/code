@@ -6643,6 +6643,11 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
   const body = `<h1>Health</h1>
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
 ${degraded}${modeNote}
+<p class="muted">Deployed build: ${
+    view.version === "unknown"
+      ? `<strong>unknown</strong> — this process was not deployed with a build marker`
+      : `<code title="${esc(view.version)}">${esc(view.version.slice(0, 12))}</code> · process up since ${esc(view.bootAt)} (${esc(ageMsText(Math.max(0, Date.parse(view.generatedAt) - Date.parse(view.bootAt))))})`
+  } (the same <code>version</code> and <code>bootAt</code> <a href="/api/health">/api/health</a> serves).</p>
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
