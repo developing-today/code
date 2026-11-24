@@ -260,6 +260,23 @@ the Android app alike (which is the same site in Chrome).
   being done is told so, and asks again. And a name keeps to the side
   that first took it, Cloudflare or a machine, whichever would be
   chosen for it later.
+
+  On Android the app is the same site in Chrome, so the same worker and
+  the same outbox run there — the difference is only the page's life.
+  Swiping the app away closes the page, not the worker: the sync stays
+  registered, and Chrome wakes the worker when the network is back, so
+  an answer made offline is still sent with the app closed. There is no
+  deadline in the app: the sync stays registered until it runs, or the
+  browser says it is its last call for it, and then opening the app
+  sends what waits. The one thing the page owns is the few seconds an
+  answer waits before it is written down (the undo pause): if the app
+  is closed in that pause, the page tries to write it as it hides, and
+  if that write does not reach the outbox the answer is lost and the
+  question stays open. The `pm-console-android-offline` workflow
+  checks this every night and on demand: an emulator, the app against
+  the demo edge, aeroplane mode, an answer made offline, the app
+  swiped away, and the answer arriving exactly once when the network
+  is back.
 - **"Sent" means recorded.** An answer the platform took and did not
   record (a question that was settled in the meantime) is not counted
   as sent: it is listed under "could not be done", with why. A question
@@ -417,4 +434,8 @@ offered. See its README.
 Because it is the site, it opens with no connection and keeps what is
 done there exactly as the site does (above, "With no connection"): text
 dictated or shared into it with no signal lands in Ask, is kept when
-sent, and goes when the phone is connected again.
+sent, and goes when the phone is connected again. The Android half of
+that is checked on a device in CI, not only in a desktop browser: the
+`pm-console-android-offline` workflow starts an emulator, installs the
+built APK, and drives it against the demo edge with the network off
+and on again.
