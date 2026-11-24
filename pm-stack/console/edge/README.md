@@ -273,7 +273,14 @@ it (the laptop's, the sign-in issuer's).
   list. The list carries no time of its own (the section's stamp says
   when it was read), so one that has not changed is not written out
   again. A new thing only the owner can do is told to his devices by
-  the edge's own wake, with no machine reporting. A machine that has
+  the edge's own wake, with no machine reporting. What he does about
+  an item the edge does itself: a reply, and "done" on what needed his
+  hands. "Done" is the label taken off and then the fleet told, in
+  that order: taking a label off twice is the same as once (GitHub
+  says "Label does not exist", which is what was wanted) and saying it
+  twice is two comments, so a failure part-way is tried again from the
+  start and said once. The list is read again before the answer goes
+  back, so the item is gone from the next look. A machine that has
   not said which repositories to look in (a console from before it
   did) goes on reporting the list itself: read from no repositories it
   would be an empty list, and whole.

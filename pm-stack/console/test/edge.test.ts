@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { queueWrites } from "../edge/src/direct.ts";
+import { DIRECT_ACTIONS, queueWrites } from "../edge/src/direct.ts";
 import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
 import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
@@ -67,7 +67,7 @@ const SECTION_NAMES = [
   "more",
 ];
 
-async function setup(options: { direct?: boolean } = {}) {
+async function setup(options: { direct?: boolean; kinds?: readonly string[] } = {}) {
   const now = { t: START };
   const clock = () => now.t;
   const access = await signer("k1");
@@ -576,7 +576,18 @@ async function setup(options: { direct?: boolean } = {}) {
     const labelMatch = /^issues\/(\d+)\/labels\/(.+)$/.exec(path);
     if (method === "DELETE" && labelMatch) {
       const n = Number(labelMatch[1]);
-      ghLabels[n] = ghLabels[n].filter((l) => l !== decodeURIComponent(labelMatch[2]));
+      const label = decodeURIComponent(labelMatch[2]);
+      // One of the labels that say something waits on the owner: it is
+      // on the item where the lists above are read from. Taken off one
+      // that does not carry it, GitHub says so (its own words, read
+      // from it on 2026-11-24).
+      if ((NEEDS_LABELS as readonly string[]).includes(label)) {
+        const item = (ghNeeds["developing-today/code"] ?? []).find((i) => i.number === n);
+        if (!item?.labels.includes(label)) return fail(404, { message: "Label does not exist", status: "404" });
+        item.labels = item.labels.filter((l) => l !== label);
+        return ok([]);
+      }
+      ghLabels[n] = ghLabels[n].filter((l) => l !== label);
       return ok({});
     }
     if (method === "POST" && path === "labels") {
@@ -712,6 +723,7 @@ async function setup(options: { direct?: boolean } = {}) {
             githubToken: "gh-test",
             queueToken: "queue-test",
             fetchImpl: asThePlatformFetch(directFetch) as typeof directFetch,
+            ...(options.kinds ? { kinds: options.kinds } : {}),
           }
         : undefined,
       setAlarm: async (at) => {
@@ -836,6 +848,14 @@ async function setup(options: { direct?: boolean } = {}) {
         return { commented: a.ref };
       },
       touch: [],
+      audit: (a) => ({ ref: a.ref }),
+    },
+    "hands.done": {
+      run: async (a) => {
+        ran.push({ kind: "hands.done", args: a });
+        return { ref: a.ref, done: true };
+      },
+      touch: ["census"],
       audit: (a) => ({ ref: a.ref }),
     },
     // Something said to an agent: about nothing else, so nothing orders it.
@@ -1882,6 +1902,7 @@ describe("actions", () => {
         // What it said it can do: the kinds of action it has, and every section it reads.
         actions: [
           "ask.send",
+          "hands.done",
           "issue.comment",
           "message.send",
           "need.comment",
@@ -1913,7 +1934,7 @@ describe("actions", () => {
     // The object is put away and another starts in its place: it still knows the machine.
     w.edge.now = w.makeEdge();
     expect((await machines()).machines.map((m) => [m.name, m.actions.length, m.sections.length])).toEqual([
-      ["nixos", 9, SECTION_NAMES.length],
+      ["nixos", 10, SECTION_NAMES.length],
     ]);
     // The owner takes one back before the machine has it.
     const dropped = await w.act("held.drop", { id: kept });
@@ -3437,8 +3458,8 @@ describe("the edge does the core itself", () => {
   type World = Awaited<ReturnType<typeof setup>>;
   /** The switch is on, the tokens are there, and a machine has said
    * where things are: from its first report on, this side does the core. */
-  async function primary() {
-    const w = await setup({ direct: true });
+  async function primary(kinds?: readonly string[]) {
+    const w = await setup({ direct: true, ...(kinds ? { kinds } : {}) });
     await w.hostReads();
     await w.link.now.once();
     w.hostSaw.length = 0;
@@ -3949,6 +3970,7 @@ describe("the edge does the core itself", () => {
         "ask.close",
         "issue.comment",
         "need.comment",
+        "hands.done",
         "issue.rank",
         "task.move",
         "pr.merge",
@@ -3966,6 +3988,113 @@ describe("the edge does the core itself", () => {
     expect(turned?.actions).not.toContain("pr.merge");
     expect(turned?.actions).toContain("issue.rank");
     expect(turned?.refused).toEqual(["pr.merge"]);
+  });
+
+  // "Done" on something that needed the owner's hands is the label
+  // taken off and the fleet told. It was a machine's to do: with the
+  // laptop away it waited. The Worker does it itself now, as it does a
+  // reply (#13491). The oracle is GitHub's stand-in: what the item
+  // carries and what was said on it afterwards.
+  describe("what needed the owner's hands, marked done with no machine", () => {
+    const REF = "developing-today/code#301";
+    /** One thing only he can do, in the repository the stand-in keeps comments for. */
+    const handsItem = (w: World) => {
+      w.ghNeeds["developing-today/code"].push({
+        number: 301,
+        title: "amd will not boot",
+        labels: ["user/escalated"],
+        body: 'It needs a person.\n<!-- hands:v1 kind=physical action="Power the host on at its BMC." -->',
+      });
+      // What was read before it was there is kept for two minutes: past that.
+      w.now.t += 121_000;
+    };
+    /** The list as GitHub has it now: the first look after a start
+     * shows the copy from before and reads behind it. */
+    const hands = async (w: World) => {
+      await w.core();
+      await settle(w);
+      return (await w.core()).doc.census.hands.map((i: { ref: string }) => i.ref);
+    };
+    const said = (w: World) => (w.ghComments[301] ?? []).map((c) => c.body);
+    const onItem = (method: string, tail: RegExp) => (m: string, url: string) => m === method && tail.test(url);
+
+    test("the label is taken off and the fleet is told, by the Worker itself, and the item leaves the list at once", async () => {
+      const w = await primary();
+      handsItem(w);
+      w.net.hostUp = false;
+      w.net.edgeUp = false;
+      expect(await hands(w)).toEqual([REF]);
+      const before = w.githubCalls.length;
+      const done = await w.act("hands.done", { ref: REF, note: "the BMC is on" });
+      expect(await done.json()).toEqual({ ok: true, result: { ref: REF, done: true } });
+      // The label first, then the comment, each once.
+      expect(
+        w.githubCalls
+          .slice(before)
+          .filter((c) => c.method !== "GET")
+          .map((c) => [c.method, new URL(c.url).pathname]),
+      ).toEqual([
+        ["DELETE", "/repos/developing-today/code/issues/301/labels/user%2Fescalated"],
+        ["POST", "/repos/developing-today/code/issues/301/comments"],
+      ]);
+      expect(w.ghNeeds["developing-today/code"][0].labels).toEqual([]);
+      expect(said(w)).toHaveLength(1);
+      expect(said(w)[0]).toContain("Done by the owner");
+      expect(said(w)[0]).toContain("the BMC is on");
+      // No machine was asked, and nothing waits for one.
+      expect(w.ran.filter((r) => r.kind === "hands.done")).toEqual([]);
+      expect(w.stored.get("held") ?? []).toEqual([]);
+      // The list the app shows is read again before the answer: the
+      // item is gone from the very next look, with nothing left to settle.
+      expect((await w.core()).doc.census.hands).toEqual([]);
+    });
+
+    test("the comment fails after the label is off: it is said to have failed, no machine is given it, and trying again says it once", async () => {
+      const w = await primary();
+      handsItem(w);
+      w.ghBreaks.push(onItem("POST", /\/issues\/301\/comments$/));
+      const first = await w.act("hands.done", { ref: REF });
+      expect(first.status).toBe(502);
+      expect(w.ghNeeds["developing-today/code"][0].labels).toEqual([]);
+      expect(said(w)).toEqual([]);
+      // Something was written, so it is not a machine's to do again from the start.
+      expect(w.ran.filter((r) => r.kind === "hands.done")).toEqual([]);
+      expect(w.stored.get("held") ?? []).toEqual([]);
+      w.ghBreaks.length = 0;
+      const again = await w.act("hands.done", { ref: REF });
+      expect(await again.json()).toEqual({ ok: true, result: { ref: REF, done: true } });
+      expect(said(w)).toHaveLength(1);
+    });
+
+    test("a label an agent already took off: the fleet is still told, once", async () => {
+      const w = await primary();
+      handsItem(w);
+      w.ghNeeds["developing-today/code"][0].labels = [];
+      const done = await w.act("hands.done", { ref: REF });
+      expect(await done.json()).toEqual({ ok: true, result: { ref: REF, done: true } });
+      expect(said(w)).toHaveLength(1);
+    });
+
+    test("a token that may not write there: nothing is written, and it is a machine's to do for the hour, as a reply is", async () => {
+      const w = await primary();
+      handsItem(w);
+      w.ghRefuses.push(onItem("DELETE", /\/issues\/301\/labels\//));
+      const done = await w.act("hands.done", { ref: REF });
+      expect(done.status).toBe(200);
+      // The machine did it (the stand-in for it records what it ran).
+      expect(w.ran.filter((r) => r.kind === "hands.done")).toHaveLength(1);
+      expect(said(w)).toEqual([]);
+      const health = (await (await w.browse("/console/health", { token: null })).json()) as { refused: string[] };
+      expect(health.refused).toEqual(["hands.done"]);
+    });
+
+    test("only for an item in a repository on the list, as on a machine", async () => {
+      const w = await primary();
+      const before = w.githubCalls.length;
+      const res = await w.act("hands.done", { ref: "someone/else#1" });
+      expect(res.status).toBe(400);
+      expect(w.githubCalls.slice(before).filter((c) => c.method !== "GET")).toEqual([]);
+    });
   });
 
   /** What needs the owner, as GitHub's stand-in has it for these tests. */
@@ -6110,12 +6239,16 @@ describe("the edge does the core itself", () => {
     }
   });
 
+  // Since "done" became this side's (#13491) no kind of today's that
+  // only a machine can do is about the same thing as one done here. The
+  // rule has to hold for the next that is, so this object is told not
+  // to do "done": it stands for a kind only a machine can do.
   test("one that only a machine can do is a machine's: this side does not try it, and what comes after it about the same thing waits behind it", async () => {
-    const w = await primary();
+    const w = await primary(DIRECT_ACTIONS.filter((kind) => kind !== "hands.done"));
     w.net.hostUp = false;
     w.net.edgeUp = false;
     const ref = "developing-today/code#1";
-    // Marking a need done is the laptop's to do; a comment on it is something this side does.
+    // Marking a need done is a machine's to do here; a comment on it is something this side does.
     expect(await (await w.act("hands.done", { ref }, ID(111))).json()).toMatchObject({ held: true });
     w.now.t += 1_000;
     const asked = w.githubCalls.length;
