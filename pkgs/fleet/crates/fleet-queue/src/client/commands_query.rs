@@ -57,6 +57,7 @@ pub(super) fn cmd_meta(rest: &[String]) -> i32 {
         if args.pos(0).is_some() || args.get("json").is_some() {
             usage_error("meta", "meta keys takes no arguments");
         }
+        reject_extra_pos("meta", &args, 1);
         let resp = unwrap_ok(call("/meta", &json!({"op":"keys"})));
         print_json(resp.get("row").unwrap_or(&Value::Null));
         return 0;
