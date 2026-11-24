@@ -426,7 +426,7 @@ tests/
 - [ARCHITECTURE.md](ARCHITECTURE.md) — System architecture and design decisions
 - [WEB.md](WEB.md) — Web interface documentation
 - [web/README.md](web/README.md) — Wire protocol and frontend details
-- [docs/](docs/) — Feature documentation (chronological)
+- [docs/](docs/) — Design-record archive (symlink to the repo-root `doc/` archive)
 - [AGENTS.md](AGENTS.md) — AI agent development guidelines
 
 ### ID program
