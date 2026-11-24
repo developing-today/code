@@ -1533,18 +1533,30 @@ mod tests {
         let mut t = FakeTransport {
             daemon: daemon.clone(),
         };
-        let data = patterned_bytes(1000);
+        // More than one chunk: the first reply must be strictly larger
+        // than that chunk's end, exercising the client's replay check.
+        let data = patterned_bytes(CHUNK_SIZE + 1000);
         let sha = sha256_hex(&data);
         t.post(
             "/files/begin",
             json!({"path": "/srv/r.bin", "size": data.len(), "sha256": sha}),
         )
         .unwrap();
+        // Seed the temp with protocol-legal chunk writes, a prior attempt
+        // that never committed.
         t.post(
             "/files/write",
             json!({
                 "path": "/srv/r.bin", "sha256": sha, "offset": 0,
-                "data_b64": b64_encode(&data),
+                "data_b64": b64_encode(&data[..CHUNK_SIZE]),
+            }),
+        )
+        .unwrap();
+        t.post(
+            "/files/write",
+            json!({
+                "path": "/srv/r.bin", "sha256": sha, "offset": CHUNK_SIZE,
+                "data_b64": b64_encode(&data[CHUNK_SIZE..]),
             }),
         )
         .unwrap();
