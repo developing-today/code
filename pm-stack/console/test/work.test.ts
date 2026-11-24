@@ -6,6 +6,7 @@
 // as an exact statement, request or argument vector. The questions store
 // is a file written by the test, so "open" and "recommended" are defined
 // here and not by the code under test.
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
@@ -16,7 +17,7 @@ import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
-import { promptPacket, Work } from "../src/work.ts";
+import { BLOCKED_KINDS_SQL, promptPacket, Work } from "../src/work.ts";
 import { asThePlatformFetch } from "./support.ts";
 
 const CFG = readConfig({ HOME: "/h" });
@@ -130,6 +131,77 @@ function store(extra: Record<string, unknown> = {}) {
     ...extra,
   });
 }
+
+// Why tasks are blocked, by the kind of reason. The oracle is SQLite
+// itself (the queue's store speaks its SQL): the query is run on rows
+// like the ones seen in the live queue on 2026-11-24, where almost
+// every blocked task carried a reason of its own, a few waited for a
+// time long past, and a few named other tasks.
+describe("why tasks are blocked", () => {
+  const db = new Database(":memory:");
+  db.run(
+    "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, status TEXT, progress TEXT, ready_condition TEXT, blocked_deps TEXT)",
+  );
+  const add = (row: {
+    queue?: string;
+    status?: string;
+    progress?: string | null;
+    ready?: string | null;
+    deps?: string | null;
+  }) =>
+    db.run("INSERT INTO tasks (queue, status, progress, ready_condition, blocked_deps) VALUES (?, ?, ?, ?, ?)", [
+      row.queue ?? "q",
+      row.status ?? "blocked",
+      row.progress ?? null,
+      row.ready ?? null,
+      row.deps ?? null,
+    ]);
+  const kinds = () =>
+    Object.fromEntries(
+      (db.query(BLOCKED_KINDS_SQL).all("q") as { kind: string; n: number }[]).map((r) => [r.kind, r.n]),
+    );
+
+  test("each blocked task is counted once, under the kind of its reason", () => {
+    const past = "2020-01-01T00:00:00Z";
+    const ahead = "2999-01-01T00:00:00.171848+00:00";
+    // A reason or a blocker written on the task, each its own text.
+    add({ progress: JSON.stringify({ reason: "Real-client fixture required" }) });
+    add({ progress: JSON.stringify({ blocker: "Merged contract lacks claim selection" }) });
+    add({ progress: JSON.stringify({ reason: "another" }), ready: JSON.stringify({ kind: "time", until: past }) });
+    // Waiting for a time: passed, and still to come, in both forms the queue writes.
+    add({ ready: JSON.stringify({ kind: "time", until: past }) });
+    add({ ready: `{"kind": "time", "until": "${past}"}` });
+    add({ ready: JSON.stringify({ kind: "time", until: ahead }) });
+    // A condition that is not a time is a reason of its own.
+    add({ ready: JSON.stringify({ kind: "pr-merged", pr: 7 }) });
+    add({ ready: "when the cache is warm" });
+    // Waiting on other tasks.
+    add({ deps: "1080" });
+    add({ deps: "[1080, 1081]" });
+    // Nothing recorded, in each of the ways nothing is written.
+    add({});
+    add({ progress: "not json", ready: "", deps: "[]" });
+    add({ progress: "{}", deps: "" });
+    // Not blocked, and another queue's: not counted.
+    add({ status: "queued", progress: JSON.stringify({ reason: "x" }) });
+    add({ queue: "other", deps: "5" });
+    expect(kinds()).toEqual({ reason: 5, "time-past": 2, time: 1, tasks: 2, none: 3 });
+    const total = (
+      db.query("SELECT count(*) AS n FROM tasks WHERE queue = 'q' AND status = 'blocked'").get() as { n: number }
+    ).n;
+    expect(Object.values(kinds()).reduce((a, b) => a + b, 0)).toBe(total);
+  });
+
+  test("the board carries them, read in the same round trip as the rest", async () => {
+    const w = world({
+      rows: (st) => (st.sql === BLOCKED_KINDS_SQL ? [{ kind: "reason", n: 4 }] : []),
+    });
+    const board = await new Work(w.ops).board();
+    expect(w.sqls.length).toBe(1);
+    expect(w.sqls[0].map((st) => st.sql)).toContain(BLOCKED_KINDS_SQL);
+    expect(board.blockedKinds).toEqual([{ kind: "reason", n: 4 }]);
+  });
+});
 
 describe("what is in progress and what is next", () => {
   test("one round trip, reads only, in the queue's own order", async () => {
@@ -462,15 +534,16 @@ describe("what needs the owner's hands", () => {
     expect(s.waiting).toEqual([{ id: "p", title: "log in", ref: "gh:x/y#1", why: "" }]);
   });
 
-  test("done means a comment and the label gone, only for a repository on the list", async () => {
+  test("done means the label gone and a comment, only for a repository on the list", async () => {
     const w = world({});
     const work = new Work(w.ops);
-    await work.handsDone({ ref: "dezren39/nix#12", note: " the BMC is on " });
+    await work.handsDone({ ref: "dezren39/darwin-nix#12", note: " the BMC is on " });
+    // The label first: see the next test for why.
     expect(w.gh()).toEqual([
-      ["-X", "POST", "repos/dezren39/nix/issues/12/comments", "--input", "-"],
-      ["-X", "DELETE", "repos/dezren39/nix/issues/12/labels/user%2Fescalated"],
+      ["-X", "DELETE", "repos/dezren39/darwin-nix/issues/12/labels/user%2Fescalated"],
+      ["-X", "POST", "repos/dezren39/darwin-nix/issues/12/comments", "--input", "-"],
     ]);
-    expect(JSON.parse(w.calls[0].stdin ?? "").body).toContain("the BMC is on");
+    expect(JSON.parse(w.calls[1].stdin ?? "").body).toContain("the BMC is on");
     await work.needComment({ ref: `${REPO}#5`, text: "go on" });
     expect(w.gh()[2]).toEqual(["-X", "POST", `repos/${REPO}/issues/5/comments`, "--input", "-"]);
     const before = w.calls.length;
@@ -479,6 +552,75 @@ describe("what needs the owner's hands", () => {
     }
     await expect(work.needComment({ ref: `${REPO}#5`, text: " " })).rejects.toThrow(OpError);
     expect(w.calls.length).toBe(before);
+  });
+
+  // "Done" is two things asked of GitHub, and either may fail. Taking a
+  // label off twice is the same as once: GitHub says it is not there,
+  // which is what was wanted. Saying "done" twice is two comments. So
+  // the label goes first, and a failure part-way is tried again from
+  // the start without anything being said twice. The oracle for "not
+  // there" is GitHub's own answer to removing a label an issue does not
+  // carry: 404, "Label does not exist".
+  test("done: the label is taken off first, so that trying again after a failure says it once", async () => {
+    const comments: string[] = [];
+    let labelled = true;
+    let commentsFail = 1;
+    const w = world({
+      commands: (argv, stdin) => {
+        if (argv.includes("DELETE")) {
+          if (!labelled) return { code: 1, stderr: "gh: Label does not exist (HTTP 404)" };
+          labelled = false;
+          return "[]";
+        }
+        if (argv.includes("POST")) {
+          if (commentsFail-- > 0) return { code: 1, stderr: "gh: Server Error (HTTP 500)" };
+          comments.push(JSON.parse(stdin ?? "{}").body);
+          return '{"html_url":"https://github.com/x"}';
+        }
+        return "{}";
+      },
+    });
+    const work = new Work(w.ops);
+    // The comment fails: the label is off, and nothing was said.
+    await expect(work.handsDone({ ref: `${REPO}#7`, note: "plugged in" })).rejects.toThrow(/Server Error/);
+    expect([labelled, comments]).toEqual([false, []]);
+    // Tried again: the label is not there to take off, which is fine, and it is said once.
+    expect(await work.handsDone({ ref: `${REPO}#7`, note: "plugged in" })).toEqual({ ref: `${REPO}#7`, done: true });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain("plugged in");
+  });
+
+  test("done: a label an agent had already taken off does not stop the fleet being told", async () => {
+    const said: string[] = [];
+    const w = world({
+      commands: (argv, stdin) => {
+        if (argv.includes("DELETE")) return { code: 1, stderr: '{"message":"Label does not exist","status":"404"}' };
+        if (argv.includes("POST")) said.push(JSON.parse(stdin ?? "{}").body);
+        return "{}";
+      },
+    });
+    expect(await new Work(w.ops).handsDone({ ref: `${REPO}#7` })).toEqual({ ref: `${REPO}#7`, done: true });
+    expect(said).toHaveLength(1);
+  });
+
+  test("done: any other failure to take the label off stops it there, with nothing said", async () => {
+    for (const stderr of [
+      "gh: Not Found (HTTP 404)",
+      "gh: Resource not accessible by personal access token (HTTP 403)",
+      "gh: API rate limit exceeded (HTTP 403)",
+      "gh: Server Error (HTTP 500)",
+    ]) {
+      const said: string[] = [];
+      const w = world({
+        commands: (argv, stdin) => {
+          if (argv.includes("DELETE")) return { code: 1, stderr };
+          if (argv.includes("POST")) said.push(JSON.parse(stdin ?? "{}").body);
+          return "{}";
+        },
+      });
+      await expect(new Work(w.ops).handsDone({ ref: `${REPO}#7` })).rejects.toThrow(OpError);
+      expect([stderr, said]).toEqual([stderr, []]);
+    }
   });
 });
 

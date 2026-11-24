@@ -246,6 +246,18 @@ filters. It is the client half of the Atlas search service; the service
 itself runs on the laptop (`fleet serve search`, 127.0.0.1:18760), and
 the Cloudflare worker surface (pkgs/atlas-search/worker) forwards to it.
 
+## `orgs` — GitHub organization registry
+
+| Command | Purpose |
+| --- | --- |
+| `fleet orgs list` | List the locally stored org/App/installation snapshot as a table or JSON; supports `--app`, `--org`, and `--permission` filters. |
+| `fleet orgs sync` | Refresh the Turso registry from each configured GitHub App's own installation listing. |
+
+The registry only makes coverage claims from `GET /app/installations` authenticated
+with that App's JWT and follows every Link page. OAuth-token
+`/orgs/<org>/installations` reads are not authoritative. See
+[`orgs-registry.md`](../doc/fleet/orgs-registry.md) for configuration and schema.
+
 | Command                                             | Purpose                                                                             |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `fleet search QUERY` or `fleet search search QUERY` | Search the Atlas corpus using its filters and output modes.                         |

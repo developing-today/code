@@ -1238,3 +1238,271 @@ stays open). What a session is waiting on the owner for comes from the
 dashboard's own tiers, not from labels, and is still the laptop's.
 Whether the edge's token can see all four repositories has not been
 seen in service; if it cannot, the screen names the ones it cannot.
+
+## 2026-11-24T06:55Z Update: seen in service, and the dashboard's census put right (#14103)
+
+**Seen in service.** At 06:45:48Z the edge's hourly check of its own
+reads ran with the new read in it: `selfCheck.kinds.census` is `ok`,
+`refused` is empty, and `github.kept` went from 3 to 11, one for each of
+the eight lists. All four repositories are readable by the edge's
+token, so the list the app shows is whole.
+
+**The dashboard's census.** `pm-stack/aggregator/src/needs-drew.ts`
+asked GitHub's search for `repo:<repo> state:open label:"<label>"`,
+which GitHub answers 422 to. It now asks each repository's own list of
+open issues by label, as the edge does: the same items, on the core
+allowance, with no index to lag behind. An answer under a 200 that is
+not a list is a failed query, never an empty queue (the list has no
+"incomplete results" flag to say so itself). A test stands in for
+GitHub as it answers today, refusing the old form with a 422, and
+fails on the census as it was. The console's test that holds the two
+readings to each other now also holds them to asking for the same
+pages.
+
+**The repositories, named two ways.** The console's list of where to
+look (`needsRepos`) named two forks and a repository by names they no
+longer have. The dashboard's list was repointed when they changed (the
+two forks to another organisation on 2026-11-04, the third renamed on
+2026-11-08, #5595); the console's, written on 2026-11-22, took the old
+names. Nothing was seen to fail: all eight lists answered the edge
+under the old names, and asking git where each name leads gives the
+same commit for both of each pair, two of them pushed within hours, so
+GitHub answers the old names with the present repositories. But an item
+was `developing-today/opencode#5` in the app and
+`developing-today-forks/opencode#5` on the dashboard, and the console
+takes a reply only for an item in a repository on its list: a reply
+from the app to an item the dashboard had named would have been refused
+as "not an item on the Needs me list". Whether an answer by way of an
+old name costs a second request against the allowance was not measured.
+The console's default is the dashboard's list now, and a test holds the
+two to each other.
+
+The edge is told the list by the laptop, which is the larger fault: the
+laptop's checkout is behind main (#13833), so the edge goes on asking
+by the old names until the laptop runs this. Which repositories the
+platform looks in should be the platform's own to hold, not whatever
+the last machine to connect was running (#14163).
+
+**Not seen.** The laptop's dashboard itself: it gets this when its
+checkout follows main again (#13833).
+
+## 2026-11-24T07:20Z Plan: the platform's settings are its own (#14163)
+
+**What is so.** The Worker holds no settings of its own. Every report
+from the laptop carries the laptop console's whole configuration, and
+the Worker stores what it is sent and acts by it: who may sign in, which
+repository and queue, where the queue's store answers (which is where
+the queue's token is sent), which repositories are looked in for what
+needs the owner. So the platform runs by the environment and the
+defaults of whatever the laptop's console was started from.
+
+That is `~/git/code` on the laptop, which agents use as a working tree
+(the lanes that looked report in #13833 that it had edits nobody had
+committed on 2026-11-23, and was on a lane's branch the day after; the
+console has run `f86b52989c31`, hours of commits behind main, since).
+Two things follow. A correction to a setting that is
+merged and deployed to Cloudflare changes nothing in service until the
+laptop runs it: today's correction of the repositories' names
+(#14165) is the case in hand. And a default changed on a branch nobody
+merged is told to the Worker as readily as main's: for where the
+queue's token is sent, that is a wider door than main.
+
+**Whose each setting is.**
+
+- _The repository's_: the repository and the queue, where the queue's
+  store answers and what its token is called, the Android app's
+  package, the label that marks an instruction, and the repositories
+  looked in for what needs the owner. Nothing on the laptop sets any of
+  them; they are defaults in the console's code.
+- _The deployment's_: who may sign in (the owners, the sign-in issuers,
+  the certificate names) and the fingerprints of the Android signing
+  certificate. The script that sets the hostname up writes them into
+  the laptop console's environment, and the laptop tells them.
+- _A machine's own_: its name, whether it has a signed build to hand
+  out, what it can do. These are facts it reports, not settings.
+
+**The plan, in order.**
+
+1. _One definition, and see first._ The repository's settings are
+   written once (`pm-stack/console/src/settings.ts`), and both the
+   console and the Worker carry them. The Worker says in its health
+   answer in which of them the machine told it otherwise, by name and
+   never by value (`machineSettingsDiffer`). It still acts by what it
+   was told. What that shows in service decides step 3: the console
+   that tells them is behind main, and whether any of them was set by
+   hand on the laptop cannot be known from here any other way.
+2. _The last action about these repositories that only a machine does._
+   "Done" on something that needed the owner's hands is a comment and a
+   label taken off, and is sent to the machine, which takes it only for
+   a repository on its own list. Once the Worker goes by its own list a
+   machine on another would refuse an item the app shows. The Worker
+   does it itself, as it does a reply.
+3. _The switch._ The Worker acts by the repository's settings, as its
+   own deploy carries them. What a machine tells for them is compared
+   and shown (Machines, with both values, to the owner signed in) and
+   is not taken. Where the queue's token is sent is then decided by
+   main alone.
+4. _With #13495._ The deployment's settings are applied from Actions,
+   and a machine's report stops changing who may sign in. Not before:
+   the script on the laptop is the only thing that sets sign-in up
+   today, and a Worker that stopped listening to it would keep the old
+   sign-in the next time it is set up again, and lock the owner out.
+5. _Settings changed from the app._ Which repositories are looked in is
+   the first: kept at the edge, told to machines. After 3.
+
+**Kept true on the way.** Sign-in never opens wider: steps 1 to 3 do
+not touch who may sign in or how it is checked. No value of any
+setting is said to anyone not signed in.
+
+## 2026-11-24T07:35Z Update: what the Worker says in service, and the list of repositories set apart (#14163)
+
+**Seen in service.** Deployed as `e053b2753c3b`, the Worker says
+`machineSettingsDiffer: ["needsRepos"]`. The laptop tells the
+repository, the queue, where its store answers, its token's name, the
+Android package and the instruction label exactly as main has them:
+none of them is set by hand on the laptop. So the Worker going by its
+own for those six changes nothing it does today.
+
+**The list of repositories is not like the other six.** A machine takes
+a reply, or "done", only for an item in a repository on its own list
+(`Work.ref`). The Worker does a reply itself, but leaves it to a
+machine when its own token is turned away, and "done" is a machine's.
+Whether the Worker's token may write in the other three repositories
+cannot be known from here: it reads them, which anyone may. If the
+Worker read by main's list while the laptop still had the old one, the
+app would show `dezren39/darwin-nix#12`, and a reply left to the laptop
+would be refused as not on its list. A reply that works today would
+fail until the laptop ran main. So the plan above is changed in two
+places:
+
+- Step 3 is for the six. For the list, the Worker goes on by the
+  machine's while a machine tells one. It says that the list differs,
+  and the Machines screen says which list is gone by and why.
+- The list becomes the platform's own together with what makes that
+  safe: a console that takes the platform's list from the Worker's
+  answer to its report (step 5 needs that anyway), or an action sent
+  only to a machine that lists the repository (#13492). Until then the
+  correction in #14165 takes effect when the laptop runs main (#13833).
+
+Step 2, "done" at the edge, no longer has to come first. It is still
+worth doing for itself (#13491).
+
+## 2026-11-24T07:45Z Update: the Worker goes by its own for the six (#14163)
+
+**Done.** What a machine tells is kept as it told it (`cfg` in the
+Worker's store, as before). What the Worker goes by is worked out from
+it: the repository, the queue, where the queue's store answers and what
+its token is called, the Android package and the instruction label are
+the ones its own bundle carries (`goesBy` in `src/settings.ts`); who
+may sign in and the list of repositories are the machine's. So those
+six change with a merge and a deploy and with nothing else, and where
+the queue's token is sent is no longer anything a machine's report can
+move.
+
+Two things follow from the Worker knowing where things are by itself.
+It does the core as soon as a machine has said who may sign in, whether
+or not that machine's console is new enough to say where the queue is
+(before, such a console left the Worker serving reports and doing
+nothing). And it still does nothing before any machine has said who
+may sign in: that it cannot know.
+
+**Said to the owner.** The Machines screen says, for a machine that
+runs with other settings, each one with what the machine says, what
+main says, and which of the two Cloudflare goes by; and it says when a
+machine and Cloudflare are on different commits (the half of #13833
+that is about saying it). The values are shown only signed in; the
+health answer goes on saying names only.
+
+**Checked.** In the real Worker runtime the stand-in host now tells
+others than main's for all six, throughout: every read and action in
+the run has to be by main's, and none of what reached the stand-ins for
+GitHub and the queue store may name anything the host told. With
+`goesBy` made to pass on what it was told, that check fails (5 of 21
+calls named the host's). Under bun, 26 faults planted one at a time
+were each caught.
+
+**Not seen.** Nothing in service changes by this today: the laptop
+tells those six as main has them. What will be seen is the Machines
+screen saying that the laptop's list of repositories is not main's,
+and that it is on other code.
+
+## 2026-11-24T08:10Z Update: "done" on what needed the owner's hands, at the edge (#13491)
+
+**Done.** "I did it" on something only the owner could do was a
+machine's: with the laptop away it waited. The Worker does it itself
+now, as it does a reply. It is two things asked of GitHub, and the
+order was changed for both sides: the label is taken off first, then
+the fleet is told. Taking a label off twice is the same as once
+(GitHub answers "Label does not exist", read from GitHub itself on
+2026-11-24), and saying "done" twice is two comments. So a failure
+part-way is tried again from the start, by the owner or by whoever
+holds the action for him, and it is said once. Any other failure to
+take the label off stops it there with nothing said. The list of what
+needs the owner is read again before the answer goes back.
+
+**A rule with no kind of today's to apply to.** What comes after
+something only a machine can do, about the same thing, waits behind
+it. "Done" was the one kind of that sort that shares what it is about
+with something the Worker does (a reply). The rule is kept for the
+next such kind, and its test stands one in by telling the Worker under
+test not to do "done" (`direct.kinds`).
+
+**Found on the way.** The app had no words for the Worker being turned
+away for reading what needs the owner: it would have shown
+`read.census`. A test now holds the app's words to the Worker's own
+lists of what it does and reads.
+
+**Checked.** In the real Worker runtime: the label off, then the
+comment, each with the Worker's token and once, no machine asked, and
+the item gone from the next look. Nine faults planted one at a time
+under bun, each caught.
+
+## 2026-11-24T08:25Z Correction: the dashboard's census was not failing in service (#14103)
+
+The section of 06:55Z says the dashboard's census "asked GitHub's
+search for `repo:<repo> state:open label:"<label>"`, which GitHub
+answers 422 to". That was read from what GitHub answered the token of
+the session that wrote it, and never checked against the dashboard that
+runs. Checked on the machine that runs it (`amd`, 08:10Z):
+
+- `GET http://127.0.0.1:4870/api/needs-drew.json`: `complete: true`,
+  eight of eight sources good, 54 items, fetched a minute before.
+- The search in the old form, asked with the fleet's identity:
+  `total_count 13`. The repository's own list: the same 13.
+
+So the 422 is what GitHub gives some tokens (a GitHub App's) and not
+the one the dashboard runs with. Nothing the owner saw was broken, and
+nothing was fixed for him by #14165. What stands of it: the census
+reads the same items from the list, on the core allowance, whichever
+kind of token it is given; and the console's list of repositories is
+the dashboard's. The issue's title, its priority and the comments in
+the code that said "every query failed" are corrected.
+
+**What it shows about checking.** A claim about what is in service was
+made from outside the service. The machine can be asked now (below),
+and a claim of that kind is made from its answer.
+
+## 2026-11-24T08:30Z Update: the live pages, looked at on the machine
+
+The console at main, started on the machine beside the one in service
+(its own port, its own empty state, no report to the edge), read by a
+headless browser at a phone's width. What was wrong, and what was done:
+
+- **"394 need you"** on the first screen, and "99+" on the tab: 347 of
+  them were questions the fleet had put with an answer it recommends.
+  What leads now is what only the owner can do (29); the tab's count
+  adds the reviews asked of him. The Needs screen opens on that list,
+  and the questions have one button that takes every recommendation.
+- **"Why 272 tasks are blocked"** stood above six lines that added up
+  to fifteen: almost every blocked task carries a reason of its own, so
+  the commonest six said nothing of the rest. The board now counts them
+  by the kind of reason (one written on the task, a time waited for and
+  whether it has passed, other tasks, none), which adds up to all of
+  them. The query is run on a real SQLite in its test.
+- **A task being worked on could not be steered from its card.** It has
+  "Comment" (on its issue, which Cloudflare posts itself) and "Message
+  its agent".
+- **"failed · failed"** on a failed unit: said once.
+- The console in service on the machine runs from `~/git/code`, which
+  was on a lane's branch: the app it served was that branch's, and its
+  code was seven hours behind main (#13833). Not fixed by this.
