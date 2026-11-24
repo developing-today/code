@@ -764,7 +764,18 @@ describe("operations", () => {
 
   test("the directory merges credential state in, and a revocation shows on the next read", async () => {
     // The bridge's answers, as they stand: felix's credential live.
-    let credentialState = [
+    // The row shape mirrors what the bridge returns: revoked_at starts
+    // null and carries a timestamp after revocation (#12521).
+    let credentialState: {
+      agent: string;
+      state: string;
+      scopes: string[];
+      addr: null;
+      credentials: number;
+      live: number;
+      created: string;
+      revoked_at: string | null;
+    }[] = [
       { agent: "felix", state: "active", scopes: ["inbox", "send"], addr: null, credentials: 1, live: 1, created: "2026-11-24T00:00:00Z", revoked_at: null },
     ];
     const r = recorder((argv) => {
@@ -785,7 +796,13 @@ describe("operations", () => {
       name: string;
       presence: string;
       last_seen: string | null;
-      credential: { state: string; scopes: string[] } | null;
+      credential: {
+        state: string;
+        scopes: string[];
+        credentials: number | null;
+        created: string | null;
+        revoked_at: string | null;
+      } | null;
     }[];
     const felix = before.find((a) => a.name === "felix");
     expect(felix?.credential).toEqual({
