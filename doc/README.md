@@ -209,6 +209,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [PM book programme — research record](2026-11-24T01-11-42Z_research_pm-book-programme-13900/2026-11-24T01-11-42Z_research_pm-book-programme-13900.md) — The Project Management book programme's gathered material: coverage ledger, Turso estate list, surveys, LLM evidence pack, sideline deposits, Space content pack (#13900).
 - [OpenCode research — usage surfaces and the event system](2026-11-24T02-09-40Z_research_opencode-research/2026-11-24T02-09-40Z_research_opencode-research.md) — the 2026-10-20 OpenCode research notes: OpenAI usage-surface interactions (Codex, Chat, Work, API, Dots, Astra, Ultrafast) and the OpenCode event system (tracking #13877).
 - [Iroh investigation research corpus](2026-11-24T02-11-50Z_research_iroh-investigation/2026-11-24T02-11-50Z_research_iroh-investigation.md) — the 2026-11-23 iroh source set (protocol census, real-projects and community review, blog-chunk working files); the blog catalogue and talks files are living documents in `doc/living/iroh/` (tracking #13877).
+- [Cloudflare research — Workers, costs, containers and prototypes](2026-11-24T02-42-57Z_research_cloudflare/2026-11-24T02-42-57Z_research_cloudflare.md) — the 2026-10-20 Cloudflare research series (Workers Paid, free tiers, paid-only, declarative infra, multiple-plans ToS, containers-vs-DO costs, DO practices) plus ideas, project README, magic-environment note and the two prototype READMEs; code stays in hatch-personal (tracking #13877).
 
 ## Legacy places
 
