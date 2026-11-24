@@ -208,10 +208,9 @@ class TestMuseBootstrapCheckOp(unittest.TestCase):
             "ln",
             "cp",
             "stat",
-            "timeout",
         ):
             resolved = shutil.which(name)
-            if resolved:
+            if resolved and not (self.sys_bin / name).exists():
                 (self.sys_bin / name).symlink_to(resolved)
         self.assertIsNotNone(shutil.which("bash", path=str(self.sys_bin)))
         self.assertIsNotNone(shutil.which("python3", path=str(self.sys_bin)))
