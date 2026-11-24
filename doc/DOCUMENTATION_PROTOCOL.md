@@ -89,6 +89,7 @@ Work is split into lanes, and a lane's work product is a dated record like any o
 - **Size.** Smaller files are always fine, even hundreds of them. Large files are kept too, for now; moving large material to a separate repository with an R2 packing bucket is possible future work, not a reason to drop material today.
 - **Work in the open.** Anything that is not literally a live credential value belongs in the repository. Doubtful material that is not a live credential value is included. Revoked or never-authorised test certificates and keys may be included, with their status labelled.
 - **The one carve-out.** Live credential values — API keys, passwords, tokens and in-use private keys — are never committed. Refer to a credential by name only.
+- **Goal bookkeeping.** A goal's `hidden_files/` — cycle logs, watermarks, working state — are tracked in the hatch-personal repo's git (Drew, 2026-11-23): "hidden" is a presentation boundary (the files are not shown as a goal's documents), not a preservation boundary. The carve-out above applies there exactly as everywhere else.
 
 ### Maintained control documents
 
@@ -153,6 +154,7 @@ docs/
 
 ## Change log
 
+- 2026-11-24: Lane work product: recorded that goal `hidden_files/` are tracked in the hatch-personal repo's git (Drew, 2026-11-23) — presentation-hidden is not untracked, and the live-credential carve-out applies there too.
 - 2026-11-24: Added "Books stay live": a change that moves anything a book states carries its book update in the same PR, or as an immediate linked follow-up PR in the same session; the weekly review and daily spot-check are the catch-net, not the mechanism.
 - 2026-11-24: Added lane work product as a dated-record class: reports and one-offs land in the repository by pull request, with their gathered material in the folder, an index link outside it, the size and openness rules, and the live-credential carve-out.
 - 2026-10-21: Split dated historical records from maintained control documents. The older paths here say `docs/`, which is a symlink to `doc/`; both reach the same folders. Rules from earlier versions are unchanged.

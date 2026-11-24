@@ -7,7 +7,7 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   resolved context (`X-Binding-Id`, `X-Jurisdiction`, set by the
   authenticated internal caller; the binding ceremony itself lives in
   `pkgs/id/src/hosted_binding.rs`), strips client-supplied internal
-  headers, and forwards to the per-user Durable Object.
+  headers, and forwards to the per-tenant Durable Object.
 - `src/routing.ts` — the only module that touches the raw `USERS`
   namespace. Objects are named by the stable `binding_id` minted at
   binding time (32 lowercase hex chars) — never email, never a provider
@@ -22,7 +22,7 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   runtime-reported jurisdiction mismatch. Routes (13 paths,
   15 method routes): `GET /v1/state`; `GET /v1/usage` (usage,
   ceiling, and `at_cap`); `GET /v1/export` (full KV plus blob index;
-  stays available at cap); `PUT|GET|DELETE /v1/kv/<key>` (per-user
+  stays available at cap); `PUT|GET|DELETE /v1/kv/<key>` (per-tenant
   store; the key must match `[A-Za-z0-9._-]{1,128}`); `PUT /v1/blobs`,
   `GET|DELETE /v1/blobs/<64-hex>` (content-addressed blobs in R2,
   deduplicated across users; DELETE drops only this user's
@@ -32,6 +32,16 @@ First local-only vertical slice of the hosted data plane (slice 3 of
   `GET /v1/bridge/ws`), covered in the bridge section below. Storage
   metering and the per-user ceiling (`USER_CEILING_BYTES`) are
   implemented, not later steps.
+
+## Tenancy control plane (component E, #9083)
+
+`tenancy/` holds the central tenancy DB schema — the control plane
+above this data plane: account registry, binding pointers,
+tenant/database registry, role grants, peer policy, publish records
+and credential metadata, as numbered migrations. It holds no user
+content, no keys and no token values (design §2.3, "never central");
+`test/tenancy-schema.test.ts` fails if a content/key/token column
+ever appears. See `tenancy/README.md`.
 
 ## Local reality check (verified 2026-11-03, wrangler dev / workerd)
 
@@ -51,7 +61,7 @@ blocked pending user authorization).
 ## The signed-object bridge (#3818)
 
 The hosted half of the #2046 bridge: production HTTPS/WebSocket
-push/pull between native ID nodes and this per-user store. The
+push/pull between native ID nodes and this per-tenant store. The
 store is a sync peer — it holds signed objects and proof-carrying
 chain/fork evidence, assigns no order, re-signs nothing, and
 serves no authoritative snapshot.

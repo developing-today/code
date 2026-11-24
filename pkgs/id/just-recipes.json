@@ -1468,6 +1468,7 @@
         { "arguments": [], "recipe": "web-lint", "star": null },
         { "arguments": [], "recipe": "test-sandbox", "star": null },
         { "arguments": [], "recipe": "test-native-shell", "star": null },
+        { "arguments": [], "recipe": "test-tui-shell", "star": null },
         { "arguments": [], "recipe": "test-hw-shell", "star": null },
         { "arguments": [], "recipe": "test-rust-examples", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
@@ -2845,6 +2846,19 @@
       "private": false,
       "quiet": false,
       "namepath": "test-shard-sandbox",
+      "shebang": false
+    },
+    "test-tui-shell": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-tui-shell"]],
+      "dependencies": [],
+      "doc": "Run the id-tui-shell capability-statement tests (#12818): non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-tui-shell",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-tui-shell",
       "shebang": false
     },
     "test-unit": {

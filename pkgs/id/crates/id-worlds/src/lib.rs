@@ -77,6 +77,7 @@ pub mod world_session;
 pub mod world_ssh;
 pub mod world_storage;
 pub mod world_store;
+pub mod world_template;
 pub mod world_terminal;
 
 pub use id_caps::world_caps;
