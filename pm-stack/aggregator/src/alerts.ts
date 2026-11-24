@@ -37,6 +37,11 @@ import {
 import { JsonlNotificationHistory, type NotificationHistoryStore } from "./notification-history.ts";
 import { getNeedsDrew } from "./needs-drew.ts";
 import { getDecisionSet } from "./decisions.ts";
+import {
+  notificationMirrorId,
+  requestNotifyRelayCandidateMirror,
+  requestNotifyRelayEventMirror,
+} from "./notify-relay.ts";
 
 // --- Shapes ----------------------------------------------------------------
 
@@ -924,11 +929,13 @@ async function runDashboardNotificationTick(
   push: PushSender,
   options: AlertTickOptions,
 ): Promise<void> {
-  if (!options.dashboardSnapshot || subscriptions.length === 0) return;
+  if (!options.dashboardSnapshot) return;
   const now = options.now ?? Date.now();
   const historyStore = options.notificationHistory ?? new JsonlNotificationHistory(cfg.notificationsFile);
   const [snapshot, history] = await Promise.all([options.dashboardSnapshot(), historyStore.read()]);
   const candidates = buildNotificationCandidates(snapshot, now);
+  for (const candidate of candidates) await requestNotifyRelayCandidateMirror(candidate);
+  if (subscriptions.length === 0) return;
 
   const keyOf = (
     entry: Pick<NotificationHistoryEntry, "class" | "objectRef" | "stateFingerprint" | "subscriptionId">,
@@ -1210,8 +1217,19 @@ export async function runAlertTick(
 ): Promise<void> {
   const subs = await store.listSubscriptions();
   const targets = subs.filter((s) => classEnabled(s, "incident"));
-  if (targets.length > 0) {
-    for (const incident of await store.pendingDeliveries()) {
+  const mirrorIncident = async (incident: Incident, transition: "opened" | "escalated") => {
+    const payload = buildIncidentPayload(incident, cfg.publicOrigin, transition === "escalated");
+    const event = {
+      objectRef: payload.objectRef,
+      transition,
+      raisedAt: transition === "escalated" ? incident.delivered_at ?? incident.first_seen_at : incident.first_seen_at,
+      payload: { ...payload },
+    };
+    await requestNotifyRelayEventMirror({ ...event, mirrorId: notificationMirrorId(event) });
+  };
+  for (const incident of await store.pendingDeliveries()) {
+    await mirrorIncident(incident, "opened");
+    if (targets.length > 0) {
       const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, false, push);
       if (summary.sent > 0) {
         await store.markDelivered(incident.id, { ...summary });
@@ -1221,7 +1239,10 @@ export async function runAlertTick(
         );
       }
     }
+  }
+  if (targets.length > 0) {
     for (const incident of await store.pendingEscalations(cfg.alerts.ackWindowMin)) {
+      await mirrorIncident(incident, "escalated");
       const summary = await deliverToAll(store, targets, incident, cfg.publicOrigin, true, push);
       if (summary.sent > 0) {
         await store.markEscalated(incident.id, { ...summary, ackWindowMin: cfg.alerts.ackWindowMin });

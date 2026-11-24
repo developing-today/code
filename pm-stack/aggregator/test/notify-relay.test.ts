@@ -121,7 +121,7 @@ describe("the client's contact discipline", () => {
     expect(calls[0].body?.snapshotSeq).toBe(1);
     expect(calls[0].authorization).toBe("Bearer test-secret");
     expect(calls[1].body).toEqual({ stackEpoch: "epoch-test", seq: 1, at: "2026-11-23T12:00:00.000Z" });
-    expect(JSON.parse(await readFile(stateFile, "utf8"))).toEqual({ snapshotSeq: 1 });
+    expect(JSON.parse(await readFile(stateFile, "utf8")).snapshotSeq).toBe(1);
     expect(client.lastPendingAnswers).toBe(0);
   });
 
@@ -180,12 +180,45 @@ describe("the client's contact discipline", () => {
       return { status: 200, body: { ok: true, pendingAnswers: 0 } };
     });
     await client.start();
-    expect(JSON.parse(await readFile(stateFile, "utf8"))).toEqual({ snapshotSeq: 7 });
+    expect(JSON.parse(await readFile(stateFile, "utf8")).snapshotSeq).toBe(7);
     rows.push(row({ id: "sub-2", endpoint: "https://fcm.googleapis.com/fcm/send/other" }));
     client.requestSubscriptionSync();
     for (let i = 0; i < 50 && snapshotAttempts < 2; i++) await new Promise((r) => setTimeout(r, 10));
     const snapshots = calls.filter((c) => c.url.endsWith("/mirror/subscriptions"));
     expect(snapshots.map((c) => c.body?.snapshotSeq)).toEqual([1, 8]);
+  });
+
+  test("a missed event acknowledgment retries the same id until the mirror is complete", async () => {
+    let attempts = 0;
+    const serverMirror = new Map<string, Record<string, unknown>>();
+    const { client, calls, stateFile } = await makeClient((call) => {
+      if (call.url.endsWith("/mirror/event")) {
+        attempts += 1;
+        const event = call.body!;
+        if (!serverMirror.has(String(event.mirrorId))) serverMirror.set(String(event.mirrorId), event);
+        return attempts === 1 ? { status: 500 } : { status: 200, body: { ok: true, outcome: "duplicate" } };
+      }
+      return okHandler(call);
+    });
+    await client.start();
+    const event = {
+      mirrorId: "stable-event-id",
+      objectRef: "quota:pool-a",
+      transition: "raised",
+      raisedAt: "2026-11-23T12:00:00.000Z",
+      payload: { class: "quota-wall", stateFingerprint: "walled" },
+    };
+
+    await client.mirrorEvent(event);
+    expect(JSON.parse(await readFile(stateFile, "utf8")).pendingEvents).toEqual([event]);
+    await client.beat();
+
+    const eventCalls = calls.filter((call) => call.url.endsWith("/mirror/event"));
+    expect(eventCalls.map((call) => call.body?.mirrorId)).toEqual([event.mirrorId, event.mirrorId]);
+    expect(serverMirror.size).toBe(1);
+    expect(JSON.parse(await readFile(stateFile, "utf8")).pendingEvents).toEqual([]);
+    await client.mirrorEvent(event);
+    expect(calls.filter((call) => call.url.endsWith("/mirror/event"))).toHaveLength(2);
   });
 });
 

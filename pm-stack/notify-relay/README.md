@@ -35,7 +35,7 @@ NO-GO half of the ruling); the only read surface is `GET /status`.
 | `POST /mirror/subscriptions`                                     | shared secret      | step 1 (this package) |
 | `POST /heartbeat`                                                | shared secret      | step 1 (this package) |
 | `GET /status`                                                    | none (minimal)     | step 1 (this package) |
-| `POST /mirror/event`                                             | shared secret      | step 2                |
+| `POST /mirror/event`                                             | shared secret      | step 2; append-only, deduped by `mirrorId`, pruned after 30 days, never sent at the edge |
 | `GET /answer/:ledgerId`, `POST /api/needs-drew/:ledgerId/answer` | per-question token | step 3                |
 
 Everything else 404s. The heartbeat response carries
