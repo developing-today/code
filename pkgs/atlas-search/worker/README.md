@@ -40,6 +40,11 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   zero; estimated Turso cost avoided; D1 bytes per tenant vs
   quota) rendered as a report for #9098's economics prototype.
   Pure accumulator + renderer, fed by the read path (follow-on 4).
+- `src/freshness.ts` — the D1 hot-cache freshness evaluator
+  (#13101; design #9134 §1): pure per-class watermark/TTL rules
+  with fail-safe degradation, plus the tenant watermark read seam.
+  Not wired into a read path yet — the D1 store is #13100 and
+  read-path integration is follow-on 4 under #9134.
 
 ## Endpoints
 
