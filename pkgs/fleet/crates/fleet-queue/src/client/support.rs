@@ -1322,7 +1322,11 @@ pub(super) fn session_declared_pool(session: &Value) -> Option<String> {
 /// (there is no cost readout to source it from, so it stays null).
 ///
 /// - `model`: the claim stamp's serving leaf, else the session
-///   record's serving leaf.
+///   record's serving leaf. A claim stamped through the route
+///   provider names the pool (route id) in `claim_model`, not a
+///   leaf — that alias is skipped, exactly as
+///   `session_model_stamp` refuses it, so the session leaf or an
+///   honest null supplies the model instead.
 /// - `effort`: the claim stamp's variant (a real one — the server
 ///   writes "default" when none was chosen), else the session
 ///   record's variant.
@@ -1338,7 +1342,18 @@ pub(super) fn derive_completion_telemetry(
     session: Option<&Value>,
 ) -> Map<String, Value> {
     let leaf: Option<(String, String, Option<String>)> = session.and_then(session_model_stamp);
-    let model = nonempty_str(claim, "claim_model")
+    // #4919: a route-provider claim stamp (the transfer path stamps
+    // the session's declared route) holds the route id in
+    // claim_model — the pool, not a serving leaf. Recording it as
+    // the completion's model would write the alias this derivation
+    // exists to avoid (measured on real rows: result.model =
+    // "workhorse"), so skip it and let the session leaf — or null —
+    // speak.
+    let claim_model = match nonempty_str(claim, "claim_provider") {
+        Some(p) if p == ROUTE_PROVIDER => None,
+        _ => nonempty_str(claim, "claim_model"),
+    };
+    let model = claim_model
         .map(str::to_string)
         .or_else(|| leaf.as_ref().map(|s| s.1.clone()));
     let effort = nonempty_str(claim, "claim_variant")
