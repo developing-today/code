@@ -1966,13 +1966,14 @@ export function awayState(health) {
   const lacks = [];
   if (on && health.githubTokenConfigured !== true) lacks.push("the repository token");
   if (on && health.queueTokenConfigured !== true) lacks.push("the queue store token");
-  if (on && health.configured !== true) lacks.push("a machine's first report, which says where things are");
+  if (on && health.configured !== true) lacks.push("a machine's first report, which says who may sign in");
   return {
     served: true,
     on,
-    // On, holding both tokens, and told where things are: it does the
-    // core itself, with or without a machine. (An edge from before this
-    // was said under `primary` says it under `directReady`.)
+    // On, holding both tokens, and told who may sign in: it does the
+    // core itself, with or without a machine (where things are it knows
+    // by itself). (An edge from before this was said under `primary`
+    // says it under `directReady`.)
     ready: on && (health.primary === true || health.directReady === true),
     lacks,
     // What its token was refused for lately, in the owner's words: the
@@ -2133,24 +2134,58 @@ const SECTION_SAID = {
 /** A list in words: "a, b and c". */
 export const listed = (items) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
 
+/** What each of the platform's settings is, where one is said. */
+const SETTING_SAID = {
+  repo: "the repository",
+  queue: "the queue",
+  queueDbUrl: "where the queue's store answers",
+  queueTokenName: "what the queue store's token is called",
+  androidPackage: "the Android app's package",
+  promptLabel: "the label that marks an instruction",
+  needsRepos: "the repositories looked in for what needs you",
+};
+
+/** One of the platform's settings a machine runs with another value
+ * of, in a sentence: what it says, what main says, and which of the
+ * two Cloudflare goes by (main's for all but the list of repositories,
+ * for now, and why is said with it). */
+export function differsSaid(d) {
+  const what = typeof d?.name === "string" && Object.hasOwn(SETTING_SAID, d.name) ? SETTING_SAID[d.name] : String(d?.name ?? "a setting");
+  const show = (value) => {
+    if (Array.isArray(value)) return value.length ? listed(value.map(String)) : "none";
+    return value === null || value === undefined || value === "" ? "nothing" : String(value);
+  };
+  if (d?.goesBy !== "machine") return `For ${what} it says ${show(d?.machine)}. Cloudflare goes by main's: ${show(d?.platform)}.`;
+  const why = d.name === "needsRepos" ? ": a machine takes a reply only for a repository on its own list" : "";
+  return `For ${what} it says ${show(d.machine)}, and main says ${show(d.platform)}. Cloudflare goes by this machine's until it runs main's${why}.`;
+}
+
 /** One machine as the Machines screen says it: whether it is
  * reporting, what it runs, and what only it reports and does. What the
  * platform does itself (`platform`, null when nothing is in front of
- * the machine) is not counted as the machine's. */
-export function machineSaid(machine, platform, now = Date.now()) {
+ * the machine) is not counted as the machine's. `serving` is the
+ * commit Cloudflare runs, where that is known: a machine on another is
+ * said to be.
+ * @param {string | null} [serving] */
+export function machineSaid(machine, platform, now = Date.now(), serving = null) {
   const theirs = new Set(platform?.sections || []);
   const done = new Set(platform?.actions || []);
   const words = (names, said) => [...new Set(names.map((name) => (name in said ? said[name] : name)).filter(Boolean))];
   const when = machine.seen === null ? "" : ago(new Date(machine.seen).toISOString(), now);
+  const version = machine.version ? String(machine.version).slice(0, 7) : "";
+  const cloud = serving ? String(serving).slice(0, 7) : "";
   return {
     name: machine.name,
     reporting: machine.seen !== null && !machine.quiet,
     state: machine.seen === null ? "It has never reported." : machine.quiet ? `Not reporting. Last heard from ${when}.` : `Reporting. Last heard from ${when}.`,
-    version: machine.version ? String(machine.version).slice(0, 7) : "",
+    version,
     reports: words((machine.sections || []).filter((name) => !theirs.has(name)), SECTION_SAID),
     does: words((machine.actions || []).filter((kind) => !done.has(kind)), CAN_SAID),
     // A console older than this screen does not say what it can do.
     said: (machine.actions || []).length + (machine.sections || []).length > 0,
+    otherCode: version && cloud && version !== cloud ? `Cloudflare runs ${cloud}: the two are on different code.` : "",
+    // The platform's settings it runs with others of, each in a sentence.
+    differs: (Array.isArray(machine.differs) ? machine.differs : []).map(differsSaid),
   };
 }
 
@@ -2170,6 +2205,7 @@ export function machinesMark(m, now = Date.now()) {
       (x.actions || []).length,
       (x.sections || []).length,
       x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
+      Array.isArray(x.differs) ? x.differs : [],
     ]),
     // Who each waits for is drawn too, and changes while it waits.
     held: (m?.held || []).map((item) => [item.id, item.waits ?? ""]),
@@ -2191,7 +2227,15 @@ export function heldWaitsSaid(waits) {
 /** Machines: the platform's own part, each machine that reports and
  * what only it can do, and what waits to be done. */
 async function viewMachines() {
-  const m = await api("machines");
+  // The commit Cloudflare runs is in its health answer, which anyone
+  // may read; without it (no connection) a machine's is said alone.
+  const [m, health] = await Promise.all([
+    api("machines"),
+    fetch("/console/health", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .catch(() => null),
+  ]);
+  const serving = health?.edge === true && typeof health.version === "string" ? health.version : null;
   machinesDrawn = machinesMark(m);
   const platform = m.platform;
   const held = Array.isArray(m.held) ? m.held : [];
@@ -2220,6 +2264,13 @@ async function viewMachines() {
             ? "Does the core itself, with a machine connected or not. A machine reports what only it has and does what only it can."
             : "Serves the app and keeps what you send. A machine does the rest.",
       ),
+      platform === null
+        ? null
+        : h(
+            "p",
+            { class: "meta" },
+            `Which repository and queue it works by, and where the queue's store answers, are main's${serving ? ` (it runs ${String(serving).slice(0, 7)})` : ""}: no machine changes them. Who may sign in is as the machine that set the hostname up says.`,
+          ),
       platform?.refused?.length ? h("p", { class: "why" }, `Turned away lately for ${listed(platform.refused.map((kind) => REFUSED_SAID[kind] || String(kind)))}: a machine does that for now.`) : null,
       platform === null ? null : h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: () => go("more/away") }, "What it does")),
     ),
@@ -2227,12 +2278,20 @@ async function viewMachines() {
   ];
   if (m.machines.length === 0) out.push(card(h("p", { class: "meta" }, "No machine has reported yet.")));
   for (const machine of m.machines) {
-    const s = machineSaid(machine, platform);
+    const s = machineSaid(machine, platform, Date.now(), serving);
     out.push(
       card(
         h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
         h("h3", {}, s.name),
-        h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : ""].filter(Boolean).join(" ")),
+        h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : "", s.otherCode].filter(Boolean).join(" ")),
+        s.differs.length
+          ? h(
+              "details",
+              { open: true },
+              h("summary", {}, `It runs with ${s.differs.length === 1 ? "one setting" : `${s.differs.length} settings`} that ${s.differs.length === 1 ? "is" : "are"} not main's`),
+              h("ul", { class: "plain" }, s.differs.map((line) => h("li", {}, line))),
+            )
+          : null,
         !s.said
           ? h("p", { class: "meta" }, "It has not said what it can do: its console is older than this screen.")
           : platform === null

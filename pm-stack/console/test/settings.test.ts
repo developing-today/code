@@ -4,9 +4,13 @@
 import { describe, expect, test } from "bun:test";
 import { readConfig } from "../src/config.ts";
 import {
+  goesBy,
+  MACHINES_FOR_NOW,
+  PLATFORM_OWN,
   PLATFORM_SETTING_NAMES,
   type PlatformSettings,
   platformSettings,
+  settingsDifferences,
   settingsThatDiffer,
 } from "../src/settings.ts";
 
@@ -112,5 +116,91 @@ describe("telling a machine on other settings apart", () => {
   test("it is told apart from the settings given, when others than the repository's are", () => {
     expect(settingsThatDiffer(other, other)).toEqual([]);
     expect(settingsThatDiffer(platformSettings(), other)).toEqual([...PLATFORM_SETTING_NAMES]);
+  });
+});
+
+describe("what the platform goes by", () => {
+  const other: PlatformSettings = {
+    repo: "o/other",
+    queue: "another-queue",
+    queueDbUrl: "https://elsewhere.example",
+    queueTokenName: "another.name",
+    androidPackage: "another.package",
+    promptLabel: "another/label",
+    needsRepos: ["o/other"],
+  };
+
+  // Every setting is one or the other: a new one that is neither is
+  // gone by nobody's, and one that is both would be the machine's after all.
+  test("each setting is either the platform's own or, for now, a machine's: never both, never neither", () => {
+    expect([...PLATFORM_OWN, ...MACHINES_FOR_NOW].map(String).sort()).toEqual(
+      [...PLATFORM_SETTING_NAMES].map(String).sort(),
+    );
+    expect(new Set<string>([...PLATFORM_OWN, ...MACHINES_FOR_NOW]).size).toBe(PLATFORM_SETTING_NAMES.length);
+  });
+
+  // The one that decides where a secret is sent must be the platform's own.
+  test("where the queue's token is sent is the platform's own", () => {
+    expect(PLATFORM_OWN).toContain("queueDbUrl");
+    expect(goesBy(other).queueDbUrl).toBe(platformSettings().queueDbUrl);
+  });
+
+  test("its own for what is its own, the machine's for the list of repositories, and everything else as it was told", () => {
+    const told = { ...other, owners: ["a@b.example"], androidApp: true };
+    const by = goesBy(told);
+    const platform = platformSettings();
+    for (const name of PLATFORM_OWN) expect([name, by[name]]).toEqual([name, platform[name]]);
+    expect(by.needsRepos).toEqual(other.needsRepos);
+    expect([by.owners, by.androidApp]).toEqual([["a@b.example"], true]);
+    // What it was handed is not changed.
+    expect(told.queue).toBe(other.queue);
+    expect(by).not.toBe(told);
+  });
+
+  test("a machine on the platform's settings is gone by as it is", () => {
+    const told = { ...platformSettings(), owners: ["a@b.example"] };
+    expect(goesBy(told)).toEqual(told);
+  });
+
+  test("gone by the settings given, when others than the repository's are", () => {
+    expect(goesBy(platformSettings(), other)).toEqual({ ...other, needsRepos: platformSettings().needsRepos });
+  });
+});
+
+describe("saying a machine's other settings to the owner", () => {
+  test("each is said with what the machine says, what the platform has, and which is gone by", () => {
+    const platform = platformSettings();
+    expect(settingsDifferences(platform)).toEqual([]);
+    expect(settingsDifferences({ ...platform, queue: "another-queue", needsRepos: ["o/other"] })).toEqual([
+      { name: "queue", machine: "another-queue", platform: platform.queue, goesBy: "platform" },
+      { name: "needsRepos", machine: ["o/other"], platform: platform.needsRepos, goesBy: "machine" },
+    ]);
+  });
+
+  test("which is gone by is what goesBy does", () => {
+    const other = { ...platformSettings(), queue: "q", repo: "o/r", needsRepos: ["o/r"], promptLabel: "l" };
+    const by = goesBy(other) as unknown as Record<string, unknown>;
+    for (const d of settingsDifferences(other)) {
+      expect([d.name, by[d.name]]).toEqual([d.name, d.goesBy === "platform" ? d.platform : d.machine]);
+    }
+  });
+
+  test("a setting the machine does not say is said as nothing, and what it says is not shown without end", () => {
+    const { promptLabel: _unsaid, ...rest } = platformSettings();
+    expect(settingsDifferences(rest)).toEqual([
+      { name: "promptLabel", machine: null, platform: platformSettings().promptLabel, goesBy: "platform" },
+    ]);
+    const long = settingsDifferences({
+      ...platformSettings(),
+      queue: "q".repeat(1_000),
+      needsRepos: Array.from({ length: 300 }, (_, i) => `${"o".repeat(500)}/r${i}`),
+    });
+    expect((long[0].machine as string).length).toBe(200);
+    expect((long[1].machine as string[]).length).toBe(50);
+    expect((long[1].machine as string[]).every((item) => item.length === 200)).toBe(true);
+    // What the platform has is its own, and is said whole.
+    expect(long[1].platform).toEqual(platformSettings().needsRepos);
+    // What is not a list or a string is said as it is.
+    expect(settingsDifferences({ ...platformSettings(), queue: 7 })[0].machine).toBe(7);
   });
 });

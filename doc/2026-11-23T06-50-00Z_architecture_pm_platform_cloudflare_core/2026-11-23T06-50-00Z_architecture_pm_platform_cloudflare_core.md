@@ -1286,7 +1286,7 @@ the last machine to connect was running (#14163).
 **Not seen.** The laptop's dashboard itself: it gets this when its
 checkout follows main again (#13833).
 
-## 2026-11-24T07:45Z Plan: the platform's settings are its own (#14163)
+## 2026-11-24T07:20Z Plan: the platform's settings are its own (#14163)
 
 **What is so.** The Worker holds no settings of its own. Every report
 from the laptop carries the laptop console's whole configuration, and
@@ -1353,3 +1353,75 @@ queue's token is sent, that is a wider door than main.
 **Kept true on the way.** Sign-in never opens wider: steps 1 to 3 do
 not touch who may sign in or how it is checked. No value of any
 setting is said to anyone not signed in.
+
+## 2026-11-24T07:35Z Update: what the Worker says in service, and the list of repositories set apart (#14163)
+
+**Seen in service.** Deployed as `e053b2753c3b`, the Worker says
+`machineSettingsDiffer: ["needsRepos"]`. The laptop tells the
+repository, the queue, where its store answers, its token's name, the
+Android package and the instruction label exactly as main has them:
+none of them is set by hand on the laptop. So the Worker going by its
+own for those six changes nothing it does today.
+
+**The list of repositories is not like the other six.** A machine takes
+a reply, or "done", only for an item in a repository on its own list
+(`Work.ref`). The Worker does a reply itself, but leaves it to a
+machine when its own token is turned away, and "done" is a machine's.
+Whether the Worker's token may write in the other three repositories
+cannot be known from here: it reads them, which anyone may. If the
+Worker read by main's list while the laptop still had the old one, the
+app would show `dezren39/darwin-nix#12`, and a reply left to the laptop
+would be refused as not on its list. A reply that works today would
+fail until the laptop ran main. So the plan above is changed in two
+places:
+
+- Step 3 is for the six. For the list, the Worker goes on by the
+  machine's while a machine tells one. It says that the list differs,
+  and the Machines screen says which list is gone by and why.
+- The list becomes the platform's own together with what makes that
+  safe: a console that takes the platform's list from the Worker's
+  answer to its report (step 5 needs that anyway), or an action sent
+  only to a machine that lists the repository (#13492). Until then the
+  correction in #14165 takes effect when the laptop runs main (#13833).
+
+Step 2, "done" at the edge, no longer has to come first. It is still
+worth doing for itself (#13491).
+
+## 2026-11-24T07:45Z Update: the Worker goes by its own for the six (#14163)
+
+**Done.** What a machine tells is kept as it told it (`cfg` in the
+Worker's store, as before). What the Worker goes by is worked out from
+it: the repository, the queue, where the queue's store answers and what
+its token is called, the Android package and the instruction label are
+the ones its own bundle carries (`goesBy` in `src/settings.ts`); who
+may sign in and the list of repositories are the machine's. So those
+six change with a merge and a deploy and with nothing else, and where
+the queue's token is sent is no longer anything a machine's report can
+move.
+
+Two things follow from the Worker knowing where things are by itself.
+It does the core as soon as a machine has said who may sign in, whether
+or not that machine's console is new enough to say where the queue is
+(before, such a console left the Worker serving reports and doing
+nothing). And it still does nothing before any machine has said who
+may sign in: that it cannot know.
+
+**Said to the owner.** The Machines screen says, for a machine that
+runs with other settings, each one with what the machine says, what
+main says, and which of the two Cloudflare goes by; and it says when a
+machine and Cloudflare are on different commits (the half of #13833
+that is about saying it). The values are shown only signed in; the
+health answer goes on saying names only.
+
+**Checked.** In the real Worker runtime the stand-in host now tells
+others than main's for all six, throughout: every read and action in
+the run has to be by main's, and none of what reached the stand-ins for
+GitHub and the queue store may name anything the host told. With
+`goesBy` made to pass on what it was told, that check fails (5 of 21
+calls named the host's). Under bun, 26 faults planted one at a time
+were each caught.
+
+**Not seen.** Nothing in service changes by this today: the laptop
+tells those six as main has them. What will be seen is the Machines
+screen saying that the laptop's list of repositories is not main's,
+and that it is on other code.

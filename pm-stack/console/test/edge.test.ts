@@ -114,6 +114,9 @@ async function setup(options: { direct?: boolean } = {}) {
   // laptop has been away for a while.
   const githubCalls: { method: string; url: string; body?: string; unchanged?: true }[] = [];
   const queueCalls: { sql: string; args: (string | number)[] }[] = [];
+  /** Calls the edge made of anywhere that is neither GitHub nor the
+   * queue store main names, and whether each carried a token. */
+  const strays: { url: string; token: boolean }[] = [];
   const ghIssues: Record<
     number,
     {
@@ -665,6 +668,7 @@ async function setup(options: { direct?: boolean } = {}) {
       }
       return { ok: true, status: 200, json: async () => ({ results }) };
     }
+    strays.push({ url: u, token: Boolean(init?.headers?.authorization ?? init?.headers?.Authorization) });
     throw new Error(`unexpected direct fetch ${u}`);
   }) as never;
 
@@ -1118,6 +1122,7 @@ async function setup(options: { direct?: boolean } = {}) {
     directDown,
     githubCalls,
     queueCalls,
+    strays,
     ghIssues,
     ghComments,
     ghLabels,
@@ -3219,6 +3224,212 @@ describe("notifications and phones, from the edge", () => {
     await w.link.now.once();
     expect(await w.edge.now.phones.devices.check(linked!.token)).toBeNull();
     expect(await w.hostDeps.phones!.devices.check(linked!.token)).toBeNull();
+  });
+});
+
+// The repository's settings are the platform's own (#14163): the Worker
+// carries them in its bundle and goes by them. A machine tells the ones
+// it runs with in every report, and until this they were what the
+// Worker acted by: the defaults of whatever checkout the laptop's
+// console was started from, a branch nobody merged included. The oracle
+// throughout is src/settings.ts, which is main's word.
+describe("the platform goes by its own settings, whatever a machine says", () => {
+  const OTHERS = {
+    repo: "someone/else",
+    queue: "another-queue",
+    queueDbUrl: "https://elsewhere.example",
+    queueTokenName: "another.token",
+    androidPackage: "another.package",
+    promptLabel: "another/label",
+  };
+  const health = async (w: Awaited<ReturnType<typeof setup>>) =>
+    (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
+
+  test("a machine that says another repository, queue, store address, token name, package and label: the Worker reads and acts by main's", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    // The fingerprint of the certificate the Android app is signed with
+    // is the deployment's, and is the machine's to tell.
+    const fingerprint = Array.from({ length: 32 }, () => "AB").join(":");
+    Object.assign(w.edgeConfig, OTHERS, { androidFingerprints: [fingerprint] });
+    await w.hostReads();
+    await w.link.now.once();
+    const { res, doc } = await w.core();
+    expect(res.status).toBe(200);
+    // The board is the queue store's own word, read where main says it
+    // is and for the queue main names: it could not have been read at
+    // all from where the machine said.
+    expect(doc.edge).toEqual({ held: 0, primary: true });
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(doc.board.counts).toEqual({ claimed: 1, queued: 1, blocked: 1 });
+    expect(w.queueCalls.length).toBeGreaterThan(0);
+    expect(w.queueCalls.some((call) => call.args.includes(mains.queue))).toBe(true);
+    expect(w.queueCalls.some((call) => call.args.includes(OTHERS.queue))).toBe(false);
+    // Nothing was asked of anywhere else, with the queue's token or without it.
+    expect(w.strays).toEqual([]);
+    // GitHub was asked about main's repository and by main's label.
+    expect(w.githubCalls.length).toBeGreaterThan(0);
+    expect(w.githubCalls.filter((call) => call.url.includes(OTHERS.repo))).toEqual([]);
+    expect(w.githubCalls.filter((call) => call.url.includes(encodeURIComponent(OTHERS.promptLabel)))).toEqual([]);
+    expect(
+      w.githubCalls.some((call) =>
+        call.url.startsWith(
+          `https://api.github.com/repos/${mains.repo}/issues?labels=${encodeURIComponent(mains.promptLabel)}`,
+        ),
+      ),
+    ).toBe(true);
+    // What the owner does is done there too.
+    const sent = (await (await w.act("issue.comment", { issue: 14, text: "by main's settings" })).json()) as {
+      ok: boolean;
+    };
+    expect(sent.ok).toBe(true);
+    expect(w.githubCalls.at(-1)).toMatchObject({
+      method: "POST",
+      url: `https://api.github.com/repos/${mains.repo}/issues/14/comments`,
+    });
+    // The Android app is linked by the package main names, signed as the machine says.
+    const links = (await (await w.browse("/.well-known/assetlinks.json", { token: null })).json()) as {
+      target: { package_name: string; sha256_cert_fingerprints: string[] };
+    }[];
+    expect(links.map((link) => [link.target.package_name, link.target.sha256_cert_fingerprints])).toEqual([
+      [mains.androidPackage, [fingerprint]],
+    ]);
+    // And it says, by name, where the machine differs.
+    expect((await health(w)).machineSettingsDiffer).toEqual(Object.keys(OTHERS));
+    expect(w.strays).toEqual([]);
+  });
+
+  test("what a machine told is kept as it told it: after a restart the Worker still goes by main's, and still says where the machine differs", async () => {
+    const w = await setup({ direct: true });
+    Object.assign(w.edgeConfig, OTHERS);
+    await w.hostReads();
+    await w.link.now.once();
+    w.edge.now = w.makeEdge(true);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const { doc } = await w.core();
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(doc.board.counts).toEqual({ claimed: 1, queued: 1, blocked: 1 });
+    expect(w.strays).toEqual([]);
+    expect((await health(w)).machineSettingsDiffer).toEqual(Object.keys(OTHERS));
+    // Kept as told, not as gone by: what is compared after a restart is the machine's own word.
+    expect(w.stored.get("cfg")).toMatchObject(OTHERS);
+    // And kept once: a machine that goes on saying the same is not written down again with every report.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.puts.length = 0;
+    w.now.t += 5_000;
+    await w.link.now.once();
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect(w.puts.filter((key) => key === "cfg")).toEqual([]);
+  });
+
+  // Where things are the Worker knows by itself; who may sign in it
+  // does not. With the switch on and both tokens, and no machine having
+  // said, it is not doing the core, and nobody is signed in by it.
+  test("with the switch and the tokens but no machine's word on who may sign in, the Worker does not do the core", async () => {
+    const w = await setup({ direct: true });
+    const said = await health(w);
+    expect([said.configured, said.directEnabled, said.primary, said.directReady]).toEqual([false, true, false, false]);
+    expect(said.machineSettingsDiffer).toBeNull();
+    expect(w.githubCalls).toEqual([]);
+    expect(w.queueCalls).toEqual([]);
+    // The first report is what changes that.
+    await w.hostReads();
+    await w.link.now.once();
+    expect((await health(w)).primary).toBe(true);
+  });
+
+  test("a machine that takes back what it said changes nothing the Worker does, and is no longer said to differ", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    Object.assign(w.edgeConfig, OTHERS);
+    await w.hostReads();
+    await w.link.now.once();
+    const before = (await w.core()).doc.board;
+    Object.assign(
+      w.edgeConfig,
+      Object.fromEntries(Object.keys(OTHERS).map((name) => [name, mains[name as keyof typeof OTHERS]])),
+    );
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect((await w.core()).doc.board).toEqual(before);
+    expect((await health(w)).machineSettingsDiffer).toEqual([]);
+    expect(w.strays).toEqual([]);
+  });
+
+  // Not changed by this, and said so that it is not taken for done: who
+  // may sign in is the deployment's, set by the script that sets the
+  // hostname up, and a machine's report is still what tells it (#13495).
+  test("who may sign in is still as the machine tells it", async () => {
+    const w = await setup();
+    await w.hostReads();
+    await w.link.now.once();
+    const second = "second@example.com";
+    /** Who answered the Machines screen for this address: the Worker
+     * itself, or the laptop it passes anyone it does not know on to
+     * (which in this world still has the first owner), or nobody. */
+    const served = async (email?: string) => {
+      const res = await w.browse("/console/api/machines", email ? { token: await w.token({ email }) } : {});
+      return res.status === 200 ? ((await res.json()) as MachinesAnswer).served : res.status;
+    };
+    expect([await served(), await served(second)]).toEqual(["edge", 403]);
+    w.edgeConfig.owners = [second];
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect([await served(second), await served()]).toEqual(["edge", "machine"]);
+  });
+
+  // The list of repositories is set apart (see the design record): a
+  // machine takes a reply only for an item in a repository on its own
+  // list, so while a machine tells a list the Worker reads by that one.
+  test("for the list of repositories the Worker goes by the machine's while a machine tells one, and says that it differs", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    const theirs = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.needsRepos = theirs;
+    w.ghNeeds["developing-today/opencode"] = [{ number: 5, title: "Under its old name", labels: ["user/review"] }];
+    await w.hostReads();
+    await w.link.now.once();
+    const { doc } = await w.core();
+    expect(doc.health.census).toEqual({ ok: true, error: null });
+    expect(doc.census.reviews.map((item: { ref: string }) => item.ref)).toEqual(["developing-today/opencode#5"]);
+    const lists = w.githubCalls.filter((call) => /labels=user%2F/.test(call.url)).map((call) => call.url);
+    expect(lists.filter((url) => url.includes("/repos/developing-today/opencode/"))).toHaveLength(2);
+    expect(lists.filter((url) => mains.needsRepos.slice(1).some((repo) => url.includes(`/repos/${repo}/`)))).toEqual(
+      [],
+    );
+    expect((await health(w)).machineSettingsDiffer).toEqual(["needsRepos"]);
+  });
+
+  test("machines: a machine on other settings is said with what it says, what main says, and which the Worker goes by", async () => {
+    const w = await setup({ direct: true });
+    const mains = platformSettings();
+    const machines = async () => (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    await w.hostReads();
+    await w.link.now.once();
+    // On main's settings there is nothing to say, and nothing is.
+    expect(Object.keys((await machines()).machines[0])).not.toContain("differs");
+    const theirs = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.queue = OTHERS.queue;
+    w.edgeConfig.needsRepos = theirs;
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect((await machines()).machines[0].differs).toEqual([
+      { name: "queue", machine: OTHERS.queue, platform: mains.queue, goesBy: "platform" },
+      { name: "needsRepos", machine: theirs, platform: mains.needsRepos, goesBy: "machine" },
+    ]);
+    // What a machine says is shown as it said it, but not without end.
+    w.edgeConfig.queue = "q".repeat(5_000);
+    w.edgeConfig.needsRepos = Array.from({ length: 400 }, (_, i) => `o/r${i}`);
+    w.now.t += 5_000;
+    await w.link.now.once();
+    const long = (await machines()).machines[0].differs ?? [];
+    expect((long[0].machine as string).length).toBeLessThanOrEqual(200);
+    expect((long[1].machine as string[]).length).toBeLessThanOrEqual(50);
+    // Nobody not signed in is told any of it.
+    expect((await w.browse("/console/api/machines", { token: null })).status).toBe(401);
   });
 });
 
@@ -5360,10 +5571,14 @@ describe("the edge does the core itself", () => {
     expect((await half.core()).doc.edge).toEqual({ held: 0, primary: false });
   });
 
-  test("a laptop too old to say where the queue is: the app is served from its reports, and nothing is done here", async () => {
+  // Until #14163 a laptop too old to say where the queue is left the
+  // Worker serving its reports and doing nothing itself. The Worker
+  // knows where things are by its own bundle now: it needs a machine to
+  // have said who may sign in, and nothing else.
+  test("a laptop too old to say where the queue is: the Worker does the core itself all the same, by main's settings", async () => {
     const w = await setup({ direct: true });
     // What an older laptop reports: the same settings, without the
-    // fields acting here needs. That shape still validates, with those empty.
+    // fields acting here needed. That shape still validates, with those empty.
     const legacy = w.edgeConfig as unknown as Record<string, unknown>;
     delete legacy.queueDbUrl;
     delete legacy.queueTokenName;
@@ -5378,27 +5593,27 @@ describe("the edge does the core itself", () => {
     });
     await w.hostReads();
     await w.link.now.once();
-    // The laptop goes out of reach: the app is still served, from its copy.
+    // The laptop goes out of reach: the board is the queue store's own word, read here.
     w.net.hostUp = false;
     w.net.edgeUp = false;
     const { res, doc } = await w.core();
     expect(res.status).toBe(200);
-    expect(doc.board).toEqual(w.data.board);
-    expect(doc.asks).toEqual([]);
-    expect(doc.edge).toEqual({ held: 0, primary: false });
-    expect(w.githubCalls).toEqual([]);
-    expect(w.queueCalls).toEqual([]);
+    expect(doc.edge).toEqual({ held: 0, primary: true });
+    expect(doc.health.board).toEqual({ ok: true, error: null });
+    expect(doc.board.counts).toEqual({ claimed: 1, queued: 1, blocked: 1 });
+    expect(doc.asks.map((a: { issue: number }) => a.issue)).toEqual([202, 201]);
+    expect(w.strays).toEqual([]);
     const health = (await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>;
-    expect(health.configured).toBe(true);
-    expect(health.primary).toBe(false);
-    expect(health.directReady).toBe(false);
-    // And an action is held for the laptop, not done here.
-    expect(await (await w.act("issue.comment", { issue: 14, text: "late" })).json()).toEqual({
-      ok: true,
-      held: true,
-      result: null,
-      waits: "machine",
-    });
+    expect([health.configured, health.primary, health.directReady]).toEqual([true, true, true]);
+    expect(health.machineSettingsDiffer).toEqual(["queueDbUrl", "queueTokenName", "promptLabel", "needsRepos"]);
+    // A machine that names no repositories goes on reporting what needs
+    // the owner itself: the Worker does not read that from none.
+    expect(doc.census).toEqual(w.data.census);
+    expect(w.githubCalls.filter((call) => /labels=user%2F/.test(call.url))).toEqual([]);
+    // And an action is done here, not held for the laptop.
+    expect(await (await w.act("issue.comment", { issue: 14, text: "late" })).json()).toMatchObject({ ok: true });
+    expect(w.githubCalls.at(-1)).toMatchObject({ method: "POST", url: expect.stringContaining("/issues/14/comments") });
+    expect(w.stored.get("held") ?? []).toEqual([]);
   });
 
   test("an older held action the laptop never took is done here first, under its own name", async () => {
