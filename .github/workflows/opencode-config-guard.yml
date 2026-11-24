@@ -43,3 +43,10 @@ jobs:
         run: node --test bin/check-opencode-route-rules.test.mjs
       - name: Check canonical route rules
         run: node bin/check-opencode-route-rules.mjs .opencode/opencode.jsonc
+      # #1173: the pool-ordering audit (OpenAI final reserve over ordered
+      # chains) is validated the same way, so implementation-only changes
+      # cannot land unexercised.
+      - name: Run pool-ordering guard fixtures
+        run: node --test bin/check-pool-ordering.test.mjs
+      - name: Check canonical pool ordering
+        run: node bin/check-pool-ordering.mjs .opencode/opencode.jsonc
