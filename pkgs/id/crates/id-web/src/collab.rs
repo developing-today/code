@@ -3716,7 +3716,7 @@ mod tests {
         // the existing checkpoint API; it must never silently discard a
         // head. The protocol has no Merge message, so exercise the
         // explicit merge through the existing API and assert its parents.
-        let mut forked_log = NoteCheckpoints::from_events(events_after_restart).unwrap();
+        let mut forked_log = NoteCheckpoints::from_events(events_after_restart.clone()).unwrap();
         let fork = DocumentRef::for_bytes("text/markdown", b"# Offline fork").unwrap();
         forked_log
             .checkpoint(
