@@ -130,7 +130,7 @@ credential enters argv, logs, or the receipt. Suites:
 - Step 2 (windowed): the cutover itself, per §4 — run `presync`, then the
   fenced writers, then `promote` (the gate in §4 names the driver and what
   it refuses). Rollback (§5) is driven by `kaneo-cutover.sh --mode
-  rollback` (fence-gated replay with parity receipt, stub-tested); the
+rollback` (fence-gated replay with parity receipt, stub-tested); the
   DSN flip, restarts, and the first window run remain operator steps.
 - Step 3 (windowed): the first isolated laptop-off drill, recorded per
   `doc/pm-stack/COLD-RESTORE-RUNBOOK.md` with measured RTO/RPO against the

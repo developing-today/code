@@ -42,33 +42,33 @@ an unknown path; the ChatGPT token opens only its `/mcp`. The bare
 address (`/` or `/mcp`, no token) is the same MCP server behind OAuth
 instead: see "Adding it to Claude".
 
-| Route                                  | What                                                                                                                                                                                    |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp/<token>`                    | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                                                                |
-| `POST /mcp/<chatgpt token>`            | The same MCP server on ChatGPT's channel                                                                                                                                                |
-| `GET /p/<token>`                       | History page: send form + every message, newest first; refreshes every 10 s                                                                                                             |
-| `POST /p/<token>`                      | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page                                                               |
-| `GET /api/<token>/messages`            | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`                                                       |
-| `POST /api/<token>/messages`           | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"` |
-| `POST /api/<token>/ack`                | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                              |
+| Route                                  | What                                                                                                                                                                                                  |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp/<token>`                    | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                                                                              |
+| `POST /mcp/<chatgpt token>`            | The same MCP server on ChatGPT's channel                                                                                                                                                              |
+| `GET /p/<token>`                       | History page: send form + every message, newest first; refreshes every 10 s                                                                                                                           |
+| `POST /p/<token>`                      | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page                                                                             |
+| `GET /api/<token>/messages`            | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`                                                                     |
+| `POST /api/<token>/messages`           | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"`               |
+| `POST /api/<token>/ack`                | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                                            |
 | `GET /api/<token>/pipeline`            | One normalized feed over connector messages, fleet messages and notes, real senders shown: `kind`, `sender`, `receiver`, `surface`, `batch`, `unread_only`, `since_id`, `before_id`, `limit`, `order` |
-| `GET /api/<token>/notes`               | Owner read over the notes table (the same filters as the pipeline); rows carry recipient, sender, body and ack state                                                                     |
-| `GET /api/<token>/agents`              | Unified connected-agents list: fleet registry (groups, first/last seen, unread counts) and note identities (scopes, signal counter), each row marked by surface; notes have no presence |
-| `GET /api/<token>/oauth-events`        | The last 100 connector sign-in events, newest first (registrations with the client's requested metadata, approvals, refusals with the reason); never a secret                           |
-| `GET /api/<token>/event-subscriptions` | ChatGPT's live event subscriptions: id, channel, callback host, created, expires; never the callback path or secret                                                                     |
-| `GET /api/<token>/wake-hooks`          | Wake hooks: address, kind, host, whether a token is set, when added; never the token or the URL's path                                                                                  |
-| `POST /api/<token>/wake-hooks`         | JSON `{"address", "url", "token"}` sets the hook for an address; `{"address", "url": null}` removes it                                                                                  |
-| `POST /notes/register`                 | Owner Bearer token: JSON `{"identity", "token", "can_send", "can_inbox"}` registers a class/name note identity; only the token's SHA-256 hash is stored                                 |
-| `POST /notes/send`                     | Identity Bearer token: JSON `{"to", "note"}`; `to` is one identity or a wildcard in either segment (`muse/*`, `*/archer`, `*/*`)                                                        |
-| `GET /notes/inbox`                     | Identity Bearer token: that identity's unacknowledged notes                                                                                                                             |
-| `POST /notes/ack`                      | Identity Bearer token: JSON `{"id"}`, `{"ids": [...]}` or `{"up_to_id": N}` acknowledges its own notes                                                                                  |
-| `GET /<class>/<name>`                  | Public wake signal: one bare UUID, the same shape for registered and unregistered paths, rotating on a per-path jittered schedule                                                       |
-| `GET /healthz`                         | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
-| `POST /`, `POST /mcp`                  | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                         |
-| `/.well-known/oauth-*`                 | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                  |
-| `POST /register`                       | Dynamic client registration: https (or localhost) redirect URIs, public or secret clients                                                                                               |
-| `GET/POST /authorize`                  | Approval page (PKCE S256 only): one tap in a browser that opened the history page, otherwise paste the page link or a token                                                             |
-| `POST /token`                          | `authorization_code` (with `code_verifier`) and `refresh_token` grants                                                                                                                  |
+| `GET /api/<token>/notes`               | Owner read over the notes table (the same filters as the pipeline); rows carry recipient, sender, body and ack state                                                                                  |
+| `GET /api/<token>/agents`              | Unified connected-agents list: fleet registry (groups, first/last seen, unread counts) and note identities (scopes, signal counter), each row marked by surface; notes have no presence               |
+| `GET /api/<token>/oauth-events`        | The last 100 connector sign-in events, newest first (registrations with the client's requested metadata, approvals, refusals with the reason); never a secret                                         |
+| `GET /api/<token>/event-subscriptions` | ChatGPT's live event subscriptions: id, channel, callback host, created, expires; never the callback path or secret                                                                                   |
+| `GET /api/<token>/wake-hooks`          | Wake hooks: address, kind, host, whether a token is set, when added; never the token or the URL's path                                                                                                |
+| `POST /api/<token>/wake-hooks`         | JSON `{"address", "url", "token"}` sets the hook for an address; `{"address", "url": null}` removes it                                                                                                |
+| `POST /notes/register`                 | Owner Bearer token: JSON `{"identity", "token", "can_send", "can_inbox"}` registers a class/name note identity; only the token's SHA-256 hash is stored                                               |
+| `POST /notes/send`                     | Identity Bearer token: JSON `{"to", "note"}`; `to` is one identity or a wildcard in either segment (`muse/*`, `*/archer`, `*/*`)                                                                      |
+| `GET /notes/inbox`                     | Identity Bearer token: that identity's unacknowledged notes                                                                                                                                           |
+| `POST /notes/ack`                      | Identity Bearer token: JSON `{"id"}`, `{"ids": [...]}` or `{"up_to_id": N}` acknowledges its own notes                                                                                                |
+| `GET /<class>/<name>`                  | Public wake signal: one bare UUID, the same shape for registered and unregistered paths, rotating on a per-path jittered schedule                                                                     |
+| `GET /healthz`                         | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                                     |
+| `POST /`, `POST /mcp`                  | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                                       |
+| `/.well-known/oauth-*`                 | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                                |
+| `POST /register`                       | Dynamic client registration: https (or localhost) redirect URIs, public or secret clients                                                                                                             |
+| `GET/POST /authorize`                  | Approval page (PKCE S256 only): one tap in a browser that opened the history page, otherwise paste the page link or a token                                                                           |
+| `POST /token`                          | `authorization_code` (with `code_verifier`) and `refresh_token` grants                                                                                                                                |
 
 ## MCP tools
 
@@ -98,30 +98,30 @@ or `all`; one row lands in each mailbox, sharing a `batch` id. Agents read
 their mailbox, mark what they handled, and post replies and reports back
 (`reply_to` links an answer to the command and marks it read).
 
-| Route                             | Token | What                                                                                      |
-| --------------------------------- | ----- | ----------------------------------------------------------------------------------------- |
-| `POST /fleet/<fleet token>/hello` | fleet | `{agent, groups?}`: register or refresh an agent                                          |
-| `GET /fleet/<fleet token>/inbox`  | fleet | `agent`, `groups`, `kind`, `since_id`, `unread_only` (default true), `mark_read`, `limit` |
-| `POST /fleet/<fleet token>/ack`   | fleet | `{agent, up_to_id \| ids}`: mark read                                                     |
-| `POST /fleet/<fleet token>/send`  | fleet | `{agent, body, to?, kind?, reply_to?}`: to central, or to any address (see Any to any)    |
-| `GET /api/<token>/fleet/agents`   | owner | registered agents, groups, last seen, unread counts                                       |
-| `GET /api/<token>/fleet/messages` | owner | `agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`                   |
-| `POST /api/<token>/fleet/send`    | owner | `{body, to, kind?, sender?}`; `kind` is `message` (default) or `command`                  |
-| `POST /api/<token>/fleet/credentials/mint` | owner | `{agent, scopes?, addr?}`: mint a credential for an agent or a service (below); the value is returned once, only its hash stored |
-| `GET /fleet/<credential>/agents`  | credential (`read`) | the agents list, as the owner's                                                          |
-| `GET /fleet/<credential>/messages` | credential (`read`) | the fleet message log, as the owner's (`agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`) |
-| `GET /api/<token>/fleet/credentials` | owner | per-agent credential state: active or revoked, live scopes, service addr, mint and revocation times — never a hash |
-| `GET /fleet/<credential>/pipeline` | credential (`read`) | the unified pipeline feed, as the owner's `/api/<token>/pipeline` (#14374) |
-| `GET /fleet/<credential>/directory` | credential (`read`) | the unified agents list, as the owner's `/api/<token>/agents` (#14374) |
-| `GET /fleet/<credential>/credentials` | credential (`read`) | per-agent credential state, as the owner's (state only: a credential can see a revocation, never make one) |
-| `GET /fleet/<credential>/offers` | credential (`read`) | every offer with its claims, as the owner's (#14375) |
-| `GET /api/<token>/enroll-tokens` | owner | every minted bootstrap token's state: pending, used, expired or revoked, with its closing times — never a hash (#14376) |
-| `GET /fleet/<credential>/enroll-tokens` | credential (`read`) | the same enroll-token state list, as the owner's (#14376) |
-| `POST /api/<token>/fleet/offer`   | owner | `{body, to, kind?, slots, sender?, ttl_seconds?}`: post an offer (below)                   |
-| `GET /api/<token>/fleet/offers`   | owner | every offer with its claims (agent, time, delivered row)                                  |
-| `POST /fleet/<fleet token>/offer` | fleet | `{agent, body, to, kind?, slots, ttl_seconds?}`: an agent posts an offer                  |
-| `GET /fleet/<fleet token>/offers` | fleet | `agent`, `groups`: the open offers this agent may claim (also in the inbox response)      |
-| `POST /fleet/<fleet token>/claim` | fleet | `{agent, offer_id}`: claim an offer; past the last slot the answer is `filled`            |
+| Route                                      | Token               | What                                                                                                                             |
+| ------------------------------------------ | ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /fleet/<fleet token>/hello`          | fleet               | `{agent, groups?}`: register or refresh an agent                                                                                 |
+| `GET /fleet/<fleet token>/inbox`           | fleet               | `agent`, `groups`, `kind`, `since_id`, `unread_only` (default true), `mark_read`, `limit`                                        |
+| `POST /fleet/<fleet token>/ack`            | fleet               | `{agent, up_to_id \| ids}`: mark read                                                                                            |
+| `POST /fleet/<fleet token>/send`           | fleet               | `{agent, body, to?, kind?, reply_to?}`: to central, or to any address (see Any to any)                                           |
+| `GET /api/<token>/fleet/agents`            | owner               | registered agents, groups, last seen, unread counts                                                                              |
+| `GET /api/<token>/fleet/messages`          | owner               | `agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`                                                          |
+| `POST /api/<token>/fleet/send`             | owner               | `{body, to, kind?, sender?}`; `kind` is `message` (default) or `command`                                                         |
+| `POST /api/<token>/fleet/credentials/mint` | owner               | `{agent, scopes?, addr?}`: mint a credential for an agent or a service (below); the value is returned once, only its hash stored |
+| `GET /fleet/<credential>/agents`           | credential (`read`) | the agents list, as the owner's                                                                                                  |
+| `GET /fleet/<credential>/messages`         | credential (`read`) | the fleet message log, as the owner's (`agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`)                  |
+| `GET /api/<token>/fleet/credentials`       | owner               | per-agent credential state: active or revoked, live scopes, service addr, mint and revocation times — never a hash               |
+| `GET /fleet/<credential>/pipeline`         | credential (`read`) | the unified pipeline feed, as the owner's `/api/<token>/pipeline` (#14374)                                                       |
+| `GET /fleet/<credential>/directory`        | credential (`read`) | the unified agents list, as the owner's `/api/<token>/agents` (#14374)                                                           |
+| `GET /fleet/<credential>/credentials`      | credential (`read`) | per-agent credential state, as the owner's (state only: a credential can see a revocation, never make one)                       |
+| `GET /fleet/<credential>/offers`           | credential (`read`) | every offer with its claims, as the owner's (#14375)                                                                             |
+| `GET /api/<token>/enroll-tokens`           | owner               | every minted bootstrap token's state: pending, used, expired or revoked, with its closing times — never a hash (#14376)          |
+| `GET /fleet/<credential>/enroll-tokens`    | credential (`read`) | the same enroll-token state list, as the owner's (#14376)                                                                        |
+| `POST /api/<token>/fleet/offer`            | owner               | `{body, to, kind?, slots, sender?, ttl_seconds?}`: post an offer (below)                                                         |
+| `GET /api/<token>/fleet/offers`            | owner               | every offer with its claims (agent, time, delivered row)                                                                         |
+| `POST /fleet/<fleet token>/offer`          | fleet               | `{agent, body, to, kind?, slots, ttl_seconds?}`: an agent posts an offer                                                         |
+| `GET /fleet/<fleet token>/offers`          | fleet               | `agent`, `groups`: the open offers this agent may claim (also in the inbox response)                                             |
+| `POST /fleet/<fleet token>/claim`          | fleet               | `{agent, offer_id}`: claim an offer; past the last slot the answer is `filled`                                                   |
 
 An **offer** is claim-style distribution: instead of fanning a row out
 to every match, a sender posts the work once with a slot count (`slots:

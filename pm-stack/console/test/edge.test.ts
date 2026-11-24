@@ -681,19 +681,84 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[]; bri
   // (#14374): one row per surface with its real sender, the unified
   // directory (a notes-only identity included), and credential state.
   const bridgePipeline = [
-    { surface: "connector", id: 11, kind: "instruction", sender_addr: "user:drew", sender_label: "drew", receiver: "claude", direction: "inbound", read_at: null, body: "owner instruction" },
-    { surface: "fleet", id: 12, kind: "command", sender_addr: "agent:lane-1", sender_label: "lane-1", receiver: "agent:lane-2", direction: "inbound", read_at: null, body: "agent command" },
-    { surface: "notes", id: 13, kind: "note", sender_addr: "user:drew", sender_label: "drew", receiver: "muse/lane-1", direction: "inbound", read_at: null, body: "a note" },
+    {
+      surface: "connector",
+      id: 11,
+      kind: "instruction",
+      sender_addr: "user:drew",
+      sender_label: "drew",
+      receiver: "claude",
+      direction: "inbound",
+      read_at: null,
+      body: "owner instruction",
+    },
+    {
+      surface: "fleet",
+      id: 12,
+      kind: "command",
+      sender_addr: "agent:lane-1",
+      sender_label: "lane-1",
+      receiver: "agent:lane-2",
+      direction: "inbound",
+      read_at: null,
+      body: "agent command",
+    },
+    {
+      surface: "notes",
+      id: 13,
+      kind: "note",
+      sender_addr: "user:drew",
+      sender_label: "drew",
+      receiver: "muse/lane-1",
+      direction: "inbound",
+      read_at: null,
+      body: "a note",
+    },
   ];
   const bridgeDirectory = [
-    { surface: "fleet", name: "lane-1", groups: ["muse"], presence: "last_seen", first_seen: "2026-11-24T00:00:00Z", last_seen: "2026-11-24T01:00:00Z", unread: 1 },
-    { surface: "notes", name: "muse/scout-1", identity: "muse/scout-1", scopes: { can_send: true, can_inbox: true }, presence: "none", first_seen: "2026-11-24T00:00:00Z", last_seen: null },
+    {
+      surface: "fleet",
+      name: "lane-1",
+      groups: ["muse"],
+      presence: "last_seen",
+      first_seen: "2026-11-24T00:00:00Z",
+      last_seen: "2026-11-24T01:00:00Z",
+      unread: 1,
+    },
+    {
+      surface: "notes",
+      name: "muse/scout-1",
+      identity: "muse/scout-1",
+      scopes: { can_send: true, can_inbox: true },
+      presence: "none",
+      first_seen: "2026-11-24T00:00:00Z",
+      last_seen: null,
+    },
   ];
   const bridgeCredentials = [
-    { agent: "lane-1", state: "active", scopes: ["inbox", "send"], addr: null, credentials: 1, live: 1, created: "2026-11-24T00:00:00Z", revoked_at: null },
+    {
+      agent: "lane-1",
+      state: "active",
+      scopes: ["inbox", "send"],
+      addr: null,
+      credentials: 1,
+      live: 1,
+      created: "2026-11-24T00:00:00Z",
+      revoked_at: null,
+    },
   ];
   const bridgeEnrollTokens = [
-    { agent: "new-1", kind: "muse", groups: ["muse"], notes_identity: null, created: "2026-11-24T00:00:00Z", expires_at: "2026-11-25T00:00:00Z", used_at: null, revoked_at: null, state: "pending" },
+    {
+      agent: "new-1",
+      kind: "muse",
+      groups: ["muse"],
+      notes_identity: null,
+      created: "2026-11-24T00:00:00Z",
+      expires_at: "2026-11-25T00:00:00Z",
+      used_at: null,
+      revoked_at: null,
+      state: "pending",
+    },
   ];
   const bridgeRefuses = { on: false };
   const bridgeFetch = (async (
@@ -3925,9 +3990,22 @@ describe("the edge does the core itself", () => {
     expect(w.hostSaw).not.toContain("GET /console/api/directory");
     // The provisioning read (#14376): the minted enroll tokens'
     // state, read the same way — state only, no hash, no value.
-    const enrollTokens = (await (await w.browse("/console/api/enroll-tokens")).json()) as { agent: string; state: string }[];
+    const enrollTokens = (await (await w.browse("/console/api/enroll-tokens")).json()) as {
+      agent: string;
+      state: string;
+    }[];
     expect(enrollTokens).toEqual([
-      { agent: "new-1", kind: "muse", groups: ["muse"], notes_identity: null, created: "2026-11-24T00:00:00Z", expires_at: "2026-11-25T00:00:00Z", used_at: null, revoked_at: null, state: "pending" },
+      {
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notes_identity: null,
+        created: "2026-11-24T00:00:00Z",
+        expires_at: "2026-11-25T00:00:00Z",
+        used_at: null,
+        revoked_at: null,
+        state: "pending",
+      },
     ]);
     expect(w.bridgeCalls.at(-1)?.method).toBe("GET");
     expect(w.bridgeCalls.at(-1)?.url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");

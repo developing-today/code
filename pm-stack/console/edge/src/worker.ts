@@ -98,8 +98,7 @@ export class PmEdge extends DurableObject<Env> {
         // The binding's fetch, shaped as the fetch the classes take:
         // not to be called as a method, like the platform's own.
         bridgeFetch: bridge
-          ? (url: string | URL | Request, init?: RequestInit) =>
-              bridge.fetch(new Request(url as string, init))
+          ? (url: string | URL | Request, init?: RequestInit) => bridge.fetch(new Request(url as string, init))
           : undefined,
         githubApi: env.GITHUB_API_ORIGIN,
         queueDb: env.QUEUE_DB_ORIGIN,

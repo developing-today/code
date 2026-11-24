@@ -17,7 +17,7 @@
 # the LB URL and leave `floatingIP` blank.
 #
 # Example: endpoint: "https://192.168.0.1:6443"
-endpoint: ""  # set per cluster; the chart refuses to render while empty
+endpoint: "" # set per cluster; the chart refuses to render while empty
 
 # Optional override for the cluster's name (defaults to Chart.Name).
 # Note that changing this value on a live cluster is considered
@@ -79,9 +79,9 @@ floatingIP: ""
 vipLink: ""
 image: "ghcr.io/cozystack/cozystack/talos:v1.14.2"
 podSubnets:
-- 10.244.0.0/16
+  - 10.244.0.0/16
 serviceSubnets:
-- 10.96.0.0/16
+  - 10.96.0.0/16
 
 # Optional override for the kubelet node IP subnets
 # (machine.kubelet.nodeIP.validSubnets; KubeNodeConfig nodeIP.validSubnets

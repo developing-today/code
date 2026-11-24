@@ -134,10 +134,7 @@ export function backfillDepsFrom(deps: AuthDeps): BackfillDeps {
  * at all is a transport failure and surfaces (502) before any
  * record is written — a partial walk is never recorded as a
  * completed run. */
-export async function runMetadataBackfill(
-  deps: BackfillDeps,
-  repos: string[],
-): Promise<BackfillRunRecord> {
+export async function runMetadataBackfill(deps: BackfillDeps, repos: string[]): Promise<BackfillRunRecord> {
   const startedAt = new Date(deps.ingestion.now()).toISOString();
   const sweep = await runIngestionSweep(deps.ingestion, repos);
   const finishedAt = new Date(deps.ingestion.now()).toISOString();

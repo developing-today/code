@@ -475,12 +475,12 @@ $ fleet queue verify-disposition 13165 --repo developing-today/code --json
 usage: repo-queue reprioritize <task-id> <new-priority> [--reason <text>] [--worker <id>]
 ```
 
-| Flag                   | Argument        | Default  | Meaning                                                                                                    |
-| ---------------------- | --------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `<task-id>` (positional) | task id       | required | The queued task whose priority changes.                                                                    |
-| `<new-priority>` (positional) | priority value | required | A number, or a category name the validator maps to one (`validate::resolve_priority`). Missing or unresolvable → exit 2. |
-| `--reason`             | text            | unset    | Why the priority changed; recorded with the change.                                                         |
-| `--worker`             | worker id       | the authenticated caller identity | The acting worker. The actor is the authenticated caller identity presented over the broker's token channel; no free-form actor string is accepted. |
+| Flag                          | Argument       | Default                           | Meaning                                                                                                                                             |
+| ----------------------------- | -------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<task-id>` (positional)      | task id        | required                          | The queued task whose priority changes.                                                                                                             |
+| `<new-priority>` (positional) | priority value | required                          | A number, or a category name the validator maps to one (`validate::resolve_priority`). Missing or unresolvable → exit 2.                            |
+| `--reason`                    | text           | unset                             | Why the priority changed; recorded with the change.                                                                                                 |
+| `--worker`                    | worker id      | the authenticated caller identity | The acting worker. The actor is the authenticated caller identity presented over the broker's token channel; no free-form actor string is accepted. |
 
 **Behaviour.** Calls the broker's `POST /reprioritize`; the broker
 applies the new priority in the Turso queue store and syncs the task's

@@ -67,13 +67,11 @@ export function storesList(value: unknown): { checked: string | null; stores: St
   const v = value as { checked?: unknown; stores?: unknown } | null;
   const given = Array.isArray(v?.stores) ? v.stores : [];
   const seen = new Set<string>();
-  const stores = given
-    .map(storeRow)
-    .filter((row): row is StoreRow => {
-      if (!row || seen.has(row.name)) return false;
-      seen.add(row.name);
-      return true;
-    });
+  const stores = given.map(storeRow).filter((row): row is StoreRow => {
+    if (!row || seen.has(row.name)) return false;
+    seen.add(row.name);
+    return true;
+  });
   return {
     checked: typeof v?.checked === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v.checked) ? v.checked : null,
     stores,

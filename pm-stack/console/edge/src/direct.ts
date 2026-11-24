@@ -776,7 +776,8 @@ async function bridgeCall(
     };
     for (let i = 0; i < rest.length; i += 2) {
       const name = names[rest[i]];
-      if (!name || rest[i + 1] === undefined) throw new OpError(502, `fleet bridge log: unexpected argument ${rest[i]}`);
+      if (!name || rest[i + 1] === undefined)
+        throw new OpError(502, `fleet bridge log: unexpected argument ${rest[i]}`);
       query.set(name, rest[i + 1]);
     }
     const qs = query.toString();
@@ -803,7 +804,8 @@ async function bridgeCall(
         continue;
       }
       const name = names[rest[i]];
-      if (!name || rest[i + 1] === undefined) throw new OpError(502, `fleet bridge pipeline: unexpected argument ${rest[i]}`);
+      if (!name || rest[i + 1] === undefined)
+        throw new OpError(502, `fleet bridge pipeline: unexpected argument ${rest[i]}`);
       query.set(name, rest[++i]);
     }
     const qs = query.toString();
@@ -826,7 +828,10 @@ async function bridgeCall(
     for (let i = 0; i < rest.length; i++) {
       const arg = rest[i];
       if (arg === "--to") {
-        const list = (rest[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+        const list = (rest[++i] ?? "")
+          .split(",")
+          .map((t) => t.trim())
+          .filter(Boolean);
         to.push(...list);
       } else if (arg === "--command") kind = "command";
       else if (arg === "--kind") kind = rest[++i] ?? "message";

@@ -14,6 +14,8 @@ Two token families, both resolved **by name** through fleet-secrets; values are 
 | --------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------- |
 | Owner token (central verbs) | `message-bridge.access-token` (renamable via `[bridge] owner_token_name`) | `send`, `agents`, `log`                                                      | `/api/<owner-token>/fleet/…` |
 | Fleet token (agent verbs)   | `message-bridge.fleet-token`                                              | `hello`, `inbox`, `post`, `ack` — agent routes only; it cannot send commands | `/fleet/<fleet-token>/…`     |
+| Per-agent credential        | `bridge.<agent>-fleet-token` (the name the agent profile records)         | The same agent routes, as that one agent only; its groups are the ones bound when the owner minted its bootstrap token | `/fleet/<credential>/…` |
+| Notes token (notes family)  | `bridge.<agent>-token` (renamable via `[bridge] notes_token_name`)        | `notes send`, `notes inbox`, `notes ack` for the token's class/name identity | `Authorization: Bearer` header on `/notes/…` |
 
 Tokens travel **in the URL path**, so every error string is scrubbed of token values (`<token>`) before it is printed, and a 404 is reported as "a wrong token, an old bridge without fleet mailboxes, or a wrong URL". Plain `http` URLs are accepted only to this machine; anything else must be `https`, because tokens ride the path.
 
@@ -116,13 +118,13 @@ Shows the five most recent commands in the central log.
 fleet bridge mint-enroll --agent A [--kind K] [--groups g1,g2] [--notes-identity I] [--ttl SECS]
 ```
 
-| Flag               | Argument | Default  | Meaning                                                                                     |
-| ------------------ | -------- | -------- | ------------------------------------------------------------------------------------------- |
-| `--agent`          | `A`      | required | The new agent's name; the token is bound to it and enrolls no other.                        |
-| `--kind`           | `K`      | `agent`  | The agent kind the token is bound to.                                                       |
-| `--groups`         | `g1,g2`  | —        | Groups the mailbox registers with at exchange.                                              |
-| `--notes-identity` | `I`      | —        | A class/name notes identity to register at exchange.                                        |
-| `--ttl`            | `SECS`   | `86400`  | The token's lifetime in seconds (60 to 604800).                                             |
+| Flag               | Argument | Default  | Meaning                                                              |
+| ------------------ | -------- | -------- | -------------------------------------------------------------------- |
+| `--agent`          | `A`      | required | The new agent's name; the token is bound to it and enrolls no other. |
+| `--kind`           | `K`      | `agent`  | The agent kind the token is bound to.                                |
+| `--groups`         | `g1,g2`  | —        | Groups the mailbox registers with at exchange.                       |
+| `--notes-identity` | `I`      | —        | A class/name notes identity to register at exchange.                 |
+| `--ttl`            | `SECS`   | `86400`  | The token's lifetime in seconds (60 to 604800).                      |
 
 ### Behaviour
 
@@ -172,10 +174,10 @@ Shows which minted tokens are still outstanding, and how each closed one ended.
 fleet bridge revoke-enroll (--agent A | --token-hash H)
 ```
 
-| Flag           | Argument | Default | Meaning                                                                                          |
-| -------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `--agent`      | `A`      | —       | Take back every still-pending token minted for this agent; the answer counts them.             |
-| `--token-hash` | `H`      | —       | Revoke the one token stored under this SHA-256 hash; the answer is `{revoked: true\|false}`.   |
+| Flag           | Argument | Default | Meaning                                                                                      |
+| -------------- | -------- | ------- | -------------------------------------------------------------------------------------------- |
+| `--agent`      | `A`      | —       | Take back every still-pending token minted for this agent; the answer counts them.           |
+| `--token-hash` | `H`      | —       | Revoke the one token stored under this SHA-256 hash; the answer is `{revoked: true\|false}`. |
 
 ### Behaviour
 
@@ -199,11 +201,11 @@ Takes back every outstanding token minted for `scout-2`.
 fleet bridge mint-credential --agent A [--scopes s1,s2] [--addr service:<name>]
 ```
 
-| Flag       | Argument        | Default      | Meaning                                                                                          |
-| ---------- | --------------- | ------------ | ------------------------------------------------------------------------------------------------ |
-| `--agent`  | `A`             | required     | The agent (or service) the credential belongs to; it acts only as itself.                        |
-| `--scopes` | `s1,s2`         | see below    | Any of `inbox`, `send`, `read`. Agent mints default to `inbox, send`; service mints to `send, read`. |
-| `--addr`   | `service:<name>` | —           | Make it a service credential, bound to that address; the name must be the agent's own.           |
+| Flag       | Argument         | Default   | Meaning                                                                                              |
+| ---------- | ---------------- | --------- | ---------------------------------------------------------------------------------------------------- |
+| `--agent`  | `A`              | required  | The agent (or service) the credential belongs to; it acts only as itself.                            |
+| `--scopes` | `s1,s2`          | see below | Any of `inbox`, `send`, `read`. Agent mints default to `inbox, send`; service mints to `send, read`. |
+| `--addr`   | `service:<name>` | —         | Make it a service credential, bound to that address; the name must be the agent's own.               |
 
 ### Behaviour
 
@@ -235,6 +237,8 @@ fleet bridge hello [--agent A] [--groups g1,g2]
 ### Behaviour
 
 Agent verb (fleet token). Registers / refreshes this agent and its groups — this is the registry write: the bridge's agent registry is exactly the set of agents that have said hello. Route: `POST /fleet/<fleet-token>/hello` with `{agent, groups}`.
+
+Under a **per-agent credential** the hello only refreshes: the credential's groups were bound when the owner minted its bootstrap token and set by the exchange, and a credentialed hello (or inbox call) cannot change them — group membership drives `group:<name>` addressing, so it is not the caller's to reassign. The shared fleet token keeps caller-supplied groups.
 
 ### Exit codes
 
@@ -341,6 +345,65 @@ $ fleet bridge ack --agent archer --up-to 412
 ```
 
 Marks all of `archer`'s messages up to id 412 as read.
+
+## fleet bridge exchange
+
+```
+fleet bridge exchange --agent A --bootstrap TOKEN
+```
+
+| Flag          | Argument | Default                                       | Meaning                                                                 |
+| ------------- | -------- | --------------------------------------------- | ----------------------------------------------------------------------- |
+| `--agent`     | `A`      | `$FLEET_AGENT`, then `[bridge] agent`         | The agent name the bootstrap token was minted for.                      |
+| `--bootstrap` | `TOKEN`  | required                                      | The single-use bootstrap token the owner minted (console hand-off).     |
+
+### Behaviour
+
+Provisioning verb (no stored token; the bootstrap token rides the request body and is scrubbed from every error). Trades the token at `POST /enroll/exchange` for the agent's own credentials — a per-agent fleet credential and, when the mint carried a notes identity, a notes token. The values come back exactly once and go straight into the vault through fleet-secrets' write path (Bitwarden, into the project named by `$FLEET_BWS_PROJECT_ID` or `[secrets] bws_project_id`) under `bridge.<agent>-fleet-token` and `bridge.<agent>-token`. The verb prints names and metadata only — never a value. A refused exchange (wrong, used, expired or revoked token, or a name that is not the minted name) stores nothing; if storing fails after a successful exchange, the error says so loudly, because the burned token cannot be replayed. `fleet agent enroll --bootstrap` runs this verb first, then enrols as usual.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport, credentials or vault write · `4` the bridge refused the exchange.
+
+### Example
+
+```console
+$ fleet bridge exchange --agent muse-9 --bootstrap <token from the console>
+```
+
+Stores `muse-9`'s credentials under `bridge.muse-9-fleet-token` and `bridge.muse-9-token` and prints the exchange's names and metadata.
+
+## fleet bridge notes
+
+```
+fleet bridge notes send --to CLASS/NAME [--kind note|instruction] [--reply-to ID] <text | ->
+fleet bridge notes inbox
+fleet bridge notes ack (--up-to ID | ID...)
+```
+
+| Flag                       | Argument    | Default  | Meaning                                                                                                              |
+| -------------------------- | ----------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `--to`                     | `CLASS/NAME` | —       | Recipient identity; a `*` segment wildcards (`muse/*`, `*/archer`, `*/*`). Required unless `--reply-to` is given.   |
+| `--kind`                   | `note\|instruction` | `note` | `instruction` makes the note a work item: it lands in the recipient's inbox **without a sender** (the bridge keeps the sender store-side). |
+| `--reply-to`               | `ID`        | —        | Answer a note in your own inbox. The reply is routed store-side to that note's real sender — including an instruction whose sender you cannot see — and may replace `--to`. |
+| `--up-to` (ack)            | `ID`        | —        | Acknowledge every note up to this id. Alternative to listing ids.                                                    |
+| `ID...` (ack, positional)  | ids         | —        | Acknowledge exactly these notes.                                                                                     |
+
+### Behaviour
+
+The class/name notes family, authenticated by the calling identity's own notes token as a `Bearer` header (routes `POST /notes/send`, `GET /notes/inbox`, `POST /notes/ack`). Inbox rows carry `kind` and `reply_to`; a plain note names its sender in `from`, an instruction's `from` is null. Replying to an instruction therefore needs nothing but its id: the replier never learns who sent it, and the reply still reaches them.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge notes send --reply-to 41 "check done, filed as task 23101"
+```
+
+Answers note 41 — even if it arrived as a sender-free instruction.
 
 ## fleet bridge health
 

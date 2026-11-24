@@ -27,8 +27,12 @@ EXPORTED = "2026-11-24T08:40:00Z"
 
 def ok_outcomes():
     return {
-        "turso_export": freshness_probe.outcome(True, "ok", freshness_probe.freshness_readout.parse_time(EXPORTED, "t")),
-        "d1_copy": freshness_probe.outcome(True, "ok", freshness_probe.freshness_readout.parse_time(EXPORTED, "t")),
+        "turso_export": freshness_probe.outcome(
+            True, "ok", freshness_probe.freshness_readout.parse_time(EXPORTED, "t")
+        ),
+        "d1_copy": freshness_probe.outcome(
+            True, "ok", freshness_probe.freshness_readout.parse_time(EXPORTED, "t")
+        ),
         "cloudflare_rehost": freshness_probe.outcome(False, "drift"),
         "plain_mirror": freshness_probe.outcome(True, "ok", NOW),
         "r2_bundles": freshness_probe.outcome(True, "ok", NOW),
@@ -137,9 +141,7 @@ class RehostParseTests(unittest.TestCase):
     def test_fetch_pairs_compares_advertised_to_mirror(self):
         head = "b" * 40
         with (
-            mock.patch.object(
-                freshness_probe, "_git_head", return_value=head
-            ),
+            mock.patch.object(freshness_probe, "_git_head", return_value=head),
             mock.patch.object(
                 freshness_probe,
                 "_fetch_advertisement",
@@ -248,9 +250,7 @@ class AlertSyncTests(unittest.TestCase):
         self.assertTrue(any(c[0] == "close" for c in calls))
 
         runner2, calls2 = self._runner([])
-        action2 = freshness_probe.sync_alert(
-            self._results(set()), NOW, runner=runner2
-        )
+        action2 = freshness_probe.sync_alert(self._results(set()), NOW, runner=runner2)
         self.assertEqual(action2, "no alert issue needed")
         self.assertEqual([c[0] for c in calls2], ["list"])
 
@@ -269,9 +269,7 @@ class MainFlowTests(unittest.TestCase):
             pairs = [("developing-today/code", "abc", "abc")]
             drifted = [("developing-today/code", "abc", "xyz")]
             with (
-                mock.patch.object(
-                    freshness_probe, "fetch_d1_meta", return_value=meta
-                ),
+                mock.patch.object(freshness_probe, "fetch_d1_meta", return_value=meta),
                 mock.patch.object(
                     freshness_probe, "fetch_mirror_pairs", return_value=pairs
                 ),
@@ -301,9 +299,7 @@ class MainFlowTests(unittest.TestCase):
             meta = {"exported_at": EXPORTED}
             pairs = [("developing-today/code", "abc", "abc")]
             with (
-                mock.patch.object(
-                    freshness_probe, "fetch_d1_meta", return_value=meta
-                ),
+                mock.patch.object(freshness_probe, "fetch_d1_meta", return_value=meta),
                 mock.patch.object(
                     freshness_probe, "fetch_mirror_pairs", return_value=pairs
                 ),
@@ -352,9 +348,7 @@ class MainFlowTests(unittest.TestCase):
                 mock.patch.object(
                     freshness_probe, "fetch_mirror_pairs", side_effect=boom
                 ),
-                mock.patch.object(
-                    freshness_probe, "fetch_r2_pairs", side_effect=boom
-                ),
+                mock.patch.object(freshness_probe, "fetch_r2_pairs", side_effect=boom),
                 mock.patch.object(
                     freshness_probe, "fetch_rehost_pairs", side_effect=boom
                 ),

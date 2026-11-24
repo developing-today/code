@@ -17,6 +17,7 @@ The detailed design records the original data-shape observations and source file
 ## 2. Goals and non-goals
 
 ### Goals
+
 - Every needs-user item explains why a person is needed and what happens if it remains unattended.
 - Offer a consistent set of standard actions, plus item-specific choices and questions where useful.
 - Support manual, first-pass-with-approval, and authorized auto delegation on the same item identity.
@@ -25,6 +26,7 @@ The detailed design records the original data-shape observations and source file
 - Keep human-only access and policy actions outside auto delegation, and require reasons for dismiss/reject.
 
 ### Non-goals
+
 - Replacing the shared action envelope, orchestration feed, or existing attention/session models.
 - Granting new authority, spending, credentials, or external side effects to the orchestrator.
 - Turning every needs-user item into a survey or forcing custom options when no genuine alternatives exist.
