@@ -817,6 +817,7 @@ let
       fleetDocs = pkgs.callPackage ../pkgs/fleet/docs.nix { };
       atlasDocs = pkgs.callPackage ../pkgs/atlas-search/docs.nix { };
       idDocs = pkgs.callPackage ../pkgs/id/docs.nix { };
+      codeDocs = pkgs.callPackage ../pkgs/code-book/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
       idMailDeploy = pkgs.callPackage ../nixos/services/id-mail/worker/deploy.nix { };
       pkarrDeploy = pkgs.callPackage ../pkgs/pkarr-worker/deploy.nix {
@@ -872,6 +873,7 @@ let
         fleet-docs = fleetDocs;
         atlas-docs = atlasDocs;
         id-docs = idDocs;
+        code-docs = codeDocs;
         mcpx-real-servers = mcpxRealServers;
         mcpx-container = mcpxContainer;
         identity-image = identityImage;
