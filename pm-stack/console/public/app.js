@@ -496,6 +496,46 @@ function taskCard(t, extra) {
   );
 }
 
+/** What the owner can do about a task that is being worked on, from
+ * its card: say something on its issue (which whoever works it reads,
+ * and Cloudflare posts itself), or say it to the agent that has it. */
+function steer(t) {
+  const registered = Array.isArray(docs.ops?.agents) ? new Set(docs.ops.agents.map((a) => a.name)) : null;
+  const agent = taskAgent(t, registered);
+  const buttons = [];
+  if (t.issue) {
+    buttons.push(
+      h(
+        "button",
+        {
+          class: "small ghost",
+          onclick: async (e) => {
+            const text = await ask({ title: `Comment on #${t.issue}`, text: t.title, label: "What to say", okLabel: "Post", required: true });
+            if (text) act("issue.comment", { issue: Number(t.issue), text }, "Comment posted", e.target);
+          },
+        },
+        "Comment",
+      ),
+    );
+  }
+  if (agent) {
+    buttons.push(
+      h(
+        "button",
+        {
+          class: "small ghost",
+          onclick: async (e) => {
+            const text = await ask({ title: `Message ${agent}`, text: t.title, label: "What to tell it", okLabel: "Send", required: true });
+            if (text) act("message.send", { to: [agent], text: `About task ${t.id}${t.issue ? ` (#${t.issue})` : ""}: ${text}` }, "Sent", e.target);
+          },
+        },
+        "Message its agent",
+      ),
+    );
+  }
+  return buttons.length ? h("div", { class: "row end" }, ...buttons) : null;
+}
+
 /** What to say when the laptop has not reported for a while. With
  * Cloudflare doing the core itself most of what is shown is current,
  * and only a machine's own part is as old as its last report. */
@@ -586,7 +626,7 @@ function viewNow() {
   const c = docs.core;
   const b = c.board || { counts: {}, now: [], next: [], blockedWhy: [] };
   const s = c.sessions || { moving: [], waiting: [] };
-  const needs = needCounts();
+  const lead = needsLead(needCounts());
   const stat = (value, label, to) =>
     h("button", { class: "stat", onclick: () => go(to) }, h("b", {}, String(value ?? "–")), h("span", {}, label));
   const out = [
@@ -595,12 +635,12 @@ function viewNow() {
       { class: "stats" },
       stat(b.counts.claimed ?? 0, "in progress", "now"),
       stat(b.counts.queued ?? 0, "queued", "next"),
-      stat(needs.total, "need you", "needs"),
+      stat(lead.tile, lead.tileLabel, "needs"),
       stat(b.counts.blocked ?? 0, "blocked", "more/queue"),
     ),
     ...notices(c),
     h("h2", {}, "In progress"),
-    ...(b.now.length ? b.now.map((t) => taskCard(t)) : [empty("No task is claimed right now.")]),
+    ...(b.now.length ? b.now.map((t) => taskCard(t, steer(t))) : [empty("No task is claimed right now.")]),
   ];
   if (s.moving.length) {
     out.push(
@@ -619,11 +659,12 @@ function viewNow() {
       ),
     );
   }
-  if ((b.counts.blocked ?? 0) > 0 && b.blockedWhy?.length) {
+  const blocked = blockedSaid(b.blockedKinds ?? b.blockedWhy);
+  if ((b.counts.blocked ?? 0) > 0 && blocked.length) {
     out.push(
       h("h2", {}, `Why ${b.counts.blocked} tasks are blocked`),
       card(
-        ...b.blockedWhy.map((w) => h("p", {}, h("b", {}, `${w.n} `), h("span", { class: "meta" }, String(w.why)))),
+        ...blocked.map((w) => h("p", {}, h("b", {}, `${w.n} `), h("span", { class: "meta" }, w.text))),
         h("div", { class: "row end" }, h("button", { class: "ghost small", onclick: () => go("more/queue") }, "Open blocked tasks")),
       ),
     );
@@ -720,6 +761,111 @@ function issueCard(i) {
 }
 
 // ---- needs me ----------------------------------------------------------
+
+/** Why tasks are blocked, in lines that add up to all of them: by the
+ * kind of reason (`kind`, as the board counts them now), a time waited
+ * for said with how many of those times have passed. Rows from a
+ * console older than the counting (`why`: each reason's own text, the
+ * commonest few) are said as they were. */
+export function blockedSaid(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const count = (kind) => list.filter((r) => r?.kind === kind).reduce((n, r) => n + (Number(r.n) || 0), 0);
+  const one = (n, single, many) => (n === 1 ? single : many);
+  const out = [];
+  const reason = count("reason");
+  if (reason) out.push({ n: reason, text: one(reason, "has a reason written on it", "have a reason written on them") });
+  const tasks = count("tasks");
+  if (tasks) out.push({ n: tasks, text: one(tasks, "waits on other tasks", "wait on other tasks") });
+  const past = count("time-past");
+  const timed = past + count("time");
+  if (timed) {
+    const passed = !past ? "" : timed === 1 ? ": it has already passed" : `: for ${past} of them it has already passed`;
+    out.push({ n: timed, text: `${one(timed, "waits for a time", "wait for a time")}${passed}` });
+  }
+  const none = count("none");
+  if (none) out.push({ n: none, text: one(none, "has no reason recorded", "have no reason recorded") });
+  const known = new Set(["reason", "tasks", "time-past", "time", "none"]);
+  for (const r of list) {
+    if (typeof r?.kind === "string" && !known.has(r.kind)) out.push({ n: Number(r.n) || 0, text: r.kind });
+    else if (r?.kind === undefined && r?.why !== undefined) out.push({ n: Number(r.n) || 0, text: String(r.why) });
+  }
+  return out;
+}
+
+/** What leads where what needs the owner is counted: what only he can
+ * do. The first screen's count is that; the badge adds the reviews
+ * asked of him; questions the fleet has put (most with an answer it
+ * recommends) are on the Needs screen and are not counted as waiting
+ * on him. The Needs screen opens on the first list that has anything. */
+export function needsLead(counts) {
+  const hands = Number(counts?.hands) || 0;
+  const reviews = Number(counts?.reviews) || 0;
+  const questions = Number(counts?.questions) || 0;
+  return {
+    badge: hands + reviews,
+    tile: hands,
+    tileLabel: "only you",
+    opens: hands ? "hands" : reviews ? "reviews" : questions ? "questions" : "hands",
+  };
+}
+
+/** What accepting every recommendation came to, from how each set
+ * went: answered now, kept or held to be sent or done later like
+ * anything else the owner does, or not accepted. */
+export function acceptAllSaid(outs) {
+  let answered = 0;
+  let waiting = 0;
+  let failed = 0;
+  for (const out of Array.isArray(outs) ? outs : []) {
+    if (out?.state === "done") answered += Number(out.result?.applied) || 0;
+    else if (out?.state === "held" || out?.state === "kept") waiting++;
+    else failed++;
+  }
+  const parts = [];
+  if (answered || (!waiting && !failed)) parts.push(`${answered} answered`);
+  if (waiting) parts.push(`${waiting} ${waiting === 1 ? "set waits" : "sets wait"} to be sent or done`);
+  if (failed) parts.push(`${failed} ${failed === 1 ? "set" : "sets"} could not be accepted`);
+  return parts.join("; ");
+}
+
+/** A unit's state in a word or two: systemd's two (`active`, `sub`),
+ * said once where they are the same word ("failed", not "failed ·
+ * failed"). */
+export function unitStateSaid(unit) {
+  const active = String(unit?.active ?? "");
+  const sub = String(unit?.sub ?? "");
+  return active === sub || sub === "" ? active : `${active} · ${sub}`;
+}
+
+/** Who a task's agent is, to send it a message: its lane where that is
+ * a registered agent's name, else its worker where that is. `names` is
+ * the registered agents' names where the app has them; without them
+ * the lane is taken unless it is one of the pool's made-up ones
+ * ("any-" and a long run of letters), which is nobody's name. Null
+ * where there is nobody to send to.
+ * @param {{ lane?: string | null, worker?: string | null } | null | undefined} task
+ * @param {Set<string> | null} [names] */
+export function taskAgent(task, names = null) {
+  const lane = typeof task?.lane === "string" ? task.lane : "";
+  const worker = typeof task?.worker === "string" ? task.worker : "";
+  if (names) return names.has(lane) ? lane : names.has(worker) ? worker : null;
+  if (lane && !/^any-[a-z]{20,}$/.test(lane)) return lane;
+  return worker || null;
+}
+
+/** The sets of open questions that have a recommended answer to
+ * accept, each once in the order they come, and how many questions
+ * accepting them all answers. */
+export function recommendedSets(open) {
+  const sets = [];
+  let questions = 0;
+  for (const q of Array.isArray(open) ? open : []) {
+    if (!Array.isArray(q?.recommended) || q.recommended.length === 0) continue;
+    questions++;
+    if (!sets.includes(q.set)) sets.push(q.set);
+  }
+  return { sets, questions };
+}
 
 function needCounts() {
   const c = docs.core || {};
@@ -902,6 +1048,47 @@ function viewQuestions() {
   const all = doc.questions?.open || [];
   const out = [...notices(doc)];
   if (!all.length) return [...out, empty("No open questions.")];
+  // Every recommendation at once: the fleet put these with an answer it
+  // recommends, and one word from the owner takes them all. Done a set
+  // at a time, as accepting one set is, so whatever cannot go now is
+  // kept and sent like anything else he does.
+  const rec = recommendedSets(all);
+  if (rec.sets.length > 1) {
+    out.push(
+      card(
+        h("h3", {}, `${rec.questions} of these ${all.length} questions have a recommended answer`),
+        h("p", { class: "meta" }, "Take the recommendation on all of them, and the fleet carries on. The rest stay here for you."),
+        h(
+          "div",
+          { class: "row end" },
+          h(
+            "button",
+            {
+              onclick: async (e) => {
+                const yes = await ask({
+                  title: `Accept all ${rec.questions} recommended answers?`,
+                  text: `In ${rec.sets.length} sets. Every open question that has a recommendation gets the recommended option.`,
+                  okLabel: "Accept them all",
+                });
+                if (yes === null) return;
+                e.target.disabled = true;
+                const outs = [];
+                for (const [i, set] of rec.sets.entries()) {
+                  e.target.textContent = `Accepting… ${i + 1} of ${rec.sets.length}`;
+                  outs.push(await submit("questions.accept", { set }).catch(() => null));
+                }
+                await readKept();
+                toast(acceptAllSaid(outs), outs.some((out) => !out || !["done", "held", "kept"].includes(out.state)));
+                await loadDoc("questions").catch(() => {});
+                draw();
+              },
+            },
+            "Decide them all for me",
+          ),
+        ),
+      ),
+    );
+  }
   let lastSet = null;
   for (const q of all.slice(0, shown)) {
     if (q.set !== lastSet) {
@@ -1019,16 +1206,16 @@ function viewNeeds(sub) {
   const counts = needCounts();
   const census = docs.core.census || { hands: [], reviews: [], other: [] };
   const waiting = (docs.core.sessions?.waiting || []).map((w) => ({ ref: w.ref.replace(/^gh:/, ""), title: w.title, why: w.why, action: w.title, url: null }));
-  const which = sub || (counts.questions ? "questions" : counts.hands ? "hands" : counts.reviews ? "reviews" : "questions");
+  const which = sub || needsLead(counts).opens;
   const seg = (name, label, n) =>
     h("button", { "aria-pressed": String(which === name), onclick: () => go(`needs/${name}`) }, `${label} ${n}`);
   const out = [
     h(
       "div",
       { class: "seg" },
-      seg("questions", "Questions", counts.questions),
       seg("hands", "Only you can do", counts.hands),
       seg("reviews", "Reviews", counts.reviews),
+      seg("questions", "Questions", counts.questions),
       seg("other", "Escalated", counts.other),
     ),
     ...notices(docs.core).slice(0, 2),
@@ -2994,7 +3181,7 @@ function viewServices() {
     return h(
       "div",
       { class: `card${u.active === "failed" ? " flag" : ""}` },
-      h("div", { class: "row" }, h("h3", {}, u.unit), chip(`${u.active} · ${u.sub}`, u.active === "active" ? "good" : u.active === "failed" ? "warn" : "")),
+      h("div", { class: "row" }, h("h3", {}, u.unit), chip(unitStateSaid(u), u.active === "active" ? "good" : u.active === "failed" ? "warn" : "")),
       h("p", { class: "meta" }, u.description),
       log,
       h(
@@ -3107,7 +3294,7 @@ function drawTabs() {
   const fresh = (docs.core?.asks || []).filter((a) => a.status === "answered").length;
   tabsEl.replaceChildren(
     ...TABS.map(([name, label, d]) => {
-      const count = name === "needs" ? n.total : name === "ask" ? fresh : 0;
+      const count = name === "needs" ? needsLead(n).badge : name === "ask" ? fresh : 0;
       return h(
         "button",
         { "aria-current": route.split("/")[0] === name ? "page" : null, onclick: () => go(name) },

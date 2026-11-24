@@ -10,10 +10,13 @@
 //
 // It asked the search API until #14103. GitHub answers a search of
 // issues that names neither `is:issue` nor `is:pull-request` with a
-// 422, so every query of the census failed and none of what waited
-// was shown. The list has no such rule, is on the core allowance (the
-// search has its own, thirty a minute), does not lag behind an index,
-// and is what the PM console's edge reads for the same lists (#14112).
+// 422 for some tokens (a GitHub App's, seen 2026-11-24) and not for
+// others: with the token the dashboard runs with, the search answered
+// and the census was whole. (#14103 was filed as if it failed in
+// service; it did not.) The list answers either kind of token, is on
+// the core allowance (the search has its own, thirty a minute), does
+// not lag behind an index, and is what the PM console's edge reads for
+// the same lists (#14112).
 //
 // Reconciliation direction (#1226): labels are the INPUT to the page.
 // The aggregator never writes labels back; the orchestrator remains the

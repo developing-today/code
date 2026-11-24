@@ -11,7 +11,9 @@ import {
   awayNotice,
   censusSaid,
   differsSaid,
+  acceptAllSaid,
   awayState,
+  blockedSaid,
   band,
   capital,
   changeAsked,
@@ -30,6 +32,8 @@ import {
   levelHeadings,
   listed,
   machineSaid,
+  needsLead,
+  recommendedSets,
   machinesMark,
   phaseHeading,
   platformCounts,
@@ -38,7 +42,9 @@ import {
   sentSaid,
   servingSaid,
   subscriptionState,
+  taskAgent,
   testSaid,
+  unitStateSaid,
   unreadSaid,
   whySaid,
   workerSaid,
@@ -957,6 +963,129 @@ test("the Machines screen is drawn again when what it shows has changed, and not
 // The oracle is the Worker's own lists: whatever it does or reads
 // itself it can be turned away for, and then the app says so. A kind
 // with no words of its own is shown by its name ("hands.done").
+// Seen on the live board on 2026-11-24: "Why 272 tasks are blocked"
+// above six lines that added up to fifteen. Almost every blocked task
+// carries a reason of its own, so the commonest six said nothing of the
+// rest. The oracle is arithmetic: what is said has to add up to what is
+// blocked, whatever the reasons are.
+test("why tasks are blocked is said by the kind of reason, and adds up to all of them", () => {
+  const kinds = [
+    { kind: "reason", n: 231 },
+    { kind: "time-past", n: 9 },
+    { kind: "time", n: 2 },
+    { kind: "tasks", n: 12 },
+    { kind: "none", n: 21 },
+  ];
+  const said = blockedSaid(kinds);
+  expect(said.map((line) => line.n).reduce((a, b) => a + b, 0)).toBe(275);
+  expect(said.map((line) => `${line.n} ${line.text}`)).toEqual([
+    "231 have a reason written on them",
+    "12 wait on other tasks",
+    "11 wait for a time: for 9 of them it has already passed",
+    "21 have no reason recorded",
+  ]);
+  // One, and the words follow.
+  expect(
+    blockedSaid([
+      { kind: "reason", n: 1 },
+      { kind: "time", n: 1 },
+      { kind: "tasks", n: 1 },
+      { kind: "none", n: 1 },
+    ]).map((l) => `${l.n} ${l.text}`),
+  ).toEqual([
+    "1 has a reason written on it",
+    "1 waits on other tasks",
+    "1 waits for a time",
+    "1 has no reason recorded",
+  ]);
+  expect(blockedSaid([{ kind: "time-past", n: 1 }]).map((l) => `${l.n} ${l.text}`)).toEqual([
+    "1 waits for a time: it has already passed",
+  ]);
+  // A kind this screen has no words for is still counted, and said as it is named.
+  expect(blockedSaid([{ kind: "something-new", n: 3 }]).map((l) => `${l.n} ${l.text}`)).toEqual(["3 something-new"]);
+  // Counts as the queue store gives them (text), and nothing at all.
+  expect(blockedSaid([{ kind: "none", n: "4" }]).map((l) => l.n)).toEqual([4]);
+  expect(blockedSaid([])).toEqual([]);
+  expect(blockedSaid(null)).toEqual([]);
+  // The reasons as an older console gives them (each its own text, the commonest six): said as they were.
+  expect(blockedSaid([{ why: "waiting on native issue blockers", n: "7" }]).map((l) => `${l.n} ${l.text}`)).toEqual([
+    "7 waiting on native issue blockers",
+  ]);
+});
+
+// What needs the owner is what only he can do. Seen live: "394 need
+// you" on the first screen, of which 347 were questions the fleet had
+// already recommended an answer to. The number that is his alone leads.
+test("what only the owner can do leads: the count on the first screen, the badge, and the list the Needs screen opens on", () => {
+  const counts = { questions: 347, hands: 29, reviews: 19, other: 9 };
+  expect(needsLead(counts)).toEqual({ badge: 48, tile: 29, tileLabel: "only you", opens: "hands" });
+  // Nothing for his hands: reviews asked of him, then questions.
+  expect(needsLead({ ...counts, hands: 0 })).toMatchObject({ badge: 19, tile: 0, opens: "reviews" });
+  expect(needsLead({ questions: 5, hands: 0, reviews: 0, other: 2 })).toMatchObject({
+    badge: 0,
+    tile: 0,
+    opens: "questions",
+  });
+  // Nothing at all still opens somewhere.
+  expect(needsLead({ questions: 0, hands: 0, reviews: 0, other: 0 })).toMatchObject({ badge: 0, opens: "hands" });
+});
+
+test("the sets with a recommendation to accept, each once, with how many questions that answers", () => {
+  const open = [
+    { set: "s1", setTitle: "One", recommended: ["a"] },
+    { set: "s1", setTitle: "One", recommended: [] },
+    { set: "s2", setTitle: "Two", recommended: [] },
+    { set: "s3", setTitle: "Three", recommended: ["x"] },
+    { set: "s1", setTitle: "One", recommended: ["b"] },
+  ];
+  expect(recommendedSets(open)).toEqual({ sets: ["s1", "s3"], questions: 3 });
+  expect(recommendedSets([])).toEqual({ sets: [], questions: 0 });
+  expect(recommendedSets(null)).toEqual({ sets: [], questions: 0 });
+});
+
+test("accepting every recommendation says what it came to: answered, waiting to go, and not accepted", () => {
+  const done = (applied: number) => ({ state: "done", result: { applied } });
+  expect(acceptAllSaid([done(2), done(5)])).toBe("7 answered");
+  expect(acceptAllSaid([done(2), { state: "held" }, { state: "kept" }])).toBe(
+    "2 answered; 2 sets wait to be sent or done",
+  );
+  expect(acceptAllSaid([{ state: "kept" }])).toBe("1 set waits to be sent or done");
+  expect(acceptAllSaid([done(1), { state: "refused", note: "no" }, null])).toBe(
+    "1 answered; 2 sets could not be accepted",
+  );
+  expect(acceptAllSaid([{ state: "refused" }])).toBe("1 set could not be accepted");
+  // A set whose questions were all answered meanwhile is accepted, and answers nothing.
+  expect(acceptAllSaid([done(0)])).toBe("0 answered");
+  expect(acceptAllSaid([])).toBe("0 answered");
+});
+
+test("a unit's state is said once where systemd's two words are the same", () => {
+  expect(unitStateSaid({ active: "failed", sub: "failed" })).toBe("failed");
+  expect(unitStateSaid({ active: "active", sub: "running" })).toBe("active · running");
+  expect(unitStateSaid({ active: "inactive", sub: "dead" })).toBe("inactive · dead");
+  expect(unitStateSaid({ active: "active" })).toBe("active");
+  expect(unitStateSaid(null)).toBe("");
+});
+
+// Seen on the live board: a task's lane is its agent's own name
+// ("code-f", "oc-code-02") or one of the pool's ("any-n", "any-occode…"),
+// and its worker ("repo-worker-code", "xaltha") is always an agent's.
+test("a task's agent, to message it: its lane where that is an agent's name, else its worker", () => {
+  // With the registered names in hand, only a registered one is offered.
+  const names = new Set(["code-f", "any-n", "xaltha", "repo-worker-code", "conductor"]);
+  expect(taskAgent({ lane: "code-f", worker: "repo-worker-code" }, names)).toBe("code-f");
+  expect(taskAgent({ lane: "any-n", worker: "repo-worker-code" }, names)).toBe("any-n");
+  expect(taskAgent({ lane: "any-occodefihdbkklhacimchhigmnffadedgjjjdi", worker: "xaltha" }, names)).toBe("xaltha");
+  expect(taskAgent({ lane: "somewhere-else", worker: "nobody-known" }, names)).toBeNull();
+  // Without them: the lane, unless it is one of the pool's made-up ones.
+  expect(taskAgent({ lane: "code-f", worker: "repo-worker-code" })).toBe("code-f");
+  expect(taskAgent({ lane: "any-n", worker: "repo-worker-code" })).toBe("any-n");
+  expect(taskAgent({ lane: "any-occodefihdbkklhacimchhigmnffadedgjjjdi", worker: "xaltha" })).toBe("xaltha");
+  expect(taskAgent({ lane: null, worker: "conductor" })).toBe("conductor");
+  expect(taskAgent({ lane: "", worker: "" })).toBeNull();
+  expect(taskAgent(null)).toBeNull();
+});
+
 test("everything Cloudflare does or reads itself has words for being turned away for it", () => {
   const kinds = [...DIRECT_ACTIONS, ...DIRECT_READ_SECTIONS.map((name) => `read.${name}`)];
   const said = awayState({ edge: true, directEnabled: true, primary: true, refused: kinds }).refused ?? [];

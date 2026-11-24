@@ -6,6 +6,7 @@
 // as an exact statement, request or argument vector. The questions store
 // is a file written by the test, so "open" and "recommended" are defined
 // here and not by the code under test.
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
@@ -16,7 +17,7 @@ import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
-import { promptPacket, Work } from "../src/work.ts";
+import { BLOCKED_KINDS_SQL, promptPacket, Work } from "../src/work.ts";
 import { asThePlatformFetch } from "./support.ts";
 
 const CFG = readConfig({ HOME: "/h" });
@@ -130,6 +131,77 @@ function store(extra: Record<string, unknown> = {}) {
     ...extra,
   });
 }
+
+// Why tasks are blocked, by the kind of reason. The oracle is SQLite
+// itself (the queue's store speaks its SQL): the query is run on rows
+// like the ones seen in the live queue on 2026-11-24, where almost
+// every blocked task carried a reason of its own, a few waited for a
+// time long past, and a few named other tasks.
+describe("why tasks are blocked", () => {
+  const db = new Database(":memory:");
+  db.run(
+    "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, status TEXT, progress TEXT, ready_condition TEXT, blocked_deps TEXT)",
+  );
+  const add = (row: {
+    queue?: string;
+    status?: string;
+    progress?: string | null;
+    ready?: string | null;
+    deps?: string | null;
+  }) =>
+    db.run("INSERT INTO tasks (queue, status, progress, ready_condition, blocked_deps) VALUES (?, ?, ?, ?, ?)", [
+      row.queue ?? "q",
+      row.status ?? "blocked",
+      row.progress ?? null,
+      row.ready ?? null,
+      row.deps ?? null,
+    ]);
+  const kinds = () =>
+    Object.fromEntries(
+      (db.query(BLOCKED_KINDS_SQL).all("q") as { kind: string; n: number }[]).map((r) => [r.kind, r.n]),
+    );
+
+  test("each blocked task is counted once, under the kind of its reason", () => {
+    const past = "2020-01-01T00:00:00Z";
+    const ahead = "2999-01-01T00:00:00.171848+00:00";
+    // A reason or a blocker written on the task, each its own text.
+    add({ progress: JSON.stringify({ reason: "Real-client fixture required" }) });
+    add({ progress: JSON.stringify({ blocker: "Merged contract lacks claim selection" }) });
+    add({ progress: JSON.stringify({ reason: "another" }), ready: JSON.stringify({ kind: "time", until: past }) });
+    // Waiting for a time: passed, and still to come, in both forms the queue writes.
+    add({ ready: JSON.stringify({ kind: "time", until: past }) });
+    add({ ready: `{"kind": "time", "until": "${past}"}` });
+    add({ ready: JSON.stringify({ kind: "time", until: ahead }) });
+    // A condition that is not a time is a reason of its own.
+    add({ ready: JSON.stringify({ kind: "pr-merged", pr: 7 }) });
+    add({ ready: "when the cache is warm" });
+    // Waiting on other tasks.
+    add({ deps: "1080" });
+    add({ deps: "[1080, 1081]" });
+    // Nothing recorded, in each of the ways nothing is written.
+    add({});
+    add({ progress: "not json", ready: "", deps: "[]" });
+    add({ progress: "{}", deps: "" });
+    // Not blocked, and another queue's: not counted.
+    add({ status: "queued", progress: JSON.stringify({ reason: "x" }) });
+    add({ queue: "other", deps: "5" });
+    expect(kinds()).toEqual({ reason: 5, "time-past": 2, time: 1, tasks: 2, none: 3 });
+    const total = (
+      db.query("SELECT count(*) AS n FROM tasks WHERE queue = 'q' AND status = 'blocked'").get() as { n: number }
+    ).n;
+    expect(Object.values(kinds()).reduce((a, b) => a + b, 0)).toBe(total);
+  });
+
+  test("the board carries them, read in the same round trip as the rest", async () => {
+    const w = world({
+      rows: (st) => (st.sql === BLOCKED_KINDS_SQL ? [{ kind: "reason", n: 4 }] : []),
+    });
+    const board = await new Work(w.ops).board();
+    expect(w.sqls.length).toBe(1);
+    expect(w.sqls[0].map((st) => st.sql)).toContain(BLOCKED_KINDS_SQL);
+    expect(board.blockedKinds).toEqual([{ kind: "reason", n: 4 }]);
+  });
+});
 
 describe("what is in progress and what is next", () => {
   test("one round trip, reads only, in the queue's own order", async () => {
