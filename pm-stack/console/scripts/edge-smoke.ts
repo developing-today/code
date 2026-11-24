@@ -155,6 +155,8 @@ deps.link = link;
 const seen: string[] = [];
 /** What reached the stand-ins for GitHub and the queue store, and with
  * what: the Worker's own reads, made in its runtime. */
+/** How often the history behind the Trends screen was asked of GitHub. */
+const historyAsked = { n: 0 };
 const outside: {
   to: "github" | "queue";
   path: string;
@@ -278,6 +280,30 @@ const server = Bun.serve({
             pull_request: { url: "https://api.github.com/repos/developing-today/code/pulls/31" },
           },
         ]);
+      }
+      if (
+        path === "repos/developing-today/code/issues" &&
+        url.searchParams.get("state") === "all" &&
+        url.searchParams.has("since")
+      ) {
+        // Everything changed at or after a time, oldest change first:
+        // what the history behind the Trends screen asks. One feature
+        // merged an hour ago.
+        historyAsked.n++;
+        const at = new Date(Date.now() - 3_600_000).toISOString().replace(/\.\d+Z$/, "Z");
+        const all = [
+          {
+            number: 43,
+            title: "feat(pm-stack): a smoke feature",
+            created_at: at,
+            updated_at: at,
+            closed_at: at,
+            state: "closed",
+            labels: [],
+            pull_request: { merged_at: at },
+          },
+        ];
+        return Response.json(all.filter((item) => item.updated_at >= (url.searchParams.get("since") ?? "")));
       }
       if (path === "repos/developing-today/code/issues" && url.searchParams.get("state") === "closed") {
         // What GitHub lists as closed: a pull request merged an hour ago
@@ -503,6 +529,80 @@ try {
       "signed in with the run's own token, the edge says who is calling",
       me.email === "owner@example.com" && me.edge === true,
       JSON.stringify(me),
+    );
+
+    // The app is one list of files (public/files.json): the Worker's build
+    // ships them and the Worker serves them. Each is asked for here, as
+    // the signed-in owner, and has to come back whole and as what it is.
+    const appFiles = JSON.parse(readFileSync(join(import.meta.dir, "..", "public", "files.json"), "utf8")) as {
+      files: { path: string; type: string }[];
+    };
+    const wrong: string[] = [];
+    for (const file of appFiles.files) {
+      const res = await asOwner(`/console/${file.path}`);
+      const got = new Uint8Array(await res.arrayBuffer());
+      const want = readFileSync(join(import.meta.dir, "..", "public", file.path));
+      if (res.status !== 200 || res.headers.get("content-type") !== file.type || got.length !== want.length) {
+        wrong.push(`${file.path}: ${res.status} ${res.headers.get("content-type")} ${got.length}/${want.length}`);
+      }
+    }
+    check(
+      `every file the app is made of is served whole and as what it is (${appFiles.files.length} files, typefaces among them)`,
+      appFiles.files.length > 20 && wrong.length === 0,
+      wrong.join("; "),
+    );
+
+    const unlisted = await asOwner("/console/fonts/licences/inter.txt");
+    check("a file the list does not name is not served", unlisted.status !== 200, String(unlisted.status));
+
+    // Trends: the Worker reads GitHub's history and the queue's store
+    // itself, keeps what it read in its own storage, and answers from
+    // that. Only this runtime has that storage and that fetch.
+    const trendsRes = await asOwner("/console/api/trends?days=7");
+    const trends = (await trendsRes.json()) as {
+      window?: number;
+      days?: string[];
+      history?: { whole: boolean; covered: string | null };
+      merged?: { all: number[]; kinds: { feat: number[] } };
+      features?: { latest: Record<string, { number: number; title: string }[]> };
+      tasks?: { all?: number[] };
+    };
+    const sumOf = (list: number[] | undefined) => (list ?? []).reduce((total, n) => total + n, 0);
+    check(
+      "Trends is read by the Worker itself: GitHub's history newest first, the queue's finished tasks, by day",
+      trendsRes.status === 200 &&
+        trends.window === 7 &&
+        trends.days?.length === 14 &&
+        // The last day is read to its end by the first ask (and older stretches follow).
+        typeof trends.history?.covered === "string" &&
+        sumOf(trends.merged?.all) === 1 &&
+        sumOf(trends.merged?.kinds.feat) === 1 &&
+        trends.features?.latest["pm-stack"]?.[0]?.number === 43 &&
+        trends.features?.latest["pm-stack"]?.[0]?.title === "a smoke feature" &&
+        Array.isArray(trends.tasks?.all),
+      JSON.stringify(trends).slice(0, 300),
+    );
+    // The older stretches come in behind the first answer; after that
+    // it answers from what it kept.
+    // (The screen was asked for, so the Worker's own clock reads the
+    // older stretches on behind it: asked again, it has them.)
+    let whole = false;
+    for (let i = 0; i < 20 && !whole; i++) {
+      await Bun.sleep(1500);
+      const more = (await (await asOwner("/console/api/trends?days=7")).json()) as typeof trends;
+      whole = more.history?.whole === true;
+    }
+    const askedWhole = historyAsked.n;
+    const trendsAgain = await asOwner("/console/api/trends?days=30");
+    const again30 = (await trendsAgain.json()) as { window?: number; merged?: { all: number[] } };
+    check(
+      "read to its end, it answers from what it kept in its own storage: GitHub is not asked again",
+      whole &&
+        trendsAgain.status === 200 &&
+        again30.window === 30 &&
+        sumOf(again30.merged?.all) === 1 &&
+        historyAsked.n === askedWhole,
+      `whole ${whole}; asked GitHub ${askedWhole} time(s), then ${historyAsked.n}`,
     );
     const onceId = "11111111-1111-4111-8111-111111111111";
     const didFirst = (await (await actAsOwner("push.class", { class: "trouble", on: false }, onceId)).json()) as {

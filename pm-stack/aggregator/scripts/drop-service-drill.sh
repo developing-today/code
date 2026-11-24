@@ -159,7 +159,7 @@ systemctl --user stop "$TARGET_UNIT" || die "failed to stop $TARGET_UNIT"
 # --- wait for the honesty signals ---------------------------------------------
 SIGNAL_DOWN=0
 SIGNAL_DEGRADED=0
-DEADLINE=$(( $(date +%s) + MAX_WAIT_MIN * 60 ))
+DEADLINE=$(($(date +%s) + MAX_WAIT_MIN * 60))
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   PAYLOAD="$(health_json)" || PAYLOAD=""
   if [ -n "$PAYLOAD" ]; then
@@ -169,7 +169,7 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
     if [ "$OK" = "false" ]; then
       SIGNAL_DOWN=1
       [ "$DEGRADED" = "true" ] && SIGNAL_DEGRADED=1
-      printf '%s' "$PAYLOAD" > "$EVIDENCE_FILE"
+      printf '%s' "$PAYLOAD" >"$EVIDENCE_FILE"
       log "signal fired: '$TARGET_ID' reports down (degraded=$DEGRADED); evidence -> $EVIDENCE_FILE"
       break
     fi

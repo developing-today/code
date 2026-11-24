@@ -1204,6 +1204,156 @@ fn a_dry_run_registers_nothing_and_saves_nothing() {
     assert!(!fake.profile_path().exists());
 }
 
+const BOOTSTRAP_FIXTURE: &str = "fixtureBootstrapTokenValue00000000000003";
+
+#[test]
+fn bootstrap_enrolment_exchanges_first_saves_names_and_writes_the_wake_hook() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet bridge exchange",
+        vec![ok(json!({
+            "agent": "muse-9",
+            "kind": "muse",
+            "groups": ["muse"],
+            "notes_identity": "muse/muse-9",
+            "fleet_token_name": "bridge.muse-9-fleet-token",
+            "notes_token_name": "bridge.muse-9-token",
+            "url": "https://bridge.example",
+            "stored": true,
+        }))],
+    )
+    .on("fleet bridge hello", vec![ok(json!({"agent": "muse-9"}))])
+    .on("fleet queue health", vec![fail(3, "queue broker unreachable")])
+    .on("fleet gh api rate_limit", vec![ok(json!({"rate": {"remaining": 4000}}))])
+    .on("fleet laptop-agent health", vec![fail(3, "no leg answered")]);
+    let (out, code) = run(
+        &fake,
+        &[
+            "enroll",
+            "--kind",
+            "muse",
+            "--name",
+            "muse-9",
+            "--bootstrap",
+            BOOTSTRAP_FIXTURE,
+        ],
+    );
+    assert_eq!(code, EXIT_OK);
+    assert_eq!(out["registered"], true);
+    // The exchange ran before any probe, and the mint-bound groups
+    // are what the enrolment reports.
+    assert!(
+        fake.calls()[0].contains("fleet bridge exchange --agent muse-9"),
+        "calls: {:?}",
+        fake.calls()
+    );
+    assert_eq!(out["groups"], json!(["muse"]));
+    assert_eq!(out["bootstrap"]["fleet_token_name"], "bridge.muse-9-fleet-token");
+    assert_eq!(out["bootstrap"]["notes_token_name"], "bridge.muse-9-token");
+    assert_eq!(out["bootstrap"]["notes_identity"], "muse/muse-9");
+    // The profile records the credential names — and no token value
+    // (neither the bootstrap token nor any credential) is in it, in
+    // the output, or in the hook files.
+    let saved_text = std::fs::read_to_string(fake.profile_path()).unwrap();
+    let saved: Value = serde_json::from_str(&saved_text).unwrap();
+    assert_eq!(saved["fleet_token_name"], "bridge.muse-9-fleet-token");
+    assert_eq!(saved["notes_token_name"], "bridge.muse-9-token");
+    assert_eq!(saved["notes_identity"], "muse/muse-9");
+    assert!(
+        !saved_text.contains(BOOTSTRAP_FIXTURE),
+        "the profile must not carry the bootstrap token"
+    );
+    assert!(
+        !out.to_string().contains(BOOTSTRAP_FIXTURE),
+        "the output must not carry the bootstrap token"
+    );
+    // The wake hook: a token-free detector polling this identity's
+    // signal path, and a definition whose prompt fetches by name.
+    let hook = &out["wake_hook"];
+    assert_eq!(hook["id"], "bridge-muse-9");
+    assert_eq!(hook["identity"], "muse/muse-9");
+    let script = std::fs::read_to_string(
+        fake.dir
+            .join("hooks")
+            .join("scripts")
+            .join("bridge-muse-9-signal.sh"),
+    )
+    .unwrap();
+    assert!(script.contains("https://bridge.example/muse/muse-9"), "{script}");
+    assert!(!script.contains(BOOTSTRAP_FIXTURE));
+    let definition: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fake.dir
+                .join("hooks")
+                .join("definitions")
+                .join("bridge-muse-9.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(definition["id"], "bridge-muse-9");
+    assert_eq!(definition["poll_interval_secs"], 60);
+    let prompt = definition["prompt"].as_str().unwrap();
+    assert!(prompt.contains("fleet bridge notes inbox"), "{prompt}");
+    assert!(prompt.contains("bridge.muse-9-token"), "the prompt names the token, by name: {prompt}");
+    assert!(!prompt.contains(BOOTSTRAP_FIXTURE));
+}
+
+#[test]
+fn a_refused_exchange_enrols_nothing() {
+    let fake = Fake::new();
+    fake.on(
+        "fleet bridge exchange",
+        vec![fail(
+            4,
+            "the bridge refused the exchange: the bootstrap token is wrong, already used, expired or revoked",
+        )],
+    );
+    let err = execute(
+        &fake,
+        &argv(&[
+            "enroll",
+            "--kind",
+            "muse",
+            "--name",
+            "muse-9",
+            "--bootstrap",
+            BOOTSTRAP_FIXTURE,
+        ]),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, AgentError::Down(m) if m.contains("nothing was stored")),
+        "{err}"
+    );
+    assert!(!fake.profile_path().exists(), "no profile after a refused exchange");
+    assert!(
+        !fake.called("bridge hello"),
+        "no hello after a refused exchange: {:?}",
+        fake.calls()
+    );
+    assert!(
+        !fake.dir.join("hooks").exists(),
+        "no wake hook after a refused exchange"
+    );
+}
+
+#[test]
+fn bootstrap_refuses_a_dry_run_and_a_seat_it_cannot_provision() {
+    let fake = Fake::new();
+    let err = |words: &[&str]| execute(&fake, &argv(words)).unwrap_err();
+    assert!(
+        matches!(err(&["enroll", "--kind", "muse", "--name", "muse-9", "--bootstrap", BOOTSTRAP_FIXTURE, "--dry-run"]), AgentError::Usage(m) if m.contains("dry run"))
+    );
+    assert!(
+        matches!(err(&["enroll", "--kind", "claude", "--bootstrap", BOOTSTRAP_FIXTURE]), AgentError::Usage(m) if m.contains("no local seat"))
+    );
+    assert!(
+        matches!(err(&["enroll", "--kind", "dot", "--name", "dot", "--bootstrap", BOOTSTRAP_FIXTURE]), AgentError::Usage(m) if m.contains("no local seat"))
+    );
+    assert!(fake.calls().is_empty());
+}
+
 #[test]
 fn enrolment_refuses_an_unknown_kind_and_a_bad_name() {
     let fake = Fake::new();

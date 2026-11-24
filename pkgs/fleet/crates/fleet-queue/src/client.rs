@@ -2483,6 +2483,28 @@ esac
     }
 
     #[test]
+    fn completion_telemetry_route_claim_model_is_the_pool_not_the_model() {
+        // A transfer-stamped claim through the route provider: its
+        // claim_model holds the route id (the pool), never a serving
+        // leaf, so the session's leaf supplies the model — and with
+        // no session record the model is an honest null rather than
+        // the route alias.
+        let claim = json!({"claim_provider": "opencode-route", "claim_model": "workhorse"});
+        let session = json!({"data": {
+            "model": {"providerID": "opencode-route", "id": "workhorse"},
+            "route_usage": {"lastServing": {
+                "providerID": "anthropic", "modelID": "claude-opus-4-1", "variant": "medium"
+            }},
+        }});
+        let derived = derive_completion_telemetry(&claim, Some(&session));
+        assert_eq!(derived["model"], json!("claude-opus-4-1"));
+        assert_eq!(derived["effort"], json!("medium"));
+        assert_eq!(derived["pool"], json!("workhorse"));
+        let derived = derive_completion_telemetry(&claim, None);
+        assert_eq!(derived["model"], Value::Null);
+    }
+
+    #[test]
     fn completion_telemetry_always_carries_all_four_keys() {
         let derived = derive_completion_telemetry(&json!({}), None);
         for field in TELEMETRY_FIELDS {
