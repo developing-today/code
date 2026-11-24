@@ -40,6 +40,7 @@ const QUEUE_VERBS: &[&str] = &[
     "revive",
     "fail",
     "complete",
+    "reprioritize",
     "verify-disposition",
     "timeline",
     "history",

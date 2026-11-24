@@ -290,6 +290,7 @@ pub const DOMAINS: &[Domain] = &[
             "revive",
             "fail",
             "complete",
+            "reprioritize",
             "verify-disposition",
             "timeline",
             "history",
