@@ -110,6 +110,33 @@ credential enters argv, logs, or the receipt. Suites:
 `pm-stack/scripts/fence-check.test.sh` (fencing rule), both run by
 `.github/workflows/pm-stack-tests.yml`.
 
+### The file-store driver: `pm-stack/scripts/grist-pad-sync.sh`
+
+Steps 1 and 5 run through one driver per file store (`--store grist|pad`),
+so the Grist/Pad syncs are mechanical instead of advisory:
+
+- File sets (from the §2 inventory): grist syncs `home.sqlite3` + `docs/`
+  (`grist-sessions.db` is runtime state and is never synced); pad syncs
+  `pad.db` + `encryption.key` + `config.toml` + `attachments/`.
+- `--mode presync` (step 1, while live): copies the store's file set from
+  the source dir to the target dir, then requires post-copy sha256 parity
+  of the copied set. Pre-copy drift is reported, not failed.
+- `--mode final` (step 5, the gate): refuses (exit 3, REFUSED receipt,
+  copies nothing) unless `pm-stack/scripts/fence-check.sh --store <store>`
+  reports **FENCED** — per-store, so pad can go final while grist still
+  runs, matching the Pad → Grist → Kaneo stop order — and, for pad, the
+  source `pad.db-wal` is absent or zero bytes (clean checkpoint). Then
+  copies and requires exact parity, including zero unaccounted target
+  files under the synced set (exit 4 otherwise; only the operator removes
+  them). The driver never deletes target files: target-only files are
+  preserved and counted in the receipt (presync tolerates them, final
+  refuses on them), and unrelated files elsewhere in the target (sync-tool
+  metadata, `grist-sessions.db`) are out of scope.
+- Receipts record the fence verdict, file counts, pre-copy drift, target
+  extras, and the verdict line; paths are local directory paths, no
+  secrets. Suite: `pm-stack/scripts/grist-pad-sync.test.sh`, run by
+  `.github/workflows/pm-stack-tests.yml` alongside the fencing suites.
+
 ## 5. Rollback
 
 - **Kaneo:** stop Kaneo, restore the local DSN, start the local stack. Any
@@ -124,15 +151,20 @@ credential enters argv, logs, or the receipt. Suites:
 - **Grist / Pad:** stop the promoted instance, point the data directory
   back at the untouched laptop volume, restart. Writes made in the
   Supabase-backed home sync back before the restart — the sync is
-  bidirectional-checked by checksum at cutover and rollback alike.
+  bidirectional-checked by checksum at cutover and rollback alike:
+  rollback reuses `pm-stack/scripts/grist-pad-sync.sh` with the source
+  and target dirs swapped (new home → laptop volume), under the same
+  fence-then-exact-parity gate as the cutover final.
 - Rollback is abandoned (volumes eligible for cleanup) only after 7 stable
   days and a recorded drill per the cold-restore runbook.
 
 ## 6. What remains after this step
 
 - Step 2 (windowed): the cutover itself, per §4 — run `presync`, then the
-  fenced writers, then `promote` (the gate in §4 names the driver and what
-  it refuses). Rollback (§5) is driven by `kaneo-cutover.sh --mode
+  fenced writers, then `promote` (Kaneo's gate in §4 names the driver and
+  what it refuses; Grist/Pad finals go through `grist-pad-sync.sh --mode
+  final`, per-store fenced with a clean pad WAL — §4 names that driver
+  too). Rollback (§5) is driven by `kaneo-cutover.sh --mode
 rollback` (fence-gated replay with parity receipt, stub-tested); the
   DSN flip, restarts, and the first window run remain operator steps.
 - Step 3 (windowed): the first isolated laptop-off drill, recorded per
