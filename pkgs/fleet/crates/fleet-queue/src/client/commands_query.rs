@@ -52,14 +52,15 @@ fn parse_meta_pairs(values: &[String]) -> Result<Value, String> {
 pub(super) fn cmd_meta(rest: &[String]) -> i32 {
     let verb = rest.first().map(String::as_str).unwrap_or("");
     let rest = &rest[1..];
+    let args = parse_verb_args("meta", rest, &["json"], &[]);
     if verb == "keys" {
-        let args = parse_verb_args("meta", rest, &[], &[]);
-        reject_extra_pos("meta", &args, 0);
+        if args.pos(0).is_some() || args.get("json").is_some() {
+            usage_error("meta", "meta keys takes no arguments");
+        }
         let resp = unwrap_ok(call("/meta", &json!({"op":"keys"})));
         print_json(resp.get("row").unwrap_or(&Value::Null));
         return 0;
     }
-    let args = parse_verb_args("meta", rest, &["json"], &[]);
     match verb {
         "get" => {
             reject_extra_pos("meta", &args, 2);
