@@ -78,6 +78,16 @@ export interface HostedEnv {
   /** Direct-read TTL cap in seconds (#12592): a token's requested
    * lifetime may not exceed it. Defaults to 3600 when unset. */
   DIRECT_READ_MAX_TTL_SECONDS?: string;
+  /** The message bridge, by service binding (#14373): the bridge
+   * door calls it with the PM credential below. A binding, not a
+   * value: present when the deployed shape carries it (wrangler.toml
+   * declares it; local dev and tests inject their own or none). */
+  BRIDGE?: { fetch(request: Request): Promise<Response> };
+  /** The PM stack's bridge credential (#14373): minted on the bridge
+   * for service:pm-stack, held as a Worker secret. A secret,
+   * referenced by name only; never logged. Absent or short → the
+   * bridge door fails closed (503). */
+  BRIDGE_PM_TOKEN?: string;
 }
 
 /** Stamp signing key material: the parsed key, bytes only. */
@@ -142,6 +152,12 @@ export interface HostedConfig {
    * (valid) DB ids / mint material are set. Independent of auth,
    * like the stamp material. */
   directRead: DirectReadConfig | null;
+  /** The PM bridge credential (#14373), or null when unset or too
+   * short to be one — the bridge door then fails closed (503). The
+   * value is held only to be presented to the bridge; it is never
+   * logged or reported. Independent of auth, like the webhook
+   * secret. */
+  bridge: { token: string } | null;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -256,7 +272,17 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     webhookSecret: env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== "" ? env.GITHUB_WEBHOOK_SECRET : null,
     ingestionRepos: parseIngestionRepos(env.INGESTION_REPOS),
     directRead: parseDirectReadConfig(env),
+    bridge: parseBridgeConfig(env),
   };
+}
+
+/** The PM bridge credential (#14373): present only when the secret
+ * is set and long enough to be a bridge credential (the bridge's own
+ * minimum is 32 characters); anything shorter is treated as unset,
+ * so a truncated paste fails closed instead of sending garbage. */
+function parseBridgeConfig(env: HostedEnv): { token: string } | null {
+  const token = env.BRIDGE_PM_TOKEN?.trim();
+  return token && token.length >= 32 ? { token } : null;
 }
 
 /** The sweeper's repo scope: comma-separated owner/name entries.

@@ -57,7 +57,9 @@ export function normalizeNew({ body, sender, direction, source, channel = "claud
   }
   let from = null;
   if (from_addr !== undefined && from_addr !== null) {
-    if (typeof from_addr !== "string" || !FROM_ADDR.test(from_addr)) throw new InputError("from_addr must be channel:<name> or agent:<name>");
+    if (typeof from_addr !== "string" || !FROM_ADDR.test(from_addr)) {
+      throw new InputError("from_addr must be channel:<name>, agent:<name> or service:<name>");
+    }
     if (from_addr === `channel:${channel}`) throw new InputError("a connector can't send to its own channel");
     if (direction !== "inbound" || (source !== "mcp" && source !== "fleet")) {
       throw new InputError("from_addr is only for messages a connector or an agent sends");
@@ -69,7 +71,7 @@ export function normalizeNew({ body, sender, direction, source, channel = "claud
   return { body, sender: s, direction, source, channel, kind: k, from_addr: from };
 }
 
-const FROM_ADDR = /^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/;
+const FROM_ADDR = /^(channel:(claude|chatgpt)|(agent|service):[a-z0-9][a-z0-9._-]{0,63})$/;
 
 /** Validates a new message's kind; empty means "message". Throws InputError. */
 export function normalizeKind(kind) {
@@ -196,6 +198,7 @@ export class MemoryStore {
     this.noteTokens = new Map();
     this.noteRows = [];
     this.noteNextId = 1;
+    this.distributions = new Map();
     this.fleetCredentials = new Map();
     this.enrollTokens = new Map();
   }
@@ -203,11 +206,17 @@ export class MemoryStore {
   // #14368), same semantics as the Durable Object: hashes only.
   async fleetCredentialAuth(token_hash) {
     const c = this.fleetCredentials.get(token_hash);
-    return c && !c.revoked_at ? { agent: c.agent, scopes: [...c.scopes] } : null;
+    return c && !c.revoked_at ? { agent: c.agent, scopes: [...c.scopes], addr: c.addr ?? null } : null;
   }
-  async fleetCredentialPut({ token_hash, agent, scopes, created }) {
-    this.fleetCredentials.set(token_hash, { agent, scopes: [...scopes], created: created ?? this.now(), revoked_at: null });
-    return { agent, scopes: [...scopes] };
+  async fleetCredentialPut({ token_hash, agent, scopes, created, addr = null }) {
+    this.fleetCredentials.set(token_hash, {
+      agent,
+      scopes: [...scopes],
+      created: created ?? this.now(),
+      revoked_at: null,
+      addr,
+    });
+    return { agent, scopes: [...scopes], addr };
   }
   async fleetCredentialRevoke(agent) {
     let n = 0;
@@ -262,20 +271,71 @@ export class MemoryStore {
   async noteIdentities() {
     return [...this.noteCounters.keys()].sort();
   }
-  async noteDeliver({ from, recipients, note, kind = "note", reply_to = null, batch = null }) {
+  async noteDeliver({ from, recipients, note, kind = "note", reply_to = null, batch = null, pattern = null, limit_n = null, matched = null }) {
     const notes = [];
     for (const recipient of recipients) {
       if (!this.noteCounters.has(recipient)) continue;
       const row = { id: this.noteNextId++, ts: this.now(), recipient, from, note, ack_at: null, kind, reply_to, batch };
       this.noteRows.push(row);
       this.noteCounters.set(recipient, this.noteCounters.get(recipient) + 1);
-      notes.push({ id: row.id, recipient, from, note, ts: row.ts, kind, reply_to });
+      notes.push({ id: row.id, recipient, from, note, ts: row.ts, kind, reply_to, batch });
+    }
+    if (batch) {
+      this.distributions.set(batch, {
+        batch,
+        sender_addr: from,
+        pattern,
+        limit_n,
+        matched: matched ?? notes.map((n) => n.recipient),
+        delivered: notes.map((n) => n.recipient),
+        ts: this.now(),
+      });
     }
     return { delivered: notes.length, recipients: notes.map((n) => n.recipient), notes };
   }
   async noteOrigin(identity, id) {
     const row = this.noteRows.find((r) => r.id === id && r.recipient === identity);
     return row ? row.from : null;
+  }
+  // Broadening a notes distribution (notes.js), same semantics as the
+  // Durable Object: only the original sender, only the remainder. The
+  // caller resolves a broaden call's new address to extra_matched.
+  async noteBroaden({ from, batch, extra_matched = [], pattern = null, limit }) {
+    const dist = this.distributions.get(batch);
+    if (!dist) return { error: `no distribution recorded for batch ${batch}` };
+    if (dist.sender_addr !== from) return { error: "only the original sender can broaden this distribution" };
+    const sample = this.noteRows.find((r) => r.batch === batch);
+    if (!sample) return { error: `batch ${batch} has no notes to broaden` };
+    const matched = [...new Set([...dist.matched, ...extra_matched])].sort();
+    const deliveredSet = new Set(dist.delivered);
+    const pending = matched.filter((n) => !deliveredSet.has(n));
+    const recipients = limit ? pending.slice(0, limit) : pending;
+    const notes = [];
+    for (const recipient of recipients) {
+      if (!this.noteCounters.has(recipient)) continue;
+      const row = { id: this.noteNextId++, ts: this.now(), recipient, from: sample.from, note: sample.note, batch, ack_at: null, kind: "note", reply_to: null };
+      this.noteRows.push(row);
+      this.noteCounters.set(recipient, this.noteCounters.get(recipient) + 1);
+      deliveredSet.add(recipient);
+      notes.push({ id: row.id, recipient, from: row.from, note: row.note, ts: row.ts, batch });
+    }
+    const delivered = [...deliveredSet].sort();
+    this.distributions.set(batch, {
+      ...dist,
+      pattern: pattern ?? dist.pattern,
+      limit_n: limit ?? dist.limit_n,
+      matched,
+      delivered,
+      ts: this.now(),
+    });
+    return {
+      batch,
+      matched: matched.length,
+      delivered: notes.length,
+      recipients: notes.map((n) => n.recipient),
+      remaining: matched.length - delivered.length,
+      notes,
+    };
   }
   async noteInbox(identity) {
     return this.noteRows
@@ -298,6 +358,38 @@ export class MemoryStore {
     return this.noteCounters.has(identity)
       ? { registered: true, counter: this.noteCounters.get(identity) }
       : { registered: false, counter: 0 };
+  }
+  // Owner reads (pipeline.js): every note row in the table's own shape
+  // ({id, ts, recipient, sender, body, ack_at}); sender/receiver here
+  // are exact identity matches, address matching lives in pipeline.js.
+  async noteOwnerList(q = {}) {
+    let rows = this.noteRows.filter(
+      (r) =>
+        (q.since_id === undefined || q.since_id === null || r.id > q.since_id) &&
+        (q.before_id === undefined || q.before_id === null || r.id < q.before_id) &&
+        (!q.unread_only || r.ack_at === null) &&
+        (!q.sender || r.from === q.sender) &&
+        (!q.receiver || r.recipient === q.receiver),
+    );
+    rows = q.order === "desc" ? rows.slice().reverse() : rows;
+    return rows
+      .slice(0, q.limit ?? 50)
+      .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.from, body: r.note, ack_at: r.ack_at }));
+  }
+  // Owner directory (pipeline.js): one row per registered identity,
+  // scopes folded over its tokens (any token granting a scope grants
+  // it), plus the wake-signal counter.
+  async noteDirectory() {
+    return [...this.noteCounters.keys()].sort().map((identity) => {
+      let can_send = false;
+      let can_inbox = false;
+      for (const t of this.noteTokens.values()) {
+        if (t.identity !== identity) continue;
+        can_send = can_send || !!t.can_send;
+        can_inbox = can_inbox || !!t.can_inbox;
+      }
+      return { identity, can_send, can_inbox, signal_counter: this.noteCounters.get(identity), created: null };
+    });
   }
   // Wake hooks (wake.js), same semantics as the Durable Object.
   async wakeHookGet(address) {

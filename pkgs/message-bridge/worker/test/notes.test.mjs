@@ -186,3 +186,47 @@ test("instructions land sender-free, notes keep their sender, replies thread to 
   assert.equal(noTarget.status, 400);
   assert.equal((await inboxOf(ARCHER)).length, archerInbox2.length);
 });
+
+test("notes pattern sends: limit, match report, glob segments, broaden remainder", async () => {
+  const { call, bearer, register } = harness();
+  assert.equal((await register("muse/archer", ARCHER)).status, 201);
+  assert.equal((await register("muse/other", OTHER)).status, 201);
+  assert.equal((await register("user/drew", DREW)).status, 201);
+  const sendRaw = (token, body) =>
+    call("/notes/send", { method: "POST", headers: bearer(token), body: JSON.stringify(body) });
+
+  // Oracle (#14367): muse/* matches two identities; limit 1 delivers
+  // to exactly the first in name order and reports the rest.
+  const sentRes = await sendRaw(ARCHER, { to: "muse/*", note: "first only", limit: 1 });
+  assert.equal(sentRes.status, 201);
+  const sent = await sentRes.json();
+  assert.equal(sent.matched, 2);
+  assert.equal(sent.delivered, 1);
+  assert.deepEqual(sent.recipients, ["muse/archer"]);
+  assert.equal(sent.remaining, 1);
+  assert.ok(sent.batch, "the send names its distribution batch");
+
+  // A segment glob follows the same rule: muse/o* names muse/other alone.
+  const glob = await (await sendRaw(ARCHER, { to: "muse/o*", note: "just other" })).json();
+  assert.equal(glob.matched, 1);
+  assert.deepEqual(glob.recipients, ["muse/other"]);
+  assert.equal(glob.remaining, 0);
+
+  // Broaden delivers the original note to exactly the remainder.
+  const b1 = await (await sendRaw(ARCHER, { broaden: sent.batch, limit: 2 })).json();
+  assert.equal(b1.matched, 2);
+  assert.equal(b1.delivered, 1);
+  assert.deepEqual(b1.recipients, ["muse/other"]);
+  assert.equal(b1.remaining, 0);
+  assert.equal(b1.notes[0].note, "first only");
+
+  // A second identical broaden delivers nothing — never a duplicate.
+  const b2 = await (await sendRaw(ARCHER, { broaden: sent.batch, limit: 2 })).json();
+  assert.equal(b2.delivered, 0);
+  assert.deepEqual(b2.notes, []);
+
+  // Only the original sender may broaden a distribution.
+  const foreign = await sendRaw(OTHER, { broaden: sent.batch, limit: 2 });
+  assert.equal(foreign.status, 400);
+  assert.match((await foreign.json()).error, /only the original sender/);
+});

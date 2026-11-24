@@ -172,6 +172,13 @@ export const SILENT_MS = 10 * 60_000;
 /** With nobody looking, what the edge reads itself and tells the owner
  * about is read again this often. */
 const OWN_CLOCK_MS = 60_000;
+/** While somebody looks at the Trends screen, the object's own clock
+ * reads its history on: this many pages each minute until it has been
+ * read to its end, then what changed, this often. */
+const TRENDS_EVERY_MS = 30 * 60_000;
+const TRENDS_PAGES_A_WAKE = 6;
+/** It does that for this long after the screen was last asked for. */
+const TRENDS_WATCHED_MS = 24 * 60 * 60_000;
 /** While the app is connected, how often this side wakes to read again
  * what has gone stale (each list by its own age), so that what changed
  * is said to the app without the app asking. */
@@ -280,6 +287,12 @@ export interface EdgeOptions {
     enabled: boolean;
     githubToken?: string;
     queueToken?: string;
+    /** The PM stack's own bridge credential and the bridge Worker's
+     * service binding (#14373): with both, `message.send` and the
+     * agents/messages reads are this side's, done through the bridge
+     * as service:pm-stack. Either missing, they stay a machine's. */
+    bridgeToken?: string;
+    bridgeFetch?: unknown;
     fetchImpl?: typeof fetch;
     /** Where GitHub's API and the queue store are, when a local run
      * puts stand-ins in their place. */
@@ -345,6 +358,11 @@ export class Edge {
   private shown = new Set<string>();
   /** When what the owner is told about was last read by the clock. */
   private clockAt = 0;
+  /** When the history behind the Trends screen was last read on by the clock. */
+  private trendsAt = 0;
+  /** When the Trends screen was last asked for (kept, so that an
+   * object started again still knows somebody looks at it). */
+  private trendsSeen: number | null = null;
   /** This side's latest calls of GitHub and the queue store, numbered. */
   private outward: (Outward & { n: number })[] = [];
   private outwardN = 0;
@@ -1473,9 +1491,19 @@ export class Edge {
 
   // ---- doing the core here ------------------------------------------------
 
-  /** The kinds this side does itself when it does the core. */
+  /** Whether this side holds the PM bridge credential and the bridge
+   * binding (#14373): the two together make the bridge this side's. */
+  private bridgeReady(): boolean {
+    return Boolean(this.direct?.bridgeToken) && Boolean(this.direct?.bridgeFetch);
+  }
+
+  /** The kinds this side does itself when it does the core. A message
+   * is this side's only with the bridge held (bridgeReady): without
+   * it the kind stays a machine's, as it was before the bridge path
+   * existed, and is held for one like any other. */
   private kinds(): readonly string[] {
-    return this.direct?.kinds ?? DIRECT_ACTIONS;
+    const base = this.direct?.kinds ?? DIRECT_ACTIONS;
+    return this.bridgeReady() && !base.includes("message.send") ? [...base, "message.send"] : base;
   }
 
   /** A kind this side does itself when it does the core; any other is
@@ -1517,7 +1545,11 @@ export class Edge {
         // repository: a machine that has not said which they are (one
         // from before it did) goes on reporting the list itself. Read
         // from no repositories it would be an empty list, and whole.
-        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0),
+        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0) &&
+        // The agents list is the bridge's: read here only while this
+        // side holds the PM bridge credential (#14373). Without it a
+        // machine goes on reporting the list, as it did before.
+        (name !== "agents" || this.bridgeReady()),
     );
   }
 
@@ -1539,11 +1571,17 @@ export class Edge {
       const made = directClasses(cfg, {
         githubToken: this.direct?.githubToken,
         queueToken: this.direct?.queueToken,
+        bridgeToken: this.direct?.bridgeToken,
+        bridgeFetch: this.direct?.bridgeFetch as never,
         githubApi: this.direct?.githubApi,
         queueDb: this.direct?.queueDb,
         fetchImpl: this.direct?.fetchImpl as never,
         now: this.now,
         github: this.github,
+        shelf: {
+          get: async (key) => ((await this.kv.get(`trend:${key}`)) as string | undefined) ?? null,
+          put: (key, text) => this.kv.put(`trend:${key}`, text),
+        },
         seen: (call) => {
           this.outward.push({ ...call, n: ++this.outwardN });
           if (this.outward.length > OUTWARD_KEPT) this.outward.splice(0, this.outward.length - OUTWARD_KEPT);
@@ -1709,6 +1747,13 @@ export class Edge {
     }
     const kinds: Record<string, { ok: boolean; error?: string }> = {};
     for (const name of DIRECT_READ_SECTIONS) {
+      // The agents section is the bridge's: with no PM bridge
+      // credential held there is no path here to prove, and the
+      // section is a machine's, as it was before (#14373). Every
+      // other section is checked even while it is a machine's for
+      // being refused: the check is how this side finds it can read
+      // the section itself again.
+      if (name === "agents" && !this.bridgeReady()) continue;
       try {
         await directRead(name, direct.ops, direct.work);
         kinds[name] = { ok: true };
@@ -2115,6 +2160,14 @@ export class Edge {
     // the first of either.
     const due = await this.heldDue(cfg);
     if (due !== null) wakes.push(Math.max(now + 1000, due));
+    // The history behind the Trends screen is read on by this side's
+    // own clock while somebody looks at that screen: a minute after
+    // its last look until it is whole, then half an hour after it was
+    // last read to its end. With nobody looking it does not wake for it.
+    const trends = (await this.trendsWatched(now)) ? this.mine(cfg)?.trends : undefined;
+    if (trends) {
+      wakes.push(Math.max(now + 1000, this.trendsAt + this.ownClockMs, await trends.dueAt(TRENDS_EVERY_MS)));
+    }
     if (wakes.length > 0) await this.setAlarm(Math.min(...wakes));
   }
 
@@ -2142,6 +2195,12 @@ export class Edge {
         console.error(`pm-edge: telling the app: ${(error as Error).message}`);
       }
     });
+  }
+
+  /** Somebody has looked at the Trends screen within the last day. */
+  private async trendsWatched(now: number): Promise<boolean> {
+    if (this.trendsSeen === null) this.trendsSeen = Number((await this.kv.get("trendsSeen")) ?? 0) || 0;
+    return this.trendsSeen > 0 && now - this.trendsSeen < TRENDS_WATCHED_MS;
   }
 
   /** This side reads something the owner is told about, and a device
@@ -2182,6 +2241,17 @@ export class Edge {
       // is the second that reads.
       for (let look = 0; look < 2; look++) await this.docs.current(this.ownedTold(cfg), CLOCK_WAIT_MS);
       await this.tell(cfg).catch((error) => console.error(`pm-edge: notify: ${(error as Error).message}`));
+    }
+    // The history behind the Trends screen, while somebody looks at
+    // that screen (within the last day): read on a little each minute
+    // until it has been read to its end, then kept up every half hour,
+    // so the screen has it when it is next opened. No machine is asked.
+    const trends = (await this.trendsWatched(now)) ? this.mine(cfg)?.trends : undefined;
+    if (trends && now - this.trendsAt >= this.ownClockMs && (await trends.due(TRENDS_EVERY_MS))) {
+      this.trendsAt = now;
+      await trends
+        .advance(TRENDS_PAGES_A_WAKE)
+        .catch((error) => console.error(`pm-edge: trends: ${(error as Error).message}`));
     }
     // The app is connected: what this side reads itself and has gone
     // stale is read again (each list by its own age; one that has not
@@ -2430,14 +2500,25 @@ export class Edge {
           await this.schedule(cfg);
           return res;
         }
-        // What needs only GitHub and the queue store is read here, by
-        // the code a machine would read it with.
+        // What needs only GitHub, the queue store and the bridge is
+        // read here, by the code a machine would read it with. The
+        // bridge's own read (the message log) is attempted only while
+        // this side holds the bridge credential: without it the log
+        // is a machine's to read, and the request goes to the host
+        // below as it did before.
         const mine = this.mine(cfg);
-        if (mine) {
+        if (mine && !(seg.length === 1 && seg[0] === "messages" && !this.bridgeReady())) {
           const from = this.outwardN;
           let read: unknown;
           try {
-            read = await platformRead(seg, url.searchParams, mine.ops, mine.plan);
+            read = await platformRead(seg, url.searchParams, mine.ops, mine.plan, mine.trends);
+            // Somebody looks at Trends: for a day after, its history is
+            // read on by this side's own clock (see `alarm`).
+            if (seg.length === 1 && seg[0] === "trends") {
+              this.trendsSeen = this.now();
+              await this.kv.put("trendsSeen", this.trendsSeen);
+              await this.schedule(cfg);
+            }
           } catch (error) {
             // Refused here: a machine has its own way in, and a read may
             // be asked twice. Anything else is said as it is; so is this,

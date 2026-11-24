@@ -13,6 +13,16 @@
 //   GET  /api/<token>/messages        JSON history (direction, channel,
 //                                     kind, since_id, before_id, unread_only,
 //                                     limit, order)
+//   GET  /api/<token>/pipeline        one normalized feed over connector
+//                                     messages, fleet messages and notes
+//                                     (pipeline.js; kind, sender, receiver,
+//                                     surface, batch, unread_only,
+//                                     since_id, before_id, limit, order)
+//   GET  /api/<token>/notes           owner read over the notes table
+//                                     (pipeline.js; the same filters)
+//   GET  /api/<token>/agents          unified connected-agents list:
+//                                     fleet registry + note identities,
+//                                     each row marked by surface
 //   POST /api/<token>/messages        JSON {body, sender, to, kind}: store
 //                                     an inbound message per recipient; to
 //                                     is "claude" (default), "chatgpt" or
@@ -33,6 +43,16 @@
 //                                     the token is the shared fleet token
 //                                     or one agent's own credential
 //                                     (#14368), which acts only as itself
+//   POST /api/<token>/fleet/offer     owner: post an offer (claim-style
+//                                     distribution, fleet.js): {body, to,
+//                                     kind?, slots, sender?, ttl_seconds?}
+//   GET  /api/<token>/fleet/offers    owner: every offer with its claims
+//   POST /fleet/<token>/offer         an agent posts an offer
+//   GET  /fleet/<token>/offers        the open offers one agent may claim
+//                                     (also the inbox response's section)
+//   POST /fleet/<token>/claim         {agent, offer_id}: claim an offer;
+//                                     the first N claimants are delivered
+//                                     the row, the rest get "filled"
 //   POST /api/<token>/enroll-tokens   owner: mint a bootstrap enroll
 //                                     token bound to a name/kind/groups;
 //                                     the value is returned once
@@ -44,6 +64,14 @@
 //                                     fleet credential + notes token once
 //   POST /api/<token>/fleet/credentials/revoke  owner: revoke an agent's
 //                                     fleet credential(s)
+//   POST /api/<token>/fleet/credentials/mint  owner: mint a credential
+//                                     directly ({agent, scopes?, addr?};
+//                                     addr service:<own name> + scope
+//                                     "read" is a service credential,
+//                                     #14373): the value is returned once
+//   GET  /fleet/<credential>/agents|messages  the owner's pipeline
+//                                     views, for a credential holding
+//                                     the "read" scope (#14373)
 //   POST /api/<token>/notes-tokens/revoke  owner: revoke an identity's
 //                                     notes token(s)
 //   POST /notes/register              owner Bearer token; registers a
@@ -76,6 +104,7 @@ import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
 import { normalizeHook, showHook, wakeAll, WAKE_ADDRESS } from "./wake.js";
 import { handleNotes, handleSignal } from "./notes.js";
+import { notesOwnerFeed, pipelineFeed, unifiedAgents } from "./pipeline.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
 const PAGE_SIZE = 200;
@@ -233,6 +262,18 @@ async function handleApi(request, store, rest, url, delivered) {
       return json({ message: messages[0], messages }, 201);
     }
     return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, POST" } });
+  }
+  if (what === "pipeline") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    return json(await pipelineFeed(store, Object.fromEntries(url.searchParams.entries())));
+  }
+  if (what === "notes") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    return json(await notesOwnerFeed(store, Object.fromEntries(url.searchParams.entries())));
+  }
+  if (what === "agents") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    return json(await unifiedAgents(store));
   }
   if (what === "oauth-events") {
     if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
