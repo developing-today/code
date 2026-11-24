@@ -192,12 +192,7 @@ fn generated_operations_match_the_model() {
             let name = rng.pick(&NAMES);
             let namespace = NamespaceId::new(*name).unwrap();
             let core = *rng.pick(&[CoreKind::Content, CoreKind::Array]);
-            let candidate = definition(
-                name,
-                core,
-                rng.pick(&HANDLERS),
-                1 + rng.below(2),
-            );
+            let candidate = definition(name, core, rng.pick(&HANDLERS), 1 + rng.below(2));
             let context = if rng.below(4) == 0 { reader() } else { admin() };
             // Mostly the true generation; sometimes a stale or a
             // future one (the concurrent-writer case).
@@ -210,7 +205,8 @@ fn generated_operations_match_the_model() {
                 MutationKind::Revoke => None,
                 _ => Some(&candidate),
             };
-            let expected_result = model.apply(&context, expected, mutation, definition_arg, &namespace);
+            let expected_result =
+                model.apply(&context, expected, mutation, definition_arg, &namespace);
             let actual_result = match mutation {
                 MutationKind::Create => state.create(&auth, &context, expected, candidate.clone()),
                 MutationKind::Update => state.update(&auth, &context, expected, candidate.clone()),
@@ -220,7 +216,11 @@ fn generated_operations_match_the_model() {
                 actual_result, expected_result,
                 "seed {seed} step {step}: {mutation} {name}"
             );
-            assert_eq!(state.generation(), model.generation, "seed {seed} step {step}");
+            assert_eq!(
+                state.generation(),
+                model.generation,
+                "seed {seed} step {step}"
+            );
             let actual_definitions: BTreeMap<String, NamespaceDefinition> = state
                 .definitions()
                 .map(|d| (d.namespace.as_str().to_owned(), d.clone()))
@@ -240,11 +240,21 @@ fn each_successful_mutation_increments_exactly_one_generation() {
     let auth = authorizer();
     assert_eq!(state.generation(), 0);
     let created = state
-        .create(&auth, &admin(), 0, definition("main", CoreKind::Content, "files", 1))
+        .create(
+            &auth,
+            &admin(),
+            0,
+            definition("main", CoreKind::Content, "files", 1),
+        )
         .unwrap();
     assert_eq!(created, 1);
     let updated = state
-        .update(&auth, &admin(), 1, definition("main", CoreKind::Content, "files", 2))
+        .update(
+            &auth,
+            &admin(),
+            1,
+            definition("main", CoreKind::Content, "files", 2),
+        )
         .unwrap();
     assert_eq!(updated, 2);
     let revoked = state
@@ -253,7 +263,11 @@ fn each_successful_mutation_increments_exactly_one_generation() {
     assert_eq!(revoked, 3);
     assert_eq!(state.audit_log().len(), 3);
     assert_eq!(
-        state.audit_log().iter().map(|e| e.generation).collect::<Vec<_>>(),
+        state
+            .audit_log()
+            .iter()
+            .map(|e| e.generation)
+            .collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
 }
@@ -263,7 +277,12 @@ fn unauthorized_mutation_changes_nothing() {
     let mut state = server_state();
     let auth = authorizer();
     state
-        .create(&auth, &admin(), 0, definition("main", CoreKind::Content, "files", 1))
+        .create(
+            &auth,
+            &admin(),
+            0,
+            definition("main", CoreKind::Content, "files", 1),
+        )
         .unwrap();
     let before = state.clone();
     let refused = state.create(
@@ -296,13 +315,23 @@ fn generation_conflict_changes_nothing() {
     let mut state = server_state();
     let auth = authorizer();
     state
-        .create(&auth, &admin(), 0, definition("main", CoreKind::Content, "files", 1))
+        .create(
+            &auth,
+            &admin(),
+            0,
+            definition("main", CoreKind::Content, "files", 1),
+        )
         .unwrap();
     let before = state.clone();
     // Two writers both read generation 1; the first lands, the
     // second conflicts.
     state
-        .create(&auth, &admin(), 1, definition("wiki", CoreKind::Array, "docs", 1))
+        .create(
+            &auth,
+            &admin(),
+            1,
+            definition("wiki", CoreKind::Array, "docs", 1),
+        )
         .unwrap();
     let conflict = state.create(
         &auth,
@@ -327,7 +356,12 @@ fn update_cannot_change_core() {
     let mut state = server_state();
     let auth = authorizer();
     state
-        .create(&auth, &admin(), 0, definition("main", CoreKind::Content, "files", 1))
+        .create(
+            &auth,
+            &admin(),
+            0,
+            definition("main", CoreKind::Content, "files", 1),
+        )
         .unwrap();
     let moved = state.update(
         &auth,
@@ -345,7 +379,10 @@ fn update_cannot_change_core() {
     );
     assert_eq!(state.generation(), 1);
     assert_eq!(
-        state.resolve(&NamespaceId::new("main").unwrap()).unwrap().core,
+        state
+            .resolve(&NamespaceId::new("main").unwrap())
+            .unwrap()
+            .core,
         CoreKind::Content
     );
 }
@@ -355,10 +392,20 @@ fn state_round_trips_through_canonical_bytes() {
     let mut state = server_state();
     let auth = authorizer();
     state
-        .create(&auth, &admin(), 0, definition("main", CoreKind::Content, "files", 1))
+        .create(
+            &auth,
+            &admin(),
+            0,
+            definition("main", CoreKind::Content, "files", 1),
+        )
         .unwrap();
     state
-        .create(&auth, &admin(), 1, definition("wiki", CoreKind::Array, "docs", 3))
+        .create(
+            &auth,
+            &admin(),
+            1,
+            definition("wiki", CoreKind::Array, "docs", 3),
+        )
         .unwrap();
     state
         .revoke(&auth, &admin(), 2, &NamespaceId::new("main").unwrap())
@@ -372,7 +419,12 @@ fn state_round_trips_through_canonical_bytes() {
     // And the decoded state keeps mutating from its generation.
     let mut decoded = decoded;
     let next = decoded
-        .create(&auth, &admin(), 3, definition("lab", CoreKind::Content, "files", 1))
+        .create(
+            &auth,
+            &admin(),
+            3,
+            definition("lab", CoreKind::Content, "files", 1),
+        )
         .unwrap();
     assert_eq!(next, 4);
 }
@@ -407,10 +459,20 @@ fn registries_coexist_with_independent_state() {
     let auth = authorizer();
     let mut one = server_state();
     let mut two = RegistryState::new(RegistryId::handle("lab-rig").unwrap());
-    one.create(&auth, &admin(), 0, definition("main", CoreKind::Content, "files", 1))
-        .unwrap();
-    two.create(&auth, &admin(), 0, definition("main", CoreKind::Array, "docs", 1))
-        .unwrap();
+    one.create(
+        &auth,
+        &admin(),
+        0,
+        definition("main", CoreKind::Content, "files", 1),
+    )
+    .unwrap();
+    two.create(
+        &auth,
+        &admin(),
+        0,
+        definition("main", CoreKind::Array, "docs", 1),
+    )
+    .unwrap();
     let name = NamespaceId::new("main").unwrap();
     assert_eq!(one.resolve(&name).unwrap().core, CoreKind::Content);
     assert_eq!(two.resolve(&name).unwrap().core, CoreKind::Array);

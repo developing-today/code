@@ -42,8 +42,7 @@ maintenance script, on a `defaultReplication=000` (single-copy) cluster.
 ### 4. Delete resurrection as empty object — issue #12786 (2026-11-19, v4.54)
 
 A delete whose tombstone reached the `.dat` file before its `.idx` row can,
-after a crash, resurrect as an EMPTY object (HTTP 200, 0 bytes) instead of
-404. Documented in the code as an intentional tradeoff: an empty placeholder
+after a crash, resurrect as an EMPTY object (HTTP 200, 0 bytes) instead of 404. Documented in the code as an intentional tradeoff: an empty placeholder
 beats a wrong tombstone dropping an acknowledged write.
 Classification: known, documented edge behaviour; data-integrity smell, not
 silent loss of acknowledged content.
@@ -102,7 +101,8 @@ replication PUT to Object Lock targets; reported by a customer two days
 after release. Process finding recorded by the project: no Object Lock
 target was exercised between the change and the RC.
 Classification: release-process gap around exactly the features (replication
-+ Object Lock) a durability story rests on.
+
+- Object Lock) a durability story rests on.
 
 ### 4. Absence of production data-loss postmortems
 

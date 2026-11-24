@@ -66,10 +66,10 @@ The split above belongs to the October snapshot.
 
 Separate SQLite read transactions on November 23, 2026 counted physical table rows in these local stores. A repeat read of the canonical database at 17:57:15 UTC reproduced the 17:56:17 UTC result. Sizes are observed database-file bytes.
 
-| Local store | Sessions | Messages | Chunks | File bytes | SQLite schema version |
-|---|---:|---:|---:|---:|---:|
-| Canonical `~/atlas/turso-atlas/data/atlas.db` | 18,325 | 122,115 | 107,439 | 1,492,127,744 | 14 |
-| Dated publish-source file `atlas-publish-v2-2026-10-31.db` in the same directory | 18,325 | 122,124 | 107,639 | 1,704,194,048 | 12 |
+| Local store                                                                      | Sessions | Messages |  Chunks |    File bytes | SQLite schema version |
+| -------------------------------------------------------------------------------- | -------: | -------: | ------: | ------------: | --------------------: |
+| Canonical `~/atlas/turso-atlas/data/atlas.db`                                    |   18,325 |  122,115 | 107,439 | 1,492,127,744 |                    14 |
+| Dated publish-source file `atlas-publish-v2-2026-10-31.db` in the same directory |   18,325 |  122,124 | 107,639 | 1,704,194,048 |                    12 |
 
 The canonical table counts differ from the October record by 0 sessions, −9 messages and −200 chunks. The census cannot determine which changes produced those differences. At 17:58:34 UTC, the canonical CAS registry contained 24,184 rows and 12,092 distinct hashes. The named Snowflake vector table was absent from both files. The dated file contained 107,639 rows in its legacy BGE table. These observations describe only the two selected files. The 7.3 GB database in PR #12028 was rebuilt from a Turso export.
 

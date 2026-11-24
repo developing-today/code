@@ -12,10 +12,9 @@ import { createPmCoreScheduler, type SchedulerAudit } from "./pm-core-scheduler.
 
 const DEFAULT_AUDIT_PATH = join(homedir(), ".local/state/pm-aggregator/pm-core-jobs.jsonl");
 
-export async function startPmCoreJobs(options: {
-  auditPath?: string;
-  warn?: (message: string) => void;
-} = {}): Promise<ReturnType<typeof createPmCoreScheduler>> {
+export async function startPmCoreJobs(
+  options: { auditPath?: string; warn?: (message: string) => void } = {},
+): Promise<ReturnType<typeof createPmCoreScheduler>> {
   // Dynamic imports keep fixture/dev tools from loading host-only job
   // dependencies unless this live process actually starts the schedulers.
   const [{ main: runQuota }, { main: runFleetFeed }] = await Promise.all([

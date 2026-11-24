@@ -34,43 +34,43 @@ evidence.
 
 ### 1.1 Named families, by layer
 
-| Layer | Capability model | Revocation | Groups | Encryption | Sync model | Rust maturity | Cloudflare fit | SQLite/Turso fit | iroh fit | Production readiness |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **p2panda core + sync + net** (data/transport plane) | None — auth is separate crates | n/a | Topics only | Channel only (iroh QUIC/TLS 1.3) | Single-writer logs; LogSync height-vector exact set difference; offline-first | Native; 0.8.1; lower layers ~2 yrs published | None (native only, no WASM) | SQLite yes (SQLx); **Turso no** | **Native — it *is* an iroh app** | Pre-1.0; breaking changes per minor; wire format evolving |
-| **p2panda-auth** | Group-membership CRDT; 4 levels Pull<Read<Write<Manage + app-evaluated conditions; **no tokens, no delegation chains, no expiry** | Remove op + StrongRemove resolver: eventual, retroactive over concurrent work; no instant kill | **First-class, nestable; groups as members** | None itself (drives spaces) | Rides the op logs (CRDT DAG) | 0.8.1; first published 2025-07 | None | Via p2panda-store | Via p2panda-net | Pre-1.0; months old |
-| **p2panda-encryption + spaces** | n/a | Key rotation on remove (forward protection only) | Spaces bind auth groups to encryption contexts | DCGKA E2EE (X3DH+HPKE, XChaCha20-Poly1305); forward secrecy optional (Data scheme) / strong (Message scheme); **unaudited; group control messages unencrypted → membership metadata exposed; no post-quantum** | Rides the logs | 0.8.1; spaces first published 2026-07, high-level integration landed 0.8.0 | None | Via store (encryption/auth state persistence still "soon" in docs) | Via net | Youngest layer; project: "cannot recommend for high-risk use-cases" |
-| **Keyline** (Keyhive auth layer) | **Convergent capabilities**: delegation/revocation certificate CRDT; authority derived (RT₀/SDSI), widest-path attenuation; redundant routes; late binding; **no expiry, by design (no clocks)** | **Coordination-free and permanent — survives merges; best in the field.** Ex-admin keeps deny-only reach; escape is role rotation | Roles are keys; nesting, supply, device groups — same primitive throughout | None itself (drives BeeKEM) | State CRDT, set-union certificates; transport-blind | `keyline` crate + conformance suite; **in-memory store only** | None shipped (Wasm crate exists, unexercised in Workers) | Designed-for (SQL CTEs + driver loop for the non-linear fixpoint); not shipped | Via Subduction | **Pre-alpha** — but the design docs + conformance suite are the contract |
-| **BeeKEM** (Keyhive group keys) | n/a | Remove = blank path; next update re-keys (post-compromise security) | Per-document CGKA trees; ~thousands of members; O(log n) typical update | TreeKEM-variant CGKA needing only causal order; cross-fork security; content keys causal — **forward secrecy for history deliberately sacrificed**. Proofs: ePrint 2026/1434, **not yet peer-reviewed**. Code gaps: **G1 revoked member can seat a fresh own key (revocation bypass), G2 share keys unchecked vs prekeys** | Causal order only | `beekem` 0.5.x | None | n/a | n/a | Pre-alpha, unaudited |
-| **Subduction** (Keyhive's sync sibling) | Policy traits; Keyhive policy crate | None of its own — auth layer decides; sync stops forwarding | None | Payload-agnostic (carries E2EE); own Ed25519 mutual-auth handshake | Sedimentree set-union; 8-byte fingerprint reconciliation in 1.5 round trips; CRDT-agnostic | 0.19.x; fortnightly releases | None; object-store backend makes R2 plausible | **No SQLite** (fs / redb / object-store) | **Ships an iroh transport** | Project's words: "early preview… DO NOT use for production" |
-| **Willow data model** | None — authorisation is a parameter (Meadowcap) | n/a | Namespaces/subspaces only | None built in | State CRDT join; **current state only — no history, traceless deletion by design**; RBSR difference-proportional reconciliation | Canonical crates in 0.6 alphas; TS implementation most complete | None | **No** (sled / redb / fjall) | Conceptual fit; iroh-willow stale (iroh 0.34-era) | **Spec Final**; Rust implementation research-grade |
-| **Meadowcap** | **Receiver-bound area tokens** (subspace × path-prefix × time-range); attenuation cryptographically monotone (area inclusion); writes self-certifying, travel with the entry | **None.** Short time windows + non-renewal + supersession hygiene; the renewal service is yours to build | **None** (owned/communal namespaces are the only shapes) | None (prefix-preserving path encryption is a documented technique, not a protocol) | n/a — authorisation parameter | `meadowcap` crate; **spec Final 2025-11-21**, two independent implementations; const-generic/ufotofu flavour | Verification is pure computation; TS implementation runs in Workers | n/a (tokens travel with entries) | Keys are Ed25519; a subspace key can literally be a NodeId | Spec-grade; no Rust sync ecosystem around it |
-| **CapTP / OCapN** (protocol layer) | Live references; attenuation = facet objects (stateful, Turing-complete policy) | **Immediate** — interposition / session severance; no expiry concept | **None** | Netlayer's problem | **None — live sessions only; offline = broken promises** | **Stage-0 single-author learning project** | None | None | None (a netlayer over iroh is conceivable, unbuilt) | **Pre-specification; wire broke compatibility in 2026** |
-| **Endo / SES** (JS runtime layer) | Ocap in JavaScript; petname daemon; formula retention | Petname deletion → formula GC cancels values, severs connections (live) | None | None | None | None (JS) | SES can run in Workers in principle; no CapTP Workers story | None | None | SES production-proven (MetaMask); `@endo/ocapn` 1.1.0 with CI interop vs Goblins |
-| **Goblins** (Scheme runtime layer) | Most complete CapTP: handoffs, distributed acyclic GC | Live, by interposition | None | Netlayers: Tor; Prelay v0 forwards **cleartext**; Noise E2EE relay announced, unreleased | None (Aurie/Bloblin persist one node's own graph — not replication) | None (Guile/Racket) | None (Hoot→Wasm exists) | None (Syrup/Bloblin stores) | None (libp2p netlayer least exercised) | "Working Beta", v0.18.0 |
-| **Agoric / SwingSet** (platform layer) | CapTP into a chain via the comms vat; ERTP rights-as-objects, Zoe offer safety | Live, in-vat | None | The chain's | Consensus as netlayer — the exception that proves the live-only rule | None (JS / Cosmos) | None | None | None | Production chain; value to this estate is patterns, not adoption |
-| **Cap'n Proto RPC** (Rust) | **Level 1 only**: connection-scoped references + promise pipelining; attenuation by facet object | Membrane pattern (you build it); disconnect revokes incidentally | None | **Unspecified** — bring TLS/Noise/iroh | None | `capnp-rpc` real and used; Level 1; single-maintainer lineage | workerd *is* Cap'n Proto (C++); the Rust crates have no Workers story | Serialisation is a fine signable blob format; no store | **Composable**: runs over any byte stream; iroh supplies the identity + encryption it lacks | Level 1 proven at Cloudflare scale (C++); Rust stable-but-thin |
-| **Cap'n Web** | Ocap stubs in JS; pipelining; in-band `authenticate()` pattern | Session lifetime; membranes yours | None | HTTPS/WSS (platform) | None | One 0.1.0 sketch crate | **First-party Workers citizen** | None | None | Experimental (Sep 2025); JS-only in practice |
-| **UCAN** | **Deepest token model**: mandatory monotone attenuation, policy language, **invocation as a separate signed object** | Reserved-namespace revocation exists; **propagation to validators explicitly out of scope** | None (principals/subjects only) | None | None | **1.0 not ready**: `rs-ucan` is pre-1.0 JWT; 1.0 (DAG-CBOR) only in third-party pre-release crates | Verification portable; no official WASM story | Tokens are CIDs/blobs; a deny-list is trivial | **`did:key` Ed25519 is NodeId-shaped — exact fit** | Spec 1.0.0 untagged on main; production lineage is JS/Go (Storacha) |
-| **Biscuit** | Bearer tokens; Datalog checks; offline attenuation; third-party blocks | Per-block revocation IDs + verifier deny-list (a SQLite table in this estate); expiry idiomatic via time checks | None (roles encodable as facts) | None (public-key verification; Ed25519 default, P-256 ok, **P-384 not**) | None | **Reference implementation** (`biscuit-auth` 6.0) | **Official WASM build** — Workers verification realistic today | Deny-list is a native fit | Bind to NodeId via a check (thin house layer) | Eclipse project; production use; two breaking third-party-block security fixes in its history |
+| Layer                                                | Capability model                                                                                                                                                                                 | Revocation                                                                                                                        | Groups                                                                     | Encryption                                                                                                                                                                                                                                                                                                                 | Sync model                                                                                                                      | Rust maturity                                                                                                | Cloudflare fit                                                        | SQLite/Turso fit                                                               | iroh fit                                                                                    | Production readiness                                                                          |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **p2panda core + sync + net** (data/transport plane) | None — auth is separate crates                                                                                                                                                                   | n/a                                                                                                                               | Topics only                                                                | Channel only (iroh QUIC/TLS 1.3)                                                                                                                                                                                                                                                                                           | Single-writer logs; LogSync height-vector exact set difference; offline-first                                                   | Native; 0.8.1; lower layers ~2 yrs published                                                                 | None (native only, no WASM)                                           | SQLite yes (SQLx); **Turso no**                                                | **Native — it _is_ an iroh app**                                                            | Pre-1.0; breaking changes per minor; wire format evolving                                     |
+| **p2panda-auth**                                     | Group-membership CRDT; 4 levels Pull<Read<Write<Manage + app-evaluated conditions; **no tokens, no delegation chains, no expiry**                                                                | Remove op + StrongRemove resolver: eventual, retroactive over concurrent work; no instant kill                                    | **First-class, nestable; groups as members**                               | None itself (drives spaces)                                                                                                                                                                                                                                                                                                | Rides the op logs (CRDT DAG)                                                                                                    | 0.8.1; first published 2025-07                                                                               | None                                                                  | Via p2panda-store                                                              | Via p2panda-net                                                                             | Pre-1.0; months old                                                                           |
+| **p2panda-encryption + spaces**                      | n/a                                                                                                                                                                                              | Key rotation on remove (forward protection only)                                                                                  | Spaces bind auth groups to encryption contexts                             | DCGKA E2EE (X3DH+HPKE, XChaCha20-Poly1305); forward secrecy optional (Data scheme) / strong (Message scheme); **unaudited; group control messages unencrypted → membership metadata exposed; no post-quantum**                                                                                                             | Rides the logs                                                                                                                  | 0.8.1; spaces first published 2026-07, high-level integration landed 0.8.0                                   | None                                                                  | Via store (encryption/auth state persistence still "soon" in docs)             | Via net                                                                                     | Youngest layer; project: "cannot recommend for high-risk use-cases"                           |
+| **Keyline** (Keyhive auth layer)                     | **Convergent capabilities**: delegation/revocation certificate CRDT; authority derived (RT₀/SDSI), widest-path attenuation; redundant routes; late binding; **no expiry, by design (no clocks)** | **Coordination-free and permanent — survives merges; best in the field.** Ex-admin keeps deny-only reach; escape is role rotation | Roles are keys; nesting, supply, device groups — same primitive throughout | None itself (drives BeeKEM)                                                                                                                                                                                                                                                                                                | State CRDT, set-union certificates; transport-blind                                                                             | `keyline` crate + conformance suite; **in-memory store only**                                                | None shipped (Wasm crate exists, unexercised in Workers)              | Designed-for (SQL CTEs + driver loop for the non-linear fixpoint); not shipped | Via Subduction                                                                              | **Pre-alpha** — but the design docs + conformance suite are the contract                      |
+| **BeeKEM** (Keyhive group keys)                      | n/a                                                                                                                                                                                              | Remove = blank path; next update re-keys (post-compromise security)                                                               | Per-document CGKA trees; ~thousands of members; O(log n) typical update    | TreeKEM-variant CGKA needing only causal order; cross-fork security; content keys causal — **forward secrecy for history deliberately sacrificed**. Proofs: ePrint 2026/1434, **not yet peer-reviewed**. Code gaps: **G1 revoked member can seat a fresh own key (revocation bypass), G2 share keys unchecked vs prekeys** | Causal order only                                                                                                               | `beekem` 0.5.x                                                                                               | None                                                                  | n/a                                                                            | n/a                                                                                         | Pre-alpha, unaudited                                                                          |
+| **Subduction** (Keyhive's sync sibling)              | Policy traits; Keyhive policy crate                                                                                                                                                              | None of its own — auth layer decides; sync stops forwarding                                                                       | None                                                                       | Payload-agnostic (carries E2EE); own Ed25519 mutual-auth handshake                                                                                                                                                                                                                                                         | Sedimentree set-union; 8-byte fingerprint reconciliation in 1.5 round trips; CRDT-agnostic                                      | 0.19.x; fortnightly releases                                                                                 | None; object-store backend makes R2 plausible                         | **No SQLite** (fs / redb / object-store)                                       | **Ships an iroh transport**                                                                 | Project's words: "early preview… DO NOT use for production"                                   |
+| **Willow data model**                                | None — authorisation is a parameter (Meadowcap)                                                                                                                                                  | n/a                                                                                                                               | Namespaces/subspaces only                                                  | None built in                                                                                                                                                                                                                                                                                                              | State CRDT join; **current state only — no history, traceless deletion by design**; RBSR difference-proportional reconciliation | Canonical crates in 0.6 alphas; TS implementation most complete                                              | None                                                                  | **No** (sled / redb / fjall)                                                   | Conceptual fit; iroh-willow stale (iroh 0.34-era)                                           | **Spec Final**; Rust implementation research-grade                                            |
+| **Meadowcap**                                        | **Receiver-bound area tokens** (subspace × path-prefix × time-range); attenuation cryptographically monotone (area inclusion); writes self-certifying, travel with the entry                     | **None.** Short time windows + non-renewal + supersession hygiene; the renewal service is yours to build                          | **None** (owned/communal namespaces are the only shapes)                   | None (prefix-preserving path encryption is a documented technique, not a protocol)                                                                                                                                                                                                                                         | n/a — authorisation parameter                                                                                                   | `meadowcap` crate; **spec Final 2025-11-21**, two independent implementations; const-generic/ufotofu flavour | Verification is pure computation; TS implementation runs in Workers   | n/a (tokens travel with entries)                                               | Keys are Ed25519; a subspace key can literally be a NodeId                                  | Spec-grade; no Rust sync ecosystem around it                                                  |
+| **CapTP / OCapN** (protocol layer)                   | Live references; attenuation = facet objects (stateful, Turing-complete policy)                                                                                                                  | **Immediate** — interposition / session severance; no expiry concept                                                              | **None**                                                                   | Netlayer's problem                                                                                                                                                                                                                                                                                                         | **None — live sessions only; offline = broken promises**                                                                        | **Stage-0 single-author learning project**                                                                   | None                                                                  | None                                                                           | None (a netlayer over iroh is conceivable, unbuilt)                                         | **Pre-specification; wire broke compatibility in 2026**                                       |
+| **Endo / SES** (JS runtime layer)                    | Ocap in JavaScript; petname daemon; formula retention                                                                                                                                            | Petname deletion → formula GC cancels values, severs connections (live)                                                           | None                                                                       | None                                                                                                                                                                                                                                                                                                                       | None                                                                                                                            | None (JS)                                                                                                    | SES can run in Workers in principle; no CapTP Workers story           | None                                                                           | None                                                                                        | SES production-proven (MetaMask); `@endo/ocapn` 1.1.0 with CI interop vs Goblins              |
+| **Goblins** (Scheme runtime layer)                   | Most complete CapTP: handoffs, distributed acyclic GC                                                                                                                                            | Live, by interposition                                                                                                            | None                                                                       | Netlayers: Tor; Prelay v0 forwards **cleartext**; Noise E2EE relay announced, unreleased                                                                                                                                                                                                                                   | None (Aurie/Bloblin persist one node's own graph — not replication)                                                             | None (Guile/Racket)                                                                                          | None (Hoot→Wasm exists)                                               | None (Syrup/Bloblin stores)                                                    | None (libp2p netlayer least exercised)                                                      | "Working Beta", v0.18.0                                                                       |
+| **Agoric / SwingSet** (platform layer)               | CapTP into a chain via the comms vat; ERTP rights-as-objects, Zoe offer safety                                                                                                                   | Live, in-vat                                                                                                                      | None                                                                       | The chain's                                                                                                                                                                                                                                                                                                                | Consensus as netlayer — the exception that proves the live-only rule                                                            | None (JS / Cosmos)                                                                                           | None                                                                  | None                                                                           | None                                                                                        | Production chain; value to this estate is patterns, not adoption                              |
+| **Cap'n Proto RPC** (Rust)                           | **Level 1 only**: connection-scoped references + promise pipelining; attenuation by facet object                                                                                                 | Membrane pattern (you build it); disconnect revokes incidentally                                                                  | None                                                                       | **Unspecified** — bring TLS/Noise/iroh                                                                                                                                                                                                                                                                                     | None                                                                                                                            | `capnp-rpc` real and used; Level 1; single-maintainer lineage                                                | workerd _is_ Cap'n Proto (C++); the Rust crates have no Workers story | Serialisation is a fine signable blob format; no store                         | **Composable**: runs over any byte stream; iroh supplies the identity + encryption it lacks | Level 1 proven at Cloudflare scale (C++); Rust stable-but-thin                                |
+| **Cap'n Web**                                        | Ocap stubs in JS; pipelining; in-band `authenticate()` pattern                                                                                                                                   | Session lifetime; membranes yours                                                                                                 | None                                                                       | HTTPS/WSS (platform)                                                                                                                                                                                                                                                                                                       | None                                                                                                                            | One 0.1.0 sketch crate                                                                                       | **First-party Workers citizen**                                       | None                                                                           | None                                                                                        | Experimental (Sep 2025); JS-only in practice                                                  |
+| **UCAN**                                             | **Deepest token model**: mandatory monotone attenuation, policy language, **invocation as a separate signed object**                                                                             | Reserved-namespace revocation exists; **propagation to validators explicitly out of scope**                                       | None (principals/subjects only)                                            | None                                                                                                                                                                                                                                                                                                                       | None                                                                                                                            | **1.0 not ready**: `rs-ucan` is pre-1.0 JWT; 1.0 (DAG-CBOR) only in third-party pre-release crates           | Verification portable; no official WASM story                         | Tokens are CIDs/blobs; a deny-list is trivial                                  | **`did:key` Ed25519 is NodeId-shaped — exact fit**                                          | Spec 1.0.0 untagged on main; production lineage is JS/Go (Storacha)                           |
+| **Biscuit**                                          | Bearer tokens; Datalog checks; offline attenuation; third-party blocks                                                                                                                           | Per-block revocation IDs + verifier deny-list (a SQLite table in this estate); expiry idiomatic via time checks                   | None (roles encodable as facts)                                            | None (public-key verification; Ed25519 default, P-256 ok, **P-384 not**)                                                                                                                                                                                                                                                   | None                                                                                                                            | **Reference implementation** (`biscuit-auth` 6.0)                                                            | **Official WASM build** — Workers verification realistic today        | Deny-list is a native fit                                                      | Bind to NodeId via a check (thin house layer)                                               | Eclipse project; production use; two breaking third-party-block security fixes in its history |
 
 ### 1.2 Wider field, same axes (survey note, compressed)
 
-| Layer | Capability model | Revocation | Groups | Encryption | Sync model | Rust | Cloudflare | SQLite/Turso | iroh | Readiness |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Macaroons | Caveat chains — the origin of offline attenuation | Short lifetimes only | None | **Symmetric-only verification (deal-breaker here)** | None | Crate unmaintained | DIY WebCrypto only | n/a | n/a | Prior art, not a dependency |
-| Veilid | DHT record ownership; route blobs as bearer caps | Weak | None | Privacy routing (its differentiator) | DHT store, no merge semantics | Rust-first, 0.5.x pre-1.0 | None | Own DHT | **Competes with iroh** | Beta; no verified large production |
-| Hypercore / Holepunch | Log key = identity; encrypted-core key = read cap | App-level | Autobase multi-writer | Encrypted cores | **Signed single-writer logs + sparse replication — strongest sync model in the survey** | **JS-only** (`datrs` unofficial) | None | Own stores | Competes | Production (Keet); funded, single-backer |
-| libp2p | Key possession only | n/a | None | Noise / TLS 1.3 channels | None (gossipsub is broadcast, not sync) | Mature (0.57, pre-1.0), heavyweight | Browser transports | n/a | Duplicates iroh's job; bridge is 0.1.x WIP | Production networks; keep as interop escape hatch |
-| Freenet | Contract WASM *is* the validity policy; delegates hold secrets | Contract-level | None | X25519+AEAD transport | Contract state as commutative monoid; delta sync | Rust 0.2.x alpha; **AGPL-3.0** | None | Network-hosted state (anti-fit) | Competes | ~440-peer live network |
-| Holochain | **CapGrant/CapClaim — the only complete capability system in the p2p set**; membrane proofs gate admission | Delete the grant | Agent-centric; no group primitive | App-level | Validated DHT; no merge semantics | Conductor mature-ish, pre-1.0 | None | DHT | **Runs on iroh today (Kitsune2 transport)** | A decade of churn; framework adoption cost is the price |
-| AT Protocol (patterns) | Thin (PDS OAuth/JWT) | n/a | n/a | n/a | MST repository + CAR export | Community Rust (Atrium) | n/a | n/a | n/a | Production at Bluesky scale — borrow the key split (§4), not the protocol |
-| Noise / WireGuard | Identity only | Config edits | None | **The channel layer itself; forward secrecy** | None | `snow` / `boringtun` strong | n/a | n/a | Subsumed by iroh's QUIC/TLS in the target design | Production everywhere |
-| SPIFFE / SPIRE | SVIDs assert identity only | Short TTL (~1 h) + auto-rotation | Trust domains | mTLS via SVIDs | None | Client-only; SPIRE itself is Go | n/a | n/a | n/a | CNCF graduated — adopt format + discipline (§4), not the control plane |
+| Layer                  | Capability model                                                                                           | Revocation                       | Groups                            | Encryption                                          | Sync model                                                                              | Rust                                | Cloudflare         | SQLite/Turso                    | iroh                                             | Readiness                                                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------- | --------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------- | ------------------ | ------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------- |
+| Macaroons              | Caveat chains — the origin of offline attenuation                                                          | Short lifetimes only             | None                              | **Symmetric-only verification (deal-breaker here)** | None                                                                                    | Crate unmaintained                  | DIY WebCrypto only | n/a                             | n/a                                              | Prior art, not a dependency                                               |
+| Veilid                 | DHT record ownership; route blobs as bearer caps                                                           | Weak                             | None                              | Privacy routing (its differentiator)                | DHT store, no merge semantics                                                           | Rust-first, 0.5.x pre-1.0           | None               | Own DHT                         | **Competes with iroh**                           | Beta; no verified large production                                        |
+| Hypercore / Holepunch  | Log key = identity; encrypted-core key = read cap                                                          | App-level                        | Autobase multi-writer             | Encrypted cores                                     | **Signed single-writer logs + sparse replication — strongest sync model in the survey** | **JS-only** (`datrs` unofficial)    | None               | Own stores                      | Competes                                         | Production (Keet); funded, single-backer                                  |
+| libp2p                 | Key possession only                                                                                        | n/a                              | None                              | Noise / TLS 1.3 channels                            | None (gossipsub is broadcast, not sync)                                                 | Mature (0.57, pre-1.0), heavyweight | Browser transports | n/a                             | Duplicates iroh's job; bridge is 0.1.x WIP       | Production networks; keep as interop escape hatch                         |
+| Freenet                | Contract WASM _is_ the validity policy; delegates hold secrets                                             | Contract-level                   | None                              | X25519+AEAD transport                               | Contract state as commutative monoid; delta sync                                        | Rust 0.2.x alpha; **AGPL-3.0**      | None               | Network-hosted state (anti-fit) | Competes                                         | ~440-peer live network                                                    |
+| Holochain              | **CapGrant/CapClaim — the only complete capability system in the p2p set**; membrane proofs gate admission | Delete the grant                 | Agent-centric; no group primitive | App-level                                           | Validated DHT; no merge semantics                                                       | Conductor mature-ish, pre-1.0       | None               | DHT                             | **Runs on iroh today (Kitsune2 transport)**      | A decade of churn; framework adoption cost is the price                   |
+| AT Protocol (patterns) | Thin (PDS OAuth/JWT)                                                                                       | n/a                              | n/a                               | n/a                                                 | MST repository + CAR export                                                             | Community Rust (Atrium)             | n/a                | n/a                             | n/a                                              | Production at Bluesky scale — borrow the key split (§4), not the protocol |
+| Noise / WireGuard      | Identity only                                                                                              | Config edits                     | None                              | **The channel layer itself; forward secrecy**       | None                                                                                    | `snow` / `boringtun` strong         | n/a                | n/a                             | Subsumed by iroh's QUIC/TLS in the target design | Production everywhere                                                     |
+| SPIFFE / SPIRE         | SVIDs assert identity only                                                                                 | Short TTL (~1 h) + auto-rotation | Trust domains                     | mTLS via SVIDs                                      | None                                                                                    | Client-only; SPIRE itself is Go     | n/a                | n/a                             | n/a                                              | CNCF graduated — adopt format + discipline (§4), not the control plane    |
 
 **Reading the matrix.** Three structural facts fall out of it:
 
-1. **The axes split.** Nothing scores well on both the *replicated-data*
-   columns (sync, groups, offline) and the *live-authority* columns
+1. **The axes split.** Nothing scores well on both the _replicated-data_
+   columns (sync, groups, offline) and the _live-authority_ columns
    (immediate revocation, stateful attenuation). The log families and the
    ocap families are answering different questions (§2 of the ocap note),
    and each is structurally weak where the other is strong.
@@ -95,7 +95,7 @@ evidence.
 - **The transport bet is already made, and p2panda is it.** The estate's
   recorded transport design (#13752) chose iroh — NodeId identity,
   self-hosted relays, hole punching. p2panda-net does not merely compose
-  with iroh; it *is* an iroh application (endpoint, gossip, blobs), and
+  with iroh; it _is_ an iroh application (endpoint, gossip, blobs), and
   adds the three things raw iroh lacks: exact log sync, gossip overlays,
   and confidential topic discovery (peers prove shared knowledge of a
   topic without revealing it). Adopting p2panda's data plane adopts no
@@ -111,8 +111,8 @@ evidence.
   identity the way the project intends.
 - **E2EE for replicated data exists today**, in a published crate — DCGKA
   group encryption wired to group membership via spaces. Neither raw iroh
-  nor the current tsnet setup provides encryption for *stored,
-  replicated* content at all.
+  nor the current tsnet setup provides encryption for _stored,
+  replicated_ content at all.
 - **Every hard preference is natively met by the lower stack:** Rust,
   SQLite, MIT/Apache-2.0, self-hostable relays, no server component, and a
   codebase small enough (~60k lines) to fork if the three-person,
@@ -140,14 +140,14 @@ evidence.
   deadlock/flaky-test fixes in the same changelog.
 - **The encryption is unaudited and leaks metadata.** The encryption
   crate's own security section: "This crate has not yet received a
-  security audit"; "We currently *cannot* recommend using this technology
+  security audit"; "We currently _cannot_ recommend using this technology
   for high-risk use-cases"; group control messages are currently
   **unencrypted**, so membership metadata (who is in which group) is
   observable to anyone who can see the traffic; and there is no
   post-quantum story (harvest-now-decrypt-later exposure stands).
 - **Broker-style coordination fights the single-writer-log grain.** The
   fleet's centre of gravity is a broker: queue claims, placement slots,
-  leases — inherently *multi-writer* contention over shared state.
+  leases — inherently _multi-writer_ contention over shared state.
   p2panda pointedly has no server, no RPC, no request/response semantics;
   modelling claims and leases as replicated state over single-writer logs
   imports exactly the contention semantics the broker exists to avoid.
@@ -162,7 +162,7 @@ evidence.
   arm's-length bridges forever — acceptable, but it means "everything"
   never actually covers the estate's edge or its Go service.
 - **Identity is raw keys, full stop.** No PKI/CA integration, no naming,
-  no rotation or recovery. p2panda identities would live *alongside* the
+  no rotation or recovery. p2panda identities would live _alongside_ the
   fleet CA / interim IdP CA, not under them; nothing in p2panda consumes
   a certificate. Two identity systems is a permanent operational fact of
   this option, not a migration phase.
@@ -183,8 +183,8 @@ that together do.
 ## 3. The composed alternatives
 
 Compositions A and B are alternative answers to the same question —
-*authorisation for replicated data* — and are the real fork. Composition
-C answers a different question — *authority inside live sessions* — and
+_authorisation for replicated data_ — and are the real fork. Composition
+C answers a different question — _authority inside live sessions_ — and
 is needed under either A or B, because the estate is already building
 live-session surfaces (coordinator-handed-off Actions-runner exec,
 #13774; placement claims, #13765) that neither A nor B addresses.
@@ -195,13 +195,13 @@ live-session surfaces (coordinator-handed-off Actions-runner exec,
 Meadowcap's validity rules are adopted **as a specification** — either
 the `meadowcap` crate or a house re-implementation against the Final
 spec, checked against the two existing implementations — and bound to
-p2panda as a header-extension authorisation token: an *area* is a
+p2panda as a header-extension authorisation token: an _area_ is a
 p2panda topic × path-prefix × time window; the owned-namespace root key
 is the estate's root of authority (Meadowcap is generic over signature
 schemes, so an Ed25519 root aligned with NodeIds — or a P-384
 instantiation aligned with the interim IdP CA — is spec-legal either
 way; that choice is decision point 4 in §5). p2panda-auth is demoted to
-what it is good at: replicated *membership* state. The fleet broker runs
+what it is good at: replicated _membership_ state. The fleet broker runs
 the renewal service Meadowcap's model requires: seats receive
 short-window capabilities at check-in; revocation is non-renewal plus
 supersession hygiene writes.
@@ -223,7 +223,7 @@ supersession hygiene writes.
   replicated is already read. Per-entry chain overhead (area + key +
   signature per delegation step) rides every authorised operation
   forever. Timestamp discipline becomes security-critical operational
-  policy, because capability windows bind *claimed* timestamps.
+  policy, because capability windows bind _claimed_ timestamps.
 - **What remains unbuilt.** The Meadowcap↔p2panda extension binding; the
   renewal service in the broker; the signature-scheme instantiation
   decision; clock/future-dating policy; and the coherence rules between
@@ -250,7 +250,7 @@ authorisation graph, able to store and forward ciphertext,
 cryptographically unable to read. Storage is two append-only SQLite
 tables; evaluation follows the implementers' own notes (SQL CTEs for the
 passes that are declarative, a driver loop for the non-linear fixpoint).
-Group keys follow BeeKEM's *shape* (per-document trees, blank-on-remove,
+Group keys follow BeeKEM's _shape_ (per-document trees, blank-on-remove,
 conflict keys) as the design reference; until someone builds or audits
 that layer, group E2EE stays on p2panda-encryption with its unaudited
 status explicit. Subduction is not adopted — p2panda-sync stays.
@@ -264,8 +264,8 @@ status explicit. Subduction is not adopted — p2panda-sync stays.
   subject grants it to all members with no re-issuance. Groups, roles,
   device collectives, and documents are one primitive, not four.
   `Relay` is a direct hit on this estate's door architecture: today the
-  doors hold ambient trust; under Keyline they would hold a *power in
-  the graph*, auditable like everyone else.
+  doors hold ambient trust; under Keyline they would hold a _power in
+  the graph_, auditable like everyone else.
 - **What it costs.** We write and maintain a security-critical
   authorisation engine. It is bounded (polynomial evaluation; the
   reference answers `members()` in ~1 ms at 180 members) but it is ours
@@ -278,7 +278,7 @@ status explicit. Subduction is not adopted — p2panda-sync stays.
   rotate-after-admin-removal (an ex-admin's deny-only reach is forever),
   and a root role that is append-only by construction — "treat it like
   a root CA." BeeKEM-shaped keys are a design commitment, not a
-  deliverable: adopting the *code* today would import G1 (a revoked
+  deliverable: adopting the _code_ today would import G1 (a revoked
   member can delegate to a fresh own key and get it seated — a live
   revocation bypass in the CGKA path) and G2 (share keys unchecked
   against prekeys), which is precisely why this composition adopts the
@@ -298,7 +298,7 @@ status explicit. Subduction is not adopted — p2panda-sync stays.
 
 ### 3.C The live-session layer, whichever of A/B wins: Biscuit tokens + capnp-over-iroh
 
-**Shape.** Where the interaction is a *live session* rather than
+**Shape.** Where the interaction is a _live session_ rather than
 replicated data — Actions-runner exec sessions, the compile
 coordinator's handoff, seat↔broker RPC — the stack is: an **iroh stream**
 as transport (identity = NodeId, encryption = QUIC/TLS 1.3); **Cap'n
@@ -306,7 +306,7 @@ Proto RPC Level 1** over that stream for live, facet-attenuated calls
 with promise pipelining; revocation by **interposition** (membrane /
 caretaker facets) plus disconnection; and **Biscuit tokens** as the
 expiring, attenuable, offline-checkable credential that authorises
-*opening* the session — minted on the broker/CA side, bound to the
+_opening_ the session — minted on the broker/CA side, bound to the
 holder's NodeId by a Datalog check, revoked via the per-block
 revocation-ID deny-list kept in SQLite. Cap'n Web is the same idea at
 the JS edge, adopted only where JS is native (Workers/browser surfaces).
@@ -382,10 +382,10 @@ this quarter."
    formula/retention GC as the lifecycle metaphor for seats, sessions,
    and leases.)
 5. **ATProto's key-split recovery (survey).** Split identity into
-   *rotation keys* (few, priority-ordered, held in escrow) that control
+   _rotation keys_ (few, priority-ordered, held in escrow) that control
    the identity record and can replace signing keys and repoint the
    host **even if the old host is offline or uncooperative**, and
-   *signing keys* that only sign data. For seat identity this is
+   _signing keys_ that only sign data. For seat identity this is
    strictly better than "the CA reissues everything": a lost or hostile
    seat is recovered by rotation-key action, with the PLC-style
    operation log as the audit trail. It composes with the estate's
@@ -395,7 +395,7 @@ this quarter."
    (`spiffe://<trust-domain>/<path>` URIs) and the short-TTL,
    auto-rotation policy (~1 h) now: a house CA issuing short-lived
    X.509 with a URI SAN, plus the existing OIDC provider issuing JWTs
-   with the same URI as `sub`, already *is* an SVID system in substance.
+   with the same URI as `sub`, already _is_ an SVID system in substance.
    Deploy SPIRE itself only when external interop (Istio/Envoy, cloud
    workload-identity federation) or attestation becomes concrete.
    Name the genuine gap honestly: **attestation** — minting identity
@@ -412,13 +412,13 @@ Stated as choices with consequences. The evidence narrows these; it
 cannot settle them, because each turns on risk appetite, sequencing, or
 how much machinery the estate wants to own.
 
-1. **Revocation posture for replicated data.** (a) *Short windows +
-   broker renewal* (composition A): revocation latency is bounded and
+1. **Revocation posture for replicated data.** (a) _Short windows +
+   broker renewal_ (composition A): revocation latency is bounded and
    predictable, but authority depends on a live renewal path — a
-   partitioned seat keeps its window. (b) *Coordination-free permanent
-   revocation* (composition B): revocation survives any merge, forever,
+   partitioned seat keeps its window. (b) _Coordination-free permanent
+   revocation_ (composition B): revocation survives any merge, forever,
    offline — at the price of owning the engine and its folklore.
-   (c) *Accept p2panda-auth as-is*: least new machinery; revocation is
+   (c) _Accept p2panda-auth as-is_: least new machinery; revocation is
    eventual and retroactive, and delegated/scoped grants stay
    unexpressible. This choice decides how a compromised seat's authority
    actually dies across the estate.
@@ -434,7 +434,7 @@ how much machinery the estate wants to own.
    data-layer E2EE entirely. Consequences either way: membership
    metadata is exposed until control-message encryption lands, and
    harvest-now-decrypt-later exposure stands until a post-quantum story
-   exists. What the data *is* decides how much this matters, and that
+   exists. What the data _is_ decides how much this matters, and that
    valuation is Drew's.
 4. **Identity binding, and the curve question.** Bind author/NodeId keys
    to the fleet CA / IdP CA (certificates attesting key ownership — a
@@ -499,7 +499,7 @@ borrowed, whose revocation weakness (no revocation, only non-renewal)
 is precisely the one this estate can patch cheaply because its seats
 already check in. B has strictly better revocation semantics but exists
 as pre-alpha code carrying a disclosed revocation bypass in its key
-seating path; adopting its *model* now and its *code* later captures the
+seating path; adopting its _model_ now and its _code_ later captures the
 ideas without betting the estate on them. C is not optional garnish:
 the live-session surfaces are being built this month, and neither A nor
 B says anything about them. p2panda-for-everything, by contrast, asks
@@ -510,7 +510,7 @@ own documentation.
 **What evidence would change this recommendation.**
 
 - **Keyhive closes G1/G2** and the ciphersuite construction gets its
-  independent review (or a full audit lands): composition B's *code*
+  independent review (or a full audit lands): composition B's _code_
   becomes adoptable, and Keyline-as-code likely displaces
   Meadowcap-as-spec — better revocation, native Relay, one auth system
   instead of two.
@@ -536,8 +536,8 @@ own documentation.
 
 ---
 
-*Sources: the five research notes in `research/` are the evidence base;
+_Sources: the five research notes in `research/` are the evidence base;
 every load-bearing claim above traces to a claim in those notes and its
 primary-source citation. This document is the investigation's synthesis
 deliverable under the master prompt in
-`p2panda-program-investigation-prompt.md`.*
+`p2panda-program-investigation-prompt.md`._

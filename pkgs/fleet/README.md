@@ -1,5 +1,7 @@
 # fleet — the multicall fleet binary
 
+[Program charter](../../doc/2026-11-23T18-00-00Z_design_fleet_program/charter.md) · [R&D book](book/research/overview.md) · [Implementation plan](book/research/roadmap.md)
+
 One Rust binary for the whole fleet surface (epic
 developing-today/code#5412; design note
 `../../doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/2026-11-04T11-45-48Z_design_fleet_multicall_binary.md`). This
@@ -304,8 +306,8 @@ and every build compiles it, so no build can know a domain another
 build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
 `fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
-`fleet shell`, `fleet search`, `fleet laptop-agent`, `fleet cert` and
-`fleet actions`, and the
+`fleet shell`, `fleet search`, `fleet laptop-agent`, `fleet cert`,
+`fleet actions` and `fleet orgs`, and the
 laptop route forms (#13717): `fleet laptop` (tier T0, the generic
 tiered command), `fleet commander` (T1), `fleet http` (T2) and
 `fleet ssh` (T3), plus the

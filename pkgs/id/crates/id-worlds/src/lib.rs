@@ -54,6 +54,7 @@ pub mod program_gallery_admission;
 pub mod program_gallery_operator;
 pub mod program_registry;
 pub mod program_registry_net;
+pub mod program_registry_pkarr;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 mod session_host;
@@ -77,6 +78,7 @@ pub mod world_session;
 pub mod world_ssh;
 pub mod world_storage;
 pub mod world_store;
+pub mod world_template;
 pub mod world_terminal;
 
 pub use id_caps::world_caps;

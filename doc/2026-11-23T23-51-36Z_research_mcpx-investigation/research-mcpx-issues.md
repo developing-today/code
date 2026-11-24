@@ -6,15 +6,15 @@ programme's precise union (labels overlap) is the issue-map deliverable.
 
 ## 1. Census headline
 
-| Slice | Open | All-state |
-|---|---|---|
-| `app/mcpx` | **21** | 374 |
-| `epic/mcpx-platform` | **45** | 110 |
-| `epic/mcpx` | 3 | — |
-| `epic/mcpx-maintenance` | 1 (the epic itself, #12459) | — |
-| `queue/blocked` ∩ `app/mcpx` | 4 | — |
-| `status/blocked` ∩ text "mcpx" | 18 | — |
-| Any open issue mentioning "mcpx" (title/body) | 92 | — |
+| Slice                                         | Open                        | All-state |
+| --------------------------------------------- | --------------------------- | --------- |
+| `app/mcpx`                                    | **21**                      | 374       |
+| `epic/mcpx-platform`                          | **45**                      | 110       |
+| `epic/mcpx`                                   | 3                           | —         |
+| `epic/mcpx-maintenance`                       | 1 (the epic itself, #12459) | —         |
+| `queue/blocked` ∩ `app/mcpx`                  | 4                           | —         |
+| `status/blocked` ∩ text "mcpx"                | 18                          | —         |
+| Any open issue mentioning "mcpx" (title/body) | 92                          | —         |
 
 The two main labels overlap heavily (most `app/mcpx` issues also carry
 `epic/mcpx-platform`); the tracker family (#1884–#1987) mostly carries only

@@ -4,8 +4,13 @@
 //! bearer token is never accepted by or serialized from [`Manifest`].
 //!
 //! Slice 2 (page/block core, link rewriting, files) lives in [`content`].
+//! Slice 4 comment claims (§2.4) live in [`comments`].
+//! Slice 3 (databases: note identity and per-data-source schema claims)
+//! lives in [`databases`].
 
+pub mod comments;
 pub mod content;
+pub mod databases;
 
 #[cfg(unix)]
 use std::fs::File;
@@ -45,6 +50,18 @@ pub trait NotionApi {
     ) -> Result<serde_json::Value>;
     /// Return whether the comments endpoint can be queried for this page.
     fn comments_available(&mut self, page_id: &str) -> Result<bool>;
+    /// Fetch one page of comments for a page (`GET /v1/comments`).
+    /// Only called for pages whose [`NotionApi::comments_available`]
+    /// returned `true`. The default returns an empty list, so transports
+    /// and test doubles that predate slice 4 keep compiling; a real
+    /// transport must override it.
+    fn comments(
+        &mut self,
+        _page_id: &str,
+        _start_cursor: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        Ok(serde_json::json!({"object":"list","results":[],"has_more":false}))
+    }
     /// Return the top-level IDs visible to this integration.
     fn visible_share_ids(&self) -> Vec<String>;
     /// Return the workspace edition when the transport can determine it.
@@ -563,6 +580,11 @@ pub struct Manifest {
     pub inventory: Inventory,
     /// Stable Notion page UUID -> destination note UUID.
     pub page_id_to_note_id: BTreeMap<String, String>,
+    /// Stable Notion database UUID -> destination note UUID. Assigned by
+    /// [`Manifest::assign_database_identities`]; absent from slice-1/2
+    /// manifests, so it defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub database_id_to_note_id: BTreeMap<String, String>,
     /// Stable Notion block UUID -> (destination note UUID, block identity).
     pub block_id_to_identity: BTreeMap<String, (String, String)>,
     /// Stable data-source UUID -> (current database UUID, source identity).
@@ -573,6 +595,17 @@ pub struct Manifest {
     /// defaults empty when an older manifest is loaded.
     #[serde(default)]
     pub file_blobs: BTreeMap<String, FileBlobRecord>,
+    /// Page UUID -> its comment claims (§2.4), recorded by
+    /// [`comments::convert_comments`]. Absent from pre-slice-4
+    /// manifests, so it defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub comment_claims: BTreeMap<String, Vec<crate::comments::CommentClaim>>,
+    /// Page UUID -> whether the acquisition path could see the page's
+    /// comments (§2.4). A page present here has had its comments
+    /// converted (possibly to zero claims); a page absent here has not.
+    /// Absent from pre-slice-4 manifests, so it defaults empty.
+    #[serde(default)]
+    pub comments_coverage: BTreeMap<String, crate::comments::CommentsCoverage>,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
@@ -628,9 +661,12 @@ impl Manifest {
                 .collect(),
             inventory,
             page_id_to_note_id: BTreeMap::new(),
+            database_id_to_note_id: BTreeMap::new(),
             block_id_to_identity: BTreeMap::new(),
             data_source_id_to_identity,
             file_blobs: BTreeMap::new(),
+            comment_claims: BTreeMap::new(),
+            comments_coverage: BTreeMap::new(),
         })
     }
 
@@ -652,8 +688,12 @@ impl Manifest {
             .filter(|object| object.kind == "page")
             .map(|object| object.id.clone())
             .collect();
-        let mut taken: std::collections::BTreeSet<String> =
-            self.page_id_to_note_id.values().cloned().collect();
+        let mut taken: std::collections::BTreeSet<String> = self
+            .page_id_to_note_id
+            .values()
+            .cloned()
+            .chain(self.database_id_to_note_id.values().cloned())
+            .collect();
         let mut assigned = 0;
         for page_id in page_ids {
             if self.page_id_to_note_id.contains_key(&page_id) {
@@ -668,6 +708,50 @@ impl Manifest {
                 bail!("note id minter returned duplicate id {note_id}");
             }
             self.page_id_to_note_id.insert(page_id, note_id);
+            assigned += 1;
+        }
+        Ok(assigned)
+    }
+
+    /// Assign a destination note ID to every inventoried database that
+    /// lacks one (design §2.2: one note per database; §3: identity is
+    /// assigned for the whole inventory before any content converts, so
+    /// forward references resolve). Mirrors
+    /// [`Manifest::assign_page_identities`]: assignments already recorded
+    /// are never changed, and a minter that returns an empty or
+    /// already-used ID fails the pass rather than forking identity.
+    /// Returns how many databases were newly assigned.
+    pub fn assign_database_identities(
+        &mut self,
+        mint: &mut dyn FnMut(&str) -> Result<String>,
+    ) -> Result<usize> {
+        let database_ids: Vec<String> = self
+            .inventory
+            .objects
+            .values()
+            .filter(|object| object.kind == "database")
+            .map(|object| object.id.clone())
+            .collect();
+        let mut taken: std::collections::BTreeSet<String> = self
+            .database_id_to_note_id
+            .values()
+            .cloned()
+            .chain(self.page_id_to_note_id.values().cloned())
+            .collect();
+        let mut assigned = 0;
+        for database_id in database_ids {
+            if self.database_id_to_note_id.contains_key(&database_id) {
+                continue;
+            }
+            let note_id = mint(&database_id)
+                .with_context(|| format!("mint note id for database {database_id}"))?;
+            if note_id.trim().is_empty() {
+                bail!("note id minter returned an empty id for database {database_id}");
+            }
+            if !taken.insert(note_id.clone()) {
+                bail!("note id minter returned duplicate id {note_id}");
+            }
+            self.database_id_to_note_id.insert(database_id, note_id);
             assigned += 1;
         }
         Ok(assigned)

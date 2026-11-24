@@ -45,7 +45,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::hash_profile::{ProfileDispatch, DEFAULT_MAX_CONTENT_BYTES};
+use crate::hash_profile::{DEFAULT_MAX_CONTENT_BYTES, ProfileDispatch};
 use crate::id_shape::{HashProfile, IdShapeError};
 use crate::signed_envelope::{Body, Envelope, EnvelopeError, EnvelopeId, PayloadId};
 

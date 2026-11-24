@@ -11,13 +11,13 @@ All GitHub reads via `fleet gh api` (REST, paginated, `per_page=100`); all issue
 
 ## Census (evidence)
 
-| repo | items in window | issues / PRs | open at census | labels in repo |
-|---|---|---|---|---|
-| developing-today/code | 13,452 | 7,009 / 6,443 | 1,387 (1,325 at the later open-fetch) | 372 |
-| developing-today-forks/opencode | 2,596 | 1,218 / 1,378 | 39 | 165 |
-| developing-today-forks/openchamber | 2,433 | 1,183 / 1,250 | 32 | 147 |
-| dezren39/fleet | 113 | 19 / 94 | 9 | 15 |
-| **total** | **18,594** | | **1,405–1,467** | |
+| repo                               | items in window | issues / PRs  | open at census                        | labels in repo |
+| ---------------------------------- | --------------- | ------------- | ------------------------------------- | -------------- |
+| developing-today/code              | 13,452          | 7,009 / 6,443 | 1,387 (1,325 at the later open-fetch) | 372            |
+| developing-today-forks/opencode    | 2,596           | 1,218 / 1,378 | 39                                    | 165            |
+| developing-today-forks/openchamber | 2,433           | 1,183 / 1,250 | 32                                    | 147            |
+| dezren39/fleet                     | 113             | 19 / 94       | 9                                     | 15             |
+| **total**                          | **18,594**      |               | **1,405–1,467**                       |                |
 
 Code-repo open-issue linkage classification (1,199 open issues at classification time):
 
@@ -107,6 +107,7 @@ The full Lane 7 brief is preserved as the first comment-history of tracking issu
 > UMBRELLA TRACKING ISSUE: developing-today/code#13871 — https://github.com/developing-today/code/issues/13871 — the cross-lane coordination point. Your tracking issue IS the stray-work audit issue described in your brief below; post its link as a comment on #13871 and post progress on it at EVERY slice boundary.
 >
 > SHARED RULES (binding on all seven lanes):
+>
 > - GitHub access: the fleet GitHub subcommand ONLY. All reads via `fleet gh api` (the `fleet` binary lives at ~/.local/share/hatch-recovery/bin/fleet — put that dir on PATH); all issue/comment writes via `~/tools/gh-post` (the GitHub App identity). NEVER plain `gh` with the user token, NEVER the GitHub connector. Reason (Drew): direct access burns the personal user API tokens; the GitHub App identity must do this work. If a fleet-gh verb you need does not exist, report that to the coordinator in your return — do not fall back to plain gh.
 > - Tracking first: file your own tracking issue in developing-today/code, link it on the umbrella (#13871), and post progress on it at EVERY slice boundary. Check the umbrella + an issue's comments before acting on it — if another lane has claimed it, the lane whose primary scope it is owns the action; the other records a pointer comment on the umbrella, never a duplicate issue or PR.
 > - Exhaustive, one by one, read everything. No sampling, no skimming by title. Volume is large — work in slices (per repo, per batch); if a slice exceeds one session, enqueue per-batch sub-work to the pilot queue (`--queue repo-health-code-pilot`, kind `feature_slice` + `payload.slice`, NEVER kind `design`; premise + singular-ownership check first, fresh fleet-gh REST reads, comments per_page=100 count-confirmed) following the lane conventions. A claim comment from another lane is a HARD STOP.

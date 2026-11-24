@@ -63,7 +63,7 @@
 
 use std::fmt;
 
-use crate::canonical_cbor::{decode_canonical, encode_canonical, CborError, Value};
+use crate::canonical_cbor::{CborError, Value, decode_canonical, encode_canonical};
 use crate::id_shape::{ContentId, HashProfile, IdShapeError};
 use crate::signed_envelope::MAX_LABEL_BYTES;
 use crate::stream_record::{

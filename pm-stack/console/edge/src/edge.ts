@@ -49,6 +49,7 @@ import {
   edgeConfig,
   HELD_FOR_MS,
   type Held,
+  type HeldFor,
   HOLDABLE,
   keyId,
   type MachineReport,
@@ -81,6 +82,7 @@ import type { Later } from "../../src/plan.ts";
 import { platformRead } from "../../src/reads.ts";
 import { Notifier, WATCHED as NOTIFIED } from "../../src/notify.ts";
 import { contact, Push } from "../../src/push.ts";
+import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
 import type { Store } from "../../src/store.ts";
 import { timed, unread } from "../../src/timed.ts";
 
@@ -146,6 +148,19 @@ interface ApkMeta {
 }
 const ACT_LIMIT = 256 * 1024;
 const HELD_MAX = 100;
+/** After a pass over what is held that could do none of it, how long
+ * before another is tried. */
+const DRAIN_AGAIN_MS = 60_000;
+/** Said of something begun by an object that was put away before it
+ * ended. */
+const RESTARTED = "Cloudflare restarted while doing this; check whether it happened before trying again.";
+/** What the owner is told of something held, by who it waits for. */
+const HELD_SAID: Record<HeldFor, string> = {
+  either:
+    "Held: it could not be done just now. Cloudflare does it as soon as it can again, or the laptop if it is back first.",
+  machine: "Held: the laptop cannot be reached. It will be sent when it is back.",
+  asked: "Held: the laptop did not answer. It may have got this, and says what became of it when it is back.",
+};
 const ACTS_KEPT = 30;
 const AUDIT_KEPT = 300;
 /** "Someone is looking" lasts this long after the last read of a document. */
@@ -206,6 +221,11 @@ interface Acted {
   state: "running" | "done" | "given";
   status?: number;
   body?: Record<string, unknown>;
+  /** For "given": how many times it has set off toward a machine. Word
+   * that one asking never arrived says the action reached no machine
+   * only when that asking was the only one. (A record from before this
+   * was counted has none, and is taken to have set off already.) */
+  relays?: number;
 }
 const ICONS = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
 
@@ -263,6 +283,13 @@ export interface EdgeOptions {
      * puts stand-ins in their place. */
     githubApi?: string;
     queueDb?: string;
+    /** Which kinds this object does itself: every one it can
+     * (DIRECT_ACTIONS) unless said. A test says, to stand for a kind
+     * only a machine can do that is about the same thing as one done
+     * here: since "done" became this side's no kind of today's is, and
+     * the rule for one (what comes after it waits behind it) has to
+     * hold for the next that is. */
+    kinds?: readonly string[];
   };
   /** Ask to be woken at a time: to read again what the owner is told
    * about, and to notice a machine gone quiet. */
@@ -328,6 +355,18 @@ export class Edge {
   private unread = new Map<string, number>();
   /** Names of actions this object is doing right now. */
   private doing = new Set<string>();
+  /** Held actions this side has taken to do itself: out of the held
+   * list, so that no machine is handed them, and not yet settled. Kept
+   * in storage under "taken", so that an object that starts again
+   * knows what became of each (see recoverTaken). Null until read. */
+  private taken: Held[] | null = null;
+  /** For each thing a taken action is about, the doing of it: a newer
+   * action about the same thing waits for it to end. */
+  private busy = new Map<string, Promise<void>>();
+  /** A pass over what is held is under way in this object. */
+  private draining = false;
+  /** No pass before this time: the last one could do nothing. */
+  private drainNotBefore = 0;
   /** Both of those have been read back from storage. They are kept
    * there because this object is put away when idle: one that forgot
    * them would claim each section again on every start, and a machine,
@@ -341,7 +380,10 @@ export class Edge {
   private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
   private getAlarm: () => Promise<number | null>;
+  /** What this side goes by (see config()), worked out from `told`. */
   private cfg: EdgeConfig | null | undefined;
+  /** What a machine told, as it is kept; undefined until read. */
+  private told: EdgeConfig | null | undefined;
   private mirrors = new Map<string, Mirror | null>();
   private held: Held[] | null = null;
   /** Held actions already handed to a machine in a report answer and not
@@ -447,7 +489,7 @@ export class Edge {
     this.push = new Push(
       kvStore(this.kv, "push"),
       // The contact a push service is given: the project's page.
-      () => contact(this.cfg?.repo ?? "developing-today/code"),
+      () => contact(platformSettings().repo),
       (url, init) => this.fetchImpl(url, init as RequestInit),
       this.now,
     );
@@ -472,6 +514,9 @@ export class Edge {
           // still turned away, the first call says so again.
           await this.github.free();
           await this.saveAway();
+          // What is held and this side can do is done on its next wake,
+          // which the scheduling after this action sets for at once.
+          this.drainNotBefore = 0;
           return { tried };
         },
         touch: [],
@@ -486,7 +531,10 @@ export class Edge {
           const held = await this.heldList();
           const at = held.findIndex((h) => h.id === a.id);
           if (at < 0) {
-            throw new OpError(404, "That is no longer waiting: a machine took it, or it was taken back already.");
+            throw new OpError(
+              404,
+              "That is no longer waiting: it was done or is being done, or was taken back already.",
+            );
           }
           const [gone] = held.splice(at, 1);
           await this.saveHeld();
@@ -703,8 +751,23 @@ export class Edge {
 
   // ---- what is kept ------------------------------------------------------
 
+  /** What a machine told, as it told it and as it is kept. */
+  private async toldConfig(): Promise<EdgeConfig | null> {
+    if (this.told === undefined) this.told = edgeConfig(await this.kv.get("cfg"));
+    return this.told;
+  }
+
+  /** What this side goes by; null until a machine has said who may
+   * sign in. Who may sign in is as the machine told it (the
+   * deployment's, until that is applied from Actions: #13495). The
+   * repository's settings are this side's own, as its deploy carries
+   * them, whatever a machine told for them; the list of repositories
+   * alone is still the machine's (src/settings.ts says why). */
   private async config(): Promise<EdgeConfig | null> {
-    if (this.cfg === undefined) this.cfg = edgeConfig(await this.kv.get("cfg"));
+    if (this.cfg === undefined) {
+      const told = await this.toldConfig();
+      this.cfg = told === null ? null : goesBy(told);
+    }
     return this.cfg;
   }
 
@@ -878,6 +941,350 @@ export class Edge {
     if (changed) await this.saveHanded();
   }
 
+  // ---- what is held, done here ------------------------------------------
+  //
+  // What the owner did while this side was turned away and no machine
+  // could be reached is held for a machine. When this side can act
+  // again it does what it holds itself, so that nothing waits for a
+  // machine that may not come. The rule that keeps anything from being
+  // done twice is that an action is one side's or the other's, never
+  // both. It is a machine's once it may have reached one: handed out in
+  // a report's answer, or sent toward one with nothing to say that it
+  // never arrived (see withMachine). It is this side's once it has been
+  // taken out of the held list, which is done before anything is begun,
+  // and only ever with one that certainly reached no machine.
+
+  /** A machine has this, or may have. It was handed out in a report's
+   * answer; or it is not known to have reached no machine (it went
+   * toward one and nothing said that it never arrived, or it was kept
+   * before that was written down). It is that machine's by name, which
+   * sorts out whether it did it. This side never does it itself, and
+   * nothing newer about the same thing goes ahead of it. */
+  private withMachine(h: Held, handed: Set<string>): boolean {
+    return handed.has(h.id) || h.unsent !== true;
+  }
+
+  /** What a held action is about, or itself when it stands alone. */
+  private heldAbout(h: Held): string {
+    return subjectOf(h.kind, h.args) ?? `:${h.id}`;
+  }
+
+  /** Who each held action waits for, as the owner is told it. The same
+   * rule heldMine goes by: this side does the oldest about a thing, and
+   * then the next, for as long as each is a kind it does and nothing
+   * about the thing is, or may be, with a machine. */
+  private async heldWaits(cfg: EdgeConfig | null): Promise<Map<string, HeldFor>> {
+    const held = await this.heldList();
+    const handed = await this.handedList();
+    const can = this.primary(cfg) && this.mine(cfg) !== null;
+    const withMachine = new Set(held.filter((h) => this.withMachine(h, handed)).map((h) => this.heldAbout(h)));
+    // Things with something ahead that only a machine can do.
+    const behind = new Set<string>();
+    const waits = new Map<string, HeldFor>();
+    for (const h of held) {
+      const about = this.heldAbout(h);
+      if (this.withMachine(h, handed)) waits.set(h.id, "asked");
+      else if (can && this.does(h.kind) && !withMachine.has(about) && !behind.has(about)) {
+        waits.set(h.id, "either");
+      } else {
+        waits.set(h.id, "machine");
+        behind.add(about);
+      }
+    }
+    return waits;
+  }
+
+  /** A held action put where its time says it goes: oldest first. */
+  private insertHeld(held: Held[], item: Held): void {
+    const at = held.findIndex((h) => h.at > item.at);
+    if (at < 0) held.push(item);
+    else held.splice(at, 0, item);
+  }
+
+  /** What this side has taken, read back when an object starts, and each
+   * settled by what its record says. One that is in the held list again
+   * (or never left it) is not taken. One whose record says it ended,
+   * ended. One begun and not ended was being done by an object that was
+   * put away: whether it happened is not known, and neither side does
+   * it again; the owner is told to look. One never begun waits again,
+   * where it was. */
+  private async recoverTaken(): Promise<void> {
+    const stored = (await this.kv.get("taken")) as unknown;
+    this.taken = [];
+    if (!Array.isArray(stored) || stored.length === 0) return;
+    const held = await this.heldList();
+    let back = false;
+    for (const item of stored as Partial<Held>[]) {
+      if (
+        !item ||
+        typeof item.id !== "string" ||
+        typeof item.kind !== "string" ||
+        typeof item.at !== "string" ||
+        typeof item.who !== "string" ||
+        item.args === null ||
+        typeof item.args !== "object"
+      ) {
+        continue;
+      }
+      const was = item as Held;
+      if (held.some((h) => h.id === was.id)) continue;
+      const key = `a:${was.id}`;
+      const record = ((await this.kv.get(key)) as Acted | undefined) ?? null;
+      if (record?.state === "done") continue;
+      if (record?.state === "running") {
+        await this.kv.put(key, {
+          at: this.now(),
+          kind: was.kind,
+          state: "done",
+          status: 502,
+          body: { error: RESTARTED },
+        } satisfies Acted);
+        await this.logAct({ id: was.id, kind: was.kind, at: was.at, by: was.who, status: "failed", note: RESTARTED });
+        continue;
+      }
+      this.insertHeld(held, was);
+      back = true;
+      await this.kv.put(key, { at: this.now(), kind: was.kind, state: "given" } satisfies Acted);
+    }
+    if (back) await this.saveHeld();
+    await this.kv.delete("taken");
+  }
+
+  /** Take a held action to do here: out of the held list before anything
+   * is begun, so that a machine reporting meanwhile is not handed it.
+   * Null if it is not this side's to take: gone from the list, or a
+   * machine's (see withMachine), which may be doing it. */
+  private async takeHeld(id: string): Promise<{ item: Held; ended: () => void } | null> {
+    await this.ready();
+    const held = await this.heldList();
+    const handed = await this.handedList();
+    // From here until the lists are changed nothing is waited for: a
+    // report answered meanwhile sees the list with it or without it,
+    // and a newer action about the same thing finds this one being done.
+    const at = held.findIndex((h) => h.id === id);
+    if (at < 0 || this.withMachine(held[at], handed)) return null;
+    const [item] = held.splice(at, 1);
+    const taken = (this.taken ??= []);
+    taken.push(item);
+    const about = this.heldAbout(item);
+    let over: () => void = () => {};
+    const doing = new Promise<void>((resolve) => {
+      over = resolve;
+    });
+    this.busy.set(about, doing);
+    const ended = () => {
+      if (this.busy.get(about) === doing) this.busy.delete(about);
+      over();
+    };
+    try {
+      // Written down as taken before it leaves the held list: an object
+      // put away between the two finds it in both, and it was not begun.
+      await this.kv.put("taken", taken);
+      await this.saveHeld();
+    } catch (error) {
+      // It could not be written down: it was not taken, and waits as
+      // it did (nothing was handed out meanwhile that is about the
+      // same thing, since it was this side's for as long as this took).
+      this.taken = (this.taken ?? []).filter((t) => t.id !== item.id);
+      if (!held.some((h) => h.id === item.id)) this.insertHeld(held, item);
+      ended();
+      throw error;
+    }
+    return { item, ended };
+  }
+
+  /** Do here a held action that never reached a machine. "done": it
+   * ended here, well or badly, and its record and "What you did" say
+   * how. "back": this side was turned away before anything was written,
+   * and it waits again where it was, a machine's by name as before.
+   * "gone": it was not this side's to take. */
+  private async doHeld(item: Held): Promise<"done" | "back" | "gone"> {
+    const took = await this.takeHeld(item.id);
+    if (!took) return "gone";
+    const { item: taken, ended } = took;
+    try {
+      let outcome: "done" | "back" = "done";
+      try {
+        await this.once(taken.id, taken.kind, () =>
+          this.directAct(taken.kind, taken.args, taken.who, "edge", taken.id),
+        );
+      } catch (error) {
+        // Anything else is a failure of this side's own (its storage):
+        // it stays taken, and the next object settles it by its record.
+        if (!(error instanceof HandOver)) throw error;
+        outcome = "back";
+      }
+      if (outcome === "back") {
+        await this.kv.put(`a:${taken.id}`, { at: this.now(), kind: taken.kind, state: "given" } satisfies Acted);
+        await this.actedIndex(taken.id);
+        this.insertHeld(await this.heldList(), taken);
+        await this.saveHeld();
+      }
+      this.taken = (this.taken ?? []).filter((t) => t.id !== taken.id);
+      await this.kv.put("taken", this.taken);
+      return outcome;
+    } finally {
+      ended();
+    }
+  }
+
+  /** A held action that a newer one of its kind, about the same thing,
+   * makes pointless (a rank set twice ends at the last): dropped, and
+   * said to have been replaced. */
+  private async replaceHeld(old: Held, by: string): Promise<void> {
+    const list = await this.heldList();
+    const at = list.findIndex((h) => h.id === old.id);
+    if (at >= 0) list.splice(at, 1);
+    await this.saveHeld();
+    await this.unhand([old.id]);
+    await this.audit({
+      at: new Date(this.now()).toISOString(),
+      who: old.who,
+      via: "edge",
+      action: old.kind,
+      phase: "done",
+      ok: false,
+      error: `replaced by a newer ${by}: the last one wins`,
+    });
+    await this.logAct({
+      id: old.id,
+      kind: old.kind,
+      at: old.at,
+      by: old.who,
+      status: "failed",
+      note: `Replaced by a newer ${by}: the last one wins.`,
+    });
+    await this.kv.put(`a:${old.id}`, {
+      at: this.now(),
+      kind: old.kind,
+      state: "done",
+      status: 409,
+      body: { error: "This was replaced by a newer action about the same thing." },
+    } satisfies Acted);
+    await this.actedIndex(old.id);
+  }
+
+  /** For each thing held actions are about (one that stands alone is
+   * its own), the oldest of them, where it is one this side could do
+   * itself: a kind it runs, that certainly reached no machine, and
+   * nothing else about the same thing with a machine either. Only the
+   * oldest about a thing can be done next, so these are all a pass can
+   * begin with. */
+  private async heldMine(cfg: EdgeConfig | null): Promise<Held[]> {
+    if (!this.primary(cfg) || !this.mine(cfg)) return [];
+    const held = await this.heldList();
+    const handed = await this.handedList();
+    const withMachine = new Set(held.filter((h) => this.withMachine(h, handed)).map((h) => this.heldAbout(h)));
+    const seen = new Set<string>();
+    const first: Held[] = [];
+    for (const h of held) {
+      const about = this.heldAbout(h);
+      if (seen.has(about)) continue;
+      seen.add(about);
+      if (this.does(h.kind) && !withMachine.has(about)) first.push(h);
+    }
+    return first;
+  }
+
+  /** When this side may next try one of its kind: not while it is
+   * turned away for the kind, nor before the time GitHub gave. (Every
+   * kind is kept to GitHub's time, though one or two ask only the queue
+   * store: tried sooner, the rest would only be turned away again.) */
+  private async heldReadyAt(kind: string): Promise<number> {
+    this.refusedKinds();
+    return Math.max(this.refused.get(kind) ?? 0, (await this.github.quiet()).core?.until ?? 0);
+  }
+
+  /** The time of the next thing to do about what is held: the first of
+   * it this side could do itself, and the day's end of the oldest of it
+   * whoever's it is. Null when nothing is held. */
+  private async heldDue(cfg: EdgeConfig | null): Promise<number | null> {
+    const held = await this.heldList();
+    if (held.length === 0) return null;
+    const times = held.map((h) => Date.parse(h.at) + HELD_FOR_MS + 1000).filter((t) => Number.isFinite(t));
+    for (const h of await this.heldMine(cfg)) {
+      times.push(Math.max(await this.heldReadyAt(h.kind), this.drainNotBefore));
+    }
+    return times.length > 0 ? Math.min(...times) : null;
+  }
+
+  /** What has waited more than a day is dropped, and said to have been. */
+  private async expireHeld(now: number): Promise<boolean> {
+    const held = await this.heldList();
+    const handed = await this.handedList();
+    let dropped = false;
+    for (const old of held.filter((h) => now - Date.parse(h.at) > HELD_FOR_MS)) {
+      // Said before it leaves the list: whether a machine may have had it.
+      const maybe = this.withMachine(old, handed);
+      held.splice(held.indexOf(old), 1);
+      dropped = true;
+      await this.logAct({
+        id: old.id,
+        kind: old.kind,
+        at: old.at,
+        by: old.who,
+        status: "failed",
+        note: maybe
+          ? "The laptop may have got this, and did not say what became of it within a day: check whether it happened before trying again."
+          : "Not sent: the laptop was out of reach for more than a day.",
+      });
+    }
+    return dropped;
+  }
+
+  /** What is held and never reached a machine is done here, now that
+   * this side can: the oldest about each thing first, and nothing about
+   * a thing behind one that could not be done. One pass at a time. */
+  private async drainHeld(cfg: EdgeConfig | null): Promise<void> {
+    if (this.draining || this.now() < this.drainNotBefore) return;
+    this.draining = true;
+    let did = 0;
+    let tried = false;
+    try {
+      await this.ready();
+      // Left for another pass: what this one could not do, and
+      // everything behind it about the same thing.
+      const left = new Set<string>();
+      for (let turn = 0; turn < 2 * HELD_MAX; turn++) {
+        const now = this.now();
+        let pick: Held | null = null;
+        for (const h of await this.heldMine(cfg)) {
+          const about = this.heldAbout(h);
+          if (left.has(about)) continue;
+          if (this.doing.has(h.id) || (await this.heldReadyAt(h.kind)) > now) {
+            left.add(about);
+            continue;
+          }
+          pick = h;
+          break;
+        }
+        if (!pick) break;
+        tried = true;
+        const about = subjectOf(pick.kind, pick.args);
+        const one = pick;
+        if (
+          LAST_WINS.has(one.kind) &&
+          about !== null &&
+          (await this.heldList()).some(
+            (h) => h.id !== one.id && h.kind === one.kind && subjectOf(h.kind, h.args) === about,
+          )
+        ) {
+          await this.replaceHeld(one, one.kind);
+          did++;
+          continue;
+        }
+        const went = await this.doHeld(one);
+        if (went === "done") did++;
+        else left.add(about ?? `:${one.id}`);
+      }
+    } finally {
+      this.draining = false;
+      // A pass that tried and could do nothing is not tried again at
+      // once. (One that found nothing due yet sets no such pause.)
+      if (tried && did === 0) this.drainNotBefore = this.now() + DRAIN_AGAIN_MS;
+    }
+  }
+
   /** The platform's own part, each machine that reports, and what is
    * held for one: what the Machines screen is drawn from. Answered
    * here, so it is there with every machine away. */
@@ -886,6 +1293,8 @@ export class Edge {
     const primary = this.primary(cfg);
     const refused = this.refusedKinds();
     const seen = this.hostSeen || null;
+    const told = await this.toldConfig();
+    const differs = told === null ? [] : settingsDifferences(told);
     return {
       served: "edge",
       platform: {
@@ -895,7 +1304,7 @@ export class Edge {
         // less what it was turned away for and a machine does for the hour.
         actions: [
           ...Object.keys(this.table).sort(),
-          ...(primary ? (DIRECT_ACTIONS as readonly string[]).filter((kind) => !refused.includes(kind)) : []),
+          ...(primary ? this.kinds().filter((kind) => !refused.includes(kind)) : []),
         ],
         sections: primary ? this.owned(cfg) : [],
         refused: [...refused, ...this.refusedReads().map((name) => `read.${name}`)],
@@ -912,14 +1321,28 @@ export class Edge {
                 version: this.hostVersion,
                 actions: this.machine?.actions ?? [],
                 sections: this.machine?.sections ?? [],
+                ...(differs.length > 0 ? { differs } : {}),
               },
             ],
-      held: [...(await this.heldList())],
+      held: await this.heldSaid(cfg),
     };
   }
 
+  /** How much is held, by who it waits for. */
+  private async heldCounts(cfg: EdgeConfig | null): Promise<Record<HeldFor, number>> {
+    const counts: Record<HeldFor, number> = { either: 0, machine: 0, asked: 0 };
+    for (const waits of (await this.heldWaits(cfg)).values()) counts[waits]++;
+    return counts;
+  }
+
+  /** What is held, each with who it waits for. */
+  private async heldSaid(cfg: EdgeConfig | null): Promise<(Held & { waits: HeldFor })[]> {
+    const waits = await this.heldWaits(cfg);
+    return (await this.heldList()).map((h) => ({ ...h, waits: waits.get(h.id) ?? "machine" }));
+  }
+
   /** What the app is told of this side, beside its state: how much is
-   * waiting for a machine, and whether this side does the core itself. */
+   * waiting to be done, and whether this side does the core itself. */
   private async showEdge(): Promise<void> {
     this.docs.extra("edge", { held: (this.held ?? []).length, primary: this.primary(await this.config()) });
   }
@@ -960,6 +1383,7 @@ export class Edge {
       await this.heldList();
       await this.showEdge();
     }
+    if (this.taken === null) await this.recoverTaken();
     if (this.ownActs === null) await this.showActs();
     if (this.hostSeen === null) {
       const host = (await this.kv.get("host")) as
@@ -1029,23 +1453,28 @@ export class Edge {
 
   // ---- doing the core here ------------------------------------------------
 
+  /** The kinds this side does itself when it does the core. */
+  private kinds(): readonly string[] {
+    return this.direct?.kinds ?? DIRECT_ACTIONS;
+  }
+
+  /** A kind this side does itself when it does the core; any other is
+   * a machine's whenever one comes. */
+  private does(kind: string): boolean {
+    return this.kinds().includes(kind);
+  }
+
   /** The switch is on and both tokens are here. */
   private directCapable(): boolean {
     return this.direct?.enabled === true && Boolean(this.direct.githubToken) && Boolean(this.direct.queueToken);
   }
 
-  /** The config carries what this side needs to do the core: a config
-   * stored or reported before that existed has these empty, and the
-   * edge serves the app from the mirror without acting itself. */
-  private directConfigReady(cfg: EdgeConfig | null): boolean {
-    return cfg !== null && cfg.queueDbUrl !== "" && cfg.queueTokenName !== "" && cfg.promptLabel !== "";
-  }
-
-  /** This side does the core itself: it has the switch, the tokens, and
-   * has been told where things are. Whether a machine is reporting
-   * makes no difference to this. */
+  /** This side does the core itself: it has the switch and the tokens,
+   * and a machine has said who may sign in. Where things are it knows
+   * by itself (src/settings.ts). Whether a machine is reporting makes
+   * no difference to this. */
   private primary(cfg: EdgeConfig | null): boolean {
-    return this.directCapable() && this.directConfigReady(cfg);
+    return this.directCapable() && cfg !== null;
   }
 
   /** A section this side reads itself. */
@@ -1061,7 +1490,15 @@ export class Edge {
   private owned(cfg: EdgeConfig | null): string[] {
     if (!this.primary(cfg)) return [];
     const refused = this.refusedReads();
-    return DIRECT_READ_SECTIONS.filter((name) => !refused.includes(name));
+    return DIRECT_READ_SECTIONS.filter(
+      (name) =>
+        !refused.includes(name) &&
+        // What is labelled as needing the owner is read repository by
+        // repository: a machine that has not said which they are (one
+        // from before it did) goes on reporting the list itself. Read
+        // from no repositories it would be an empty list, and whole.
+        (name !== "census" || (cfg?.needsRepos.length ?? 0) > 0),
+    );
   }
 
   /** Sections this side's token was turned away for, and still is. */
@@ -1432,12 +1869,15 @@ export class Edge {
     await this.ready();
     const last = this.hostSeq ?? 0;
     if (msg.at <= last) return json({ error: "replay", last }, 409);
-    const cfg = edgeConfig(msg.config);
-    if (!cfg) return json({ error: "config: not one this side can use" }, 400);
-    if (JSON.stringify(cfg) !== JSON.stringify(await this.config())) {
-      await this.kv.put("cfg", cfg);
-      this.cfg = cfg;
-      // New settings may be what lets this side do the core itself.
+    const says = edgeConfig(msg.config);
+    if (!says) return json({ error: "config: not one this side can use" }, 400);
+    if (JSON.stringify(says) !== JSON.stringify(await this.toldConfig())) {
+      // Kept as told: what is gone by is worked out from it (config()),
+      // and where the machine differs is said from it.
+      await this.kv.put("cfg", says);
+      this.told = says;
+      this.cfg = undefined;
+      // Who may sign in, or the list of repositories, may have changed.
       await this.showEdge();
     }
     const settings = await this.config();
@@ -1496,18 +1936,7 @@ export class Edge {
       }
     }
     // What has waited too long is dropped, and said to have been.
-    for (const old of held.filter((h) => now - Date.parse(h.at) > HELD_FOR_MS)) {
-      held.splice(held.indexOf(old), 1);
-      settled = true;
-      await this.logAct({
-        id: old.id,
-        kind: old.kind,
-        at: old.at,
-        by: old.who,
-        status: "failed",
-        note: "Not sent: the laptop was out of reach for more than a day.",
-      });
-    }
+    if (await this.expireHeld(now)) settled = true;
     if (settled) await this.saveHeld();
     await this.pruneHanded();
     // What a machine has just done late changed things this side reads
@@ -1593,17 +2022,40 @@ export class Edge {
       const copy = await this.mirror(name);
       if (!copy || copy.own) want.push(name);
     }
+    const watching = now - this.lastDocAt < WATCHING_MS;
+    const notify = await this.someoneToTell();
+    const phones = await this.phones.devices.links();
+    const handed = await this.handedList();
+    // What the machine is handed: everything held, less anything about
+    // a thing this side is doing something about right now (it would
+    // be done out of turn). Chosen and marked as handed with nothing
+    // waited for in between, so that this side cannot take one of them
+    // for itself meanwhile; and written down before the answer goes.
+    const mine = new Set(
+      (this.taken ?? []).map((t) => subjectOf(t.kind, t.args)).filter((about): about is string => about !== null),
+    );
+    const commands = held.filter((h) => {
+      const about = subjectOf(h.kind, h.args);
+      return about === null || !mine.has(about);
+    });
+    let marked = false;
+    for (const command of commands) {
+      if (!handed.has(command.id)) {
+        handed.add(command.id);
+        marked = true;
+      }
+    }
+    if (marked) await this.saveHanded();
     const answer: SyncResponse = {
       ok: true,
-      watching: now - this.lastDocAt < WATCHING_MS,
-      notify: await this.someoneToTell(),
+      watching,
+      notify,
       want,
-      commands: held,
-      phones: await this.phones.devices.links(),
+      commands,
+      phones,
       // What this side reads itself, and so need not be sent.
       owns: this.owned(settings),
     };
-    await this.markHanded(held.map((h) => h.id));
     return json(answer);
   }
 
@@ -1632,6 +2084,11 @@ export class Edge {
         if (NOTIFIED.includes(name)) wakes.push(Math.max(now + 1000, (this.unread.get(name) ?? now) + 1000));
       }
     }
+    // What is held and never reached a machine is this side's to do
+    // when it can, and what has waited a day is dropped: it wakes for
+    // the first of either.
+    const due = await this.heldDue(cfg);
+    if (due !== null) wakes.push(Math.max(now + 1000, due));
     if (wakes.length > 0) await this.setAlarm(Math.min(...wakes));
   }
 
@@ -1655,7 +2112,7 @@ export class Edge {
         const delivery = await this.push.send("trouble", {
           title: "The laptop has gone quiet",
           body: this.primary(cfg)
-            ? "It has not reported for ten minutes. Cloudflare carries on with the board, your prompts, pull requests and the plan; what needs the laptop waits for it."
+            ? "It has not reported for ten minutes. Cloudflare carries on with the board, your prompts, pull requests, the plan and what is labelled as needing you; what needs the laptop waits for it."
             : "It has not reported for ten minutes. The app still opens; what you do is held until it is back.",
           url: "/console/",
           tag: "host",
@@ -1674,6 +2131,12 @@ export class Edge {
       for (let look = 0; look < 2; look++) await this.docs.current(this.ownedTold(cfg), CLOCK_WAIT_MS);
       await this.tell(cfg).catch((error) => console.error(`pm-edge: notify: ${(error as Error).message}`));
     }
+    // What is held: the day's limit is kept with no machine reporting,
+    // and what this side can now do itself, it does.
+    if (await this.expireHeld(now)) await this.saveHeld();
+    await this.drainHeld(cfg).catch((error) =>
+      console.error(`pm-edge: doing what was held: ${(error as Error).message}`),
+    );
     await this.schedule(cfg);
   }
 
@@ -1698,6 +2161,7 @@ export class Edge {
     // Public: nothing here says anything about the fleet.
     if (path === `${BASE}/health` && method === "GET") {
       await this.ready();
+      const told = await this.toldConfig();
       // The self-check runs when the capability is there: one direct
       // read of each kind, and how it went. Nothing here is a secret.
       await this.maybeSelfCheck(cfg);
@@ -1710,7 +2174,7 @@ export class Edge {
         githubTokenConfigured: Boolean(this.direct?.githubToken),
         queueTokenConfigured: Boolean(this.direct?.queueToken),
         // This side does the core itself: the switch and the tokens are
-        // here, and it has been told where things are. `directReady` is
+        // here, and a machine has said who may sign in. `directReady` is
         // the same thing under the name it had when this side acted
         // only while the laptop was away.
         primary: this.primary(cfg),
@@ -1747,9 +2211,20 @@ export class Edge {
         // quiet. Notifications with no machine depend on this, and it
         // is how that is seen to be alive from outside.
         clock: { wanted: await this.clockWanted(cfg), next: await this.getAlarm().catch(() => null) },
+        // How many things the owner did are waiting to be done, by who
+        // each waits for: either side, whichever can first; a machine
+        // only; or a machine that was given it or may have got it.
+        // Counts, and nothing of what they are.
+        held: await this.heldCounts(cfg),
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
+        // In which of the platform's own settings (the repository's:
+        // src/settings.ts) the machine said it runs with others, by
+        // name and never by value; null while no machine has said any.
+        // A machine on other code than this, or with an environment of
+        // its own, shows here. This side goes by its own all the same.
+        machineSettingsDiffer: told === null ? null : settingsThatDiffer(told),
         // The copy of the Android build kept here: when it was built,
         // and whether it is the host's newest. Null if there is none.
         androidBuild: await this.apkState(),
@@ -1939,11 +2414,7 @@ export class Edge {
         const before = id === null ? null : (((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null);
         const given = before?.state === "given";
         const here =
-          before !== null
-            ? !given
-            : (DIRECT_ACTIONS as readonly string[]).includes(kind) &&
-              this.primary(cfg) &&
-              !this.refusedKinds().includes(kind);
+          before !== null ? !given : this.does(kind) && this.primary(cfg) && !this.refusedKinds().includes(kind);
         if (here) {
           // An older action held for a machine about the same thing
           // comes first. One already handed to a machine may be being
@@ -1953,68 +2424,50 @@ export class Edge {
           // wins is dropped as replaced by the newer instead.
           const about = subjectOf(kind, args as Record<string, unknown>);
           if (about !== null) {
-            const older = (await this.heldList()).filter((h) => h.id !== id && subjectOf(h.kind, h.args) === about);
-            if (older.length > 0) {
+            const newer = { id: id ?? crypto.randomUUID(), kind, args, who: by };
+            // Each turn waits out one thing being done here about the
+            // same thing, or settles the oldest of what is held about
+            // it; then it looks again, since either may have changed
+            // what is waiting. (There cannot be more turns than this.)
+            let clear = false;
+            for (let turn = 0; turn < 4 * HELD_MAX; turn++) {
+              const held = await this.heldList();
               const handed = await this.handedList();
-              if (older.some((h) => handed.has(h.id))) {
-                return this.keep({ id: id ?? crypto.randomUUID(), kind, args, who: by });
+              // From here to the choice nothing is waited for.
+              // Something older about the same thing may be being done
+              // here right now (what was held, on this side's own wake):
+              // this one waits for it to end, so that the two are done
+              // in the order the owner did them.
+              const doing = this.busy.get(about);
+              if (doing) {
+                await doing;
+                continue;
               }
-              for (const old of older) {
-                if (LAST_WINS.has(old.kind)) {
-                  const list = await this.heldList();
-                  const at = list.findIndex((h) => h.id === old.id);
-                  if (at >= 0) list.splice(at, 1);
-                  await this.saveHeld();
-                  await this.unhand([old.id]);
-                  const atIso = new Date(this.now()).toISOString();
-                  await this.audit({
-                    at: atIso,
-                    who: old.who,
-                    via: "edge",
-                    action: old.kind,
-                    phase: "done",
-                    ok: false,
-                    error: `replaced by a newer ${kind}: the last one wins`,
-                  });
-                  await this.logAct({
-                    id: old.id,
-                    kind: old.kind,
-                    at: old.at,
-                    by: old.who,
-                    status: "failed",
-                    note: `Replaced by a newer ${kind}: the last one wins.`,
-                  });
-                  await this.kv.put(`a:${old.id}`, {
-                    at: this.now(),
-                    kind: old.kind,
-                    state: "done",
-                    status: 409,
-                    body: { error: "This was replaced by a newer action about the same thing." },
-                  } satisfies Acted);
-                  await this.actedIndex(old.id);
-                } else {
-                  try {
-                    await this.once(old.id, old.kind, () =>
-                      this.directAct(old.kind, old.args, old.who, "edge", old.id),
-                    );
-                  } catch (error) {
-                    // Refused here too: the newer waits behind the older,
-                    // as behind one handed to a machine.
-                    if (error instanceof HandOver) {
-                      return this.keep({ id: id ?? crypto.randomUUID(), kind, args, who: by });
-                    }
-                    throw error;
-                  }
-                  const list = await this.heldList();
-                  const at = list.findIndex((h) => h.id === old.id);
-                  if (at >= 0) {
-                    list.splice(at, 1);
-                    await this.saveHeld();
-                  }
-                  await this.unhand([old.id]);
-                }
+              const older = held.filter((h) => h.id !== id && subjectOf(h.kind, h.args) === about);
+              if (older.length === 0) {
+                clear = true;
+                break;
               }
+              // One a machine has, or may have, may be being done
+              // there: the newer waits behind it.
+              if (older.some((h) => this.withMachine(h, handed))) return this.keep(newer);
+              // One that only a machine can do is a machine's whenever
+              // one comes: the newer waits behind it too.
+              if (older.some((h) => !this.does(h.kind))) return this.keep(newer);
+              const old = older[0];
+              // One of the same kind where the last one wins is dropped
+              // as replaced by this. (Only by its own kind: a comment
+              // about an issue does not replace its rank.)
+              if (LAST_WINS.has(old.kind) && old.kind === kind) {
+                await this.replaceHeld(old, kind);
+                continue;
+              }
+              // Refused here too: the newer waits behind the older. (If
+              // it was not this side's to take after all, the next look
+              // finds why: being done here, or a machine's.)
+              if ((await this.doHeld(old)) === "back") return this.keep(newer);
             }
+            if (!clear) return this.keep(newer);
           }
           try {
             return await this.once(id, kind, () =>
@@ -2027,7 +2480,7 @@ export class Edge {
         }
         // Written down as a machine's before it goes anywhere.
         if (id !== null && !given) {
-          await this.kv.put(`a:${id}`, { at: this.now(), kind, state: "given" } satisfies Acted);
+          await this.kv.put(`a:${id}`, { at: this.now(), kind, state: "given", relays: 0 } satisfies Acted);
           await this.actedIndex(id);
         }
         // What may be done late goes behind anything already waiting
@@ -2039,12 +2492,39 @@ export class Edge {
           // A retry under the same name is the same action, not a later
           // one: it goes back to the host, which sorts out whether it
           // already did it, instead of waiting behind itself.
-          if (
-            about !== null &&
-            (await this.heldList()).some((h) => h.id !== id && subjectOf(h.kind, h.args) === about)
-          ) {
-            return this.keep({ id: id ?? crypto.randomUUID(), kind, args, who: by });
+          const held = await this.heldList();
+          if (about !== null && held.some((h) => h.id !== id && subjectOf(h.kind, h.args) === about)) {
+            // A name that was a machine's before this arrival set off
+            // toward one already: it may be there now, and is kept as
+            // that machine's. (One already waiting here is kept once,
+            // as it is.)
+            return this.keep({ id: id ?? crypto.randomUUID(), kind, args, who: by }, given ? "unknown" : "nowhere");
           }
+        }
+        if (id !== null) {
+          await this.ready();
+          const handed = await this.handedList();
+          const record = ((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null;
+          // From here to the choice nothing is waited for.
+          // This side took the name to do itself a moment ago: it is
+          // not sent to a machine as well.
+          if ((this.taken ?? []).some((t) => t.id === id)) return this.takenSaid(id);
+          // Offered again while it waits here, having reached no
+          // machine: it goes on waiting as it is, for this side or for
+          // a machine's next report, whichever is first. Sent toward
+          // the host now, it would be on its way there while this side
+          // may be taking it for its own.
+          const waiting = (this.held ?? []).find((h) => h.id === id);
+          if (waiting && !this.withMachine(waiting, handed)) {
+            const waits = (await this.heldWaits(cfg)).get(id) ?? "machine";
+            return json({ ok: true, held: true, result: null, again: true, waits });
+          }
+          // It sets off toward a machine, and that is counted under its
+          // name before it goes (a record from before the counting is
+          // taken to have set off once already).
+          const relays = (record?.state === "given" ? (record.relays ?? 1) : 0) + 1;
+          await this.kv.put(`a:${id}`, { at: this.now(), kind, state: "given", relays } satisfies Acted);
+          await this.actedIndex(id);
         }
         // The host's to do. The stateless part relays it, and if the
         // host cannot be reached comes back to have it held.
@@ -2056,6 +2536,9 @@ export class Edge {
         return next("relay", {
           mode: "act",
           id: id ?? crypto.randomUUID(),
+          // Whether the name is the device's (it may be offered again)
+          // or one given here for this one asking.
+          named: id !== null,
           kind,
           args,
           who: by,
@@ -2097,7 +2580,7 @@ export class Edge {
         // Started, and not by this object (it would hold the name):
         // one that was put away before it ended. Whether it happened
         // is not known, and doing it again could do it twice.
-        const body = { error: "Cloudflare restarted while doing this; check whether it happened before trying again." };
+        const body = { error: RESTARTED };
         await this.kv.put(key, { at: this.now(), kind, state: "done", status: 502, body } satisfies Acted);
         return json({ ...body, again: true }, 502);
       }
@@ -2178,21 +2661,41 @@ export class Edge {
     }
   }
 
-  /** The host could not be reached: keep the action for it, if it is one
-   * that may be done late. */
+  /** The host did not answer: keep the action, if it is one that may be
+   * done late. The stateless part, which saw what came back in the
+   * host's place, says whether that was word that the host was never
+   * reached. */
   private async hold(req: Request): Promise<Response> {
-    return this.keep(
-      (await req.json().catch(() => null)) as {
-        id?: unknown;
-        kind?: unknown;
-        args?: unknown;
-        who?: unknown;
-      } | null,
-    );
+    const body = (await req.json().catch(() => null)) as {
+      id?: unknown;
+      kind?: unknown;
+      args?: unknown;
+      who?: unknown;
+      unreached?: unknown;
+      named?: unknown;
+    } | null;
+    if (body?.unreached !== true) return this.keep(body, "unknown");
+    // Word that this asking never arrived says the action reached no
+    // machine only if it set off this once: another asking under the
+    // same name (the device offered it again meanwhile) may be at the
+    // host now. A name given here, and not by the device, set off once.
+    const record =
+      body.named === false || typeof body.id !== "string"
+        ? null
+        : (((await this.kv.get(`a:${body.id}`)) as Acted | undefined) ?? null);
+    const once = body.named === false || (record?.state === "given" && record.relays === 1);
+    return this.keep(body, once ? "unreached" : "unknown");
   }
 
-  /** Keep an action for a machine, at the back of what already waits. */
-  private async keep(body: { id?: unknown; kind?: unknown; args?: unknown; who?: unknown } | null): Promise<Response> {
+  /** Keep an action for later, at the back of what already waits.
+   * `went` is how far it got toward a machine. "nowhere": it was never
+   * sent to one. "unreached": it was sent, and what answered in the
+   * machine's place said it never arrived. "unknown": it was sent, and
+   * nothing says what became of it, so the machine may have done it. */
+  private async keep(
+    body: { id?: unknown; kind?: unknown; args?: unknown; who?: unknown } | null,
+    went: "nowhere" | "unreached" | "unknown" = "nowhere",
+  ): Promise<Response> {
     const kind = typeof body?.kind === "string" ? body.kind : "";
     const args = body?.args;
     if (!HOLDABLE.has(kind) || args === null || typeof args !== "object" || Array.isArray(args)) {
@@ -2207,11 +2710,16 @@ export class Edge {
       );
     }
     await this.ready();
+    const cfg = await this.config();
     const held = await this.heldList();
     // Offered again under a name that is already waiting (the device
-    // never heard that it was kept): it is kept once.
-    if (typeof body?.id === "string" && held.some((h) => h.id === body.id)) {
-      return json({ ok: true, held: true, result: null, again: true });
+    // never heard that it was kept): it is kept once, as it is. (One
+    // waiting here only sets off toward a machine again when it is a
+    // machine's already, so there is nothing about it to change.)
+    const waiting = typeof body?.id === "string" ? held.find((h) => h.id === body.id) : undefined;
+    if (waiting) {
+      const waits = (await this.heldWaits(cfg)).get(waiting.id) ?? "machine";
+      return json({ ok: true, held: true, result: null, again: true, waits });
     }
     if (held.length >= HELD_MAX) {
       return json({ error: "The laptop cannot be reached, and too much is already waiting for it." }, 503);
@@ -2223,19 +2731,39 @@ export class Edge {
       args: args as Record<string, unknown>,
       who: String(body?.who ?? "owner"),
       at: new Date(this.now()).toISOString(),
+      ...(went === "unknown" ? {} : { unsent: true as const }),
     };
     held.push(item);
     await this.saveHeld();
-    await this.audit({ at: item.at, who: item.who, via: "edge", action: kind, phase: "held", id: item.id });
-    await this.logAct({
-      id: item.id,
-      kind,
+    const waits = (await this.heldWaits(cfg)).get(item.id) ?? "machine";
+    await this.audit({
       at: item.at,
-      by: item.who,
-      status: "running",
-      note: "Held: the laptop cannot be reached. It will be sent when it is back.",
+      who: item.who,
+      via: "edge",
+      action: kind,
+      phase: "held",
+      id: item.id,
+      // Whether it is known to have reached no machine.
+      unsent: item.unsent === true,
     });
-    return json({ ok: true, held: true, result: null });
+    await this.logAct({ id: item.id, kind, at: item.at, by: item.who, status: "running", note: HELD_SAID[waits] });
+    // If it is one this side could do itself when it can again, it
+    // asks to be woken for that; and for the day's end of it either way.
+    await this.schedule(cfg).catch(() => {});
+    return json({ ok: true, held: true, result: null, waits });
+  }
+
+  /** A name this side has taken to do itself is not sent to a machine
+   * as well: its doing is waited for, and the answer is what came of
+   * it. If nothing did (this side was turned away again, or could not
+   * write down how it went), the device is told it is not over, and
+   * offers it again. (Called only for a name in the taken list.) */
+  private async takenSaid(id: string): Promise<Response> {
+    const mine = (this.taken ?? []).find((t) => t.id === id);
+    if (mine) await this.busy.get(this.heldAbout(mine));
+    const after = ((await this.kv.get(`a:${id}`)) as Acted | undefined) ?? null;
+    if (after?.state === "done") return json({ ...after.body, again: true }, after.status ?? 200);
+    return json({ error: "This is still being done.", running: true }, 409);
   }
 
   /** After the host did a relayed action: the sections it read again and

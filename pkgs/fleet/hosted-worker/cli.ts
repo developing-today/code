@@ -37,8 +37,7 @@ class FileSessionStateStore implements SessionStateStore {
 
 const env = (name: string): string | null => process.env[name] ?? null;
 
-const tokenFile =
-  process.env["FLEET_HOSTED_TOKEN_FILE"] ?? join(homedir(), ".config", "fleet-hosted", "token");
+const tokenFile = process.env["FLEET_HOSTED_TOKEN_FILE"] ?? join(homedir(), ".config", "fleet-hosted", "token");
 
 const deps: CliDeps = {
   serviceUrl: (process.env["FLEET_HOSTED_URL"] ?? "http://localhost:8787").replace(/\/+$/, ""),

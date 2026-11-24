@@ -77,20 +77,20 @@ One repository has one GitHub Pages site, and every book is staged into it
 under its own subpath by the combined deploy (see [Deploying this
 book](operations/deploying-this-book.md)).
 
-| Book | Published at | Sources in this repo | Programme tracker |
-| --- | --- | --- | --- |
-| mcpx book | [developing-today.github.io/code/](https://developing-today.github.io/code/) (the site root) | `pkgs/mcpx/docs/` | [#13264](https://github.com/developing-today/code/issues/13264) |
-| Fleet book | [developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/) | `pkgs/fleet/book/` | [#13272](https://github.com/developing-today/code/issues/13272) |
-| Atlas book | [developing-today.github.io/code/atlas/](https://developing-today.github.io/code/atlas/) | `pkgs/atlas-search/book/` | [#13241](https://github.com/developing-today/code/issues/13241) |
-| ID book | [developing-today.github.io/code/id/](https://developing-today.github.io/code/id/) | `pkgs/id/book/` | [#13240](https://github.com/developing-today/code/issues/13240) |
-| This book (Code Book) | [developing-today.github.io/code/code/](https://developing-today.github.io/code/code/) | `pkgs/code-book/book/` | [#13905](https://github.com/developing-today/code/issues/13905) |
-| Lab Book | [developing-today.github.io/code/lab/](https://developing-today.github.io/code/lab/) | built under the same programme as this book | [#13905](https://github.com/developing-today/code/issues/13905) |
-| Project Management book | [developing-today.github.io/code/pm/](https://developing-today.github.io/code/pm/) | `pm-stack/book/` | [#13900](https://github.com/developing-today/code/issues/13900) |
+| Book                    | Published at                                                                                 | Sources in this repo                        | Programme tracker                                               |
+| ----------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------- |
+| mcpx book               | [developing-today.github.io/code/](https://developing-today.github.io/code/) (the site root) | `pkgs/mcpx/docs/`                           | [#13264](https://github.com/developing-today/code/issues/13264) |
+| Fleet book              | [developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/)     | `pkgs/fleet/book/`                          | [#13272](https://github.com/developing-today/code/issues/13272) |
+| Atlas book              | [developing-today.github.io/code/atlas/](https://developing-today.github.io/code/atlas/)     | `pkgs/atlas-search/book/`                   | [#13241](https://github.com/developing-today/code/issues/13241) |
+| ID book                 | [developing-today.github.io/code/id/](https://developing-today.github.io/code/id/)           | `pkgs/id/book/`                             | [#13240](https://github.com/developing-today/code/issues/13240) |
+| This book (Code Book)   | [developing-today.github.io/code/code/](https://developing-today.github.io/code/code/)       | `pkgs/code-book/book/`                      | [#13905](https://github.com/developing-today/code/issues/13905) |
+| Lab Book                | [developing-today.github.io/code/lab/](https://developing-today.github.io/code/lab/)         | built under the same programme as this book | [#13905](https://github.com/developing-today/code/issues/13905) |
+| Project Management book | [developing-today.github.io/code/pm/](https://developing-today.github.io/code/pm/)           | `pm-stack/book/`                            | [#13900](https://github.com/developing-today/code/issues/13900) |
 
 ## Conventions used in this book
 
-- **Statuses are dated.** The status vocabulary is the censuses': *done*,
-  *in flight*, *designed*, *not started* — each with its evidence. A status
+- **Statuses are dated.** The status vocabulary is the censuses': _done_,
+  _in flight_, _designed_, _not started_ — each with its evidence. A status
   without a date in this book is a status as of the 2026-11-23/24 censuses.
 - **Item numbers are stable.** The merged list's numbers (1–30) are used
   identically in every book's high-level roadmap chapter, so a reader can

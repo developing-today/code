@@ -90,11 +90,11 @@ The report's per-signal means carry the four metrics above — `ndcg10`, `recall
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Success: the report for the requested split was printed to stdout. |
-| 1 | Runtime failure: unreadable input file, invalid evaluation data, or an evaluation failure. |
-| 2 | Usage failure: wrong arity (including `--help`/`-h`/`help`) or an unknown split value. |
+| Code | Meaning                                                                                    |
+| ---- | ------------------------------------------------------------------------------------------ |
+| 0    | Success: the report for the requested split was printed to stdout.                         |
+| 1    | Runtime failure: unreadable input file, invalid evaluation data, or an evaluation failure. |
+| 2    | Usage failure: wrong arity (including `--help`/`-h`/`help`) or an unknown split value.     |
 
 ## Offline single-user recommendation candidates
 

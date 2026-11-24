@@ -51,8 +51,8 @@ Full detail: sideline `fleet-hosted-wrangler.toml.txt` and
   `compatibility_date = "2025-06-01"`. **No bindings at all** — no D1, KV, R2,
   Durable Objects, or queues. The only `[vars]` entry is `RP_AUDIENCE = "fleet-hosted"`.
   One cron trigger: `*/15 * * * *` (the ingestion sweeper). Header comment, verbatim
-  in substance: *LOCAL ONLY — this config is for wrangler dev/tests; no account-level
-  deployment or billable resource is authorized by this package.*
+  in substance: _LOCAL ONLY — this config is for wrangler dev/tests; no account-level
+  deployment or billable resource is authorized by this package._
 - **Routes** (verified in `src/router.ts` + `src/routes/*.ts`): public
   `GET /health`, `GET /capabilities`; `POST /v1/sessions{,/resume,/resolve,/close}`;
   `POST /v1/stamps`; `GET|POST /v1/query`; 25 queue verb routes
@@ -66,7 +66,7 @@ Full detail: sideline `fleet-hosted-wrangler.toml.txt` and
   runs the same ingestion sweep over `INGESTION_REPOS`.
 - **Dual ingestion (the brief's "webhook-route dual ingestion"):** the ingestion
   door (#12590, design §7.3, #9060 §16) is the hosted half; native ingestion
-  (#9076) is the peer, and both run *the same check*. Route 1 — webhook:
+  (#9076) is the peer, and both run _the same check_. Route 1 — webhook:
   `POST /v1/ingestion/github` is public at the router (GitHub deliveries carry no
   fleet credential) and the handler authenticates each delivery itself by
   `X-Hub-Signature-256` HMAC-SHA256 over the raw body, before any parsing.
@@ -145,7 +145,7 @@ Full detail: sideline `fleet-hosted-wrangler.toml.txt` and
 - **Failure shapes:** every refusal is a `FailClosed` rendered as
   `{ "error": <code>, "message": ... }` — 404 `not_found` (unmatched paths
   advertise nothing), 401 `missing_token`, 403 cross-tenant / out-of-scope,
-  503 for each unconfigured dependency (auth, stamp signing — refused *before*
+  503 for each unconfigured dependency (auth, stamp signing — refused _before_
   any GitHub write, session registry, metadata store, queue store, webhook
   secret), 500 `{error: "internal"}` for unhandled errors. Door-specific:
   sessions 404 `session_unknown` (another tenancy's session answers identically
@@ -411,9 +411,9 @@ Full detail: sideline `fleet-dispatch-jobs-sql-and-config.txt`. Headlines:
   found **no other reader or writer** in those paths (a repo-wide grep timed
   out on the laptop; see the caveat in the sideline dump).
 - **Schema (`jobs`, 14 columns):** `id, created_at, name, target_repo,
-  target_ref, script, status, run_id, run_url, exit_code, output_tail,
-  updated_at, submodule, commands`. Phase-2 semantics: `target_ref` carries
-  the *submodule* ref (empty = the umbrella's recorded SHA) and `script`
+target_ref, script, status, run_id, run_url, exit_code, output_tail,
+updated_at, submodule, commands`. Phase-2 semantics: `target_ref` carries
+  the _submodule_ ref (empty = the umbrella's recorded SHA) and `script`
   mirrors `commands` so MVP-era readers still see the payload. **No
   `CREATE TABLE` for `jobs` exists anywhere in the searched repo** — the
   table predates the crate (MVP era); the only DDL the code runs is the
@@ -515,7 +515,7 @@ is the URL's subdomain), its token name (`turso.fleet-dispatch-jobs-token`),
 its table and all 14 columns, and its full row lifecycle, in both
 `pkgs/fleet/book/concepts/dispatch.md` (§"The Turso jobs store") and
 `pkgs/fleet/book/reference/dispatch-test.md`. What is genuinely missing is
-narrower: the DB is never named *as a database in its own right* — there is
+narrower: the DB is never named _as a database in its own right_ — there is
 no data-stores inventory chapter in the fleet book's SUMMARY at all, and no
 chapter treats the DB (provenance, estate position, migration posture) as
 its subject. Code + book win over the ledger: the drafting lane should
@@ -553,7 +553,7 @@ stores"; its owner is the fleet plane.** Audit §G8 lists
 MOVE-CLEAN. The code disagrees about what it is: the DB's sole owner is
 `pkgs/fleet/crates/fleet-dispatch-test` — fleet-plane CI infrastructure,
 configured from the fleet binary's `[dispatch-test]` config section — not
-a product surface. The audit's *facts* (one table, 6 rows, tiny, join-free)
+a product surface. The audit's _facts_ (one table, 6 rows, tiny, join-free)
 are not in dispute, and the ledger's assignment of the gap to the fleet
 book follows the code. Code wins on classification; a chapter should not
 inherit the "product store" framing.
@@ -577,7 +577,7 @@ any production reading of "live": `wrangler.toml` authorizes no deployment,
 `INGESTION_REPOS` is commented out (so the scheduled sweep has nothing to
 scan), every store is a fixture in module scope, and `workers.json`
 records the Worker "not deployed". Both are true at different layers —
-the *code* is complete and smoke-proven in-process; the *service* has
+the _code_ is complete and smoke-proven in-process; the _service_ has
 never run in production. Code/config win: the book should say
 "implemented, undeployed", never "live", for fleet-hosted. (Contrast
 queue-transport-alert, where "in service" is accurate.)

@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS journal_entries (
 ```
 
 Routes (single fetch handler):
+
 - `GET /health` → plain `new Response("ok")`. Returns BEFORE the try block
   and before ensureSchema — does not touch the DB.
 - `POST /append`:
@@ -84,8 +85,8 @@ Routes (single fetch handler):
     and caps_granted entries".
   - Insert in a `first-primary` session:
     `INSERT INTO journal_entries (world_id, ordinal, entry_bytes) VALUES
-    (?, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM journal_entries WHERE
-    world_id = ?), ?)` — comment cites #806's one-writer-per-world
+(?, (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM journal_entries WHERE
+world_id = ?), ?)` — comment cites #806's one-writer-per-world
     assumption; the INSERT allocates the next ordinal from the durable tail
     and returns it atomically.
   - Re-queries `SELECT ordinal … WHERE world_id = ? AND rowid = ?` with
@@ -121,8 +122,8 @@ stream cursor is an ordinal; it is not a D1 bookmark.").
   serverless edition storage — D1 vs Turso vs both for id on Cloudflare
   Workers" (next proof: compare D1 and Turso operation semantics for the
   actual Worker journal workload); #5864 "id: design: D1 journal fit (design
-  + spike) (from #5681)" (next proof: compare durable ordering, checkpoint
-  and crash behavior on the D1 journal path).
+  - spike) (from #5681)" (next proof: compare durable ordering, checkpoint
+    and crash behavior on the D1 journal path).
 - research/design-review.md: #5681 recorded decision — Drew chose both
   engines with roles, Turso preferred and D1 first-class; the signed journal
   owns logical recovery.

@@ -4,13 +4,13 @@ Source: https://github.com/developing-today/code/blob/main/pkgs/id/worker-poc/d1
 
 `id-d1-journal-poc` is a **local-only fit probe, not a service and not a production path**. It is a subfolder of `pkgs/id/worker-poc/` — the package covered in [id-worker-poc: the World Durable Object proof of concept](worker-poc.md) — with its own Wrangler configuration and its own Worker name, which is why it is covered under that exact name here. [The hosted Worker API](hosted-worker.md) and [The hosted edition](../concepts/hosted.md) mention it in passing; this chapter is its full record.
 
-| Item | Value |
-|---|---|
-| Worker name | `id-d1-journal-poc` |
-| Source | `pkgs/id/worker-poc/d1-journal-poc/` — entry point `worker.mjs` |
-| Compatibility date | `2025-03-01` |
-| Database | D1 binding `DB`, database name `id-d1-journal-poc`, database ID `00000000-0000-0000-0000-000000000001` — a **placeholder**, used only by local Wrangler with `--local` |
-| Status | A completed probe with a passing local smoke. It is never deployed: its harness always supplies its own temporary persistence directory and the `--local` flag. |
+| Item               | Value                                                                                                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker name        | `id-d1-journal-poc`                                                                                                                                                    |
+| Source             | `pkgs/id/worker-poc/d1-journal-poc/` — entry point `worker.mjs`                                                                                                        |
+| Compatibility date | `2025-03-01`                                                                                                                                                           |
+| Database           | D1 binding `DB`, database name `id-d1-journal-poc`, database ID `00000000-0000-0000-0000-000000000001` — a **placeholder**, used only by local Wrangler with `--local` |
+| Status             | A completed probe with a passing local smoke. It is never deployed: its harness always supplies its own temporary persistence directory and the `--local` flag.        |
 
 ## What it was for, and what it proved
 
@@ -34,20 +34,20 @@ It is an ordinal-allocation and exact-byte fit probe. Its own README is explicit
 
 One binding, from `wrangler.toml`:
 
-| Binding | Value |
-|---|---|
-| `DB` | D1 database, database name `id-d1-journal-poc`, placeholder database ID above. |
+| Binding | Value                                                                          |
+| ------- | ------------------------------------------------------------------------------ |
+| `DB`    | D1 database, database name `id-d1-journal-poc`, placeholder database ID above. |
 
 There are no routes, no Durable Objects, no secrets and no environment variables. The synthetic world is a constant in the source, `WORLD_ID = "d1-journal-poc-world"`; there is no world parameter.
 
 Routes, from `worker.mjs`:
 
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | Answers the plain text `ok`. Does not touch the database or create the schema. |
-| POST | `/append` | Append one journal entry (shape below). Answers `{world_id, ordinal, bookmark}`. |
-| GET | `/snapshot` | Every entry for the world, in ordinal order, as one JSONL body. |
-| GET | `/tail` | Entries after the `?after=` ordinal (default `0`), in ordinal order, as one JSONL body. |
+| Method | Path        | Purpose                                                                                 |
+| ------ | ----------- | --------------------------------------------------------------------------------------- |
+| GET    | `/health`   | Answers the plain text `ok`. Does not touch the database or create the schema.          |
+| POST   | `/append`   | Append one journal entry (shape below). Answers `{world_id, ordinal, bookmark}`.        |
+| GET    | `/snapshot` | Every entry for the world, in ordinal order, as one JSONL body.                         |
+| GET    | `/tail`     | Entries after the `?after=` ordinal (default `0`), in ordinal order, as one JSONL body. |
 
 Any other method/path combination is `404 {"error":"not found"}`.
 
@@ -68,20 +68,20 @@ journal_entries (
 
 An append body must be exactly one entry: newline-terminated JSONL bytes, with no interior newline, decoding as one UTF-8 JSON object. Only two entry kinds are accepted, both from journal header version `1` (`JOURNAL_VERSION`):
 
-| Entry | Required shape |
-|---|---|
-| `created` | `entry.world_id` must be the synthetic world and `entry.version` must be `1`. |
-| `caps_granted` | `entry.granted` must be an array of strings. |
+| Entry          | Required shape                                                                |
+| -------------- | ----------------------------------------------------------------------------- |
+| `created`      | `entry.world_id` must be the synthetic world and `entry.version` must be `1`. |
+| `caps_granted` | `entry.granted` must be an array of strings.                                  |
 
 The append runs in a `first-primary` session: the insert computes the next ordinal as `COALESCE(MAX(ordinal), 0) + 1` for the world inside the insert statement itself, then re-queries the inserted row's ordinal under the same session and returns it with the session bookmark. That single-writer assumption (#806) is what makes the max-plus-one allocation sound here.
 
 Failure shapes, all JSON `{"error": ...}`:
 
-| Status | Cause |
-|---|---|
-| `400` | The body is not exactly one newline-terminated entry; the line is not valid UTF-8 JSON or not a JSON object; a `created` entry names another world or a version other than `1`; a `caps_granted` entry's `granted` is not a string array; the entry kind is neither of the two; or `after` on `/tail` is not a non-negative safe integer. Each refusal's message names its specific cause. |
-| `404` | Any other method/path combination: `{"error":"not found"}`. |
-| `500` | Anything else, including a D1 result the code cannot interpret — for example an append that returns no ordinal or no session bookmark, or a stored value that is not a byte array, an `ArrayBuffer` or a typed-array view when read back. The message is the thrown error's message. |
+| Status | Cause                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `400`  | The body is not exactly one newline-terminated entry; the line is not valid UTF-8 JSON or not a JSON object; a `created` entry names another world or a version other than `1`; a `caps_granted` entry's `granted` is not a string array; the entry kind is neither of the two; or `after` on `/tail` is not a non-negative safe integer. Each refusal's message names its specific cause. |
+| `404`  | Any other method/path combination: `{"error":"not found"}`.                                                                                                                                                                                                                                                                                                                                |
+| `500`  | Anything else, including a D1 result the code cannot interpret — for example an append that returns no ordinal or no session bookmark, or a stored value that is not a byte array, an `ArrayBuffer` or a typed-array view when read back. The message is the thrown error's message.                                                                                                       |
 
 ## Running its proof
 

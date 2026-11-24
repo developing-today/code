@@ -60,13 +60,13 @@ There is NO `wrangler.toml` in the package (see disagreements MW-3).
 - Imports `bindings, defineConfig, exports as cfExports` from `cf/config`;
   entrypoint is `./src/index.js` imported `with { type: "cf-worker" }`.
 - Reads `config.json`; builds `mailConfig` = exactly `{defaultTransport,
-  transports, limits, templates}` from it (callers/routes/senders NOT in it).
+transports, limits, templates}` from it (callers/routes/senders NOT in it).
 - `defineConfig({ worker: { name: config.worker, compatibilityDate,
-  entrypoint, exports: { Limiter: cfExports.durableObject({ state: "created",
-  storage: "sqlite" }) }, env: { MAIL_CONFIG: bindings.text(JSON.stringify(mailConfig)),
-  EMAIL: bindings.sendEmail({ allowedSenderAddresses: config.senders }),
-  LIMITER: bindings.durableObject({ worker: config.worker, exportName: "Limiter" }),
-  CALLERS: bindings.secret() } } })`.
+entrypoint, exports: { Limiter: cfExports.durableObject({ state: "created",
+storage: "sqlite" }) }, env: { MAIL_CONFIG: bindings.text(JSON.stringify(mailConfig)),
+EMAIL: bindings.sendEmail({ allowedSenderAddresses: config.senders }),
+LIMITER: bindings.durableObject({ worker: config.worker, exportName: "Limiter" }),
+CALLERS: bindings.secret() } } })`.
 
 ## package.json (verbatim)
 
@@ -107,10 +107,10 @@ There is NO `wrangler.toml` in the package (see disagreements MW-3).
   8. `transport.check(body, grant, config)` refusal → `{error, status}` from
      the transport.
   9. Rate limits: caller key first — `take(env, "caller:" + caller.name,
-     limits.callerPerWindow, windowMs)`; denial → `429 rate limited`, final,
+limits.callerPerWindow, windowMs)`; denial → `429 rate limited`, final,
      before any recipient DO work (comment cites #5739). Then recipient keys
      `transport.rateKeys(body)` → `take(env, "target:" + name + ":" + key,
-     limits.recipientPerWindow, windowMs)` in parallel; any false → 429.
+limits.recipientPerWindow, windowMs)` in parallel; any false → 429.
   10. `transport.deliver(body, grant, env)` → 200 with its return value;
       throw → `502 {"error": error.code ?? "send_failed", "message": error.message}`.
 - `take()`: `env.LIMITER.get(env.LIMITER.idFromName(key))`, POSTs
@@ -122,7 +122,7 @@ There is NO `wrangler.toml` in the package (see disagreements MW-3).
   number ≥ 0 (`isLimit`).
 - `parseCallers` validation: each caller a plain object with `sha256: string`
   and `transports` a plain object; each grant `{mode: string, from: string[],
-  maxRecipients: isLimit}`.
+maxRecipients: isLimit}`.
 - `authenticate`: `Authorization: Bearer <token>` regex; SHA-256 hex of token
   via `crypto.subtle.digest`; compared per caller with `sameText` (length
   check + XOR-accumulate over char codes — constant-time-style). Returns
@@ -136,6 +136,7 @@ Constants: `EMAIL_ADDRESS = /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/`,
 `PLACEHOLDER = "{code}"`.
 
 `check(body, grant, config)` refusal order:
+
 1. Grant/config shape wrong → refuse(500, "caller grant is misconfigured").
 2. `from = body.from ?? grant.from[0]`; recipients = `recipientList(body)`
    (`to` string → [to]; array of strings → itself; else null). If no list or
@@ -148,7 +149,7 @@ Constants: `EMAIL_ADDRESS = /^[^\s@,;<>"]+@[^\s@,;<>"]+\.[^\s@,;<>"]+$/`,
 7. `!grant.from.includes(from)` → 403 "caller may not send from that address".
 8. `grant.mode === "template"` and no template matches → 400 "template"
    (the literal error string is the single word `template`).
-Otherwise null (pass).
+   Otherwise null (pass).
 
 `matchesTemplate`: subject must be exactly equal; body pattern = template
 body split on `{code}`, regex-escaped parts joined with `\d{6}`, anchored
@@ -193,16 +194,15 @@ recipients; no rollback and no per-recipient outcome in the 502.
 - Secrets: `bws secret list -o json`; `secretValue(key)` throws if missing.
   API token from Bitwarden key `cloudflare.api-token-account-wide` (value
   never reproduced here). Per caller: `sha256 = createHash("sha256")
-  .update(secretValue(caller.tokenKey)).digest("hex")`; CALLERS =
+.update(secretValue(caller.tokenKey)).digest("hex")`; CALLERS =
   `{name: {sha256, transports}}`.
 - Generated wrangler config (`.generated/wrangler.json`): `{name, main:
-  "../src/index.js", compatibility_date, workers_dev, routes: [{pattern,
-  custom_domain: true}], vars: {MAIL_CONFIG}, send_email: [{name: "EMAIL",
-  allowed_sender_addresses: senders}], durable_objects: {bindings: [{name:
-  "LIMITER", class_name: "Limiter"}]}, migrations: [{tag: "v1",
-  new_sqlite_classes: ["Limiter"]}]}`.
-- Sequence: `wrangler deploy --dry-run` always; if `--dry-run`, log and exit
-  0. Else: for each `retire` name, `retire(name)` BEFORE deploy ("A hostname
+"../src/index.js", compatibility_date, workers_dev, routes: [{pattern,
+custom_domain: true}], vars: {MAIL_CONFIG}, send_email: [{name: "EMAIL",
+allowed_sender_addresses: senders}], durable_objects: {bindings: [{name:
+"LIMITER", class_name: "Limiter"}]}, migrations: [{tag: "v1",
+new_sqlite_classes: ["Limiter"]}]}`.
+- Sequence: `wrangler deploy --dry-run` always; if `--dry-run`, log and exit 0. Else: for each `retire` name, `retire(name)` BEFORE deploy ("A hostname
   can belong to only one Worker"); then `wrangler deploy`; then
   `wrangler secret put CALLERS` with the JSON. Logs
   `deployed ${worker} with callers: …`.
@@ -299,9 +299,9 @@ recipients; no rollback and no per-recipient outcome in the 502.
 - "an oversized declared body is refused with 413 without being read (#11331)"
 - "a drip-fed oversized body stops being read at the cap (#11331)"
 - "bad JSON and non-object bodies keep their 400 envelopes after the bounded read (#11331)"
-(Plus promote.test.mjs pinning: CALLERS inherited by name+type, secret
-contents never compared; upload-version.test.mjs pinning the
-ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION requirement.)
+  (Plus promote.test.mjs pinning: CALLERS inherited by name+type, secret
+  contents never compared; upload-version.test.mjs pinning the
+  ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION requirement.)
 
 ## Host wiring — nixos/services/id-mail/default.nix (read in full)
 
@@ -331,7 +331,7 @@ ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION requirement.)
 ## cloudflare-mail.sh (read in full)
 
 - Header: "Sends one confirmation mail. Run by `id serve
-  --world-mail-command`, which sets ID_MAIL_TO, ID_MAIL_SUBJECT and
+--world-mail-command`, which sets ID_MAIL_TO, ID_MAIL_SUBJECT and
   ID_MAIL_BODY." Requires those three (`:?`). `transport=${ID_MAIL_TRANSPORT:-rest}`.
 - rest: requires CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID;
   `from=${ID_MAIL_FROM:-id@security.cab}`; jq payload `{from,to,subject,text}`;
@@ -347,14 +347,14 @@ ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION requirement.)
 
 - `nixos/hosts/default.nix` imports "services/id-mail" and sets, in the host
   modules list: `services.id-mail = { transport = "worker"; workerUrl =
-  "https://mail.security.cab"; }`. So the production node uses the worker
+"https://mail.security.cab"; }`. So the production node uses the worker
   transport at the `mail.security.cab` route.
 
 ## Native side (id) — where codes and mail sinks live
 
 - `pkgs/id/crates/id-directory/src/directory_view.rs`: `code_mail(address,
-  code, subject)` builds `Mail { to, subject: format!("id: {subject}"), body:
-  format!("Your code is {code}. It works for 15 minutes.\n") }`; call sites
+code, subject)` builds `Mail { to, subject: format!("id: {subject}"), body:
+format!("Your code is {code}. It works for 15 minutes.\n") }`; call sites
   pass "confirm your address" (confirmation) and "sign-in code" (sign-in) —
   exactly the two worker templates. `directory_auth.rs` holds the
   confirmation/sign-in code state (independent slots per purpose, per its
@@ -377,7 +377,7 @@ ID_MAIL_WORKER_CF_TOKEN_MAIL_WORKER_PRODUCTION requirement.)
 ## Relationship checks (grep evidence)
 
 - `grep -rn "worker-poc|2271" pkgs/id/hosted-worker/ pkgs/id/src/
-  pkgs/id/crates/` → no hits: no code relationship between mail worker /
+pkgs/id/crates/` → no hits: no code relationship between mail worker /
   worker-poc and the hosted worker package.
 - The mail worker is referenced from the book (pre-existing) only at:
   development/release-and-rollout.md (the publish/promote workflows "concern

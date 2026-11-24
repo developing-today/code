@@ -43,7 +43,7 @@ func TestDecisionAuditCarriesNoFeedbackPayloadFields(t *testing.T) {
 				}
 			}
 			ft := f.Type
-			for ft.Kind() == reflect.Ptr || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array || ft.Kind() == reflect.Map {
+			for ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array || ft.Kind() == reflect.Map {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct && ft.Name() != "Time" && ft.PkgPath() != "time" {

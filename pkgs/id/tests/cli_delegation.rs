@@ -288,6 +288,7 @@ fn test_a_cross_world_grant_above_write_is_refused() {
                     grantee,
                     scope: Role::Manage,
                     can_redelegate: false,
+                    expires_at: None,
                 },
                 world: "another-world".to_owned(),
             },
@@ -308,6 +309,7 @@ fn test_a_cross_world_grant_above_write_is_refused() {
                     grantee,
                     scope: Role::Read,
                     can_redelegate: false,
+                    expires_at: None,
                 },
                 world: String::new(),
             },
@@ -359,6 +361,7 @@ fn test_a_device_may_not_grant_above_its_scope() {
                 grantee: key_bytes(&bob.key()),
                 scope: Role::Write,
                 can_redelegate: false,
+                expires_at: None,
             }),
         )
         .unwrap();

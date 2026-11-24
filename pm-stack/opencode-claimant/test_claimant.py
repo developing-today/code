@@ -1412,10 +1412,10 @@ class TestClaimant8038(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             argv = [str(part) for part in cmd]
-            if argv[0] == "gh" and "view" in argv:
+            if argv[1:3] == ["gh", "sync-labels"]:
                 # The step-4a2 held-label read: no labels at all.
                 return Result(0, "[]")
-            if argv[0] == "gh":
+            if argv[1:3] == ["gh", "sync-comment"]:
                 notes.append(cmd)
                 return Result(0, "")
             return base_fake(cmd, **kwargs)
@@ -1485,7 +1485,7 @@ def make_handback_run(calls, *, claim_row="candidate", park_rc=0):
         if "repo-queue" in argv[0] and "park" in argv:
             calls["park"].append(argv)
             return Result(park_rc, "{}")
-        if argv[0] == "gh":
+        if argv[1:3] == ["gh", "sync-comment"]:
             calls["gh"].append(argv)
             return Result(0, "")
         calls["other"].append(argv)
@@ -1570,7 +1570,18 @@ class TestHandBackStep(unittest.TestCase):
         # One hand-back note on the candidate's issue.
         self.assertEqual(len(calls["gh"]), 1)
         gh_argv = calls["gh"][0]
-        self.assertEqual(gh_argv[:4], ["gh", "issue", "comment", "1187"])
+        self.assertEqual(
+            gh_argv[:7],
+            [
+                str(claimant.FLEET_CMD),
+                "gh",
+                "sync-comment",
+                "--repo",
+                "developing-today/code",
+                "issue",
+                "1187",
+            ],
+        )
         self.assertEqual(gh_argv[gh_argv.index("--repo") + 1], "developing-today/code")
         body = gh_argv[gh_argv.index("--body") + 1]
         self.assertIn("agent-note:v1", body)
