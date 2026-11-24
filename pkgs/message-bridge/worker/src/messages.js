@@ -186,6 +186,58 @@ export class MemoryStore {
     this.noteRows = [];
     this.noteNextId = 1;
     this.distributions = new Map();
+    this.fleetCredentials = new Map();
+    this.enrollTokens = new Map();
+  }
+  // Per-agent fleet credentials + bootstrap enroll tokens (fleet.js,
+  // #14368), same semantics as the Durable Object: hashes only.
+  async fleetCredentialAuth(token_hash) {
+    const c = this.fleetCredentials.get(token_hash);
+    return c && !c.revoked_at ? { agent: c.agent, scopes: [...c.scopes] } : null;
+  }
+  async fleetCredentialPut({ token_hash, agent, scopes, created }) {
+    this.fleetCredentials.set(token_hash, { agent, scopes: [...scopes], created: created ?? this.now(), revoked_at: null });
+    return { agent, scopes: [...scopes] };
+  }
+  async fleetCredentialRevoke(agent) {
+    let n = 0;
+    for (const c of this.fleetCredentials.values()) {
+      if (c.agent === agent && !c.revoked_at) {
+        c.revoked_at = this.now();
+        n++;
+      }
+    }
+    return n;
+  }
+  async enrollTokenMint(row) {
+    this.enrollTokens.set(row.token_hash, { ...row, groups: [...row.groups], used_at: null, revoked_at: null });
+    return { agent: row.agent, kind: row.kind, groups: [...row.groups], notes_identity: row.notes_identity, expires_at: row.expires_at, created: row.created };
+  }
+  async enrollTokenGet(token_hash) {
+    const r = this.enrollTokens.get(token_hash);
+    return r ? { ...r, groups: [...r.groups] } : null;
+  }
+  async enrollTokenClaim(token_hash, agent, now) {
+    const r = this.enrollTokens.get(token_hash);
+    if (!r || r.agent !== agent || r.used_at || r.revoked_at || !(r.expires_at > now)) return null;
+    r.used_at = now;
+    return { agent: r.agent, kind: r.kind, groups: [...r.groups], notes_identity: r.notes_identity };
+  }
+  async enrollTokenRevoke(token_hash) {
+    const r = this.enrollTokens.get(token_hash);
+    if (!r || r.used_at || r.revoked_at) return false;
+    r.revoked_at = this.now();
+    return true;
+  }
+  async noteRevoke(identity) {
+    let n = 0;
+    for (const [hash, t] of this.noteTokens) {
+      if (t.identity === identity) {
+        this.noteTokens.delete(hash);
+        n++;
+      }
+    }
+    return n;
   }
   // Class/name notes (notes.js), same semantics as the Durable Object.
   async noteRegister({ identity, token_hash, can_send, can_inbox }) {
@@ -283,6 +335,38 @@ export class MemoryStore {
     return this.noteCounters.has(identity)
       ? { registered: true, counter: this.noteCounters.get(identity) }
       : { registered: false, counter: 0 };
+  }
+  // Owner reads (pipeline.js): every note row in the table's own shape
+  // ({id, ts, recipient, sender, body, ack_at}); sender/receiver here
+  // are exact identity matches, address matching lives in pipeline.js.
+  async noteOwnerList(q = {}) {
+    let rows = this.noteRows.filter(
+      (r) =>
+        (q.since_id === undefined || q.since_id === null || r.id > q.since_id) &&
+        (q.before_id === undefined || q.before_id === null || r.id < q.before_id) &&
+        (!q.unread_only || r.ack_at === null) &&
+        (!q.sender || r.from === q.sender) &&
+        (!q.receiver || r.recipient === q.receiver),
+    );
+    rows = q.order === "desc" ? rows.slice().reverse() : rows;
+    return rows
+      .slice(0, q.limit ?? 50)
+      .map((r) => ({ id: r.id, ts: r.ts, recipient: r.recipient, sender: r.from, body: r.note, ack_at: r.ack_at }));
+  }
+  // Owner directory (pipeline.js): one row per registered identity,
+  // scopes folded over its tokens (any token granting a scope grants
+  // it), plus the wake-signal counter.
+  async noteDirectory() {
+    return [...this.noteCounters.keys()].sort().map((identity) => {
+      let can_send = false;
+      let can_inbox = false;
+      for (const t of this.noteTokens.values()) {
+        if (t.identity !== identity) continue;
+        can_send = can_send || !!t.can_send;
+        can_inbox = can_inbox || !!t.can_inbox;
+      }
+      return { identity, can_send, can_inbox, signal_counter: this.noteCounters.get(identity), created: null };
+    });
   }
   // Wake hooks (wake.js), same semantics as the Durable Object.
   async wakeHookGet(address) {

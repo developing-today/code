@@ -26,6 +26,7 @@ const RESERVED_SIGNAL_CLASSES = new Set([
   ".well-known",
   "api",
   "authorize",
+  "enroll",
   "fleet",
   "healthz",
   "mcp",
