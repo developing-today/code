@@ -783,6 +783,7 @@ mod tests {
         let grant = crate::mcp_policy::RoleGrant {
             agent_key: agent(9).0,
             agent_label: "participant".to_owned(),
+            role: "participant".to_owned(),
             owner: OWNER.to_owned(),
             world: "atlas".to_owned(),
             capability_ref: "proof".to_owned(),
@@ -797,12 +798,14 @@ mod tests {
                 tool_calls: 10,
                 program_invocations: 0,
             },
+            quota_replenishment: None,
             rate_limits: Vec::new(),
         };
         let mut session = PolicySession::new(
             grant,
             BridgeSession::start(&v1_tool_definitions()).expect("bridge starts"),
             host,
+            NOW,
         );
         let joined = session.act("world.join", &json!({ "capability": "cap-1" }), NOW);
         assert!(matches!(joined, PolicyOutcome::Executed(_)));

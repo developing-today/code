@@ -99,7 +99,7 @@ impl AgentQuotaLedger {
     }
 
     /// The spend outstanding after replenishment up to `now`.
-    pub fn spend(&mut self, now: u64) -> Quota {
+    pub const fn spend(&mut self, now: u64) -> Quota {
         self.refresh(now);
         self.spend
     }
@@ -124,11 +124,17 @@ impl AgentQuotaLedger {
     }
 
     /// Regain budget for every whole replenishment period elapsed by
-    /// `now`. A clock that moves backwards regains nothing.
-    fn refresh(&mut self, now: u64) {
+    /// `now`. A clock that moves backwards regains nothing, and a zero
+    /// cadence — rejected by [`crate::role_config::RoleDefinition::validate`]
+    /// for role-loaded classes — regains nothing instead of dividing
+    /// by zero.
+    const fn refresh(&mut self, now: u64) {
         let Some(replenishment) = self.replenishment else {
             return;
         };
+        if replenishment.every_secs == 0 {
+            return;
+        }
         let elapsed = now.saturating_sub(self.last_replenished_at);
         let ticks = elapsed / replenishment.every_secs;
         if ticks == 0 {
@@ -175,7 +181,23 @@ pub fn spend_by_role(ledgers: &mut [AgentQuotaLedger], now: u64) -> BTreeMap<Str
     totals
 }
 
+/// Spend summed per agent across ledgers: the owner's per-agent view.
+/// Spend is read as of `now`, after replenishment.
+///
+/// A ledger belongs to exactly one agent, so each entry is that
+/// agent's spend in one world; an agent in several worlds has one
+/// entry per world ledger.
+pub fn spend_by_agent(ledgers: &mut [AgentQuotaLedger], now: u64) -> BTreeMap<[u8; 32], Quota> {
+    let mut totals: BTreeMap<[u8; 32], Quota> = BTreeMap::new();
+    for ledger in ledgers {
+        let spend = ledger.spend(now);
+        totals.entry(*ledger.agent_key()).or_default().add(spend);
+    }
+    totals
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -286,5 +308,42 @@ mod tests {
 
         assert_eq!(totals["archivist"].tool_calls, 3);
         assert_eq!(totals["courier"].tool_calls, 1);
+    }
+
+    #[test]
+    fn spend_by_agent_reports_each_agent_key() {
+        let mut a = AgentQuotaLedger::open([1; 32], "w", "archivist", class(9, None), 0);
+        let mut b = AgentQuotaLedger::open([2; 32], "w", "archivist", class(9, None), 0);
+        a.charge(0, call()).unwrap();
+        b.charge(0, call()).unwrap();
+        b.charge(0, call()).unwrap();
+
+        let mut ledgers = [a, b];
+        let totals = spend_by_agent(&mut ledgers, 0);
+
+        assert_eq!(totals[&[1; 32]].tool_calls, 1);
+        assert_eq!(totals[&[2; 32]].tool_calls, 2);
+    }
+
+    #[test]
+    fn zero_cadence_regains_nothing_and_never_panics() {
+        // Role-loaded classes reject a zero cadence at validation
+        // (`RoleDefinition::validate`); a hand-built class with one
+        // must still be total.
+        let zero = QuotaClass {
+            budget: Quota {
+                frames: 0,
+                tool_calls: 1,
+                program_invocations: 0,
+            },
+            replenishment: Some(Replenishment {
+                every_secs: 0,
+                amount: call(),
+            }),
+        };
+        let mut ledger = AgentQuotaLedger::open(AGENT, "w", "archivist", zero, 100);
+        ledger.charge(100, call()).unwrap();
+        assert!(ledger.charge(u64::MAX, call()).is_err());
+        assert_eq!(ledger.spend(u64::MAX).tool_calls, 1);
     }
 }

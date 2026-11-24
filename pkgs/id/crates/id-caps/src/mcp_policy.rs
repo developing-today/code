@@ -11,10 +11,13 @@
 //!    role grant and names the tools, the worlds, the object classes,
 //!    and the program-invoke allowlist. Anything outside it is refused
 //!    and audited, and never reaches the bridge.
-//! 2. **Quota charge** (section 6.2). A local, per-session budget over
-//!    frames, tool calls, and program invocations — the spike does not
-//!    wait for F12.10 (design section 9.3); the audit event shape is
-//!    the one F12.10 will consume. Every admitted action is charged
+//! 2. **Quota charge** (section 6.2). A per-(agent, world) ledger
+//!    ([`crate::agent_quota_ledger::AgentQuotaLedger`]) over frames,
+//!    tool calls, and program invocations, granted with the role and
+//!    replenished on the role's cadence — the v2 step-3 successor to
+//!    the spike's per-session budget, which reset when the session
+//!    did. The audit event shape is the one F12.10 will consume.
+//!    Every admitted action is charged
 //!    *before* execution; a charge that would exceed the budget
 //!    refuses the action and **parks** the agent: parking is returned
 //!    to the driver as the first-class world event
@@ -59,7 +62,9 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, Verifying
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use crate::agent_quota_ledger::{AgentQuotaLedger, LedgerExhaustion};
 use crate::mcp_bridge::{BridgeError, BridgeSession, ToolAction, ToolDefinition};
+use crate::role_config::{QuotaClass, Replenishment};
 
 /// The world event text emitted when quota exhaustion parks an agent
 /// (design section 6.2, findings Q3b: visible, never silent).
@@ -85,14 +90,19 @@ pub struct RateLimit {
 /// Emitted when quota exhaustion parks an agent. "Agent parked,
 /// quota exhausted" is a first-class world event the owner sees,
 /// never a silent failure; the shape is the section 9.3
-/// local-budget event F12.10 will consume.
+/// local-budget event F12.10 will consume. Field names and types
+/// are frozen for that consumer: only the human-readable
+/// [`message`](Self::message) names the exhausted axis and the
+/// role's next replenishment time.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParkEvent {
     /// Event kind: always `agent_parked`.
     pub kind: String,
     /// Machine-readable reason: always `quota_exhausted`.
     pub reason: String,
-    /// Owner-facing message: [`QUOTA_PARK_EVENT`].
+    /// Owner-facing message: [`QUOTA_PARK_EVENT`], naming the
+    /// exhausted axis and the next replenishment time (or the lack
+    /// of one).
     pub message: String,
     /// The parked agent's public key.
     pub agent_key: [u8; 32],
@@ -192,6 +202,24 @@ fn charge_for(tool: &str) -> Quota {
     }
 }
 
+/// The owner-facing park text for a refused charge: the exhaustion
+/// names the axis and when the role's budget next replenishes, so a
+/// parked agent's owner knows how long the park lasts. The text
+/// starts with [`QUOTA_PARK_EVENT`] so existing consumers matching
+/// on the event prefix keep working.
+fn park_detail(exhaustion: &LedgerExhaustion) -> String {
+    match exhaustion.replenishes_at {
+        Some(at) => format!(
+            "{QUOTA_PARK_EVENT} on the {} axis; budget replenishes at {at}",
+            exhaustion.axis
+        ),
+        None => format!(
+            "{QUOTA_PARK_EVENT} on the {} axis; role grants no replenishment",
+            exhaustion.axis
+        ),
+    }
+}
+
 /// A role grant: the authority a session is constructed with. Set
 /// owner-side at grant time; the session never widens it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -201,6 +229,11 @@ pub struct RoleGrant {
     /// Short human label for the agent ("archivist"), used in the
     /// owner summary and in-world presence.
     pub agent_label: String,
+    /// The role the agent holds in this world (see
+    /// [`crate::role_config::RoleDefinition::name`]). The quota
+    /// ledger is keyed by it, and the owner's per-role spend view
+    /// groups by it.
+    pub role: String,
     /// The owner's name; the agent's presence is labelled with it
     /// (design section 6.3).
     pub owner: String,
@@ -211,8 +244,12 @@ pub struct RoleGrant {
     pub capability_ref: String,
     /// The capability ceiling for this session.
     pub ceiling: CapabilityCeiling,
-    /// The per-session quota budget for this session.
+    /// The quota budget granted with the role: the session ledger's
+    /// opening budget (see [`crate::role_config::QuotaClass`]).
     pub quota: Quota,
+    /// How the role's budget replenishes (`None` for a
+    /// never-replenishing budget): the session ledger's cadence.
+    pub quota_replenishment: Option<Replenishment>,
     /// Per-tool rate limits for this session (design section 6.3),
     /// part of the role: empty when the role caps no tool.
     pub rate_limits: Vec<RateLimit>,
@@ -612,29 +649,93 @@ pub enum PolicyOutcome {
 }
 
 /// A bridge session behind the policy point: one role grant, one
-/// bridge session, one audit log, one quota budget.
+/// bridge session, one audit log, one per-(agent, world) quota
+/// ledger.
 #[derive(Debug)]
 pub struct PolicySession {
     grant: RoleGrant,
     bridge: BridgeSession,
     audit: AuditLog,
-    spend: Quota,
+    ledger: AgentQuotaLedger,
     parked: bool,
     object_classes: BTreeMap<String, String>,
     admitted_at: BTreeMap<String, VecDeque<u64>>,
 }
 
 impl PolicySession {
-    /// Open a policy session for one role grant. The bridge session
-    /// is started (and its definitions pinned) by the driver, as in
-    /// [`BridgeSession::start`]; `host_key` signs the audit chain.
+    /// Open a policy session for one role grant, opening the grant's
+    /// quota ledger fresh: the budget is the grant's quota with the
+    /// grant's replenishment cadence, and spend starts at zero. A
+    /// rejoining agent must go through [`Self::rejoin`] with its
+    /// persisted ledger instead — opening fresh would reset its
+    /// budget. The bridge session is started (and its definitions
+    /// pinned) by the driver, as in [`BridgeSession::start`];
+    /// `host_key` signs the audit chain.
     #[must_use]
-    pub const fn new(grant: RoleGrant, bridge: BridgeSession, host_key: SigningKey) -> Self {
+    pub fn new(grant: RoleGrant, bridge: BridgeSession, host_key: SigningKey, now: u64) -> Self {
+        let ledger = AgentQuotaLedger::open(
+            grant.agent_key,
+            grant.world.clone(),
+            grant.role.clone(),
+            QuotaClass {
+                budget: grant.quota,
+                replenishment: grant.quota_replenishment,
+            },
+            now,
+        );
+        Self::with_ledger(grant, bridge, host_key, ledger)
+    }
+
+    /// Reopen a policy session for a rejoining agent: the persisted
+    /// ledger (see [`Self::ledger`]) is adopted when it names this
+    /// grant's (agent, world), so spend survives the leave/rejoin
+    /// cycle unchanged and rejoining never resets the budget; only
+    /// the grant's current role, budget, and cadence are adopted. A
+    /// ledger saved for another agent or world is never adopted —
+    /// the grant opens fresh instead.
+    #[must_use]
+    pub fn rejoin(
+        grant: RoleGrant,
+        bridge: BridgeSession,
+        host_key: SigningKey,
+        mut saved: AgentQuotaLedger,
+        now: u64,
+    ) -> Self {
+        if saved.agent_key() == &grant.agent_key && saved.world() == grant.world {
+            saved.reopen(
+                grant.role.clone(),
+                QuotaClass {
+                    budget: grant.quota,
+                    replenishment: grant.quota_replenishment,
+                },
+                now,
+            );
+        } else {
+            saved = AgentQuotaLedger::open(
+                grant.agent_key,
+                grant.world.clone(),
+                grant.role.clone(),
+                QuotaClass {
+                    budget: grant.quota,
+                    replenishment: grant.quota_replenishment,
+                },
+                now,
+            );
+        }
+        Self::with_ledger(grant, bridge, host_key, saved)
+    }
+
+    const fn with_ledger(
+        grant: RoleGrant,
+        bridge: BridgeSession,
+        host_key: SigningKey,
+        ledger: AgentQuotaLedger,
+    ) -> Self {
         Self {
             grant,
             bridge,
             audit: AuditLog::new(host_key),
-            spend: Quota::zero(),
+            ledger,
             parked: false,
             object_classes: BTreeMap::new(),
             admitted_at: BTreeMap::new(),
@@ -694,11 +795,26 @@ impl PolicySession {
         self.parked
     }
 
-    /// The quota spent so far. A copy: the agent cannot reach the
-    /// session's own ledger through it.
+    /// The quota spent so far, replenished up to `now`. A copy:
+    /// the agent cannot reach the session's own ledger through it.
+    pub const fn spend(&mut self, now: u64) -> Quota {
+        self.ledger.spend(now)
+    }
+
+    /// The session's quota ledger, for the host to persist across the
+    /// leave/rejoin cycle (the ledger is serde-shaped; see
+    /// [`AgentQuotaLedger`]). A rejoining agent's session opens on
+    /// the persisted value through [`Self::rejoin`].
     #[must_use]
-    pub const fn spend(&self) -> Quota {
-        self.spend
+    pub const fn ledger(&self) -> &AgentQuotaLedger {
+        &self.ledger
+    }
+
+    /// The session's quota ledger, moved out at leave time for the
+    /// host to persist.
+    #[must_use]
+    pub fn into_ledger(self) -> AgentQuotaLedger {
+        self.ledger
     }
 
     /// The audit events so far, read-only.
@@ -721,9 +837,9 @@ impl PolicySession {
         self.audit.verify()
     }
 
-    /// The owner summary over the whole session so far.
-    #[must_use]
-    pub fn owner_summary(&self) -> OwnerSummary {
+    /// The owner summary over the whole session so far, with the
+    /// spend read off the quota ledger as of `now`.
+    pub fn owner_summary(&mut self, now: u64) -> OwnerSummary {
         let mut executed = 0u64;
         let mut refusals = 0u64;
         let mut refusals_by_code: BTreeMap<String, u64> = BTreeMap::new();
@@ -744,7 +860,7 @@ impl PolicySession {
             executed,
             refusals,
             refusals_by_code,
-            spend: self.spend,
+            spend: self.ledger.spend(now),
             parked: self.parked,
         }
     }
@@ -801,18 +917,28 @@ impl PolicySession {
             return self.execute(name, arguments, object, Quota::zero());
         }
         if self.parked {
-            self.audit.append(
-                &self.grant,
-                name,
-                object,
-                Quota::zero(),
-                AuditOutcome::RefusedParked,
-            );
-            return PolicyOutcome::Refused(PolicyRefusal {
-                kind: RefusalKind::Parked,
-                detail: QUOTA_PARK_EVENT.to_owned(),
-                park_event: None,
-            });
+            // A replenished ledger lifts the park: when the role's
+            // cadence has regained enough budget for this action, the
+            // agent resumes through the normal pipeline below instead
+            // of staying parked on a stale refusal.
+            let charge = charge_for(name);
+            if Quota::exceeded_axis(self.ledger.budget(), self.ledger.spend(now), charge).is_none()
+            {
+                self.parked = false;
+            } else {
+                self.audit.append(
+                    &self.grant,
+                    name,
+                    object,
+                    Quota::zero(),
+                    AuditOutcome::RefusedParked,
+                );
+                return PolicyOutcome::Refused(PolicyRefusal {
+                    kind: RefusalKind::Parked,
+                    detail: QUOTA_PARK_EVENT.to_owned(),
+                    park_event: None,
+                });
+            }
         }
         if let Some(detail) = self.ceiling_refusal(name, arguments) {
             self.audit.append(
@@ -873,33 +999,33 @@ impl PolicySession {
             });
         }
         let charge = charge_for(name);
-        if let Some(axis) = Quota::exceeded_axis(self.grant.quota, self.spend, charge) {
+        if let Err(exhaustion) = self.ledger.charge(now, charge) {
             self.parked = true;
+            let detail = park_detail(&exhaustion);
             self.audit.append(
                 &self.grant,
                 name,
                 object,
                 Quota::zero(),
                 AuditOutcome::RefusedQuota {
-                    axis: axis.to_owned(),
+                    axis: exhaustion.axis,
                 },
             );
             return PolicyOutcome::Refused(PolicyRefusal {
                 kind: RefusalKind::Quota,
-                detail: format!("quota exhausted on the {axis} axis"),
+                detail: detail.clone(),
                 park_event: Some(ParkEvent {
                     kind: "agent_parked".to_owned(),
                     reason: "quota_exhausted".to_owned(),
-                    message: QUOTA_PARK_EVENT.to_owned(),
+                    message: detail,
                     agent_key: self.grant.agent_key,
                     world: self.grant.world.clone(),
                     at: now,
-                    quota_spent: self.spend,
-                    quota_budget: self.grant.quota,
+                    quota_spent: self.ledger.spend(now),
+                    quota_budget: self.ledger.budget(),
                 }),
             });
         }
-        self.spend.add(charge);
         self.admitted_at
             .entry(name.to_owned())
             .or_default()
@@ -1058,6 +1184,7 @@ mod tests {
         RoleGrant {
             agent_key: [3; 32],
             agent_label: "archivist".to_owned(),
+            role: "archivist".to_owned(),
             owner: "drew".to_owned(),
             world: "tic-tac-toe".to_owned(),
             capability_ref: "grant-1".to_owned(),
@@ -1072,6 +1199,7 @@ mod tests {
                 tool_calls: 32,
                 program_invocations: 1,
             },
+            quota_replenishment: None,
             rate_limits: Vec::new(),
         }
     }
@@ -1081,6 +1209,7 @@ mod tests {
             grant,
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
             host_key(),
+            TEST_NOW,
         )
     }
 
@@ -1154,7 +1283,23 @@ mod tests {
         let park = refusal.park_event.as_ref().expect("park event present");
         assert_eq!(park.kind, "agent_parked");
         assert_eq!(park.reason, "quota_exhausted");
-        assert_eq!(park.message, QUOTA_PARK_EVENT);
+        // The message keeps the event prefix and names the axis and
+        // the (absent) replenishment of this grant.
+        assert!(
+            park.message.starts_with(QUOTA_PARK_EVENT),
+            "unexpected park message: {}",
+            park.message
+        );
+        assert!(
+            park.message.contains("frames"),
+            "unexpected park message: {}",
+            park.message
+        );
+        assert!(
+            park.message.contains("no replenishment"),
+            "unexpected park message: {}",
+            park.message
+        );
         assert_eq!(park.world, "tic-tac-toe");
         assert_eq!(park.quota_budget.frames, 1);
         assert_eq!(park.quota_spent.frames, 1);
@@ -1163,9 +1308,11 @@ mod tests {
             last_outcome(&session),
             AuditOutcome::RefusedQuota { .. }
         ));
-        // Parked actions are refused without a charge...
-        let spend_before = session.spend();
-        let outcome = session.act("screen.read", &json!({}), TEST_NOW);
+        // The park lasts until the ledger can admit the action (v2:
+        // exhaustion parks, it does not stick past the budget). A
+        // frame-costing action is still refused without a charge...
+        let spend_before = session.spend(TEST_NOW);
+        let outcome = session.act("chat.post", &json!({ "text": "again" }), TEST_NOW);
         assert!(matches!(
             outcome,
             PolicyOutcome::Refused(PolicyRefusal {
@@ -1173,15 +1320,176 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(session.spend(), spend_before);
-        // ...but the agent can always leave.
+        assert_eq!(session.spend(TEST_NOW), spend_before);
+        // ...while a frameless action fits the remaining budget, so
+        // the park lifts and it is admitted.
+        let outcome = session.act("screen.read", &json!({}), TEST_NOW);
+        assert!(matches!(outcome, PolicyOutcome::Executed(_)), "{outcome:?}");
+        assert!(!session.is_parked());
+        // ...and the agent can always leave.
         assert_eq!(
             session.act("world.leave", &json!({}), TEST_NOW),
             PolicyOutcome::Executed(ToolAction::Close)
         );
-        let summary = session.owner_summary();
-        assert!(summary.parked);
-        assert!(summary.render().contains("parked, quota exhausted"));
+        let summary = session.owner_summary(TEST_NOW);
+        assert!(!summary.parked);
+        assert!(summary.render().contains("was refused 2 times"));
+    }
+
+    #[test]
+    fn quota_ledger_survives_leave_and_rejoin() {
+        let mut session = joined(grant()); // join: 1 frame + 1 tool call
+        session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
+        let spend_before = session.spend(TEST_NOW);
+        assert_eq!(spend_before.tool_calls, 2);
+
+        // Leave: the host persists the ledger — the serde round-trip
+        // stands in for the world store.
+        let stored = serde_json::to_string(&session.into_ledger()).unwrap();
+        let restored: AgentQuotaLedger = serde_json::from_str(&stored).unwrap();
+
+        // Rejoin under a fresh session on the same grant: spend is
+        // kept, the budget is not reset.
+        let mut rejoined = PolicySession::rejoin(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            restored,
+            TEST_NOW + 1,
+        );
+        assert_eq!(rejoined.spend(TEST_NOW + 1).tool_calls, 2);
+        let outcome = rejoined.act(
+            "world.join",
+            &json!({ "capability": "cap-1" }),
+            TEST_NOW + 1,
+        );
+        assert!(matches!(outcome, PolicyOutcome::Executed(_)), "{outcome:?}");
+        assert_eq!(rejoined.spend(TEST_NOW + 1).tool_calls, 3);
+
+        // A ledger saved for another agent or world is never
+        // adopted: the grant opens fresh instead.
+        let foreign = AgentQuotaLedger::open(
+            [9; 32],
+            "tic-tac-toe",
+            "archivist",
+            QuotaClass {
+                budget: grant().quota,
+                replenishment: None,
+            },
+            TEST_NOW,
+        );
+        let mut fresh = PolicySession::rejoin(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            foreign,
+            TEST_NOW,
+        );
+        assert_eq!(fresh.spend(TEST_NOW), Quota::zero());
+    }
+
+    #[test]
+    fn replenishing_grant_parks_with_the_replenishment_time() {
+        let mut replenishing = grant();
+        replenishing.quota = Quota {
+            frames: 100,
+            tool_calls: 1,
+            program_invocations: 0,
+        };
+        replenishing.quota_replenishment = Some(Replenishment {
+            every_secs: 60,
+            amount: Quota {
+                frames: 0,
+                tool_calls: 1,
+                program_invocations: 0,
+            },
+        });
+        let mut session = joined(replenishing); // join spends the only call
+        let outcome = session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
+        let PolicyOutcome::Refused(refusal) = outcome else {
+            panic!("quota refusal expected, got {outcome:?}");
+        };
+        let park = refusal.park_event.as_ref().expect("park event present");
+        assert!(
+            park.message.contains("replenishes at"),
+            "unexpected park message: {}",
+            park.message
+        );
+        assert!(
+            park.message.contains(&format!("{}", TEST_NOW + 60)),
+            "unexpected park message: {}",
+            park.message
+        );
+        assert!(session.is_parked());
+
+        // The cadence has not passed: still parked, charged nothing.
+        let spend_before = session.spend(TEST_NOW + 30);
+        let outcome = session.act("chat.post", &json!({ "text": "again" }), TEST_NOW + 30);
+        assert!(matches!(
+            outcome,
+            PolicyOutcome::Refused(PolicyRefusal {
+                kind: RefusalKind::Parked,
+                ..
+            })
+        ));
+        assert_eq!(session.spend(TEST_NOW + 30), spend_before);
+
+        // The cadence passes: the park lifts and the action is admitted.
+        let outcome = session.act("chat.post", &json!({ "text": "back" }), TEST_NOW + 61);
+        assert!(matches!(outcome, PolicyOutcome::Executed(_)), "{outcome:?}");
+        assert!(!session.is_parked());
+    }
+
+    #[test]
+    fn ledger_exhaustion_keeps_the_f12_10_park_shape() {
+        // The section 9.3 local-budget event F12.10 consumes: exhaust
+        // through the wired ledger and pin the emitted shape, so a
+        // field addition, removal, or rename fails here first.
+        let mut grant = grant();
+        grant.quota.frames = 1; // the join spends the only frame
+        let mut session = joined(grant);
+        let outcome = session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
+        let PolicyOutcome::Refused(refusal) = outcome else {
+            panic!("quota refusal expected, got {outcome:?}");
+        };
+        let park = refusal.park_event.as_ref().expect("park event present");
+
+        let value = serde_json::to_value(park).unwrap();
+        let object = value.as_object().expect("park event is an object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "agent_key",
+                "at",
+                "kind",
+                "message",
+                "quota_budget",
+                "quota_spent",
+                "reason",
+                "world"
+            ]
+        );
+        for axis in ["quota_spent", "quota_budget"] {
+            let mut subkeys: Vec<&str> = object[axis]
+                .as_object()
+                .expect("quota vector is an object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            subkeys.sort_unstable();
+            assert_eq!(subkeys, ["frames", "program_invocations", "tool_calls"]);
+        }
+
+        // The spend the shape carries is the ledger's, not a reset
+        // budget: the join's frame survived on the ledger.
+        assert_eq!(park.quota_spent.frames, 1);
+        assert_eq!(park.quota_budget.frames, 1);
+        assert!(matches!(
+            last_outcome(&session),
+            AuditOutcome::RefusedQuota { axis } if axis == "frames"
+        ));
     }
 
     #[test]
@@ -1240,7 +1548,7 @@ mod tests {
         session.act("screen.read", &json!({}), TEST_NOW); // 1 tool call
         session.act("chat.post", &json!({ "text": "hi" }), TEST_NOW); // 1 frame + 1 tool call
         session.act("host.exec", &json!({}), TEST_NOW); // ceiling refusal, no charge
-        let summary = session.owner_summary();
+        let summary = session.owner_summary(TEST_NOW);
         assert_eq!(summary.actions, 5);
         assert_eq!(summary.executed, 4);
         assert_eq!(summary.refusals, 1);
@@ -1357,7 +1665,7 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(session.spend().program_invocations, 0);
+        assert_eq!(session.spend(TEST_NOW).program_invocations, 0);
         // Inside the allowlist: admitted, charged on the program
         // axis, and executed — the bridge translates the invoke into
         // the single `input` frame that carries it (spike step 5).
@@ -1371,7 +1679,7 @@ mod tests {
                 json!({ "type": "input", "data_hex": "34" })
             ))
         );
-        assert_eq!(session.spend().program_invocations, 1);
+        assert_eq!(session.spend(TEST_NOW).program_invocations, 1);
         assert!(matches!(last_outcome(&session), AuditOutcome::Executed));
         assert_eq!(
             session.audit_events().last().unwrap().object.as_deref(),
@@ -1385,11 +1693,11 @@ mod tests {
         session.act("chat.post", &json!({ "text": "hello" }), TEST_NOW);
         // The spend comes out by value: scribbling on the copy does
         // not reach the session's ledger.
-        let mut copy = session.spend();
+        let mut copy = session.spend(TEST_NOW);
         copy.frames = 0;
         copy.tool_calls = 0;
         assert_eq!(copy.tool_calls, 0); // the copy really was scribbled on
-        assert_eq!(session.spend().tool_calls, 2);
+        assert_eq!(session.spend(TEST_NOW).tool_calls, 2);
         // The log comes out as a shared slice; the chain still
         // verifies after every read.
         assert_eq!(session.audit_events().len(), 2);
@@ -1417,7 +1725,7 @@ mod tests {
         ));
         // The third is refused by the rate limit, audited, and
         // charged nothing.
-        let spend_before = session.spend();
+        let spend_before = session.spend(TEST_NOW);
         let outcome = session.act("chat.post", &json!({ "text": "three" }), TEST_NOW + 2);
         assert!(matches!(
             outcome,
@@ -1430,7 +1738,7 @@ mod tests {
             last_outcome(&session),
             AuditOutcome::RefusedRateLimit { .. }
         ));
-        assert_eq!(session.spend(), spend_before);
+        assert_eq!(session.spend(TEST_NOW), spend_before);
         // Once the window slides past the admitted calls, the tool
         // admits again.
         assert!(matches!(
@@ -1444,7 +1752,7 @@ mod tests {
         let mut session = joined(grant());
         session.act("host.exec", &json!({}), TEST_NOW); // ceiling refusal
         session.act("host.exec", &json!({}), TEST_NOW); // ceiling refusal again
-        let summary = session.owner_summary();
+        let summary = session.owner_summary(TEST_NOW);
         assert_eq!(summary.refusals, 2);
         assert_eq!(summary.refusals_by_code.get("ceiling"), Some(&2));
         assert_eq!(summary.refusals_by_code.len(), 1);

@@ -77,6 +77,7 @@ fn spike_grant() -> RoleGrant {
     RoleGrant {
         agent_key: [9; 32],
         agent_label: "spike".to_owned(),
+        role: "spike".to_owned(),
         owner: "drew".to_owned(),
         world: "tic-tac-toe".to_owned(),
         capability_ref: "grant-spike-1".to_owned(),
@@ -94,6 +95,7 @@ fn spike_grant() -> RoleGrant {
             tool_calls: 32,
             program_invocations: 1,
         },
+        quota_replenishment: None,
         rate_limits: Vec::new(),
     }
 }
@@ -243,6 +245,7 @@ async fn spike_run_joins_reads_chats_invokes_once_and_leaves() {
             spike_grant(),
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
             SigningKey::from_bytes(&[5; 32]),
+            SPIKE_NOW,
         ),
     };
 
@@ -445,7 +448,7 @@ async fn spike_run_joins_reads_chats_invokes_once_and_leaves() {
     assert_eq!(invoke_event.object.as_deref(), Some("tic-tac-toe"));
     assert_eq!(invoke_event.quota_charged.program_invocations, 1);
     session.verify_audit().unwrap();
-    let summary = session.owner_summary();
+    let summary = session.owner_summary(SPIKE_NOW);
     assert_eq!(summary.actions, 9);
     assert_eq!(summary.executed, 8);
     assert_eq!(summary.refusals, 1);
