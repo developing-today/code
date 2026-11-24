@@ -271,7 +271,9 @@ function withoutAnswered(doc) {
 let hostSeen = null;
 /** How far behind the laptop may be before the app says so. */
 const HOST_QUIET_MS = 3 * 60_000;
-const HELD_NOTE = "Held: the laptop cannot be reached. It will be sent when it is back.";
+/** Said of something the platform holds when it did not say more (the
+ * platform says who it waits for: outbox.js has the words). */
+const HELD_NOTE = "Held: it could not be done just now, and will be when it can.";
 
 const KEPT_NOTE = "Kept on this device. It is sent when you are connected.";
 
@@ -391,7 +393,7 @@ async function sendAlone(entry) {
   const answer = await Outbox.httpSend(entry);
   const out = Outbox.classify(answer);
   if (out.state === "done") return { state: "done", result: out.result };
-  if (out.state === "held") return { state: "held" };
+  if (out.state === "held") return { state: "held", note: out.note };
   if (out.state === "failed") return { state: "failed", note: out.note };
   if (out.signin) signedOut = true;
   return { state: "refused", note: answer.network ? "This needs a connection." : out.signin ? NO_SIGNIN : out.note };
@@ -422,7 +424,7 @@ export function sentSaid(did, id) {
   const now = did.entry;
   if (!now) return { state: "refused", note: "It was taken back before it was sent." };
   if (now.state === "done") return { state: "done", result: now.result ?? null, others: did.others };
-  if (now.state === "held") return { state: "held", others: did.others };
+  if (now.state === "held") return { state: "held", note: now.note || "", others: did.others };
   if (now.state === "failed") return { state: "failed", note: now.note };
   return {
     state: "kept",
@@ -458,7 +460,7 @@ async function act(kind, args, done, button) {
     return out.result ?? { done: true };
   }
   if (out.state === "held") {
-    toast(HELD_NOTE + also);
+    toast((out.note || HELD_NOTE) + also);
     await refresh(true);
     return { held: true };
   }
@@ -524,7 +526,7 @@ function notices(doc, only = null) {
   if (doc === docs.core && doc?.edge?.held > 0) {
     const n = doc.edge.held;
     out.push(
-      h("div", { class: "card flag" }, h("p", { class: "meta" }, `${n} ${n === 1 ? "thing" : "things"} you did ${n === 1 ? "is" : "are"} waiting for the laptop. See “What you did” below.`)),
+      h("div", { class: "card flag" }, h("p", { class: "meta" }, `${n} ${n === 1 ? "thing" : "things"} you did ${n === 1 ? "is" : "are"} waiting to be done. See “What you did” below.`)),
     );
   }
   for (const said of unreadSaid(doc, only)) out.push(h("div", { class: "card flag" }, h("p", { class: "meta" }, said)));
@@ -786,7 +788,7 @@ async function sendAnswer(kind, args, key, said) {
     // A choice was already acknowledged when it was made (with its
     // Undo); anything else says so now, or the question would simply
     // vanish.
-    if (out.state === "held") toast(HELD_NOTE);
+    if (out.state === "held") toast(out.note || HELD_NOTE);
     else if (out.state === "kept") toast(out.note);
     else if (said) toast(said);
     picks.delete(key);
@@ -2155,13 +2157,25 @@ export function machinesMark(m, now = Date.now()) {
       (x.sections || []).length,
       x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
     ]),
-    held: (m?.held || []).map((item) => item.id),
+    // Who each waits for is drawn too, and changes while it waits.
+    held: (m?.held || []).map((item) => [item.id, item.waits ?? ""]),
   });
 }
 let machinesDrawn = "";
 
+/** Who something held waits for, in the owner's words; empty when the
+ * platform did not say (one older than the saying). */
+export function heldWaitsSaid(waits) {
+  const said = {
+    either: "Cloudflare does this as soon as it can again, or a machine that is back first.",
+    machine: "Waits for a machine: only one can do it, or it comes after something that waits for one.",
+    asked: "A machine was given this, or may have got it. It says what became of it when it is back; nobody else does it meanwhile.",
+  };
+  return typeof waits === "string" && Object.hasOwn(said, waits) ? said[waits] : "";
+}
+
 /** Machines: the platform's own part, each machine that reports and
- * what only it can do, and what waits for one. */
+ * what only it can do, and what waits to be done. */
 async function viewMachines() {
   const m = await api("machines");
   machinesDrawn = machinesMark(m);
@@ -2218,13 +2232,14 @@ async function viewMachines() {
       ),
     );
   }
-  out.push(h("h2", {}, `Waiting for a machine (${held.length})`));
+  out.push(h("h2", {}, `Waiting to be done (${held.length})`));
   if (held.length === 0) out.push(card(h("p", { class: "meta" }, "Nothing is waiting.")));
   for (const item of held) {
     out.push(
       card(
         h("h3", {}, Outbox.sayOf(item.kind, item.args)),
         h("p", { class: "meta" }, `${item.who} · ${ago(item.at)}`),
+        heldWaitsSaid(item.waits) ? h("p", { class: "meta" }, heldWaitsSaid(item.waits)) : null,
         h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: (e) => takeBack(item, e) }, "Take back")),
       ),
     );
@@ -2345,7 +2360,7 @@ export function keptGroups(entries) {
     { state: "waiting", title: "Waiting to send", can: ["drop"], entries: of("waiting") },
     { state: "stale", title: "Kept back for you to look at", can: ["send", "drop"], entries: of("stale") },
     { state: "failed", title: "Could not be done", can: ["again", "drop"], entries: of("failed") },
-    { state: "held", title: "With the platform, waiting for a machine", can: [], entries: of("held") },
+    { state: "held", title: "With the platform, waiting to be done", can: [], entries: of("held") },
     { state: "done", title: "Sent", can: [], entries: of("done") },
   ].filter((g) => g.entries.length > 0);
 }

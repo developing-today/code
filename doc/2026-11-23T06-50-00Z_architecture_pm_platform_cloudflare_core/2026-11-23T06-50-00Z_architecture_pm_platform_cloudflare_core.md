@@ -992,6 +992,8 @@ is the object's own alarm, asked for whenever something is kept; there
 is no other place the held list is worked through.
 
 **Never twice.** An action is one side's or the other's, never both.
+(As first written here this was wrong in one case, found before it was
+merged: see the correction below.)
 
 - _A machine's_ once a report's answer has handed it out: the machine
   may be doing it. The edge never takes it, nor anything else about
@@ -1052,3 +1054,111 @@ made once.
 stays the machine's until the day is up: the edge cannot know whether
 it was done. Every kind is kept to GitHub's time, though moving a task
 asks only the queue store.
+
+## 2026-11-24T05:00Z Correction: an action sent to the host may have been done there (#13831)
+
+**The fault, mine, found reading the change before merging it.** The
+rule above took "never handed out in a report's answer" to mean "never
+reached a machine". It does not. Nearly everything held gets there by
+being sent to the host and getting no answer, and no answer has two
+meanings: the host never had the request, or the host did it and the
+answer was lost on the way back. The second kind was done again by the
+edge once it could. A test written first showed it: a comment the
+laptop made, its answer lost, the laptop then away; an hour later the
+edge made the same comment a second time. The code this was built on
+(#13652) had the same hole in its one case, and waking by itself made
+it reachable with nobody doing anything.
+
+**What can be known.** What comes back from asking the host is one of
+three things: the host's own answer; nothing (the time ran out, the
+connection broke); or an answer from what stands in front of it. Only
+Cloudflare's 530 says the host never had the request. Cloudflare gives
+it (with error 1033 in the body) when the tunnel has no connection to
+send anything down, which is what a laptop asleep or off looks like.
+Its documentation says so of both: the 530 page, and the 1033 page
+("cannot find a healthy `cloudflared` instance to receive the
+traffic"). A 502 from the tunnel's own daemon does not say as much (it
+is also what a connection lost part-way looks like), and is treated as
+no word.
+
+**The rule now.** A held action is the edge's to do only when it is
+known to have reached no machine: it never set off toward one, or it
+set off once and that one asking was answered 530. It then carries the
+word `unsent`. Without the word it is a machine's by name, as
+everything held was before this change: handed to the host when it
+reports, which says what became of it. The word is the positive one on
+purpose. What is held in service today was kept by a version that did
+not write down how the asking ended, and has no word either way; read
+as "may have", it is left to the laptop.
+
+**The same name, asked twice.** A device gives up on a send after a
+minute and offers the name again, while the edge gives the host a
+little longer. So two askings under one name can be out at once, and
+word that the second never arrived says nothing of the first. Every
+setting-off is counted under the name, and a 530 is believed only for
+a name that set off once. Three more cases follow from the same
+thought:
+
+- One waiting here that reached nobody is not sent toward the host
+  when its device offers it again. It would be on its way there while
+  the edge may be taking it for its own.
+- A name the edge has taken to do itself, offered again in that
+  moment, is not sent to the host as well. The device is answered with
+  what came of doing it here, or told that it is not over.
+- A name whose first asking is still out, offered again while
+  something else about the same thing waits here, is kept as the
+  host's.
+
+Also: a newer action about a thing waits behind an older one the host
+may have, where before it waited only behind one handed out (a newer
+rank would otherwise have replaced an older rank the host may be about
+to set, and the older would have been the last word). And a host's
+answer that cannot be read settles the name as any answer of the
+host's does; it used to leave a hold under it.
+
+**What the owner sees.** Each held action is one of three, and is said
+as that when it is kept, in "What you did", on the Machines screen and
+in the note the device keeps: either side's, whichever can first; a
+machine's only; or one a machine was given or may have got, which
+nobody else does meanwhile. Dropped after a day, the last kind is said
+to be worth checking, not "not sent". The health answer counts the
+three (`held`), so that what the Worker made of a laptop being away
+can be seen from outside.
+
+**Checked.** Thirteen more tests at the edge (28 now for this change),
+the first of them written before the fix and seen to fail: the answer
+lost; out of reach each way, side by side; offered again while
+waiting; offered again with the first asking still out; the same with
+something else waiting; a newer one behind one the host may have, a
+rank among them; offered again at the moment the edge has taken it,
+done and turned away; one kept by the version before; a name from
+before the counting; an unreadable answer; and a take that could not
+be written down leaving nothing marked as being done. In the real
+runtime the Worker's own reading of what comes back is exercised both
+ways: the host's stand-in answering 530, the comment is held as either
+side's and the Worker makes it once; answering 502, it is held for the
+host and the Worker does not make it, able as it is.
+
+71 single faults planted over the whole of the change: 68 fail a test.
+The three that do not change nothing that can be seen. One takes a
+failure of storage in the middle of an action for being turned away
+(the tests' store cannot fail in the middle of one and work again for
+the next write). One drops the check the taking itself makes that a
+machine does not have the action: everything that takes asks the same
+thing first, and between the asking and the taking there is nothing
+but the object's own storage to wait for, during which Cloudflare lets
+nothing else in. One drops the limit on how many times a newer action
+looks again at what is ahead of it, which cannot be reached. The
+Worker's reading of the host's answer is outside those tests, so it
+was turned each way in the real runtime: taking everything for "never
+reached", the Worker makes the comment it should have left to the
+host; believing nothing, it leaves the one it should have made. Each
+fails the checks it should.
+
+**Not done, and filed.** The 530 has not been seen in service: that
+needs the owner's action to be turned away by GitHub while the laptop
+is away. What it was taken for is then in the health answer. An older
+action still out at the host does not hold back a newer one about the
+same thing that the edge can do at once (a rank sent to the host,
+then another the edge makes directly within the minute): the edge does
+not keep track of askings that are out by what they are about.

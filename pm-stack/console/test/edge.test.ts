@@ -730,6 +730,7 @@ async function setup(options: { direct?: boolean } = {}) {
     "issue.comment": {
       run: async (a) => {
         ran.push({ kind: "issue.comment", args: a });
+        await gate.wait;
         if (a.issue === 13) throw new OpError(404, "no such issue");
         return { commented: a.issue };
       },
@@ -813,15 +814,21 @@ async function setup(options: { direct?: boolean } = {}) {
     },
   };
   const net: {
+    /** The host can be reached. When it cannot, what answers in its
+     * place says so (the tunnel is down), unless `silent`. */
     hostUp: boolean;
     edgeUp: boolean;
     loseAnswer: boolean;
     giveUpEarly: boolean;
+    /** Out of reach with nothing to say so: asking it only runs out of time. */
+    silent: boolean;
+    /** The host does the work and answers, and its answer cannot be read. */
+    garble: boolean;
     /** A report of more than this many bytes does not get through: it
      * is cut off on the way ("lost", a slow connection running out of
      * time) or turned away by something in front of the edge ("refused"). */
     large: { over: number; fate: "lost" | "refused" } | null;
-  } = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false, large: null };
+  } = { hostUp: true, edgeUp: true, loseAnswer: false, giveUpEarly: false, silent: false, garble: false, large: null };
   /** The size of each report the host sent, whether or not it arrived. */
   const reportSizes: number[] = [];
   /** Each report the host sent, as it read. */
@@ -866,6 +873,27 @@ async function setup(options: { direct?: boolean } = {}) {
     ["/console/outbox.js", "// what is kept"],
     ["/icons/icon-192.png", "PNG"],
   ]);
+  const askHost = async (r: Request): Promise<Response | null> => {
+    if (!net.hostUp) return null;
+    hostSaw.push(`${r.method} ${new URL(r.url).pathname}`);
+    // Through the tunnel: the connection is local, the headers are the edge's.
+    const answer = handle(r, hostDeps, "127.0.0.1").then(marked);
+    // The edge stops waiting while the host is still at it.
+    if (net.giveUpEarly) {
+      stillRunning.push(answer);
+      return null;
+    }
+    // The host does the work and its answer is lost on the way back.
+    if (net.loseAnswer) {
+      await answer;
+      return null;
+    }
+    if (net.garble) {
+      const said = await answer;
+      return new Response("{", { status: said.status, headers: said.headers });
+    }
+    return answer;
+  };
   const io: Io = {
     state: (r) => edge.now.fetch(r),
     // The platform's file store tags each file by its content; the icon
@@ -874,23 +902,10 @@ async function setup(options: { direct?: boolean } = {}) {
       files.has(path)
         ? new Response(files.get(path), path.startsWith("/icons/") ? {} : { headers: { ETag: `"tag-of-${path}"` } })
         : new Response("", { status: 404 }),
-    host: async (r) => {
-      if (!net.hostUp) return null;
-      hostSaw.push(`${r.method} ${new URL(r.url).pathname}`);
-      // Through the tunnel: the connection is local, the headers are the edge's.
-      const answer = handle(r, hostDeps, "127.0.0.1").then(marked);
-      // The edge stops waiting while the host is still at it.
-      if (net.giveUpEarly) {
-        stillRunning.push(answer);
-        return null;
-      }
-      // The host does the work and its answer is lost on the way back.
-      if (net.loseAnswer) {
-        await answer;
-        return null;
-      }
-      return answer;
-    },
+    host: askHost,
+    // Asked to do something: a host that cannot be reached is said to
+    // be, as Cloudflare says of a tunnel with no connection.
+    act: async (r) => (!net.hostUp && !net.silent ? "unreached" : askHost(r)),
     publicHost: HOST,
     version: "test",
     later: (work) => later.push(work),
@@ -1099,6 +1114,7 @@ describe("before the host's first report", () => {
       version: "test",
       woke: w.now.t,
       clock: { wanted: false, next: null },
+      held: { either: 0, machine: 0, asked: 0 },
       host: HOST,
     });
     // The owner's page is the host's own, reached through the edge.
@@ -1480,7 +1496,7 @@ describe("actions", () => {
     w.net.edgeUp = false;
 
     const held = await w.act("ask.send", { text: "Do this when you are back" });
-    expect(await held.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await held.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
     // A merge acts on what the owner saw; it is never done late.
     const merge = await w.act("pr.merge", { pr: 7 });
     expect(merge.status).toBe(503);
@@ -1596,7 +1612,7 @@ describe("actions", () => {
     const res = await w.act("ask.send", { text: "only once" });
     w.net.loseAnswer = false;
     // The edge cannot tell "never arrived" from "done, answer lost": it holds it.
-    expect(await res.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await res.json()).toEqual({ ok: true, held: true, result: null, waits: "asked" });
     expect(w.ran).toHaveLength(1);
     // The host is offered it under the name it was relayed with, knows
     // it did it, and says so instead of doing it again.
@@ -1723,7 +1739,7 @@ describe("actions", () => {
     // would be done first, and the older move would undo it.
     w.net.hostUp = true;
     const second = await w.act("task.move", { task: 21016, to: "last" });
-    expect(await second.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
     expect(w.ran.filter((r) => r.kind === "task.move")).toEqual([]);
     // Another task is nothing to do with it: it is done at once.
     const other = await w.act("task.move", { task: 21017, to: "first" });
@@ -1836,7 +1852,7 @@ describe("actions", () => {
     const again = await w.act("held.drop", { id: kept });
     expect([again.status, await again.json()]).toEqual([
       404,
-      { error: "That is no longer waiting: a machine took it, or it was taken back already." },
+      { error: "That is no longer waiting: it was done or is being done, or was taken back already." },
     ]);
     // The machine is back: it is given what still waits, and not what was taken back.
     w.net.hostUp = true;
@@ -1901,12 +1917,14 @@ describe("actions", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "machine",
     });
     expect(await (await w.act("ask.send", { text: "kept once" }, id)).json()).toEqual({
       ok: true,
       held: true,
       result: null,
       again: true,
+      waits: "machine",
     });
     expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([id]);
     // The laptop comes back and does it once; sent yet again, the device
@@ -1933,7 +1951,7 @@ describe("actions", () => {
     w.net.giveUpEarly = true;
     const res = await w.act("need.comment", { ref: "code#1", text: "slow" });
     w.net.giveUpEarly = false;
-    expect(await res.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await res.json()).toEqual({ ok: true, held: true, result: null, waits: "asked" });
     // Offered again while still running: not run a second time, and not answered for yet.
     w.now.t += 1_000;
     const during = await w.link.now.once();
@@ -4236,7 +4254,7 @@ describe("the edge does the core itself", () => {
     w.net.edgeUp = false;
     w.ghRefuses.push((method) => method !== "GET");
     const comment = await w.act("issue.comment", { issue: 301, text: "later, then" });
-    expect(await comment.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await comment.json()).toEqual({ ok: true, held: true, result: null, waits: "either" });
     expect((w.stored.get("held") as { kind: string }[]).map((h) => h.kind)).toEqual(["issue.comment"]);
     const merge = await w.act("pr.merge", { pr: 55 });
     expect(merge.status).toBe(503);
@@ -5002,7 +5020,7 @@ describe("the edge does the core itself", () => {
     w.net.hostUp = false;
     w.net.edgeUp = false;
     const held = await w.act("issue.comment", { issue: 14, text: "late" });
-    expect(await held.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await held.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
     // And what the plan's screens read is the laptop's to answer.
     expect((await w.browse("/console/api/roadmap?area=fleet")).status).toBe(503);
     expect(w.githubCalls).toEqual([]);
@@ -5096,6 +5114,7 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "machine",
     });
   });
 
@@ -5111,6 +5130,7 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
     expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
     // The token is put right and this side takes comments back.
@@ -5148,6 +5168,7 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
     expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId]);
     // The token is put right and this side takes ranking back.
@@ -5179,6 +5200,7 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
     // The token is put right and this side takes comments back.
     w.ghRefuses.length = 0;
@@ -5195,7 +5217,7 @@ describe("the edge does the core itself", () => {
     // it is kept, not done here.
     const newerId = "0f000000-0000-4000-8000-000000000022";
     const second = await w.act("issue.comment", { issue: 7, text: "newer" }, newerId);
-    expect(await second.json()).toEqual({ ok: true, held: true, result: null });
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
     expect((w.stored.get("held") as { id: string }[]).map((h) => h.id)).toEqual([olderId, newerId]);
     // Nothing was done here: the laptop did the older, the newer waits.
     // The only call this side made was the older one's refused try.
@@ -5215,6 +5237,7 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
     // The token is put right and this side takes comments back.
     w.ghRefuses.length = 0;
@@ -5247,6 +5270,9 @@ describe("the edge does the core itself", () => {
       .filter((c) => COMMENT(c.method, c.url))
       .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
   const heldIds = (w: HeldWorld) => ((w.stored.get("held") as { id: string }[] | undefined) ?? []).map((h) => h.id);
+  /** What is held, each with who it waits for, as the Machines screen is told it. */
+  const heldWaits = async (w: HeldWorld) =>
+    ((await (await w.browse("/console/api/machines")).json()) as MachinesAnswer).held.map((h) => [h.id, h.waits]);
   /** This side wakes itself: at the time it asked for, and (as in service) as an object that has just started. */
   const wake = async (w: HeldWorld) => {
     w.now.t = Math.max(w.now.t, w.alarm.at);
@@ -5264,6 +5290,7 @@ describe("the edge does the core itself", () => {
         ok: true,
         held: true,
         result: null,
+        waits: "either",
       });
       w.now.t += 1_000;
     }
@@ -5342,12 +5369,19 @@ describe("the edge does the core itself", () => {
       ok: true,
       held: true,
       result: null,
+      waits: "either",
     });
     w.ghLimits.length = 0;
     const asked = w.githubCalls.length;
     // Woken before the time (for the laptop gone quiet): nothing is asked of GitHub at all.
     await wake(w);
     expect([w.now.t < back, w.githubCalls.length, heldIds(w)]).toEqual([true, asked, [ID(2)]]);
+    // Woken again half a minute before the time: still nothing, and its next wake is the time
+    // itself (a pass that found nothing due does not put the next one off).
+    w.now.t = back - 30_000;
+    w.edge.now = w.makeEdge();
+    await w.edge.now.alarm();
+    expect([w.githubCalls.length, w.alarm.at]).toEqual([asked, back]);
     // Its next wake is the time GitHub gave, and then it is done.
     await wake(w);
     expect(w.now.t).toBe(back);
@@ -5406,9 +5440,10 @@ describe("the edge does the core itself", () => {
     expect(heldIds(w)).toEqual([ID(22)]);
     expect(commented(w).slice(before)).toEqual(["behind it"]);
     const { doc } = await w.core();
+    // (Not "not sent": the laptop was handed it, and may have done it.)
     expect(doc.acts.find((a: { id: string }) => a.id === ID(21))).toMatchObject({
       status: "failed",
-      note: expect.stringMatching(/more than a day/),
+      note: expect.stringMatching(/may have got this, and did not say what became of it within a day/),
     });
     expect(doc.acts.find((a: { id: string }) => a.id === ID(23))).toMatchObject({ status: "done" });
   });
@@ -5591,6 +5626,11 @@ describe("the edge does the core itself", () => {
     });
     // Nothing was tried here for either, and neither was failed.
     expect(heldIds(w)).toEqual([ID(111), ID(112)]);
+    // Each is said to wait for a machine: the one only it can do, and the one behind it.
+    expect(await heldWaits(w)).toEqual([
+      [ID(111), "machine"],
+      [ID(112), "machine"],
+    ]);
     expect(w.stored.get(`a:${ID(111)}`)).toMatchObject({ state: "given" });
     // Woken, this side still does neither: the comment is behind what is a machine's.
     await wake(w);
@@ -5626,6 +5666,23 @@ describe("the edge does the core itself", () => {
     expect([commented(w).length, heldIds(w)]).toEqual([2, []]);
   });
 
+  test("a take that could not be written down does not leave the thing marked as being done: a newer one about it is not left waiting", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(125), 7, "older"]]);
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    w.storeFails.add("taken");
+    await w.edge.now.alarm();
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(125)]]);
+    // Storage is well again, and the owner comments on the same issue: the older is made
+    // first, then the newer. (Were the issue still marked as being worked on, this would wait
+    // for an end that never comes.)
+    w.storeFails.clear();
+    const newer = await w.act("issue.comment", { issue: 7, text: "newer" }, ID(126));
+    expect(await newer.json()).toMatchObject({ ok: true, result: expect.anything() });
+    expect([commented(w), heldIds(w)]).toEqual([["older", "older", "newer"], []]);
+  });
+
   test("a side that no longer does the core does none of what is held: it stays a machine's, and is not failed", async () => {
     const w = await primary();
     await heldComments(w, [[ID(131), 7, "for whoever does the core"]]);
@@ -5658,11 +5715,14 @@ describe("the edge does the core itself", () => {
     // issue. The rank is tried first, refused again, and goes back; the comment, which this
     // side could make, waits behind it and is not made out of turn.
     w.now.t += 61 * 60_000;
+    const written = w.puts.length;
     expect(await (await w.act("issue.comment", { issue: 201, text: "after the rank" }, ID(142))).json()).toMatchObject({
       held: true,
     });
     expect([commented(w), heldIds(w)]).toEqual([[], [ID(141), ID(142)]]);
     expect(w.stored.get(`a:${ID(141)}`)).toMatchObject({ state: "given" });
+    // Tried once, not over and over: taken, and then no longer taken.
+    expect(w.puts.slice(written).filter((key) => key === "taken")).toHaveLength(2);
     // The laptop comes back and does both, in order.
     w.net.hostUp = true;
     w.net.edgeUp = true;
@@ -5707,6 +5767,404 @@ describe("the edge does the core itself", () => {
       status: "failed",
       note: expect.stringMatching(/Replaced by a newer issue\.rank/),
     });
+  });
+
+  test("one the laptop may have done, its answer lost on the way back, is the laptop's by name: this side never does it, however long the laptop is away", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    // Turned away here, it goes to the laptop, which makes the comment. Its answer is lost on the way back.
+    w.net.loseAnswer = true;
+    expect(
+      await (await w.act("issue.comment", { issue: 7, text: "made by the laptop" }, ID(201))).json(),
+    ).toMatchObject({ held: true });
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    // The laptop goes away. The token is put right, the hour passes, and this side wakes.
+    w.net.loseAnswer = false;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.ghRefuses.length = 0;
+    const asked = commented(w).length;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    // It does not make the comment a second time, and still holds it for the laptop.
+    expect([commented(w).length, heldIds(w)]).toEqual([asked, [ID(201)]]);
+    expect(await heldWaits(w)).toEqual([[ID(201), "asked"]]);
+    // Nor when the owner says to try again now.
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    w.now.t += 2_000;
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([asked, [ID(201)]]);
+    // The laptop comes back, is handed it by name, and says what became of it: made once.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(201)]);
+    await w.link.now.once();
+    expect([heldIds(w), w.ran.filter((r) => r.kind === "issue.comment").length, commented(w).length]).toEqual([
+      [],
+      1,
+      asked,
+    ]);
+  });
+
+  /** Woken now, as an object that has just started. (Not at the time it asked for: with nothing
+   * of its own to do, that is the day's end of what it holds.) */
+  const wakeNow = async (w: HeldWorld) => {
+    w.edge.now = w.makeEdge();
+    await w.edge.now.alarm();
+    await settle(w);
+  };
+
+  test("out of reach with nothing to say so, the laptop may have got it, and it is never done here; said to be out of reach, it is", async () => {
+    // Two comments, each turned away here with the laptop out of reach: one way, then the other.
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    w.net.silent = true;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "may have arrived" }, ID(211))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "asked",
+    });
+    w.net.silent = false;
+    expect(await (await w.act("issue.comment", { issue: 8, text: "never arrived" }, ID(212))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "either",
+    });
+    expect(await heldWaits(w)).toEqual([
+      [ID(211), "asked"],
+      [ID(212), "either"],
+    ]);
+    // The health answer, which anyone may read, counts them and says nothing else of them.
+    const health = (await (await w.browse("/console/health", { token: null })).json()) as { held: unknown };
+    expect(health.held).toEqual({ either: 1, machine: 0, asked: 1 });
+    const { doc } = await w.core();
+    const noted = (id: string) => doc.acts.find((a: { id: string }) => a.id === id)?.note;
+    expect(noted(ID(211))).toMatch(/did not answer\. It may have got this/);
+    expect(noted(ID(212))).toMatch(/Cloudflare does it as soon as it can again/);
+    // So far GitHub was asked for the first, and refused it; with this side turned away by
+    // then, the second was not asked for at all.
+    expect(commented(w)).toEqual(["may have arrived"]);
+    // GitHub takes comments again, and the hour passes.
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    // Only the one that reached nobody is made here. The other is still the laptop's.
+    expect([commented(w), heldIds(w)]).toEqual([["may have arrived", "never arrived"], [ID(211)]]);
+  });
+
+  test("offered again while it waits here, having reached no machine, it is not sent toward the laptop: it waits as it was, and is done once", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(221), 7, "offered twice"]]);
+    // The device never heard that it was kept, and offers it again. By now the laptop can be
+    // reached (it has not reported yet): sent on, the comment would be made there.
+    w.net.hostUp = true;
+    const again = await w.act("issue.comment", { issue: 7, text: "offered twice" }, ID(221));
+    expect(await again.json()).toEqual({ ok: true, held: true, result: null, again: true, waits: "either" });
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
+    expect(heldIds(w)).toEqual([ID(221)]);
+    // This side makes it when it can: once.
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    expect([commented(w), heldIds(w)]).toEqual([["offered twice", "offered twice"], []]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
+    // Offered a third time, it is answered from what was written down.
+    expect(await (await w.act("issue.comment", { issue: 7, text: "offered twice" }, ID(221))).json()).toMatchObject({
+      ok: true,
+      again: true,
+    });
+    expect(commented(w)).toHaveLength(2);
+  });
+
+  test("offered again while its first asking of the laptop is still out: word that the second never arrived is not word that the first did not", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    // Turned away here, it goes to the laptop, which is slow about it.
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "asked twice" }, ID(231));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+    // The device gives up on that try and offers it again. By now the tunnel is down.
+    w.net.hostUp = false;
+    const second = await w.act("issue.comment", { issue: 7, text: "asked twice" }, ID(231));
+    expect(await second.json()).toEqual({ ok: true, held: true, result: null, waits: "asked" });
+    // GitHub takes comments again and the hour passes: this side still does not make it.
+    w.ghRefuses.length = 0;
+    const asked = commented(w).length;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([asked, [ID(231)]]);
+    // The laptop finishes the first asking. It made the comment, once, and its answer settles the name.
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    expect([heldIds(w), w.ran.filter((r) => r.kind === "issue.comment").length, commented(w).length]).toEqual([
+      [],
+      1,
+      asked,
+    ]);
+  });
+
+  test("a newer one about the same thing does not go ahead of one the laptop may have: it waits behind it, and one about something else does not", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.loseAnswer = true;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "the laptop's" }, ID(241))).json()).toMatchObject({
+      held: true,
+      waits: "asked",
+    });
+    w.net.loseAnswer = false;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // This side takes comments again.
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    w.edge.now = w.makeEdge();
+    const asked = commented(w).length;
+    const newer = await w.act("issue.comment", { issue: 7, text: "newer" }, ID(242));
+    expect(await newer.json()).toEqual({ ok: true, held: true, result: null, waits: "machine" });
+    expect(commented(w)).toHaveLength(asked);
+    expect(await heldWaits(w)).toEqual([
+      [ID(241), "asked"],
+      [ID(242), "machine"],
+    ]);
+    // A comment on another issue is nothing to do with either: it is made at once.
+    expect(await (await w.act("issue.comment", { issue: 8, text: "other" }, ID(243))).json()).toMatchObject({
+      ok: true,
+      result: expect.anything(),
+    });
+    expect(commented(w).slice(asked)).toEqual(["other"]);
+    // Woken, this side still does neither of the two.
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([asked + 1, [ID(241), ID(242)]]);
+  });
+
+  test("offered again at the moment this side has taken it to do itself, it is not sent to the laptop as well: the answer is what came of doing it here", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(251), 7, "taken, then offered"]]);
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    // The laptop can be reached again (it has not reported): a name sent toward it is done there.
+    w.net.hostUp = true;
+    w.edge.now = w.makeEdge();
+    // Its record is slow to read. The wake has taken it, and has not yet written down that it
+    // has begun, when the device offers it again: by its record it is still a machine's.
+    let read = () => {};
+    w.storeSlow.set(
+      `a:${ID(251)}`,
+      new Promise<void>((resolve) => {
+        read = resolve;
+      }),
+    );
+    const waking = w.edge.now.alarm();
+    const taken = () => ((w.stored.get("taken") as unknown[] | undefined) ?? []).length;
+    for (let turn = 0; turn < 200 && taken() === 0; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(taken()).toBe(1);
+    const again = w.act("issue.comment", { issue: 7, text: "taken, then offered" }, ID(251));
+    for (let turn = 0; turn < 20; turn++) await new Promise((r) => setTimeout(r, 1));
+    w.storeSlow.clear();
+    read();
+    await waking;
+    expect(await (await again).json()).toMatchObject({ ok: true, again: true });
+    await settle(w);
+    // Made here, once, and not by the laptop.
+    expect(commented(w)).toEqual(["taken, then offered", "taken, then offered"]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
+    expect([heldIds(w), w.stored.get("taken")]).toEqual([[], []]);
+  });
+
+  test("one kept before it was written down whether it reached a machine is taken to have: this side leaves it to the laptop", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(261), 7, "from before"]]);
+    // As the version before this one stored it: with no word either way.
+    const stored = w.stored.get("held") as Record<string, unknown>[];
+    expect(stored.map((h) => h.unsent)).toEqual([true]);
+    w.stored.set(
+      "held",
+      stored.map(({ unsent: _unsent, ...rest }) => rest),
+    );
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(261)]]);
+    expect(await heldWaits(w)).toEqual([[ID(261), "asked"]]);
+    // The laptop, back, is handed it by name.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(261)]);
+  });
+
+  test("the laptop answers for a name and its answer cannot be read: the name is the laptop's, and nothing is left waiting under it", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.loseAnswer = true;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "answered, unread" }, ID(271))).json()).toMatchObject({
+      held: true,
+      waits: "asked",
+    });
+    w.net.loseAnswer = false;
+    // The device offers it again; the laptop says how it went, and what it says does not arrive whole.
+    w.net.garble = true;
+    const again = await w.act("issue.comment", { issue: 7, text: "answered, unread" }, ID(271));
+    w.net.garble = false;
+    expect([again.status, await again.json()]).toEqual([503, { error: "the host's answer could not be read" }]);
+    expect(heldIds(w)).toEqual([]);
+    // Offered once more, the laptop's own answer comes through: made once.
+    expect(await (await w.act("issue.comment", { issue: 7, text: "answered, unread" }, ID(271))).json()).toMatchObject({
+      ok: true,
+    });
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
+  test("turned away again at the moment it is offered again: the device is told it is not over, and it is not sent to the laptop", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(255), 7, "taken, refused, offered"]]);
+    // The hour passes with GitHub still refusing comments, and the laptop can be reached again.
+    w.now.t += 61 * 60_000;
+    w.net.hostUp = true;
+    w.edge.now = w.makeEdge();
+    let read = () => {};
+    w.storeSlow.set(
+      `a:${ID(255)}`,
+      new Promise<void>((resolve) => {
+        read = resolve;
+      }),
+    );
+    const waking = w.edge.now.alarm();
+    const taken = () => ((w.stored.get("taken") as unknown[] | undefined) ?? []).length;
+    for (let turn = 0; turn < 200 && taken() === 0; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(taken()).toBe(1);
+    const again = w.act("issue.comment", { issue: 7, text: "taken, refused, offered" }, ID(255));
+    for (let turn = 0; turn < 20; turn++) await new Promise((r) => setTimeout(r, 1));
+    w.storeSlow.clear();
+    read();
+    await waking;
+    const answer = await again;
+    expect([answer.status, await answer.json()]).toEqual([409, { error: "This is still being done.", running: true }]);
+    await settle(w);
+    // Refused twice by GitHub, made by nobody, and waiting again as it was.
+    expect(commented(w)).toEqual(["taken, refused, offered", "taken, refused, offered"]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toEqual([]);
+    expect([heldIds(w), w.stored.get("taken")]).toEqual([[ID(255)], []]);
+    expect(await heldWaits(w)).toEqual([[ID(255), "either"]]);
+  });
+
+  test("a rank the laptop may have set is not replaced by a newer rank: the newer waits behind it, and neither is done here", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/labels$/.test(url);
+    const labelled = () => w.githubCalls.filter((c) => labels(c.method, c.url)).length;
+    w.ghRefuses.push(labels);
+    // Turned away here, the rank goes to the laptop. Its answer is lost on the way back.
+    w.net.loseAnswer = true;
+    expect(await (await w.act("issue.rank", { issue: 201, rank: "now" }, ID(281))).json()).toMatchObject({
+      held: true,
+      waits: "asked",
+    });
+    w.net.loseAnswer = false;
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // This side may label again, and the owner ranks the issue again.
+    w.ghRefuses.length = 0;
+    w.now.t += 61 * 60_000;
+    w.edge.now = w.makeEdge();
+    const asked = labelled();
+    expect(await (await w.act("issue.rank", { issue: 201, rank: "next" }, ID(282))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "machine",
+    });
+    // Both wait, in the order they were done. GitHub was not asked, and the older was not
+    // dropped as replaced: done late by the laptop, it would otherwise be the last word.
+    expect([heldIds(w), labelled()]).toEqual([[ID(281), ID(282)], asked]);
+    const { doc } = await w.core();
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(281))).toMatchObject({ status: "running" });
+  });
+
+  test("a name given to a machine before its askings were counted is taken to have set off already", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // As the version before this one wrote it down: a machine's, with no count of its askings.
+    w.stored.set(`a:${ID(291)}`, { at: w.now.t, kind: "issue.comment", state: "given" });
+    // Word that this asking never arrived says nothing of the one before it.
+    expect(await (await w.act("issue.comment", { issue: 7, text: "from before the count" }, ID(291))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "asked",
+    });
+    expect(w.stored.get(`a:${ID(291)}`)).toMatchObject({ state: "given", relays: 2 });
+    // A name new to this side, out of reach the same way, set off once: it reached nobody.
+    expect(await (await w.act("issue.comment", { issue: 8, text: "new" }, ID(292))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "either",
+    });
+    expect(w.stored.get(`a:${ID(292)}`)).toMatchObject({ state: "given", relays: 1 });
+  });
+
+  test("offered again while its first asking is still out, with something else about the same thing waiting here: it is kept as the laptop's, and nothing about the thing is done here meanwhile", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    // Turned away here, the first comment goes to the laptop, which is slow about it.
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "first, slow" }, ID(301));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+    // The tunnel drops. A second comment on the issue reaches nobody, and waits here.
+    w.net.hostUp = false;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "second" }, ID(302))).json()).toMatchObject({
+      held: true,
+      waits: "either",
+    });
+    // The device gives up on the first and offers it again. It is kept, as the laptop's:
+    // its first asking may be being done.
+    expect(await (await w.act("issue.comment", { issue: 7, text: "first, slow" }, ID(301))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+      waits: "asked",
+    });
+    expect(await heldWaits(w)).toEqual([
+      [ID(302), "machine"],
+      [ID(301), "asked"],
+    ]);
+    // GitHub takes comments again and the hour passes: this side makes neither.
+    w.ghRefuses.length = 0;
+    const asked = commented(w).length;
+    w.now.t += 61 * 60_000;
+    await wakeNow(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([asked, [ID(302), ID(301)]]);
+    // The laptop finishes the first asking: made there, once, and the name is settled.
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    expect([heldIds(w), w.ran.filter((r) => r.kind === "issue.comment").length]).toEqual([[ID(302)], 1]);
+    // What is left reached nobody, and is this side's again: made here, once.
+    expect(await heldWaits(w)).toEqual([[ID(302), "either"]]);
+    w.now.t += 2_000;
+    await wakeNow(w);
+    expect([commented(w).slice(asked), heldIds(w)]).toEqual([["second"], []]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
   });
 
   test("with no machine ever reporting, what only a machine can do is still dropped after a day, and said to have been", async () => {
