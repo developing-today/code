@@ -198,7 +198,17 @@ fn reason(status: u16) -> &'static str {
 /// Splitting head from body is what lets `serve_with_precheck`
 /// refuse a request (e.g. unauthenticated, #6515) before a single
 /// body byte is consumed.
-fn read_head(stream: &mut UnixStream) -> Option<(HttpRequest, usize)> {
+fn read_head(stream: &mut impl Read) -> Option<(HttpRequest, usize)> {
+    read_head_inner(stream, false)
+}
+
+/// TCP retains tiny_http's chunked/Expect support; the adapter validates
+/// framing and runs the broker's size/auth gate before reading the body.
+pub(crate) fn read_tcp_head(stream: &mut impl Read) -> Option<(HttpRequest, usize)> {
+    read_head_inner(stream, true)
+}
+
+fn read_head_inner(stream: &mut impl Read, tcp: bool) -> Option<(HttpRequest, usize)> {
     // Read until the header terminator, capping the head size. The
     // cap applies to the complete header (#6515, PR #6514 thread
     // 4492609689): a terminator that only appears past the cap does
@@ -226,6 +236,11 @@ fn read_head(stream: &mut UnixStream) -> Option<(HttpRequest, usize)> {
     let mut req_line = lines.next()?.split_whitespace();
     let method = req_line.next()?.to_string();
     let target = req_line.next()?.to_string();
+    if tcp
+        && (!matches!(req_line.next(), Some("HTTP/1.1" | "HTTP/1.0")) || req_line.next().is_some())
+    {
+        return None;
+    }
     let mut headers = Vec::new();
     // Content-Length follows the fleet strict doctrine (the
     // fleet-proxy http.rs oracle, #6527): an unparsable value is
@@ -258,14 +273,14 @@ fn read_head(stream: &mut UnixStream) -> Option<(HttpRequest, usize)> {
     // transport (#6515, PR #6514 thread 4492609728): the brokers'
     // clients always send Content-Length, so an encoded body is
     // rejected outright instead of being misparsed as length-less.
-    if has_transfer_encoding {
+    if has_transfer_encoding && !tcp {
         return None;
     }
     let content_length = declared_length.unwrap_or(0);
     // An oversized body is rejected from its declared length, before
     // a byte of it is read (#6515, thread 4492609738) — the previous
     // clamp dispatched the handler with a silently truncated body.
-    if content_length > MAX_BODY_BYTES {
+    if content_length > MAX_BODY_BYTES && !tcp {
         return None;
     }
     let body = buf[head_end..].to_vec();
@@ -284,8 +299,8 @@ fn read_head(stream: &mut UnixStream) -> Option<(HttpRequest, usize)> {
 /// body — the peer closes before the declared length arrives — is
 /// rejected, never dispatched truncated (#6515, PR #6514 thread
 /// 4492609747).
-fn read_body(
-    stream: &mut UnixStream,
+pub(crate) fn read_body(
+    stream: &mut impl Read,
     mut req: HttpRequest,
     content_length: usize,
 ) -> Option<HttpRequest> {
@@ -310,7 +325,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-fn write_response(stream: &mut UnixStream, status: u16, body: &[u8]) {
+pub(crate) fn write_response(stream: &mut impl Write, status: u16, body: &[u8]) {
     let resp = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         status,
@@ -416,7 +431,10 @@ mod tests {
             .map(|_| InFlightSlot::try_acquire(&in_flight).expect("under cap"))
             .collect();
         assert!(InFlightSlot::try_acquire(&in_flight).is_none());
-        assert_eq!(in_flight.load(std::sync::atomic::Ordering::SeqCst), MAX_CONNECTIONS);
+        assert_eq!(
+            in_flight.load(std::sync::atomic::Ordering::SeqCst),
+            MAX_CONNECTIONS
+        );
         drop(held);
         assert_eq!(in_flight.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(InFlightSlot::try_acquire(&in_flight).is_some());
