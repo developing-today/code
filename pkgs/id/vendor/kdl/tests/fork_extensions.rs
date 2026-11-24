@@ -105,12 +105,11 @@ fn limit_kdl_shapes() {
 
     let doc = parse("(\"predicate#NotVeryWell\")\"writesBooks\" (\"object#book#author:BrianGriffin\")\"Wish It, Want It, Do It\"\n");
     let node = &doc.nodes()[0];
+    assert_eq!(node.name().value(), "writesBooks");
+    assert_eq!(annotation_values(node), vec!["predicate#NotVeryWell"]);
+    assert_eq!(node.entries().len(), 1);
     assert_eq!(
         entry_annotation_values(&node.entries()[0]),
-        vec!["predicate#NotVeryWell"]
-    );
-    assert_eq!(
-        entry_annotation_values(&node.entries()[1]),
         vec!["object#book#author:BrianGriffin"]
     );
 }
