@@ -1173,8 +1173,12 @@ mod tests {
         // by another author: the fold lists it first, but the owner is
         // still the create event's author.
         let mut log = NoteCheckpoints::new();
-        let note = log.create(hash(10), author(1), content(b"first")).unwrap().id;
-        log.checkpoint(note, hash(9), author(2), content(b"earlier id"), vec![note]).unwrap();
+        let note = log
+            .create(hash(10), author(1), content(b"first"))
+            .unwrap()
+            .id;
+        log.checkpoint(note, hash(9), author(2), content(b"earlier id"), vec![note])
+            .unwrap();
         assert_eq!(
             log.notes().unwrap()[0].revisions.first().unwrap().author,
             author(2),

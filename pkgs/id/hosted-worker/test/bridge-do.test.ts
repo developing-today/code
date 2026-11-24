@@ -11,12 +11,7 @@ import { authTranscript, bodyHashHex } from "../src/bridge-auth.ts";
 import { BridgeStore, BRIDGE_SCHEMA } from "../src/bridge-store.ts";
 import { bytesToHex, importIdKey, type IdKey } from "../src/ed25519.ts";
 import { signEvent, type SignedEvent } from "../src/event.ts";
-import {
-  BridgeClient,
-  decodeBatch,
-  encodeBatch,
-  type FrameTransport,
-} from "../src/bridge-session.ts";
+import { BridgeClient, decodeBatch, encodeBatch, type FrameTransport } from "../src/bridge-session.ts";
 
 const BINDING = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -132,7 +127,10 @@ test("HTTPS push/pull round trip with per-call proofs", async () => {
   );
   assert.equal(push.status, 200);
   const pushBody = (await push.json()) as { outcomes: { kind: string }[]; heads: { next_seq: number }[] };
-  assert.deepEqual(pushBody.outcomes.map((o) => o.kind), ["accepted", "accepted"]);
+  assert.deepEqual(
+    pushBody.outcomes.map((o) => o.kind),
+    ["accepted", "accepted"],
+  );
   assert.equal(pushBody.heads[0].next_seq, 2);
 
   // Pull from position zero replays the store; from the head, nothing.
@@ -150,11 +148,17 @@ test("HTTPS push/pull round trip with per-call proofs", async () => {
     maxBatchBytes: 1 << 20,
     maxWantIds: 512,
   });
-  assert.deepEqual(pulled, events.map((e) => e.bytes));
+  assert.deepEqual(
+    pulled,
+    events.map((e) => e.bytes),
+  );
 
   // Usage counts the bridge bytes.
   const usage = (await (await doA.fetch(routed("/v1/usage", null))).json()) as { bridge_bytes: number };
-  assert.equal(usage.bridge_bytes, events.reduce((sum, e) => sum + e.bytes.length, 0));
+  assert.equal(
+    usage.bridge_bytes,
+    events.reduce((sum, e) => sum + e.bytes.length, 0),
+  );
 });
 
 test("bridge HTTPS legs fail closed: no key, no proof, wrong key, replayed nonce", async () => {
@@ -173,18 +177,30 @@ test("bridge HTTPS legs fail closed: no key, no proof, wrong key, replayed nonce
   const nonce = await challenge(doA, key.publicHex);
   const badHeaders = await proofHeaders(wrong, nonce, "push", batch);
   assert.equal(
-    (await doA.fetch(routed("/v1/bridge/push", key.publicHex, { method: "POST", headers: badHeaders, body: batch as BodyInit }))).status,
+    (
+      await doA.fetch(
+        routed("/v1/bridge/push", key.publicHex, { method: "POST", headers: badHeaders, body: batch as BodyInit }),
+      )
+    ).status,
     403,
   );
   // A good proof works once; the same nonce replayed is refused.
   const nonce2 = await challenge(doA, key.publicHex);
   const good = await proofHeaders(key, nonce2, "push", batch);
   assert.equal(
-    (await doA.fetch(routed("/v1/bridge/push", key.publicHex, { method: "POST", headers: good, body: batch as BodyInit }))).status,
+    (
+      await doA.fetch(
+        routed("/v1/bridge/push", key.publicHex, { method: "POST", headers: good, body: batch as BodyInit }),
+      )
+    ).status,
     200,
   );
   assert.equal(
-    (await doA.fetch(routed("/v1/bridge/push", key.publicHex, { method: "POST", headers: good, body: batch as BodyInit }))).status,
+    (
+      await doA.fetch(
+        routed("/v1/bridge/push", key.publicHex, { method: "POST", headers: good, body: batch as BodyInit }),
+      )
+    ).status,
     403,
   );
 });

@@ -39,10 +39,10 @@ serve recipes are `just serve-lib` (which runs
 The two Nix packages in `pkgs/id/flake.nix` install the same single `id`
 binary under two feature sets:
 
-| Nix package | Features | Web UI | World SSH serving |
-| --- | --- | --- | --- |
-| `id-web` (the default package) | `web`, `sandbox`, `ssh`, `world` | yes | yes |
-| `id-lib` | `sandbox`, `world` (built with default features off) | no | no |
+| Nix package                    | Features                                             | Web UI | World SSH serving |
+| ------------------------------ | ---------------------------------------------------- | ------ | ----------------- |
+| `id-web` (the default package) | `web`, `sandbox`, `ssh`, `world`                     | yes    | yes               |
+| `id-lib`                       | `sandbox`, `world` (built with default features off) | no     | no                |
 
 Build them with `just build-nix` (the web variant) and
 `just build-nix-lib` (which runs `nix build .#id-lib`).
@@ -126,15 +126,15 @@ before the subcommand, change it:
 
 Inside the data directory, the layout is:
 
-| Path | What it is |
-| --- | --- |
-| `.iroh-store/` | The Iroh blob store (redb plus data files), with the Iroh docs store under `.iroh-store/docs/`. The constant is `STORE_PATH = ".iroh-store"` in `id-store`. |
-| `.iroh-key` | The node's own key file. The client key file is `.iroh-key-client`. |
-| `.iroh-serve.lock` | The lock file a running `id serve` holds. Its presence is how the REPL and other commands detect the local serve and proxy operations to it. The constant is `SERVE_LOCK = ".iroh-serve.lock"` in `id-core`. |
-| `.iroh-meta/` | The tag-store registry directory; the registry file inside it is `.iroh-meta/registry.json`. |
-| `.id-worlds/<NAME>/` | Per-world files for a hosted world, where `<NAME>` is the world name (default `lobby`). |
-| `events/` | The event store directory used by `doc`, `claim`, and `writer-sets`. This is the runtime default of the global `--event-store <DIR>` flag; a relative value is relative to the data directory. |
-| `groups.jsonl` | The group log used by `group`, `delegate`, and `revoke`. This is the runtime default of the global `--groups-log <FILE>` flag; a relative value is relative to the data directory. |
+| Path                 | What it is                                                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `.iroh-store/`       | The Iroh blob store (redb plus data files), with the Iroh docs store under `.iroh-store/docs/`. The constant is `STORE_PATH = ".iroh-store"` in `id-store`.                                                  |
+| `.iroh-key`          | The node's own key file. The client key file is `.iroh-key-client`.                                                                                                                                          |
+| `.iroh-serve.lock`   | The lock file a running `id serve` holds. Its presence is how the REPL and other commands detect the local serve and proxy operations to it. The constant is `SERVE_LOCK = ".iroh-serve.lock"` in `id-core`. |
+| `.iroh-meta/`        | The tag-store registry directory; the registry file inside it is `.iroh-meta/registry.json`.                                                                                                                 |
+| `.id-worlds/<NAME>/` | Per-world files for a hosted world, where `<NAME>` is the world name (default `lobby`).                                                                                                                      |
+| `events/`            | The event store directory used by `doc`, `claim`, and `writer-sets`. This is the runtime default of the global `--event-store <DIR>` flag; a relative value is relative to the data directory.               |
+| `groups.jsonl`       | The group log used by `group`, `delegate`, and `revoke`. This is the runtime default of the global `--groups-log <FILE>` flag; a relative value is relative to the data directory.                           |
 
 One disagreement is worth knowing before you go looking for the lock:
 the module documentation in `crates/id-cli/src/commands/serve.rs` once
