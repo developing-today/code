@@ -34,6 +34,9 @@ export type Fetch = (
   headers?: { get(name: string): string | null };
 }>;
 export type Row = Record<string, string | number | null>;
+/** How much of a task's reason the Queue screen is given. One that is
+ * this long was cut here, and the screen says so. */
+export const QUEUE_WHY_CHARS = 300;
 
 /** A value as the queue's store sends it. A whole number comes as text
  * marked as an integer (the wire carries 64 bits, and a JSON number
@@ -366,7 +369,7 @@ export class Ops {
     const q = typeof search === "string" ? search.trim().slice(0, 100) : "";
     const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
     return this.sql(
-      "SELECT id, status, priority, title, dedupe_key, substr(updated_at,1,16) AS updated, substr(coalesce(json_extract(progress,'$.reason'), json_extract(progress,'$.blocker'), ready_condition, ''),1,300) AS why FROM tasks WHERE queue = ? AND status = ? AND title LIKE ? ESCAPE '\\' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT ?",
+      `SELECT id, status, priority, title, dedupe_key, substr(updated_at,1,16) AS updated, substr(coalesce(json_extract(progress,'$.reason'), json_extract(progress,'$.blocker'), ready_condition, ''),1,${QUEUE_WHY_CHARS}) AS why FROM tasks WHERE queue = ? AND status = ? AND title LIKE ? ESCAPE '\\' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT ?`,
       [this.cfg.queue, status as string, like, Math.min(n, 200)],
     );
   }

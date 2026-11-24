@@ -51,17 +51,21 @@ import {
   platformCounts,
   prCheck,
   runSaid,
+  sharedGoal,
+  sharedGoalSaid,
   sentSaid,
   servingSaid,
   subscriptionState,
   taskAgent,
   testSaid,
   unitStateSaid,
+  whyShown,
   unreadSaid,
   whySaid,
   workerSaid,
 } from "../public/app.js";
 import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS } from "../edge/src/direct.ts";
+import { QUEUE_WHY_CHARS } from "../src/ops.ts";
 import { ASK_INTENTS } from "../src/work.ts";
 import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
@@ -1215,6 +1219,48 @@ test("each kind of prompt has its own words, and the platform takes every kind t
     "Filed as #7. filed, not queued: the queue is down",
   );
   expect(askSent("task", { issue: 7, queued: false })).toBe("Filed as #7.");
+});
+
+// A goal most of a list shares is said once, not on every card. Seen
+// live: sixty queued tasks, fifty-nine of them triage with the same
+// three lines of goal each. The oracle is counting: the goal that more
+// than half of the tasks carry, where there are at least three of them.
+test("a goal most of the tasks share is found, to be said once; where there is none, each card keeps its own", () => {
+  const t = (goal: string | null, step: string | null = null) => ({ goal, step });
+  const same = "Record a verdict on the issue";
+  expect(sharedGoal([t(same), t(same), t(same), t("Another")])).toEqual({ goal: same, n: 3 });
+  // Exactly half is not most, however many that is.
+  expect(sharedGoal([t(same), t(same), t(same), t("A"), t("B"), t("C")])).toBeNull();
+  expect(sharedGoal([t(same), t(same), t(same), t(same), t("A"), t("B"), t("C")])).toEqual({ goal: same, n: 4 });
+  // Two alike say nothing of a list.
+  expect(sharedGoal([t(same), t(same)])).toBeNull();
+  // A card that shows its next step does not show its goal, so it is not counted as carrying one.
+  expect(sharedGoal([t(same, "doing it"), t(same, "doing it"), t(same, "doing it"), t(same)])).toBeNull();
+  expect(sharedGoal([t(same), t(same), t(same), t(same, "doing it")])).toEqual({ goal: same, n: 3 });
+  // No goals at all, nothing at all, and something that is not a list.
+  expect(sharedGoal([t(null), t(""), t(null)])).toBeNull();
+  expect(sharedGoal([])).toBeNull();
+  expect(sharedGoal(undefined)).toBeNull();
+  // What is said of it.
+  expect(sharedGoalSaid({ goal: same, n: 59 }, 60)).toBe(
+    "59 of these 60 have the same goal, said here once: Record a verdict on the issue",
+  );
+  expect(sharedGoalSaid({ goal: same, n: 3 }, 3)).toBe(
+    "All 3 have the same goal, said here once: Record a verdict on the issue",
+  );
+});
+
+// A reason that was cut where the queue's store cuts it says that it
+// was. Seen live: "...and the sandbox CLI, t". The oracle is the length
+// the read asks the store for (QUEUE_WHY_CHARS in src/ops.ts).
+test("a blocked task's reason that was cut short ends by saying so", () => {
+  expect(QUEUE_WHY_CHARS).toBe(300);
+  expect(whyShown("Short reason.")).toBe("Short reason.");
+  expect(whyShown("x".repeat(299))).toBe("x".repeat(299));
+  expect(whyShown("x".repeat(300))).toBe(`${"x".repeat(300)}…`);
+  expect(whyShown(`${"word ".repeat(59)}and t`)).toBe(`${"word ".repeat(59)}and t…`);
+  expect(whyShown("")).toBe("");
+  expect(whyShown(null)).toBe("");
 });
 
 // What needs the owner is what only he can do. Seen live: "394 need

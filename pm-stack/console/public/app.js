@@ -476,7 +476,43 @@ async function act(kind, args, done, button) {
 
 // ---- now ---------------------------------------------------------------
 
-function taskCard(t, extra) {
+/** The goal that most of a list's cards would show: carried by more
+ * than half of the tasks, and by at least three. A card that shows its
+ * next step does not show its goal, so it is not counted. Null where
+ * there is no such goal.
+ * @param {any} tasks */
+export function sharedGoal(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  const counts = new Map();
+  for (const t of list) {
+    if (t?.step || !t?.goal) continue;
+    counts.set(t.goal, (counts.get(t.goal) || 0) + 1);
+  }
+  let best = null;
+  for (const [goal, n] of counts) if (!best || n > best.n) best = { goal, n };
+  return best && best.n >= 3 && best.n * 2 > list.length ? best : null;
+}
+
+/** What is said, once, of a goal most of a list shares.
+ * @param {{ goal: string, n: number }} shared
+ * @param {number} of */
+export function sharedGoalSaid(shared, of) {
+  const many = shared.n === of ? `All ${of} have` : `${shared.n} of these ${of} have`;
+  return `${many} the same goal, said here once: ${shared.goal}`;
+}
+
+/** How much of a blocked task's reason the platform sends (QUEUE_WHY_CHARS in src/ops.ts). */
+const WHY_CHARS = 300;
+
+/** A blocked task's reason as shown: one that was cut where the
+ * platform cuts it ends by saying so.
+ * @param {unknown} why */
+export function whyShown(why) {
+  const text = typeof why === "string" ? why : "";
+  return text.length >= WHY_CHARS ? `${text}…` : text;
+}
+
+function taskCard(t, extra, shared = null) {
   const who = [t.worker, laneSaid(t.lane), t.model].filter(Boolean).join(" · ");
   const when = t.claimed ? `claimed ${ago(t.claimed)}` : `queued ${ago(t.created)}`;
   return card(
@@ -489,7 +525,8 @@ function taskCard(t, extra) {
     ),
     h("h3", {}, t.title),
     h("p", { class: "meta" }, [who, when].filter(Boolean).join(" · ")),
-    t.step || t.goal
+    // A goal that most of the list shares is said once above the list, not here.
+    t.step || (t.goal && t.goal !== shared?.goal)
       ? h("div", { class: "step" }, h("b", {}, t.step ? "Next step" : "Goal"), t.step || t.goal)
       : null,
     extra,
@@ -628,6 +665,7 @@ function viewNow() {
   const s = c.sessions || { moving: [], waiting: [] };
   const lead = needsLead(needCounts());
   const finished = doneSaid(docs.done?.done);
+  const sharedNow = sharedGoal(b.now);
   const stat = (value, label, to) =>
     h("button", { class: "stat", onclick: () => go(to) }, h("b", {}, String(value ?? "–")), h("span", {}, label));
   const out = [
@@ -642,7 +680,8 @@ function viewNow() {
     ),
     ...notices(c),
     h("h2", {}, "In progress"),
-    ...(b.now.length ? b.now.map((t) => taskCard(t, steer(t))) : [empty("No task is claimed right now.")]),
+    ...(sharedNow ? [h("p", { class: "meta" }, sharedGoalSaid(sharedNow, b.now.length))] : []),
+    ...(b.now.length ? b.now.map((t) => taskCard(t, steer(t), sharedNow)) : [empty("No task is claimed right now.")]),
   ];
   if (s.moving.length) {
     out.push(
@@ -838,6 +877,8 @@ function viewNext() {
   const b = docs.core.board || { counts: {}, next: [] };
   const out = [...notices(docs.core), h("h2", {}, "Queued next, in the order it will be picked up")];
   if (!b.next.length) out.push(empty("Nothing is queued. Blocked and parked tasks are under More, Queue."));
+  const sharedNext = sharedGoal(b.next);
+  if (sharedNext) out.push(h("p", { class: "meta" }, sharedGoalSaid(sharedNext, b.next.length)));
   b.next.forEach((t, i) => {
     const moves = h(
       "div",
@@ -861,7 +902,7 @@ function viewNext() {
         "Cancel",
       ),
     );
-    out.push(h("div", { class: "lead" }, h("span", { class: "num" }, String(i + 1)), h("div", {}, taskCard(t, moves))));
+    out.push(h("div", { class: "lead" }, h("span", { class: "num" }, String(i + 1)), h("div", {}, taskCard(t, moves, sharedNext))));
   });
   const ranked = docs.ops?.priorities?.issues;
   out.push(h("h2", {}, "Ranked issues"));
@@ -3263,7 +3304,7 @@ async function viewQueue() {
           card(
             h("h3", {}, t.title),
             h("p", { class: "meta" }, [band(t.priority), t.updated ? `updated ${ago(t.updated)}` : ""].filter(Boolean).join(" · ")),
-            t.why ? h("p", { class: "why" }, String(t.why)) : null,
+            t.why ? h("p", { class: "why" }, whyShown(String(t.why))) : null,
             h(
               "div",
               { class: "row end" },

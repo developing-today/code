@@ -7,3 +7,13 @@
 
 **Learning:** In `pkgs/id/web`, editor dialogs are module singletons that are hidden rather than destroyed and reattached across editor recreation. Transient accessibility state (`aria-invalid`, error text) therefore survives into the next open unless it is reset in both open and close — and a rejected `Ctrl+G` value previously only re-selected the text, which reads as a broken shortcut.
 **Action:** For these singleton dialogs, put the reason next to the input with `role="alert"` + `aria-describedby`, and reset it on open, on input and on close (`goto-line.ts`).
+
+## 2026-11-24 - Static dashboards ship unlabeled inputs and silent async output
+**Learning:** This repo's real UI surfaces are small static dashboards under
+`pkgs/*/public/` (not a component framework). Their recurring pattern is
+fetch-and-dump into a `<pre>`: inputs ship without `<label>` (placeholder-only
+at best) and the async result regions are invisible to screen readers because
+nothing announces the text change.
+**Action:** On any `pkgs/*/public/` page, check every `<input>` for a
+`<label for>`, and put `aria-live="polite"` on elements whose textContent is
+set from fetch/WebSocket handlers. First instance fixed: lab-ops-hub.
