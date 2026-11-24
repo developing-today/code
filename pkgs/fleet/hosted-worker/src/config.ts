@@ -60,6 +60,24 @@ export interface HostedEnv {
    * route may name repos per request instead; this is the
    * scheduled run's standing scope. */
   INGESTION_REPOS?: string;
+  /** Metadata DB id (#12592): the one database a direct-read token
+   * may be bound to. A plain identifier, not a secret. */
+  METADATA_DB_ID?: string;
+  /** Queue DB id (#12592): named in configuration so the direct-read
+   * scope can refuse it by name — direct access to the queue DB is
+   * forbidden (design §3.3 rule 2). A plain identifier. */
+  QUEUE_DB_ID?: string;
+  /** Direct-read mint signing key (#12592): base64url PKCS#8 Ed25519
+   * private key. A secret, referenced by name only; never logged. */
+  DIRECT_READ_SIGNING_KEY_PKCS8?: string;
+  /** Key id the direct-read mint signs under ([A-Za-z0-9_-]+). */
+  DIRECT_READ_SIGNING_KEY_ID?: string;
+  /** Direct-read verifier keys (#12592): JSON object mapping key id
+   * to a base64url raw Ed25519 public key. */
+  DIRECT_READ_VERIFY_KEYS_JSON?: string;
+  /** Direct-read TTL cap in seconds (#12592): a token's requested
+   * lifetime may not exceed it. Defaults to 3600 when unset. */
+  DIRECT_READ_MAX_TTL_SECONDS?: string;
 }
 
 /** Stamp signing key material: the parsed key, bytes only. */
@@ -74,6 +92,19 @@ export interface StampConfig {
   /** Verifier public keys by key id (raw Ed25519 bytes), or null when
    * no (valid) verifier set is configured. */
   verifyKeys: ReadonlyMap<string, Uint8Array> | null;
+}
+
+/** Direct-read configuration for the direct-Turso Metadata read path
+ * (#12592; design §3.3): the two DB ids the scope distinguishes, the
+ * mint's signing material, the verifier keys, and the TTL cap. Null
+ * as a whole when any piece is missing or malformed — minting then
+ * fails closed and inspection refuses everything. */
+export interface DirectReadConfig {
+  metadataDbId: string;
+  queueDbId: string;
+  signing: StampSigningMaterial;
+  verifyKeys: ReadonlyMap<string, Uint8Array>;
+  maxTtlSeconds: number;
 }
 
 /** Fleet App configuration for the hosted rotation point (#12585):
@@ -107,6 +138,10 @@ export interface HostedConfig {
    * Empty when unconfigured — the scheduled sweep then has
    * nothing to scan and the sweep route must be given repos. */
   ingestionRepos: string[];
+  /** Direct-Turso read-path configuration (#12592), or null when no
+   * (valid) DB ids / mint material are set. Independent of auth,
+   * like the stamp material. */
+  directRead: DirectReadConfig | null;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -135,11 +170,7 @@ function parseStampConfig(env: HostedEnv): StampConfig {
   let signing: StampSigningMaterial | null = null;
   if (env.STAMP_SIGNING_KEY_PKCS8 && env.STAMP_SIGNING_KEY_ID) {
     const pkcs8 = b64urlToBytesOrNull(env.STAMP_SIGNING_KEY_PKCS8);
-    if (
-      pkcs8 !== null &&
-      pkcs8.length === ED25519_PKCS8_BYTES &&
-      isValidStampKeyId(env.STAMP_SIGNING_KEY_ID)
-    ) {
+    if (pkcs8 !== null && pkcs8.length === ED25519_PKCS8_BYTES && isValidStampKeyId(env.STAMP_SIGNING_KEY_ID)) {
       signing = { keyId: env.STAMP_SIGNING_KEY_ID, pkcs8 };
     }
     // Malformed signing material stays null: signing fails closed.
@@ -222,11 +253,9 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     authConfigured: rp !== null && tenancy !== null,
     stamp: parseStampConfig(env),
     github: parseGitHubAppConfig(env),
-    webhookSecret:
-      env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== ""
-        ? env.GITHUB_WEBHOOK_SECRET
-        : null,
+    webhookSecret: env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== "" ? env.GITHUB_WEBHOOK_SECRET : null,
     ingestionRepos: parseIngestionRepos(env.INGESTION_REPOS),
+    directRead: parseDirectReadConfig(env),
   };
 }
 
@@ -245,4 +274,52 @@ function parseIngestionRepos(raw: string | undefined): string[] {
     }
   }
   return out;
+}
+
+/** Default cap on a direct-read token's lifetime (design §3.3:
+ * tokens are expiring; the cap keeps "expiring" short). */
+export const DEFAULT_DIRECT_READ_MAX_TTL_SECONDS = 3600;
+
+/** Parse the direct-read configuration (#12592). Every piece is
+ * required and any malformed piece nulls the whole: a half-configured
+ * mint that guessed a DB id or a key would be a fail-open scope. The
+ * metadata and queue DB ids must be distinct — a scope that cannot
+ * tell its one allowed DB from the forbidden one is no scope. */
+function parseDirectReadConfig(env: HostedEnv): DirectReadConfig | null {
+  const metadataDbId = env.METADATA_DB_ID?.trim();
+  const queueDbId = env.QUEUE_DB_ID?.trim();
+  if (!metadataDbId || !queueDbId || metadataDbId === queueDbId) return null;
+  if (!env.DIRECT_READ_SIGNING_KEY_PKCS8 || !env.DIRECT_READ_SIGNING_KEY_ID) return null;
+  if (!isValidStampKeyId(env.DIRECT_READ_SIGNING_KEY_ID)) return null;
+  const pkcs8 = b64urlToBytesOrNull(env.DIRECT_READ_SIGNING_KEY_PKCS8);
+  if (pkcs8 === null || pkcs8.length !== ED25519_PKCS8_BYTES) return null;
+  if (!env.DIRECT_READ_VERIFY_KEYS_JSON) return null;
+  let verifyKeys: Map<string, Uint8Array>;
+  try {
+    const parsed: unknown = JSON.parse(env.DIRECT_READ_VERIFY_KEYS_JSON);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    verifyKeys = new Map();
+    for (const [keyId, text] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!isValidStampKeyId(keyId) || typeof text !== "string") return null;
+      const raw = b64urlToBytesOrNull(text);
+      if (raw === null || raw.length !== ED25519_PUBLIC_KEY_BYTES) return null;
+      verifyKeys.set(keyId, raw);
+    }
+  } catch {
+    return null;
+  }
+  if (verifyKeys.size === 0) return null;
+  let maxTtlSeconds = DEFAULT_DIRECT_READ_MAX_TTL_SECONDS;
+  if (env.DIRECT_READ_MAX_TTL_SECONDS !== undefined) {
+    if (!/^[0-9]+$/.test(env.DIRECT_READ_MAX_TTL_SECONDS)) return null;
+    maxTtlSeconds = Number(env.DIRECT_READ_MAX_TTL_SECONDS);
+    if (!Number.isSafeInteger(maxTtlSeconds) || maxTtlSeconds <= 0) return null;
+  }
+  return {
+    metadataDbId,
+    queueDbId,
+    signing: { keyId: env.DIRECT_READ_SIGNING_KEY_ID, pkcs8 },
+    verifyKeys,
+    maxTtlSeconds,
+  };
 }

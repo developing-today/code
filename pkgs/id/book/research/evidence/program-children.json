@@ -1,0 +1,218 @@
+{
+  "endpoint": "https://api.github.com/search/issues?q=repo%3Adeveloping-today%2Fcode+is%3Aissue+parent-issue%3Adeveloping-today%2Fcode%232056&per_page=100",
+  "server_date": "Mon, 23 Nov 2026 14:01:53 GMT",
+  "total": 35,
+  "incomplete_results": false,
+  "children": [
+    {
+      "number": 12462,
+      "title": "epic(id): maintenance",
+      "state": "open",
+      "url": "https://github.com/developing-today/code/issues/12462"
+    },
+    {
+      "number": 9106,
+      "title": "epic: ID/Atlas extensible primitives, federation, namespaces — major design iteration (2026-11-12 directive)",
+      "state": "open",
+      "url": "https://github.com/developing-today/code/issues/9106"
+    },
+    {
+      "number": 6312,
+      "title": "id: Phase 14 — hosted, federated, local-first (plan of record)",
+      "state": "open",
+      "url": "https://github.com/developing-today/code/issues/6312"
+    },
+    {
+      "number": 5536,
+      "title": "id: implement ID conversion engine - linked transfer pairs and rate authorisation (design #2063)",
+      "state": "open",
+      "url": "https://github.com/developing-today/code/issues/5536"
+    },
+    {
+      "number": 3195,
+      "title": "pkgs/id: build-time review — runtime performance first, then build time (cold check build ~16 min, tests run 12 s)",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/3195"
+    },
+    {
+      "number": 2054,
+      "title": "id: design: ID boards v1",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2054"
+    },
+    {
+      "number": 2053,
+      "title": "id: investigate: embedded playable posts — HTML5 mini-games, async challenges, and forkable succession saves",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2053"
+    },
+    {
+      "number": 2052,
+      "title": "id: investigate: boards — a modern phpBB on ID identity: no registration, copyable themes",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2052"
+    },
+    {
+      "number": 2051,
+      "title": "id: design: ID chat v1",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2051"
+    },
+    {
+      "number": 2050,
+      "title": "id: investigate: BitTorrent-style chunk retrieval for graph objects",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2050"
+    },
+    {
+      "number": 2049,
+      "title": "id: investigate: IRC-first chat on ID — channels, graph-linked objects, presence",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2049"
+    },
+    {
+      "number": 2048,
+      "title": "id: design: Zettelkasten layer — multiplayer docs/wiki on ID",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2048"
+    },
+    {
+      "number": 2047,
+      "title": "id: investigate: friendly-name references — @/# phrase resolution via cross-service search (zettelkasten / Mnote model)",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2047"
+    },
+    {
+      "number": 2046,
+      "title": "id: design: ID serverless edition v1 (Cloudflare Workers)",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2046"
+    },
+    {
+      "number": 2045,
+      "title": "id: investigate: hosted data option — per-user stores, Google SSO, static/local-storage variants, container-spend limits",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2045"
+    },
+    {
+      "number": 2044,
+      "title": "id: investigate: Cloudflare Workers edition — isolates + Durable Objects + per-user SQLite fit for ID",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2044"
+    },
+    {
+      "number": 2043,
+      "title": "id: design: ID currencies v1",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2043"
+    },
+    {
+      "number": 2042,
+      "title": "id: investigate: tokens for real services — Steam-key grants, returns/refunds, revocation",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2042"
+    },
+    {
+      "number": 2041,
+      "title": "id: investigate: token issuance in the ID graph — per-ID issuance, issuer snapshots, authorized conversion rates",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2041"
+    },
+    {
+      "number": 2040,
+      "title": "id: investigate: TigerBeetle — multi-currency ledgers, conversions, per-coin vs balance model, 3-node cluster topology",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2040"
+    },
+    {
+      "number": 2039,
+      "title": "id: design: match attestation + audit v1",
+      "state": "open",
+      "url": "https://github.com/developing-today/code/issues/2039"
+    },
+    {
+      "number": 2038,
+      "title": "id: investigate: match audit — netcode log format, replay validation, and cheating signals",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2038"
+    },
+    {
+      "number": 2037,
+      "title": "id: investigate: match-result attestation — mutual concession, witness adjudication, offline play",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2037"
+    },
+    {
+      "number": 2036,
+      "title": "id: design: ID messaging/relay protocol v1",
+      "state": "open",
+      "url": "https://github.com/developing-today/code/issues/2036"
+    },
+    {
+      "number": 2035,
+      "title": "id: investigate: multi-hop relay and P2P media paths — bridging peers, optional privacy relay, large-message chunking",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2035"
+    },
+    {
+      "number": 2034,
+      "title": "id: investigate: ephemeral live data vs the chained event graph — retention and intermittent signing",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2034"
+    },
+    {
+      "number": 2033,
+      "title": "id: design: abuse-control primitives v1 for ID comms",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2033"
+    },
+    {
+      "number": 2032,
+      "title": "id: investigate: comms abuse controls — blocks, rate limits, and per-counterparty budgets",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2032"
+    },
+    {
+      "number": 2031,
+      "title": "id: design+PoC: sticky-notes / did-it tracker — the first ID app",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2031"
+    },
+    {
+      "number": 2030,
+      "title": "id: investigate: trust/visibility model — servers accept all signed objects; views count only allowed writers",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2030"
+    },
+    {
+      "number": 2029,
+      "title": "id: investigate: did-it tracker data model — events, expectations, per-entity cardinality, details + later opinions",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2029"
+    },
+    {
+      "number": 2028,
+      "title": "id: design: ID core build v1 — app model + capability system, enough to start app examples",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2028"
+    },
+    {
+      "number": 2027,
+      "title": "id: investigate: capability-based specialization — forms, location, media across web, ESP32/MQTT, and text/audio modes",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2027"
+    },
+    {
+      "number": 2026,
+      "title": "id: investigate: app packaging — apps as folders (code + resources), TUI/web interface parity, web-native specialization",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/2026"
+    },
+    {
+      "number": 1240,
+      "title": "id: next horizons — what comes after Phase 13 (discussion with Drew)",
+      "state": "closed",
+      "url": "https://github.com/developing-today/code/issues/1240"
+    }
+  ]
+}

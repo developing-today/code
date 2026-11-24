@@ -1,6 +1,7 @@
 """Offline regression tests for the host-health systemd snapshot projection."""
 
 import importlib.util
+import json
 import random
 import subprocess
 import unittest
@@ -235,3 +236,80 @@ class HostHealthCollectorTests(unittest.TestCase):
         self.assertIn("ExecMainCode", props.removeprefix("--property=").split(","))
         unavailable, _ = self.read(returncode=1)
         self.assertEqual(unavailable["state"], "unknown")
+
+
+class ReadBackupRecordTests(unittest.TestCase):
+    """The run-record half of the snapshot (#3989 criterion 6): the
+    collector passes the dashboard backup's newest verified generation
+    through, and anything unreadable reads as unknown, never as health."""
+
+    def write_record(self, tmp_path, payload):
+        record = Path(tmp_path) / ".last-run.json"
+        if isinstance(payload, (dict, list)):
+            record.write_text(json.dumps(payload) + "\n")
+        else:
+            record.write_text(payload)
+        return record
+
+    def complete_record(self):
+        return {
+            "job": "pm-dashboard-backup",
+            "date": "2026-11-22",
+            "started_at": "2026-11-22T10:30:00+00:00",
+            "finished_at": "2026-11-22T10:41:01+00:00",
+            "result": "complete",
+            "exit_code": 0,
+            "failing_step": None,
+            "steps": [{"step": "local-archive", "outcome": "ok"}],
+            "archive_sha256": "8f4cec6c",
+            "destinations": {"local": "ok", "r2": "ok", "drive": "ok"},
+        }
+
+    def test_complete_generation_passes_through(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            record = self.write_record(tmp, self.complete_record())
+            backup = COLLECTOR.read_backup_record(str(record))
+        self.assertEqual(backup["result"], "complete")
+        self.assertEqual(backup["date"], "2026-11-22")
+        self.assertEqual(backup["finishedAt"], "2026-11-22T10:41:01+00:00")
+        self.assertEqual(backup["archiveSha256"], "8f4cec6c")
+        self.assertEqual(
+            backup["destinations"], {"local": "ok", "r2": "ok", "drive": "ok"}
+        )
+        self.assertIsNone(backup["failingStep"])
+
+    def test_failed_generation_names_its_step(self):
+        import tempfile
+
+        payload = self.complete_record()
+        payload.update(
+            {"result": "failed", "exit_code": 1, "failing_step": "r2-upload"}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            record = self.write_record(tmp, payload)
+            backup = COLLECTOR.read_backup_record(str(record))
+        self.assertEqual(backup["result"], "failed")
+        self.assertEqual(backup["failingStep"], "r2-upload")
+
+    def test_missing_corrupt_or_shapeless_record_is_unknown(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = COLLECTOR.read_backup_record(str(Path(tmp) / "absent.json"))
+            self.assertEqual(missing["state"], "unknown")
+            corrupt = self.write_record(tmp, "{not json")
+            self.assertEqual(
+                COLLECTOR.read_backup_record(str(corrupt))["state"], "unknown"
+            )
+            shapeless = self.write_record(tmp, {"job": "pm-dashboard-backup"})
+            self.assertEqual(
+                COLLECTOR.read_backup_record(str(shapeless))["state"], "unknown"
+            )
+            bad_result = self.write_record(
+                tmp, {**self.complete_record(), "result": "complete-ish"}
+            )
+            self.assertEqual(
+                COLLECTOR.read_backup_record(str(bad_result))["state"], "unknown"
+            )

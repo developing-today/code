@@ -3,11 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GithubHotEvent } from "../src/activity.ts";
-import {
-  FileOutcomeBindingSource,
-  GithubOutcomeConsumer,
-  type OutcomeBindingSource,
-} from "../src/outcome-consumer.ts";
+import { FileOutcomeBindingSource, GithubOutcomeConsumer, type OutcomeBindingSource } from "../src/outcome-consumer.ts";
 import { OutcomeFactStore, rollupOutcomeFacts, type OutcomeBinding } from "../src/outcome-attribution.ts";
 
 /** Fixture hot-list rows in the projector's normalized shape (#5204),

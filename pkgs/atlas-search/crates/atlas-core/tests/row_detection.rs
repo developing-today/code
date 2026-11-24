@@ -635,7 +635,7 @@ fn op_strategy() -> impl proptest::strategy::Strategy<Value = Op> {
     let id = 1..=6i64;
     let body = "[a-z]{1,8}";
     prop_oneof![
-        (id.clone(), body.clone()).prop_map(|(id, body)| Op::Insert { id, body }),
+        (id.clone(), body).prop_map(|(id, body)| Op::Insert { id, body }),
         (id.clone(), body).prop_map(|(id, body)| Op::Update { id, body }),
         id.prop_map(|id| Op::Delete { id }),
     ]

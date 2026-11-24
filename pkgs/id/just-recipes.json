@@ -1469,6 +1469,7 @@
         { "arguments": [], "recipe": "test-sandbox", "star": null },
         { "arguments": [], "recipe": "test-native-shell", "star": null },
         { "arguments": [], "recipe": "test-tui-shell", "star": null },
+        { "arguments": [], "recipe": "test-hw-shell", "star": null },
         { "arguments": [], "recipe": "test-rust-examples", "star": null },
         { "arguments": [], "recipe": "test-web-unit", "star": null },
         { "arguments": [], "recipe": "test-web-typecheck", "star": null },
@@ -2595,6 +2596,19 @@
       "private": false,
       "quiet": false,
       "namepath": "test-full",
+      "shebang": false
+    },
+    "test-hw-shell": {
+      "attributes": [{ "group": "test" }],
+      "body": [["cargo nextest run -p id-hw-shell"]],
+      "dependencies": [],
+      "doc": "Run the id-hw-shell live-host behavioral tests (#10929): non-default workspace member, so the default-member test recipes never run it.",
+      "name": "test-hw-shell",
+      "parameters": [],
+      "priors": 0,
+      "private": false,
+      "quiet": false,
+      "namepath": "test-hw-shell",
       "shebang": false
     },
     "test-int-sandbox": {

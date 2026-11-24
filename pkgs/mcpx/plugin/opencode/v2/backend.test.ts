@@ -50,10 +50,7 @@ const stubStorage = (): StorageLike => {
   };
 };
 
-const discoverWithEnv = async (
-  env: Record<string, string | undefined>,
-  candidates: Candidate[],
-) => {
+const discoverWithEnv = async (env: Record<string, string | undefined>, candidates: Candidate[]) => {
   const calls = { namespaces: 0, bin: 0 };
   const fakeClient = (): DaemonClientLike => ({
     namespaces: async () => {
@@ -95,9 +92,7 @@ describe("plugin.backend (MCPX_PLUGIN_BACKEND)", () => {
   });
 
   test("cli never uses the socket: the binary answers even with a daemon reachable", async () => {
-    const { content, calls } = await discoverWithEnv({ MCPX_PLUGIN_BACKEND: "cli" }, [
-      candidate(socketTarget),
-    ]);
+    const { content, calls } = await discoverWithEnv({ MCPX_PLUGIN_BACKEND: "cli" }, [candidate(socketTarget)]);
     expect(content).toContain("from the binary");
     expect(content).not.toContain("files  (3 tools)");
     expect(calls.namespaces).toBe(0);
@@ -118,9 +113,7 @@ describe("plugin.backend (MCPX_PLUGIN_BACKEND)", () => {
   });
 
   test("v1 still answers from the daemon when one is reachable", async () => {
-    const { content, calls } = await discoverWithEnv({ MCPX_PLUGIN_BACKEND: "v1" }, [
-      candidate(socketTarget),
-    ]);
+    const { content, calls } = await discoverWithEnv({ MCPX_PLUGIN_BACKEND: "v1" }, [candidate(socketTarget)]);
     expect(content).toContain("files  (3 tools)");
     expect(calls.namespaces).toBe(1);
     expect(calls.bin).toBe(0);

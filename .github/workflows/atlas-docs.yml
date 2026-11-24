@@ -1,0 +1,54 @@
+name: atlas docs
+
+# CI tier policy: see .github/ci-policy.md
+
+# Build the atlas book (#13251): pkgs/atlas-search/book.toml +
+# pkgs/atlas-search/book, rendered by the flake output .#atlas-docs
+# (pkgs/atlas-search/docs.nix) — the same `nix build` locally and in
+# CI, mirroring the fleet book's build job in fleet-docs.yml.
+#
+# This workflow only builds; it never deploys. A repository has
+# exactly one GitHub Pages site and every Pages deployment replaces
+# the whole site, so the atlas book is deployed by the mcpx-docs
+# workflow's deploy job, staged under atlas/ with siteUrl
+# "/code/atlas/" — an atlas-only deploy from here would wipe the
+# mcpx and fleet books (and vice versa). See the book's "Deploying
+# this book" chapter:
+# pkgs/atlas-search/book/operations/deploying-this-book.md.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "build: nix build .#atlas-docs"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          # Same cache posture as mcpx-docs.yml: no FlakeHub, the
+          # GitHub Actions cache is the cache.
+          use-flakehub: false
+          use-gha-cache: true
+
+      - name: Nix build
+        run: nix build .#atlas-docs --print-build-logs
+
+      # The nix result is a symlink into the store; copy it
+      # dereferenced so the staged tree is a plain static site.
+      - name: Stage site
+        run: |
+          rm -rf site
+          cp -rL result site
+          test -f site/index.html

@@ -16,8 +16,11 @@ printed or saved; the corpus is private):
 - Original window W0 = prev + target + next (blank-line joined), the
   production chunk shape.
 - Perturbations per target:
-  * boundary_shift — drop W0's first sentence; append the first
-    sentence of the paragraph after `next` when one exists.
+  * boundary_shift — drop the first sentence of the previous
+    paragraph only (the target paragraph stays byte-identical and
+    the blank-line window shape is preserved); append the first
+    sentence of the paragraph after `next` to the end of `next`
+    when one exists.
   * neighbor_replace_prev / neighbor_replace_next — replace that
     neighbor with the target paragraph of another sampled message
     (deterministic donor offsets +7 / +13).

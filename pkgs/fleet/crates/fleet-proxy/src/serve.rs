@@ -516,6 +516,10 @@ fn startup_line(pool_size: usize, socket_path: &std::path::Path) -> String {
 
 struct Broker {
     config: Config,
+    /// The tailnet egress parsed at startup. Tunnel opens
+    /// re-resolve it (see [`Broker::tailnet_egress`]); this parse
+    /// is the fallback for an open whose fresh resolution fails,
+    /// and its absence is what the startup warning reports.
     egress: Option<Egress>,
     /// The Cloudflare leg's egress: the same proxy as `egress`,
     /// dialled at the proxy URL's own port (see
@@ -531,17 +535,48 @@ struct Broker {
     last_used: AtomicU64,
 }
 
+/// The tailnet-egress preference at tunnel-open time (the
+/// oracle for #12426's fix): a fresh resolution of the seat's
+/// current state wins; the startup parse is the fallback when
+/// the fresh resolution fails; with neither, the fresh error —
+/// the same message the startup warning prints — is the
+/// failure.
+fn resolve_tailnet_egress(
+    fresh: Result<Egress, String>,
+    startup: &Option<Egress>,
+) -> Result<Egress, String> {
+    match fresh {
+        Ok(e) => Ok(e),
+        Err(why) => startup.clone().ok_or(why),
+    }
+}
+
 impl Broker {
+    /// The tailnet leg's egress for one tunnel open, resolved
+    /// fresh — never just the startup parse. The seat's recorded
+    /// tailnet proxy (`fleet-proxy.env`, #12555) can appear or
+    /// change after this broker started: a broker auto-spawned
+    /// while tailscaled was down was born with the ambient
+    /// egress value (or none) and would otherwise keep it for
+    /// its whole life, so tailnet tunnels kept failing after
+    /// the tailnet recovered until a manual restart (#12426).
+    /// Opens are pooled and recovery-gated, so re-resolving
+    /// per open costs one small file read per new tunnel, not
+    /// per request.
+    fn tailnet_egress(&self) -> Result<Egress, String> {
+        resolve_tailnet_egress(
+            egress_from_env(self.config.egress_proxy_port()),
+            &self.egress,
+        )
+    }
+
     fn open_raw_tunnel(&self, port: u16) -> Result<TcpStream, String> {
         let target = self.config.target_host();
         let stream = if self.config.proxy_direct() {
             connect_raw_tunnel(None, target, port)
         } else {
-            let egress = self
-                .egress
-                .as_ref()
-                .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
-            connect_raw_tunnel(Some(egress), target, port)
+            let egress = self.tailnet_egress()?;
+            connect_raw_tunnel(Some(&egress), target, port)
         }
         .map_err(|e| format!("raw tunnel to {target}:{port}: {e}"))?;
         Ok(stream)
@@ -605,11 +640,8 @@ impl Broker {
                 .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
             return HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"));
         }
-        let egress = self
-            .egress
-            .as_ref()
-            .ok_or_else(|| "HTTPS_PROXY must be set (runtime proxy env)".to_string())?;
-        let stream: TcpStream = connect_tunnel(Some(egress), target, port)
+        let egress = self.tailnet_egress()?;
+        let stream: TcpStream = connect_tunnel(Some(&egress), target, port)
             .map_err(|e| format!("tunnel to {target}:{port}: {e}"))?;
         HttpConn::new(stream).map_err(|e| format!("tunnel to {target}:{port}: {e}"))
     }
@@ -681,7 +713,7 @@ impl Broker {
         if client {
             self.last_used.store(now_secs(), Ordering::Relaxed);
         }
-        let port = req.port.unwrap_or(fleet_config::PORT_LAPTOP_AGENT);
+        let port = dial_port(req.port);
         let token_path = match &req.token_file {
             Some(p) => std::path::PathBuf::from(p),
             None => self.config.default_token_file(),
@@ -800,6 +832,27 @@ impl Broker {
 /// The Python broker's set — the connection is dropped and the
 /// plan falls to the next leg.
 const CF_EDGE_STATUSES: [u16; 3] = [502, 503, 530];
+
+/// The port `do_request` dials for one parsed request
+/// (#13464): the client-declared port verbatim, or the
+/// laptop-agent default when the frame named none. There is
+/// deliberately NO `services_map` membership check here. The
+/// advertised table (`Config::services`, the hello map) is a
+/// host-local, configurable advertisement — discovery for the
+/// hello and the shims — not an access-control list, and the
+/// in-tree consumer `fleet proxy connect --request …`
+/// `--service-port N` deliberately addresses operator-chosen
+/// ports outside it (client.rs pins `--service-port 8080`):
+/// refusing unadvertised ports would break that consumer
+/// (#6583 disposition (a)). The #6582 contract still holds: the
+/// port is validated where it is read — type and range at the
+/// frame boundary (`parse_port`, #6516) — and the dial itself
+/// stays token-gated. Residual risk, recorded: an unadvertised
+/// port receiving an arbitrary body is only as constrained as
+/// the service behind it (#6583 (b)).
+fn dial_port(requested: Option<u16>) -> u16 {
+    requested.unwrap_or(fleet_config::PORT_LAPTOP_AGENT)
+}
 
 /// The attempt plan for one request, the Python broker's plan
 /// exactly (code#10356). The Cloudflare leg is in play only for
@@ -1041,7 +1094,18 @@ fn parse_port(frame: &serde_json::Value) -> Result<Option<u16>, String> {
     Ok(Some(n as u16))
 }
 
-fn serve_session(broker: &Broker, mut stream: UnixStream) {
+fn serve_session(broker: &Broker, stream: UnixStream) {
+    serve_session_with_read_timeout(broker, stream, crate::tunnel::TUNNEL_READ_TIMEOUT);
+}
+
+fn serve_session_with_read_timeout(
+    broker: &Broker,
+    mut stream: UnixStream,
+    read_timeout: Duration,
+) {
+    if stream.set_read_timeout(Some(read_timeout)).is_err() {
+        return;
+    }
     let mut client_supports_raw_splice = false;
     let first = match read_frame(&mut stream) {
         Ok(f) => f,
@@ -1143,6 +1207,12 @@ fn serve_session(broker: &Broker, mut stream: UnixStream) {
                             )
                             .is_err()
                             {
+                                return;
+                            }
+                            // Session framing is bounded, but the raw
+                            // relay carries long-lived connections that
+                            // may legitimately remain idle for hours.
+                            if stream.set_read_timeout(None).is_err() {
                                 return;
                             }
                             // A raw relay can be the broker's only
@@ -1465,6 +1535,33 @@ mod tests {
         assert!(!conn.reusable());
         server.join().unwrap();
         conn
+    }
+
+    #[test]
+    fn stalled_accepted_session_is_dropped_within_read_timeout() {
+        let broker = Arc::new(Broker {
+            config: Config::default(),
+            egress: None,
+            cf_egress: None,
+            pool: TunnelPool::new(0),
+            recovery: RecoveryGate::new(),
+            last_used: AtomicU64::new(now_secs()),
+        });
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let (done_tx, done_rx) = mpsc::channel();
+        let timeout = Duration::from_millis(200);
+        let started = Instant::now();
+
+        std::thread::spawn(move || {
+            serve_session_with_read_timeout(&broker, stream, timeout);
+            let _ = done_tx.send(());
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("stalled accepted stream should time out and return");
+        assert!(started.elapsed() >= timeout);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     const PORT: u16 = 4799;
@@ -2147,6 +2244,25 @@ mod tests {
     }
 
     #[test]
+    fn dial_port_passes_any_frame_valid_port_through() {
+        // The #13464 decision, pinned at the dial site: no
+        // services_map membership filtering. Absent means the
+        // laptop-agent default; a table port passes through
+        // unchanged; a non-table port -- the --service-port case,
+        // e.g. 8080, which client.rs pins as parseable -- passes
+        // through verbatim, up to the top of the u16 range the
+        // frame boundary validated (#6516). A future membership
+        // refusal must change this test, not slip past it.
+        assert_eq!(dial_port(None), fleet_config::PORT_LAPTOP_AGENT);
+        assert_eq!(
+            dial_port(Some(fleet_config::PORT_LAPTOP_AGENT)),
+            fleet_config::PORT_LAPTOP_AGENT
+        );
+        assert_eq!(dial_port(Some(8080)), 8080);
+        assert_eq!(dial_port(Some(65535)), 65535);
+    }
+
+    #[test]
     fn parse_request_refuses_present_but_invalid_ports() {
         // Every shape the pre-fix chain silently collapsed to the
         // 4799 default (#6516): out of range, negative, float,
@@ -2207,5 +2323,44 @@ mod tests {
                 .map_err(|_| ());
             prop_assert_eq!(got, model(&value), "port value: {}", value);
         });
+    }
+    fn egress(host: &str) -> Egress {
+        Egress {
+            host: host.to_string(),
+            port: 3130,
+            authorization: "Basic Og==".to_string(),
+        }
+    }
+
+    #[test]
+    fn tailnet_egress_fresh_resolution_wins_over_the_startup_parse() {
+        // The seat's state appeared (or changed) after startup:
+        // the open must ride the current value, not the one the
+        // broker was born with (#12426).
+        let startup = Some(egress("hatch-egress-proxy"));
+        let got = resolve_tailnet_egress(Ok(egress("127.0.0.1")), &startup).unwrap();
+        assert_eq!(got, egress("127.0.0.1"));
+    }
+
+    #[test]
+    fn tailnet_egress_falls_back_to_the_startup_parse() {
+        // Fresh resolution failed (no recorded proxy, no ambient
+        // env): the startup value still serves the open.
+        let startup = Some(egress("127.0.0.1"));
+        let got =
+            resolve_tailnet_egress(Err("HTTPS_PROXY must be set".to_string()), &startup).unwrap();
+        assert_eq!(got, egress("127.0.0.1"));
+    }
+
+    #[test]
+    fn tailnet_egress_without_either_surfaces_the_resolution_error() {
+        let got = resolve_tailnet_egress(
+            Err("HTTPS_PROXY must be set (runtime proxy env)".to_string()),
+            &None,
+        );
+        assert_eq!(
+            got.unwrap_err(),
+            "HTTPS_PROXY must be set (runtime proxy env)"
+        );
     }
 }

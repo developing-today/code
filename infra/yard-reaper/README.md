@@ -1,6 +1,6 @@
 # yard-reaper
 
-Reaps the laptop's `~/git/fleet` scratch yard under Drew's disposition
+Reaps the laptop's `~/git/fleet` scratch yard under the user's disposition
 rule (2026-11-07, code#7093): **KEEP text, scripts, and markdown** —
 provenance beats extension. This directory is the canonical home of
 the tool: script, systemd units, tests, and this runbook.
@@ -45,7 +45,7 @@ each move.
   (`watcher-bench`, `bench-fixture`, `fixture`).
 - An entry holding even one keep-set file outside those places is
   protected as `holds-keep-set` and reported by name — extraction
-  of its keep set (review → PR, per Drew's rule: preservation =
+  of its keep set (review → PR, per the user's rule: preservation =
   pushed or PR'd, no local preservation tier, no archive branches)
   is separate follow-up work, never improvised by the reaper.
 

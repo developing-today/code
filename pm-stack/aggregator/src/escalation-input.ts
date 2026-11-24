@@ -12,12 +12,7 @@
 // escalation-tick.ts, which routes the built input and delivers it
 // with the real journal/feed/push sinks.
 import type { EscalationIncident, EscalationInput, IncidentPhase } from "./escalation.ts";
-import {
-  CATALOGUE,
-  isCircuitBreakerOpen,
-  type FacetId,
-  type RemediationState,
-} from "./remediation.ts";
+import { CATALOGUE, isCircuitBreakerOpen, type FacetId, type RemediationState } from "./remediation.ts";
 import type { SloFacetSummary } from "./slo.ts";
 
 /**

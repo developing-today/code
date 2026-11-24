@@ -544,6 +544,123 @@ fn maybe_raise_needs_drew(st: &State, req: &Value, resp: &Value) {
     });
 }
 
+/// #13774: the actions-exec agent verbs authenticate with the
+/// job's GitHub OIDC JWT instead of the broker token — the agent
+/// runs on a public runner and never holds the broker token. A
+/// JWT-shaped X-Agent-Token (three base64url segments) on one of
+/// these paths passes the token gate; the verb then verifies the
+/// JWT against GitHub's JWKS and binds its claims to the session
+/// row before acting. Any other call on these paths still needs
+/// the broker token.
+const ACTIONS_EXEC_AGENT_PATHS: [&str; 5] = [
+    "/actions-exec-register",
+    "/actions-exec-poll",
+    "/actions-exec-io",
+    "/actions-exec-result",
+    "/actions-exec-close",
+];
+
+fn actions_exec_agent_call(path: &str, provided_token: Option<&str>) -> bool {
+    if !ACTIONS_EXEC_AGENT_PATHS.contains(&path) {
+        return false;
+    }
+    let Some(token) = provided_token else {
+        return false;
+    };
+    let mut parts = token.split('.');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(h), Some(p), Some(s), None) => {
+            !h.is_empty()
+                && !p.is_empty()
+                && !s.is_empty()
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        }
+        _ => false,
+    }
+}
+
+/// #13774: an extension request raises its tier's push on the
+/// PM surface (fire-and-forget, the /block pattern): tier 1's
+/// notification, tier 2's deny-window warning, tier 3's manual
+/// ask. The verb has already recorded (or, tier 1, applied) the
+/// request; this post is what puts it in front of Drew.
+fn maybe_raise_actions_exec_extension(st: &State, resp: &Value) {
+    if resp.get("requested").and_then(|v| v.as_bool()) != Some(true) {
+        return;
+    }
+    let (Some(handle), Some(host_repo)) = (
+        resp.get("handle").and_then(|v| v.as_str()),
+        resp.get("host_repo").and_then(|v| v.as_str()),
+    ) else {
+        return;
+    };
+    let s = |k: &str| {
+        resp.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let i = |k: &str, d: i64| resp.get(k).and_then(|v| v.as_i64()).unwrap_or(d);
+    let info = crate::needs_drew::ExtensionAlert {
+        key: s("alert_key"),
+        handle: handle.to_string(),
+        context: resp
+            .get("context")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        host_repo: host_repo.to_string(),
+        workflow: s("workflow"),
+        seat: s("seat"),
+        run_id: resp.get("run_id").and_then(|v| v.as_i64()),
+        run_attempt: resp.get("run_attempt").and_then(|v| v.as_i64()),
+        created_at: s("created_at"),
+        granted_s: i("granted_s", 0),
+        elapsed_s: i("elapsed_s", 0),
+        lease_until: s("lease_until"),
+        max_until: s("max_until"),
+        extend_s: i("extend_s", 1800),
+        tier: i("tier", 3),
+        ext_count_before: i("ext_count", 0),
+        ext_total_s_before: i("ext_total_s", 0),
+        decide_after: resp
+            .get("decide_after")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        grace_until: s("grace_until"),
+        reason: s("reason"),
+    };
+    let body = crate::needs_drew::build_extension_alert_body(&info);
+    let secrets_url = st.secrets_url.clone();
+    let secrets_token = st.secrets_token.clone();
+    let agent = st.agent.clone();
+    std::thread::spawn(move || {
+        let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+            url: secrets_url,
+            token: secrets_token,
+            agent: agent.clone(),
+        })]);
+        let raised = resolver
+            .resolve(crate::needs_drew::ALERTS_INTAKE_TOKEN_SECRET)
+            .map_err(|e| e.to_string())
+            .and_then(|token| {
+                crate::needs_drew::post_plain_alert_to(
+                    &crate::needs_drew::alerts_url(),
+                    token.expose(),
+                    &body,
+                )
+            });
+        match raised {
+            Ok(_) => crate::log::info("queue-broker", "actions-exec extension alert raised"),
+            Err(e) => crate::log::info(
+                "queue-broker",
+                &format!("actions-exec extension alert failed: {e}"),
+            ),
+        }
+    });
+}
+
 fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     if let Err(e) = validate_durations(path, req) {
         return fail(2, e);
@@ -572,6 +689,10 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             // escalated block (fire-and-forget).
             if path == "/block" {
                 maybe_raise_needs_drew(st, req, &resp);
+            }
+            // #13774: the emergency-extension needs-drew raise.
+            if path == "/actions-exec-extend-request" {
+                maybe_raise_actions_exec_extension(st, &resp);
             }
             resp
         }
@@ -613,7 +734,7 @@ fn pre_body_refusal(
     if method == "GET" && path == "/healthz" {
         return None;
     }
-    if !token_matches(provided_token, token) {
+    if !actions_exec_agent_call(path, provided_token) && !token_matches(provided_token, token) {
         return Some((401, json!({"error": "unauthorized"})));
     }
     if let Some(n) = content_length {
@@ -639,14 +760,28 @@ fn handle_request(
     let path = target.split('?').next().unwrap_or("");
     if method == "GET" && path == "/healthz" {
         (200, ok(json!({"service": "queue-broker"})))
-    } else if !token_matches(provided_token, token) {
+    } else if !actions_exec_agent_call(path, provided_token)
+        && !token_matches(provided_token, token)
+    {
         (401, json!({"error": "unauthorized"}))
     } else if method != "POST" {
         (405, json!({"error": "POST only"}))
     } else {
         match std::str::from_utf8(body) {
             Ok(buf) => {
-                let parsed: Value = serde_json::from_str(buf).unwrap_or(Value::Null);
+                let mut parsed: Value = serde_json::from_str(buf).unwrap_or(Value::Null);
+                // #13774: _oidc_jwt is broker-injected, never
+                // client-supplied — strip any spoofed copy from
+                // every body, then inject the header token on
+                // agent-path calls for the verbs to verify.
+                if let Some(obj) = parsed.as_object_mut() {
+                    obj.remove("_oidc_jwt");
+                    if actions_exec_agent_call(path, provided_token) {
+                        if let Some(tok) = provided_token {
+                            obj.insert("_oidc_jwt".to_string(), Value::String(tok.to_string()));
+                        }
+                    }
+                }
                 (200, dispatch(st, path, &parsed))
             }
             Err(e) => (
@@ -688,9 +823,19 @@ pub fn run() -> i32 {
         }
     };
 
+    // Platform root store, not webpki-roots alone: this agent
+    // carries the broker's GitHub dep-probe reads, and a broker
+    // running behind a TLS-intercepting egress proxy presents
+    // the proxy's CA, which only the platform store carries
+    // (code#13122; same fix as fleet's gh.rs App leg).
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(90)))
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
         .build()
         .into();
     // Turso is the only queue backend: QUEUE_BROKER_BACKEND unset

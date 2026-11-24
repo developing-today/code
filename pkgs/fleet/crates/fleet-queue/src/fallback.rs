@@ -28,6 +28,22 @@
 //!   * A worker RELEASES by posting a release marker with the
 //!     outcome (`done` = the work landed, `free` = handed back
 //!     unworked, which restores the `queue/queued` label).
+//!   * A worker COMPLETES with broker parity (#13023) by handing
+//!     `complete` the disposition record `verify-disposition`
+//!     produced for the issue: the record must pass the broker's
+//!     offline gate (`crate::disposition::check`) locally before
+//!     anything is posted — a rejection posts nothing and the
+//!     claim stays live, exactly as a broker `complete` rejection
+//!     leaves the task claimed. On a pass, `complete` posts the
+//!     release-done marker with the summary and the full record
+//!     in a `fleet-disposition` fenced block, so the record stays
+//!     consumable from the marker stream when the broker returns
+//!     (`disposition_record_in_comment`). The one broker-only
+//!     check — a follow_up's task_id against the live queue
+//!     (`check_successor_task`) — cannot run from a fallback
+//!     seat; a record naming one is completed with that check
+//!     flagged UNCHECKED in the comment and the verb output,
+//!     never silently treated as checked.
 //!   * A BLOCKED item -- its issue carries the `queue/blocked`
 //!     label the broker-backed system maintains -- sits outside
 //!     the scan sweep and cannot be claimed. A worker UNBLOCKS
@@ -72,7 +88,9 @@
 //! Exit codes mirror the rest of the client: 0 ok, 2 usage,
 //! 3 the GitHub transport itself failed (gh missing/erroring),
 //! 5 the verb ran but the claim state forbids the action (the
-//! NO_CLAIM_EXIT convention from `claim`).
+//! NO_CLAIM_EXIT convention from `claim`), and 1 a `complete`
+//! whose disposition the gate rejected or whose record could
+//! not be read (verify-disposition's own gate-failure code).
 
 use std::process::{Command, exit};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -787,16 +805,17 @@ struct FbArgs {
 
 /// Group usage for `repo-queue fallback --help`.
 pub(crate) const GROUP_USAGE: &str = "\
-usage: repo-queue fallback <scan|status|claim|heartbeat|release|unblock> ...\n\
+usage: repo-queue fallback <scan|status|claim|heartbeat|release|complete|unblock> ...\n\
 \n\
 GitHub-backed queue used when the primary broker is down; issue\n\
 comments carry the claims. Run `repo-queue fallback <sub> --help`\n\
 for flags:\n\
-  scan <repo> <issue-number>  (--repo/--limit/--lease-min live on scan)\n\
+  scan [--repo <repo>] [--limit <1..100>] [--lease-min <minutes>]\n\
   status <repo> <issue-number>\n\
   claim <repo> <issue-number> --worker <id>\n\
   heartbeat <repo> <issue-number> --worker <id>\n\
   release <repo> <issue-number> --worker <id>\n\
+  complete <repo> <issue-number> --worker <id>\n\
   unblock <repo> <issue-number> --worker <id> --reason <text>";
 
 /// Per-verb usage for the fallback verbs.
@@ -816,6 +835,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "release" => {
             "usage: repo-queue fallback release <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--outcome done|free] [--summary <text>]\n\nReleases a fallback claim (done keeps the terminal state, free returns it to the pool)."
+        }
+        "complete" => {
+            "usage: repo-queue fallback complete <repo> <issue-number> --worker <id> --summary <text> --result <path> [--pr <n[,n...]>] [--lease-min <minutes>]\n\nCompletes a fallback claim with broker parity (#13023): the disposition record at --result (the output of `repo-queue verify-disposition <issue> --repo <repo> --json`) must pass the broker's offline disposition gate for this issue before anything is posted; a rejection posts nothing, the claim stays live, and the verb exits 1. On a pass it posts the release-done marker with the summary and the full record in a fleet-disposition fenced block, so the record stays consumable from the marker stream when the broker returns. A follow_up naming a task_id is recorded but flagged unchecked \u{2014} only the broker can check it against the queue. Plain `release --outcome done` remains for handing back work that carries no disposition."
         }
         "unblock" => {
             "usage: repo-queue fallback unblock <repo> <issue-number> --worker <id> --reason <text>\n\nReleases a blocked fallback issue back to the claimable pool: posts an unblock marker recording the override and its reason, clears the queue/blocked label and restores queue/queued. Refuses an issue that is closed, not blocked, or under a live or contested claim."
@@ -1333,6 +1355,215 @@ fn cmd_release(rest: &[String]) -> i32 {
     0
 }
 
+/// The info string tagging the fenced block that carries a
+/// completion's disposition record in its comment.
+const DISPOSITION_FENCE: &str = "fleet-disposition";
+
+/// Validate a verify-disposition record for a fallback completion:
+/// the broker's offline gate (`crate::disposition`), run locally.
+/// Pure -- the unit tests are its oracle. Returns the record, its
+/// verdict and `checked_at`, and the follow-up task id only the
+/// broker can check against the live queue: fallback mode has no
+/// queue, so that id comes back as *unchecked*, never as checked.
+fn check_fallback_disposition(
+    record_text: &str,
+    issue: i64,
+    extra_linked: &[i64],
+    now: i64,
+) -> Result<(Value, String, String, Option<i64>), String> {
+    let value: Value = serde_json::from_str(record_text)
+        .map_err(|e| format!("--result is not a JSON disposition record ({e})"))?;
+    let record = crate::disposition::parse_record(&value)
+        .map_err(|e| format!("disposition record is not well-formed ({e})"))?;
+    crate::disposition::check(
+        &record,
+        Some(issue),
+        extra_linked,
+        now,
+        crate::disposition::DEFAULT_STALENESS_SECONDS,
+    )?;
+    let task_id = record.follow_up.as_ref().and_then(|f| f.task_id);
+    Ok((
+        value,
+        record.verdict.clone(),
+        record.checked_at.clone(),
+        task_id,
+    ))
+}
+
+/// The comment body a fallback `complete` posts: the release-done
+/// marker, the summary, and the disposition record in its fenced
+/// block. Pure -- the round-trip test is its oracle.
+fn complete_body(
+    worker: &str,
+    summary: &str,
+    record: &Value,
+    verdict: &str,
+    checked_at: &str,
+    follow_up_task: Option<i64>,
+    ts: i64,
+) -> String {
+    let pretty = serde_json::to_string_pretty(record).unwrap_or_else(|_| record.to_string());
+    let task_note = match follow_up_task {
+        Some(id) => format!(
+            " The record's follow_up names task {id}: only the broker can check it \
+             against the queue, so it is recorded here UNCHECKED -- the broker \
+             runs check_successor_task on it when it returns."
+        ),
+        None => String::new(),
+    };
+    format!(
+        "{}\n\nCompleted by `{worker}` (outcome: done). {summary}\n\nDisposition: verdict `{verdict}`, checked_at {checked_at} -- the record below passed the broker's offline disposition gate at completion time.{task_note}\n\n```{DISPOSITION_FENCE}\n{pretty}\n```",
+        marker_line(&MarkerKind::Release, worker, Some("done"), ts)
+    )
+}
+
+/// Extract the disposition record a fallback `complete` recorded
+/// in a comment body: the first fenced block tagged
+/// `fleet-disposition`. This is the consumption shape for when
+/// the broker returns -- the extracted value is the record
+/// exactly as `verify-disposition` produced it, re-checkable
+/// offline with `crate::disposition::parse_record`.
+pub(crate) fn disposition_record_in_comment(body: &str) -> Option<Value> {
+    let fence = format!("```{DISPOSITION_FENCE}");
+    let mut in_block = false;
+    let mut text = String::new();
+    for line in body.lines() {
+        let t = line.trim();
+        if !in_block {
+            if t == fence {
+                in_block = true;
+            }
+            continue;
+        }
+        if t == "```" {
+            return serde_json::from_str(&text).ok();
+        }
+        text.push_str(line);
+        text.push('\n');
+    }
+    None
+}
+
+fn cmd_complete(rest: &[String]) -> i32 {
+    let args = parse_fb_args(
+        "complete",
+        rest,
+        &["worker", "lease-min", "summary", "result", "pr"],
+    );
+    let (repo, number) = repo_and_issue("complete", &args);
+    let lease = lease_seconds("complete", &args);
+    let worker = worker_id("complete", &args);
+    let summary = args.get("summary").unwrap_or_else(|| {
+        usage_error(
+            "complete",
+            "fallback complete: --summary is required (what landed, with PR links)",
+        )
+    });
+    let result_path = args.get("result").unwrap_or_else(|| {
+        usage_error(
+            "complete",
+            "fallback complete: --result <path> is required -- the disposition record from `repo-queue verify-disposition <issue> --repo <repo> --json`",
+        )
+    });
+    // PRs the completion claims beyond the readback's own
+    // discovery: the gate requires each to be in the record,
+    // exactly as the broker's complete requires the record to
+    // cover the completion's claimed PRs.
+    let mut extra_linked: Vec<i64> = Vec::new();
+    if let Some(raw) = args.get("pr") {
+        for part in raw.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            match part.trim_start_matches('#').parse::<i64>() {
+                Ok(n) => {
+                    if !extra_linked.contains(&n) {
+                        extra_linked.push(n);
+                    }
+                }
+                Err(_) => usage_error(
+                    "complete",
+                    &format!("fallback complete: argument --pr: invalid PR number {part:?}"),
+                ),
+            }
+        }
+    }
+    let markers = fetch_markers(&repo, number).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
+    let state = fold_claim(&markers, now_epoch(), lease);
+    match state.holder() {
+        Some(w) if w == worker => {}
+        Some(w) => {
+            print_json(&json!({
+                "completed": false, "reason": "held_by_other",
+                "repo": repo, "number": number, "holder": w, "claim": state.to_json(),
+            }));
+            return EXIT_NO_CLAIM;
+        }
+        None => {
+            print_json(&json!({
+                "completed": false, "reason": "no_claim",
+                "repo": repo, "number": number, "claim": state.to_json(),
+            }));
+            return EXIT_NO_CLAIM;
+        }
+    }
+    let record_text = match std::fs::read_to_string(&result_path) {
+        Ok(t) => t,
+        Err(e) => {
+            print_json(&json!({
+                "completed": false, "reason": "result_unreadable",
+                "repo": repo, "number": number,
+                "detail": format!("cannot read --result {result_path:?}: {e}"),
+            }));
+            return 1;
+        }
+    };
+    // The gate runs before anything is posted: a rejected
+    // disposition leaves the claim live, as a broker rejection
+    // leaves the task claimed.
+    let (record, verdict, checked_at, follow_up_task) =
+        match check_fallback_disposition(&record_text, number, &extra_linked, now_epoch()) {
+            Ok(v) => v,
+            Err(e) => {
+                print_json(&json!({
+                    "completed": false, "reason": "disposition_rejected",
+                    "repo": repo, "number": number, "detail": e,
+                }));
+                return 1;
+            }
+        };
+    let body = complete_body(
+        &worker,
+        &summary,
+        &record,
+        &verdict,
+        &checked_at,
+        follow_up_task,
+        now_epoch(),
+    );
+    let comment_url =
+        post_comment(&repo, number, &body).unwrap_or_else(|e| die(EXIT_TRANSPORT, &e));
+    let mut warnings = Vec::new();
+    edit_labels(
+        &repo,
+        number,
+        &[],
+        &["queue/claimed", "work/assigned"],
+        &mut warnings,
+    );
+    print_json(&json!({
+        "completed": true,
+        "repo": repo, "number": number, "worker": worker,
+        "outcome": "done", "verdict": verdict, "checked_at": checked_at,
+        "follow_up_task_unchecked": follow_up_task,
+        "comment_url": comment_url,
+        "warnings": warnings,
+    }));
+    0
+}
+
 fn cmd_unblock(rest: &[String]) -> i32 {
     let args = parse_fb_args("unblock", rest, &["worker", "reason"]);
     let (repo, number) = repo_and_issue("unblock", &args);
@@ -1425,6 +1656,7 @@ pub fn run(args: &[String]) -> i32 {
         "claim" => cmd_claim(rest),
         "heartbeat" => cmd_heartbeat(rest),
         "release" => cmd_release(rest),
+        "complete" => cmd_complete(rest),
         "unblock" => cmd_unblock(rest),
         s if is_help_arg(s) => {
             println!("{GROUP_USAGE}");
@@ -1463,6 +1695,175 @@ mod tests {
             outcome: Some(outcome.to_string()),
             ts,
         }
+    }
+
+    // -- fallback complete (#13023): the disposition gate, run
+    // locally by the fallback seat. The oracle is the broker's
+    // own gate semantics (`crate::disposition::check`): a record
+    // the broker would accept must pass here, and one it would
+    // reject must not.
+
+    fn disp_record(checked_epoch: i64, issue: Value, pulls: Value, verdict: &str) -> String {
+        json!({
+            "checked_at": format_ts(checked_epoch),
+            "source": "verify-disposition",
+            "issue": issue,
+            "pulls": pulls,
+            "verdict": verdict,
+        })
+        .to_string()
+    }
+
+    fn merged_pull(n: i64, at: i64) -> Value {
+        json!({"number": n, "state": "merged", "is_draft": false, "merged_at": format_ts(at)})
+    }
+
+    fn draft_pull(n: i64) -> Value {
+        json!({"number": n, "state": "open", "is_draft": true, "merged_at": null})
+    }
+
+    #[test]
+    fn complete_gate_accepts_a_verified_record() {
+        let text = disp_record(
+            T0,
+            json!({"number": 42, "state": "closed"}),
+            json!([merged_pull(7, T0 - 60)]),
+            "closed_verified",
+        );
+        let (record, verdict, checked_at, task) =
+            check_fallback_disposition(&text, 42, &[], T0).expect("verified record passes");
+        assert_eq!(verdict, "closed_verified");
+        assert_eq!(checked_at, format_ts(T0));
+        assert_eq!(task, None);
+        assert_eq!(record["issue"]["number"], json!(42));
+    }
+
+    #[test]
+    fn complete_gate_rejects_a_record_for_another_issue() {
+        let text = disp_record(
+            T0,
+            json!({"number": 42, "state": "closed"}),
+            json!([merged_pull(7, T0 - 60)]),
+            "closed_verified",
+        );
+        let err = check_fallback_disposition(&text, 43, &[], T0).unwrap_err();
+        assert!(err.contains("describes issue #42"), "{err}");
+    }
+
+    #[test]
+    fn complete_gate_rejects_a_stale_record() {
+        let text = disp_record(
+            T0,
+            json!({"number": 42, "state": "closed"}),
+            json!([merged_pull(7, T0 - 60)]),
+            "closed_verified",
+        );
+        let now = T0 + crate::disposition::DEFAULT_STALENESS_SECONDS + 1;
+        let err = check_fallback_disposition(&text, 42, &[], now).unwrap_err();
+        assert!(err.contains("re-run"), "{err}");
+    }
+
+    #[test]
+    fn complete_gate_rejects_unfinished_work_under_a_merged_verdict() {
+        // The #10611 failure class in miniature: a merged verdict
+        // whose readback holds only an open draft.
+        let text = disp_record(
+            T0,
+            json!({"number": 42, "state": "open"}),
+            json!([draft_pull(7)]),
+            "merged_verified",
+        );
+        let err = check_fallback_disposition(&text, 42, &[], T0).unwrap_err();
+        assert!(err.contains("no pull in the readback is merged"), "{err}");
+    }
+
+    #[test]
+    fn complete_gate_rejects_a_claimed_pr_missing_from_the_record() {
+        let text = disp_record(
+            T0,
+            json!({"number": 42, "state": "closed"}),
+            json!([merged_pull(7, T0 - 60)]),
+            "closed_verified",
+        );
+        let err = check_fallback_disposition(&text, 42, &[9], T0).unwrap_err();
+        assert!(err.contains("linked PR #9 is not in the readback"), "{err}");
+    }
+
+    #[test]
+    fn complete_gate_rejects_malformed_records() {
+        assert!(check_fallback_disposition("not json", 42, &[], T0).is_err());
+        assert!(check_fallback_disposition("{}", 42, &[], T0).is_err());
+    }
+
+    #[test]
+    fn complete_gate_surfaces_an_unchecked_follow_up_task() {
+        // An open draft handed to a follow-up task: the offline
+        // gate passes the record, and the task id comes back as
+        // the broker-only check a fallback seat cannot run.
+        let mut v: Value = serde_json::from_str(&disp_record(
+            T0,
+            json!({"number": 42, "state": "open"}),
+            json!([draft_pull(7)]),
+            "open_draft_with_followup",
+        ))
+        .unwrap();
+        v["follow_up"] = json!({"task_id": 99, "reason": "the draft carries the rest"});
+        let (_, verdict, _, task) =
+            check_fallback_disposition(&v.to_string(), 42, &[], T0).expect("record passes");
+        assert_eq!(verdict, "open_draft_with_followup");
+        assert_eq!(task, Some(99));
+    }
+
+    #[test]
+    fn complete_body_round_trips_marker_and_record() {
+        let record: Value = serde_json::from_str(&disp_record(
+            T0,
+            json!({"number": 42, "state": "closed"}),
+            json!([merged_pull(7, T0 - 60)]),
+            "closed_verified",
+        ))
+        .unwrap();
+        let body = complete_body(
+            "lane-kf",
+            "Landed in PR #7.",
+            &record,
+            "closed_verified",
+            &format_ts(T0),
+            None,
+            T0,
+        );
+        // The claim fold must read the body as a release-done.
+        let m = parse_marker(&body).expect("body carries a marker");
+        assert_eq!(m.kind, MarkerKind::Release);
+        assert_eq!(m.outcome.as_deref(), Some("done"));
+        // And the recorded disposition extracts back as the same
+        // JSON value, consumable when the broker returns.
+        assert_eq!(disposition_record_in_comment(&body), Some(record.clone()));
+        // The unchecked-task note appears when a task is named.
+        let body2 = complete_body(
+            "lane-kf",
+            "Handed off.",
+            &record,
+            "open_draft_with_followup",
+            &format_ts(T0),
+            Some(99),
+            T0,
+        );
+        assert!(body2.contains("task 99"), "{body2}");
+        assert!(body2.contains("UNCHECKED"), "{body2}");
+    }
+
+    #[test]
+    fn disposition_record_absent_from_plain_comments() {
+        assert_eq!(disposition_record_in_comment("just a note"), None);
+        assert_eq!(
+            disposition_record_in_comment("```fleet-disposition\nnot json\n```"),
+            None
+        );
+        assert_eq!(
+            disposition_record_in_comment("```fleet-disposition\n{\"a\":1}"),
+            None
+        );
     }
 
     #[test]

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1134,12 +1136,44 @@ func TestScriptViewCommandTimeoutKillsSpawnedWorkers(t *testing.T) {
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
-			return // the worker is gone: the group was terminated
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return // the worker has been reaped
+		}
+		// Linux containers may not reap orphaned workers promptly. A zombie
+		// still has a PID but has exited and cannot perform side effects.
+		if runtime.GOOS == "linux" {
+			if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil && scriptWorkerIsZombie(string(stat)) {
+				return
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("worker %d survived the call's timeout: the process group was not terminated", pid)
+}
+
+func scriptWorkerIsZombie(stat string) bool {
+	// comm is parenthesized and may itself contain spaces or parentheses.
+	i := strings.LastIndexByte(stat, ')')
+	return i >= 0 && strings.HasPrefix(stat[i+1:], " Z ")
+}
+
+func TestScriptWorkerIsZombie(t *testing.T) {
+	for _, tc := range []struct {
+		stat string
+		want bool
+	}{
+		{"42 (worker) Z 1 2", true},
+		{"42 (worker ) name) Z 1 2", true},
+		{"42 (worker Z ) S 1 2", false},
+		{"42 (worker) R 1 2", false},
+		{"42 (worker) Z", false},
+		{"missing command field", false},
+	} {
+		if got := scriptWorkerIsZombie(tc.stat); got != tc.want {
+			t.Errorf("scriptWorkerIsZombie(%q) = %t, want %t", tc.stat, got, tc.want)
+		}
+	}
 }
 
 // Oracle: a file-backed tool forwards the caller's call settings

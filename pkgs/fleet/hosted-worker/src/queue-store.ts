@@ -322,13 +322,7 @@ export class FixtureQueueStore implements QueueStore {
     this.checkpoints.set(`${workerId} ${key}`, clone(value));
   }
 
-  appendEvent(
-    workerId: string | null,
-    taskId: number | null,
-    kind: string,
-    detail: Json,
-    createdAt: string,
-  ): EventRow {
+  appendEvent(workerId: string | null, taskId: number | null, kind: string, detail: Json, createdAt: string): EventRow {
     const row: EventRow = {
       id: this.nextEventId++,
       worker_id: workerId,

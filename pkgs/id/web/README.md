@@ -21,15 +21,24 @@ All messages are encoded as MessagePack arrays with a type tag as the first elem
 
 ### Message Types
 
-| Tag | Name   | Direction      | Format                                          |
-| --- | ------ | -------------- | ----------------------------------------------- |
-| 0   | Init   | Server->Client | `[0, version, doc]`                             |
-| 1   | Steps  | Client->Server | `[1, version, steps, clientID]`                 |
-| 2   | Update | Server->Client | `[2, steps, clientIDs]`                         |
-| 3   | Ack    | Server->Client | `[3, version]`                                  |
-| 4   | Cursor | Bidirectional  | `[4, clientID, head, anchor, name?, idleSecs?]` |
-| 5   | Error  | Server->Client | `[5, errorMessage]`                             |
-| -   | Empty  | Bidirectional  | `""` (empty text, see below)                    |
+| Tag | Name         | Direction      | Format                                          |
+| --- | ------------ | -------------- | ----------------------------------------------- |
+| 0   | Init         | Server->Client | `[0, version, doc, mode]`                       |
+| 1   | Steps        | Client->Server | `[1, version, steps, clientID]`                 |
+| 2   | Update       | Server->Client | `[2, steps, clientIDs]`                         |
+| 3   | Ack          | Server->Client | `[3, version]`                                  |
+| 4   | Cursor       | Bidirectional  | `[4, clientID, head, anchor, name?, idleSecs?]` |
+| 5   | Error        | Server->Client | `[5, errorMessage]`                             |
+| 6   | CursorRemove | Server->Client | `[6, clientID]`                                 |
+| 7   | NewVersion   | Server->Client | `[7, hash, name]`                               |
+| 8   | Auth         | Client->Server | `[8, token]` (first message after connect)      |
+| 9   | AuthOk       | Server->Client | `[9, client_id, name, token?]`                  |
+| 10  | Checkpoint   | Client->Server | `[10, text]` (note sessions only)               |
+| 11  | Checkpointed | Server->Client | `[11, head]` (hex of the new note head)         |
+| -   | Empty        | Bidirectional  | `""` (empty text, see below)                    |
+
+A legacy Init frame without the `mode` field still decodes; `mode`
+defaults to `raw`.
 
 ### Field Types
 
@@ -45,7 +54,7 @@ All messages are encoded as MessagePack arrays with a type tag as the first elem
 
 ### Connection Flow
 
-1. Client connects to `/ws/collab/{file_path}`
+1. Client connects to `/ws/collab/{doc_id}`
 2. Server sends `Init` with current version and document
 3. Client initializes ProseMirror with received version
 4. Client sends `Steps` when user edits
@@ -55,7 +64,7 @@ All messages are encoded as MessagePack arrays with a type tag as the first elem
 
 ### Empty Text Messages
 
-WebSocket Ping control frames are handled silently by browsers and don't trigger JavaScript's `onmessage`. To allow cursor decoration refresh in inactive tabs (where `setInterval` is throttled), the server sends empty text messages (`""`) every 60 seconds instead of Ping frames.
+WebSocket Ping control frames are handled silently by browsers and don't trigger JavaScript's `onmessage`. To allow cursor decoration refresh in inactive tabs (where `setInterval` is throttled), the server sends a Ping frame on each 30-second idle cycle, and every 2nd cycle's Ping is replaced by an empty text message (`""`). Clients must therefore handle both Ping frames and empty text frames on the same socket.
 
 When the client receives an empty text message, it:
 
@@ -131,8 +140,8 @@ Cursor behavior changes based on WebSocket connection state:
 
 ### Timeouts
 
-- **Ping/Pong**: Server pings after 30s of inactivity; any message resets timer
-- **WebSocket**: Server closes connection after 30m of no activity
+- **Ping/Pong**: Server sends a Ping after 30s of inactivity (every 2nd cycle's Ping is replaced by an empty text message); any message resets timer
+- **WebSocket**: Server closes connection after 30m without a pong or message
 - **Cursor**: Server removes cursor 5m after WebSocket closes
 - **Document**: Server cleans up document 1h after no connections
 
@@ -176,8 +185,13 @@ web/
 │   ├── goto-line.ts    # Go-to-line dialog (Ctrl+G)
 │   ├── indent.ts       # Tab indentation (2-space)
 │   ├── active-line.ts  # Active line highlight plugin
-│   └── wrap.ts         # Word wrap toggle (Alt+Z)
-├── dist/               # Built output (git-ignored)
+│   ├── wrap.ts         # Word wrap toggle (Alt+Z)
+│   ├── home.ts         # Home page (world list, tagged documents, global chat)
+│   ├── navigation.ts   # SPA navigation
+│   ├── world.ts        # World surface (bridge client, forms, records)
+│   ├── world-*.ts      # World helpers (http, keyboard, seed, surface)
+│   └── *.test.ts       # Unit tests alongside the modules they cover
+├── dist/               # Built output (contents git-ignored; the directory itself is tracked with a .gitkeep)
 ├── bun.nix             # Offline npm dependency fetching for nix sandbox
 └── package.json
 ```
@@ -283,18 +297,18 @@ The `/ws/tags` endpoint provides real-time tag change notifications. Clients rec
 ### Event Types
 
 ```json
-{"type": "Set", "ns": "global", "subject": "readme.md", "key": "author", "value": "Jane"}
-{"type": "Del", "ns": "global", "subject": "readme.md", "key": "author"}
-{"type": "DelAll", "ns": "global", "subject": "readme.md"}
-{"type": "Transfer", "ns": "global", "from_subject": "old.md", "to_subject": "new.md"}
+{"type": "set", "ns": "global", "subject": "readme.md", "key": "author", "value": "Jane"}
+{"type": "del", "ns": "global", "subject": "readme.md", "key": "author"}
+{"type": "del_all", "ns": "global", "subject": "readme.md"}
+{"type": "transfer", "ns": "global", "from": "old.md", "to": "new.md", "count": 3}
 ```
 
 | Event      | Description                                 |
 | ---------- | ------------------------------------------- |
-| `Set`      | A tag was added or updated                  |
-| `Del`      | A specific tag was removed                  |
-| `DelAll`   | All tags were removed from a subject        |
-| `Transfer` | Tags were moved from one subject to another |
+| `set`      | A tag was added or updated                  |
+| `del`      | A specific tag was removed                  |
+| `del_all`  | All tags were removed from a subject        |
+| `transfer` | Tags were moved from one subject to another |
 
 The `value` field is omitted from `Set` events when the tag has no value (key-only tags). The `ns` field indicates the namespace (`global` for the default namespace).
 

@@ -38,8 +38,7 @@ describe("stack tokens", () => {
   });
 
   test("rejects correctly signed tokens that omit explicit timestamps", () => {
-    const encode = (value: unknown): string =>
-      Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+    const encode = (value: unknown): string => Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
     const handSigned = (payload: Record<string, unknown>): string => {
       const body = `${encode({ alg: "HS256", typ: "JWT" })}.${encode(payload)}`;
       const sig = createHmac("sha256", SECRET).update(body).digest("base64url");
@@ -50,9 +49,7 @@ describe("stack tokens", () => {
       const token = handSigned(payload);
       expect(() => verifyStackToken(token, SECRET, "kaneo", NOW)).toThrow(/timestamps/);
       // Still rejected years later: no fresh defaults are substituted.
-      expect(() => verifyStackToken(token, SECRET, "kaneo", NOW + 3 * 365 * 24 * 3600_000)).toThrow(
-        /timestamps/,
-      );
+      expect(() => verifyStackToken(token, SECRET, "kaneo", NOW + 3 * 365 * 24 * 3600_000)).toThrow(/timestamps/);
     }
   });
 

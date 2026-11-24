@@ -36,6 +36,7 @@ test-unit
 test-crate-integration
 test-native-shell
 test-tui-shell
+test-hw-shell
 test-rust-examples
 test-shard-0
 test-shard-1

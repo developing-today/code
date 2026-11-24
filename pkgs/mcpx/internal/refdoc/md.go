@@ -17,8 +17,10 @@ package refdoc
 import "strings"
 
 // Table renders a Markdown table with the given headers and rows.
-// Cells are escaped: a "|" becomes "\|" and a newline becomes "<br>",
-// so a cell can never break the table's shape. Rows shorter than the
+// Cells are escaped: a "|" becomes "\|", angle brackets in prose
+// become "&lt;"/"&gt;" (see EscapeAngles) and a newline becomes
+// "<br>", so a cell can never break the table's shape or lose a
+// placeholder token to the HTML renderer. Rows shorter than the
 // header are padded with empty cells.
 func Table(headers []string, rows [][]string) string {
 	var b strings.Builder
@@ -49,11 +51,85 @@ func Table(headers []string, rows [][]string) string {
 }
 
 func escapeCell(s string) string {
+	s = EscapeAngles(s)
 	s = strings.ReplaceAll(s, "|", `\|`)
 	s = strings.ReplaceAll(s, "\r\n", "<br>")
 	s = strings.ReplaceAll(s, "\n", "<br>")
 	s = strings.ReplaceAll(s, "\r", "<br>")
 	return s
+}
+
+// EscapeAngles escapes "<" and ">" as the HTML entities &lt; and
+// &gt; in prose, so a placeholder token like <id> survives rendering
+// instead of being eaten as an HTML tag (an mdBook build warns about
+// the unclosed tag, and the placeholder vanishes from the published
+// page). Text inside a backtick code span is already literal, so it
+// passes through untouched: a source that writes `flake:<ref>` keeps
+// exactly that text. Existing entities are not special-cased --
+// "&lt;" contains no angle bracket and passes through as written.
+// A backtick run with no matching closing run is literal text
+// (CommonMark), so it does not switch the rest of the string to code.
+func EscapeAngles(s string) string {
+	if !strings.ContainsAny(s, "<>") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	span := 0 // backtick run length of the code span we are inside; 0 = prose
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c == '`' {
+			j := i
+			for j < len(s) && s[j] == '`' {
+				j++
+			}
+			run := j - i
+			switch {
+			case span == 0 && hasClosingRun(s[j:], run):
+				span = run
+			case span != 0 && run == span:
+				span = 0
+			}
+			b.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		if span == 0 {
+			switch c {
+			case '<':
+				b.WriteString("&lt;")
+				i++
+				continue
+			case '>':
+				b.WriteString("&gt;")
+				i++
+				continue
+			}
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
+// hasClosingRun reports whether s contains a backtick run of exactly
+// n backticks, which is what closes a code span opened by n backticks.
+func hasClosingRun(s string, n int) bool {
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		j := i
+		for j < len(s) && s[j] == '`' {
+			j++
+		}
+		if j-i == n {
+			return true
+		}
+		i = j
+	}
+	return false
 }
 
 // Code renders s as a fenced code block. The fence is one backtick
