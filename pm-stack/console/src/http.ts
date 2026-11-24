@@ -12,6 +12,9 @@ export const MANIFEST = {
   name: "PM",
   short_name: "PM",
   description: "What the fleet is doing, what is next, what needs you, and a place to say what you want.",
+  // What an installed copy is known by. It is the address the app opens
+  // at, said outright, so that it stays one app if that address moves.
+  id: "/console/",
   start_url: "/console/",
   scope: "/",
   display: "standalone",
@@ -34,7 +37,22 @@ export const SECURITY = {
     "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
+  // This site is only ever HTTPS: a browser that has been here does not
+  // try plain HTTP again for a year. (Over plain HTTP, as on the host's
+  // own loopback port, browsers ignore it.)
+  "Strict-Transport-Security": "max-age=31536000",
 };
+
+/** Whether a browser's copy of a file is still the file: its
+ * If-None-Match names this entity tag. The comparison is the weak one
+ * of RFC 9110 (a W/ prefix on either side does not matter), which is
+ * the one a conditional GET uses. */
+export function sameEntity(ifNoneMatch: string | null, etag: string | null): boolean {
+  if (!ifNoneMatch || !etag) return false;
+  const bare = (tag: string) => tag.trim().replace(/^W\//, "");
+  const mine = bare(etag);
+  return ifNoneMatch.split(",").some((tag) => tag.trim() === "*" || bare(tag) === mine);
+}
 
 export function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -75,7 +93,7 @@ export interface Phones {
 
 /** Sections the summary is built from, and how long a phone waits for
  * them to be read again. */
-const SUMMARY_SECTIONS = ["board", "sessions", "census", "asks", "questionCount"];
+const SUMMARY_SECTIONS = ["board", "sessions", "census", "asks", "questionCount", "pipeline"];
 /** Under the five seconds the phone gives a read. */
 const SUMMARY_WAIT_MS = 3_500;
 const DEVICE_BODY_LIMIT = 1024;

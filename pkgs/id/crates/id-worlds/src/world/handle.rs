@@ -323,6 +323,7 @@ impl WorldHandle {
             stale_wants_at_open,
             acting: None,
             acting_session: None,
+            acting_device_input: None,
             device_manifest,
             location_consent: crate::world_caps::LocationConsent::ConsentRequired,
             location_fix: None,
@@ -1466,7 +1467,7 @@ impl WorldHandle {
 
     /// Submit bounded opaque game input.
     pub async fn input(&self, token: JoinCapability, input: Vec<u8>) -> Result<WorldEvent> {
-        self.input_with_session(token, input, None).await
+        self.input_with_session(token, input, None, None).await
     }
 
     /// Submit bounded opaque game input from a live session connection.
@@ -1475,8 +1476,9 @@ impl WorldHandle {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: SessionId,
+        device_input: Option<serde_json::Value>,
     ) -> Result<WorldEvent> {
-        self.input_with_session(token, input, Some(session_id))
+        self.input_with_session(token, input, Some(session_id), device_input)
             .await
     }
 
@@ -1485,6 +1487,7 @@ impl WorldHandle {
         token: JoinCapability,
         input: Vec<u8>,
         session_id: Option<SessionId>,
+        device_input: Option<serde_json::Value>,
     ) -> Result<WorldEvent> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -1492,6 +1495,7 @@ impl WorldHandle {
                 token,
                 input,
                 session_id,
+                device_input,
                 signed_move: None,
                 reply,
             })
@@ -1538,6 +1542,7 @@ impl WorldHandle {
                 token,
                 input,
                 session_id: None,
+                device_input: None,
                 signed_move: Some(signed_move),
                 reply,
             })
@@ -1664,6 +1669,36 @@ impl WorldHandle {
         response
             .await
             .context("world actor dropped lease handoff response")?
+    }
+
+    /// Run a spill v2 automatic failover (design #5787 §1, #7572).
+    /// The actor plans from its journaled lease and the supplied
+    /// grantor-side pool and journals the revoke/grant pair in plan
+    /// order; the returned execution names the successor, its epoch,
+    /// and the grant position it must replay through before writing.
+    /// The host adapter must authenticate the caller and supply pool
+    /// observations gathered from the roster's readers.
+    pub async fn failover_write_lease(
+        &self,
+        pool: spill_pool::SpillPool,
+        journal_tip: u64,
+        max_catch_up_lag: u64,
+        term_ms: u64,
+    ) -> Result<spill_pool::FailoverExecution> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::FailoverWriteLease {
+                pool,
+                journal_tip,
+                max_catch_up_lag,
+                term_ms,
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped lease failover response")?
     }
 
     /// Read a world snapshot.

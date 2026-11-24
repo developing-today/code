@@ -1,0 +1,40 @@
+# fleet-hosted (#12583; design doc/2026-11-22T14-28-45Z_design_fleet-tool-workers-edition §3.1).
+# LOCAL ONLY in this slice: this config is for wrangler dev / tests. No
+# account-level deployment or billable resource is authorized by this
+# package — the acceptance's "Worker deploys" is a local wrangler dev
+# run until a later C issue owns production deployment.
+name = "fleet-hosted"
+main = "src/worker.ts"
+compatibility_date = "2025-06-01"
+
+# Non-secret configuration. RP_ISSUER is the #9077 devtoday OIDC
+# provider's issuer URL, set per environment once the provider stands
+# up; RP_JWKS_URI overrides its JWKS endpoint when set. TENANCY_FIXTURE_JSON
+# is the skeleton's stand-in for component E's tenancy DB (see
+# src/tenancy.ts) and is set by tests / local dev only. Secrets never
+# live in this file.
+[vars]
+RP_AUDIENCE = "fleet-hosted"
+
+# The message bridge, by service binding (#14373): the bridge door
+# calls it presenting the PM stack's bridge credential
+# (BRIDGE_PM_TOKEN — a secret, set by name at deployment, never in
+# this file). Declared here so the deployed shape carries it; the
+# local-only posture above still applies.
+[[services]]
+binding = "BRIDGE"
+service = "message-bridge"
+
+# The ingestion sweeper's standing scope (#12590): the in-scope
+# repos the scheduled run re-scans (#9060 §16). Set per environment
+# at deployment; empty here (local only) means the scheduled sweep
+# has nothing to scan.
+# INGESTION_REPOS = "developing-today/code"
+
+# The ingestion sweeper (#12590; design §7.3): the scheduled Worker
+# half of dual ingestion, running the webhook route's check over
+# the configured scope to catch listener misses. Declared here so
+# the deployed shape carries it; inert until the deployment issue
+# lands this package (this config authorizes no deployment).
+[triggers]
+crons = ["*/15 * * * *"]

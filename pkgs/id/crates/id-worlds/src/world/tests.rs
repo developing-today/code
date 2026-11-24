@@ -785,6 +785,7 @@ mod tests {
                     caps_ceiling: None,
                     schedules: None,
                     kv: None,
+                    blobs: None,
                     transfers: Some(vec![receipt.clone()]),
                     lease: None,
                     snapshot: "snapshot".to_owned(),
@@ -1198,6 +1199,7 @@ mod tests {
                 caps_ceiling: None,
                 schedules: None,
                 kv: None,
+                blobs: None,
                 transfers: None,
                 lease: None,
                 snapshot: "s".to_owned(),
@@ -1278,6 +1280,7 @@ mod tests {
                     caps_ceiling: None,
                     schedules: None,
                     kv: None,
+                    blobs: None,
                     transfers: None,
                     lease: None,
                     snapshot: "s".to_owned(),
@@ -1463,6 +1466,7 @@ mod tests {
                 caps_ceiling: None,
                 schedules: None,
                 kv: None,
+                blobs: None,
                 transfers: Some(transfers),
                 lease: None,
                 snapshot: "state".to_owned(),
@@ -1530,6 +1534,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             admin_history: None,
@@ -1628,9 +1633,12 @@ mod tests {
     }
 
     fn lease_header() -> JournalEntry {
+        // Stamped lease entries (#13711) require version 16; the
+        // unstamped legacy header (version 7) is covered by
+        // `unstamped_lease_entries_still_restore_at_version_7`.
         JournalEntry::Created {
             world_id: "w".to_owned(),
-            version: JOURNAL_VERSION_WRITE_LEASE,
+            version: JOURNAL_VERSION_LEASE_POSITION,
         }
     }
 
@@ -1640,6 +1648,7 @@ mod tests {
             to: "native-1".to_owned(),
             epoch: 1,
             expires_at_ms: Some(30_000),
+            position: 1,
         }
     }
 
@@ -1648,6 +1657,7 @@ mod tests {
             holder: "native-1".to_owned(),
             epoch: 1,
             expires_at_ms: 40_000,
+            position: 2,
         }
     }
 
@@ -1661,6 +1671,7 @@ mod tests {
             observed_epoch: 1,
             reason: LeaseRejectionReason::StaleEpoch,
             received_at_ms: 35_000,
+            position: 3,
         }
     }
 
@@ -1669,25 +1680,54 @@ mod tests {
         // Design #2819 phase 2 (#3804): lease kinds are the first
         // entries a version-6 binary cannot read, so they pin the
         // header to version 7 under the #227 bump-on-first-write
-        // contract.
+        // contract. Unstamped (position 0) entries still require
+        // exactly 7; a stamped position (#13711) requires 16.
         for entry in [
             JournalEntry::LeaseGranted {
                 holder: "native-1".to_owned(),
                 epoch: 1,
                 expires_at_ms: Some(30_000),
+                position: 0,
             },
-            spill_renewal(),
-            spill_handoff(),
+            JournalEntry::LeaseRenewed {
+                holder: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: 40_000,
+                position: 0,
+            },
+            JournalEntry::LeaseHandedOff {
+                from: DO_WRITE_LEASE_HOLDER.to_owned(),
+                to: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: Some(30_000),
+                position: 0,
+            },
             JournalEntry::LeaseRevoked {
                 former_holder: "native-1".to_owned(),
                 epoch: 2,
                 reason: "expired".to_owned(),
+                position: 0,
             },
-            stale_rejection(),
+            JournalEntry::LeaseWriteRejected {
+                writer: "native-1".to_owned(),
+                presented_epoch: 0,
+                operation_id: "op-1".to_owned(),
+                observed_epoch: 1,
+                reason: LeaseRejectionReason::StaleEpoch,
+                received_at_ms: 35_000,
+                position: 0,
+            },
         ] {
             assert_eq!(
                 journal_version_required_by(&entry),
                 JOURNAL_VERSION_WRITE_LEASE,
+                "{entry:?}"
+            );
+        }
+        for entry in [spill_handoff(), spill_renewal(), stale_rejection()] {
+            assert_eq!(
+                journal_version_required_by(&entry),
+                JOURNAL_VERSION_LEASE_POSITION,
                 "{entry:?}"
             );
         }
@@ -1696,13 +1736,22 @@ mod tests {
         // wiring, code#1068), version 9 for signed play (#4346) and
         // version 8 for recurring schedules (#1355); the lease entries
         // still require exactly 7.
-        // Version 12 (#11960) records join and revoke times.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_JOIN_TIMES);
+        // Version 12 (#11960) records join and revoke times, version
+        // 13 the kv store entries, version 14 the blob store entries,
+        // and version 15 the notify provider's `Notification` events
+        // (all #1062). Version 16 (#13711) stamps lease positions.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
+        // A checkpoint whose lease history carries stamped positions
+        // requires version 16.
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000), 0)
+            .unwrap();
+        let mut stamped = WriteLease::bootstrap();
+        stamped
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000), 1)
             .unwrap();
         let checkpoint = |lease: Option<WriteLease>| JournalEntry::Checkpoint {
             sequence: 0,
@@ -1713,6 +1762,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease,
             snapshot: "s".to_owned(),
@@ -1723,6 +1773,10 @@ mod tests {
         assert_eq!(
             journal_version_required_by(&checkpoint(Some(lease))),
             JOURNAL_VERSION_WRITE_LEASE
+        );
+        assert_eq!(
+            journal_version_required_by(&checkpoint(Some(stamped))),
+            JOURNAL_VERSION_LEASE_POSITION
         );
         assert_eq!(
             journal_version_required_by(&checkpoint(None)),
@@ -1740,8 +1794,10 @@ mod tests {
                 "{json}"
             );
         }
-        // A lease entry in a journal whose header predates version 7 is
-        // refused at restore, never applied mid-read.
+        // A lease entry in a journal whose header predates the
+        // version it requires is refused at restore, never applied
+        // mid-read. The handoff helper carries a stamped position
+        // (#13711), so it requires version 16.
         let error = WorldCore::restore(
             "w",
             WorldLimits::default(),
@@ -1755,7 +1811,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            error.to_string().contains("requires version 7"),
+            error.to_string().contains("requires version 16"),
             "{error:#}"
         );
     }
@@ -1792,11 +1848,13 @@ mod tests {
                     former_holder: "native-1".to_owned(),
                     epoch: 2,
                     reason: "term expired without renewal".to_owned(),
+                    position: 3,
                 },
                 JournalEntry::LeaseGranted {
                     holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                     epoch: 3,
                     expires_at_ms: None,
+                    position: 4,
                 },
             ],
         )
@@ -1818,6 +1876,14 @@ mod tests {
                 LeaseTransitionKind::Granted,
             ]
         );
+        // Positions ride the history in journal order (#13711), and
+        // the watermark is the highest position replayed.
+        let positions: Vec<u64> = lease
+            .transitions()
+            .map(|transition| transition.position)
+            .collect();
+        assert_eq!(positions, [1, 2, 3, 4]);
+        assert_eq!(restored.core.lease_position_watermark(), 4);
         // The ex-holder is fenced at the new epoch, and the returned
         // holder presenting an old epoch is stale.
         assert_eq!(
@@ -1896,6 +1962,7 @@ mod tests {
             observed_epoch: 1,
             reason: LeaseRejectionReason::Expired,
             received_at_ms: 35_000,
+            position: 2,
         };
         let error = WorldCore::restore(
             "w",
@@ -1919,6 +1986,7 @@ mod tests {
                     to: "native-1".to_owned(),
                     epoch: 2,
                     expires_at_ms: Some(30_000),
+                    position: 1,
                 }],
                 "advances the write lease epoch from 0 to 2",
             ),
@@ -1928,6 +1996,7 @@ mod tests {
                     holder: "native-1".to_owned(),
                     epoch: 1,
                     expires_at_ms: None,
+                    position: 1,
                 }],
                 "while",
             ),
@@ -1939,6 +2008,7 @@ mod tests {
                         holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                         epoch: 1,
                         expires_at_ms: 50_000,
+                        position: 2,
                     },
                 ],
                 "held by",
@@ -1952,6 +2022,7 @@ mod tests {
                         holder: "native-1".to_owned(),
                         epoch: 1,
                         expires_at_ms: 35_000,
+                        position: 3,
                     },
                 ],
                 "backwards",
@@ -1964,6 +2035,7 @@ mod tests {
                         former_holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                         epoch: 2,
                         reason: "operator".to_owned(),
+                        position: 2,
                     },
                 ],
                 "held by",
@@ -1975,6 +2047,7 @@ mod tests {
                     to: "native-1".to_owned(),
                     epoch: 1,
                     expires_at_ms: None,
+                    position: 1,
                 }],
                 "held by",
             ),
@@ -2008,11 +2081,13 @@ mod tests {
                     former_holder: "native-1".to_owned(),
                     epoch: 2,
                     reason: "term expired without renewal".to_owned(),
+                    position: 4,
                 },
                 JournalEntry::LeaseGranted {
                     holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                     epoch: 3,
                     expires_at_ms: None,
+                    position: 5,
                 },
             ],
         )
@@ -2045,16 +2120,17 @@ mod tests {
         let lease = restored.core.write_lease().clone();
 
         // Compaction carries the lease whole on the checkpoint: the
-        // header rises to version 7 and a restore of the compacted
-        // journal rebuilds the identical lease — epoch, holder, term,
-        // transition history and rejection audit all preserved.
+        // header rises to version 16 (stamped positions, #13711) and
+        // a restore of the compacted journal rebuilds the identical
+        // lease — epoch, holder, term, transition history and
+        // rejection audit all preserved.
         let mut core = restored.core;
         core.active_module_hash = Some("h".to_owned());
         let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
         assert!(matches!(
             compacted[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_WRITE_LEASE,
+                version: JOURNAL_VERSION_LEASE_POSITION,
                 ..
             }
         ));
@@ -2080,6 +2156,253 @@ mod tests {
         }
         let error = WorldCore::restore("w", WorldLimits::default(), tampered).unwrap_err();
         assert!(error.to_string().contains("write lease"), "{error:#}");
+    }
+
+    #[test]
+    fn lease_position_watermark_reports_the_grant_position_after_replay() {
+        // #13711 oracle: a successor replaying a journal with a
+        // grant at position P reports watermark >= P before it may
+        // accept writes. Bootstrap has no stamped position.
+        let bootstrap = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION,
+            }],
+        )
+        .unwrap();
+        assert_eq!(bootstrap.core.lease_position_watermark(), 0);
+
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                JournalEntry::LeaseRevoked {
+                    former_holder: "native-1".to_owned(),
+                    epoch: 2,
+                    reason: "term expired without renewal".to_owned(),
+                    position: 2,
+                },
+                JournalEntry::LeaseGranted {
+                    holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    epoch: 3,
+                    expires_at_ms: None,
+                    position: 3,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+        assert_eq!(restored.core.write_lease().last_position(), 3);
+
+        // Compaction preserves the watermark: the checkpoint carries
+        // the whole lease history, positions included.
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+    }
+
+    #[test]
+    fn unstamped_lease_entries_still_restore_at_version_7() {
+        // #13711 back-compat: lease entries written before positions
+        // existed parse with position 0, restore under a version-7
+        // header, and report watermark 0 — the barrier simply has
+        // no stamped grant to name yet.
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION_WRITE_LEASE,
+                },
+                JournalEntry::LeaseHandedOff {
+                    from: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    to: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: Some(30_000),
+                    position: 0,
+                },
+                JournalEntry::LeaseRenewed {
+                    holder: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: 40_000,
+                    position: 0,
+                },
+            ],
+        )
+        .unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-1"));
+        assert_eq!(lease.epoch, 1);
+        assert_eq!(restored.core.lease_position_watermark(), 0);
+        assert!(
+            lease
+                .transitions()
+                .all(|transition| transition.position == 0)
+        );
+    }
+
+    #[test]
+    fn lease_positions_that_do_not_advance_are_refused() {
+        // #13711: a stamped position that does not advance past the
+        // highest stamped position already replayed is a corrupt
+        // journal, refused at restore — not silently reordered.
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                JournalEntry::LeaseRenewed {
+                    holder: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: 40_000,
+                    position: 1,
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("does not advance past"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn lease_positions_are_strictly_increasing_across_appends_and_compaction() {
+        // #13711 property test. Oracle: the lease history after
+        // restore (and after compaction + restore) carries exactly
+        // the positions the appends stamped, in order — one per
+        // lease record, strictly increasing. The generator folds
+        // op bytes through the lease state machine (holder, epoch,
+        // expiry), so every sequence is one the append authority
+        // could legally have written: handoff/renew/revoke while a
+        // holder stands, grant only while none does.
+        use proptest::prelude::*;
+        proptest!(|(ops in proptest::collection::vec(0u8..=255, 1..=12))| {
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum ModelHolder {
+                Do,
+                Native,
+            }
+            let mut holder = Some(ModelHolder::Do);
+            let mut epoch = 0u64;
+            let mut expiry: Option<u64> = None;
+            let mut entries = vec![lease_header()];
+            let mut position = 0u64;
+            for op in ops {
+                position += 1;
+                match holder {
+                    Some(current) => match op % 3 {
+                        0 => {
+                            let (from, to) = match current {
+                                ModelHolder::Do => (DO_WRITE_LEASE_HOLDER, "native-1"),
+                                ModelHolder::Native => ("native-1", DO_WRITE_LEASE_HOLDER),
+                            };
+                            epoch += 1;
+                            let next_expiry = if current == ModelHolder::Do {
+                                Some(30_000 + epoch * 1_000)
+                            } else {
+                                None
+                            };
+                            entries.push(JournalEntry::LeaseHandedOff {
+                                from: from.to_owned(),
+                                to: to.to_owned(),
+                                epoch,
+                                expires_at_ms: next_expiry,
+                                position,
+                            });
+                            holder = Some(if current == ModelHolder::Do {
+                                ModelHolder::Native
+                            } else {
+                                ModelHolder::Do
+                            });
+                            expiry = next_expiry;
+                        }
+                        1 => {
+                            let next_expiry = expiry.map_or(40_000, |e| e + 1_000);
+                            let holder_name = match current {
+                                ModelHolder::Do => DO_WRITE_LEASE_HOLDER,
+                                ModelHolder::Native => "native-1",
+                            };
+                            entries.push(JournalEntry::LeaseRenewed {
+                                holder: holder_name.to_owned(),
+                                epoch,
+                                expires_at_ms: next_expiry,
+                                position,
+                            });
+                            expiry = Some(next_expiry);
+                        }
+                        _ => {
+                            let former = match current {
+                                ModelHolder::Do => DO_WRITE_LEASE_HOLDER,
+                                ModelHolder::Native => "native-1",
+                            };
+                            epoch += 1;
+                            entries.push(JournalEntry::LeaseRevoked {
+                                former_holder: former.to_owned(),
+                                epoch,
+                                reason: "term expired without renewal".to_owned(),
+                                position,
+                            });
+                            holder = None;
+                            expiry = None;
+                        }
+                    },
+                    None => {
+                        epoch += 1;
+                        if op % 2 == 0 {
+                            entries.push(JournalEntry::LeaseGranted {
+                                holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                                epoch,
+                                expires_at_ms: None,
+                                position,
+                            });
+                            holder = Some(ModelHolder::Do);
+                            expiry = None;
+                        } else {
+                            entries.push(JournalEntry::LeaseGranted {
+                                holder: "native-1".to_owned(),
+                                epoch,
+                                expires_at_ms: Some(30_000 + epoch * 1_000),
+                                position,
+                            });
+                            holder = Some(ModelHolder::Native);
+                            expiry = Some(30_000 + epoch * 1_000);
+                        }
+                    }
+                }
+            }
+            let expected: Vec<u64> = (1..=position).collect();
+            let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+            let positions: Vec<u64> = restored
+                .core
+                .write_lease()
+                .transitions()
+                .map(|transition| transition.position)
+                .collect();
+            prop_assert_eq!(positions, expected.clone());
+            prop_assert_eq!(restored.core.lease_position_watermark(), position);
+
+            let mut core = restored.core;
+            core.active_module_hash = Some("h".to_owned());
+            let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+            let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+            let positions: Vec<u64> = restored
+                .core
+                .write_lease()
+                .transitions()
+                .map(|transition| transition.position)
+                .collect();
+            prop_assert_eq!(positions, expected);
+            prop_assert_eq!(restored.core.lease_position_watermark(), position);
+        });
     }
 
     #[test]
@@ -2400,6 +2723,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -2420,6 +2744,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -2855,7 +3180,9 @@ mod tests {
                     self.asks += 1;
                 }
                 WorldEventKind::System { event } => self.received.push(event.clone()),
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
@@ -3765,6 +4092,7 @@ mod tests {
             caps_ceiling: None,
             schedules: None,
             kv: None,
+            blobs: None,
             transfers: None,
             snapshot: "snapshot".to_owned(),
             events,
@@ -7752,7 +8080,9 @@ mod tests {
                             self.read_key = key.to_owned();
                         }
                     }
-                    WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                    WorldEventKind::Chat(_)
+                    | WorldEventKind::ProgramInstalled { .. }
+                    | WorldEventKind::Notification { .. } => {}
                 }
                 Ok(())
             }
@@ -8811,8 +9141,13 @@ mod tests {
         let entries = w.journal.entries();
         assert!(matches!(
             entries.last(),
-            Some(JournalEntry::LeaseHandedOff { from, to, epoch: 1, .. })
-                if from == DO_WRITE_LEASE_HOLDER && to == "native-1"
+            Some(JournalEntry::LeaseHandedOff {
+                from,
+                to,
+                epoch: 1,
+                position: 1,
+                ..
+            }) if from == DO_WRITE_LEASE_HOLDER && to == "native-1"
         ));
         assert!(
             !entries
@@ -8878,6 +9213,14 @@ mod tests {
                 LeaseTransitionKind::HandedOff
             ]
         );
+        // Live handoffs stamp successive positions (#13711): the
+        // first handoff is position 1, the handback position 2, and
+        // the successor's watermark is 2.
+        assert_eq!(
+            lease.transitions().map(|t| t.position).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(restored.core.lease_position_watermark(), 2);
     }
 
     #[tokio::test]
@@ -8909,6 +9252,108 @@ mod tests {
         let refused_again = w.handle.input(w.token.clone(), b"0".to_vec()).await;
         assert!(refused_again.is_err());
         assert_eq!(committed_inputs(&w.journal), 0);
+    }
+
+    #[tokio::test]
+    async fn failover_after_expiry_grants_the_caught_up_pool_successor() {
+        // Oracle: design #5787 §7 — the holder dies mid-term with a
+        // caught-up replica in the pool. The grantor fences first
+        // (revoke at e+1), grants the successor at e+2, and the grant's
+        // journal position is the barrier the successor resumes at.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+
+        // native-2 has served as a reader at the tip for the full
+        // observation window; the grantor's tip for this grant is 2.
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+
+        // The term lapses on the authority clock (start 1_000 + 60_000).
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+        assert_eq!(execution.grant_position(), 3);
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+
+        // The journal carries the fence before the grant, positions
+        // continuing the lease chain (handoff 1, revoke 2, grant 3).
+        let entries = w.journal.entries();
+        assert!(matches!(
+            &entries[entries.len() - 2],
+            JournalEntry::LeaseRevoked {
+                former_holder,
+                epoch: 2,
+                position: 2,
+                ..
+            } if former_holder == "native-1"
+        ));
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseGranted {
+                holder,
+                epoch: 3,
+                position: 3,
+                ..
+            }) if holder == "native-2"
+        ));
+
+        // Replay is the oracle: the journal alone rebuilds native-2
+        // holding epoch 3, watermark at the grant position, and the
+        // dead holder fenced.
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-2"));
+        assert_eq!(lease.epoch, 3);
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+        assert_eq!(
+            lease.check_writer("native-1", 1, 61_000),
+            Err(LeaseRejectionReason::NotHolder)
+        );
+
+        // The DO executor no longer holds the lease: its commands are
+        // refused, exactly as after a handoff.
+        let refused = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert_eq!(
+            lease_error(&refused.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+    }
+
+    #[tokio::test]
+    async fn failover_with_no_eligible_successor_recovers_to_the_do() {
+        // Oracle: design #5787 §7 — no eligible successor: the DO
+        // grants to itself rather than to a lagging replica, and the
+        // world resumes under its authority.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(spill_pool::SpillPool::default(), 0, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), DO_WRITE_LEASE_HOLDER);
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(committed_inputs(&w.journal), 1);
     }
 
     #[tokio::test]
@@ -9676,7 +10121,9 @@ mod schedule_tests {
                         _ => {}
                     }
                 }
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
@@ -9775,6 +10222,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: document.to_string().into_bytes(),
                 session_id: None,
+                device_input: None,
                 signed_move: None,
                 reply,
             })
@@ -9879,6 +10327,7 @@ mod schedule_tests {
                 token: token.clone(),
                 input: input.to_vec(),
                 session_id: None,
+                device_input: None,
                 signed_move: None,
                 reply,
             });
@@ -10325,6 +10774,7 @@ mod schedule_tests {
                     token: token.clone(),
                     input: b"{}".to_vec(),
                     session_id: Some(session_id),
+                    device_input: None,
                     signed_move: None,
                     reply,
                 })
@@ -10842,6 +11292,7 @@ mod schedule_tests {
             caps_ceiling: None,
             schedules: None,
             kv,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -10909,6 +11360,1158 @@ mod schedule_tests {
             });
         }
         assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+    }
+
+    // ---- F12.5 blob provider (#1062) ----
+
+    #[test]
+    fn blob_bounds_refuse_each_violation_with_a_reason() {
+        let core = world(8);
+        let hash = blob_id(b"content");
+        assert!(core.check_blob_put(&hash, 7).is_ok());
+        assert!(
+            core.check_blob_put(&blob_id(b"max"), crate::world_caps::MAX_BLOB_BYTES)
+                .is_ok()
+        );
+        let error = core.check_blob_put("not-a-hash", 4).unwrap_err();
+        assert!(error.to_string().contains("blob hash"), "{error}");
+        let error = core
+            .check_blob_put(&hash, crate::world_caps::MAX_BLOB_BYTES + 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("blob exceeds"), "{error}");
+
+        // Entry cap: a new blob is refused at the cap; re-putting
+        // content the world already holds is not — it is a no-op.
+        let mut full = world(8);
+        for index in 0..crate::world_caps::MAX_BLOBS {
+            let content = vec![index as u8];
+            full.blobs.insert(blob_id(&content), content);
+        }
+        assert!(
+            full.check_blob_put(&blob_id(&[0u8]), 1).is_ok(),
+            "a re-put at capacity fits: it frees no slot because it takes none"
+        );
+        let error = full.check_blob_put(&blob_id(b"one-more"), 8).unwrap_err();
+        assert!(error.to_string().contains("blobs"), "{error}");
+
+        // Total byte cap: 64 maximal blobs exactly fill it; one more
+        // byte under a new address is refused, a re-put is not.
+        let mut store = world(8);
+        for index in 0..64u8 {
+            let content = vec![index; crate::world_caps::MAX_BLOB_BYTES];
+            store.blobs.insert(blob_id(&content), content);
+        }
+        assert_eq!(store.blob_bytes(), crate::world_caps::MAX_BLOB_TOTAL_BYTES);
+        assert!(
+            store
+                .check_blob_put(&blob_id(&vec![0u8; crate::world_caps::MAX_BLOB_BYTES]), 4)
+                .is_ok(),
+            "a re-put at the total cap fits: it charges nothing new"
+        );
+        let error = store.check_blob_put(&blob_id(b"overflow"), 8).unwrap_err();
+        assert!(error.to_string().contains("total bytes"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn blob_put_get_delete_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, journal) = scheduling_actor(
+            "blob-round-trip",
+            &["blob.put", "blob.get", "blob.delete"],
+            false,
+        );
+        let data = blob_encode(b"hello blob");
+        let hash = blob_id(b"hello blob");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": data}},
+            ]}),
+        )
+        .await;
+        let written = schedule_result(&actor, "p1").unwrap();
+        assert_eq!(written["ok"], true, "{written}");
+        assert_eq!(written["value"]["hash"], hash, "{written}");
+        assert_eq!(written["value"]["size"], 10, "{written}");
+        assert_eq!(actor.core.blobs[&hash], b"hello blob");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p2", "cap": "blob.put", "args": {"data": data}},
+                {"id": "g1", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "g2", "cap": "blob.get", "args": {"hash": blob_id(b"never stored")}},
+                {"id": "g3", "cap": "blob.get", "args": {"hash": "not-a-hash"}},
+                {"id": "p3", "cap": "blob.put", "args": {"data": "!!! not base64 !!!"}},
+            ]}),
+        )
+        .await;
+        let again = schedule_result(&actor, "p2").unwrap();
+        assert_eq!(again["ok"], true, "{again}");
+        assert_eq!(again["value"]["hash"], hash, "{again}");
+        let read = schedule_result(&actor, "g1").unwrap();
+        assert_eq!(read["value"]["data"], data, "{read}");
+        let missing = schedule_result(&actor, "g2").unwrap();
+        assert_eq!(
+            missing["value"]["data"],
+            serde_json::Value::Null,
+            "{missing}"
+        );
+        assert_eq!(
+            schedule_result(&actor, "g3").unwrap()["error"],
+            "bad_args",
+            "a malformed hash is refused"
+        );
+        assert_eq!(
+            schedule_result(&actor, "p3").unwrap()["error"],
+            "bad_args",
+            "malformed base64 is refused"
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "d1", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+        let deleted = schedule_result(&actor, "d1").unwrap();
+        assert_eq!(deleted["value"]["deleted"], true, "{deleted}");
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "g4", "cap": "blob.get", "args": {"hash": hash}},
+                {"id": "d2", "cap": "blob.delete", "args": {"hash": hash}},
+            ]}),
+        )
+        .await;
+        let gone = schedule_result(&actor, "g4").unwrap();
+        assert_eq!(gone["value"]["data"], serde_json::Value::Null, "{gone}");
+        let deleted_again = schedule_result(&actor, "d2").unwrap();
+        assert_eq!(deleted_again["value"]["deleted"], false, "{deleted_again}");
+        let entries = journal.entries();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::BlobStored { .. }))
+                .count(),
+            1,
+            "two puts of one content journal one entry"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::BlobRemoved { .. }))
+                .count(),
+            1,
+            "deleting an absent blob journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_blob_write_is_refused_and_counted() {
+        let (mut actor, _clock, token, journal) = scheduling_actor("blob-refused", &[], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": blob_encode(b"content")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "p1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["blob.put"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.blobs.is_empty(),
+            "a refused write stores nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::BlobStored { .. })),
+            "a refused write journals nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blob_write_outside_the_ceiling_is_refused_and_stores_nothing() {
+        let (mut actor, _clock, token, journal) =
+            scheduling_actor("blob-ceiling", &["blob.put"], false);
+        let (reply, response) = tokio::sync::oneshot::channel();
+        actor
+            .handle(WorldCommand::SetCapsCeiling {
+                ceiling: vec!["time.now".to_owned()],
+                reply,
+            })
+            .await;
+        let _ = response.await.unwrap().unwrap();
+        actor.after_change().await;
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "p1", "cap": "blob.put", "args": {"data": blob_encode(b"content")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "p1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor.core.ledger.usage()["blob.put"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor.core.blobs.is_empty(),
+            "a ceiling-refused write stores nothing"
+        );
+        assert!(
+            journal
+                .entries()
+                .iter()
+                .all(|entry| !matches!(entry, JournalEntry::BlobStored { .. })),
+            "a ceiling-refused write journals nothing"
+        );
+    }
+
+    #[test]
+    fn blob_entries_replay_and_survive_compaction() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        let stored = |content: &[u8]| JournalEntry::BlobStored {
+            hash: blob_id(content),
+            data: blob_encode(content),
+        };
+        assert_eq!(
+            journal_version_required_by(&stored(b"a")),
+            JOURNAL_VERSION_BLOB
+        );
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                header(),
+                stored(b"alpha"),
+                stored(b"beta"),
+                JournalEntry::BlobRemoved {
+                    hash: blob_id(b"beta"),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.blobs.len(), 1);
+        assert_eq!(restored.core.blobs[&blob_id(b"alpha")], b"alpha");
+        // A remove of a blob that is not stored refuses the restore.
+        let bad = [
+            header(),
+            JournalEntry::BlobRemoved {
+                hash: blob_id(b"ghost"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad).is_err());
+        // Content that does not hash to its stated address refuses
+        // the restore: the journal is self-verifying.
+        let tampered = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(b"alpha"),
+                data: blob_encode(b"forged"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), tampered).is_err());
+        // Content that is not base64 at all refuses it too.
+        let garbled = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(b"alpha"),
+                data: "!!! not base64 !!!".to_owned(),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), garbled).is_err());
+        // Compaction: a core carrying blobs re-emits them before its
+        // checkpoint, so a restored core sees the same set.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.blobs.insert(blob_id(b"alpha"), b"alpha".to_vec());
+        core.blobs.insert(blob_id(b"gamma"), b"gamma".to_vec());
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.contains(&stored(b"alpha")),
+            "a compacted journal keeps the blob entry"
+        );
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.blobs, core.blobs);
+    }
+
+    #[test]
+    fn a_checkpoint_that_disagrees_with_its_blob_index_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        let stored = || JournalEntry::BlobStored {
+            hash: blob_id(b"alpha"),
+            data: blob_encode(b"alpha"),
+        };
+        let checkpoint = |blobs: Option<Vec<CheckpointBlobEntry>>| JournalEntry::Checkpoint {
+            sequence: 0,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv: None,
+            blobs,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: Vec::new(),
+            admin_history: None,
+            open_presence: None,
+        };
+        let declared = || CheckpointBlobEntry {
+            hash: blob_id(b"alpha"),
+            size: 5,
+        };
+        let agreed = [header(), stored(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), agreed).is_ok());
+        let omitted = [header(), stored(), checkpoint(None)];
+        assert!(WorldCore::restore("w", WorldLimits::default(), omitted).is_err());
+        let unwritten = [header(), checkpoint(Some(vec![declared()]))];
+        assert!(WorldCore::restore("w", WorldLimits::default(), unwritten).is_err());
+        let wrong_size = [
+            header(),
+            stored(),
+            checkpoint(Some(vec![CheckpointBlobEntry {
+                hash: blob_id(b"alpha"),
+                size: 4,
+            }])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), wrong_size).is_err());
+        let duplicated = [
+            header(),
+            stored(),
+            checkpoint(Some(vec![declared(), declared()])),
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), duplicated).is_err());
+    }
+
+    #[test]
+    fn a_journal_past_the_blob_bounds_is_refused() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_BLOB,
+        };
+        // A hash the writer would never accept.
+        let bad_hash = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: "not-a-hash".to_owned(),
+                data: blob_encode(b"a"),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), bad_hash).is_err());
+        // A blob past the content cap, under its true address.
+        let big = vec![7u8; crate::world_caps::MAX_BLOB_BYTES + 1];
+        let big_blob = [
+            header(),
+            JournalEntry::BlobStored {
+                hash: blob_id(&big),
+                data: blob_encode(&big),
+            },
+        ];
+        assert!(WorldCore::restore("w", WorldLimits::default(), big_blob).is_err());
+        // More blobs than the set may hold.
+        let mut entries = vec![header()];
+        for index in 0..=crate::world_caps::MAX_BLOBS {
+            let content = (index as u32).to_le_bytes();
+            entries.push(JournalEntry::BlobStored {
+                hash: blob_id(&content),
+                data: blob_encode(&content),
+            });
+        }
+        assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+        // More content in total than the set may hold.
+        let mut entries = vec![header()];
+        for index in 0..65u8 {
+            let content = vec![index; crate::world_caps::MAX_BLOB_BYTES];
+            entries.push(JournalEntry::BlobStored {
+                hash: blob_id(&content),
+                data: blob_encode(&content),
+            });
+        }
+        assert!(WorldCore::restore("w", WorldLimits::default(), entries).is_err());
+    }
+
+    // ---- F12.5 http.fetch provider (#1062) ----
+
+    /// A hermetic HTTP/1.1 server on a loopback port: one canned
+    /// response per path, `Connection: close` on every reply, and
+    /// a hit count so refusal tests can prove no request arrived.
+    /// No test in this section touches the live internet.
+    struct FetchServer {
+        port: u16,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl FetchServer {
+        fn hits(&self) -> usize {
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn url(&self, path: &str) -> String {
+            format!("http://127.0.0.1:{}{path}", self.port)
+        }
+
+        /// The allowlist entry for this server: its host and port.
+        /// A bare `127.0.0.1` would admit only port 80.
+        fn entry(&self) -> String {
+            format!("127.0.0.1:{}", self.port)
+        }
+    }
+
+    fn fetch_server() -> FetchServer {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            request.extend_from_slice(&buffer[..read]);
+                            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                let (status, headers, body): (&str, String, Vec<u8>) = match path.as_str() {
+                    "/hello" => ("200 OK", String::new(), b"hello fetch".to_vec()),
+                    "/hop" => ("302 Found", "Location: /hello\r\n".to_owned(), Vec::new()),
+                    "/away" => (
+                        "302 Found",
+                        format!("Location: http://localhost:{port}/hello\r\n"),
+                        Vec::new(),
+                    ),
+                    "/default-port" => (
+                        "302 Found",
+                        "Location: http://127.0.0.1/hello\r\n".to_owned(),
+                        Vec::new(),
+                    ),
+                    "/loop" => ("302 Found", "Location: /loop\r\n".to_owned(), Vec::new()),
+                    "/big" => (
+                        "200 OK",
+                        String::new(),
+                        vec![b'x'; crate::world_caps::MAX_HTTP_FETCH_RESPONSE_BYTES + 1],
+                    ),
+                    _ => ("404 Not Found", String::new(), b"nope".to_vec()),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        FetchServer { port, hits }
+    }
+
+    /// An actor for `http.fetch` tests, on `scheduling_actor`'s
+    /// pattern. `enabled` performs the operator's two ceiling
+    /// acts — naming the provider in the server caps and in the
+    /// world's own ceiling; without them the provider stays off
+    /// by default however it is granted.
+    fn http_fetch_actor(
+        id: &str,
+        grants: &[&str],
+        hosts: &[&str],
+        enabled: bool,
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        if enabled {
+            limits.server_caps.insert("http.fetch".to_owned());
+        }
+        limits.http_fetch_hosts = hosts.iter().map(|host| (*host).to_owned()).collect();
+        let mut core = WorldCore::new_with_clock(id, limits, clock.clone()).unwrap();
+        if enabled {
+            core.caps_ceiling.insert("http.fetch".to_owned());
+            core.sync_ledger_ceiling();
+        }
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let program = Scheduler::default();
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
+    }
+
+    #[test]
+    fn http_fetch_checks_refuse_each_violation_with_a_reason() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        // An unnormalized entry still matches: entries and URL
+        // hosts pass through the same normalization.
+        limits.http_fetch_hosts = ["EXAMPLE.com."].into_iter().map(str::to_owned).collect();
+        let mut core = WorldCore::new_with_clock("w", limits, clock.clone()).unwrap();
+
+        let host = core.check_http_fetch("https://example.com/a?b=1").unwrap();
+        assert_eq!(host, "example.com");
+        let error = core.check_http_fetch("not a url").unwrap_err();
+        assert!(error.to_string().contains("malformed"), "{error}");
+        let error = core.check_http_fetch("ftp://example.com/").unwrap_err();
+        assert!(error.to_string().contains("scheme"), "{error}");
+        let error = core
+            .check_http_fetch("https://user@example.com/")
+            .unwrap_err();
+        assert!(error.to_string().contains("credentials"), "{error}");
+        let error = core.check_http_fetch("https://other.example/").unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // Subdomains are not implied by listing the parent.
+        let error = core
+            .check_http_fetch("https://api.example.com/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // A bare host admits only the scheme's default port.
+        assert!(core.check_http_fetch("https://example.com:443/").is_ok());
+        let error = core
+            .check_http_fetch("https://example.com:8443/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // Listing `host:port` opens that port and no other.
+        core.limits
+            .http_fetch_hosts
+            .insert("example.com:8443".to_owned());
+        assert!(core.check_http_fetch("https://example.com:8443/").is_ok());
+        let error = core
+            .check_http_fetch("https://example.com:8444/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+
+        // The rate bound: a full window of attempts refuses the
+        // next check, and the window admits again once it passes.
+        for _ in 0..crate::world_caps::MAX_HTTP_FETCH_BURST {
+            core.check_http_fetch("https://example.com/").unwrap();
+            core.note_http_fetch_attempt();
+        }
+        let error = core.check_http_fetch("https://example.com/").unwrap_err();
+        assert!(error.to_string().contains("rate"), "{error}");
+        clock.advance(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS + 1);
+        assert!(core.check_http_fetch("https://example.com/").is_ok());
+    }
+
+    #[tokio::test]
+    async fn http_fetch_is_off_by_default() {
+        let server = fetch_server();
+        // Granted, and the host allowlisted — but the operator
+        // never named the provider in a ceiling, so the default
+        // ceiling refuses it before any provider code runs.
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-default-off",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            false,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert_eq!(server.hits(), 0, "a refused fetch connects nowhere");
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_http_fetch_is_refused_and_counted() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-ungranted", &[], &[server.entry().as_str()], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["http.fetch"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert_eq!(server.hits(), 0, "a refused fetch connects nowhere");
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_host_is_refused() {
+        let server = fetch_server();
+        // Enabled and granted, but the allowlist names another
+        // host: the fetch is refused before any connection.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-unlisted", &["http.fetch"], &["example.org"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in the allowlist"),
+            "{refused}"
+        );
+        assert_eq!(server.hits(), 0, "an unlisted host is never contacted");
+    }
+
+    #[tokio::test]
+    async fn a_bare_host_entry_refuses_a_non_default_port() {
+        let server = fetch_server();
+        // The host is listed without a port, so only port 80 is
+        // open; the server's own port is refused before any
+        // connection is made.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-bare-host", &["http.fetch"], &["127.0.0.1"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in the allowlist"),
+            "{refused}"
+        );
+        assert_eq!(server.hits(), 0, "an unlisted port is never contacted");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_round_trip_through_the_actor() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-round-trip",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+                {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/hop")}},
+                {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/missing")}},
+            ]}),
+        )
+        .await;
+        let fetched = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(fetched["ok"], true, "{fetched}");
+        assert_eq!(fetched["value"]["status"], 200, "{fetched}");
+        assert_eq!(fetched["value"]["url"], server.url("/hello"), "{fetched}");
+        assert_eq!(
+            fetched["value"]["body"],
+            blob_encode(b"hello fetch"),
+            "{fetched}"
+        );
+        assert_eq!(fetched["value"]["body_bytes"], 11, "{fetched}");
+        // An on-list redirect is followed to its target.
+        let hopped = schedule_result(&actor, "f2").unwrap();
+        assert_eq!(hopped["ok"], true, "{hopped}");
+        assert_eq!(hopped["value"]["status"], 200, "{hopped}");
+        assert_eq!(hopped["value"]["url"], server.url("/hello"), "{hopped}");
+        assert_eq!(hopped["value"]["body"], blob_encode(b"hello fetch"));
+        // A status is a result, not a refusal: only policy and
+        // transport failures refuse a fetch.
+        let missing = schedule_result(&actor, "f3").unwrap();
+        assert_eq!(missing["ok"], true, "{missing}");
+        assert_eq!(missing["value"]["status"], 404, "{missing}");
+    }
+
+    #[tokio::test]
+    async fn http_fetch_refuses_redirects_off_the_list_and_past_the_hop_cap() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-redirects",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/away")}},
+                {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/loop")}},
+                {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/big")}},
+                {"id": "f4", "cap": "http.fetch", "args": {"url": server.url("/default-port")}},
+            ]}),
+        )
+        .await;
+        // /away redirects to localhost, which is not allowlisted:
+        // refused before the second connection is made.
+        let away = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(away["error"], "bad_args", "{away}");
+        assert!(
+            away["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host_not_allowed"),
+            "{away}"
+        );
+        let looping = schedule_result(&actor, "f2").unwrap();
+        assert_eq!(looping["error"], "failed", "{looping}");
+        assert!(
+            looping["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("too_many_redirects"),
+            "{looping}"
+        );
+        let big = schedule_result(&actor, "f3").unwrap();
+        assert_eq!(big["error"], "failed", "{big}");
+        assert!(
+            big["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("response_too_large"),
+            "{big}"
+        );
+        // /default-port redirects to the same host on port 80,
+        // which the `host:port` entry does not list: refused.
+        let other_port = schedule_result(&actor, "f4").unwrap();
+        assert_eq!(other_port["error"], "bad_args", "{other_port}");
+        assert!(
+            other_port["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host_not_allowed"),
+            "{other_port}"
+        );
+        // Exactly the requests made: /away once (the redirect was
+        // not followed), /loop for the initial fetch plus the hop
+        // cap of follows, /big once, /default-port once.
+        assert_eq!(
+            server.hits(),
+            1 + (1 + crate::world_caps::MAX_HTTP_FETCH_REDIRECTS) + 1 + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn http_fetches_journal_nothing_and_replay_is_unaffected() {
+        let server = fetch_server();
+        let (mut actor, _clock, token, journal) = http_fetch_actor(
+            "fetch-replay",
+            &["kv.set", "http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "k1", "cap": "kv.set", "args": {"key": "a", "value": 1}},
+            ]}),
+        )
+        .await;
+        let before = journal.entries();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "f1").unwrap()["ok"],
+            true,
+            "the fetch itself succeeded"
+        );
+        // The fetch ask adds only the entries every request adds:
+        // the input's committed event and the result's system
+        // event (the delivery replay feeds the program, as for a
+        // `kv.get`). No entry describes the fetch as state for
+        // replay to apply — there is no fetch entry kind at all.
+        let after = journal.entries();
+        let added = &after[before.len()..];
+        assert!(
+            added.iter().all(|entry| matches!(
+                entry,
+                JournalEntry::Committed { .. } | JournalEntry::System { .. }
+            )),
+            "a fetch journals no state of its own: {added:?}"
+        );
+        // And the journal — written across the fetch — restores
+        // exactly the state the journaled writes describe.
+        let restored = WorldCore::restore("fetch-replay", WorldLimits::default(), after).unwrap();
+        assert_eq!(restored.core.kv["a"], "1");
+        assert!(restored.core.blobs.is_empty());
+    }
+
+    /// An actor for `notify` tests, on `http_fetch_actor`'s
+    /// pattern. `enabled` performs the operator's two ceiling
+    /// acts — naming the provider in the server caps and in the
+    /// world's own ceiling; without them the provider stays off
+    /// by default however it is granted.
+    fn notify_actor(
+        id: &str,
+        grants: &[&str],
+        enabled: bool,
+    ) -> (WorldActor, Arc<ManualClock>, JoinCapability, Recorded) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut limits = WorldLimits::default();
+        if enabled {
+            limits.server_caps.insert("notify".to_owned());
+        }
+        let mut core = WorldCore::new_with_clock(id, limits, clock.clone()).unwrap();
+        if enabled {
+            core.caps_ceiling.insert("notify".to_owned());
+            core.sync_ledger_ceiling();
+        }
+        core.ledger
+            .set_granted(grants.iter().map(|grant| (*grant).to_owned()).collect());
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let program = Scheduler::default();
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (actor, clock, token, journal)
+    }
+
+    #[test]
+    fn notify_checks_refuse_each_violation_with_a_reason() {
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
+
+        core.check_notify("the match has ended").unwrap();
+        // Oversized: past the world's chat byte limit — the bound
+        // a notification shares with the host's own chat lines.
+        let big = "x".repeat(core.limits.chat_bytes + 1);
+        let error = core.check_notify(&big).unwrap_err();
+        assert!(error.to_string().contains("exceeds"), "{error}");
+        // Empty, and empty once the sanitizer strips it.
+        let error = core.check_notify("").unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+        let error = core.check_notify("\u{1}\u{2}").unwrap_err();
+        assert!(error.to_string().contains("empty"), "{error}");
+
+        // The rate bound: a full window of attempts refuses the
+        // next check, and the window admits again once it passes.
+        for _ in 0..crate::world_caps::MAX_NOTIFY_BURST {
+            core.check_notify("again").unwrap();
+            core.note_notify_attempt();
+        }
+        let error = core.check_notify("again").unwrap_err();
+        assert!(error.to_string().contains("rate"), "{error}");
+        clock.advance(crate::world_caps::NOTIFY_RATE_WINDOW_MS + 1);
+        assert!(core.check_notify("again").is_ok());
+    }
+
+    #[tokio::test]
+    async fn notify_is_off_by_default() {
+        // Granted — but the operator never named the provider in a
+        // ceiling, so the default ceiling refuses it before any
+        // provider code runs, and nothing is committed.
+        let (mut actor, _clock, token, _journal) =
+            notify_actor("notify-default-off", &["notify"], false);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "outside_ceiling"
+        );
+        assert!(
+            actor
+                .core
+                .events
+                .iter()
+                .all(|event| !matches!(event.kind, WorldEventKind::Notification { .. })),
+            "a refused notify commits no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_notify_is_refused_and_counted() {
+        let (mut actor, _clock, token, _journal) = notify_actor("notify-ungranted", &[], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "hello"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(
+            schedule_result(&actor, "n1").unwrap()["error"],
+            "cap_denied"
+        );
+        assert!(
+            actor.core.ledger.usage()["notify"].denied > 0,
+            "{:?}",
+            actor.core.ledger.usage()
+        );
+        assert!(
+            actor
+                .core
+                .events
+                .iter()
+                .all(|event| !matches!(event.kind, WorldEventKind::Notification { .. })),
+            "a refused notify commits no event"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_round_trip_through_the_actor() {
+        let (mut actor, _clock, token, _journal) =
+            notify_actor("notify-round-trip", &["notify"], true);
+        let mut broadcast = actor.event_sender.subscribe();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "the match has ended\u{7}"}},
+            ]}),
+        )
+        .await;
+        let sent = schedule_result(&actor, "n1").unwrap();
+        assert_eq!(sent["ok"], true, "{sent}");
+        let sequence = sent["value"]["sequence"].as_u64().unwrap();
+        // The committed event is in the world's log, host-authored,
+        // carrying the sanitized text (the bell is stripped).
+        let event = actor
+            .core
+            .events
+            .iter()
+            .find(|event| event.sequence == sequence)
+            .expect("the notification is in the event log");
+        assert_eq!(event.participant_id, 0);
+        match &event.kind {
+            WorldEventKind::Notification { text } => {
+                assert_eq!(text, "the match has ended");
+            }
+            other => panic!("expected a notification event, got {other:?}"),
+        }
+        // And it went out on the broadcast channel the sessions
+        // read (the ask's own input event may precede it there).
+        let mut aired = None;
+        while let Ok(event) = broadcast.try_recv() {
+            if matches!(event.kind, WorldEventKind::Notification { .. }) {
+                aired = Some(event);
+            }
+        }
+        let aired = aired.expect("the notification was broadcast");
+        assert_eq!(aired.sequence, sequence);
+    }
+
+    #[tokio::test]
+    async fn notify_refuses_past_the_rate_bound() {
+        let (mut actor, _clock, token, _journal) = notify_actor("notify-rate", &["notify"], true);
+        // One wants document, burst + 1 requests: the window
+        // admits the burst and refuses the next in the same change.
+        let requests: Vec<serde_json::Value> = (1..=crate::world_caps::MAX_NOTIFY_BURST + 1)
+            .map(|index| {
+                serde_json::json!({"id": format!("n{index}"), "cap": "notify", "args": {"text": "ping"}})
+            })
+            .collect();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": requests}),
+        )
+        .await;
+        for index in 1..=crate::world_caps::MAX_NOTIFY_BURST {
+            assert_eq!(
+                schedule_result(&actor, &format!("n{index}")).unwrap()["ok"],
+                true,
+                "attempt {index} is inside the burst"
+            );
+        }
+        let refused = schedule_result(
+            &actor,
+            &format!("n{}", crate::world_caps::MAX_NOTIFY_BURST + 1),
+        )
+        .unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("rate"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn notify_journals_a_committed_event_and_replay_restores_it() {
+        let (mut actor, _clock, token, journal) = notify_actor("notify-replay", &["notify"], true);
+        let before = journal.entries();
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "n1", "cap": "notify", "args": {"text": "server restarting soon"}},
+            ]}),
+        )
+        .await;
+        assert_eq!(schedule_result(&actor, "n1").unwrap()["ok"], true);
+        // The notify ask adds the entries every request adds (the
+        // input's committed event, the result's system event) plus
+        // exactly one of its own: the committed notification.
+        let after = journal.entries();
+        let added = &after[before.len()..];
+        let notifications: Vec<&JournalEntry> = added
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    JournalEntry::Committed { event }
+                        if matches!(event.kind, WorldEventKind::Notification { .. })
+                )
+            })
+            .collect();
+        assert_eq!(notifications.len(), 1, "{added:?}");
+        assert!(
+            added.iter().all(|entry| matches!(
+                entry,
+                JournalEntry::Committed { .. } | JournalEntry::System { .. }
+            )),
+            "a notify journals no state of its own beyond its event: {added:?}"
+        );
+        // The notification entry is a version-15 entry: a journal
+        // carrying one is refused by older binaries at the header
+        // check, never failed mid-replay.
+        assert_eq!(
+            journal_version_required_by(notifications[0]),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // Restoring from the journal rebuilds the event log with
+        // the notification intact at its sequence.
+        let restored = WorldCore::restore("notify-replay", WorldLimits::default(), after).unwrap();
+        assert!(
+            restored.core.events.iter().any(|event| matches!(
+                &event.kind,
+                WorldEventKind::Notification { text } if text == "server restarting soon"
+            )),
+            "{:?}",
+            restored.core.events
+        );
+    }
+
+    #[test]
+    fn notify_events_require_journal_version_15() {
+        let event = WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::Notification {
+                text: "hi".to_owned(),
+            },
+        };
+        assert_eq!(
+            journal_version_required_by(&JournalEntry::Committed {
+                event: event.clone()
+            }),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // A checkpoint retaining one requires it too.
+        let checkpoint = JournalEntry::Checkpoint {
+            sequence: 1,
+            module_hash: "h".to_owned(),
+            seed: 1,
+            provenance: None,
+            execution_profile: None,
+            caps_ceiling: None,
+            schedules: None,
+            kv: None,
+            blobs: None,
+            transfers: None,
+            lease: None,
+            snapshot: "s".to_owned(),
+            events: vec![event],
+            open_presence: None,
+            admin_history: None,
+        };
+        assert_eq!(
+            journal_version_required_by(&checkpoint),
+            JOURNAL_VERSION_NOTIFY
+        );
+        // Version 16 (#13711, stamped lease positions) is the newest
+        // version this binary reads.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
     }
 
     #[tokio::test]
@@ -11388,6 +12991,7 @@ mod schedule_tests {
             caps_ceiling: None,
             schedules,
             kv: None,
+            blobs: None,
             transfers: None,
             lease: None,
             snapshot: "s".to_owned(),
@@ -12687,9 +14291,11 @@ mod audit_tests {
     // id on every line, admin commands included.
     #[test]
     fn audit_records_carry_target_correlation_and_schema_v2() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-correlation", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -12744,9 +14350,11 @@ mod audit_tests {
 
     #[test]
     fn admin_audit_replays_grants_and_ceiling_and_records_refusal_once() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new(
             "audit-test",
@@ -12860,9 +14468,11 @@ mod audit_tests {
 
     #[test]
     fn issuance_is_audited_alongside_revocation_without_the_token() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -12918,9 +14528,11 @@ mod audit_tests {
 
     #[test]
     fn install_program_writability_refusal_is_audited_once() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13010,9 +14622,11 @@ mod audit_tests {
 
     #[test]
     fn participant_readable_queries_emit_no_admin_audit_record() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13117,9 +14731,11 @@ mod audit_tests {
 
     #[test]
     fn revocation_on_a_read_only_replica_is_audited_once_as_refused() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13183,6 +14799,7 @@ mod audit_tests {
 
     #[test]
     fn admin_audit_replay_matches_live_state_for_generated_sequences() {
+        crate::test_tracing::register_audit_callsite();
         // Oracle: the audit records themselves (model-based replay).
         // Folding the accepted records — plus first-use grants — over
         // the initial state must reproduce the live ledger grants and
@@ -13198,6 +14815,7 @@ mod audit_tests {
             let records = Arc::new(Mutex::new(Vec::new()));
             let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
             let _guard = tracing::subscriber::set_default(subscriber);
+            crate::test_tracing::rebuild_interest_cache();
 
             let core = WorldCore::new(
                 "audit-test",

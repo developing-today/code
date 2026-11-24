@@ -18,6 +18,9 @@ import {
   zoomChartView,
   applyDominanceFilters,
   baselineRatios,
+  costScoreEnvelope,
+  costScoreOls,
+  costScoreTail,
   sortRows,
   unpricedScoredPoints,
 } from "../src/assets/aa-explorer-computations.js";
@@ -321,5 +324,95 @@ describe("unpricedScoredPoints (#1400 remainder)", () => {
     const before = rows.map((r) => r.key);
     unpricedScoredPoints(rows);
     expect(rows.map((r) => r.key)).toEqual(before);
+  });
+});
+
+describe("cost x score overlays (#1400 remainder)", () => {
+  // Five cost points spanning 0.1..10 with an exactly linear score
+  // relationship in log10(cost) space: slope 20, intercept 70.
+  const linear: Array<{ key: string; cost: number | null; score: number | null }> = [
+    { key: "a", cost: 0.1, score: 50 },
+    { key: "b", cost: 1, score: 70 },
+    { key: "c", cost: 10, score: 90 },
+    { key: "d", cost: 2, score: 76.02059991327962 },
+    { key: "e", cost: 4, score: 82.04119982655925 },
+  ];
+
+  test("OLS fit recovers the slope and intercept in log-cost space", () => {
+    const fit = costScoreOls(linear);
+    expect(fit).not.toBeNull();
+    expect(fit!.n).toBe(5);
+    expect(fit!.slope).toBeCloseTo(20, 6);
+    expect(fit!.intercept).toBeCloseTo(70, 6);
+    expect(fit!.costMin).toBe(0.1);
+    expect(fit!.costMax).toBe(10);
+  });
+
+  test("OLS declines a fit it cannot estimate (single point, flat cost, or unpriced rows)", () => {
+    expect(costScoreOls([{ cost: 1, score: 10 }])).toBeNull();
+    expect(costScoreOls([{ cost: null, score: 10 }, { cost: 2, score: 20 }])).toBeNull();
+    expect(costScoreOls([{ cost: 2, score: 10 }, { cost: 2, score: 20 }])).toBeNull();
+    expect(costScoreOls([])).toBeNull();
+  });
+
+  test("OLS ignores unpriced and unscored rows without changing the fit", () => {
+    const mixed: Array<{ key: string; cost: number | null; score: number | null }> = linear.concat([
+      { key: "unpriced", cost: null, score: 99 },
+      { key: "unscored", cost: 3, score: null },
+    ]);
+    const fit = costScoreOls(mixed);
+    expect(fit!.n).toBe(5);
+    expect(fit!.slope).toBeCloseTo(20, 6);
+  });
+
+  test("envelope is the cost-low / score-high frontier, cost ascending", () => {
+    const rows = [
+      { key: "cheap", cost: 0.5, score: 40 },
+      { key: "dominated", cost: 1, score: 40 },
+      { key: "mid", cost: 2, score: 55 },
+      { key: "top", cost: 5, score: 70 },
+    ];
+    const env = costScoreEnvelope(rows);
+    expect(env.length).toBeGreaterThanOrEqual(3);
+    expect(env[0].cost).toBe(0.5);
+    expect(env[env.length - 1].cost).toBe(5);
+    for (let i = 1; i < env.length; i++) expect(env[i].cost).toBeGreaterThanOrEqual(env[i - 1].cost);
+    // endpoints pinned to real scores by the smoothing rule
+    expect(env[0].score).toBe(40);
+    expect(env[env.length - 1].score).toBe(70);
+  });
+
+  test("envelope keeps one point per cost (deepest score wins) and refuses <2 usable rows", () => {
+    const env = costScoreEnvelope([
+      { cost: 1, score: 40 }, { cost: 1, score: 60 }, { cost: 2, score: 55 }, { cost: 3, score: 50 },
+    ]);
+    expect(new Set(env.map((p) => p.cost)).size).toBe(env.length);
+    expect(costScoreEnvelope([{ cost: 1, score: 40 }])).toEqual([]);
+    expect(costScoreEnvelope([{ cost: null, score: 40 }, { cost: 2, score: null }])).toEqual([]);
+  });
+
+  test("tail is the per-bin expectation of the upper half, never the bin max", () => {
+    // One bin over 1..10 (single bin count 1 would collapse), use 2 bins.
+    const rows = [
+      { cost: 1, score: 10 }, { cost: 1.2, score: 20 }, { cost: 1.5, score: 30 }, { cost: 2, score: 40 },
+      { cost: 5, score: 50 }, { cost: 7, score: 60 }, { cost: 9, score: 70 }, { cost: 10, score: 80 },
+    ];
+    const tail = costScoreTail(rows, 2);
+    expect(tail.length).toBe(2);
+    // first bin: scores 10,20,30,40 -> top half 30,40 -> 35
+    expect(tail[0].score).toBeCloseTo(35, 6);
+    // second bin: 50,60,70,80 -> top half 70,80 -> 75
+    expect(tail[1].score).toBeCloseTo(75, 6);
+    for (let i = 0; i < tail.length; i++) expect(tail[i].cost).toBeGreaterThan(0);
+  });
+
+  test("tail skips bins without two scored points and refuses too little data", () => {
+    expect(costScoreTail([{ cost: 1, score: 10 }])).toEqual([]);
+    // two bins, the upper one holds a single point, so only the lower bin reports
+    const tail = costScoreTail([
+      { cost: 1, score: 10 }, { cost: 1.1, score: 20 }, { cost: 1.2, score: 30 },
+      { cost: 100, score: 95 },
+    ], 2);
+    expect(tail.length).toBe(1);
   });
 });

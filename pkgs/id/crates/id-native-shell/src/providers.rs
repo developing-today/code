@@ -32,7 +32,9 @@
 //!
 //! The adapter seam is [`ClientProviderExecutor`]: step 5 registers
 //! the first real executor ([`FileReadExecutor`], `client.file.read`)
-//! through [`ProviderAdapter::grant_file_read`]; a provider with no
+//! through [`ProviderAdapter::grant_file_read`], and #10930 registers
+//! the second ([`NotifyExecutor`], `client.notify`) through
+//! [`ProviderAdapter::grant_notify`]; a provider with no
 //! registered executor refuses `provider_unavailable` and an ungranted
 //! one refuses `provider_not_granted` — no provider is enabled by
 //! default, and a malicious or mistaken host request still meets the
@@ -85,6 +87,15 @@ pub const REFUSAL_IO: &str = "file_read_io";
 /// The first client-side provider's registry name (F13.7 step 5;
 /// the manifest is `id_caps::world_caps::CLIENT_FILE_READ_MANIFEST`).
 pub const CLIENT_FILE_READ_PROVIDER: &str = "client.file.read";
+/// The mobile shell's notification provider (#10930, shells v1 slice 4;
+/// the manifest is `id_caps::world_caps::CLIENT_NOTIFY_MANIFEST`).
+pub const CLIENT_NOTIFY_PROVIDER: &str = "client.notify";
+/// Refusal: a `client.notify` request carried a non-unsigned `head`.
+pub const REFUSAL_INVALID_HEAD: &str = "notify_invalid_head";
+/// Refusal: a `client.notify` request carried a content-bearing field.
+/// A notification is a hint to re-sync, never a data channel, so any
+/// content field is refused whole rather than delivered.
+pub const REFUSAL_CONTENT_FORBIDDEN: &str = "notify_content_forbidden";
 
 /// Rate-limit window for `per_minute` bounds, in milliseconds.
 const RATE_WINDOW_MS: u64 = 60_000;
@@ -113,6 +124,17 @@ impl LocalBounds {
         max_bytes: 32_768,
         per_minute: 10,
         in_flight: 2,
+    };
+
+    /// The starting bounds for `client.notify` (#10930): the reply is
+    /// a fixed-shape acknowledgment carrying no content, so the byte
+    /// bound is the manifest's small ack cap; hints may burst (a catch-up
+    /// run can surface several), so the rate allows thirty per minute
+    /// with four in flight.
+    pub const NOTIFY_DEFAULT: Self = Self {
+        max_bytes: 1024,
+        per_minute: 30,
+        in_flight: 4,
     };
 
     /// The effective bound of two bound sets: the minimum of each
@@ -341,6 +363,86 @@ impl ClientProviderExecutor for FileReadExecutor {
     }
 }
 
+/// The second client provider (#10930, shells v1 slice 4): the mobile
+/// shell's local notification surface behind `client.notify`.
+///
+/// A notification is a hint to re-sync, never a data channel: the only
+/// argument the registry schema allows is the optional journal `head`
+/// the hint refers to, and the reply is a fixed-shape acknowledgment
+/// carrying no content (empty bytes). The shell renders its own local
+/// wording from the hint and, on return, runs catch-up from the client
+/// projection plus the host view (see [`notify_needs_resync`]). There
+/// is deliberately no disclosure gate here, unlike file read: a hint
+/// carries no world bytes into the journal, so there is nothing to
+/// disclose.
+///
+/// Content-bearing fields (`text`, `content`, `body`, `data`,
+/// `message`) are refused with [`REFUSAL_CONTENT_FORBIDDEN`]: a host
+/// that tries to push world content through the hint channel meets the
+/// local check, not a delivery.
+#[derive(Clone, Debug, Default)]
+pub struct NotifyExecutor {
+    surfaced: Vec<Option<u64>>,
+}
+
+impl NotifyExecutor {
+    /// A new notifier with no surfaced hints yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The hint heads surfaced so far, oldest first (`None` is a hint
+    /// that carried no `head`). The record proves the local surface
+    /// happened; it never carries world content.
+    #[must_use]
+    pub fn surfaced_heads(&self) -> &[Option<u64>] {
+        &self.surfaced
+    }
+
+    fn check_args(args: &Value) -> Result<Option<u64>, String> {
+        for forbidden in ["text", "content", "body", "data", "message"] {
+            if args.get(forbidden).is_some_and(|value| !value.is_null()) {
+                return Err(REFUSAL_CONTENT_FORBIDDEN.to_owned());
+            }
+        }
+        match args.get("head") {
+            None => Ok(None),
+            Some(value) if value.is_null() => Ok(None),
+            Some(value) => value
+                .as_u64()
+                .ok_or_else(|| REFUSAL_INVALID_HEAD.to_owned())
+                .map(Some),
+        }
+    }
+}
+
+impl ClientProviderExecutor for NotifyExecutor {
+    fn execute(&mut self, args: &Value, _max_bytes: u32) -> Result<Vec<u8>, String> {
+        let head = Self::check_args(args)?;
+        self.surfaced.push(head);
+        Ok(Vec::new())
+    }
+}
+
+/// Whether a surfaced `client.notify` hint requires the shell to
+/// re-sync on return (the behavioral half of #10930's Done).
+///
+/// - No local snapshot (`local_head` is `None`): re-sync; there is
+///   nothing to render without a fresh snapshot.
+/// - Hint without a `head` (`hint_head` is `None`): re-sync; a
+///   headless hint means something changed.
+/// - Otherwise re-sync exactly when the shell is behind the hint
+///   (`local < hint`); a shell already past the hint ignores it.
+#[must_use]
+pub fn notify_needs_resync(local_head: Option<u64>, hint_head: Option<u64>) -> bool {
+    match (local_head, hint_head) {
+        (None, _) => true,
+        (_, None) => true,
+        (Some(local), Some(hint)) => local < hint,
+    }
+}
+
 /// One user-readable local audit entry: the record that the local
 /// adapter executed or refused a provider request. Deliberately
 /// carries no argument values, local paths, or result bytes.
@@ -492,6 +594,21 @@ impl ProviderAdapter {
         self.register_world_executor(world, CLIENT_FILE_READ_PROVIDER, Box::new(executor));
         self.grant(world, CLIENT_FILE_READ_PROVIDER, bounds);
         Ok(())
+    }
+
+    /// The #10930 opt-in for `client.notify`: ensure a
+    /// [`NotifyExecutor`] is registered for the shell and grant the
+    /// provider for `world` with the given local bounds, so the mobile
+    /// shell's notification power is per-world opt-in like every other
+    /// client power. Unlike file read there is no disclosure gate and
+    /// no per-world resource: a hint carries no world bytes, so one
+    /// shared executor serves every granted world and the audit entry
+    /// still records which world each hint arrived for.
+    pub fn grant_notify(&mut self, world: &str, bounds: LocalBounds) {
+        if !self.executors.contains_key(CLIENT_NOTIFY_PROVIDER) {
+            self.register_executor(CLIENT_NOTIFY_PROVIDER, Box::new(NotifyExecutor::new()));
+        }
+        self.grant(world, CLIENT_NOTIFY_PROVIDER, bounds);
     }
 
     /// Revoke a grant, effective immediately: the provider leaves
@@ -1107,5 +1224,152 @@ mod file_read_tests {
         );
         assert_eq!(reply["error"], REFUSAL_UNAVAILABLE);
         std::fs::remove_dir_all(base).ok();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod notify_tests {
+    use super::*;
+
+    fn notify_request(nonce: &str, args: Value) -> Value {
+        json!({
+            "type": "provider_request",
+            "nonce": nonce,
+            "provider": CLIENT_NOTIFY_PROVIDER,
+            "args": args,
+            "deadline_ms": 5000,
+        })
+    }
+
+    fn notified_adapter() -> ProviderAdapter {
+        let mut adapter = ProviderAdapter::new();
+        adapter.grant_notify("world-a", LocalBounds::NOTIFY_DEFAULT);
+        adapter
+    }
+
+    #[test]
+    fn the_notify_executor_acks_a_head_hint_with_no_content() {
+        let mut executor = NotifyExecutor::new();
+        let ack = executor.execute(&json!({"head": 42}), 1024).unwrap();
+        assert!(ack.is_empty(), "the ack carries no world content");
+        assert_eq!(executor.surfaced_heads(), &[Some(42)]);
+    }
+
+    #[test]
+    fn the_notify_executor_accepts_a_headless_hint_as_resync() {
+        let mut executor = NotifyExecutor::new();
+        assert!(executor.execute(&json!({}), 1024).is_ok());
+        assert!(executor.execute(&json!({"head": null}), 1024).is_ok());
+        assert_eq!(executor.surfaced_heads(), &[None, None]);
+    }
+
+    #[test]
+    fn the_notify_executor_refuses_content_bearing_fields() {
+        let mut executor = NotifyExecutor::new();
+        for args in [
+            json!({"head": 7, "text": "hello"}),
+            json!({"content": "hello"}),
+            json!({"body": "hello"}),
+            json!({"data": "aGVsbG8="}),
+            json!({"message": "hello"}),
+        ] {
+            assert_eq!(
+                executor.execute(&args, 1024),
+                Err(REFUSAL_CONTENT_FORBIDDEN.to_owned()),
+                "args {args}"
+            );
+        }
+        assert!(executor.surfaced_heads().is_empty());
+    }
+
+    #[test]
+    fn the_notify_executor_refuses_a_non_unsigned_head() {
+        let mut executor = NotifyExecutor::new();
+        for args in [
+            json!({"head": "42"}),
+            json!({"head": -1}),
+            json!({"head": 4.5}),
+            json!({"head": true}),
+        ] {
+            assert_eq!(
+                executor.execute(&args, 1024),
+                Err(REFUSAL_INVALID_HEAD.to_owned()),
+                "args {args}"
+            );
+        }
+        assert!(executor.surfaced_heads().is_empty());
+    }
+
+    #[test]
+    fn a_granted_notify_provider_is_offered_and_replies_with_an_empty_ack() {
+        let mut adapter = notified_adapter();
+        assert_eq!(
+            adapter.offer_frame("world-a"),
+            Some(json!({"type": "provider_offer", "providers": ["client.notify"]}))
+        );
+        let reply =
+            adapter.handle_request("world-a", &notify_request("n1", json!({"head": 9})), 1_000);
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["result_hex"], json!(""));
+        assert_eq!(adapter.audit_entries()[0].outcome, "executed");
+        // A second world without the grant is still refused, never offered.
+        assert_eq!(adapter.offer_frame("world-b"), None);
+        let reply =
+            adapter.handle_request("world-b", &notify_request("n2", json!({"head": 9})), 1_000);
+        assert_eq!(reply["error"], REFUSAL_NOT_GRANTED);
+    }
+
+    #[test]
+    fn revoke_is_immediate_for_notify_offers_and_requests() {
+        let mut adapter = notified_adapter();
+        assert!(adapter.revoke("world-a", CLIENT_NOTIFY_PROVIDER));
+        assert_eq!(adapter.offer_frame("world-a"), None);
+        let reply = adapter.handle_request("world-a", &notify_request("n1", json!({})), 1_000);
+        assert_eq!(reply["error"], REFUSAL_REVOKED);
+        adapter.grant_notify("world-a", LocalBounds::NOTIFY_DEFAULT);
+        let reply = adapter.handle_request("world-a", &notify_request("n2", json!({})), 2_000);
+        assert_eq!(reply["ok"], true);
+    }
+
+    #[test]
+    fn notify_needs_resync_ignores_a_hint_at_or_behind_the_local_head() {
+        assert!(notify_needs_resync(None, Some(9)));
+        assert!(notify_needs_resync(None, None));
+        assert!(notify_needs_resync(Some(3), None));
+        assert!(notify_needs_resync(Some(3), Some(9)));
+        assert!(!notify_needs_resync(Some(9), Some(9)));
+        assert!(!notify_needs_resync(Some(10), Some(9)));
+    }
+
+    #[test]
+    fn the_notify_then_resync_flow_surfaces_first_and_decides_second() {
+        // Behavioral check for #10930's Done: a hint is delivered, the
+        // shell surfaces its local notification, and on return the
+        // shell re-syncs exactly when it is behind the hinted head.
+        // The rendered view itself is rebuilt from the client
+        // projection plus the host view (slice 1's catch-up seam,
+        // #10927); this test pins the decision that gates that run.
+        let mut adapter = notified_adapter();
+        let reply =
+            adapter.handle_request("world-a", &notify_request("n1", json!({"head": 12})), 1_000);
+        assert_eq!(reply["ok"], true);
+        // A shell behind the hint must re-sync on return ...
+        assert!(notify_needs_resync(Some(7), Some(12)));
+        // ... while a shell already past it ignores the hint.
+        assert!(!notify_needs_resync(Some(12), Some(12)));
+        assert!(!notify_needs_resync(Some(13), Some(12)));
+        // A headless hint always re-syncs: something changed.
+        let reply = adapter.handle_request("world-a", &notify_request("n2", json!({})), 2_000);
+        assert_eq!(reply["ok"], true);
+        assert!(notify_needs_resync(Some(13), None));
+        // Both deliveries are audited as executions, with no content.
+        assert_eq!(adapter.audit_entries().len(), 2);
+        assert!(
+            adapter
+                .audit_entries()
+                .iter()
+                .all(|entry| entry.outcome == "executed")
+        );
     }
 }

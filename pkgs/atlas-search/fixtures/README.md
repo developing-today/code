@@ -27,11 +27,13 @@ fixture alone.
 
 Bit-identity is a **version-matched** claim (code#6663): the gate
 must load the ONNX Runtime version named in the provenance
-(1.31.1, the atlas venv build). A different runtime — e.g. the nix
-closure's 1.27.1 — produces ~1e-7 deltas on most components of every
-probe from kernel/fusion differences alone; the gate detects that
-case and fails as NOT APPLICABLE rather than reporting a parity
-verdict. Align the runtime or re-record the fixtures (below) —
+(1.31.1, the atlas venv build). A different runtime — e.g.
+nixpkgs' 1.27.1 — produces ~1e-7 deltas on most components of
+every probe from kernel/fusion differences alone; the gate
+detects that case and fails as NOT APPLICABLE rather than
+reporting a parity verdict. (The packaged nix closure is not a
+different runtime: it carries the vendored 1.31.1 build,
+code#6765.) Align the runtime or re-record the fixtures (below) —
 never read cross-version deltas as parity evidence.
 
 ## Regenerating

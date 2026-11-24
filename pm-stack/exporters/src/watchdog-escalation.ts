@@ -8,12 +8,17 @@
 //   (source, failure class) while the incident is open — the dedupe
 //   record lives on the incident itself (Incident.escalation), so a
 //   second escalation tick for the same pair creates neither;
+// - dedupe is not silence (#10630): once a confirmed hand-off has been
+//   unresolved for ESCALATION_REPEAT_AFTER_MS, the plan updates the
+//   EXISTING escalation — one comment on the incident issue — and
+//   repeats once per window while the source stays down, so a repair
+//   task nobody picks up cannot go quiet past the second threshold;
 // - the queue task carries the full context packet (below), so a
 //   browser-enabled agent can start from the packet alone;
-// - on the next producer success, the recovery plan comments the
-//   resolution on the incident issue, closes it, and completes the
-//   queue task — the watchdog's own state clears the incident in the
-//   same tick (decide's healthy path), nobody closes anything by hand;
+// - on producer success, the recovery plan comments the resolution on
+//   the incident issue and clears only the watchdog's operational state;
+//   issue closure and queue-task completion remain with their authorized
+//   disposition paths;
 // - surfacing follows the quiet-while-repairing rule: a human-blocked
 //   incident earns its NEEDS DREW line the same tick it is marked; an
 //   ordinary escalation stays quiet until it has been unresolved for
@@ -21,7 +26,7 @@
 //   via the normal sweep path (surfacingLine is what a sweep renders).
 //
 // The production effectors (fleet queue enqueue via the fleet CLI, gh
-// issue create/comment/close) are wired by the watchdog entry point —
+// issue create/comment) are wired by the watchdog entry point —
 // the #6032 remainder — which calls planEscalation / planRecovery with
 // the tick's pre-decision health record and persists whatever
 // recordEscalation returns.
@@ -40,6 +45,13 @@ import type { EscalationRecord, FailureClass, SourceHealth } from "./watchdog-st
 
 /** How long an ordinary escalation stays quiet before it surfaces. */
 export const ESCALATION_NEEDS_DREW_AFTER_MS = 24 * 60 * 60_000;
+
+/** How long a confirmed hand-off may sit unresolved before the
+ *  escalation re-fires on its existing incident issue (#10630: the
+ *  second threshold). It matches the surfacing threshold: the tick
+ *  that earns the NEEDS DREW line also posts the re-escalation
+ *  update, and each further window earns one more. */
+export const ESCALATION_REPEAT_AFTER_MS = ESCALATION_NEEDS_DREW_AFTER_MS;
 
 /** Per-source wiring the entry point supplies from the adapter. */
 export interface EscalationContext {
@@ -87,9 +99,7 @@ export interface EscalationPacket {
 export type EscalationAction =
   | { type: "enqueue_task"; packet: EscalationPacket }
   | { type: "open_issue"; repo: string; title: string; body: string; labels: string[] }
-  | { type: "comment_issue"; repo: string; issueNumber: number; body: string }
-  | { type: "close_issue"; repo: string; issueNumber: number }
-  | { type: "complete_task"; queueTaskId: string };
+  | { type: "comment_issue"; repo: string; issueNumber: number; body: string };
 
 /** Side effects, injected. Production implementations shell to the
  *  fleet CLI / gh; tests count calls. */
@@ -97,8 +107,6 @@ export interface EscalationEffectors {
   enqueueTask(packet: EscalationPacket): Promise<string>;
   openIssue(action: Extract<EscalationAction, { type: "open_issue" }>): Promise<number>;
   commentIssue(action: Extract<EscalationAction, { type: "comment_issue" }>): Promise<void>;
-  closeIssue(action: Extract<EscalationAction, { type: "close_issue" }>): Promise<void>;
-  completeTask(action: Extract<EscalationAction, { type: "complete_task" }>): Promise<void>;
 }
 
 export function escalationDedupeKey(source: string, cls: FailureClass | null): string {
@@ -134,7 +142,7 @@ export function buildEscalationPacket(health: SourceHealth, ctx: EscalationConte
     },
     requiredCapability: "browser-enabled agent; laptop Helium via CDP (:19222); adapter origins only",
     acceptance:
-      "a fresh producer document lands and the watchdog auto-closes the incident (the fixer does not close anything by hand)",
+      "a fresh producer document lands, the watchdog records recovery on the existing incident issue, and authorized disposition preserves any open issue, repair task, or PR",
     stopConditions: [
       "a human-only challenge (2FA / verify-it's-you / passkey) -> stop, mark human-blocked, do not work around it",
       "anything outside the adapter's origin allowlist -> stop and report on the incident issue",
@@ -159,7 +167,21 @@ function issueBody(health: SourceHealth, packet: EscalationPacket): string {
     "Repair log (every rung tried):",
     rungs || "- (empty)",
     "",
-    `A fleet queue task carries the full context packet (dedupe key \`${packet.dedupeKey}\`). This issue is the durable record and the fixing agent's reporting surface; the watchdog auto-closes it on the next producer success.`,
+    `A fleet queue task carries the full context packet (dedupe key \`${packet.dedupeKey}\`). This issue is the durable record and the fixing agent's reporting surface; the watchdog records recovery here but leaves disposition to the authorized authority.`,
+  ].join("\n");
+}
+
+function reEscalationBody(health: SourceHealth, rec: EscalationRecord, nowMs: number): string {
+  const anchor = Date.parse(rec.lastReEscalatedAt ?? rec.since);
+  const hours = Math.floor((nowMs - anchor) / 3_600_000);
+  return [
+    `Still unresolved: source \`${health.source}\` is still failing (${health.currentClass ?? "unknown"}) ${hours}h after the last escalation update, and no fresh read has landed.`,
+    "",
+    `- consecutive failures: ${health.consecutiveFailures}`,
+    `- last detail: ${health.lastDetail || "(none)"}`,
+    `- repair task: ${rec.queueTaskId ?? "(unrecorded)"} (dedupe \`${escalationDedupeKey(health.source, rec.class)}\`)`,
+    "",
+    "The watchdog re-escalates on the existing incident instead of opening a new one (#10630); the repair task above remains the work item. Recovery is recorded here when a fresh read lands; disposition stays with the authorized authority.",
   ].join("\n");
 }
 
@@ -167,12 +189,19 @@ function issueBody(health: SourceHealth, packet: EscalationPacket): string {
  * Plan the rung-4 effects for a tick whose health record carries an
  * escalating incident. Pure: returns the actions to run, or an empty
  * list when the (source, class) pair is already escalated (dedupe) or
- * the incident is not in an escalating state.
+ * the incident is not in an escalating state. One exception to the
+ * empty dedupe plan (#10630): when `nowMs` is supplied and the
+ * confirmed hand-off has been unresolved for
+ * ESCALATION_REPEAT_AFTER_MS since it (last re-)fired, the plan is a
+ * single re-escalation comment on the existing incident issue,
+ * flagged `reEscalated` so the caller can stamp it via
+ * recordReEscalation once the comment confirms.
  */
 export function planEscalation(
   health: SourceHealth,
   ctx: EscalationContext,
-): { actions: EscalationAction[]; deduped: boolean } {
+  nowMs?: number,
+): { actions: EscalationAction[]; deduped: boolean; reEscalated?: boolean } {
   const incident = health.incident;
   if (!incident || incident.surfacing !== "escalate" || incident.humanBlocked) {
     return { actions: [], deduped: false };
@@ -198,7 +227,30 @@ export function planEscalation(
     const actions: EscalationAction[] = [];
     if (forClass.issueNumber === null) actions.push(openIssue);
     if (forClass.queueTaskId === null) actions.push({ type: "enqueue_task", packet });
-    return { actions, deduped: actions.length === 0 };
+    if (actions.length > 0) return { actions, deduped: false };
+    // Fully confirmed hand-off: dedupe holds — unless the escalation
+    // has been unresolved past the repeat window (#10630). Then the
+    // plan updates the existing escalation with one comment on its
+    // incident issue; no new issue, no new task. The window is
+    // measured from the last re-escalation, else from the hand-off.
+    if (nowMs !== undefined && forClass.issueNumber !== null) {
+      const anchor = Date.parse(forClass.lastReEscalatedAt ?? forClass.since);
+      if (Number.isFinite(anchor) && nowMs - anchor >= ESCALATION_REPEAT_AFTER_MS) {
+        return {
+          actions: [
+            {
+              type: "comment_issue",
+              repo: forClass.issueRepo,
+              issueNumber: forClass.issueNumber,
+              body: reEscalationBody(health, forClass, nowMs),
+            },
+          ],
+          deduped: false,
+          reEscalated: true,
+        };
+      }
+    }
+    return { actions: [], deduped: true };
   }
   return {
     deduped: false,
@@ -235,7 +287,7 @@ export function buildQueueTaskWrapper(packet: EscalationPacket, at: string): Que
     body: [
       packet.outcomeWanted,
       "",
-      `Incident issue: ${repo}#${n} (the watchdog auto-closes it on the next producer success — do not close it by hand).`,
+      `Incident issue: ${repo}#${n} (the watchdog records recovery here but does not close the issue or complete the task).`,
       `Required capability: ${packet.requiredCapability}`,
       `Acceptance: ${packet.acceptance}`,
     ].join("\n"),
@@ -262,7 +314,7 @@ export function buildQueueTaskWrapper(packet: EscalationPacket, at: string): Que
       ],
       acceptance: [
         packet.acceptance,
-        `incident issue ${repo}#${n} is auto-commented and auto-closed by the watchdog on producer success (the fixer closes nothing by hand)`,
+        `a producer recovery is recorded on incident issue ${repo}#${n}; issue and task disposition remain with the authorized authority`,
       ],
       tests: [
         "the producer for this source writes a fresh latest.json with status ok and real quota windows",
@@ -320,8 +372,8 @@ export function recordEscalation(
     };
   } else if (prev) {
     // Class changed: the displaced hand-off stays on the record
-    // (flattened into `previous`) so recovery can close and complete
-    // it and dedupe can find it again (Codex P2 on PR #8357).
+    // (flattened into `previous`) so recovery can report on it and
+    // dedupe can find it again (Codex P2 on PR #8357).
     const { previous: prevPrevious, ...prevFlat } = prev;
     escalation = {
       class: cls as EscalationRecord["class"],
@@ -344,6 +396,33 @@ export function recordEscalation(
     ...health,
     incident: { ...health.incident, escalation },
   };
+}
+
+/**
+ * Stamp a confirmed re-escalation (#10630) onto the hand-off record
+ * for the health record's current failure class — the current record,
+ * or the displaced one in `previous` when the class changed away and
+ * back. The next repeat window is measured from this stamp, so a
+ * re-escalation fires once per window, never once per tick. Pure.
+ */
+export function recordReEscalation(health: SourceHealth, at: string): SourceHealth {
+  const incident = health.incident;
+  if (!incident?.escalation) return health;
+  const esc = incident.escalation;
+  if (esc.class === health.currentClass) {
+    return { ...health, incident: { ...incident, escalation: { ...esc, lastReEscalatedAt: at } } };
+  }
+  if (!esc.previous) return health;
+  let stamped = false;
+  const previous = esc.previous.map((rec) => {
+    if (!stamped && rec.class === health.currentClass) {
+      stamped = true;
+      return { ...rec, lastReEscalatedAt: at };
+    }
+    return rec;
+  });
+  if (!stamped) return health;
+  return { ...health, incident: { ...incident, escalation: { ...esc, previous } } };
 }
 
 /**
@@ -382,16 +461,18 @@ export function surfacingLine(health: SourceHealth, now: number): string | null 
 
 /**
  * Plan the recovery effects for a source whose incident was escalated
- * and whose latest observation is a producer success. Call with the
- * PRE-tick health record (decide's healthy path clears the incident in
- * the next record; the refs live on the old one). Pure.
+ * and whose latest observation is a producer success. Recovery is an
+ * operational update only: issue closure and queue-task completion are
+ * reserved for their authorized disposition paths. Call with the
+ * PRE-tick health record (the refs live on the old one). Pure.
  */
 export function planRecovery(health: SourceHealth, recoveredAt: string): EscalationAction[] {
   const esc = health.incident?.escalation;
   if (!esc) return [];
-  // Close and complete EVERY hand-off the incident carries (Codex P2
+  // Report recovery for EVERY hand-off the incident carries (Codex P2
   // on PR #8357): when the failure class changed mid-incident, the
-  // earlier pair in `previous` is just as open as the latest one.
+  // earlier issue is just as open as the latest one. Disposition is not
+  // a watchdog recovery effect.
   const records: EscalationRecord[] = [esc, ...(esc.previous ?? [])];
   const actions: EscalationAction[] = [];
   for (const rec of records) {
@@ -400,12 +481,8 @@ export function planRecovery(health: SourceHealth, recoveredAt: string): Escalat
         type: "comment_issue",
         repo: rec.issueRepo,
         issueNumber: rec.issueNumber,
-        body: `Recovered: source \`${health.source}\` produced a fresh document at ${recoveredAt}; the watchdog is auto-closing this incident (#6033).`,
+        body: `Recovered: source \`${health.source}\` produced a fresh document at ${recoveredAt}. The watchdog resolved the operational attention state; the issue remains open for authorized disposition (#6033).`,
       });
-      actions.push({ type: "close_issue", repo: rec.issueRepo, issueNumber: rec.issueNumber });
-    }
-    if (rec.queueTaskId !== null) {
-      actions.push({ type: "complete_task", queueTaskId: rec.queueTaskId });
     }
   }
   return actions;
@@ -416,7 +493,7 @@ export function planRecovery(health: SourceHealth, recoveredAt: string): Escalat
  *  confirmed refs ride on the error so the caller can persist them
  *  via recordEscalation before retrying — without them, the retry
  *  plan would re-create the confirmed half and duplicate repair
- *  work, and recovery could never complete the orphaned task. */
+ *  work, and recovery must never dispose of its orphaned task. */
 export class EscalationPartialError extends Error {
   readonly refs: { queueTaskId: string | null; issueNumber: number | null };
   constructor(cause: unknown, refs: { queueTaskId: string | null; issueNumber: number | null }) {
@@ -458,12 +535,6 @@ export async function applyEscalationActions(
           break;
         case "comment_issue":
           await effectors.commentIssue(action);
-          break;
-        case "close_issue":
-          await effectors.closeIssue(action);
-          break;
-        case "complete_task":
-          await effectors.completeTask(action);
           break;
       }
     } catch (err) {

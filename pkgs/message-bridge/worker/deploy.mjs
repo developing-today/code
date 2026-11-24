@@ -162,7 +162,8 @@ if (args.mode === "print-urls") {
   const chatgpt = tokenFromVault(names.chatgpt);
   console.log(`claude connector:  ${publicUrl}/mcp/${token}`);
   console.log(`chatgpt connector: ${chatgpt ? `${publicUrl}/mcp/${chatgpt}` : "(none yet; a full deploy creates it)"}`);
-  console.log(`page:              ${publicUrl}/p/${token}`);
+  console.log(`owner link:        ${publicUrl}/p/${token} (sets the owner cookie, redirects to the console)`);
+  console.log(`console:           ${configUrl("CONSOLE_URL") || "https://pm.security.cab/console/#more/messages"}`);
   console.log(`api:               ${publicUrl}/api/${token}/messages`);
   process.exit(0);
 }

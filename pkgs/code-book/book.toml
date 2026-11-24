@@ -1,0 +1,18 @@
+# mdBook configuration for the Code Book (#13905).
+# The book root is pkgs/code-book itself so the sources stay next to the
+# programme they document: plain markdown under book/, readable on GitHub
+# exactly as written, and rendered as a book via the .#code-docs
+# flake output (pkgs/code-book/docs.nix).
+[book]
+title = "Code Book"
+authors = ["developing-today"]
+language = "en"
+src = "book"
+
+[build]
+build-dir = "rendered"
+# Every chapter in SUMMARY.md must exist on disk; never invent stubs.
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/developing-today/code"

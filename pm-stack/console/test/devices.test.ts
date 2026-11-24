@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { actions, perform } from "../src/actions.ts";
 import { AuthError } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
-import { challengeOf, Devices, Limiter, summary } from "../src/devices.ts";
+import { challengeOf, Devices, KeyedLimiter, Limiter, summary } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { fileStore } from "../src/file-store.ts";
 import { OpError, Ops } from "../src/ops.ts";
@@ -37,6 +37,17 @@ function store(now = { t: 1_800_000_000_000 }) {
     bytes: () => readFileSync(file, "utf8"),
     done: () => rmSync(dir, { recursive: true, force: true }),
   };
+}
+
+function memoryDevices(now: () => number) {
+  let contents: string | null = null;
+  const kept = {
+    read: async () => contents,
+    write: async (value: string) => {
+      contents = value;
+    },
+  };
+  return new Devices(kept, now);
 }
 
 describe("linking a phone", () => {
@@ -119,6 +130,85 @@ describe("linking a phone", () => {
     }
   });
 
+  test("phone-link sync merges hashes and propagates owner removals without transmitting tokens", async () => {
+    const owner = store();
+    const other = store();
+    try {
+      await owner.devices.approve({ challenge: hashOf(VERIFIER), name: "Pocket" });
+      const linked = await owner.devices.link(VERIFIER);
+      const token = linked!.token;
+      const snapshot = await owner.devices.links();
+      expect(JSON.stringify(snapshot)).not.toContain(token);
+      expect(snapshot.devices).toEqual([
+        expect.objectContaining({ id: linked!.id, name: "Pocket", hash: expect.any(String) }),
+      ]);
+      await other.devices.mergeLinks(snapshot);
+      expect((await other.devices.check(token))?.name).toBe("Pocket");
+
+      await owner.devices.remove({ id: linked!.id });
+      await other.devices.mergeLinks(await owner.devices.links());
+      expect(await other.devices.check(token)).toBeNull();
+      // A stale pre-removal report cannot resurrect an owner-removed phone.
+      await other.devices.mergeLinks(snapshot);
+      expect(await other.devices.check(token)).toBeNull();
+    } finally {
+      owner.done();
+      other.done();
+    }
+  });
+
+  test("property: generated link/remove histories never resurrect a removed token", async () => {
+    // Deterministic LCG: generated independent endpoint clocks and delivery
+    // orders make this reproducible while exploring many replication histories.
+    let seed = 0x12528;
+    const next = () => {
+      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+      return seed;
+    };
+
+    for (let history = 0; history < 250; history++) {
+      const base = 1_800_000_000_000 + history * 10_000;
+      const skew = next() % (2 * 60_000 + 1);
+      const hostNow = { t: base + skew };
+      const edgeNow = { t: base - (120_000 - skew) };
+      const host = memoryDevices(() => hostNow.t);
+      const edge = memoryDevices(() => edgeNow.t);
+      const verifier = String(history).padStart(3, "0").repeat(15).slice(0, 43);
+
+      await host.approve({ challenge: hashOf(verifier), name: "Generated phone" });
+      const linked = await host.link(verifier);
+      expect(linked).not.toBeNull();
+      const staleLink = await host.links();
+      await edge.mergeLinks(staleLink);
+
+      // The edge's removal timestamp can be earlier than the host-created
+      // link timestamp by almost the full supported two-minute sync skew.
+      await edge.remove({ id: (await edge.list())[0].id });
+      const removal = await edge.links();
+      if (next() & 1) await host.mergeLinks(staleLink);
+      await host.mergeLinks(removal);
+      expect((await host.links()).devices.some((device) => device.hash === staleLink.devices[0].hash)).toBe(false);
+
+      // Replaying any previously captured link snapshot cannot restore it.
+      await host.mergeLinks(staleLink);
+      expect((await host.links()).devices.some((device) => device.hash === staleLink.devices[0].hash)).toBe(false);
+      expect(await host.check(linked!.token)).toBeNull();
+    }
+  });
+
+  test("malformed link snapshots are ignored", async () => {
+    const s = store();
+    try {
+      await s.devices.mergeLinks({
+        devices: [{ id: "bad", hash: "raw-token", name: "x", createdAt: "y", seenAt: null }],
+        removed: "bad",
+      });
+      expect(await s.devices.links()).toEqual({ devices: [], removed: [] });
+    } finally {
+      s.done();
+    }
+  });
+
   test("no more than eight phones, and no more than four requests waiting", async () => {
     const s = store();
     try {
@@ -172,6 +262,7 @@ describe("the summary", () => {
     census: { hands: [{}, {}, {}], reviews: [{}], other: [{}, {}, {}, {}, {}] },
     asks: [{ status: "answered" }, { status: "working" }, { status: "done" }, { status: "queued" }],
     questionCount: { total: 7, sets: 2 },
+    pipeline: { unreadInstructions: 3 },
   };
 
   test("counts and the top lines, with the same needs sum as the app's badge", () => {
@@ -189,6 +280,8 @@ describe("the summary", () => {
       next: { count: 2, top: ["N1", "N2"] },
       // 7 questions + (3 hands + 2 sessions waiting) + 1 review; "other" is the fleet's to decide.
       needs: { total: 13, questions: 7, hands: 5, reviews: 1 },
+      // The pipeline section's count, carried through whole (#14377).
+      messages: { unreadInstructions: 3 },
       asks: { answered: 1, waiting: 2 },
     });
   });
@@ -200,6 +293,7 @@ describe("the summary", () => {
       now: { count: 0, top: [] },
       next: { count: 0, top: [] },
       needs: { total: 0, questions: 0, hands: 0, reviews: 0 },
+      messages: { unreadInstructions: 0 },
       asks: { answered: 0, waiting: 0 },
     });
     const long = summary({ board: { counts: {}, now: [{ title: "x".repeat(300), step: "y".repeat(300) }] } }, 1) as {
@@ -226,7 +320,9 @@ describe("over HTTP, without the sign-in", () => {
           "questions",
           "prs",
           "priorities",
+          "done",
           "agents",
+          "pipeline",
           "services",
           "more",
         ].map((name) => [
@@ -240,7 +336,9 @@ describe("over HTTP, without the sign-in", () => {
                 ? { counts: { claimed: 2, queued: 1 }, now: [{ title: "T" }], next: [] }
                 : name === "questionCount"
                   ? { total: 3 }
-                  : [];
+                  : name === "pipeline"
+                    ? { unreadInstructions: 2 }
+                    : [];
             },
           },
         ]),
@@ -310,20 +408,21 @@ describe("over HTTP, without the sign-in", () => {
         now: { count: 2, top: [{ title: "T", step: "" }] },
         next: { count: 1, top: [] },
         needs: { total: 3, questions: 3, hands: 0, reviews: 0 },
+        messages: { unreadInstructions: 2 },
         asks: { answered: 0, waiting: 0 },
       });
       // Only the sections the summary is built from were read.
-      expect([...w.reads].sort()).toEqual(["asks", "board", "census", "questionCount", "sessions"]);
+      expect([...w.reads].sort()).toEqual(["asks", "board", "census", "pipeline", "questionCount", "sessions"]);
       // Read again at once: served from memory.
       await w.read(token);
-      expect(w.reads).toHaveLength(5);
+      expect(w.reads).toHaveLength(6);
       // A widget's read does not count as someone looking: the loop stays idle.
       w.now.t += 60_000;
       w.docs.tick();
-      expect(w.reads).toHaveLength(5);
+      expect(w.reads).toHaveLength(6);
       // The next read, after the sections have aged, reads them again and waits for them.
       expect(((await (await w.read(token)).json()) as { at: string }).at).toBe(new Date(w.now.t).toISOString());
-      expect(w.reads).toHaveLength(10);
+      expect(w.reads).toHaveLength(12);
     } finally {
       w.done();
     }
@@ -497,4 +596,38 @@ describe("over HTTP, without the sign-in", () => {
       w.done();
     }
   });
+});
+
+test("a limit kept apart for each sender forgets old senders and never grows past its table", () => {
+  const now = { t: 1_000_000 };
+  const limit = new KeyedLimiter(3, 60_000, () => now.t, 4);
+  // Under the allowance: not blocked. At it: blocked, for that key only.
+  limit.count("a");
+  limit.count("a");
+  expect(limit.blocked("a")).toBe(false);
+  limit.count("a");
+  expect(limit.blocked("a")).toBe(true);
+  expect(limit.blocked("b")).toBe(false);
+  // The window is the key's own, from its first count.
+  now.t += 59_999;
+  expect(limit.blocked("a")).toBe(true);
+  now.t += 1;
+  expect(limit.blocked("a")).toBe(false);
+  limit.count("a");
+  expect(limit.blocked("a")).toBe(false);
+  // A full table makes room: what has run out goes first, then the oldest.
+  for (const key of ["b", "c", "d"]) {
+    limit.count(key);
+    limit.count(key);
+    limit.count(key);
+  }
+  expect(["a", "b", "c", "d"].map((key) => limit.blocked(key))).toEqual([false, true, true, true]);
+  limit.count("e");
+  limit.count("f");
+  // "a" and "b" were the oldest: forgotten, so no longer blocked; the newest are counted.
+  expect(limit.blocked("b")).toBe(false);
+  expect(limit.blocked("d")).toBe(true);
+  limit.count("f");
+  limit.count("f");
+  expect(limit.blocked("f")).toBe(true);
 });

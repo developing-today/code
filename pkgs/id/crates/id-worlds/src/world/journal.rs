@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use super::signed;
 use super::{
-    CheckpointKvEntry, CheckpointSchedule, FileScope, HandoffTransferState, Isolation,
-    LeaseRejectionReason, ModuleProvenance, Participant, WorldEvent, WorldEventKind, WriteLease,
-    hex_decode, hex_encode, replication,
+    CheckpointBlobEntry, CheckpointKvEntry, CheckpointSchedule, FileScope, HandoffTransferState,
+    Isolation, LeaseRejectionReason, ModuleProvenance, Participant, WorldEvent, WorldEventKind,
+    WriteLease, hex_decode, hex_encode, replication,
 };
 
 /// One durable fact in the region coordinator's own journal (#3870 phase 1,
@@ -423,6 +423,27 @@ pub enum JournalEntry {
         /// The key that was removed.
         key: String,
     },
+    /// A `blob.put` request stored new content (#1062): the blob
+    /// addressed by `hash` — the content's iroh-blobs hash, as
+    /// lowercase hex — now holds `data`, the content as base64.
+    /// Written before the request's result is delivered, and only
+    /// when the world did not already hold the blob: putting content
+    /// the world already holds is a no-op and journals nothing.
+    /// Replay decodes `data` and refuses the entry unless it hashes
+    /// back to `hash`, so the journal is self-verifying.
+    BlobStored {
+        /// The blob's content address: its hash as lowercase hex.
+        hash: String,
+        /// The content, as base64.
+        data: String,
+    },
+    /// A `blob.delete` request removed a live blob (#1062). Written
+    /// only when the blob was present, before the request's result
+    /// is delivered.
+    BlobRemoved {
+        /// The hash of the blob that was removed.
+        hash: String,
+    },
     /// A participant's author key was bound for signed play (#2814,
     /// #4346). Written when the binding is first made; replaying it
     /// restores the binding and the author's (still empty) chain, so a
@@ -514,6 +535,12 @@ pub enum JournalEntry {
         /// authority's clock; absent for an untermed holder.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at_ms: Option<u64>,
+        /// The entry's durable per-world journal position (#13711):
+        /// strictly increasing across lease entries in journal order,
+        /// assigned by the append authority. `0` means unstamped: a
+        /// lease entry written before positions existed.
+        #[serde(default)]
+        position: u64,
     },
     /// The current holder's lease term was renewed by the authority
     /// (design #2819). The epoch is unchanged.
@@ -524,6 +551,10 @@ pub enum JournalEntry {
         epoch: u64,
         /// The new term expiry, in unix milliseconds.
         expires_at_ms: u64,
+        /// The entry's durable per-world journal position (#13711);
+        /// `0` means unstamped (pre-positions entry).
+        #[serde(default)]
+        position: u64,
     },
     /// The write lease was handed from one holder to another
     /// (design #2819). This entry's journal position is the ownership
@@ -540,6 +571,10 @@ pub enum JournalEntry {
         /// absent for an untermed holder.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expires_at_ms: Option<u64>,
+        /// The entry's durable per-world journal position (#13711);
+        /// `0` means unstamped (pre-positions entry).
+        #[serde(default)]
+        position: u64,
     },
     /// The write lease was revoked by the authority (design #2819):
     /// the former holder is fenced at the resulting epoch and no
@@ -551,6 +586,10 @@ pub enum JournalEntry {
         epoch: u64,
         /// Why the lease was revoked.
         reason: String,
+        /// The entry's durable per-world journal position (#13711);
+        /// `0` means unstamped (pre-positions entry).
+        #[serde(default)]
+        position: u64,
     },
     /// An authenticated append attempt was refused by the append gate
     /// and the authority journaled the attempt as an audit record
@@ -570,6 +609,10 @@ pub enum JournalEntry {
         /// When the authority received the attempt, in unix
         /// milliseconds on the authority's clock.
         received_at_ms: u64,
+        /// The entry's durable per-world journal position (#13711);
+        /// `0` means unstamped (pre-positions entry).
+        #[serde(default)]
+        position: u64,
     },
     /// One UTF-8-safe part of a compacted program snapshot. The complete set
     /// immediately precedes its checkpoint and is keyed by that checkpoint's
@@ -636,6 +679,13 @@ pub enum JournalEntry {
         /// empty, and it must match the `KvSet` entries before it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kv: Option<Vec<CheckpointKvEntry>>,
+        /// Live blob index (#1062): hash and content size per live
+        /// blob. Absent when the world holds no blobs, and it must
+        /// match the `BlobStored` entries before it. Only the index
+        /// is declared, never the content — the entries carry the
+        /// bytes, and each is hash-verified as it replays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blobs: Option<Vec<CheckpointBlobEntry>>,
         /// Active region-seam handoffs (#3870 phase 1, design #2818 §3):
         /// export fences/payloads, import receipts/dedupe keys and owner
         /// epochs, so compaction cannot resurrect an exported entity or
@@ -674,6 +724,39 @@ pub enum JournalEntry {
 pub struct JournalAdminHistory {
     pub(crate) events: Vec<WorldEvent>,
     pub(crate) complete: bool,
+}
+
+impl JournalAdminHistory {
+    /// Build an admin-history window for a checkpoint.
+    ///
+    /// This is the public construction path for code outside
+    /// `id-worlds` — benches, integration tests and downstream
+    /// tooling writing journal fixtures (#13421): the fields stay
+    /// crate-private so the window's contents are only ever set
+    /// whole, here or by the journal writer itself. `events` is the
+    /// ordered sequenced and host-originated window the checkpoint
+    /// carries; `complete` states whether that window reaches back
+    /// to the start of the world's history, the same claim the
+    /// writer records from its own admin-history state.
+    pub const fn new(events: Vec<WorldEvent>, complete: bool) -> Self {
+        Self { events, complete }
+    }
+
+    /// The ordered events this window carries.
+    pub fn events(&self) -> &[WorldEvent] {
+        &self.events
+    }
+
+    /// Whether this window reaches back to the start of the
+    /// world's history.
+    pub const fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Consume the window, returning its events.
+    pub fn into_events(self) -> Vec<WorldEvent> {
+        self.events
+    }
 }
 
 /// Version written in a new journal's [`JournalEntry::Created`] header.
@@ -783,17 +866,48 @@ pub const JOURNAL_VERSION_JOIN_TIMES: u32 = 12;
 /// containing them must be refused at the header check instead.
 pub const JOURNAL_VERSION_KV: u32 = 13;
 
+/// Journal version 14 (#1062): the `blob` store entries
+/// ([`JournalEntry::BlobStored`] / [`JournalEntry::BlobRemoved`])
+/// and a checkpoint carrying a `blobs` field. A version-13 binary
+/// cannot parse the new entry kinds and would fail mid-replay, so a
+/// journal containing them must be refused at the header check
+/// instead.
+pub const JOURNAL_VERSION_BLOB: u32 = 14;
+
+/// Journal version 15 (#1062): a journal that carries a
+/// `notify` provider event — a committed (or retained) event of
+/// kind [`WorldEventKind::Notification`]. The entry kinds are the
+/// old ones; the *event* kind is new, exactly as an
+/// entity-addressed input event required
+/// [`JOURNAL_VERSION_REGION_HANDOFF`]. A version-14 binary cannot
+/// parse the event kind and would fail mid-replay, so a journal
+/// containing one must be refused at the header check instead.
+pub const JOURNAL_VERSION_NOTIFY: u32 = 15;
+
+/// Journal version 16 (#13711): a lease entry
+/// ([`JournalEntry::LeaseGranted`] and its siblings) carrying a
+/// stamped journal `position`, or a checkpoint carrying a lease
+/// history with stamped positions. The field is optional, so a
+/// version-15 binary would parse such an entry yet drop the
+/// position at its next checkpoint — silently unmooring the
+/// replay barrier the position names — so a journal containing a
+/// stamped position must be refused at the header check instead.
+/// Unstamped (position 0) lease entries keep version 7.
+pub const JOURNAL_VERSION_LEASE_POSITION: u32 = 16;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_KV;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_LEASE_POSITION;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
 /// version 4 for entries persisting a per-world total memory budget, version 5
 /// for checkpoints with open-presence metadata, and version 6 for checkpoint
 /// part entries. Checkpoints combine the requirements of their transfers,
-/// retained events, profile and presence field.
+/// retained events, profile and presence field. A lease entry carrying a
+/// stamped journal position requires version 16, as does a checkpoint whose
+/// lease history carries one; unstamped lease entries keep version 7.
 ///
 /// Any entry that records a program-bundle install additionally requires
 /// [`JOURNAL_VERSION_PROGRAM_BUNDLE`].
@@ -861,11 +975,17 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         JournalEntry::EntityExported { .. } | JournalEntry::EntityImported { .. } => {
             JOURNAL_VERSION_REGION_HANDOFF
         }
-        JournalEntry::LeaseGranted { .. }
-        | JournalEntry::LeaseRenewed { .. }
-        | JournalEntry::LeaseHandedOff { .. }
-        | JournalEntry::LeaseRevoked { .. }
-        | JournalEntry::LeaseWriteRejected { .. } => JOURNAL_VERSION_WRITE_LEASE,
+        JournalEntry::LeaseGranted { position, .. }
+        | JournalEntry::LeaseRenewed { position, .. }
+        | JournalEntry::LeaseHandedOff { position, .. }
+        | JournalEntry::LeaseRevoked { position, .. }
+        | JournalEntry::LeaseWriteRejected { position, .. } => {
+            if *position == 0 {
+                JOURNAL_VERSION_WRITE_LEASE
+            } else {
+                JOURNAL_VERSION_LEASE_POSITION
+            }
+        }
         JournalEntry::AuthorKeyBound { .. } | JournalEntry::SignedMoveAccepted { .. } => {
             JOURNAL_VERSION_SIGNED_PLAY
         }
@@ -874,6 +994,7 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         | JournalEntry::CheckpointAdminPart { .. } => JOURNAL_VERSION_CHECKPOINT_PARTS,
         JournalEntry::Committed { event } | JournalEntry::System { event } => match &event.kind {
             WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
+            WorldEventKind::Notification { .. } => JOURNAL_VERSION_NOTIFY,
             _ => JOURNAL_VERSION,
         },
         // A checkpoint stands in for the entries it compacted, so it must
@@ -893,6 +1014,7 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             JOURNAL_VERSION_SCHEDULE_RECURRENCE
         }
         JournalEntry::KvSet { .. } | JournalEntry::KvDeleted { .. } => JOURNAL_VERSION_KV,
+        JournalEntry::BlobStored { .. } | JournalEntry::BlobRemoved { .. } => JOURNAL_VERSION_BLOB,
         JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
         JournalEntry::Checkpoint {
             transfers,
@@ -902,9 +1024,36 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             execution_profile,
             schedules,
             kv,
+            blobs,
+            admin_history,
             ..
         } => {
-            let base = if kv.is_some() {
+            // A checkpoint with a stamped lease history requires
+            // version 16, above every other content version: the
+            // check is ordered highest-first, so this arm comes
+            // before the notify/blob/kv arms below.
+            let base = if lease
+                .as_ref()
+                .is_some_and(|lease| lease.last_position() > 0)
+            {
+                JOURNAL_VERSION_LEASE_POSITION
+            // A retained `Notification` event is a version-15 kind
+            // wherever the checkpoint carries it — the retained
+            // events or the admin history (the both-places check
+            // the bundle-provenance rule uses).
+            } else if events
+                .iter()
+                .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
+                || admin_history.as_ref().is_some_and(|history| {
+                    history
+                        .events
+                        .iter()
+                        .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
+                }) {
+                JOURNAL_VERSION_NOTIFY
+            } else if blobs.is_some() {
+                JOURNAL_VERSION_BLOB
+            } else if kv.is_some() {
                 JOURNAL_VERSION_KV
             } else if schedules.as_ref().is_some_and(|declared| {
                 declared
@@ -942,25 +1091,141 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
     }
 }
 
+/// When a journal acknowledges an append relative to the sync that
+/// makes it durable (#557; design record
+/// `doc/2026-11-23T00-24-00Z_design_journal_ack_modes`).
+///
+/// The mode is a property of the journal, chosen per world at open
+/// time (see `WorldLimits::journal_ack_mode`). It is runtime
+/// configuration, never journaled state: the entry bytes, the journal
+/// format and the recovery scan are identical in every mode, so
+/// reopening a journal under a different mode re-reads exactly the
+/// entries that survived — a mode changes what a *future*
+/// acknowledgement promises, never what existing bytes mean.
+///
+/// The three durability levers, side by side:
+///
+/// - **The sync primitive** is `fdatasync` per sync, in every mode.
+///   Sharing one `syncfs` across journals was measured on three
+///   filesystems and lost to `fdatasync` on all of them (fleet runner
+///   ~2.5x, sandbox btrfs ~1.26x, reference-laptop ext4 1.07x median /
+///   1.44x p99), so it is not used; the question reopens only if
+///   `syncfs` gets cheaper than `fdatasync`.
+/// - **Sync sharing** (group commit) needs appends to queue behind an
+///   in-flight sync; a journal's only producer is its owning actor,
+///   blocked until the in-flight append returns, so per-journal
+///   concurrency is 1 by construction and the measured batching
+///   headroom at the F12.12 operating point is zero. `append_batch`
+///   already lands a caller-formed batch with a single sync.
+/// - **Ack timing** — this enum — is the remaining lever: how much
+///   durability an acknowledgement waits for. It is a semantics
+///   choice, so it is opt-in per world and the default does not move.
+///
+/// Guarantees that hold in **every** mode: appends land in call order
+/// and a completed sync always covers a prefix of the history, so
+/// recovery never sees a later entry without its predecessors; a
+/// *process* crash loses nothing already written (the bytes are in the
+/// OS page cache) — the loss window below is an OS crash or power
+/// loss; transactions and compaction always build, sync and rename a
+/// complete journal, regardless of mode. One honesty note for the
+/// relaxed modes: the replication feed reads written journal bytes,
+/// so a replica can receive an entry before it is durable on the
+/// source, and after a source OS crash can hold an entry the source's
+/// recovered journal no longer has. Worlds that replicate for
+/// durability rather than liveness should stay in `Sync` mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JournalAckMode {
+    /// Acknowledge only after a sync covering the entry completes:
+    /// one `write_all` + one `sync_data` per append, one sync per
+    /// batch. Acknowledged means durable, unconditionally — the
+    /// original `WorldJournal` contract, byte-for-byte.
+    ///
+    /// Cost: one sync latency on every input's ack path (the #557
+    /// profile: the ack essentially *is* the sync wait). Choose this
+    /// unless a world has a measured reason not to; it is the default
+    /// because it is the only mode that never loses an acknowledged
+    /// input.
+    #[default]
+    Sync,
+    /// Acknowledge after the write; sync once per
+    /// `crate::world_store::JOURNAL_ACK_BATCH_SIZE` appends. An
+    /// acknowledged append is durable once its batch's sync completes;
+    /// until then it is written but not durable.
+    ///
+    /// Guarantee: recovery after a crash sees a prefix of the
+    /// acknowledged history — loss is bounded to the unsynced tail,
+    /// at most `JOURNAL_ACK_BATCH_SIZE - 1` acknowledged appends plus
+    /// the one in flight, never a hole in the middle. Choose this for
+    /// high-rate worlds whose inputs are individually cheap to lose in
+    /// a bounded tail and whose bottleneck is sync latency: it pays
+    /// one sync per batch of inputs instead of one per input. (With a
+    /// single sequential producer the win is sync *count*, not sync
+    /// sharing.)
+    Batched,
+    /// Acknowledge after the write, with no sync on the append path at
+    /// all. Durability arrives only at sync points: an explicit
+    /// [`WorldJournal::sync`], a checkpoint/compaction, or a
+    /// transaction.
+    ///
+    /// Guarantee: acknowledged means written to the OS, in order —
+    /// nothing more. An OS crash can lose every input since the last
+    /// sync point (in practice bounded by checkpoint cadence, since a
+    /// checkpoint compaction syncs in full). Choose this only for
+    /// worlds whose journal is a rebuildable cache — throwaway or dev
+    /// worlds — never for history anyone will audit.
+    Async,
+}
+
 /// Durable, append-only record of a world's history.
 ///
 /// The actor calls `append` before acknowledging or broadcasting a mutation.
 /// If `append` fails, the world turns read-only: acknowledged history must
-/// never get ahead of durable history.
+/// never get ahead of durable history — in the journal's
+/// [`JournalAckMode`] the ack may get ahead of *durability* only as far
+/// as that mode's documented bound, and never ahead of the journal
+/// itself.
 pub trait WorldJournal: Send + 'static {
-    /// Durably append one entry.
+    /// The acknowledgement mode this journal runs (see
+    /// [`JournalAckMode`]). The default is [`JournalAckMode::Sync`],
+    /// the original durability-before-ack contract; a journal that
+    /// relaxes it says so here, where any reader can see it.
+    fn ack_mode(&self) -> JournalAckMode {
+        JournalAckMode::Sync
+    }
+
+    /// Make every append acknowledged so far durable. In
+    /// [`JournalAckMode::Sync`] this is a no-op by construction (each
+    /// append synced before it returned); relaxed modes flush their
+    /// unsynced tail here. Checkpoints, transactions and compaction
+    /// are also sync points and never need this call first.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure from the flush; the actor then refuses further
+    /// mutations, as for a failed append.
+    fn sync(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Append one entry, acknowledging it under this journal's
+    /// [`JournalAckMode`](Self::ack_mode): in the default
+    /// [`JournalAckMode::Sync`] the entry is durable before this
+    /// returns.
     ///
     /// # Errors
     ///
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
 
-    /// Durably append a batch of entries in order (group commit, #8239):
-    /// where the journal can, the batch lands with a single sync, and
-    /// durability-before-ack applies to the batch as a whole - either
-    /// every entry is durable or the batch has failed and none may be
-    /// acknowledged. The default is the per-entry append loop, which is
-    /// always correct, just slower.
+    /// Append a batch of entries in order (group commit, #8239):
+    /// where the journal can, the batch lands with a single sync. In
+    /// [`JournalAckMode::Sync`] durability-before-ack applies to the
+    /// batch as a whole - either every entry is durable or the batch
+    /// has failed and none may be acknowledged; relaxed modes count
+    /// the batch's entries toward their own sync accounting (see
+    /// [`JournalAckMode`]). The default is the per-entry append loop,
+    /// which is always correct, just slower.
     ///
     /// # Errors
     ///

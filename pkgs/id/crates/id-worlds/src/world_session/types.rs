@@ -45,6 +45,12 @@ pub(crate) const MAX_CONCURRENT_MODULE_UPLOADS: usize = 2;
 pub enum Inbound {
     /// A complete text frame no larger than [`MAX_FRAME_BYTES`].
     Text(String),
+    /// A complete binary frame no larger than [`MAX_FRAME_BYTES`], on a
+    /// transport that carries bytes. Client frames are text by protocol,
+    /// so the driver fails a binary frame safely, exactly like
+    /// [`Inbound::Unsupported`]; the variant exists so byte-capable
+    /// transports can report the frame instead of discarding it.
+    Bytes(Vec<u8>),
     /// A frame larger than [`MAX_FRAME_BYTES`] (its contents are discarded).
     Oversized,
     /// A frame that is not UTF-8 text.
@@ -53,15 +59,28 @@ pub enum Inbound {
     Closed,
 }
 
-/// Moves whole text frames for one session.
+/// Moves whole frames for one session.
 ///
 /// `recv` must be cancel-safe: the driver races it against world events and a
 /// cancelled call must not lose or split a frame.
 pub trait SessionIo: Send {
     /// Next inbound frame.
     fn recv(&mut self) -> impl Future<Output = Inbound> + Send;
-    /// Send one frame. Returns `false` when the peer is gone.
+    /// Send one text frame. Returns `false` when the peer is gone.
     fn send(&mut self, frame: String) -> impl Future<Output = bool> + Send;
+    /// Whether this transport can carry binary frames. Only a session
+    /// on a byte-capable transport may negotiate binary screen patches
+    /// (F12.11 phase 3); on any other transport the negotiation falls
+    /// back to the JSON patch path.
+    fn supports_bytes(&self) -> bool {
+        false
+    }
+    /// Send one binary frame. Returns `false` when the peer is gone —
+    /// and on transports that cannot carry bytes, which never send.
+    fn send_bytes(&mut self, frame: Vec<u8>) -> impl Future<Output = bool> + Send {
+        let _ = frame;
+        std::future::ready(false)
+    }
     /// Mark this session authorized after its application-level
     /// capability or admin credential has been validated.
     fn mark_authorized(&mut self) {}
@@ -192,6 +211,23 @@ pub(crate) enum ClientFrame {
         /// Opt in to revisioned JSON screen patches. Omitted by v1 clients.
         #[serde(default)]
         screen_patches: bool,
+        /// Opt in to negotiated binary screen patches (F12.11 phase 3,
+        /// contract revision 12): when `screen_patches` is also set and
+        /// the transport carries bytes, patch frames arrive as versioned
+        /// MessagePack binary frames instead of JSON `view` frames.
+        /// Anywhere else — no patch opt-in, a text-only transport — the
+        /// session keeps the JSON patch path unchanged. Omitted by
+        /// clients that predate the revision.
+        #[serde(default)]
+        screen_msgpack: bool,
+        /// Opt in to compressed binary screen patches (F12.11 phase 4,
+        /// contract revision 16): when `screen_msgpack` is also set,
+        /// patch frames arrive as compressed version-2 MessagePack
+        /// frames whenever compression makes the complete frame
+        /// smaller, and as version-1 frames otherwise. Omitted by
+        /// clients that predate the revision.
+        #[serde(default)]
+        screen_compress: bool,
         /// Resume token from this client's last applied view. A cursor, not a
         /// credential: the join capability above still authorizes the session,
         /// and an unknown, stale or foreign token simply gets a full view.
@@ -204,6 +240,10 @@ pub(crate) enum ClientFrame {
         /// it and serves full views at reduced fidelity, same authority.
         #[serde(default)]
         agent_profile: bool,
+        /// Input affordances of this presenter. This is descriptive session
+        /// metadata, not an authority grant; omitted by older clients.
+        #[serde(default)]
+        device_input: Option<serde_json::Value>,
     },
     Info {
         capability: String,

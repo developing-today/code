@@ -38,7 +38,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck } from "./deploy-lib.mjs";
+import { listItems, newestWithTag, parseArgs, parseJsonOutput, servingCheck, singleServingVersion, ghaUploadIdentity, uploadedVersionId, hasExactUpload } from "./deploy-lib.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "queue-transport-alert";
@@ -55,6 +55,9 @@ try {
 }
 
 if (!process.env.CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID is not set; run deploy.sh");
+const gha = process.env.QTA_GHA === "1";
+if (gha && dryRun && deployVersion === null) throw new Error("GHA upload does not accept --dry-run");
+if (gha && !process.env.CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN is required in GHA mode");
 const names = {
   cf: process.env.QTA_CF_TOKEN_SECRET ?? "cloudflare.api-token-day-to-day",
   accessId: process.env.QTA_ACCESS_ID_SECRET ?? "cloudflare.access.queue-broker-client-id",
@@ -62,13 +65,13 @@ const names = {
   github: process.env.QTA_GITHUB_TOKEN_SECRET ?? "github.developing-today-code-automation",
   telegram: process.env.QTA_TELEGRAM_SECRET ?? "openclaw.telegram-bot-token",
 };
-const vault = JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
+const vault = gha ? [] : JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
 const byName = (name) => {
   const value = vault.find((s) => s.key === name)?.value;
   if (!value) throw new Error(`no Bitwarden secret named ${name}`);
   return value.replace(/\r?\n$/, "");
 };
-const env = { ...process.env, CLOUDFLARE_API_TOKEN: byName(names.cf) };
+const env = { ...process.env, CLOUDFLARE_API_TOKEN: gha ? process.env.CLOUDFLARE_API_TOKEN : byName(names.cf) };
 
 // Stage a writable copy (the store path is read-only and cf writes
 // .cloudflare/ build output next to the config) with node_modules
@@ -96,10 +99,10 @@ for (const [name, variable] of [["cf", "QTA_CF_MODULE"], ["wrangler", "QTA_WRANG
   symlinkSync(target, join(stage, "node_modules", name));
 }
 
-function runCf(args, { capture = false } = {}) {
+function runCf(args, { capture = false, outputFile } = {}) {
   return execFileSync("cf", ["-q", ...args], {
     cwd: stage,
-    env,
+    env: outputFile ? { ...env, WRANGLER_OUTPUT_FILE_PATH: outputFile } : env,
     encoding: "utf8",
     stdio: ["inherit", capture ? "pipe" : "inherit", "inherit"],
   });
@@ -154,7 +157,65 @@ async function verify(versionId) {
   console.log(`verified: version ${versionId} serves 100%; ${url} reports the broker ${status.status ?? "unknown"}`);
 }
 
+if (gha && deployVersion === null) {
+  const currentDeployments = listItems(parseJsonOutput(runCf(["workers", "deployments", "list", "--worker", WORKER], { capture: true })), "deployments");
+  const baselineVersion = singleServingVersion(currentDeployments);
+  if (!baselineVersion) {
+    throw new Error("cannot upload code-only version: no single 100% serving baseline version to inherit runtime bindings from");
+  }
+  // Inherits against the latest uploaded version, not necessarily the serving one.
+  const priorVersions = listItems(parseJsonOutput(runCf(["workers", "versions", "list", "--worker-id", WORKER, "--per-page", "1"], { capture: true })), "versions");
+  if (priorVersions[0]?.id !== baselineVersion) {
+    throw new Error("latest upload is not the serving baseline; refusing runtime binding inheritance");
+  }
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (sha !== process.env.QTA_SOURCE_SHA) throw new Error("checkout does not match dispatch SHA");
+  if (!process.env.QTA_HANDOFF_FILE) throw new Error("GHA upload requires a handoff path");
+  const identity = ghaUploadIdentity({ sha, runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT });
+  const outputFile = join(stage, "cf-versions-upload-result.json");
+  runCf(["workers", "versions", "create", "--worker", WORKER, "--tag", identity.tag, "--message", identity.message], { outputFile });
+  const versionId = uploadedVersionId(readFileSync(outputFile, "utf8"), WORKER);
+  const versions = listItems(parseJsonOutput(runCf(["workers", "versions", "list", "--worker-id", WORKER], { capture: true })), "versions");
+  if (!hasExactUpload(versions, versionId, identity)) throw new Error("provider did not read back the exact created version and provenance");
+  const current = listItems(parseJsonOutput(runCf(["workers", "deployments", "list", "--worker", WORKER], { capture: true })), "deployments");
+  if (singleServingVersion(current) !== baselineVersion) throw new Error("serving baseline changed during upload");
+  const handoff = {
+    worker: WORKER,
+    source_sha: sha,
+    tag: identity.tag,
+    version_id: versionId,
+    upload_run_id: process.env.GITHUB_RUN_ID,
+    upload_run_attempt: process.env.GITHUB_RUN_ATTEMPT,
+    upload_event: process.env.GITHUB_EVENT_NAME,
+    upload_ref: process.env.GITHUB_REF,
+    upload_workflow_path: process.env.GITHUB_WORKFLOW_REF?.split("@")[0]?.replace(`${process.env.GITHUB_REPOSITORY}/`, ""),
+    baseline_version_id: baselineVersion,
+  };
+  if (!handoff.upload_run_id || !handoff.upload_run_attempt || !process.env.QTA_HANDOFF_FILE) {
+    throw new Error("GHA upload requires GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT and QTA_HANDOFF_FILE");
+  }
+  await (await import("node:fs/promises")).writeFile(process.env.QTA_HANDOFF_FILE, `${JSON.stringify(handoff, null, 2)}\n`, { mode: 0o600 });
+  console.log(`uploaded version ${versionId}; handoff manifest saved`);
+  process.exit(0);
+}
+
 if (deployVersion !== null) {
+  if (gha) {
+    const handoff = JSON.parse(readFileSync(process.env.QTA_HANDOFF_FILE ?? "", "utf8"));
+    const identity = ghaUploadIdentity({ sha: handoff.source_sha, runId: handoff.upload_run_id, attempt: handoff.upload_run_attempt });
+    if (handoff.worker !== WORKER || handoff.version_id !== deployVersion || handoff.source_sha !== process.env.QTA_SOURCE_SHA ||
+        handoff.upload_run_id !== process.env.QTA_UPLOAD_RUN_ID || handoff.tag !== identity.tag) {
+      throw new Error("handoff manifest does not bind this version to the expected Worker, source SHA, tag and upload run");
+    }
+    const versions = listItems(parseJsonOutput(runCf(["workers", "versions", "list", "--worker-id", WORKER], { capture: true })), "versions");
+    if (!hasExactUpload(versions, deployVersion, identity)) {
+      throw new Error("requested Worker version lacks the verified immutable upload provenance");
+    }
+    const deployments = listItems(parseJsonOutput(runCf(["workers", "deployments", "list", "--worker", WORKER], { capture: true })), "deployments");
+    if (singleServingVersion(deployments) !== handoff.baseline_version_id) {
+      throw new Error("serving baseline changed since code-only upload; refusing promotion because inherited runtime bindings cannot be established");
+    }
+  }
   if (dryRun) {
     console.log(`dry run: would deploy ${WORKER} at existing version ${deployVersion} (100%); nothing created`);
     process.exit(0);

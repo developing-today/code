@@ -66,7 +66,7 @@ import {
 import { mergeChargeRows } from "../charges-collect.ts";
 import type { CloudflareExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
-import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
+import { createNeedsDrewSweeper, needsDrewSweepTtlMs, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
 import {
@@ -124,25 +124,30 @@ import {
   refUrl,
 } from "../model.ts";
 import type { Source } from "../source.ts";
-
-interface FetchResult {
-  ok: boolean;
-  json: unknown;
-}
-
-async function getJson(
-  url: string,
-  headers: Record<string, string> = {},
-  init: RequestInit = {},
-): Promise<FetchResult> {
-  try {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000), ...init });
-    if (!res.ok) return { ok: false, json: { status: res.status } };
-    return { ok: true, json: await res.json() };
-  } catch (err) {
-    return { ok: false, json: { error: String(err) } };
-  }
-}
+import { getJson } from "./http.ts";
+import {
+  LatestCommentsCache,
+  latestPerRef,
+  mergeLinks,
+  projectorComments,
+  projectorItems,
+  projectorLatestComments,
+  projectorLinks,
+} from "./projector.ts";
+export {
+  LATEST_COMMENTS_TTL_MS,
+  LatestCommentsCache,
+  latestPerRef,
+  mapProjectorComment,
+  mapProjectorItem,
+  mergeLinks,
+  parseProjectorLabels,
+  projectorComments,
+  projectorItems,
+  projectorLatestComments,
+  projectorLinks,
+} from "./projector.ts";
+export type { ProjectorCommentRow, ProjectorItemRow, ProjectorLinkRow } from "./projector.ts";
 
 // --- Kaneo --------------------------------------------------------------
 
@@ -338,353 +343,33 @@ async function gristRoadmap(cfg: Config): Promise<RoadmapRow[]> {
   return records.map((rec) => mapGristRoadmapRecord(cfg.grist.docId, rec));
 }
 
-// --- Projector (J's service, pm-stack/projector) -------------------------
-// The wire schema is the projector's schema.sql: snake_case fields, `state`
-// is only open|closed with `merged` as a separate 0/1 flag, and
-// `labels`/`assignees` are JSON array *strings*. Map rows to the read model
-// here; nothing else in the app sees the wire shape.
-
-export interface ProjectorItemRow {
-  ref: string;
-  repo: string;
-  number: number;
-  kind: "issue" | "pr";
-  url: string;
-  title: string;
-  state: "open" | "closed";
-  state_reason?: string | null;
-  draft?: number | boolean;
-  merged?: number | boolean;
-  author?: string | null;
-  labels?: string | string[];
-  assignees?: string | string[];
-  created_at: string;
-  updated_at: string;
-  closed_at?: string | null;
-  merged_at?: string | null;
-}
-
-export interface ProjectorCommentRow {
-  id: string;
-  ref: string;
-  kind: Comment["kind"];
-  author?: string | null;
-  body?: string | null;
-  created_at: string;
-  url?: string;
-  path?: string | null;
-  line?: number | null;
-  review_state?: string | null;
-  commit_id?: string | null;
-  deleted?: number | boolean;
-}
-
-export interface ProjectorLinkRow {
-  subject: string;
-  ref: string;
-  relation: string;
-  note?: string | null;
-  created_by?: string | null;
-  created_at?: string;
-}
-
-const asBool = (v: number | boolean | undefined): boolean => v === 1 || v === true;
-
-export function parseProjectorLabels(labels: string | string[] | undefined): string[] {
-  if (Array.isArray(labels)) return labels;
-  if (typeof labels !== "string" || labels === "") return [];
-  try {
-    const parsed: unknown = JSON.parse(labels);
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-export function mapProjectorItem(row: ProjectorItemRow): GhItem {
-  return {
-    ref: row.ref,
-    kind: row.kind,
-    url: row.url,
-    title: row.title,
-    state: asBool(row.merged) ? "merged" : row.state,
-    draft: asBool(row.draft),
-    labels: parseProjectorLabels(row.labels),
-    author: row.author ?? "",
-    updatedAt: row.updated_at,
-  };
-}
-
-export function mapProjectorComment(row: ProjectorCommentRow): Comment {
-  return {
-    id: String(row.id),
-    ref: row.ref,
-    kind: row.kind,
-    author: row.author ?? "",
-    body: row.body ?? "",
-    createdAt: row.created_at,
-    // #6243 (ref contract rule 4): row.ref is stored projector data; the
-    // stored url wins, and the refUrl fallback fires only for a ref the
-    // shared rule accepts - an invalid stored ref yields no URL instead
-    // of throwing out of the map (cf. the #6211 read gate for links).
-    url: row.url ?? (isValidRef(row.ref) ? refUrl(row.ref, row.kind === "issue_comment" ? "issue" : "pr") : ""),
-    path: row.path ?? undefined,
-    line: row.line ?? undefined,
-    reviewState: row.review_state ?? undefined,
-    deleted: asBool(row.deleted),
-  };
-}
-
-/** Union two link lists, deduped by ref+relation (first relation wins). */
-export function mergeLinks(existing: Link[], extra: Link[]): Link[] {
-  const seen = new Set(existing.map((l) => `${l.ref}|${l.relation}`));
-  const out = [...existing];
-  for (const l of extra) {
-    const key = `${l.ref}|${l.relation}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      out.push(l);
-    }
-  }
-  return out;
-}
-
-const RELATIONS = new Set<string>(["tracks", "implements", "relates"]);
-const asRelation = (v: string): Link["relation"] => (RELATIONS.has(v) ? (v as Link["relation"]) : "relates");
-
-/**
- * Refs travel in the query string, and the projector (Bun.serve) rejects
- * request lines past ~16KB with HTTP 431 — at ~30 encoded chars per ref
- * that ceiling is only ~500 refs, which the board prime outgrew on
- * 2026-10-27: the prime's comments/items reads failed over to fixtures
- * while single-item pages (a handful of refs) stayed live. Chunk every
- * multi-ref read so each request stays far below the limit.
- */
-const PROJECTOR_REFS_PER_REQUEST = 200;
-
-function refChunks(refs: RefKey[]): RefKey[][] {
-  const chunks: RefKey[][] = [];
-  for (let i = 0; i < refs.length; i += PROJECTOR_REFS_PER_REQUEST) {
-    chunks.push(refs.slice(i, i + PROJECTOR_REFS_PER_REQUEST));
-  }
-  return chunks;
-}
-
-export async function projectorItems(baseUrl: string, refs: RefKey[]): Promise<Map<RefKey, GhItem> | null> {
-  if (refs.length === 0) return new Map();
-  // Refs contain `#` — they must be percent-encoded or the `#` starts a
-  // fragment and the projector never sees the number.
-  const out = new Map<RefKey, GhItem>();
-  for (const chunk of refChunks(refs)) {
-    const r = await getJson(`${baseUrl}/items?refs=${encodeURIComponent(chunk.join(","))}`);
-    if (!r.ok) return null;
-    const rows = (r.json as { items?: ProjectorItemRow[] }).items ?? [];
-    for (const row of rows) out.set(row.ref, mapProjectorItem(row));
-  }
-  return out;
-}
-
-export async function projectorComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
-  if (refs.length === 0) return [];
-  const out: Comment[] = [];
-  for (const chunk of refChunks(refs)) {
-    const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(chunk.join(","))}`);
-    if (!r.ok) return null;
-    out.push(
-      ...((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
-        .map(mapProjectorComment)
-        .filter((c) => !c.deleted),
-    );
-  }
-  return out;
-}
-
-/** The latest non-deleted comment per ref, from a list in any order. */
-export function latestPerRef(comments: Comment[]): Comment[] {
-  const byRef = new Map<RefKey, Comment>();
-  for (const c of comments) {
-    if (c.deleted) continue;
-    const cur = byRef.get(c.ref);
-    if (!cur || cur.createdAt < c.createdAt) byRef.set(c.ref, c);
-  }
-  return [...byRef.values()];
-}
-
-/** TTL for the latest-comments cache below (#9781). */
-export const LATEST_COMMENTS_TTL_MS = 60_000;
-
-/**
- * Per-ref stale-while-revalidate cache for the briefs' latest comments
- * (#9781). projectorLatestComments fans out one projector read per ref
- * with an 8 s abort on every fetch, and the board/program/attention
- * handlers call it on EVERY request — so whenever the projector is
- * slow (measured 11.2 s for a /comments read while its 15-minute
- * /reconcile sweep occupies the process), each page assembly pays the
- * full ~8.2 s abort cliff, and /program's assembly crosses its 10 s
- * deadline into a 503. This cache gives the read the same contract the
- * page assemblies already have (#1179/#5082): fresh entries serve
- * directly; expired entries serve the stale comment immediately and
- * refresh single-flight in the background; only a never-seen ref pays
- * a projector read on the request path. A failed fetch never poisons
- * the cache: a failed refresh keeps serving the stale value, and a
- * failed cold read falls back (fixtures, in the live source) without
- * caching the failure, so the next request retries the projector.
- *
- * Truthfulness: a brief's "latest comment" can lag reality by at most
- * the TTL plus one refresh — the same 60 s bound the health probe
- * cache (#1147) already accepts. Only the latest comment per ref is
- * cached, never a comment list, so nothing else can be served stale.
- */
-export class LatestCommentsCache {
-  private entries = new Map<RefKey, { at: number; comment: Comment | null }>();
-  private inFlight = new Set<RefKey>();
-
-  constructor(
-    private readonly fetchLatest: (refs: RefKey[]) => Promise<Comment[] | null>,
-    private readonly fallback: (refs: RefKey[]) => Promise<Comment[]>,
-    private readonly ttlMs: number = LATEST_COMMENTS_TTL_MS,
-    private readonly now: () => number = Date.now,
-  ) {}
-
-  /** The latest comment for each requested ref that has one, in ref order. */
-  async get(refs: RefKey[]): Promise<Comment[]> {
-    const at = this.now();
-    const byRef = new Map<RefKey, Comment>();
-    const missing: RefKey[] = [];
-    const stale: RefKey[] = [];
-    for (const ref of refs) {
-      const hit = this.entries.get(ref);
-      if (hit && at - hit.at < this.ttlMs) {
-        if (hit.comment) byRef.set(ref, hit.comment);
-      } else if (hit) {
-        if (hit.comment) byRef.set(ref, hit.comment);
-        stale.push(ref);
-      } else {
-        missing.push(ref);
-      }
-    }
-    if (stale.length) this.refresh(stale);
-    if (missing.length) {
-      const live = await this.fetchLatest(missing);
-      if (live) {
-        const fetched = new Map(live.map((c) => [c.ref, c]));
-        for (const ref of missing) {
-          const comment = fetched.get(ref) ?? null;
-          this.store(ref, comment);
-          if (comment) byRef.set(ref, comment);
-        }
-      } else {
-        for (const c of await this.fallback(missing)) byRef.set(c.ref, c);
-      }
-    }
-    return refs.flatMap((ref) => {
-      const c = byRef.get(ref);
-      return c ? [c] : [];
-    });
-  }
-
-  /** Background re-read behind expired entries; never throws. */
-  private refresh(refs: RefKey[]): void {
-    const todo = refs.filter((ref) => !this.inFlight.has(ref));
-    if (!todo.length) return;
-    for (const ref of todo) this.inFlight.add(ref);
-    this.fetchLatest(todo).then(
-      (live) => {
-        if (live) {
-          const fetched = new Map(live.map((c) => [c.ref, c]));
-          for (const ref of todo) this.store(ref, fetched.get(ref) ?? null);
-        }
-        // A failed refresh keeps the stale entries; the next expired
-        // read retries.
-        for (const ref of todo) this.inFlight.delete(ref);
-      },
-      () => {
-        for (const ref of todo) this.inFlight.delete(ref);
-      },
-    );
-  }
-
-  private store(ref: RefKey, comment: Comment | null): void {
-    // Soft cap: briefs only ever ask for pool/board/attention refs
-    // (hundreds), so this only trims pathological growth.
-    if (!this.entries.has(ref) && this.entries.size >= 4096) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest !== undefined) this.entries.delete(oldest);
-    }
-    this.entries.set(ref, { at: this.now(), comment });
-  }
-}
-
-/**
- * The latest comment for each ref, one projector read per ref (#1279).
- * The bulk /comments read applies its row limit across every requested
- * ref (projector default 500), so in a busy batch an item's latest
- * comment can be truncated away entirely; a per-ref limit=1 read cannot
- * be crowded out by other items' comments. Reads run with bounded
- * concurrency against the local projector; any failed read fails the
- * whole call (null), matching projectorComments' fail-soft contract.
- */
-export async function projectorLatestComments(baseUrl: string, refs: RefKey[]): Promise<Comment[] | null> {
-  if (refs.length === 0) return [];
-  const out: Comment[] = [];
-  const CONCURRENCY = 16;
-  for (let i = 0; i < refs.length; i += CONCURRENCY) {
-    const batch = refs.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(
-      batch.map(async (ref): Promise<Comment[] | null> => {
-        const r = await getJson(`${baseUrl}/comments?refs=${encodeURIComponent(ref)}&limit=1`);
-        if (!r.ok) return null;
-        return ((r.json as { comments?: ProjectorCommentRow[] }).comments ?? [])
-          .map(mapProjectorComment)
-          .filter((c) => !c.deleted);
-      }),
-    );
-    for (const rows of results) {
-      if (rows === null) return null;
-      if (rows.length) out.push(latestPerRef(rows)[0]);
-    }
-  }
-  return out;
-}
-
-/** Registry links for one subject (kaneo:/grist:/gh:), from GET /links. */
-export async function projectorLinks(baseUrl: string, subject: string): Promise<Link[]> {
-  const r = await getJson(`${baseUrl}/links?subject=${encodeURIComponent(subject)}`);
-  if (!r.ok) return [];
-  const rows = (r.json as { links?: ProjectorLinkRow[] }).links ?? [];
-  // Stored rows bypass the projector's POST /links gate (legacy/seeded
-  // data), so the shared ref rule (#4952) is applied here at the read
-  // boundary (#6211): a ref parseRef rejects - an unsafe-integer number,
-  // or not owner/repo#N at all - must never reach a renderer, where
-  // refUrl would throw on it and 500 the page. The drop is logged so a
-  // bad registry row stays visible instead of silently vanishing.
-  return rows.flatMap((row) => {
-    if (!isValidRef(row.ref)) {
-      console.error(
-        `[registry] WARNING: dropping projector link with invalid ref ${JSON.stringify(row.ref)} for subject ${subject} (#6211)`,
-      );
-      return [];
-    }
-    return [{ ref: row.ref, relation: asRelation(row.relation) }];
-  });
-}
-
 /**
  * Enrich board items / roadmap rows with their cross-repo registry links.
  * This is the first-class requirement Kaneo cannot provide: the registry is
  * where a `code` task's link to an `opencode` PR lives.
+ *
+ * A failed registry read never throws and never blocks the board: the
+ * entry keeps its own links and the result reports `linksDegraded` so the
+ * caller can say so in its provenance (#8570) instead of claiming links
+ * it did not fetch.
  */
 async function enrichWithRegistryLinks<T extends { links: Link[] }>(
   baseUrl: string,
   entries: T[],
   subjectOf: (entry: T) => string,
-): Promise<T[]> {
-  return Promise.all(
+): Promise<{ entries: T[]; linksDegraded: boolean }> {
+  let linksDegraded = false;
+  const enriched = await Promise.all(
     entries.map(async (entry) => {
       const extra = await projectorLinks(baseUrl, subjectOf(entry));
+      if (extra === null) {
+        linksDegraded = true;
+        return entry;
+      }
       return extra.length ? { ...entry, links: mergeLinks(entry.links, extra) } : entry;
     }),
   );
+  return { entries: enriched, linksDegraded };
 }
 
 // --- Orchestrator in-flight lane -------------------------------------------
@@ -888,6 +573,9 @@ export function liveSource(
   cfg: Config,
   opts?: {
     standingAuto?: () => Promise<boolean>;
+    // C3 health hook (#9571): fired when the laptop's OpenCode session
+    // map cannot be read on an aggregator tick. Fire-and-forget.
+    onLaptopUnreachable?: (detail: string) => void;
     onEvent?: (event: NewStreamEvent) => void;
     hasEvent?: (kind: string, ref: string) => Promise<boolean>;
     // The handler's return is the ingestion acknowledgment (#3321,
@@ -1184,20 +872,26 @@ export function liveSource(
   let laptopFailureAt = 0;
   let laptopInFlight: Promise<MappedSessions | null> | null = null;
   const LAPTOP_FAILURE_CACHE_MS = 15_000;
-  // #1226: the Needs-Drew label census hits the GitHub search API
-  // (8 queries per sweep). The sweeper caches for 5 minutes and shares
-  // one in-flight sweep between concurrent callers, so the three
-  // attention fragments rendering together do not each pay that cost or
-  // burn the search rate limit (#3970).
-  const needsDrewSweep = createNeedsDrewSweeper((url) => {
-    const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...(token ? { Authorization: "Bearer " + token } : {}),
-    };
-    return getJson(url, headers);
-  });
+  // #1226: the Needs-Drew label census asks each repository's list of
+  // open issues by label (8 requests per sweep; the search API until
+  // #14103, which GitHub refuses some tokens in the form it was asked). The
+  // sweeper caches for 5 minutes and shares one in-flight sweep between
+  // concurrent callers, so the three attention fragments rendering
+  // together do not each pay that cost (#3970).
+  const needsDrewSweep = createNeedsDrewSweeper(
+    (url) => {
+      const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        ...(token ? { Authorization: "Bearer " + token } : {}),
+      };
+      return getJson(url, headers);
+    },
+    {},
+    // Half as often with no token: see needsDrewSweepTtlMs.
+    { ttlMs: needsDrewSweepTtlMs(Boolean(process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN)) },
+  );
   // #9922: the Path to Phase 12 body feed — one GraphQL read of
   // #1235's body, cached for 5 minutes and shared in-flight (same
   // discipline as the Needs-Drew sweeper above), fail-soft to the
@@ -1382,6 +1076,7 @@ export function liveSource(
           laptopCache = { value: mapped, at: Date.now() };
         } else {
           laptopFailureAt = Date.now();
+          opts?.onLaptopUnreachable?.("laptop OpenCode session map unreachable on aggregator tick");
         }
         return mapped;
       })().finally(() => {
@@ -1690,9 +1385,14 @@ export function liveSource(
         provenance.board = "live (Kaneo; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         let merged = board;
         if (cfg.projector.baseUrl) {
-          merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
-          provenance.board =
-            "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
+          const { entries, linksDegraded } = await enrichWithRegistryLinks(cfg.projector.baseUrl, board, (b) => b.id);
+          merged = entries;
+          // #8570: a dead registry degrades the links visibly — the board
+          // stays up on the Kaneo cards, and the chip names the outage
+          // instead of claiming "+ projector links" for links not fetched.
+          provenance.board = linksDegraded
+            ? "live (Kaneo + projector links unavailable (registry unreachable); done aged out after 7 days, retired ROADMAP Done-table cards filtered)"
+            : "live (Kaneo + projector links; done aged out after 7 days, retired ROADMAP Done-table cards filtered)";
         }
         // In-flight lane (see inFlightBoardItems above): synthetic
         // entries from the fleet feed's orchestration section — the
@@ -1725,8 +1425,14 @@ export function liveSource(
           let merged = rows;
           let label = "live (Grist)";
           if (cfg.projector.baseUrl) {
-            merged = await enrichWithRegistryLinks(cfg.projector.baseUrl, rows, (r) => r.subject);
-            label = "live (Grist + projector links)";
+            const { entries, linksDegraded } = await enrichWithRegistryLinks(
+              cfg.projector.baseUrl,
+              rows,
+              (r) => r.subject,
+            );
+            merged = entries;
+            // #8570: same degraded-links honesty as the board path above.
+            label = linksDegraded ? "live (Grist + projector links unavailable (registry unreachable))" : "live (Grist + projector links)";
           }
           // #1738: merge the repos' own roadmap files in alongside the
           // Grist rows. The repo-file read never throws (its failures

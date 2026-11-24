@@ -50,17 +50,24 @@ def monitor_records(payload):
         closable = report.get("closable")
         root_state = report.get("rootState")
         blockers = report.get("blockers")
-        if not isinstance(complete, bool) or not isinstance(closable, bool) or not isinstance(blockers, list):
+        if (
+            not isinstance(complete, bool)
+            or not isinstance(closable, bool)
+            or not isinstance(blockers, list)
+        ):
             raise ValueError(f"closure gate output is incomplete for {report['root']}")
         if root_state not in ("OPEN", "CLOSED"):
-            raise ValueError(f"closure gate output omitted root state for {report['root']}")
+            raise ValueError(
+                f"closure gate output omitted root state for {report['root']}"
+            )
         status = "unavailable" if not complete else "clear" if closable else "blocked"
         unfinished_children = sorted(
             {
                 ref
                 for blocker in blockers
                 if isinstance(blocker, dict)
-                and blocker.get("condition") == "unfinished_children_without_reparent_destination"
+                and blocker.get("condition")
+                == "unfinished_children_without_reparent_destination"
                 for ref in blocker.get("refs", [])
                 if isinstance(ref, str)
             }
@@ -75,8 +82,11 @@ def monitor_records(payload):
                 "facts_complete": complete,
                 "closable": closable,
                 "blockers": blockers,
-                "closed_with_unfinished_children": root_state == "CLOSED" and bool(unfinished_children),
-                "skipped_reparent_refs": unfinished_children if root_state == "CLOSED" else [],
+                "closed_with_unfinished_children": root_state == "CLOSED"
+                and bool(unfinished_children),
+                "skipped_reparent_refs": unfinished_children
+                if root_state == "CLOSED"
+                else [],
             }
         )
     return records
@@ -88,7 +98,9 @@ def run_gate(roots):
     command = ["bun", "run", "scripts/epic-closure-gate.ts"]
     for root in roots:
         command.extend(("--root", root))
-    result = subprocess.run(command, cwd=aggregator, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        command, cwd=aggregator, capture_output=True, text=True, check=False
+    )
     if result.returncode != 0:
         detail = result.stderr.strip() or f"closure gate exited {result.returncode}"
         raise RuntimeError(detail)

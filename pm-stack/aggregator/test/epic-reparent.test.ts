@@ -20,10 +20,7 @@ const issue = (overrides: Partial<ReparentIssue> = {}): ReparentIssue => ({
   ...overrides,
 });
 
-const epic = (
-  number: number,
-  overrides: Partial<ReparentEpic> = {},
-): ReparentEpic => ({
+const epic = (number: number, overrides: Partial<ReparentEpic> = {}): ReparentEpic => ({
   ref: `developing-today/code#${number}`,
   state: "OPEN",
   labels: [`epic/id-work-${number}`],
@@ -59,7 +56,9 @@ describe("re-parent destination selection", () => {
       maintenance: (index & 32) !== 0,
     }));
     const model = (candidates: ReparentEpic[]): ReparentSelection => {
-      const eligible = candidates.filter((candidate) => candidate.state === "OPEN" && candidate.ref !== child.ref && candidate.ref !== child.parentRef);
+      const eligible = candidates.filter(
+        (candidate) => candidate.state === "OPEN" && candidate.ref !== child.ref && candidate.ref !== child.parentRef,
+      );
       for (let rank = 0; rank < relations.length; rank += 1) {
         const matches = eligible.filter((candidate) => {
           const index = Number(candidate.ref.split("#").at(-1));
@@ -67,11 +66,13 @@ describe("re-parent destination selection", () => {
           return (option.mask & (1 << rank)) !== 0;
         });
         if (matches.length === 1) return { kind: "selected", epic: matches[0], reason: relations[rank] };
-        if (matches.length > 1) return { kind: "ambiguous", reason: relations[rank], refs: matches.map(({ ref }) => ref).sort() };
+        if (matches.length > 1)
+          return { kind: "ambiguous", reason: relations[rank], refs: matches.map(({ ref }) => ref).sort() };
       }
       const maintenance = eligible.filter(({ maintenance }) => maintenance);
       if (maintenance.length === 1) return { kind: "selected", epic: maintenance[0], reason: "maintenance_fallback" };
-      if (maintenance.length > 1) return { kind: "ambiguous", reason: "shared_area", refs: maintenance.map(({ ref }) => ref).sort() };
+      if (maintenance.length > 1)
+        return { kind: "ambiguous", reason: "shared_area", refs: maintenance.map(({ ref }) => ref).sort() };
       return { kind: "unavailable", reason: "no_open_destination_or_maintenance_epic" };
     };
     const candidateOptions = new Map<number, (typeof options)[number]>();
@@ -103,7 +104,12 @@ describe("re-parent destination selection", () => {
 
   test("returns an ambiguity rather than selecting arbitrarily among equally related epics", () => {
     const child = issue({ labels: ["design/id-auth"] });
-    expect(selectReparentDestination(child, [epic(2, { labels: ["design/id-auth"] }), epic(3, { labels: ["design/id-auth"] })])).toMatchObject({
+    expect(
+      selectReparentDestination(child, [
+        epic(2, { labels: ["design/id-auth"] }),
+        epic(3, { labels: ["design/id-auth"] }),
+      ]),
+    ).toMatchObject({
       kind: "ambiguous",
       refs: ["developing-today/code#2", "developing-today/code#3"],
     });
@@ -119,7 +125,9 @@ describe("re-parent destination selection", () => {
 
   test("never selects the current parent as the destination", () => {
     const current = epic(1, { labels: ["epic/id-platform", "epic"] });
-    expect(selectReparentDestination(issue({ labels: ["epic/id-platform"] }), [current, epic(3, { maintenance: true })])).toMatchObject({
+    expect(
+      selectReparentDestination(issue({ labels: ["epic/id-platform"] }), [current, epic(3, { maintenance: true })]),
+    ).toMatchObject({
       kind: "selected",
       epic: { ref: "developing-today/code#3" },
       reason: "maintenance_fallback",
@@ -164,12 +172,19 @@ describe("re-parent destination selection", () => {
       replaceNativeParent: async (child, oldParent, newParent) => {
         calls.push(`parent:${child}:${oldParent}:${newParent}`);
       },
-      removeNativeParent: async (child, parent) => { calls.push(`remove-parent:${child}:${parent}`); },
+      removeNativeParent: async (child, parent) => {
+        calls.push(`remove-parent:${child}:${parent}`);
+      },
       replaceLabels: async (child, labels) => {
         calls.push(`labels:${child}:${labels.join(",")}`);
       },
-      recordHistoricalParent: async (child, parent) => { calls.push(`history:${child}:${parent}`); return true; },
-      removeHistoricalParent: async (child, parent) => { calls.push(`remove-history:${child}:${parent}`); },
+      recordHistoricalParent: async (child, parent) => {
+        calls.push(`history:${child}:${parent}`);
+        return true;
+      },
+      removeHistoricalParent: async (child, parent) => {
+        calls.push(`remove-history:${child}:${parent}`);
+      },
       addComment: async (ref) => {
         calls.push(`comment:${ref}`);
       },
@@ -189,12 +204,24 @@ describe("re-parent destination selection", () => {
     const gateway: ReparentGateway = {
       readChildLive: async () => issue({ parentRef: "developing-today/code#8" }),
       isOpenEpicLive: async () => true,
-      replaceNativeParent: async () => { throw new Error("must not mutate"); },
-      removeNativeParent: async () => { throw new Error("must not mutate"); },
-      replaceLabels: async () => { throw new Error("must not mutate"); },
-      recordHistoricalParent: async () => { throw new Error("must not mutate"); },
-      removeHistoricalParent: async () => { throw new Error("must not mutate"); },
-      addComment: async () => { throw new Error("must not mutate"); },
+      replaceNativeParent: async () => {
+        throw new Error("must not mutate");
+      },
+      removeNativeParent: async () => {
+        throw new Error("must not mutate");
+      },
+      replaceLabels: async () => {
+        throw new Error("must not mutate");
+      },
+      recordHistoricalParent: async () => {
+        throw new Error("must not mutate");
+      },
+      removeHistoricalParent: async () => {
+        throw new Error("must not mutate");
+      },
+      addComment: async () => {
+        throw new Error("must not mutate");
+      },
     };
     const plan = planEpicReparent(issue(), epic(55, { labels: ["epic/id-platform"] }));
     await expect(applyEpicReparent(plan, "developing-today/code#99", gateway)).rejects.toThrow("parent changed");
@@ -206,16 +233,27 @@ describe("re-parent destination selection", () => {
     const gateway: ReparentGateway = {
       readChildLive: async () => issue(),
       isOpenEpicLive: async () => true,
-      replaceNativeParent: async (_child, oldParent, newParent) => { calls.push(`parent:${oldParent}->${newParent}`); },
-      removeNativeParent: async (_child, parent) => { calls.push(`remove-parent:${parent}`); },
+      replaceNativeParent: async (_child, oldParent, newParent) => {
+        calls.push(`parent:${oldParent}->${newParent}`);
+      },
+      removeNativeParent: async (_child, parent) => {
+        calls.push(`remove-parent:${parent}`);
+      },
       replaceLabels: async (_child, labels) => {
         calls.push(`labels:${labels.includes("primary-parent/old") ? "old" : "new"}`);
         labelWrites += 1;
         if (labelWrites === 1) throw new Error("label update failed");
       },
-      recordHistoricalParent: async () => { calls.push("history"); return true; },
-      removeHistoricalParent: async () => { calls.push("remove-history"); },
-      addComment: async () => { calls.push("comment"); },
+      recordHistoricalParent: async () => {
+        calls.push("history");
+        return true;
+      },
+      removeHistoricalParent: async () => {
+        calls.push("remove-history");
+      },
+      addComment: async () => {
+        calls.push("comment");
+      },
     };
     const plan = planEpicReparent(issue(), epic(55, { labels: ["epic/id-platform"] }));
     await expect(applyEpicReparent(plan, "developing-today/code#99", gateway)).rejects.toThrow("label update failed");
@@ -228,7 +266,8 @@ describe("re-parent destination selection", () => {
   });
 
   test("writes and removes the former parent in canonical metadata without losing other links", () => {
-    const original = "Issue text\n\n<!-- pm-metadata:start -->\n```json\n{\"pm_meta\":1,\"links\":[{\"relation\":\"blockedBy\",\"target\":{\"repo\":\"x/y\",\"number\":7}}]}\n```\n<!-- pm-metadata:end -->";
+    const original =
+      'Issue text\n\n<!-- pm-metadata:start -->\n```json\n{"pm_meta":1,"links":[{"relation":"blockedBy","target":{"repo":"x/y","number":7}}]}\n```\n<!-- pm-metadata:end -->';
     const parent = "developing-today/code#12" as const;
     const withHistory = setHistoricalParentMetadata(original, parent, true, "2026-11-22");
     expect(withHistory).toContain('"status": "historical"');
@@ -243,11 +282,27 @@ describe("re-parent destination selection", () => {
     const parent = "developing-today/code#12" as const;
     const strings = ["plain", "$&", "$'", "$`", "${value}", "emoji 🐙", "line\nbreak"];
     for (const value of strings) {
-      const metadata = { pm_meta: 1, extra: value, links: [{ relation: "blockedBy", target: { repo: "x/y", number: 7 }, note: value }] };
+      const metadata = {
+        pm_meta: 1,
+        extra: value,
+        links: [{ relation: "blockedBy", target: { repo: "x/y", number: 7 }, note: value }],
+      };
       const original = `prefix ${value}\n\n<!-- pm-metadata:start -->\n\`\`\`json\n${JSON.stringify(metadata)}\n\`\`\`\n<!-- pm-metadata:end -->\n\nsuffix ${value}`;
       const added = setHistoricalParentMetadata(original, parent, true, "2026-11-22");
       const json = /\`\`\`json\s*([\s\S]*?)\`\`\`/.exec(added)?.[1];
-      expect(JSON.parse(json!)).toMatchObject({ ...metadata, links: [...metadata.links, { relation: "parent", status: "historical", until: "2026-11-22", reason: "reparent-on-close", target: { repo: "developing-today/code", number: 12 } }] });
+      expect(JSON.parse(json!)).toMatchObject({
+        ...metadata,
+        links: [
+          ...metadata.links,
+          {
+            relation: "parent",
+            status: "historical",
+            until: "2026-11-22",
+            reason: "reparent-on-close",
+            target: { repo: "developing-today/code", number: 12 },
+          },
+        ],
+      });
       expect(added).toContain(`prefix ${value}`);
       expect(added).toContain(`suffix ${value}`);
       const removed = setHistoricalParentMetadata(added, parent, false);
@@ -263,15 +318,23 @@ describe("re-parent destination selection", () => {
     const gateway: ReparentGateway = {
       readChildLive: async () => issue(),
       isOpenEpicLive: async () => true,
-      replaceNativeParent: async () => { calls.push("parent"); },
-      removeNativeParent: async () => { calls.push("remove-parent"); },
+      replaceNativeParent: async () => {
+        calls.push("parent");
+      },
+      removeNativeParent: async () => {
+        calls.push("remove-parent");
+      },
       replaceLabels: async () => {
         labelWrites += 1;
         if (labelWrites === 1) throw new Error("labels failed");
       },
       recordHistoricalParent: async () => false,
-      removeHistoricalParent: async () => { calls.push("remove-history"); },
-      addComment: async () => { calls.push("comment"); },
+      removeHistoricalParent: async () => {
+        calls.push("remove-history");
+      },
+      addComment: async () => {
+        calls.push("comment");
+      },
     };
     const plan = planEpicReparent(issue(), epic(55, { labels: ["epic/id-platform"] }));
     await expect(applyEpicReparent(plan, "developing-today/code#99", gateway)).rejects.toThrow("labels failed");
@@ -285,16 +348,27 @@ describe("re-parent destination selection", () => {
     const gateway: ReparentGateway = {
       readChildLive: async () => child,
       isOpenEpicLive: async () => true,
-      replaceNativeParent: async (_child, oldParent, newParent) => { calls.push(`parent:${oldParent}->${newParent}`); },
-      removeNativeParent: async (_child, parent) => { calls.push(`remove-parent:${parent}`); },
+      replaceNativeParent: async (_child, oldParent, newParent) => {
+        calls.push(`parent:${oldParent}->${newParent}`);
+      },
+      removeNativeParent: async (_child, parent) => {
+        calls.push(`remove-parent:${parent}`);
+      },
       replaceLabels: async (_child, labels) => {
         calls.push(`labels:${labels.includes("primary-parent/id-platform") ? "new" : "old"}`);
         labelWrites += 1;
         if (labelWrites === 1) throw new Error("label update failed");
       },
-      recordHistoricalParent: async () => { calls.push("history"); return true; },
-      removeHistoricalParent: async () => { calls.push("remove-history"); },
-      addComment: async () => { calls.push("comment"); },
+      recordHistoricalParent: async () => {
+        calls.push("history");
+        return true;
+      },
+      removeHistoricalParent: async () => {
+        calls.push("remove-history");
+      },
+      addComment: async () => {
+        calls.push("comment");
+      },
     };
     const plan = planEpicReparent(child, epic(55, { labels: ["epic/id-platform"] }));
     await expect(applyEpicReparent(plan, "developing-today/code#99", gateway)).rejects.toThrow("label update failed");

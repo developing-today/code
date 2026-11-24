@@ -34,6 +34,10 @@ export interface AaBatchCacheEntry {
    * before the overlay was validity-keyed; such entries are
    * treated as stale and rebuilt. */
   pricesFingerprint?: string | null;
+  /** Current-measurement fingerprint and query scope used to build the
+   * configs/CAI sections. Latest is current; historical batches are as-of. */
+  measurementsFingerprint?: string | null;
+  measurementsScope?: "current" | "as-of";
   /** aaPayloadSql revision the section was built with
    * (AA_PAYLOAD_SQL_REVISION in aa-batch-sql.ts). Absent on entries
    * written before the revision was stamped; the collector reads those
@@ -198,6 +202,28 @@ export function summarizeBatches(
       latest: kept.length === 0,
     });
   }
+  // Only presentation changes here. A label collision is not evidence that
+  // two imports carry identical data; the fingerprint rule above decides that.
+  const baseCounts = new Map<string, number>();
+  for (const { label } of kept) baseCounts.set(label, (baseCounts.get(label) ?? 0) + 1);
+  const used = new Set(baseCounts.keys());
+  // Assign tie-breaker labels by stable batch ID, not query order. Sort a
+  // shallow copy so the ordering and selected/latest identity are unchanged.
+  const collisions = kept.filter((batch) => baseCounts.get(batch.label) !== 1);
+  collisions.sort((a, b) => (a.importBatch < b.importBatch ? -1 : a.importBatch > b.importBatch ? 1 : 0));
+  collisions.forEach((batch, index) => {
+    const time = batch.importedAt ? Date.parse(batch.importedAt) : NaN;
+    const imported = Number.isFinite(time) ? new Date(time).toISOString() : "unknown import time";
+    const counts = Object.entries(batch.insertedCounts ?? {});
+    counts.sort(([a], [b]) => a.localeCompare(b));
+    const rows = counts.map(([table, count]) => `${table}: ${count}`).join(", ");
+    const detail = `${batch.label} · ${imported}${rows ? ` · ${rows}` : ""}`;
+    let label = detail;
+    // Exact timestamp/count ties and missing metadata still need unique labels.
+    for (let suffix = index + 1; used.has(label); suffix++) label = `${detail} · import ${suffix}`;
+    used.add(label);
+    batch.label = label;
+  });
   return kept;
 }
 
@@ -217,6 +243,10 @@ export function isAaBatchCacheEntry(v: unknown): v is AaBatchCacheEntry {
     typeof e.configFingerprint === "string" &&
     typeof e.fingerprint === "string" &&
     (e.pricesFingerprint === undefined || e.pricesFingerprint === null || typeof e.pricesFingerprint === "string") &&
+    (e.measurementsFingerprint === undefined ||
+      e.measurementsFingerprint === null ||
+      typeof e.measurementsFingerprint === "string") &&
+    (e.measurementsScope === undefined || e.measurementsScope === "current" || e.measurementsScope === "as-of") &&
     (e.sqlRevision === undefined || typeof e.sqlRevision === "number") &&
     typeof e.builtAt === "string" &&
     typeof e.section === "object" &&

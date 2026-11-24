@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://developing-today/code/doc/2026-11-24_design_id-graph-layer-typed-links-verbs/fixtures/content-object.schema.json",
+  "title": "D3 ContentObject (fixtures use readable ids; object_id is the content hash at implementation)",
+  "type": "object",
+  "required": ["object_id", "author", "created_claim", "kind", "body", "schema_version"],
+  "properties": {
+    "object_id": { "type": "string", "minLength": 1 },
+    "author": { "type": "string", "pattern": "^ed25519:[0-9a-f]{4,}$" },
+    "created_claim": { "type": "string" },
+    "kind": { "type": "string", "enum": ["chat-message", "forum-post", "image"] },
+    "body": { "type": "object" },
+    "schema_version": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

@@ -23,6 +23,12 @@ exercises the real step logic with no server and no queue:
   is rolled back (delete + recovery bind) so it does not stand as
   an attempt-consuming launch, and main() records the verbatim
   provider error under the fires entry's provider_wall key;
+- a live fire that finds the cap saturated with launchable
+  candidates waiting hands the next candidate back in the same
+  fire (#1187 criterion 2): claimed by the claimant, parked with
+  reason `executor-saturated` and the broker's capacity
+  ready-condition, and noted on its issue; shadow fires and
+  failed hand-back claims mutate nothing;
 - supervision_step recovers a bound task whose session is gone from
   the server (error body, zero messages) via delete + recovery bind;
 - supervision_step treats an unreadable message read as UNKNOWN, not
@@ -37,6 +43,8 @@ against the 307-line Slice-1 shadow stub that replaced it
 
 import importlib.util
 import json
+import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -199,6 +207,83 @@ CANDIDATE = {
 
 
 class TestLaunchStep(unittest.TestCase):
+    def test_live_mid_loop_cap_exhaustion_hands_back_next_candidate(self):
+        # The oracle is the real launch/hand-back subprocess boundary:
+        # with one launch slot and two candidates, the second task must
+        # be claimed, parked as executor-saturated and noted, not merely
+        # left as a cap_saturated fire-log skip.
+        binds = []
+        calls = empty_calls()
+        first = dict(
+            CANDIDATE,
+            id=777,
+            stage="launch_failed",
+            issue="#1187",
+            packet={"repo": "developing-today/code", "issue": {"number": 1187}},
+        )
+        second = dict(
+            first,
+            id=889,
+            issue="#1188",
+            packet={"repo": "developing-today/code", "issue": {"number": 1188}},
+        )
+        base_fake = make_fake_run(binds)
+        handback_fake = make_handback_run(calls)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and ("claim" in argv or "park" in argv):
+                return handback_fake(cmd, **kwargs)
+            if argv and argv[0] == "gh":
+                calls["gh"].append(argv)
+                if "view" in argv:
+                    return Result(0, "[]")
+                return Result(0, "")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(
+                claimant,
+                "run_poll",
+                return_value={"candidates": [first, second]},
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            hand_back = []
+            launched, skips = claimant.launch_step(
+                "live",
+                1,
+                fire_start_candidates=[first, second],
+                hand_back_out=hand_back,
+            )
+
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["task_id"], 777)
+        self.assertIn({"task_id": 889, "reason": "cap_saturated"}, skips)
+        self.assertEqual(len(calls["claim"]), 1)
+        claim_argv = calls["claim"][0]
+        self.assertEqual(claim_argv[claim_argv.index("--task") + 1], "889")
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertIn("executor-saturated", " ".join(calls["park"][0]))
+        self.assertTrue(
+            any(
+                "handed back" in argv[argv.index("--body") + 1]
+                for argv in calls["gh"]
+                if "--body" in argv
+            )
+        )
+        self.assertEqual(
+            hand_back,
+            [
+                {
+                    "task_id": 889,
+                    "parked": True,
+                    "noted": True,
+                    "reason": "executor-saturated",
+                }
+            ],
+        )
+
     def test_valid_candidate_launches_and_binds(self):
         binds = []
         with (
@@ -303,7 +388,7 @@ class TestLaunchStep(unittest.TestCase):
     def test_vanished_candidate_is_a_recorded_skip(self):
         calls = {"n": 0}
 
-        def poll_stub():
+        def poll_stub(**_kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
                 return {"candidates": [dict(CANDIDATE)]}
@@ -599,6 +684,49 @@ class TestSupervisionStep(unittest.TestCase):
         self.assertEqual(recovered, [])
         self.assertEqual(binds, [])
 
+    def test_error_stopped_recovery_deletes_then_compare_clears_binding(self):
+        binds = []
+        deletes = []
+        with (
+            patch.object(
+                claimant,
+                "_delete_session",
+                side_effect=lambda sid: deletes.append(sid) or True,
+            ),
+            patch.object(
+                claimant.subprocess, "run", make_fake_run(binds, deletes=deletes)
+            ),
+        ):
+            recovered = claimant._recover_error_stopped("ses_error", 4242, {})
+        self.assertTrue(recovered)
+        self.assertEqual(deletes, ["ses_error"])
+        self.assertEqual(len(binds), 1)
+        bind_argv = [str(part) for part in binds[0]]
+        self.assertIn("4242", bind_argv)
+        self.assertIn("ses_error", bind_argv)
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_ERROR_STOPPED, bind_argv)
+
+    def test_supervision_requeues_expired_error_stopped_bound_task(self):
+        binds = []
+        error_session = {
+            "id": "ses_gone",
+            "time": {"created": 1, "updated": 2, "idle": 3},
+            "outcome": "failure",
+        }
+        with (
+            stub_claimed_rows([BOUND_ROW]),
+            patch.object(claimant, "_fetch_sessions", return_value=[]),
+            patch.object(claimant, "_fetch_active_ids", return_value=set()),
+            patch.object(claimant, "_get_session", return_value=("ok", error_session)),
+            patch.object(claimant, "_delete_session", return_value=True),
+            patch.object(claimant.subprocess, "run", make_fake_run(binds)),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(recovered[0]["reason"], "error_stopped")
+        self.assertEqual(recovered[0]["outcome"], "failure")
+        self.assertEqual(recovered[0]["binding"]["task_id"], 4242)
+        self.assertEqual(recovered[0]["action"], "requeued_retry")
+
     def test_unreadable_messages_are_unknown_not_zero(self):
         # #3026: the old endpoint 404s with an empty body, and the old
         # read parsed that as []. Unknown must leave the task bound:
@@ -750,7 +878,7 @@ class TestMainFireLog(unittest.TestCase):
     def test_main_records_launch_skips_in_fires_entry(self):
         calls = {"n": 0}
 
-        def poll_stub():
+        def poll_stub(**_kwargs):
             calls["n"] += 1
             # The gate (call 1) sees the candidate and main threads
             # it into launch_step as the fire-start snapshot (#8038);
@@ -864,6 +992,7 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant, "fire_opencode_working_hook") as hook,
             ):
                 self.assertEqual(claimant.main(), 1)
             entries = [
@@ -872,6 +1001,8 @@ class TestCapUnknownFireLog(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertIsNone(entries[0]["cap_room"])
         self.assertEqual(entries[0]["skips"], [{"reason": "cap_unknown"}])
+        self.assertEqual(hook.call_count, 1)
+        self.assertEqual(hook.call_args.args[0], "lane-launch")
 
 
 class TestGateUnknownFireLog(unittest.TestCase):
@@ -1244,6 +1375,7 @@ class TestClaimant8038(unittest.TestCase):
                 patch.object(
                     claimant, "get_active_root_session_count", return_value=36
                 ),
+                patch.object(claimant.subprocess, "run", make_fake_run([])),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
             ):
@@ -1280,10 +1412,10 @@ class TestClaimant8038(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             argv = [str(part) for part in cmd]
-            if argv[0] == "gh" and "view" in argv:
+            if argv[1:3] == ["gh", "sync-labels"]:
                 # The step-4a2 held-label read: no labels at all.
                 return Result(0, "[]")
-            if argv[0] == "gh":
+            if argv[1:3] == ["gh", "sync-comment"]:
                 notes.append(cmd)
                 return Result(0, "")
             return base_fake(cmd, **kwargs)
@@ -1318,5 +1450,432 @@ class TestClaimant8038(unittest.TestCase):
         self.assertIn("heartbeat at least every 10 minutes", prompt_text)
 
 
+HANDBACK_CANDIDATE = {
+    "id": 888,
+    "queue": "repo-health-code-pilot",
+    "lane": "opencode",
+    "session_id": None,
+    "stage": "handed_off",
+    "worker_id": "repo-worker-code",
+    "issue": "#1187",
+    "packet": {"repo": "developing-today/code", "issue": {"number": 1187}},
+}
+
+
+def make_handback_run(calls, *, claim_row="candidate", park_rc=0):
+    """subprocess.run stub for hand-back fires.
+
+    calls collects argv lists under "claim", "park", "gh" and
+    "other". claim_row: "candidate" answers the targeted claim with
+    the claimed row for the --task id; "none" answers
+    {"task": null} (nothing claimed); "other" answers a row whose
+    id is not the candidate's.
+    """
+
+    def fake_run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        if "repo-queue" in argv[0] and "claim" in argv:
+            calls["claim"].append(argv)
+            if claim_row == "none":
+                return Result(0, json.dumps({"task": None}))
+            task_id = int(argv[argv.index("--task") + 1])
+            if claim_row == "other":
+                task_id += 1000
+            return Result(0, json.dumps({"id": task_id, "status": "claimed"}))
+        if "repo-queue" in argv[0] and "park" in argv:
+            calls["park"].append(argv)
+            return Result(park_rc, "{}")
+        if argv[1:3] == ["gh", "sync-comment"]:
+            calls["gh"].append(argv)
+            return Result(0, "")
+        calls["other"].append(argv)
+        return Result(0, "")
+
+    return fake_run
+
+
+def empty_calls():
+    return {"claim": [], "park": [], "gh": [], "other": []}
+
+
+class TestHandBackStep(unittest.TestCase):
+    """#1187 criterion 2 (hand-back): a live fire that finds the
+    session cap saturated with launchable candidates waiting hands
+    the NEXT candidate back in the same fire - claimed by the
+    claimant, parked with reason `executor-saturated` and the
+    broker's capacity ready-condition, and noted on its issue -
+    instead of leaving it silently queued with the only record in
+    the local fire log. The oracle is the argv sequence at the
+    subprocess boundary plus the fires.jsonl entry. Shadow fires
+    mutate nothing, and a hand-back whose claim does not land
+    parks nothing."""
+
+    def _run_main(self, mode, candidates, fake_run, active=36):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value=mode),
+                patch.object(
+                    claimant,
+                    "run_poll",
+                    return_value={"candidates": candidates},
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(
+                    claimant,
+                    "get_active_root_session_count",
+                    return_value=active,
+                ),
+                patch.object(claimant.subprocess, "run", fake_run),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                rc = claimant.main()
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        return rc, entries
+
+    def test_live_saturated_fire_hands_back_next_candidate(self):
+        calls = empty_calls()
+        second = dict(HANDBACK_CANDIDATE, id=889, issue="#1188")
+        rc, entries = self._run_main(
+            "live",
+            [dict(HANDBACK_CANDIDATE), second],
+            make_handback_run(calls),
+        )
+        self.assertEqual(rc, 0)
+        # Exactly one targeted claim, for the first candidate only.
+        self.assertEqual(len(calls["claim"]), 1)
+        claim_argv = calls["claim"][0]
+        self.assertEqual(claim_argv[claim_argv.index("--task") + 1], "888")
+        self.assertEqual(
+            claim_argv[claim_argv.index("--worker") + 1], claimant.CLAIMANT_WORKER
+        )
+        self.assertEqual(claim_argv[claim_argv.index("--platform") + 1], "openchamber")
+        # Exactly one park: the claimed task, reason class
+        # executor-saturated, capacity ready-condition.
+        self.assertEqual(len(calls["park"]), 1)
+        park_argv = calls["park"][0]
+        self.assertIn("888", park_argv)
+        self.assertIn("executor-saturated", park_argv[park_argv.index("--reason") + 1])
+        self.assertEqual(
+            json.loads(park_argv[park_argv.index("--ready-condition") + 1]),
+            {"kind": "capacity"},
+        )
+        # One hand-back note on the candidate's issue.
+        self.assertEqual(len(calls["gh"]), 1)
+        gh_argv = calls["gh"][0]
+        self.assertEqual(
+            gh_argv[:7],
+            [
+                str(claimant.FLEET_CMD),
+                "gh",
+                "sync-comment",
+                "--repo",
+                "developing-today/code",
+                "issue",
+                "1187",
+            ],
+        )
+        self.assertEqual(gh_argv[gh_argv.index("--repo") + 1], "developing-today/code")
+        body = gh_argv[gh_argv.index("--body") + 1]
+        self.assertIn("agent-note:v1", body)
+        self.assertIn("handed back", body)
+        self.assertIn("executor-saturated", body)
+        self.assertIn("888", body)
+        # The fire log keeps the cap_saturated skip AND records the
+        # hand-back under its own key.
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["skips"], [{"reason": "cap_saturated"}])
+        self.assertEqual(
+            entries[0]["hand_back"],
+            {
+                "task_id": 888,
+                "parked": True,
+                "noted": True,
+                "reason": "executor-saturated",
+            },
+        )
+
+    def test_shadow_saturated_fire_mutates_nothing(self):
+        calls = empty_calls()
+        rc, entries = self._run_main(
+            "shadow",
+            [dict(HANDBACK_CANDIDATE)],
+            make_handback_run(calls),
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, empty_calls())
+        self.assertEqual(len(entries), 1)
+        self.assertIsNone(entries[0]["hand_back"])
+
+    def test_failed_claim_parks_nothing(self):
+        calls = empty_calls()
+        with patch.object(
+            claimant.subprocess, "run", make_handback_run(calls, claim_row="none")
+        ):
+            record = claimant.hand_back_step("live", [dict(HANDBACK_CANDIDATE)])
+        self.assertEqual(
+            record,
+            {
+                "task_id": 888,
+                "parked": False,
+                "noted": False,
+                "reason": "handback_claim_failed",
+            },
+        )
+        self.assertEqual(calls["park"], [])
+        self.assertEqual(calls["gh"], [])
+
+    def test_handback_reuses_claim_already_collected_for_launch(self):
+        calls = empty_calls()
+        with patch.object(
+            claimant.subprocess,
+            "run",
+            make_handback_run(calls),
+        ):
+            record = claimant.hand_back_step(
+                "live",
+                [dict(HANDBACK_CANDIDATE)],
+                already_claimed_task_ids=[888],
+            )
+        self.assertEqual(record["parked"], True)
+        self.assertEqual(record["noted"], True)
+        self.assertEqual(calls["claim"], [])
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertEqual(len(calls["gh"]), 1)
+
+    def test_mismatched_claim_parks_nothing(self):
+        calls = empty_calls()
+        with patch.object(
+            claimant.subprocess, "run", make_handback_run(calls, claim_row="other")
+        ):
+            record = claimant.hand_back_step("live", [dict(HANDBACK_CANDIDATE)])
+        self.assertEqual(record["parked"], False)
+        self.assertEqual(record["reason"], "handback_claim_failed")
+        self.assertEqual(calls["park"], [])
+        self.assertEqual(calls["gh"], [])
+
+    def test_handback_picks_first_launchable_not_excluded(self):
+        calls = empty_calls()
+        bound = dict(HANDBACK_CANDIDATE, id=890, session_id="ses_busy")
+        second = dict(HANDBACK_CANDIDATE, id=889, issue="#1188")
+        with patch.object(claimant.subprocess, "run", make_handback_run(calls)):
+            record = claimant.hand_back_step(
+                "live",
+                [dict(HANDBACK_CANDIDATE), bound, second],
+                exclude_task_ids=[888],
+            )
+        self.assertEqual(record["task_id"], 889)
+        self.assertEqual(record["parked"], True)
+        self.assertEqual(len(calls["park"]), 1)
+        self.assertIn("889", calls["park"][0])
+
+    def test_no_launchable_candidate_no_handback(self):
+        calls = empty_calls()
+        bound = dict(HANDBACK_CANDIDATE, session_id="ses_busy")
+        with patch.object(claimant.subprocess, "run", make_handback_run(calls)):
+            record = claimant.hand_back_step("live", [bound])
+        self.assertIsNone(record)
+        self.assertEqual(calls, empty_calls())
+
+
+class TestBoundedPoll(unittest.TestCase):
+    def snapshot(self):
+        return {
+            "candidates": [],
+            "cap_room": 36,
+            "ledger_readable": True,
+            "queues": {q: {"read_ok": True} for q in claimant.QUEUES},
+        }
+
+    def poll(self, snapshot):
+        result = subprocess.CompletedProcess(
+            [], 0, json.dumps(snapshot), "claimant-poll-phase:snapshot\n"
+        )
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(claimant.subprocess, "run", return_value=result) as child,
+        ):
+            data = claimant.run_poll(timeout=12)
+        self.assertEqual(child.call_args.kwargs["timeout"], 12)
+        self.assertEqual(
+            child.call_args.kwargs["env"]["OPENCODE_CLAIMANT_POLL_SECONDS"], "12"
+        )
+        return data
+
+    def test_healthy_snapshot_keeps_decision(self):
+        snapshot = self.snapshot()
+        self.assertEqual(self.poll(snapshot), snapshot)
+        snapshot["candidates"] = [dict(CANDIDATE)]
+        self.assertEqual(self.poll(snapshot), snapshot)
+
+    def test_incomplete_snapshot_cannot_launch_even_with_candidate(self):
+        for field, bad, phase in (
+            ("cap_room", None, "session_census"),
+            ("ledger_readable", False, "ledger_read"),
+            ("queues", {}, "broker_reads"),
+            (
+                "queues",
+                {q: {"read_ok": False} for q in claimant.QUEUES},
+                "broker_reads",
+            ),
+        ):
+            with self.subTest(field=field, bad=bad):
+                snapshot = self.snapshot()
+                snapshot["candidates"] = [dict(CANDIDATE)]
+                snapshot[field] = bad
+                with self.assertRaises(claimant.PollFailure) as raised:
+                    self.poll(snapshot)
+                self.assertEqual(raised.exception.category, "incomplete_snapshot")
+                self.assertEqual(raised.exception.phase, phase)
+
+    def test_hard_timeout_reports_only_fixed_phase_not_stderr(self):
+        exc = subprocess.TimeoutExpired(
+            ["fixture"],
+            3,
+            stderr=b"private diagnostic\nclaimant-poll-phase:broker_reads\n",
+        )
+        with (
+            patch.object(Path, "exists", return_value=True),
+            patch.object(claimant.subprocess, "run", side_effect=exc),
+        ):
+            with self.assertRaises(claimant.PollFailure) as raised:
+                claimant.run_poll(timeout=3)
+        self.assertEqual(str(raised.exception), "deadline during broker_reads")
+
+    def test_gate_spends_only_remaining_budget_and_records_fixed_category(self):
+        with (
+            patch.object(claimant.time, "monotonic", side_effect=[10.0, 27.0, 28.0]),
+            patch.object(claimant, "run_queue_health", return_value=None),
+            patch.object(
+                claimant,
+                "run_poll",
+                side_effect=claimant.PollFailure("deadline", "broker_reads"),
+            ) as read,
+        ):
+            self.assertIsNone(claimant.gate_step())
+        read.assert_called_once_with(timeout=298.0)
+        self.assertEqual(
+            claimant._gate_diagnostic,
+            {"category": "deadline", "phase": "broker_reads", "elapsed_ms": 18000},
+        )
+
+
+class TestSinkClaimDiagnostics(unittest.TestCase):
+    def test_fixed_categories_do_not_copy_cli_output_and_preserve_attempts(self):
+        fixtures = (
+            (subprocess.TimeoutExpired(["private"], 15, stderr=b"private"), "timeout"),
+            (OSError("private"), "spawn_error"),
+            (Result(13, "private"), "cli_nonzero"),
+            (Result(0, "private"), "invalid_json"),
+            (Result(0, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(5, '{"task":null,"ignored":"private"}'), "no_match"),
+            (Result(5, '{"ignored":"private"}'), "cli_nonzero"),
+            (Result(0, '{"ignored":"private"}'), "missing_claim_row"),
+        )
+        for fixture, category in fixtures:
+            with (
+                self.subTest(category=category),
+                patch.object(claimant.subprocess, "run", side_effect=[fixture]) as run,
+                patch.object(claimant.time, "monotonic", side_effect=[10.0, 10.25]),
+            ):
+                diagnostic = {}
+                self.assertEqual(
+                    claimant._collect_handed_offs("fixture", 3, diagnostic=diagnostic),
+                    {},
+                )
+                self.assertEqual(diagnostic, {"category": category, "elapsed_ms": 250})
+                run.assert_called_once()
+                self.assertIn("--handoff", run.call_args.args[0])
+                self.assertNotIn("--task", run.call_args.args[0])
+                self.assertEqual(run.call_args.kwargs["timeout"], 15)
+
+    def test_diagnostic_does_not_change_preexisting_acceptance_of_returned_row(self):
+        row = {"id": 42, "private": "not surfaced"}
+        with patch.object(
+            claimant.subprocess, "run", return_value=Result(1, json.dumps(row))
+        ):
+            diagnostic = {}
+            self.assertEqual(
+                claimant._collect_handed_offs("fixture", 1, diagnostic=diagnostic),
+                {42: row},
+            )
+        self.assertEqual(diagnostic["category"], "row_returned")
+        self.assertEqual(set(diagnostic), {"category", "elapsed_ms"})
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCodeSourceFireLog(unittest.TestCase):
+    """#12813: every fire log entry records the primary clone's
+    checked-out branch and commit (code_source), so a fire running
+    stale-branch code names itself. The read is fail-open: a clone
+    git cannot read yields state "unreadable", never an abort."""
+
+    def setUp(self):
+        claimant._code_source = None
+
+    def tearDown(self):
+        claimant._code_source = None
+
+    def _make_clone(self, tmp: str) -> Path:
+        # A static .git layout written with plain file writes (#13135):
+        # the hermetic suite's audit guard forbids subprocess spawns,
+        # so the fixture cannot run `git init` — and read_code_source()
+        # reads .git directly, so no git binary is needed for the read
+        # either. The commit sha is a fixed 40-hex placeholder; the
+        # tests assert shape (branch, 40-char commit), not history.
+        clone = Path(tmp) / "clone"
+        git_dir = clone / ".git"
+        (git_dir / "refs" / "heads").mkdir(parents=True)
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (git_dir / "refs" / "heads" / "main").write_text(
+            "0123456789abcdef0123456789abcdef01234567\n"
+        )
+        (clone / "f.txt").write_text("x")
+        return clone
+
+    def test_reads_branch_and_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = self._make_clone(tmp)
+            with patch.object(claimant, "PRIMARY_CLONE", clone):
+                source = claimant.read_code_source()
+        self.assertEqual(source["state"], "ok")
+        self.assertEqual(source["branch"], "main")
+        self.assertEqual(len(source["commit"]), 40)
+
+    def test_unreadable_clone_fails_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_repo = Path(tmp) / "nope"
+            not_a_repo.mkdir()
+            with patch.object(claimant, "PRIMARY_CLONE", not_a_repo):
+                source = claimant.read_code_source()
+        self.assertEqual(source["state"], "unreadable")
+        self.assertIsNone(source["branch"])
+        self.assertIsNone(source["commit"])
+
+    def test_fire_entry_carries_code_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clone = self._make_clone(tmp)
+            state_dir = Path(tmp) / "state"
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "PRIMARY_CLONE", clone),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                claimant.log_fire("live", [], [], 3, [])
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["code_source"]["branch"], "main")
+        self.assertEqual(entries[0]["code_source"]["state"], "ok")

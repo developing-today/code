@@ -40,9 +40,36 @@ declaring an issue uncovered (branch `queue/<task>-<issue>-*`, a
 closing keyword, or a trailing `(#n)` title reference). An issue with
 an open fix PR is in-flight: no triage packet. With `--import` it gets
 one merge-watch packet per PR (dedupe
-`repo-health:v1:merge-watch:<repo>:pr:<n>`) — the ~24h recheck that
-re-tests mergibility, refreshes the branch, merges, or closes the PR
-with a salvage note, instead of letting pr_opened work bit-rot.
+`repo-health:v1:pr:<repo>:pr:<n>`) — the ~24h recheck that re-tests
+mergibility, refreshes the branch, merges, or closes the PR with a
+salvage note, instead of letting pr_opened work bit-rot. If several
+open PRs cover one issue, each PR gets its own watch task.
+
+**Ready-PR shepherd fallback (#12280):** the stale-PR warden is the
+merge sweep, but it is one scheduled job — when its live job vanished
+in the November 2026 environment recovery, ready PRs sat unmerged for
+days while the schedule registry still listed the job enabled. The
+reconciliation is the fallback that does not depend on it: the
+`/coverage` call also carries the repo's open PR numbers, and the
+broker answers which of them a **live** task names (the canonical
+`repo-health:v1:pr:<repo>:pr:<n>` key shared by the warden and
+merge-watch). With `--import`, any ready (non-draft) PR older than 6
+hours with no live task naming it gets one `pr_shepherd` packet under
+that same key, so the warden and this fallback share one live task per PR.
+The packet's done rule: merged, or closed with a reason recorded. A PR
+already receiving a merge-watch packet in the same run is not
+double-filed.
+
+**Verdict coverage (#12233 F2b):** the broker diff only knows tasks,
+so `check_coverage.py` also reads the recorded verdict on an
+`effort/l` or `effort/m` issue it would otherwise call uncovered.
+When the issue's newest agent note is a triage verdict with a
+recorded verdict token and a valid resume condition
+(`resume=<slice_landed|dependency_closed>:<number>`), the verdict
+note is the park record for the triage disposition: the issue is
+covered and gets no new triage packet. The decision record with the
+full rules is on #12233; `pm-stack/lane-guard/lane_guard.py
+coverage` applies the same rules to a single issue.
 
 ## Running it
 

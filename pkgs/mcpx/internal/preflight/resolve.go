@@ -79,6 +79,12 @@ type ResolveOptions struct {
 	CrossProject  CrossProjectMode
 	Network       bool
 	LatestVersion func(context.Context, string) (string, error)
+	// PrepareCache is the cache root stage 3 (prepare.go) materialises
+	// the resolved set into in prepare mode. Empty resolves the root
+	// from the environment the way the daemon resolves its cache.
+	PrepareCache string
+	// PrepareInstall is the installer stage 3 uses; nil means npm.
+	PrepareInstall Installer
 }
 
 // DiscoverPackageManifests finds the nearest package.json/package.jsonc or

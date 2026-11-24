@@ -21,6 +21,14 @@
 //!   embedding entries (#1518): one `items` row plus its
 //!   `chunks_raw`, carrying the confirmed definition's metadata
 //!   (repo, path, commit SHA, kind, language, unit).
+//! * [`stage_classified_artifact`] is the classified item writer
+//!   (#12628): the producer's declared source-native classification
+//!   segments are composed through the boundary splitter
+//!   ([`crate::boundary::split_by_boundaries`]) into boundary-safe
+//!   chunks, and one #12408 classification record per chunk — exact
+//!   source offsets and effective sensitivity — is persisted in the
+//!   item's `meta` for promotion to enforce
+//!   ([`chunk_classifications`]).
 //! * [`Registry::promote`] is the merge-on-close transition, gated on
 //!   the embedding-model contract (#7648, M6 of the #6060 decision
 //!   record): a unit is promoted only when its database's recorded
@@ -43,7 +51,10 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::boundary::{ClassificationSegment, split_by_boundaries};
+use crate::classification::{ClassificationProvenance, ClassificationRecord};
 use crate::error::{Error, Result};
+use crate::filters::Sensitivity;
 use crate::shards::{EMBEDDING_MODEL_ID, Tier};
 
 /// The staging schema version this build knows how to provision and
@@ -139,12 +150,11 @@ pub struct MergeManifest {
 /// database reports `_schema_version = 1` and exactly
 /// [`STAGE_V1_TABLES`].
 pub fn provision_staging_db(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Error::backend(format!("staging: creating {}: {e}", parent.display()))
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::backend(format!("staging: creating {}: {e}", parent.display())))?;
     }
     let conn = open(path)?;
     let existing = user_tables(&conn)?;
@@ -190,7 +200,11 @@ pub fn user_tables(conn: &Connection) -> Result<BTreeSet<String>> {
 
 /// Assert a database is exactly a v1 staging DB: `_schema_version = 1`
 /// and the exact [`STAGE_V1_TABLES`] table set. This is the invariant
-/// the schema oracle checks.
+/// the schema oracle checks. One deliberate consequence: a promoted
+/// unit's DB no longer satisfies it — promotion stamps a sixth
+/// table (`atlas_manifest`) into the unit DB, which is what closes
+/// it to further `stage_artifact` writes (see
+/// [`crate::aggregate`]'s step 4; #13284).
 pub fn check_stage_schema(conn: &Connection) -> Result<()> {
     let version = schema_version(conn)?;
     if version != STAGE_SCHEMA_VERSION {
@@ -246,13 +260,15 @@ pub struct ArtifactEntry {
     pub text: String,
 }
 
-/// One staged item, read back from a staging DB ([`list_staged_items`]).
+/// One staged item, read back from a staging DB ([`list_staged_items`]),
+/// with its full text and chunk count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedItem {
     pub id: i64,
     pub unit_id: String,
     pub kind: String,
     pub source: Option<String>,
+    pub text: String,
     pub sensitivity: String,
     pub created_at: String,
     pub meta: Option<String>,
@@ -316,7 +332,7 @@ pub fn chunk_artifact_text(text: &str) -> Vec<String> {
     chunks
 }
 
-fn sha256_hex(text: &str) -> String {
+pub(crate) fn sha256_hex(text: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(text.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -398,13 +414,267 @@ pub fn stage_artifact_in_db(
     stage_artifact(&conn, unit_id, entry, now)
 }
 
+/// One chunk's persisted classification, read back from a staged
+/// item's per-embed records ([`stage_classified_artifact`]): the
+/// chunk's exact byte range in the item's text, its effective
+/// sensitivity, and whether the boundary/decision behind it was
+/// uncertain (and therefore handled at `secret-bearing`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkClassification {
+    pub start: usize,
+    pub end: usize,
+    pub sensitivity: Sensitivity,
+    pub uncertain: bool,
+    pub embed_id: String,
+}
+
+/// The provenance actor recorded on classification records written
+/// by [`stage_classified_artifact`].
+pub const CLASSIFICATION_ACTOR: &str = "atlas-stage";
+
+/// The decision method recorded on those records: the records are
+/// the staging-time composition of the producer's declared segments
+/// through the boundary splitter (#12403).
+pub const CLASSIFICATION_METHOD: &str = "boundary-split";
+
+/// Build the #12408 classification record for one staged chunk, as
+/// JSON. The chunk's exact byte range and uncertainty ride as record
+/// extras (`start` / `end` / `uncertain`), which
+/// [`ClassificationRecord`] preserves verbatim, so the persisted
+/// record carries offsets and effective sensitivity together.
+fn classification_record_json(
+    source: &str,
+    idx: usize,
+    start: usize,
+    end: usize,
+    sensitivity: Sensitivity,
+    uncertain: bool,
+    now: &str,
+) -> serde_json::Value {
+    let mut extras = serde_json::Map::new();
+    extras.insert("start".into(), serde_json::json!(start));
+    extras.insert("end".into(), serde_json::json!(end));
+    extras.insert("uncertain".into(), serde_json::json!(uncertain));
+    ClassificationRecord {
+        schema_version: 1,
+        embed_id: format!("{source}#chunk-{idx}"),
+        sensitivity,
+        disposition: None,
+        provenance: ClassificationProvenance {
+            actor: CLASSIFICATION_ACTOR.to_string(),
+            decided_at: now.to_string(),
+            method: CLASSIFICATION_METHOD.to_string(),
+            method_version: "1".to_string(),
+            config_version: "1".to_string(),
+            evidence_refs: vec![source.to_string()],
+            previous_decision_id: None,
+            extras: serde_json::Map::new(),
+        },
+        extras,
+    }
+    .to_json()
+}
+
+/// Read one persisted classification record back, failing closed: a
+/// record that does not parse, or whose uncertainty flag is absent,
+/// is `secret-bearing` and uncertain (the #12408 convention: an
+/// unrecognized sensitivity already resolves to `secret-bearing`
+/// inside [`ClassificationRecord::parse`]).
+fn chunk_classification_from_json(value: &serde_json::Value) -> ChunkClassification {
+    let Ok(record) = ClassificationRecord::parse(value.clone()) else {
+        return ChunkClassification {
+            start: 0,
+            end: 0,
+            sensitivity: Sensitivity::SecretBearing,
+            uncertain: true,
+            embed_id: String::new(),
+        };
+    };
+    ChunkClassification {
+        start: record
+            .extras
+            .get("start")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize,
+        end: record
+            .extras
+            .get("end")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize,
+        sensitivity: record.sensitivity,
+        uncertain: record
+            .extras
+            .get("uncertain")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        embed_id: record.embed_id,
+    }
+}
+
+/// The persisted per-chunk classifications of one staged item, in
+/// chunk order: `None` for an item staged without classification
+/// (the legacy [`stage_artifact`] path — promotion falls back to the
+/// item's recorded tier for those), `Some` for an item staged by
+/// [`stage_classified_artifact`]. Malformed records fail closed per
+/// record (see [`chunk_classification_from_json`]).
+pub fn chunk_classifications(
+    conn: &Connection,
+    item_id: i64,
+) -> Result<Option<Vec<ChunkClassification>>> {
+    let meta: Option<String> = conn
+        .query_row(
+            "SELECT meta FROM items WHERE id = ?1",
+            params![item_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| Error::backend(format!("staging: reading item {item_id} meta: {e}")))?
+        .flatten();
+    let Some(meta) = meta else {
+        return Ok(None);
+    };
+    let meta: serde_json::Value = serde_json::from_str(&meta)
+        .map_err(|e| Error::backend(format!("staging: item {item_id} meta is not JSON: {e}")))?;
+    let Some(records) = meta.get("classification").and_then(|v| v.as_array()) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        records.iter().map(chunk_classification_from_json).collect(),
+    ))
+}
+
+/// Split one boundary chunk's byte range further at line
+/// boundaries so no piece exceeds [`MAX_CHUNK_BYTES`]. Pieces stay
+/// inside the chunk's range, so they inherit its classification and
+/// can never cross a boundary; a single line over the ceiling stays
+/// whole (no boundary exists inside it), as in
+/// [`chunk_artifact_text`].
+fn split_range_at_lines(text: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
+    let piece = &text[start..end];
+    let mut out = Vec::new();
+    let mut piece_start = 0usize;
+    let mut acc = 0usize;
+    for line in piece.split_inclusive('\n') {
+        if acc > 0 && acc + line.len() > MAX_CHUNK_BYTES {
+            out.push((start + piece_start, start + piece_start + acc));
+            piece_start += acc;
+            acc = 0;
+        }
+        acc += line.len();
+    }
+    if acc > 0 {
+        out.push((start + piece_start, start + piece_start + acc));
+    }
+    out
+}
+
+/// Stage one code/config artifact whose producer declared
+/// source-native classification segments (#12403 wiring, #12628):
+/// like [`stage_artifact`], but the `chunks_raw` chunks are the
+/// boundary-safe chunks of [`split_by_boundaries`] over the declared
+/// `segments` — no chunk crosses a declared boundary, and gaps,
+/// overlaps and uncertain declarations fail closed to
+/// `secret-bearing` chunks — and the item's `meta` carries one #12408
+/// classification record per chunk (see
+/// [`classification_record_json`]) with the chunk's exact source
+/// offsets and effective sensitivity. The item row's own
+/// `sensitivity` keeps the [`ArtifactEntry`] semantics (the entry's
+/// declared tier); the per-chunk records are the effective
+/// classification promotion enforces. Segment *declaration* stays
+/// with the producer (the classifier / boundary detector); staging
+/// composes declarations into chunks and records.
+pub fn stage_classified_artifact(
+    conn: &Connection,
+    unit_id: &str,
+    entry: &ArtifactEntry,
+    segments: &[ClassificationSegment],
+    now: &str,
+) -> Result<i64> {
+    check_stage_schema(conn)?;
+    // Final chunk ranges: boundary chunks, sub-split at line
+    // boundaries only where one chunk exceeds the chunk ceiling.
+    let mut ranges: Vec<(usize, usize, Sensitivity, bool)> = Vec::new();
+    for chunk in split_by_boundaries(&entry.text, segments) {
+        if chunk.end - chunk.start <= MAX_CHUNK_BYTES {
+            ranges.push((chunk.start, chunk.end, chunk.sensitivity, chunk.uncertain));
+        } else {
+            for (s, e) in split_range_at_lines(&entry.text, chunk.start, chunk.end) {
+                ranges.push((s, e, chunk.sensitivity, chunk.uncertain));
+            }
+        }
+    }
+    let source = artifact_source(entry);
+    let records: Vec<serde_json::Value> = ranges
+        .iter()
+        .enumerate()
+        .map(|(idx, &(start, end, sensitivity, uncertain))| {
+            classification_record_json(&source, idx, start, end, sensitivity, uncertain, now)
+        })
+        .collect();
+    let meta = serde_json::json!({
+        "repo": entry.repo,
+        "path": entry.path,
+        "commit_sha": entry.commit_sha,
+        "kind": entry.kind,
+        "language": entry.language,
+        "unit": "boundary",
+        "embedded_at": now,
+        "chunks": ranges.len(),
+        "classification": records,
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO items (unit_id, kind, source, text, sensitivity, created_at, meta) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            unit_id,
+            entry.kind,
+            source,
+            entry.text,
+            entry.sensitivity.name(),
+            now,
+            meta,
+        ],
+    )
+    .map_err(|e| Error::backend(format!("staging: inserting item for {}: {e}", entry.path)))?;
+    let item_id = conn.last_insert_rowid();
+    for (idx, &(start, end, _, _)) in ranges.iter().enumerate() {
+        let chunk = &entry.text[start..end];
+        conn.execute(
+            "INSERT INTO chunks_raw (item_id, idx, text, content_hash, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![item_id, idx as i64, chunk, sha256_hex(chunk), now],
+        )
+        .map_err(|e| {
+            Error::backend(format!(
+                "staging: inserting chunk {idx} for {}: {e}",
+                entry.path
+            ))
+        })?;
+    }
+    Ok(item_id)
+}
+
+/// [`stage_classified_artifact`] against a staging DB file: the
+/// form the `atlas-stage ingest --segments` tool calls.
+pub fn stage_classified_artifact_in_db(
+    db: &Path,
+    unit_id: &str,
+    entry: &ArtifactEntry,
+    segments: &[ClassificationSegment],
+    now: &str,
+) -> Result<i64> {
+    let conn = open(db)?;
+    stage_classified_artifact(&conn, unit_id, entry, segments, now)
+}
+
 /// Read back the items staged in a v1 staging DB, optionally only
 /// one unit's, each with its chunk count.
 pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec<StagedItem>> {
     check_stage_schema(conn)?;
     let mut stmt = conn
         .prepare(
-            "SELECT i.id, i.unit_id, i.kind, i.source, i.sensitivity, i.created_at, i.meta, \
+            "SELECT i.id, i.unit_id, i.kind, i.source, i.text, i.sensitivity, i.created_at, i.meta, \
              (SELECT COUNT(*) FROM chunks_raw c WHERE c.item_id = i.id) \
              FROM items i WHERE (?1 IS NULL OR i.unit_id = ?1) ORDER BY i.id",
         )
@@ -416,10 +686,11 @@ pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec
                 unit_id: r.get(1)?,
                 kind: r.get(2)?,
                 source: r.get(3)?,
-                sensitivity: r.get(4)?,
-                created_at: r.get(5)?,
-                meta: r.get(6)?,
-                chunk_count: r.get(7)?,
+                text: r.get(4)?,
+                sensitivity: r.get(5)?,
+                created_at: r.get(6)?,
+                meta: r.get(7)?,
+                chunk_count: r.get(8)?,
             })
         })
         .map_err(|e| Error::backend(format!("staging: listing items: {e}")))?;
@@ -450,12 +721,12 @@ impl Registry {
     /// Open (creating if needed) a registry at `path` and ensure its
     /// v1 table exists.
     pub fn open(path: &Path) -> Result<Registry> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    Error::backend(format!("registry: creating {}: {e}", parent.display()))
-                })?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::backend(format!("registry: creating {}: {e}", parent.display()))
+            })?;
         }
         let conn = open(path)?;
         ensure_registry(&conn)?;
@@ -951,7 +1222,7 @@ fn ensure_registry(conn: &Connection) -> Result<()> {
         .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))
 }
 
-fn open(path: &Path) -> Result<Connection> {
+pub(crate) fn open(path: &Path) -> Result<Connection> {
     Connection::open(path)
         .map_err(|e| Error::backend(format!("staging: opening {}: {e}", path.display())))
 }

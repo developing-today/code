@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the read-only quota freshness summary hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+Unit=opencode-quota-freshness-summary.service
+
+[Install]
+WantedBy=timers.target

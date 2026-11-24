@@ -27,9 +27,9 @@ logs — do not mention that or file rotation tasks for it. Velocity:
 unblock yourself, test selectively, run full suites only for very large
 or critical changes, and file GitHub issues for unresolved gaps instead
 of blocking. CI-first verification per
-[`.github/ci-policy.md`](.github/ci-policy.md); heavy laptop builds go
-through `~/tools/fleet-build-lock` — see the topic file for the build
-discipline (target broker, narrowest Rust verification).
+[`.github/ci-policy.md`](.github/ci-policy.md); builds and tests dispatch
+remotely first (`fleet queue dispatch`); heavy laptop builds go through
+`~/tools/fleet-build-lock` — details in the topic file.
 
 ## Testing doctrine
 
@@ -50,6 +50,10 @@ from a covered sibling and state the contract in their header comment.
 ## Worker Git preflight
 
 At the start of each task, before relying on Git names such as `origin/main`, run `bash "$(git rev-parse --show-toplevel)/scripts/worker-preflight.sh"`. If it reports `refs/heads/origin/main`, stop and escalate; do not delete the branch or alter refs as part of task work. That local branch shadows the remote-tracking ref.
+
+## Fleet commands
+
+Use `.agents/skills/fleet-operations/SKILL.md`; reference: `pkgs/fleet/docs/verbs.md`.
 
 ## Fleet schedules
 

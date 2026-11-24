@@ -10,10 +10,10 @@ Around the site, the app uses what only an installed app has:
 
 | What                 | How it is used                                                                                                            | Code                                  |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| Home-screen widget   | In progress, queued next, needs me, and the task being worked on. Each number opens its screen                            | `StatusWidget`, `Fleet`               |
+| Home-screen widget   | In progress, queued next, needs me, unread instructions, and the task being worked on. Each number opens its screen       | `StatusWidget`, `Fleet`               |
 | Dictation            | Long-press the icon and choose Dictate, or tap the "Ask the fleet" quick-settings tile: the words land in the Ask box     | `DictateActivity`, `AskTileService`   |
-| Share and selection  | Share text from any app, or select text and choose "Ask the fleet": it lands in the Ask box                               | `ShareActivity`                       |
-| Long-press shortcuts | Dictate, Ask, Needs me, Now. They move the open app to that screen and do not reload it                                   | `OpenActivity`, `res/xml/shortcuts`   |
+| Share and selection  | Share text from any app, or select text and choose "Ask the fleet": it lands in the Ask box. An enroll command lands in provisioning on the Agents screen instead | `ShareActivity`, `Links`              |
+| Long-press shortcuts | Dictate, Ask, Needs me, Now, Messages. They move the open app to that screen and do not reload it                         | `OpenActivity`, `res/xml/shortcuts`   |
 | Notifications        | The site's notifications arrive as the app's own, with its mark in the status bar; the app asks for the permission itself | the helper library's activities       |
 | Links                | `https://pm.security.cab/...` links open in the app                                                                       | the launcher activity's intent filter |
 
@@ -45,52 +45,106 @@ under More, Phones, and the widget then goes back to "Tap to link".
 
 If the two disagree the app still works, with a browser bar at the top.
 
-## Build
+## Build and release
+
+GitHub Actions builds the app on every push to `main` that touches it
+(`.github/workflows/pm-console-android.yml`), and by hand:
 
 ```bash
-gh workflow run pm-console-android.yml        # builds the APK in CI
-bash pm-stack/console/android/build.sh        # locally: needs JAVA_HOME (17 or 21) and ANDROID_HOME
-bash pm-stack/console/android/sign.sh app-release-unsigned.apk   # sign a CI build with the key on this machine
+gh workflow run pm-console-android.yml
+bash pm-stack/console/android/build.sh        # here: needs JAVA_HOME (17 or 21) and ANDROID_HOME
 ```
 
-The signing key is on the pm-stack host at
-`~/.local/state/pm-console/android/release.p12`, and it stays there. The
-workflow builds an unsigned APK and keeps it as the artifact
-`pm-console-apk-unsigned`; `sign.sh` on the host signs it, checks the
-certificate against `signing-fingerprint.txt`, and the signed
-`pm-console.apk` is uploaded to the release:
+A build names its own version from its commit (`build.sh`): a code that
+rises with the commit's time, so each build installs over the one
+before, and a name that says the day and the commit.
+
+Every build ends up signed and released with nobody involved, twice:
+
+- `pm-console-android-v<code>`: that build. Once made it is never
+  changed.
+- `pm-console-android`: one address that always holds the newest build
+  and is never taken back to an older one. The site hands this one out.
+
+Each carries `pm-console.apk`, `pm-console.apk.sha256` and a
+`version.json` (name, code, commit, sha256, size, when, certificate).
+`release.sh` makes both. Where the signing happens depends on where the
+key is.
+
+**Only the pm-stack host holds the key** (how it starts). The workflow's
+build is unsigned and kept as the artifact `pm-console-apk-unsigned`,
+with the version it was built as. On the host,
+`pm-console-android-release.timer` runs `release-built.sh` every ten
+minutes: it takes the newest unsigned build made on `main`, signs it
+there with `sign.sh` (which refuses a result that does not carry the
+certificate in `signing-fingerprint.txt`), releases it, and puts it
+where the console serves the app from. The key is read there by
+`apksigner` and goes nowhere; what leaves is the signed APK, which is
+public. A build is released within about ten minutes of being made, or
+when the host is next up. If that unit fails it shows on the console's
+Services screen and in its notifications, like any other.
+
+Only a build this repository made on `main`, by a push or by hand, is
+ever signed: a run of a pull request, another branch or a fork is not,
+whatever it is called.
+
+By hand, the same steps:
 
 ```bash
 gh run download <run-id> -n pm-console-apk-unsigned -D /tmp/pm-apk
 nix shell nixpkgs#apksigner -c bash pm-stack/console/android/sign.sh /tmp/pm-apk/app-release-unsigned.apk
-gh release upload pm-console-android /tmp/pm-apk/pm-console.apk --clobber
+install -m 644 /tmp/pm-apk/pm-console.apk ~/.local/state/pm-console/android/pm-console.apk
 ```
 
-If the repository secrets `PM_CONSOLE_ANDROID_KEYSTORE_B64` and
-`PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD` are ever set, the workflow signs
-and publishes by itself instead, and fails unless the certificate
-matches. Losing the key means a new key, a new fingerprint and a
-reinstall; nothing else depends on it.
+**GitHub holds the key too** (the owner's choice). The build is signed
+in the workflow, checked against the same certificate, and released by
+the same `release.sh`; the host then finds nothing to do, and a release
+no longer waits for the host to be up.
+
+### Giving GitHub the key
+
+Not needed for releases to happen: see above. It takes the host out of
+the path.
+
+The key is on the pm-stack host at
+`~/.local/state/pm-console/android/release.p12`, with its password in
+`keystore-password` beside it. The workflow signs once the
+`pm-console-android` environment of the repository holds two secrets:
+
+- `PM_CONSOLE_ANDROID_KEYSTORE_B64`: the keystore, base64;
+- `PM_CONSOLE_ANDROID_KEYSTORE_PASSWORD`: its password.
+
+Putting them there is the owner's to do, by hand, with `gh secret set
+--env pm-console-android` or in the repository's settings. No script,
+workflow or agent here holds or moves the key, on purpose. The
+environment is made by the workflow's first run; limiting it to the
+`main` branch (Settings, Environments) keeps a workflow on any other
+branch from reading the key.
+
+A build signed by any other key fails before anything is released, in
+`build.sh` or in `sign.sh`. Losing the key means a new key, a new
+fingerprint and a reinstall; nothing else depends on it.
 
 ## Install
 
 On the phone, open `https://pm.security.cab/console/`, sign in, and go to
-More, Phones, "Download the app". That downloads the signed build from
-the host (`/console/pm-console.apk`, owner only); open it to install.
-Later builds install over it.
+More, Phones, "Download the app" (`/console/pm-console.apk`, owner
+only). What that is, in order:
+
+1. the build GitHub released, fetched from the release and checked
+   against its `version.json`; this needs nothing of the laptop;
+2. otherwise the laptop's signed build
+   (`~/.local/state/pm-console/android/pm-console.apk`), or the copy of
+   it kept at Cloudflare when the laptop is away.
+
+The page says which it is. Later builds install over it.
 
 The native parts are checked by compiling the build and reading its
 merged manifest; the site's side of each (the Ask box taking handed-over
-words, linking a phone, the summary) is tested in `test/`. They have not
-been exercised by an automated run on a device.
-
-The console serves whatever signed build is at
-`~/.local/state/pm-console/android/pm-console.apk` on the host, so
-putting a new build in place is the whole release:
-
-```bash
-install -m 644 /tmp/pm-apk/pm-console.apk ~/.local/state/pm-console/android/pm-console.apk
-```
-
-The same file can also be attached to the GitHub release
-`pm-console-android` for a copy outside the host.
+words, linking a phone, the summary) is tested in `test/`. The app
+with no connection is checked on a device in CI: the
+`pm-console-android-offline` workflow (nightly, and on demand) starts
+an emulator, installs the built APK, and drives it against the demo
+edge — open, aeroplane mode, open again from the icon, answer a
+question, swipe the app away, network back — and checks the demo edge
+saw that answer exactly once. See `offline-check.sh` for the steps.

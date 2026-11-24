@@ -15,13 +15,13 @@
 
 ## 2. Value semantics and assignment
 
-| Value / disposition | Meaning | Search / handling |
-|---|---|---|
-| `shareable` | Project content intentionally suitable for external disclosure, subject to the destination's own checks. | Eligible for public-surface filtering; not an automatic publish authorization. |
-| `personal` | Owner/person-specific project or operational content, excluding unrelated personal-life material. | Fleet-internal or same-owner hosted-per-user only; never public by default. |
-| `local-only` | Restricted content whose raw text and embedding stay in the local/private boundary. | Local authorized search only; no hosted or public disclosure. |
-| `secret-bearing` | Direct credentials, tokens, private keys, or other secret-bearing content, including unreviewed content. | Secret-tier storage/embedder and secret-handling path only; no ordinary search result or output. |
-| `excluded_personal_life` | Drew's personal-life content unrelated to coding, design, or projects. | Excluded from Atlas search, embedding, and disclosure. Remove from active searchable index through the documented retention/remediation process; retain only the minimum audit tombstone required by policy. |
+| Value / disposition      | Meaning                                                                                                  | Search / handling                                                                                                                                                                                            |
+| ------------------------ | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `shareable`              | Project content intentionally suitable for external disclosure, subject to the destination's own checks. | Eligible for public-surface filtering; not an automatic publish authorization.                                                                                                                               |
+| `personal`               | Owner/person-specific project or operational content, excluding unrelated personal-life material.        | Fleet-internal or same-owner hosted-per-user only; never public by default.                                                                                                                                  |
+| `local-only`             | Restricted content whose raw text and embedding stay in the local/private boundary.                      | Local authorized search only; no hosted or public disclosure.                                                                                                                                                |
+| `secret-bearing`         | Direct credentials, tokens, private keys, or other secret-bearing content, including unreviewed content. | Secret-tier storage/embedder and secret-handling path only; no ordinary search result or output.                                                                                                             |
+| `excluded_personal_life` | Drew's personal-life content unrelated to coding, design, or projects.                                   | Excluded from Atlas search, embedding, and disclosure. Remove from active searchable index through the documented retention/remediation process; retain only the minimum audit tombstone required by policy. |
 
 Classification is assigned to each embed (or span under #6035). A source-level classification is an input ceiling, not a substitute for per-embed assignment. The effective level for a result is the most restrictive of the embed/span, source version, and applicable recipient-local raise. The same byte-identical span reused in multiple locations inherits the most restrictive applicable classification; a low-classification reference cannot dilute a secret-bearing occurrence. This follows #6035 I7's `max(span, version)` rule, refined to include the local raise and exclusion disposition.
 
@@ -39,12 +39,12 @@ Classifier output must identify the exact embed/span and source offsets it class
 
 The effective result set is computed as: authorized identity/grant **AND** context ceiling **AND** sensitivity eligibility **AND** not excluded. Context is explicit on every search request and query record; an absent or unknown context fails closed to `public-surface` for outbound sinks and to `local-only` for interactive local reads. Context does not raise identity grants.
 
-| Context | Maximum eligible value | Rule |
-|---|---|---|
-| `fleet-internal` | `local-only` | Authenticated fleet task agents may search project/personal/local-only material only within their grant. `secret-bearing` requires the dedicated secret path and purpose-bound authorization; never include it in ordinary agent context. |
-| `hosted-per-user` | `personal` | Tenant/owner boundary and grant required; no local-only or secret-bearing data. No cross-user retrieval. |
-| `public-surface` | `shareable` | Apply immediately before transmission/posting regardless of caller clearance. Filter snippets, quoted text, file paths/metadata, citations, cached payloads, and generated output references. If an output cannot be safely filtered, withhold it. |
-| `local-owner` | `secret-bearing` | Explicit local owner action may access secret-tier content through the local secret path. This is not an override of cryptographic boundaries and cannot make a public/hosted result eligible. |
+| Context           | Maximum eligible value | Rule                                                                                                                                                                                                                                               |
+| ----------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fleet-internal`  | `local-only`           | Authenticated fleet task agents may search project/personal/local-only material only within their grant. `secret-bearing` requires the dedicated secret path and purpose-bound authorization; never include it in ordinary agent context.          |
+| `hosted-per-user` | `personal`             | Tenant/owner boundary and grant required; no local-only or secret-bearing data. No cross-user retrieval.                                                                                                                                           |
+| `public-surface`  | `shareable`            | Apply immediately before transmission/posting regardless of caller clearance. Filter snippets, quoted text, file paths/metadata, citations, cached payloads, and generated output references. If an output cannot be safely filtered, withhold it. |
+| `local-owner`     | `secret-bearing`       | Explicit local owner action may access secret-tier content through the local secret path. This is not an override of cryptographic boundaries and cannot make a public/hosted result eligible.                                                     |
 
 `excluded_personal_life` is ineligible in every context, including local-owner search. Search implementations in #9092 enforce the table; #9099 records the context, policy version, and effective ceiling with the query and results. A downstream surface must not trust a prior searcher's context as proof of permission to disclose.
 

@@ -137,7 +137,11 @@ pub fn check_note_op(kind: &str, op: &NoteOp) -> Result<(), NoteError> {
 }
 
 /// An applied note event, as the fold reads it: its ID, its signer, and its operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Serializable so a host can persist the log's events alongside the
+/// policy snapshot and rebuild the log from them after a restart
+/// (#3819): the events are the durable form of the log.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppliedNote {
     /// The event's ID. For a `note.create`, this is also the note's stable ID.
     pub id: Hash,
@@ -169,7 +173,9 @@ pub struct NoteRecord {
     /// The note's stable ID: the ID of its `note.create` event. It is not any later
     /// revision's ID, and it does not depend on a filename or alias.
     pub id: Hash,
-    /// Every revision of the note, in revision ID order. The first is the create.
+    /// Every revision of the note, in revision ID order. The create is
+    /// the revision whose ID is the note's ID — not necessarily the
+    /// first: a later revision's ID may sort before the note's ID.
     pub revisions: Vec<RevisionRecord>,
     /// The revisions no other revision names as a parent, in ID order. Concurrent
     /// revisions are all heads until an explicit merge revision names them.

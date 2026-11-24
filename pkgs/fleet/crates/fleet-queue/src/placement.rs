@@ -17,12 +17,15 @@
 //!
 //! Sessions are server-side records keyed by an unguessable handle
 //! (`fp_` + 128-bit random), so any client can reconnect:
-//! `repo-queue session status|result|list`. STOPGAP (labeled, per
-//! the spec): records live in a local JSON store at
-//! `~/.local/state/fleet-place/sessions.json` — the same path and
-//! record shape the reference implementation used, so records
-//! migrate rather than being redesigned when the designed
-//! `agent.placement_sessions` table lands in the queue backend.
+//! `repo-queue session status|result|list`. Records live in the
+//! local JSON store at `~/.local/state/fleet-place/sessions.json`
+//! — the same path and record shape the reference implementation
+//! used — and mirror best-effort to the queue backend's
+//! `placement_sessions` table (#13146; the designed home the intake
+//! spec pointed at), so a handle resolves from any seat. The local
+//! store remains the always-available fallback and the only input
+//! to placement decisions: the mirror can neither fail nor stall a
+//! dispatch, and `FLEET_PLACE_REMOTE=off` disables it.
 //!
 //! Client interface (frozen v1):
 //!   repo-queue dispatch --repo <owner/name> --command '<cmd>'
@@ -177,6 +180,44 @@ impl Job {
         }
         Value::Object(out)
     }
+
+    /// Rebuild a job from its stored record — the `session status`
+    /// grant path re-dispatches a coordinator-queued session from the
+    /// job its dispatch pass committed. Unknown or missing fields
+    /// fall back to the dispatch defaults, exactly as the flag
+    /// parser would supply them.
+    fn from_json(v: &Value) -> Option<Job> {
+        let repo = v.get("repo")?.as_str()?.to_string();
+        let command = v.get("command")?.as_str()?.to_string();
+        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+        Some(Job {
+            repo,
+            command,
+            git_ref: s("ref").unwrap_or_default(),
+            runner: s("runner").unwrap_or_else(|| "auto".to_string()),
+            platform: s("platform").unwrap_or_else(|| "linux".to_string()),
+            container: s("container"),
+            surface_pin: s("surface_pin"),
+            preferred_surface: s("preferred_surface"),
+            previous_run_id: v.get("previous_run_id").and_then(|x| x.as_i64()),
+            previous_run_repo: s("previous_run_repo"),
+            push_nix_cache: v.get("push_nix_cache").and_then(|x| x.as_bool()).unwrap_or(false),
+            actions_cache: s("actions_cache"),
+            actions_cache_restore_keys: v
+                .get("actions_cache_restore_keys")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            allow_paid_blacksmith: v
+                .get("allow_paid_blacksmith")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0),
+        })
+    }
 }
 
 // ----------------------------------------------------------------- context
@@ -189,6 +230,7 @@ impl Job {
 pub struct Ctx {
     pub owners: Value,
     pub owner_load: HashMap<String, (i64, i64)>, // owner -> (running, queued)
+    pub owner_load_coverage: HashMap<String, LoadCoverage>,
     pub owner_last_dispatch: HashMap<String, i64>,
     pub surface_last_dispatch: HashMap<String, i64>,
     pub owner_load_overridden: Vec<String>,
@@ -206,6 +248,99 @@ impl Ctx {
             .and_then(|c| c.as_i64())
             .unwrap_or(0)
     }
+}
+
+/// How completely an owner's live load was observed while building
+/// the context. The collector counts running+queued runs per owner
+/// through the GitHub API; every required read either yields a count
+/// or is recorded as missing, so a zero is only ever reported as a
+/// *measured* zero when every read succeeded. Before this existed, a
+/// missing token, a 403, or a malformed 200 all collapsed to the
+/// same numeric 0 as a genuinely idle account (issue #13611).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadCoverageStatus {
+    /// Every required host/status read returned a valid count.
+    Measured,
+    /// Some reads returned counts; the rest are missing. The known
+    /// subtotal is a lower bound on the owner's true load.
+    Partial,
+    /// No read returned a count; the owner's load is unknown.
+    Unknown,
+    /// The load was supplied by the explicit `--assume-owner-load`
+    /// simulation override, not read from GitHub.
+    Simulated,
+}
+
+impl LoadCoverageStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LoadCoverageStatus::Measured => "measured",
+            LoadCoverageStatus::Partial => "partial",
+            LoadCoverageStatus::Unknown => "unknown",
+            LoadCoverageStatus::Simulated => "simulated",
+        }
+    }
+}
+
+/// Per-owner load-read coverage: what was observed, what is known,
+/// and what could not be read. Carried into the decision JSON so an
+/// operator can tell a measured idle account from an unreadable one.
+#[derive(Debug, Clone)]
+pub struct LoadCoverage {
+    pub status: LoadCoverageStatus,
+    pub known_running: i64,
+    pub known_queued: i64,
+    pub cap: i64,
+    pub read_at: i64,
+    pub source: String,
+    pub missing_reads: Vec<String>,
+}
+
+impl LoadCoverage {
+    /// The observed running+queued subtotal: exact for measured and
+    /// simulated coverage, a lower bound for partial coverage.
+    pub fn known_load(&self) -> i64 {
+        self.known_running.saturating_add(self.known_queued)
+    }
+
+    /// A numeric free-slot estimate is only meaningful when the
+    /// load figure is complete (measured) or an explicitly labeled
+    /// simulation. Partial coverage still proves saturation when
+    /// the known subtotal already reaches the cap.
+    pub fn estimated_free(&self, cap: i64) -> Option<i64> {
+        match self.status {
+            LoadCoverageStatus::Measured | LoadCoverageStatus::Simulated => {
+                Some((cap - self.known_load()).max(0))
+            }
+            LoadCoverageStatus::Partial if self.known_load() >= cap => Some(0),
+            _ => None,
+        }
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "status": self.status.as_str(),
+            "known_running": self.known_running,
+            "known_queued": self.known_queued,
+            "known_load": self.known_load(),
+            "cap": self.cap,
+            "read_at": self.read_at,
+            "source": self.source,
+            "missing_reads": self.missing_reads,
+        })
+    }
+}
+
+/// The `owner_load_coverage` fragment of the decision JSON, keyed
+/// by owner in sorted order so the output is deterministic.
+pub fn owner_load_coverage_json(ctx: &Ctx) -> Value {
+    let mut owners: Vec<&String> = ctx.owner_load_coverage.keys().collect();
+    owners.sort();
+    let mut out = Map::new();
+    for owner in owners {
+        out.insert(owner.clone(), ctx.owner_load_coverage[owner].to_json());
+    }
+    Value::Object(out)
 }
 
 // ------------------------------------------------------- side-effect surface
@@ -293,9 +428,19 @@ fn first_token(lookups: &[&dyn Fn() -> Option<String>]) -> Option<String> {
 
 impl RealGh {
     fn new() -> Self {
+        // Platform root store, not webpki-roots alone: hosts
+        // behind a TLS-intercepting egress proxy present the
+        // proxy's CA, which only the platform store carries (the
+        // sandbox seat's dispatch died with UnknownIssuer before
+        // this — code#13122; same fix as fleet's gh.rs App leg).
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(60)))
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
             .build()
             .into();
         RealGh {
@@ -541,6 +686,70 @@ fn valid_owner_repo(repo: &str) -> bool {
     valid_part(owner) && valid_part(name) && !name.contains('/')
 }
 
+/// A portable run reference names the Fleet runner repository and its
+/// GitHub Actions run ID. Unlike an fp_ handle, it is resolvable from
+/// any workspace with GitHub access and the same surface registry.
+fn parse_portable_run_reference(reference: &str) -> Option<(String, i64)> {
+    let (repo, raw_id) = reference.rsplit_once('#')?;
+    let run_id = raw_id.parse::<i64>().ok()?;
+    if !valid_owner_repo(repo) || run_id <= 0 {
+        return None;
+    }
+    Some((repo.to_string(), run_id))
+}
+
+fn resolve_portable_run_reference(reference: &str, registry: &Value, gh: &dyn Gh) -> R<Value> {
+    let (repo, run_id) = parse_portable_run_reference(reference).ok_or_else(|| {
+        Die(format!(
+            "invalid portable run reference {reference:?}; expected owner/repo#run_id"
+        ))
+    })?;
+    let surface = registry_surfaces(registry)
+        .into_iter()
+        .find(|surface| {
+            surf_str(surface, "repo") == repo
+                && matches!(surf_str(surface, "kind"), "github-actions" | "blacksmith")
+        })
+        .ok_or_else(|| {
+            Die(format!(
+                "{repo} is not a registered Fleet GitHub Actions runner repository"
+            ))
+        })?;
+    let token = surface_token(&surface, gh).ok_or_else(|| {
+        Die(format!(
+            "no GitHub token is available to read runner {repo}"
+        ))
+    })?;
+    let (status, run) = gh.api(
+        "GET",
+        &format!("/repos/{repo}/actions/runs/{run_id}"),
+        &token,
+        None,
+    )?;
+    if status != 200 {
+        return die(format!(
+            "cannot read Fleet run {reference} (GitHub API HTTP {status})"
+        ));
+    }
+    let run_url = run
+        .get("html_url")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("https://github.com/{repo}/actions/runs/{run_id}"));
+    Ok(json!({
+        "handle": reference,
+        "portable_id": reference,
+        "runner_repo": repo,
+        "run_id": run_id,
+        "run_url": run_url,
+        "surface": surf_str(&surface, "id"),
+        "surface_kind": surf_str(&surface, "kind"),
+        "state": map_run_state(&run),
+        "created_at": run.get("created_at").cloned().unwrap_or(Value::Null),
+        "updated_at": run.get("updated_at").cloned().unwrap_or(Value::Null),
+    }))
+}
+
 fn load_registry(path: &str) -> R<Value> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Die(format!("cannot read registry {path}: {e}")))?;
@@ -643,8 +852,14 @@ fn with_store_lock<T>(f: impl FnOnce() -> R<T>) -> R<T> {
 /// Commit one new session record (and optionally its Blacksmith
 /// ledger entry) under the store lock, merging into the CURRENT
 /// store on disk — records written by other processes since this
-/// process loaded its snapshot are preserved.
-fn commit_new_session(rec: &Value, blacksmith_entry: Option<&Value>) -> R<()> {
+/// process loaded its snapshot are preserved. The local commit is
+/// the commit: afterwards the record mirrors best-effort to the
+/// queue backend (#13146), where a failure changes nothing locally.
+fn commit_new_session(
+    rec: &Value,
+    blacksmith_entry: Option<&Value>,
+    remote: &dyn remote::SessionRemote,
+) -> R<()> {
     let handle = rec
         .get("handle")
         .and_then(|h| h.as_str())
@@ -666,7 +881,9 @@ fn commit_new_session(rec: &Value, blacksmith_entry: Option<&Value>) -> R<()> {
             }
         }
         save_store(&store)
-    })
+    })?;
+    let _ = remote.put(rec);
+    Ok(())
 }
 
 fn load_store() -> Value {
@@ -772,851 +989,16 @@ fn submitted_by() -> String {
 
 // ---------------------------------------------------------------- adapters
 
-#[derive(Debug, Clone)]
-pub struct Capacity {
-    pub summary: String,
-    pub free_slots: Option<i64>,
-    pub remaining_total_minutes: Option<f64>,
-}
-
-#[derive(Debug, Default)]
-pub struct DispatchResult {
-    pub run_id: Option<i64>,
-    pub run_url: Option<String>,
-    pub note: Option<String>,
-    pub codespace: Option<String>,
-    /// Set when the dispatch itself already knows the terminal
-    /// outcome (Codespace ssh exit code), so the session record
-    /// is terminal from the start instead of stuck `dispatched`.
-    pub terminal_state: Option<String>,
-}
-
-/// One adapter per registry `kind` (spec: "Adapters per placement
-/// kind"). Adding a placement type = a new adapter here plus a new
-/// `kind` value in the registry; the cascade below does not change.
-pub trait Adapter {
-    fn kind(&self) -> &'static str;
-    fn surface(&self) -> &Value;
-    fn eligible(&self, job: &Job, ctx: &Ctx, gh: &dyn Gh) -> (bool, String);
-    fn capacity(&self, job: &Job, ctx: &Ctx) -> Capacity;
-    fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult>;
-    fn status(&self, session: &Value, gh: &dyn Gh) -> String {
-        session
-            .get("state")
-            .and_then(|s| s.as_str())
-            .unwrap_or("unknown")
-            .to_string()
-    }
-}
-
-fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
-    let status = surf_str(surface, "status");
-    if status != "active" {
-        return (false, format!("surface status is '{status}', not 'active'"));
-    }
-    let dispatch_as = surf_str(surface, "dispatch_as");
-    if !matches!(dispatch_as, "" | "app" | "user") {
-        return (
-            false,
-            format!("surface dispatch_as is '{dispatch_as}', not 'app' or 'user'"),
-        );
-    }
-    if !surface_targets_job(surface, job) {
-        return (
-            false,
-            format!("{} is not in this surface's targets", job.repo),
-        );
-    }
-    (true, "eligible".to_string())
-}
-
-/// The dispatch_id for a surface whose workflow declares a
-/// `dispatch_id` input (registry flag `dispatch_id_input`, set for
-/// org-run.yml and dezren39/fleet's fleet-run.yml, which surface it
-/// in the run display title via `run-name:` — issue #8371). A fresh
-/// fp_ handle per dispatch. Surfaces without the flag get None:
-/// GitHub rejects dispatch inputs the workflow does not declare,
-/// so those keep the snapshot-exclusion fallback in correlate_run.
-fn dispatch_id_for(surface: &Value) -> Option<String> {
-    if surface.get("dispatch_id_input").and_then(|v| v.as_bool()) == Some(true) {
-        Some(new_handle(&rand_source::URandom))
-    } else {
-        None
-    }
-}
-
-/// Pick the run a dispatch created out of a workflow run list.
-/// Runs in the pre-dispatch snapshot (before_ids) and runs created
-/// before `since` are never candidates. With a dispatch_id, only a
-/// run whose display_title carries the id is a candidate — exact
-/// correlation even when another dispatch of the same workflow
-/// lands in the same poll window (issue #8371). Without one, the
-/// earliest new run wins (the snapshot-exclusion fallback).
-fn correlate_run(
-    runs: &[Value],
-    before_ids: &std::collections::HashSet<i64>,
-    since: i64,
-    dispatch_id: Option<&str>,
-) -> Option<(i64, String)> {
-    let mut candidates: Vec<(i64, i64, String)> = Vec::new();
-    for r in runs {
-        let id = r.get("id").and_then(|i| i.as_i64()).unwrap_or(0);
-        if before_ids.contains(&id) {
-            continue;
-        }
-        let created = r
-            .get("created_at")
-            .and_then(|c| c.as_str())
-            .and_then(parse_iso)
-            .unwrap_or(0);
-        if created < since {
-            continue;
-        }
-        if let Some(d) = dispatch_id {
-            let title = r
-                .get("display_title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if !title.contains(d) {
-                continue;
-            }
-        }
-        candidates.push((
-            created,
-            id,
-            r.get("html_url")
-                .and_then(|u| u.as_str())
-                .unwrap_or("")
-                .to_string(),
-        ));
-    }
-    candidates.sort();
-    candidates
-        .into_iter()
-        .next()
-        .map(|(_created, id, url)| (id, url))
-}
-
-pub struct GithubActionsAdapter {
-    surface: Value,
-    /// The runner this adapter dispatches: "github" for the plain
-    /// adapter, "blacksmith" for the Blacksmith variant (the
-    /// reference models Blacksmith as a subclass overriding
-    /// runner_name).
-    force_runner: &'static str,
-}
-
-impl GithubActionsAdapter {
-    /// The fleet-run workflow inputs for a job. Cache options travel
-    /// in a `jobs` entry (the workflows that accept bare repo/command
-    /// inputs ignore entry fields they do not know); the `runner`
-    /// input is sent only when it changes something (blacksmith) —
-    /// upstream's fleet-run rejects unknown inputs.
-    fn workflow_inputs(&self, job: &Job, dispatch_id: Option<&str>) -> Value {
-        if surf_str(&self.surface, "workflow") == "fleet-command.yml" {
-            let mut inputs = Map::new();
-            inputs.insert("repo".into(), json!(job.repo));
-            inputs.insert("command".into(), json!(job.command));
-            inputs.insert("runner".into(), json!(self.runner_name(job)));
-            inputs.insert("platform".into(), json!(job.platform));
-            if !job.git_ref.is_empty() {
-                inputs.insert("ref".into(), json!(job.git_ref));
-            }
-            if self.surface.get("container_input").and_then(Value::as_bool) == Some(true) {
-                if let Some(container) = &job.container {
-                    inputs.insert("container_image".into(), json!(container));
-                }
-            }
-            if let Some(cache) = &job.actions_cache {
-                let (key, path) = cache.split_once(':').unwrap_or((cache.as_str(), "."));
-                inputs.insert("actions_cache_key".into(), json!(key));
-                inputs.insert("actions_cache_path".into(), json!(path));
-                inputs.insert(
-                    "actions_cache_restore_keys".into(),
-                    json!(job.actions_cache_restore_keys.join("\n")),
-                );
-            }
-            if job.push_nix_cache {
-                inputs.insert("push_nix_cache".into(), json!(true));
-            }
-            if self
-                .surface
-                .get("previous_run_id_input")
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
-                if let Some(run_id) = job.previous_run_id {
-                    inputs.insert("previous_run_id".into(), json!(run_id.to_string()));
-                }
-                if let Some(repo) = &job.previous_run_repo {
-                    inputs.insert("previous_run_repo".into(), json!(repo));
-                }
-            }
-            if let Some(id) = dispatch_id {
-                inputs.insert("dispatch_id".into(), json!(id));
-            }
-            return Value::Object(inputs);
-        }
-        let mut entry = Map::new();
-        entry.insert("repo".into(), json!(job.repo));
-        entry.insert("command".into(), json!(job.command));
-        if !job.git_ref.is_empty() {
-            entry.insert("ref".into(), json!(job.git_ref));
-        }
-        let mut cache = Map::new();
-        if job.push_nix_cache {
-            cache.insert("push_nix".into(), json!(true));
-        }
-        if let Some(ac) = &job.actions_cache {
-            let (key, path) = match ac.split_once(':') {
-                Some((key, path)) => (key, path),
-                None => (ac.as_str(), "."),
-            };
-            cache.insert("actions_key".into(), json!(key));
-            cache.insert("actions_path".into(), json!(path));
-        }
-        if !job.actions_cache_restore_keys.is_empty() {
-            cache.insert(
-                "actions_restore_keys".into(),
-                json!(job.actions_cache_restore_keys),
-            );
-        }
-        let has_artifact_input = self
-            .surface
-            .get("previous_run_id_input")
-            .and_then(Value::as_bool)
-            == Some(true);
-        let has_platform_input =
-            self.surface.get("platform_input").and_then(Value::as_bool) == Some(true);
-        if has_artifact_input {
-            if let Some(run_id) = job.previous_run_id {
-                entry.insert("previous_run_id".into(), json!(run_id.to_string()));
-            }
-            if let Some(repo) = &job.previous_run_repo {
-                entry.insert("previous_run_repo".into(), json!(repo));
-            }
-        }
-        if has_platform_input {
-            entry.insert("platform".into(), json!(job.platform));
-        }
-        let mut inputs = Map::new();
-        let needs_jobs = !cache.is_empty()
-            || (has_artifact_input && job.previous_run_id.is_some())
-            || (has_platform_input && job.platform != "linux");
-        if needs_jobs {
-            if !cache.is_empty() {
-                entry.insert("cache".into(), Value::Object(cache));
-            }
-            inputs.insert(
-                "jobs".into(),
-                json!(Value::Array(vec![Value::Object(entry)]).to_string()),
-            );
-            // org-run.yml declares the top-level `repo` input
-            // required even when `jobs` is given — retain it.
-            inputs.insert("repo".into(), json!(job.repo));
-        } else {
-            inputs.insert("repo".into(), json!(job.repo));
-            inputs.insert("command".into(), json!(job.command));
-        }
-        if has_artifact_input {
-            if let Some(run_id) = job.previous_run_id {
-                inputs.insert("previous_run_id".into(), json!(run_id.to_string()));
-            }
-            if let Some(repo) = &job.previous_run_repo {
-                inputs.insert("previous_run_repo".into(), json!(repo));
-            }
-        }
-        if has_platform_input {
-            inputs.insert("platform".into(), json!(job.platform));
-        }
-        if surf_str(&self.surface, "workflow") == "org-run.yml" {
-            // org-run's setup job defaults to a Blacksmith runner;
-            // pin it to this dispatch's provider so a GitHub-only
-            // dispatch does not silently consume Blacksmith
-            // minutes outside the budget/ledger (Codex P2).
-            inputs.insert("setup_runner".into(), json!(self.runner_name(job)));
-        }
-        if self.runner_name(job) == "blacksmith" {
-            inputs.insert("runner".into(), json!("blacksmith"));
-        }
-        if !job.git_ref.is_empty() {
-            inputs.insert("ref".into(), json!(job.git_ref));
-        }
-        if let Some(id) = dispatch_id {
-            inputs.insert("dispatch_id".into(), json!(id));
-        }
-        Value::Object(inputs)
-    }
-
-    fn runner_name(&self, _job: &Job) -> &'static str {
-        self.force_runner
-    }
-
-    fn dispatch_workflow(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
-        let s = &self.surface;
-        let repo = surf_str(s, "repo").to_string();
-        let workflow = surf_str(s, "workflow").to_string();
-        let token = surface_token(s, gh).ok_or_else(|| Die(no_token_reason(s)))?;
-        let dispatch_id = dispatch_id_for(s);
-        let inputs = self.workflow_inputs(job, dispatch_id.as_deref());
-        // Correlate the created run with THIS dispatch (Codex P1
-        // on PR #8325, exact-id fix in issue #8371): when the
-        // workflow declares a dispatch_id input (dispatch_id_for),
-        // the id generated above travels with the dispatch and the
-        // workflow surfaces it in the run's display title, so
-        // correlate_run can match exactly this dispatch's run even
-        // when another dispatch lands in the same poll window.
-        // The pre-dispatch snapshot of existing run ids is kept
-        // for every surface: it is the only correlation for
-        // workflows without the input (the fallback), and with an
-        // id it still excludes runs that predate this dispatch.
-        let list_runs = |gh: &dyn Gh| -> R<Vec<Value>> {
-            let (_st, runs) = gh.api(
-                "GET",
-                &format!(
-                    "/repos/{repo}/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=100"
-                ),
-                &token,
-                None,
-            )?;
-            Ok(runs
-                .get("workflow_runs")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default())
-        };
-        let before_ids: std::collections::HashSet<i64> = list_runs(gh)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|r| r.get("id").and_then(|i| i.as_i64()))
-            .collect();
-        let (status, payload) = gh.api(
-            "POST",
-            &format!("/repos/{repo}/actions/workflows/{workflow}/dispatches"),
-            &token,
-            Some(&json!({ "ref": "main", "inputs": inputs })),
-        )?;
-        if status != 204 {
-            return die(format!(
-                "dispatch to {} failed: HTTP {status}: {}",
-                surf_str(s, "id"),
-                payload
-                    .get("message")
-                    .map(|m| m.to_string())
-                    .unwrap_or_else(|| payload.to_string())
-            ));
-        }
-        // Find the run the dispatch created: the earliest run
-        // that was not in the pre-dispatch snapshot and was
-        // created at/after the dispatch instant.
-        let since = gh.now_epoch() - 5;
-        let mut found: Option<(i64, String)> = None;
-        for _ in 0..12 {
-            gh.sleep_secs(3);
-            // A failed run-list request after the POST was
-            // accepted (HTTP 204) must not abort the command: the
-            // job is already executing, and discarding the
-            // session would lose the reconnectable handle (and
-            // invite a duplicate submission). Treat it as "not
-            // visible yet" and keep polling; after the loop the
-            // caller records an accepted-but-unresolved session.
-            if let Some((id, url)) = correlate_run(
-                &list_runs(gh).unwrap_or_default(),
-                &before_ids,
-                since,
-                dispatch_id.as_deref(),
-            ) {
-                found = Some((id, url));
-                break;
-            }
-        }
-        match found {
-            Some((id, url)) => Ok(DispatchResult {
-                run_id: Some(id),
-                run_url: Some(url),
-                ..Default::default()
-            }),
-            None => Ok(DispatchResult {
-                note: Some(
-                    "dispatch accepted (HTTP 204) but the run did not appear \
-                     within ~40s; resolve it from the workflow's run list"
-                        .to_string(),
-                ),
-                ..Default::default()
-            }),
-        }
-    }
-
-    fn run_state(&self, session: &Value, gh: &dyn Gh) -> String {
-        let run_id = match session.get("run_id").and_then(|r| r.as_i64()) {
-            Some(id) => id,
-            None => {
-                return session
-                    .get("state")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-            }
-        };
-        let repo = surf_str(&self.surface, "repo");
-        let token = match surface_token(&self.surface, gh) {
-            Some(t) => t,
-            None => {
-                return session
-                    .get("state")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-            }
-        };
-        match gh.api(
-            "GET",
-            &format!("/repos/{repo}/actions/runs/{run_id}"),
-            &token,
-            None,
-        ) {
-            Ok((200, run)) => map_run_state(&run),
-            _ => session
-                .get("state")
-                .and_then(|s| s.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-        }
-    }
-}
-
-impl Adapter for GithubActionsAdapter {
-    fn kind(&self) -> &'static str {
-        "github-actions"
-    }
-    fn surface(&self) -> &Value {
-        &self.surface
-    }
-    fn eligible(&self, job: &Job, ctx: &Ctx, gh: &dyn Gh) -> (bool, String) {
-        let _ = ctx;
-        if job.platform == "macos"
-            && self.surface.get("platform_input").and_then(Value::as_bool) != Some(true)
-        {
-            return (
-                false,
-                "this surface workflow does not declare the macOS platform input".to_string(),
-            );
-        }
-        let (ok, why) = base_eligible(&self.surface, job);
-        if !ok {
-            return (ok, why);
-        }
-        if job.runner == "blacksmith" {
-            return (
-                false,
-                "job pins runner=blacksmith; this is a github-runner surface".to_string(),
-            );
-        }
-        // A surface the App cannot reach can never dispatch
-        // (Codex P2 on PR #8325): live token availability is part
-        // of eligibility, so an inaccessible surface cannot win
-        // the cascade and then abort at dispatch time.
-        let token = match surface_token(&self.surface, gh) {
-            Some(token) => token,
-            None => return (false, no_token_reason(&self.surface)),
-        };
-        if self
-            .surface
-            .get("public_targets_only")
-            .and_then(Value::as_bool)
-            == Some(true)
-        {
-            match gh.api("GET", &format!("/repos/{}", job.repo), &token, None) {
-                Ok((200, target))
-                    if target.get("private").and_then(Value::as_bool) == Some(false) => {}
-                Ok((200, _)) => {
-                    return (
-                        false,
-                        "this surface has no private-repository checkout token; target is not verified public"
-                            .to_string(),
-                    );
-                }
-                Ok((status, _)) => {
-                    return (
-                        false,
-                        format!(
-                            "cannot verify public target {} on this surface (HTTP {status})",
-                            job.repo
-                        ),
-                    );
-                }
-                Err(error) => {
-                    return (
-                        false,
-                        format!("cannot verify public target {}: {}", job.repo, error.0),
-                    );
-                }
-            }
-        }
-        (true, "eligible".to_string())
-    }
-    fn capacity(&self, job: &Job, ctx: &Ctx) -> Capacity {
-        let owner = surf_str(&self.surface, "owner");
-        let (running, queued) = ctx.owner_load.get(owner).copied().unwrap_or((0, 0));
-        let cap = if job.platform == "macos" {
-            // Count all host runs conservatively as potential macOS
-            // consumers so dispatch never oversubscribes the small pool.
-            let macos_cap = ctx
-                .owners
-                .get(owner)
-                .and_then(|value| value.get("concurrent_macos_cap"))
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
-            ctx.owner_cap(owner).min(macos_cap)
-        } else {
-            ctx.owner_cap(owner)
-        };
-        let active = running + queued;
-        let free = (cap - active).max(0);
-        Capacity {
-            summary: format!(
-                "owner {owner}: {active} active job(s) on fleet runner hosts \
-                 (proxy for account load) vs cap {cap} -> {free} free slot(s)"
-            ),
-            free_slots: Some(free),
-            remaining_total_minutes: None,
-        }
-    }
-    fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
-        self.dispatch_workflow(job, gh)
-    }
-    fn status(&self, session: &Value, gh: &dyn Gh) -> String {
-        self.run_state(session, gh)
-    }
-}
-
-/// Map a GitHub Actions run onto the session state vocabulary.
-pub fn map_run_state(run: &Value) -> String {
-    let status = run.get("status").and_then(|s| s.as_str()).unwrap_or("");
-    match status {
-        "queued" | "waiting" | "pending" | "requested" => "queued".to_string(),
-        "in_progress" => "running".to_string(),
-        "completed" => match run.get("conclusion").and_then(|c| c.as_str()) {
-            Some("success") | Some("skipped") | Some("neutral") => "succeeded".to_string(),
-            Some("cancelled") => "cancelled".to_string(),
-            _ => "failed".to_string(),
-        },
-        _ => "unknown".to_string(),
-    }
-}
-
-pub struct BlacksmithAdapter {
-    inner: GithubActionsAdapter,
-}
-
-impl BlacksmithAdapter {
-    fn budget(&self, job: &Job, ctx: &Ctx) -> (f64, f64, f64) {
-        let b = self
-            .inner
-            .surface
-            .get("budget")
-            .cloned()
-            .unwrap_or(json!({}));
-        let free = b
-            .get("free_minutes_monthly")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(3000.0);
-        let paid_cap = b
-            .get("paid_cap_minutes")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
-            + job.allow_paid_blacksmith;
-        (free, paid_cap, ctx.blacksmith_used_minutes)
-    }
-}
-
-impl Adapter for BlacksmithAdapter {
-    fn kind(&self) -> &'static str {
-        "blacksmith"
-    }
-    fn surface(&self) -> &Value {
-        &self.inner.surface
-    }
-    fn eligible(&self, job: &Job, ctx: &Ctx, gh: &dyn Gh) -> (bool, String) {
-        if surf_str(&self.inner.surface, "owner") == "dezren39" {
-            return (
-                false,
-                "Blacksmith is orgs-only; never the personal copy".to_string(),
-            );
-        }
-        if job.platform != "linux" {
-            return (
-                false,
-                "Blacksmith surfaces provide Linux runners only".to_string(),
-            );
-        }
-        let (ok, why) = base_eligible(&self.inner.surface, job);
-        if !ok {
-            return (ok, why);
-        }
-        if job.runner == "github" {
-            return (false, "job pins runner=github".to_string());
-        }
-        if surface_token(&self.inner.surface, gh).is_none() {
-            return (false, no_token_reason(&self.inner.surface));
-        }
-        // The budget binds pinned surfaces too (Codex round-4 on
-        // PR #8325): a --surface pin is a placement choice, not a
-        // paid-usage authorization. Remaining minutes already include
-        // the registry paid cap and any explicit
-        // --allow-paid-blacksmith allowance carried on the job.
-        let (free, paid_cap, used) = self.budget(job, ctx);
-        if free + paid_cap - used <= 0.0 {
-            return (
-                false,
-                format!(
-                    "blacksmith budget spent: {used:.0} of {free:.0} free                      min/mo used (+{paid_cap:.0} paid cap allowed) \u{2014} \
-                     pass --allow-paid-blacksmith to authorize paid minutes"
-                ),
-            );
-        }
-        (true, "eligible".to_string())
-    }
-    fn capacity(&self, job: &Job, ctx: &Ctx) -> Capacity {
-        let (free, paid_cap, used) = self.budget(job, ctx);
-        let remaining = (free + paid_cap - used).max(0.0);
-        Capacity {
-            summary: format!(
-                "blacksmith budget: {used:.0} of {free} free min/mo used \
-                 (+{paid_cap:.0} paid cap allowed) -> {remaining:.0} min placeable"
-            ),
-            free_slots: None,
-            remaining_total_minutes: Some(remaining),
-        }
-    }
-    fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
-        // Same workflow as the github-actions surface hosting it;
-        // the inner adapter carries force_runner = "blacksmith", so
-        // the workflow inputs carry runner=blacksmith.
-        self.inner.dispatch_workflow(job, gh)
-    }
-    fn status(&self, session: &Value, gh: &dyn Gh) -> String {
-        self.inner.run_state(session, gh)
-    }
-}
-
-pub struct CodespaceAdapter {
-    surface: Value,
-    scope: RefCell<Option<bool>>,
-}
-
-impl CodespaceAdapter {
-    fn scope_ok(&self, gh: &dyn Gh) -> bool {
-        let mut slot = self.scope.borrow_mut();
-        if let Some(v) = *slot {
-            return v;
-        }
-        let ok = gh.codespace_list().is_ok();
-        *slot = Some(ok);
-        ok
-    }
-}
-
-impl Adapter for CodespaceAdapter {
-    fn kind(&self) -> &'static str {
-        "codespace"
-    }
-    fn surface(&self) -> &Value {
-        &self.surface
-    }
-    fn eligible(&self, job: &Job, ctx: &Ctx, gh: &dyn Gh) -> (bool, String) {
-        // The surface's registry status is pending-scope while the
-        // OAuth scope is ungranted; the live probe is the real gate
-        // either way (reference behavior).
-        if !self.scope_ok(gh) {
-            return (
-                false,
-                "gh codespace list fails (codespace OAuth scope not granted \
-                 on this token) — surface pending-scope"
-                    .to_string(),
-            );
-        }
-        if job.platform != "linux" {
-            return (
-                false,
-                "Codespaces provide Linux workspaces only".to_string(),
-            );
-        }
-        let explicitly_selected = job.surface_pin.as_deref() == Some(surf_str(&self.surface, "id"))
-            || job.preferred_surface.as_deref() == Some(surf_str(&self.surface, "id"));
-        if !ctx.laptop_busy && !explicitly_selected {
-            return (
-                false,
-                "codespaces are the last resort: laptop is not marked \
-                 saturated, so this tier is not reached"
-                    .to_string(),
-            );
-        }
-        if !surface_targets_job(&self.surface, job) {
-            return (
-                false,
-                format!("{} is not in this surface's targets", job.repo),
-            );
-        }
-        (true, "eligible".to_string())
-    }
-    fn capacity(&self, _job: &Job, _ctx: &Ctx) -> Capacity {
-        let core_hours = self
-            .surface
-            .get("budget")
-            .and_then(|b| b.get("core_hours_monthly"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(180.0);
-        let max_live = self
-            .surface
-            .get("max_live")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(3);
-        Capacity {
-            summary: format!(
-                "codespace budget: {core_hours} core-hours/mo (Pro); \
-                 reuse-only, max {max_live} live"
-            ),
-            free_slots: None,
-            remaining_total_minutes: None,
-        }
-    }
-    fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
-        let spaces = gh
-            .codespace_list()
-            .map_err(|_| Die("codespace list failed at dispatch time (scope lost?)".to_string()))?;
-        let space = spaces
-            .iter()
-            .find(|c| c.get("repository").and_then(|r| r.as_str()) == Some(job.repo.as_str()));
-        let space = match space {
-            Some(s) => s,
-            None => {
-                return die(format!(
-                    "codespace surface selected but no existing codespace for {} \
-                     to reuse — fleet-place never creates codespaces; create one \
-                     deliberately, then resubmit",
-                    job.repo
-                ));
-            }
-        };
-        let name = space
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("")
-            .to_string();
-        // Honor the requested revision (Codex P2 on PR #8325):
-        // the reused codespace must be checked out at the
-        // requested ref; fleet-place validates and refuses rather
-        // than running against different code than the session
-        // records.
-        if !job.git_ref.is_empty() {
-            let esc = job.git_ref.replace('\'', "'\\''");
-            let (hcode, head) = gh.codespace_ssh_capture(&name, "git rev-parse HEAD")?;
-            let (tcode, target) = gh.codespace_ssh_capture(
-                &name,
-                &format!(
-                    "git rev-parse --verify '{esc}^{{commit}}' 2>/dev/null || git rev-parse --verify 'origin/{esc}^{{commit}}' 2>/dev/null"
-                ),
-            )?;
-            if hcode != 0 || head.is_empty() || tcode != 0 || target.is_empty() {
-                return die(format!(
-                    "codespace {name}: cannot validate the requested ref {} \u{2014} \
-                     the reused codespace's checkout could not be resolved \
-                     against it; check out the ref in the codespace and \
-                     resubmit, or drop --ref",
-                    job.git_ref
-                ));
-            }
-            if head != target {
-                return die(format!(
-                    "codespace {name} is checked out at {head}, not the \
-                     requested ref {} ({target}) \u{2014} fleet-place does not \
-                     move a reused codespace's checkout; check out the ref \
-                     in the codespace and resubmit, or drop --ref",
-                    job.git_ref
-                ));
-            }
-        }
-        let code = gh.codespace_ssh(&name, &job.command)?;
-        Ok(DispatchResult {
-            codespace: Some(name.clone()),
-            note: Some(format!(
-                "job handed to a session in codespace {name} (ssh exit {code})"
-            )),
-            // The ssh call IS the execution: its exit code is the
-            // terminal outcome (Codex P2 on PR #8325).
-            terminal_state: Some(if code == 0 { "succeeded" } else { "failed" }.to_string()),
-            ..Default::default()
-        })
-    }
-}
-
-pub struct LaptopAdapter {
-    surface: Value,
-}
-
-impl Adapter for LaptopAdapter {
-    fn kind(&self) -> &'static str {
-        "laptop"
-    }
-    fn surface(&self) -> &Value {
-        &self.surface
-    }
-    fn eligible(&self, job: &Job, _ctx: &Ctx, _gh: &dyn Gh) -> (bool, String) {
-        if job.surface_pin.as_deref() == Some(surf_str(&self.surface, "id")) {
-            return (true, "job pins the laptop surface".to_string());
-        }
-        (
-            false,
-            "laptop work is owned by pm-dispatch/repo-queue lanes; \
-             fleet-place only records pinned handoffs"
-                .to_string(),
-        )
-    }
-    fn capacity(&self, _job: &Job, ctx: &Ctx) -> Capacity {
-        Capacity {
-            summary: format!(
-                "laptop busy flag: {} ({})",
-                ctx.laptop_busy, ctx.laptop_busy_source
-            ),
-            free_slots: None,
-            remaining_total_minutes: None,
-        }
-    }
-    fn dispatch(&self, _job: &Job, _gh: &dyn Gh) -> R<DispatchResult> {
-        Ok(DispatchResult {
-            note: Some(
-                "handoff recorded; execution belongs to the laptop's \
-                 pm-dispatch/repo-queue lanes"
-                    .to_string(),
-            ),
-            ..Default::default()
-        })
-    }
-}
-
-fn adapter_for(surface: &Value) -> Option<Box<dyn Adapter>> {
-    match surf_str(surface, "kind") {
-        "github-actions" => Some(Box::new(GithubActionsAdapter {
-            surface: surface.clone(),
-            force_runner: "github",
-        })),
-        "blacksmith" => Some(Box::new(BlacksmithAdapter {
-            inner: GithubActionsAdapter {
-                surface: surface.clone(),
-                force_runner: "blacksmith",
-            },
-        })),
-        "codespace" => Some(Box::new(CodespaceAdapter {
-            surface: surface.clone(),
-            scope: RefCell::new(None),
-        })),
-        "laptop" => Some(Box::new(LaptopAdapter {
-            surface: surface.clone(),
-        })),
-        _ => None,
-    }
-}
+mod adapters;
+mod coordinator;
+mod remote;
+use adapters::adapter_for;
+#[cfg(test)]
+use adapters::correlate_run;
+pub use adapters::{
+    Adapter, BlacksmithAdapter, Capacity, CodespaceAdapter, DispatchResult, GithubActionsAdapter,
+    LaptopAdapter, map_run_state,
+};
 
 // ----------------------------------------------------------------- context
 
@@ -1660,10 +1042,15 @@ pub fn build_ctx(
         }
     }
     let mut owner_load: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut owner_load_coverage: HashMap<String, LoadCoverage> = HashMap::new();
     let mut read_errors: Vec<String> = Vec::new();
+    let read_at = gh.now_epoch();
     for (owner, repos) in &hosts {
         let mut running: i64 = 0;
         let mut queued: i64 = 0;
+        let mut observed: usize = 0;
+        let mut expected: usize = 0;
+        let mut missing_reads: Vec<String> = Vec::new();
         for repo in repos {
             let minted = if user_repos.contains(repo) {
                 gh.user_token()
@@ -1673,13 +1060,17 @@ pub fn build_ctx(
             let token = match minted {
                 Some(t) => t,
                 None => {
-                    read_errors.push(format!(
-                        "{repo}: no token available (not covered) — load counted as 0"
-                    ));
+                    expected += 2;
+                    let msg = format!(
+                        "{repo}: no token available (not covered) — load unobserved for this repo"
+                    );
+                    read_errors.push(msg.clone());
+                    missing_reads.push(msg);
                     continue;
                 }
             };
             for status_name in ["in_progress", "queued"] {
+                expected += 1;
                 match gh.api(
                     "GET",
                     &format!("/repos/{repo}/actions/runs?status={status_name}&per_page=1"),
@@ -1687,28 +1078,72 @@ pub fn build_ctx(
                     None,
                 ) {
                     Ok((200, payload)) => {
-                        let total = payload
-                            .get("total_count")
-                            .and_then(|t| t.as_i64())
-                            .unwrap_or(0);
-                        if status_name == "in_progress" {
-                            running += total;
-                        } else {
-                            queued += total;
+                        match payload.get("total_count").and_then(|t| t.as_i64()) {
+                            Some(total) => {
+                                observed += 1;
+                                if status_name == "in_progress" {
+                                    running += total;
+                                } else {
+                                    queued += total;
+                                }
+                            }
+                            None => {
+                                let msg = format!(
+                                    "{repo} ({status_name}): HTTP 200 without a valid \
+                                     total_count — load unobserved"
+                                );
+                                read_errors.push(msg.clone());
+                                missing_reads.push(msg);
+                            }
                         }
                     }
                     Ok((code, _)) => {
-                        read_errors.push(format!("{repo} ({status_name}): HTTP {code}"))
+                        let msg = format!("{repo} ({status_name}): HTTP {code}");
+                        read_errors.push(msg.clone());
+                        missing_reads.push(msg);
                     }
-                    Err(e) => read_errors.push(format!("{repo} ({status_name}): {}", e.0)),
+                    Err(e) => {
+                        let msg = format!("{repo} ({status_name}): {}", e.0);
+                        read_errors.push(msg.clone());
+                        missing_reads.push(msg);
+                    }
                 }
             }
         }
+        let status = if overrides.contains_key(owner) {
+            LoadCoverageStatus::Simulated
+        } else if observed == expected {
+            LoadCoverageStatus::Measured
+        } else if observed > 0 {
+            LoadCoverageStatus::Partial
+        } else {
+            LoadCoverageStatus::Unknown
+        };
         if let Some(n) = overrides.get(owner) {
             running = *n;
             queued = 0;
         }
         owner_load.insert(owner.clone(), (running, queued));
+        owner_load_coverage.insert(
+            owner.clone(),
+            LoadCoverage {
+                status,
+                known_running: running,
+                known_queued: queued,
+                cap: owners
+                    .get(owner)
+                    .and_then(|o| o.get("concurrent_jobs_cap"))
+                    .and_then(|c| c.as_i64())
+                    .unwrap_or(0),
+                read_at,
+                source: if status == LoadCoverageStatus::Simulated {
+                    "--assume-owner-load override (simulation, not live counts)".to_string()
+                } else {
+                    "live GitHub Actions run counts over fleet runner hosts".to_string()
+                },
+                missing_reads,
+            },
+        );
     }
     let mut owner_last_dispatch: HashMap<String, i64> = HashMap::new();
     let mut surface_last_dispatch: HashMap<String, i64> = HashMap::new();
@@ -1771,6 +1206,7 @@ pub fn build_ctx(
     Ctx {
         owners,
         owner_load,
+        owner_load_coverage,
         owner_last_dispatch,
         surface_last_dispatch,
         owner_load_overridden: overridden,
@@ -1863,6 +1299,10 @@ pub fn decide(
     // distribute idle bursts evenly across accounts. Within an owner,
     // prefer its Fleet runner repo so followups can reuse that cache.
     let mut tier1: Vec<(i64, i64, i64, i64, String)> = Vec::new();
+    // Eligible surfaces whose owner load could not be fully read
+    // (and is not proven saturated): they carry no numeric estimate,
+    // but stay placeable under the unknown-capacity rule below.
+    let mut tier1_unknown: Vec<(i64, i64, i64, String)> = Vec::new();
     for s in &surfaces {
         if surf_str(s, "kind") != "github-actions" {
             continue;
@@ -1891,6 +1331,15 @@ pub fn decide(
             } else {
                 reasoning.push(format!("tier1 unavailable {id}: no free account slots"));
             }
+        } else {
+            let owner = surf_str(s, "owner");
+            let owner_last = ctx.owner_last_dispatch.get(owner).copied().unwrap_or(0);
+            let surface_last = ctx.surface_last_dispatch.get(&id).copied().unwrap_or(0);
+            let priority = s
+                .get("selection_priority")
+                .and_then(Value::as_i64)
+                .unwrap_or(50);
+            tier1_unknown.push((owner_last, priority, surface_last, id));
         }
     }
     if !tier1.is_empty() {
@@ -1904,6 +1353,31 @@ pub fn decide(
         let sid = tier1[0].4.clone();
         reasoning.push(format!(
             "tier1 pick {sid}: least-loaded eligible owner, with idle owners rotated by last dispatch"
+        ));
+        let surface = find_surface(registry, &sid).unwrap().clone();
+        return Ok((adapter_for(&surface), reasoning));
+    }
+    if !tier1_unknown.is_empty() {
+        // Unknown-capacity rule: with no measured headroom anywhere,
+        // an eligible free surface whose load is merely unreadable
+        // may still be picked — deterministically, and with the
+        // uncertainty named in the receipt. Unread load never
+        // authorizes paid overage: this tier is free GitHub-hosted
+        // capacity only, and tier 2 (Blacksmith) is not reached on
+        // the strength of an unknown.
+        tier1_unknown.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.3.cmp(&b.3))
+        });
+        let sid = tier1_unknown[0].3.clone();
+        reasoning.push(format!(
+            "tier1 pick {sid}: unknown-capacity rule — no eligible surface has \
+             measured headroom, and this surface's owner load could not be \
+             fully read, so its occupancy is unknown rather than zero; picked \
+             deterministically among unknown-capacity surfaces (owner \
+             rotation, selection priority, surface last dispatch, surface id)"
         ));
         let surface = find_surface(registry, &sid).unwrap().clone();
         return Ok((adapter_for(&surface), reasoning));
@@ -1962,6 +1436,129 @@ pub fn decide(
 
 // --------------------------------------------------------------- sessions
 
+/// #13765 queued-session completion: a session the coordinator
+/// queued carries its claim handle and job. Once the coordinator
+/// grants the claim, dispatch the stored job on the granted surface,
+/// confirm the slot, and move the record off `queued`. A failed
+/// dispatch releases the slot and fails the session. Best-effort: an
+/// unreachable coordinator or a claim that is not granted leaves the
+/// record queued for the next status call.
+fn complete_queued_session(
+    store: &mut Value,
+    handle: &str,
+    rec: &mut Value,
+    registry: &Value,
+    gh: &dyn Gh,
+) {
+    if rec.get("state").and_then(Value::as_str) != Some("queued") {
+        return;
+    }
+    let Some(claim_handle) = rec.get("claim_handle").and_then(Value::as_str).map(str::to_string)
+    else {
+        return;
+    };
+    let coord = coordinator::coordinator();
+    let Ok(status) = coord.claim_status(&claim_handle) else {
+        return;
+    };
+    let claim = status.get("claim").cloned().unwrap_or(Value::Null);
+    if claim.get("state").and_then(Value::as_str) != Some("granted") {
+        return;
+    }
+    let Some(job) = rec.get("job").and_then(Job::from_json) else {
+        return;
+    };
+    let Some(sid) = claim.get("surface").and_then(Value::as_str).map(str::to_string) else {
+        return;
+    };
+    let Some(surface) = find_surface(registry, &sid) else {
+        return;
+    };
+    let Some(ad) = adapter_for(surface) else {
+        return;
+    };
+    let kind = surf_str(surface, "kind").to_string();
+    let runner_repo = surf_str(surface, "repo").to_string();
+    match ad.dispatch(&job, gh) {
+        Err(Die(msg)) => {
+            let _ = coord.release(&claim_handle, None);
+            rec["state"] = json!("failed");
+            rec["note"] = json!(format!("coordinator grant dispatch failed: {msg}"));
+        }
+        Ok(result) => {
+            let _ = coord.confirm(&claim_handle, result.run_id);
+            rec["surface"] = json!(sid);
+            rec["surface_kind"] = json!(kind);
+            if !runner_repo.is_empty() {
+                rec["runner_repo"] = json!(runner_repo.clone());
+            }
+            if let Some(run_id) = result.run_id {
+                rec["portable_id"] = json!(format!("{runner_repo}#{run_id}"));
+            }
+            rec["run_id"] = result.run_id.map(Value::from).unwrap_or(Value::Null);
+            rec["run_url"] = result.run_url.clone().map(Value::from).unwrap_or(Value::Null);
+            rec["state"] = json!(match &result.terminal_state {
+                Some(s) => s.clone(),
+                None if result.run_id.is_some() => "queued".to_string(),
+                None => "dispatched".to_string(),
+            });
+            if let Some(note) = &result.note {
+                rec["note"] = json!(note);
+            }
+            if kind == "blacksmith" {
+                if let Some(arr) = store.get_mut("blacksmith_dispatches").and_then(Value::as_array_mut) {
+                    arr.push(json!({
+                        "handle": handle,
+                        "month": current_month(),
+                        "minutes": 0.0,
+                        "run_id": result.run_id,
+                        "note": "minutes reconciled from the run's duration on later invocations",
+                        "reconciled": false,
+                    }));
+                }
+            }
+        }
+    }
+    rec["updated_at"] = json!(now_iso());
+}
+
+/// Give a terminal session's coordinator slot back. Blacksmith slots
+/// settle with the run's reconciled minutes and wait for them; every
+/// other slot releases as soon as its run is terminal.
+fn settle_coordinator_claim(store: &Value, handle: &str, rec: &mut Value, state: &str, kind: &str) {
+    let Some(claim_handle) = rec.get("claim_handle").and_then(Value::as_str).map(str::to_string)
+    else {
+        return;
+    };
+    if rec.get("coord_released").and_then(Value::as_bool) == Some(true) {
+        return;
+    }
+    if !["succeeded", "failed", "cancelled"].contains(&state) {
+        return;
+    }
+    let actual = if kind == "blacksmith" {
+        let reconciled = store
+            .get("blacksmith_dispatches")
+            .and_then(Value::as_array)
+            .and_then(|arr| {
+                arr.iter().find(|d| {
+                    d.get("handle").and_then(Value::as_str) == Some(handle)
+                        && d.get("reconciled").and_then(Value::as_bool) == Some(true)
+                })
+            })
+            .and_then(|d| d.get("minutes").and_then(Value::as_f64));
+        match reconciled {
+            Some(minutes) => Some(minutes),
+            None => return,
+        }
+    } else {
+        None
+    };
+    if coordinator::coordinator().release(&claim_handle, actual).is_ok() {
+        rec["coord_released"] = json!(true);
+    }
+}
+
 fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn Gh) -> R<Value> {
     let mut rec = store
         .get("sessions")
@@ -1973,13 +1570,19 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                 state_file()
             ))
         })?;
+    complete_queued_session(store, handle, &mut rec, registry, gh);
     let run_id = rec.get("run_id").and_then(|r| r.as_i64());
     let surface_id = rec
         .get("surface")
         .and_then(|s| s.as_str())
         .map(str::to_string);
-    if let (Some(_), Some(sid)) = (run_id, surface_id) {
+    if let (Some(run_id), Some(sid)) = (run_id, surface_id) {
         if let Some(surface) = find_surface(registry, &sid) {
+            let runner_repo = surf_str(surface, "repo");
+            if !runner_repo.is_empty() {
+                rec["runner_repo"] = json!(runner_repo);
+                rec["portable_id"] = json!(format!("{runner_repo}#{run_id}"));
+            }
             if let Some(ad) = adapter_for(surface) {
                 let state = ad.status(&rec, gh);
                 if state != rec.get("state").and_then(|s| s.as_str()).unwrap_or("") {
@@ -1995,7 +1598,7 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                     if let Some(token) = surface_token(surface, gh) {
                         if let Ok((200, run)) = gh.api(
                             "GET",
-                            &format!("/repos/{repo}/actions/runs/{}", run_id.unwrap()),
+                            &format!("/repos/{repo}/actions/runs/{run_id}"),
                             &token,
                             None,
                         ) {
@@ -2035,6 +1638,14 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
             }
         }
     }
+    let state = rec.get("state").and_then(Value::as_str).unwrap_or("").to_string();
+    let kind = rec
+        .get("surface")
+        .and_then(Value::as_str)
+        .and_then(|sid| find_surface(registry, sid))
+        .map(|s| surf_str(s, "kind").to_string())
+        .unwrap_or_default();
+    settle_coordinator_claim(store, handle, &mut rec, &state, &kind);
     if let Some(sessions) = store.get_mut("sessions").and_then(|s| s.as_object_mut()) {
         sessions.insert(handle.to_string(), rec.clone());
     }
@@ -2210,8 +1821,9 @@ fn blacksmith_reconcile_handles(store: &Value, registry: &Value) -> Vec<String> 
 
 const DISPATCH_USAGE: &str = "usage: repo-queue dispatch --repo <owner/name> --command '<cmd>' \
 [--ref REF] [--runner auto|github|blacksmith] [--platform linux|macos] [--container IMAGE] \
-[--surface ID] [--followup HANDLE] [--push-nix-cache] [--actions-cache KEY:PATH] \
-[--actions-cache-restore-key PREFIX]... [--allow-paid-blacksmith MINUTES] \
+[--surface ID] [--followup HANDLE|OWNER/REPO#RUN_ID] [--push-nix-cache] \
+[--actions-cache KEY:PATH] [--actions-cache-restore-key PREFIX]... \
+[--allow-paid-blacksmith MINUTES] \
 [--laptop-busy] [--dispatch] [--json] [--registry PATH]\nDry-run unless --dispatch; prints the placement decision.";
 
 fn run_dispatch(args: &[String]) -> R<i32> {
@@ -2361,6 +1973,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     };
     let registry = registry_value(&cli)?;
     let gh = RealGh::new();
+    // #13146: the session mirror to the queue backend. Best-effort
+    // throughout — nothing below may fail because it did.
+    let remote = remote::session_remote();
     // Reconcile outstanding Blacksmith sessions BEFORE the
     // placement decision (Codex P2 on PR #8325), so the budget
     // figure build_ctx sums reflects real run durations rather
@@ -2379,7 +1994,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         });
     }
     if let Some(handle) = &followup_handle {
-        let previous = if dispatch {
+        let previous = if parse_portable_run_reference(handle).is_some() {
+            resolve_portable_run_reference(handle, &registry, &gh)?
+        } else if dispatch {
             with_store_lock(|| {
                 let mut store = load_store();
                 let previous = refresh_session(&mut store, handle, &registry, &gh)?;
@@ -2387,13 +2004,18 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 Ok(previous)
             })?
         } else {
-            load_store()
+            // #13146: the previous session may live only in the
+            // backend mirror (dispatched from another seat) — take
+            // the newer of the local and backend copies.
+            let local = load_store()
                 .get("sessions")
                 .and_then(Value::as_object)
                 .and_then(|sessions| sessions.get(handle))
-                .cloned()
+                .cloned();
+            let mirrored = remote.get(handle).ok().flatten();
+            remote::pick_session(local, mirrored)
                 .ok_or_else(|| Die(format!(
-                    "--followup {handle}: no session with this handle in the local Fleet placement store"
+                    "--followup {handle}: no session with this handle in the local or backend Fleet placement store"
                 )))?
         };
         let state = previous
@@ -2420,12 +2042,19 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         if let Some(surface_id) = previous_surface {
             job.preferred_surface = Some(surface_id.to_string());
             if let Some(run_id) = previous.get("run_id").and_then(Value::as_i64) {
-                if let Some(surface) = find_surface(&registry, surface_id) {
-                    let host_repo = surf_str(surface, "repo");
-                    if !host_repo.is_empty() {
-                        job.previous_run_id = Some(run_id);
-                        job.previous_run_repo = Some(host_repo.to_string());
-                    }
+                let host_repo = previous
+                    .get("runner_repo")
+                    .and_then(Value::as_str)
+                    .filter(|repo| !repo.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        find_surface(&registry, surface_id)
+                            .map(|surface| surf_str(surface, "repo").to_string())
+                            .filter(|repo| !repo.is_empty())
+                    });
+                if let Some(host_repo) = host_repo {
+                    job.previous_run_id = Some(run_id);
+                    job.previous_run_repo = Some(host_repo);
                 }
             }
         }
@@ -2439,7 +2068,48 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         assume_blacksmith_used,
         &gh,
     );
-    let (adapter, reasoning) = decide(&registry, &job, &ctx, &gh)?;
+    let (mut adapter, mut reasoning) = decide(&registry, &job, &ctx, &gh)?;
+    // #13765: decide() found no surface — consult the coordinator's
+    // true view before queuing. A seat with zero coverage (no token
+    // for a host) sees no room where the fleet has some; when the
+    // coordinator's occupancy shows room, re-decide once against
+    // those counts. An unreachable coordinator keeps today's queued
+    // path and names the fallback.
+    let mut coord_path = "coordinator";
+    let mut coord_error: Option<String> = None;
+    if adapter.is_none() && dispatch {
+        // Preserve the existing dry-run decision/output: only a real dispatch
+        // consults the coordinator's true view before it enters claim flow.
+        let coord = coordinator::coordinator();
+        match coord.load() {
+            Ok(load) => {
+                let overrides = coordinator::coord_overrides(&load);
+                if !overrides.is_empty() {
+                    let ctx2 = build_ctx(
+                        &registry,
+                        &store,
+                        laptop_busy_flag,
+                        &overrides,
+                        assume_blacksmith_used,
+                        &gh,
+                    );
+                    if let Ok((adapter2, mut reasoning2)) = decide(&registry, &job, &ctx2, &gh) {
+                        if adapter2.is_some() {
+                            reasoning.push(format!(
+                                "coordinator true view shows room ({overrides}); re-decided"
+                            ));
+                            reasoning.append(&mut reasoning2);
+                            adapter = adapter2;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                coord_path = "singular-fallback";
+                coord_error = Some(e);
+            }
+        }
+    }
     let mut out = Map::new();
     out.insert("job".into(), job.to_json_compact());
     out.insert(
@@ -2464,6 +2134,9 @@ fn run_dispatch(args: &[String]) -> R<i32> {
     if !ctx.load_read_errors.is_empty() {
         out.insert("load_read_errors".into(), json!(ctx.load_read_errors));
     }
+    if !ctx.owner_load_coverage.is_empty() {
+        out.insert("owner_load_coverage".into(), owner_load_coverage_json(&ctx));
+    }
     if !dispatch {
         out.insert(
             "mode".into(),
@@ -2473,47 +2146,133 @@ fn run_dispatch(args: &[String]) -> R<i32> {
         return Ok(0);
     }
     let handle = new_handle(&rand_source::URandom);
-    match adapter {
-        None => {
-            let rec = json!({
-                "handle": handle,
-                "job": job.to_json(),
-                "surface": Value::Null,
-                "decision_reasoning": reasoning,
-                "run_id": Value::Null,
-                "run_url": Value::Null,
-                "state": "queued",
-                "submitted_by": submitted_by(),
-                "actor": "developing-today[bot] (GitHub App dispatch)",
-                "created_at": now_iso(),
-                "updated_at": now_iso(),
-            });
-            commit_new_session(&rec, None)?;
+    let coord = coordinator::coordinator();
+    let seat = coordinator::seat_name();
+    let mut chosen = adapter;
+    let mut claim_error = coord_error;
+    let mut claim: Option<(coordinator::ClaimDecision, Option<Value>)> = None;
+    let mut refused_once = false;
+    // #13765 claim-before-dispatch: a chosen surface is claimed from the
+    // coordinator first. A refused claim (budget spent) re-decides once
+    // with Blacksmith removed and claims the replacement.
+    while let Some(ad) = chosen.as_ref() {
+        let sid = surf_str(ad.surface(), "id").to_string();
+        let answer = coord.claim(
+            &handle,
+            &sid,
+            &seat,
+            coordinator::CLAIM_ESTIMATE_MINUTES,
+            job.allow_paid_blacksmith,
+        );
+        let (decision, claim_answer, err) = coordinator::classify_claim(answer);
+        if err.is_some() {
+            claim_error = err;
+        }
+        if decision == coordinator::ClaimDecision::Refused && !refused_once {
+            refused_once = true;
+            reasoning.push(format!(
+                "coordinator refused {sid} (budget spent); re-decided without Blacksmith"
+            ));
+            let reg2 = coordinator::registry_without_blacksmith(&registry);
+            let ctx2 = build_ctx(
+                &reg2,
+                &store,
+                laptop_busy_flag,
+                &assume_owner_load,
+                assume_blacksmith_used,
+                &gh,
+            );
+            let (next, mut reasoning2) = decide(&reg2, &job, &ctx2, &gh)?;
+            reasoning.append(&mut reasoning2);
+            chosen = next;
+            continue;
+        }
+        claim = Some((decision, claim_answer));
+        break;
+    }
+    let placement_path = match &claim {
+        Some((decision, _)) => coordinator::placement_path(decision),
+        None => coord_path,
+    };
+    let mut rec = Map::new();
+    rec.insert("handle".into(), json!(handle));
+    rec.insert("job".into(), job.to_json());
+    rec.insert("placement_path".into(), json!(placement_path));
+    if let Some(err) = &claim_error {
+        rec.insert("coord_error".into(), json!(err));
+    }
+    rec.insert("decision_reasoning".into(), json!(reasoning));
+    rec.insert("owner_load_coverage".into(), owner_load_coverage_json(&ctx));
+    rec.insert("submitted_by".into(), json!(submitted_by()));
+    rec.insert(
+        "actor".into(),
+        json!("developing-today[bot] (GitHub App dispatch)"),
+    );
+    rec.insert("created_at".into(), json!(now_iso()));
+    rec.insert("updated_at".into(), json!(now_iso()));
+    match (chosen, claim) {
+        (Some(ad), Some((coordinator::ClaimDecision::Queued, claim_answer))) => {
+            let sid = surf_str(ad.surface(), "id").to_string();
+            let position = claim_answer
+                .as_ref()
+                .and_then(|v| v.get("position"))
+                .and_then(|p| p.as_i64());
+            let mut queued = coordinator::queued_session_record(
+                &handle,
+                job.to_json(),
+                &sid,
+                &handle,
+                &reasoning,
+                owner_load_coverage_json(&ctx),
+                &submitted_by(),
+                &now_iso(),
+            );
+            if let Some(obj) = queued.as_object_mut() {
+                if let Some(err) = &claim_error {
+                    obj.insert("coord_error".into(), json!(err));
+                }
+            }
+            commit_new_session(&queued, None, &*remote)?;
             out.insert("handle".into(), json!(handle));
             out.insert("state".into(), json!("queued"));
+            out.insert("placement_path".into(), json!(placement_path));
+            if let Some(pos) = position {
+                out.insert("queue_position".into(), json!(pos));
+            }
         }
-        Some(adapter) => {
-            let result = adapter.dispatch(&job, &gh)?;
-            let surface = adapter.surface().clone();
+        (Some(ad), Some((decision, _))) if coordinator::dispatch_now(&decision) => {
+            let granted = decision == coordinator::ClaimDecision::Granted;
+            let result = match ad.dispatch(&job, &gh) {
+                Ok(r) => r,
+                Err(e) => {
+                    if granted {
+                        let _ = coord.release(&handle, None);
+                    }
+                    return Err(e);
+                }
+            };
+            let surface = ad.surface().clone();
             let sid = surf_str(&surface, "id").to_string();
             let kind = surf_str(&surface, "kind").to_string();
-            let mut rec = Map::new();
-            rec.insert("handle".into(), json!(handle));
-            rec.insert("job".into(), job.to_json());
+            let runner_repo = surf_str(&surface, "repo").to_string();
             rec.insert("surface".into(), json!(sid));
             rec.insert("surface_kind".into(), json!(kind));
-            rec.insert("decision_reasoning".into(), json!(reasoning));
-            rec.insert(
-                "run_id".into(),
-                result.run_id.map(Value::from).unwrap_or(Value::Null),
-            );
+            if !runner_repo.is_empty() {
+                rec.insert("runner_repo".into(), json!(runner_repo.clone()));
+            }
+            if let Some(run_id) = result.run_id {
+                rec.insert(
+                    "portable_id".into(),
+                    json!(format!("{runner_repo}#{run_id}")),
+                );
+            }
+            if granted {
+                rec.insert("claim_handle".into(), json!(handle));
+            }
+            rec.insert("run_id".into(), result.run_id.map(Value::from).unwrap_or(Value::Null));
             rec.insert(
                 "run_url".into(),
-                result
-                    .run_url
-                    .clone()
-                    .map(Value::from)
-                    .unwrap_or(Value::Null),
+                result.run_url.clone().map(Value::from).unwrap_or(Value::Null),
             );
             rec.insert(
                 "state".into(),
@@ -2528,13 +2287,11 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                     }
                 }),
             );
-            rec.insert("submitted_by".into(), json!(submitted_by()));
-            rec.insert(
-                "actor".into(),
-                json!("developing-today[bot] (GitHub App dispatch)"),
-            );
-            rec.insert("created_at".into(), json!(now_iso()));
-            rec.insert("updated_at".into(), json!(now_iso()));
+            if granted {
+                if let Err(e) = coord.confirm(&handle, result.run_id) {
+                    rec.insert("confirm_error".into(), json!(e));
+                }
+            }
             if let Some(note) = &result.note {
                 rec.insert("note".into(), json!(note));
             }
@@ -2553,8 +2310,18 @@ fn run_dispatch(args: &[String]) -> R<i32> {
             } else {
                 None
             };
-            commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref())?;
+            commit_new_session(&Value::Object(rec), blacksmith_entry.as_ref(), &*remote)?;
             out.insert("handle".into(), json!(handle));
+            out.insert("placement_path".into(), json!(placement_path));
+            if let Some(run_id) = result.run_id {
+                if !runner_repo.is_empty() {
+                    out.insert("runner_repo".into(), json!(runner_repo));
+                    out.insert(
+                        "portable_id".into(),
+                        json!(format!("{runner_repo}#{run_id}")),
+                    );
+                }
+            }
             out.insert(
                 "run_id".into(),
                 result.run_id.map(Value::from).unwrap_or(Value::Null),
@@ -2564,18 +2331,47 @@ fn run_dispatch(args: &[String]) -> R<i32> {
                 result.run_url.map(Value::from).unwrap_or(Value::Null),
             );
         }
+        _ => {
+            rec.insert("surface".into(), Value::Null);
+            rec.insert("run_id".into(), Value::Null);
+            rec.insert("run_url".into(), Value::Null);
+            rec.insert("state".into(), json!("queued"));
+            commit_new_session(&Value::Object(rec), None, &*remote)?;
+            out.insert("handle".into(), json!(handle));
+            out.insert("state".into(), json!("queued"));
+            out.insert("placement_path".into(), json!(placement_path));
+        }
     }
+    // #13146: opportunistic migration — push any local records the
+    // backend still lacks (insert-or-ignore there; idempotent).
+    remote::sync_local_sessions(&*remote, &load_store());
     print_out(&Value::Object(out), cli.json, render_decision);
     Ok(0)
 }
 
-const SESSION_USAGE: &str = "usage: repo-queue session <status|result|list> [HANDLE] \
+const SESSION_USAGE: &str = "usage: repo-queue session <status|result|list> [HANDLE|OWNER/REPO#RUN_ID] \
 [--mine] [--json] [--registry PATH]";
+
+/// True when a session subcommand's tail asks for help. A help flag
+/// is never a session handle: `session status --help` used to look
+/// up a session literally named `--help` and error (#13175).
+fn session_help_requested(sub: &str, rest: &[String]) -> bool {
+    matches!(sub, "status" | "result" | "list")
+        && rest
+            .get(1..)
+            .is_some_and(|tail| tail.iter().any(|a| matches!(a.as_str(), "--help" | "-h")))
+}
 
 fn run_session(args: &[String]) -> R<i32> {
     let (cli, rest) = extract_common(args)?;
     let sub = rest.first().map(|s| s.as_str()).unwrap_or("");
+    if session_help_requested(sub, &rest) {
+        println!("{SESSION_USAGE}");
+        return Ok(0);
+    }
     let gh = RealGh::new();
+    // #13146: the session mirror to the queue backend (best-effort).
+    let remote = remote::session_remote();
     match sub {
         "status" | "result" => {
             let handle = rest
@@ -2583,12 +2379,33 @@ fn run_session(args: &[String]) -> R<i32> {
                 .cloned()
                 .ok_or_else(|| Die(format!("session {sub} needs a HANDLE")))?;
             let registry = registry_value(&cli)?;
-            let rec = with_store_lock(|| {
-                let mut store = load_store();
-                let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
-                save_store(&store)?;
-                Ok(rec)
-            })?;
+            let rec = if parse_portable_run_reference(&handle).is_some() {
+                resolve_portable_run_reference(&handle, &registry, &gh)?
+            } else {
+                // #13146: seed the local store from the backend
+                // mirror when it holds the newer copy (or the only
+                // copy — a session dispatched from another seat),
+                // refresh as usual, and mirror the refreshed record
+                // back. Any mirror failure leaves today's local-only
+                // behavior untouched.
+                let mirrored = remote.get(&handle).ok().flatten();
+                let rec = with_store_lock(|| {
+                    let mut store = load_store();
+                    if let Some(m) = &mirrored {
+                        let local = store.get("sessions").and_then(|s| s.get(&handle)).cloned();
+                        if let Some(winner) = remote::pick_session(local, Some(m.clone())) {
+                            if let Some(sessions) = store["sessions"].as_object_mut() {
+                                sessions.insert(handle.clone(), winner);
+                            }
+                        }
+                    }
+                    let rec = refresh_session(&mut store, &handle, &registry, &gh)?;
+                    save_store(&store)?;
+                    Ok(rec)
+                })?;
+                let _ = remote.put(&rec);
+                rec
+            };
             if sub == "status" {
                 print_out(&rec, cli.json, |r| {
                     format!(
@@ -2628,11 +2445,19 @@ fn run_session(args: &[String]) -> R<i32> {
             let mine = rest.iter().any(|a| a == "--mine");
             let store = load_store();
             let me = submitted_by();
-            let mut sessions: Vec<Value> = store
+            let local_sessions: Vec<Value> = store
                 .get("sessions")
                 .and_then(|s| s.as_object())
                 .map(|m| m.values().cloned().collect())
                 .unwrap_or_default();
+            // #13146: union in the backend mirror's records (a
+            // failed mirror read lists local-only, as before), then
+            // take the chance to migrate local records upward.
+            let mirrored_sessions = remote
+                .list(if mine { Some(me.as_str()) } else { None }, 200)
+                .unwrap_or_default();
+            let mut sessions = remote::merge_session_records(local_sessions, mirrored_sessions);
+            remote::sync_local_sessions(&*remote, &store);
             sessions.sort_by(|a, b| {
                 b.get("created_at")
                     .and_then(|v| v.as_str())
@@ -2679,8 +2504,14 @@ fn run_session(args: &[String]) -> R<i32> {
     }
 }
 
+const SURFACES_USAGE: &str = "usage: repo-queue surfaces [--json] [--registry PATH]\n\nPrints the placement surface registry as JSON.";
+
 fn run_surfaces(args: &[String]) -> R<i32> {
-    let (cli, _rest) = extract_common(args)?;
+    let (cli, rest) = extract_common(args)?;
+    if rest.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
+        println!("{SURFACES_USAGE}");
+        return Ok(0);
+    }
     let registry = registry_value(&cli)?;
     println!(
         "{}",
@@ -2732,6 +2563,7 @@ mod tests {
         post_runs: Vec<Value>,
         runs_by_id: Map2<i64, Value>,
         load_by_repo: Map2<String, (i64, i64)>, // repo -> (in_progress, queued)
+        load_replies: Map2<(String, String), (u16, Value)>, // (repo, status) -> canned load reply; repo "*" matches any
         codespace_ok: bool,
         codespace_items: Vec<Value>,
         codespace_exit: i32,
@@ -2748,6 +2580,7 @@ mod tests {
                 post_runs: Vec::new(),
                 runs_by_id: Map2::new(),
                 load_by_repo: Map2::new(),
+                load_replies: Map2::new(),
                 codespace_ok: false,
                 codespace_items: Vec::new(),
                 codespace_exit: 0,
@@ -2825,6 +2658,21 @@ mod tests {
                     .next()
                     .unwrap_or("")
                     .to_string();
+                let status_name = if path.contains("status=in_progress") {
+                    "in_progress"
+                } else {
+                    "queued"
+                };
+                if let Some((code, payload)) = self
+                    .load_replies
+                    .get(&(repo.clone(), status_name.to_string()))
+                    .or_else(|| {
+                        self.load_replies
+                            .get(&("*".to_string(), status_name.to_string()))
+                    })
+                {
+                    return Ok((*code, payload.clone()));
+                }
                 let (running, queued) = self.load_by_repo.get(&repo).copied().unwrap_or((0, 0));
                 let total = if path.contains("status=in_progress") {
                     running
@@ -2913,9 +2761,38 @@ mod tests {
     }
 
     fn ctx(load: &[(&str, (i64, i64))], blacksmith_used: f64, laptop_busy: bool) -> Ctx {
+        let owners = registry()["owners"].clone();
+        let owner_load: HashMap<String, (i64, i64)> =
+            load.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        // Fixtures state load as fact, so coverage is measured for
+        // every registry owner (defaulting to an observed zero).
+        let owner_load_coverage = owners
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(owner, o)| {
+                let (running, queued) = owner_load.get(owner).copied().unwrap_or((0, 0));
+                (
+                    owner.clone(),
+                    LoadCoverage {
+                        status: LoadCoverageStatus::Measured,
+                        known_running: running,
+                        known_queued: queued,
+                        cap: o
+                            .get("concurrent_jobs_cap")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0),
+                        read_at: FIXED_NOW,
+                        source: "test fixture".to_string(),
+                        missing_reads: vec![],
+                    },
+                )
+            })
+            .collect();
         Ctx {
-            owners: registry()["owners"].clone(),
-            owner_load: load.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            owners,
+            owner_load,
+            owner_load_coverage,
             owner_last_dispatch: HashMap::new(),
             surface_last_dispatch: HashMap::new(),
             owner_load_overridden: vec![],
@@ -3490,12 +3367,80 @@ mod tests {
         commit_new_session(
             &json!({ "handle": "fp_mine", "state": "queued" }),
             Some(&json!({ "handle": "fp_mine", "month": current_month(), "minutes": 0.0 })),
+            &remote::NullRemote,
         )
         .unwrap();
         let back = load_store();
         assert_eq!(back["sessions"]["fp_other"]["state"], json!("running"));
         assert_eq!(back["sessions"]["fp_mine"]["state"], json!("queued"));
         assert_eq!(back["blacksmith_dispatches"].as_array().unwrap().len(), 1);
+        unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A placement-mirror fake for the commit wiring tests:
+    /// records puts, and can be told to fail (the backend-down
+    /// case).
+    struct RecordingRemote {
+        puts: RefCell<Vec<Value>>,
+        fail: bool,
+    }
+
+    impl remote::SessionRemote for RecordingRemote {
+        fn put(&self, rec: &Value) -> Result<(), String> {
+            if self.fail {
+                return Err("backend down".to_string());
+            }
+            self.puts.borrow_mut().push(rec.clone());
+            Ok(())
+        }
+        fn get(&self, _handle: &str) -> Result<Option<Value>, String> {
+            Err("not used by commit".to_string())
+        }
+        fn list(&self, _who: Option<&str>, _limit: usize) -> Result<Vec<Value>, String> {
+            Err("not used by commit".to_string())
+        }
+        fn sync(&self, _records: &[Value]) -> Result<i64, String> {
+            Err("not used by commit".to_string())
+        }
+    }
+
+    #[test]
+    fn commit_new_session_mirrors_and_survives_remote_failure() {
+        // Oracle (#13146): the local commit lands identically
+        // whether the mirror accepts the record or is down; when
+        // the mirror is up it receives exactly the committed
+        // record — the local store is the commit, the mirror is a
+        // mirror.
+        let _store_env_guard = STORE_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir =
+            std::env::temp_dir().join(format!("fleet-place-test-mirror-{}", std::process::id()));
+        unsafe { std::env::set_var("FLEET_PLACE_STATE", &dir) };
+        let rec = json!({ "handle": "fp_mirror", "state": "queued" });
+        let up = RecordingRemote {
+            puts: RefCell::new(Vec::new()),
+            fail: false,
+        };
+        commit_new_session(&rec, None, &up).unwrap();
+        assert_eq!(up.puts.borrow().as_slice(), &[rec.clone()]);
+        assert_eq!(
+            load_store()["sessions"]["fp_mirror"]["state"],
+            json!("queued")
+        );
+        let down = RecordingRemote {
+            puts: RefCell::new(Vec::new()),
+            fail: true,
+        };
+        commit_new_session(
+            &json!({ "handle": "fp_offline", "state": "queued" }),
+            None,
+            &down,
+        )
+        .unwrap();
+        assert_eq!(
+            load_store()["sessions"]["fp_offline"]["state"],
+            json!("queued")
+        );
         unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3534,6 +3479,52 @@ mod tests {
         assert_eq!(
             handles,
             vec!["fp_done_unrec".to_string(), "fp_live".to_string()]
+        );
+    }
+
+    #[test]
+    fn portable_run_reference_parser_validates_repo_and_id() {
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#12345"),
+            Some(("developing-today/fleet".to_string(), 12345))
+        );
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#0"),
+            None
+        );
+        assert_eq!(parse_portable_run_reference("not-a-repo#12345"), None);
+        assert_eq!(
+            parse_portable_run_reference("developing-today/fleet#latest"),
+            None
+        );
+    }
+
+    #[test]
+    fn portable_run_reference_resolves_without_local_session_store() {
+        let reg = registry();
+        let reference = "developing-today/code#12345";
+        let gh = FakeGh {
+            runs_by_id: Map2::from([(
+                12345,
+                json!({
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/developing-today/code/actions/runs/12345"
+                }),
+            )]),
+            ..Default::default()
+        };
+
+        let rec = resolve_portable_run_reference(reference, &reg, &gh).unwrap();
+
+        assert_eq!(rec["portable_id"], json!(reference));
+        assert_eq!(rec["runner_repo"], json!("developing-today/code"));
+        assert_eq!(rec["run_id"], json!(12345));
+        assert_eq!(rec["surface"], json!("org-run"));
+        assert_eq!(rec["state"], json!("succeeded"));
+        assert_eq!(
+            rec["run_url"],
+            json!("https://github.com/developing-today/code/actions/runs/12345")
         );
     }
 
@@ -3811,5 +3802,255 @@ mod tests {
         );
         assert_eq!(jobs[0]["cache"]["actions_restore_keys"][1], "rust-code-");
         assert_eq!(inputs["dispatch_id"], "fp_test");
+    }
+
+    /// #13175 oracle: a help flag after a session subcommand is a
+    /// help request, never a handle; a real handle is not.
+    #[test]
+    fn session_help_flag_is_not_a_handle() {
+        let args = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+        assert!(session_help_requested(
+            "status",
+            &args(&["status", "--help"])
+        ));
+        assert!(session_help_requested("result", &args(&["result", "-h"])));
+        assert!(session_help_requested("list", &args(&["list", "--help"])));
+        assert!(!session_help_requested(
+            "status",
+            &args(&["status", "fp_abc123"])
+        ));
+        assert!(!session_help_requested("status", &args(&["status"])));
+        assert!(!session_help_requested(
+            "bogus",
+            &args(&["bogus", "--help"])
+        ));
+    }
+
+    /// A load-reply table answering every fixture-registry host
+    /// repo with one canned reply per status.
+    fn all_load_replies(code: u16, payload: Value) -> Map2<(String, String), (u16, Value)> {
+        let mut replies = Map2::new();
+        for repo in [
+            "dezren39/fleet",
+            "developing-today/code",
+            "developing-today/fleet",
+        ] {
+            for status in ["in_progress", "queued"] {
+                replies.insert(
+                    (repo.to_string(), status.to_string()),
+                    (code, payload.clone()),
+                );
+            }
+        }
+        replies
+    }
+
+    #[test]
+    fn coverage_measured_zero_yields_numeric_headroom() {
+        // Fixture oracle (issue #13611): a fully observed zero with
+        // cap 40 is a measured zero — numeric headroom, normal pick,
+        // no unknown-capacity reasoning.
+        let reg = registry();
+        let gh = FakeGh::default();
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Measured);
+        assert_eq!(cov.known_load(), 0);
+        assert_eq!(cov.cap, 40);
+        assert_eq!(cov.read_at, FIXED_NOW);
+        assert!(cov.missing_reads.is_empty());
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("measured"));
+        assert_eq!(j["dezren39"]["known_load"], json!(0));
+        assert_eq!(j["dezren39"]["cap"], json!(40));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        assert_eq!(ad.capacity(&job(), &c).free_slots, Some(40));
+        let (picked, reasoning) = decide(&reg, &job(), &c, &gh).unwrap();
+        assert_eq!(surf_str(picked.unwrap().surface(), "id"), "fleet-personal");
+        assert!(
+            !reasoning.iter().any(|r| r.contains("unknown-capacity")),
+            "{reasoning:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_missing_token_is_unknown_not_zero() {
+        // Fixture oracle: no covering token -> the owner's load is
+        // unknown; no numeric headroom may be reported for it.
+        let reg = registry();
+        let gh = FakeGh {
+            tokens_ok: false,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Unknown);
+        assert_eq!(cov.known_load(), 0);
+        assert!(!cov.missing_reads.is_empty());
+        assert!(
+            cov.missing_reads
+                .iter()
+                .all(|m| m.contains("no token available")),
+            "{:?}",
+            cov.missing_reads
+        );
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("unknown"));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        let cap = ad.capacity(&job(), &c);
+        assert_eq!(cap.free_slots, None);
+        assert!(cap.summary.contains("load unknown"), "{}", cap.summary);
+    }
+
+    #[test]
+    fn coverage_http_403_is_unknown_and_falls_back_by_rule() {
+        // Fixture oracle: every load read refused (403) -> unknown
+        // coverage; with no measured headroom anywhere, tier 1 may
+        // still pick a free surface, but only under the named
+        // unknown-capacity rule, deterministically.
+        let reg = registry();
+        let gh = FakeGh {
+            load_replies: all_load_replies(403, json!({ "message": "Forbidden" })),
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Unknown);
+        assert!(
+            cov.missing_reads.iter().all(|m| m.contains("HTTP 403")),
+            "{:?}",
+            cov.missing_reads
+        );
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        assert_eq!(ad.capacity(&job(), &c).free_slots, None);
+        let (picked, reasoning) = decide(&reg, &job(), &c, &gh).unwrap();
+        assert_eq!(surf_str(picked.unwrap().surface(), "id"), "fleet-personal");
+        assert!(
+            reasoning
+                .iter()
+                .any(|r| r.contains("unknown-capacity rule")),
+            "{reasoning:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_malformed_200_is_unobserved_not_zero() {
+        // Fixture oracle: an HTTP 200 without a valid total_count
+        // observes nothing — it must not collapse to a measured 0.
+        let reg = registry();
+        let gh = FakeGh {
+            load_replies: all_load_replies(200, json!({ "workflow_runs": [] })),
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Unknown);
+        assert!(
+            cov.missing_reads
+                .iter()
+                .all(|m| m.contains("without a valid total_count")),
+            "{:?}",
+            cov.missing_reads
+        );
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("unknown"));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        assert_eq!(ad.capacity(&job(), &c).free_slots, None);
+    }
+
+    #[test]
+    fn coverage_partial_keeps_known_subtotal_and_yields_no_estimate() {
+        // Fixture oracle: in_progress reads 3 while the queued read
+        // fails -> partial coverage; the known subtotal 3 is kept as
+        // a lower bound, no numeric headroom is reported, and a
+        // measured surface elsewhere still wins the pick.
+        let reg = registry();
+        let mut replies = Map2::new();
+        replies.insert(
+            ("dezren39/fleet".to_string(), "in_progress".to_string()),
+            (200, json!({ "total_count": 3 })),
+        );
+        replies.insert(
+            ("dezren39/fleet".to_string(), "queued".to_string()),
+            (500, json!({ "message": "boom" })),
+        );
+        let gh = FakeGh {
+            load_replies: replies,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Partial);
+        assert_eq!(cov.known_running, 3);
+        assert_eq!(cov.known_queued, 0);
+        assert_eq!(cov.known_load(), 3);
+        assert_eq!(cov.missing_reads.len(), 1);
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("partial"));
+        assert_eq!(j["dezren39"]["known_load"], json!(3));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        let cap = ad.capacity(&job(), &c);
+        assert_eq!(cap.free_slots, None);
+        assert!(cap.summary.contains("at least 3"), "{}", cap.summary);
+        let (picked, reasoning) = decide(&reg, &job(), &c, &gh).unwrap();
+        assert_eq!(surf_str(picked.unwrap().surface(), "id"), "org-run");
+        assert!(
+            !reasoning
+                .iter()
+                .any(|r| r.contains("unknown-capacity rule")),
+            "{reasoning:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_partial_subtotal_at_cap_proves_saturation() {
+        // A known subtotal that already reaches the cap proves
+        // saturation even when the remaining reads are missing:
+        // the estimate is a proven 0, not an unknown.
+        let reg = registry();
+        let mut replies = Map2::new();
+        replies.insert(
+            ("dezren39/fleet".to_string(), "in_progress".to_string()),
+            (200, json!({ "total_count": 40 })),
+        );
+        replies.insert(
+            ("dezren39/fleet".to_string(), "queued".to_string()),
+            (500, json!({ "message": "boom" })),
+        );
+        let gh = FakeGh {
+            load_replies: replies,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Partial);
+        assert_eq!(cov.estimated_free(40), Some(0));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        let cap = ad.capacity(&job(), &c);
+        assert_eq!(cap.free_slots, Some(0));
+        assert!(cap.summary.contains("saturated"), "{}", cap.summary);
+        let (picked, _) = decide(&reg, &job(), &c, &gh).unwrap();
+        assert_eq!(surf_str(picked.unwrap().surface(), "id"), "org-run");
+    }
+
+    #[test]
+    fn coverage_override_is_labeled_simulated() {
+        // Fixture oracle: an explicit --assume-owner-load override
+        // is a simulation — labeled in the JSON and the summary —
+        // and may yield a numeric estimate on that basis alone.
+        let reg = registry();
+        let gh = FakeGh::default();
+        let c = build_ctx(&reg, &json!({}), false, "dezren39=5", None, &gh);
+        let cov = &c.owner_load_coverage["dezren39"];
+        assert_eq!(cov.status, LoadCoverageStatus::Simulated);
+        assert_eq!(cov.known_load(), 5);
+        assert!(cov.source.contains("simulation"), "{}", cov.source);
+        let j = owner_load_coverage_json(&c);
+        assert_eq!(j["dezren39"]["status"], json!("simulated"));
+        assert_eq!(j["dezren39"]["known_load"], json!(5));
+        let ad = adapter_for(find_surface(&reg, "fleet-personal").unwrap()).unwrap();
+        let cap = ad.capacity(&job(), &c);
+        assert_eq!(cap.free_slots, Some(35));
+        assert!(cap.summary.contains("simulated"), "{}", cap.summary);
     }
 }

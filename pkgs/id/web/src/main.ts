@@ -23,7 +23,7 @@ import { closeDownloadMenu, toggleDownloadMenu } from "./download-menu";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
-import { parseTagsResponse } from "./tags-response";
+import { parseTagsResponse, parseTagWsEvent } from "./tags-response";
 import {
   isCopyFileResponse,
   isNewFileResponse,
@@ -731,7 +731,13 @@ async function init(): Promise<void> {
 
       ws.onmessage = (event: MessageEvent) => {
         try {
-          const data = JSON.parse(event.data as string);
+          // #7983 item 2: the broadcast frame is validated at the
+          // boundary before any field is read. A wrong-shape frame
+          // (scalar, array, or an object without the TagEvent `type`
+          // tag) is ignored — never refreshed against.
+          if (typeof event.data !== "string") return;
+          const data = parseTagWsEvent(JSON.parse(event.data));
+          if (data === null) return;
           console.log("[id] Tag event:", data);
 
           // On any tag change, refresh the file list if we're on the home page

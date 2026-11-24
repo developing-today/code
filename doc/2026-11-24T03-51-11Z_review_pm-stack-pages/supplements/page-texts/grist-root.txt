@@ -1,0 +1,16 @@
+Welcome to Grist
+Verify that you have access to this server to continue.
+Enter boot key
+Set your boot key
+Turn off this check
+Look for this banner near the top of Grist's startup output — check your terminal, container logs, or hosting panel:
+┌──────────────────────────────────────────┐
+│                                          │
+│   BOOT KEY: ••••••••••••••••••••••••••   │
+│                                          │
+└──────────────────────────────────────────┘
+BOOT KEY
+
+Can't find your boot key? You can set your own or disable this check.
+
+Check key

@@ -1,4 +1,5 @@
-pub mod app;
+pub use web_gen_api_app as app;
+
 use cfg_if::cfg_if;
 
 cfg_if! {
@@ -13,8 +14,8 @@ if #[cfg(feature = "hydrate")] {
 
       console_error_panic_hook::set_once();
 
-      leptos::mount_to_body(move |cx| {
-          view! { cx, <App/> }
+      leptos::mount::hydrate_body(move || {
+          view! { <App/> }
       });
     }
 }

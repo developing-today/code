@@ -203,14 +203,17 @@ type Defaults struct {
 		// build of a large flake can legitimately take minutes.
 		ResolveTimeout   string `json:"resolveTimeout"`
 		ResolveWaitDelay string `json:"resolveWaitDelay"`
-		WorkDirs         int    `json:"workDirs"`
-		Programs         int    `json:"programs"`
-		Entries          int    `json:"entries"`
-		StderrLimit      int    `json:"stderrLimit"`
-		StdoutLimit      int    `json:"stdoutLimit"`
-		Output           string `json:"output"`
-		RemoteOutput     string `json:"remoteOutput"`
-		Delivery         string `json:"delivery"`
+		// CallHistoryTTL is how long a finished run's call history stays
+		// fetchable from execsvc after the run ends.
+		CallHistoryTTL string `json:"callHistoryTtl"`
+		WorkDirs       int    `json:"workDirs"`
+		Programs       int    `json:"programs"`
+		Entries        int    `json:"entries"`
+		StderrLimit    int    `json:"stderrLimit"`
+		StdoutLimit    int    `json:"stdoutLimit"`
+		Output         string `json:"output"`
+		RemoteOutput   string `json:"remoteOutput"`
+		Delivery       string `json:"delivery"`
 	} `json:"exec"`
 	// Cache governs the one content-addressed cache mechanism (#1908):
 	// the byte and age bounds every kind is evicted against, and how old
@@ -797,7 +800,9 @@ var (
 	// ExecResolveWaitDelay bounds how long a timed-out resolution's Run
 	// waits for the child's output pipes to close (progspec cmd.WaitDelay).
 	ExecResolveWaitDelay = mustDur(builtin.Exec.ResolveWaitDelay, "exec.resolveWaitDelay")
-	ExecOutput           = builtin.Exec.Output
+	// ExecCallHistoryTTL is how long execsvc keeps a finished run's calls.
+	ExecCallHistoryTTL = mustDur(builtin.Exec.CallHistoryTTL, "exec.callHistoryTtl")
+	ExecOutput         = builtin.Exec.Output
 	// ExecStderrLimit bounds how much of a failed script's stderr is kept to
 	// explain the failure. Unbounded, a script looping on stderr would be
 	// held in memory in full, by the daemon, on someone else's behalf.

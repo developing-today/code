@@ -1,5 +1,6 @@
-// Turso-backed implementations of the four remote store interfaces
-// added in #6815. They speak the shared SqlClient contract
+// Turso-backed implementations of the remote store interfaces
+// added in #6815, plus the comments interface added in #1744
+// (Move 1, step 2). They speak the shared SqlClient contract
 // (src/sql-client.ts), served by the Turso store client
 // (src/turso-stores.ts), and write only the tables from
 // shared-schema/migrations/20261116_0001_aggregator_remote_stores.up.sql
@@ -13,7 +14,8 @@ import { ACTION_STATES, type ActionsRemote, type DashAction } from "./actions.ts
 import type { ActivityRemote, ActivitySourceStatus, GapRecord, IngestionFile, SourceCheckpoint } from "./activity.ts";
 import type { AppendOnlyDocumentRemote, DocumentRemote } from "./aa-last-good.ts";
 import type { SnapshotsRemote } from "./snapshots.ts";
-import type { SnapshotRecord } from "./model.ts";
+import type { DashComment, SnapshotRecord } from "./model.ts";
+import type { CommentsRemote } from "./comments.ts";
 import { snapshotKey } from "./snapshots.ts";
 import { storeWriterIdentity } from "./store-backend.ts";
 import { sqlJson, sqlStr, type SqlClient } from "./sql-client.ts";
@@ -23,12 +25,23 @@ export interface StoreRemotes {
   actions: ActionsRemote;
   activity: ActivityRemote;
   usage: SnapshotsRemote;
-  aaLastGood: DocumentRemote;
+  aaLastGood: DocumentRemote & AppendOnlyDocumentRemote;
+  comments: CommentsRemote;
 }
 
 type GetClient = () => Promise<SqlClient | null>;
 
 const WRITE_CHUNK = 200;
+
+// Use a single set of mutable columns for assignment and comparison. The
+// null-safe check runs against the actual conflicting row inside the UPSERT,
+// not against a cache that could be stale after another write or lost response.
+function updateChanged(table: string, columns: readonly string[], touchUpdatedAt = false): string {
+  const assignments = columns.map((column) => `${column} = excluded.${column}`);
+  if (touchUpdatedAt) assignments.push("updated_at = now()");
+  const changed = columns.map((column) => `${table}.${column} is not excluded.${column}`);
+  return `do update set ${assignments.join(", ")} where ${changed.join(" or ")}`;
+}
 
 function chunks<T>(rows: readonly T[], size = WRITE_CHUNK): T[][] {
   const out: T[][] = [];
@@ -157,9 +170,15 @@ export function createTursoActionsRemote(getClient: GetClient = getTursoStoreCli
         const values = chunk.map(actionRowValues).join(",\n");
         await db.query(
           `insert into public.agg_actions (${ACTION_COLUMNS}) values\n${values}\n` +
-            `on conflict (id) do update set state = excluded.state, applied_at = excluded.applied_at, ` +
-            `applied_by_run = excluded.applied_by_run, result_note = excluded.result_note, ` +
-            `supersedes_action_id = excluded.supersedes_action_id, duplicate_of_action_id = excluded.duplicate_of_action_id`,
+            `on conflict (id) ${updateChanged("agg_actions", [
+              "state",
+              "applied_at",
+              "applied_by_run",
+              "result_note",
+              "supersedes_action_id",
+              "duplicate_of_action_id",
+            ])}`,
+          { operation: "actions", candidates: chunk.length },
         );
       }
     },
@@ -231,8 +250,12 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
         await db.query(
           `insert into public.agg_activity_ingestion (source, checkpoint, seen_ids, source_status, updated_at) values\n` +
             `${chunk.join(",\n")}\n` +
-            `on conflict (source) do update set checkpoint = excluded.checkpoint, seen_ids = excluded.seen_ids, ` +
-            `source_status = excluded.source_status, updated_at = now()`,
+            `on conflict (source) ${updateChanged(
+              "agg_activity_ingestion",
+              ["checkpoint", "seen_ids", "source_status"],
+              true,
+            )}`,
+          { operation: "activity.ingestion", candidates: chunk.length },
         );
       }
       const gapRows = data.gaps.map(
@@ -245,8 +268,8 @@ export function createTursoActivityRemote(getClient: GetClient = getTursoStoreCl
         await db.query(
           `insert into public.agg_activity_gaps (id, source, gap_from, gap_to, status, detected_at, resolved_at, updated_at) values\n` +
             `${chunk.join(",\n")}\n` +
-            `on conflict (id) do update set status = excluded.status, gap_to = excluded.gap_to, ` +
-            `resolved_at = excluded.resolved_at, updated_at = now()`,
+            `on conflict (id) ${updateChanged("agg_activity_gaps", ["status", "gap_to", "resolved_at"], true)}`,
+          { operation: "activity.gaps", candidates: chunk.length },
         );
       }
     },
@@ -364,6 +387,97 @@ export function createTursoDocumentRemote(
   };
 }
 
+// ---------------------------------------------------------------------
+// comments.json -> public.shared_comments (#1744 Move 1, step 2)
+// ---------------------------------------------------------------------
+
+const COMMENT_COLUMNS =
+  "id, object_ref, kind, author, author_verified, provenance, linked_identity, body, " +
+  "created_at, triage_state, github_ref, github_state, github_url, github_error, github_failed_at";
+
+export function commentRowValues(c: DashComment): string {
+  return `(${[
+    sqlStr(c.id),
+    sqlStr(c.objectRef),
+    sqlStr(c.kind),
+    sqlJson(c.author),
+    c.authorVerified === true ? "true" : "false",
+    // The file store persists the #9607 provenance default on load;
+    // the remote writes the same effective value so a row never
+    // round-trips to a different record than the file would hold.
+    sqlStr(c.provenance ?? "asserted-legacy"),
+    c.linkedIdentity ? sqlJson(c.linkedIdentity) : "null",
+    sqlStr(c.body),
+    `${sqlStr(c.createdAt)}::timestamptz`,
+    optStr(c.triageState),
+    optStr(c.githubRef),
+    optStr(c.githubState),
+    optStr(c.githubUrl),
+    optStr(c.githubError),
+    optTs(c.githubFailedAt),
+  ].join(", ")})`;
+}
+
+export function commentFromRow(row: Record<string, unknown>): DashComment {
+  const comment = {
+    id: String(row.id),
+    objectRef: String(row.object_ref),
+    kind: String(row.kind),
+    author: row.author as DashComment["author"],
+    // SQLite (the Turso dialect) returns the boolean as 1/0.
+    authorVerified: row.author_verified === true || row.author_verified === 1,
+    body: String(row.body),
+    createdAt: isoRequired(row.created_at, "created_at"),
+  } as DashComment;
+  if (typeof row.provenance === "string") comment.provenance = row.provenance as DashComment["provenance"];
+  if (row.linked_identity && typeof row.linked_identity === "object") {
+    comment.linkedIdentity = row.linked_identity as DashComment["linkedIdentity"];
+  }
+  if (typeof row.triage_state === "string") comment.triageState = row.triage_state as DashComment["triageState"];
+  if (typeof row.github_ref === "string") comment.githubRef = row.github_ref as DashComment["githubRef"];
+  if (typeof row.github_state === "string") comment.githubState = row.github_state as DashComment["githubState"];
+  if (typeof row.github_url === "string") comment.githubUrl = row.github_url;
+  if (typeof row.github_error === "string") comment.githubError = row.github_error;
+  const failedAt = isoOrUndefined(row.github_failed_at);
+  if (failedAt) comment.githubFailedAt = failedAt;
+  return comment;
+}
+
+export function createTursoCommentsRemote(getClient: GetClient = getTursoStoreClient): CommentsRemote {
+  return {
+    async loadAll(): Promise<DashComment[]> {
+      const db = await requireClient(getClient);
+      const rows = await db.query<Record<string, unknown>>(
+        `select ${COMMENT_COLUMNS} from public.shared_comments order by created_at asc`,
+      );
+      return rows.map(commentFromRow);
+    },
+
+    async saveAll(comments: readonly DashComment[]): Promise<void> {
+      if (comments.length === 0) return;
+      const db = await requireClient(getClient);
+      const ordered = [...comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const chunk of chunks(ordered)) {
+        const values = chunk.map(commentRowValues).join(",\n");
+        await db.query(
+          `insert into public.shared_comments (${COMMENT_COLUMNS}) values\n${values}\n` +
+            // Only the state fields the store mutates after creation
+            // ride the update: triage transitions and github posting
+            // results. Identity, author and body are write-once.
+            `on conflict (id) ${updateChanged("shared_comments", [
+              "triage_state",
+              "github_state",
+              "github_url",
+              "github_error",
+              "github_failed_at",
+            ])}`,
+          { operation: "comments", candidates: chunk.length },
+        );
+      }
+    },
+  };
+}
+
 export function createTursoRemotes(
   getClient: GetClient = getTursoStoreClient,
   writer: string = storeWriterIdentity(),
@@ -373,5 +487,6 @@ export function createTursoRemotes(
     activity: createTursoActivityRemote(getClient),
     usage: createTursoSnapshotsRemote(getClient),
     aaLastGood: createTursoDocumentRemote(getClient, writer),
+    comments: createTursoCommentsRemote(getClient),
   };
 }

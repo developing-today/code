@@ -211,11 +211,23 @@ export function mergeQuiet(input: unknown): QuietPrefs {
   return out;
 }
 
-/** Preserve existing subscription choices when new classes are added:
- * only the original incident class defaults on for old rows; new rows
- * receive the reviewed defaults from mergeClasses at creation. */
+/** Whether a subscription receives a notification class.
+ *
+ * A stored choice always wins, including an explicit opt-out. A class
+ * with no stored choice was added after the subscription was created
+ * (the stored map carries only the classes of its day, and upserts
+ * touch only the keys the caller sent — #7193), so it takes the
+ * reviewed default from NOTIFICATION_CLASS_DEFAULTS: the #13940
+ * backfill for pre-class rows. Before this, only incident defaulted
+ * on for such rows, which silently left pre-class subscriptions —
+ * e.g. rows created before the #8568 classes existed — with every
+ * later class off, even though the preferences page already rendered
+ * those classes at their defaults. A class with no reviewed default
+ * stays off. New rows receive the full reviewed defaults from
+ * mergeClasses at creation, so this fallback only ever fires for
+ * classes newer than the row. */
 export function classEnabled(sub: { classes: Record<string, boolean> }, cls: string): boolean {
-  return sub.classes?.[cls] ?? cls === "incident";
+  return sub.classes?.[cls] ?? DEFAULT_CLASSES[cls] ?? false;
 }
 
 /** Is `now` inside the quiet window (evaluated in the prefs' timezone)?
@@ -497,9 +509,15 @@ export class AlertsStore {
    * incident_key) WHERE status <> 'closed': a fresh insert opens the
    * incident (+ `opened` event); a conflict bumps occurrences /
    * last_seen_at (+ `duplicate_suppressed` event only when a delivery
-   * would otherwise repeat).
+   * would otherwise repeat). `openedEventDetail` merges extra members
+   * into the `opened` event's detail — the `healthHook` incident
+   * record rides there (#12602: the ledger is the C3 record of
+   * detail, so the down record lands on the event that opens it).
    */
-  async postIncident(input: NewIncident): Promise<{ incident: Incident; created: boolean }> {
+  async postIncident(
+    input: NewIncident,
+    openedEventDetail?: Record<string, unknown>,
+  ): Promise<{ incident: Incident; created: boolean }> {
     const inserted = await this.db.query<Incident>(
       `insert into alerts.incidents (source, incident_key, severity, title, body)
        values (${sqlStr(input.source)}, ${sqlStr(input.key)}, ${sqlStr(input.severity)}, ${sqlStr(input.title)}, ${
@@ -509,7 +527,12 @@ export class AlertsStore {
        returning *`,
     );
     if (inserted[0]) {
-      await this.addEvent(inserted[0].id, "opened", { source: input.source, key: input.key, severity: input.severity });
+      await this.addEvent(inserted[0].id, "opened", {
+        source: input.source,
+        key: input.key,
+        severity: input.severity,
+        ...openedEventDetail,
+      });
       return { incident: inserted[0], created: true };
     }
     const bumped = await this.db.query<Incident>(
@@ -563,29 +586,44 @@ export class AlertsStore {
 
   /** #8568: close the open incident for a (source, key) pair — the
    * sentinel's "up" transition resolves the incident its "down" post
-   * opened. Reuses closeIncident for the transition + event. */
+   * opened. Reuses closeIncident for the transition + event.
+   * `closedEventDetail` becomes the `closed` event's detail — the
+   * `healthHook` recovery record rides there (#12602). */
   async closeOpenIncidentByKey(
     source: string,
     key: string,
+    closedEventDetail?: Record<string, unknown>,
   ): Promise<{ incident: Incident | null; transitioned: boolean }> {
     const rows = await this.db.query<Incident>(
       `select * from alerts.incidents where source = ${sqlStr(source)} and incident_key = ${sqlStr(key)} and status <> 'closed' order by first_seen_at limit 1`,
     );
     const open = rows[0];
     if (!open) return { incident: null, transitioned: false };
-    return this.closeIncident(open.id);
+    return this.closeIncident(open.id, closedEventDetail);
   }
 
-  async closeIncident(id: string): Promise<{ incident: Incident | null; transitioned: boolean }> {
+  async closeIncident(
+    id: string,
+    closedEventDetail?: Record<string, unknown>,
+  ): Promise<{ incident: Incident | null; transitioned: boolean }> {
     const rows = await this.db.query<Incident>(
       `update alerts.incidents set status = 'closed', closed_at = now()
        where id = ${sqlStr(id)} and status <> 'closed' returning *`,
     );
     if (rows[0]) {
-      await this.addEvent(id, "closed", {});
+      await this.addEvent(id, "closed", closedEventDetail ?? {});
       return { incident: rows[0], transitioned: true };
     }
     return { incident: await this.getIncident(id), transitioned: false };
+  }
+
+  /** Every ledger event for one incident, oldest first — the
+   * per-incident read behind GET /api/alerts/:id, C6's detail path
+   * for health-hook incident records (#12602). */
+  async listIncidentEvents(incidentId: string): Promise<IncidentEvent[]> {
+    return this.db.query<IncidentEvent>(
+      `select * from alerts.incident_events where incident_id = ${sqlStr(incidentId)} order by id`,
+    );
   }
 
   async pendingDeliveries(limit = 20): Promise<Incident[]> {

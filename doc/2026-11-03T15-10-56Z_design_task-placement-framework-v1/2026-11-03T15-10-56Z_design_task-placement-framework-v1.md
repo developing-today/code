@@ -5,6 +5,9 @@
 - **Status:** v1 for orchestrator review. Per the program pattern, #2024 stays
   open for the review round; this doc is the reviewable artifact, not the
   endpoint.
+- **v1.1 amendment (2026-11-22):** §8 adds the machine dimension §6
+  deferred, on the #2179 registry shape. Per the policy artifact's
+  header rule, `placement-policy.yaml` is amended in the same PR.
 - **Inputs (all verified fresh 2026-11-03 before writing):**
   - #2022 — placement comparison matrix, comment
     https://github.com/developing-today/code/issues/2022#issuecomment-6494235903
@@ -240,7 +243,9 @@ is built here.
   conditions should gain one.
 - **Machine pool growth (#2179)** will add a placement dimension (which
   machine, not just which option) that v1 deliberately does not model;
-  it belongs in v1.1 once #2179's shape is known.
+  it belongs in v1.1 once #2179's shape is known — **landed as §8**:
+  the onboarding standard fixed the shape, the registry artifact
+  exists, and the watchdog writes its health cache.
 
 ## 7. Acceptance self-check (against #2024 / task 8136)
 
@@ -258,3 +263,74 @@ is built here.
       #2023 + PR #2303.
 - [x] Issue stays open for the orchestrator review round: this doc's PR
       references #2024 and does not close it.
+
+## 8. v1.1 amendment — the machine dimension (#2179)
+
+_Added 2026-11-22. §6 deferred this dimension until #2179's shape was
+known; it is known now: the machine onboarding standard
+(`doc/2026-11-04T05-15-02Z_design_machine-onboarding-standard-v1`)
+fixed the registry shape, the registry artifact exists
+(`doc/fleet-machine-registry.yaml`), and the watchdog writes its
+health cache on a 15-minute cadence (standard §1.5). §§1–5 are
+unchanged; this section is the third step of placement._
+
+**Placement is now a three-step decision:** pick the execution
+option (§2), pick the pool/route inside it (§3), then pick the
+machine the work runs on. The machine step reads exactly three
+signals, all from the machine's registry record — a scheduler never
+probes a machine to learn whether it may place on it (§1.4 of the
+standard):
+
+1. the **declared state** (standard §3),
+2. the **declared capabilities and capacity** (standard §1.4/§3),
+3. the **watchdog health cache**, read through the reader-side rule
+   of §1.5/§4: fresh health reads as its earned status; a
+   `last_seen` older than two watchdog cadences (30 minutes), or
+   absent, reads as `left`.
+
+**The machine rules:**
+
+| Rule   | Condition                                                                                  | Effect                                                                                                                                                                                 |
+| ------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **M1** | The record's declared state is not `active` (`declared`, `joining`, `draining`, `retired`) | **Not eligible.** `declared`/`joining` have not passed §2 steps 5–6; `draining` takes no new work (§4); `retired` is terminal. The state gate is evaluated before the health cache.    |
+| **M2** | Active, and the health view is `unreachable`, `unknown`, or `left`                         | **Not eligible.** Unreachable and left are the departure shapes (§4). Unknown is unearned — a gating check that could not run must not mask a failure (§1.5: healthy is earned whole). |
+| **M3** | Active + health view `healthy`                                                             | **Tier 1** — place here first.                                                                                                                                                         |
+| **M4** | Active + health view `degraded`                                                            | **Tier 2** — placeable only behind every tier-1 machine that can serve the requirement. The view names the failed checks, so the scheduler sees the axis (load, disk) it is accepting. |
+| **M5** | The work requires a capability (`queue_worker`, `opencode_sessions`, `builds`, `gpu`)      | Only machines whose record declares that capability `true` are eligible at any tier (§1.4).                                                                                            |
+
+**Two v1.1 decisions, recorded here so the review round can overturn
+them.** (a) _Degraded is eligible, at tier 2._ A degraded axis is a
+fresh, earned, named failure — not silence — and a pool whose only
+node is degraded still has to run the fleet's work or stop entirely;
+the 2026-11-22 disk episode ran exactly that way (amd-6 degraded on
+disk headroom while work continued, until the purge restored it).
+Tier 2 keeps the preference honest without making one failed axis a
+fleet-wide stop. (b) _Unknown is not eligible._ Eligibility follows
+earned states only — the machine analogue of B3's "a read that
+actually returned 100%". This deliberately differs from B4 (a stale
+_quota_ read never idles a pool): the standard makes machine silence
+and unearned health a stop (§1.5), and v1.1 follows the standard for
+machines, not B4.
+
+**Within a tier, v1.1 does not rank.** The reader exposes the facts a
+scheduler ranks by — declared capacity, and the health cache's
+session facts (`listed`, `active_within_cadence`) beside the §1.3
+cap. Activity is not concurrency, so the cap is reported, not gated
+on. Intra-tier ranking is the refinement a second node will force;
+with a pool of one it would be decoration.
+
+**Placement record.** The §5 B1 record gains two fields: `machine`
+(the registry id the work was placed on, or `n/a` for options that
+run nowhere in the pool — Actions, Jules) and `machine_view` (the
+health view and tier the machine step relied on). A placement onto a
+machine this section makes ineligible is an exception and follows §4
+(E1–E5) unchanged.
+
+**The reader.** `scripts/fleet-machine-placement.py` derives the view
+above from the registry file — validated first; an invalid registry
+is refused, never read leniently. It imports `placement_view` from
+the watchdog module rather than reimplementing it: the §1.5 rule has
+exactly one home. No scheduler consumes the reader yet; wiring the
+first consumer (a dispatch or claim path) is the follow-on, and the
+tiers only bite when a second node passes §2 — until then the pool
+this section places on is amd-6 alone.

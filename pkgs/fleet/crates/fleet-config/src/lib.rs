@@ -142,6 +142,10 @@ pub struct BridgeConfig {
     /// Secret name of the fleet (agent) token; default
     /// [`DEFAULT_BRIDGE_FLEET_TOKEN_NAME`].
     pub fleet_token_name: Option<String>,
+    /// Secret name of this agent's class/name notes token (#14370).
+    /// Default: the name the agent profile recorded at enrolment,
+    /// else `bridge.<agent>-token` derived from the agent name.
+    pub notes_token_name: Option<String>,
 }
 
 pub const DEFAULT_BRIDGE_URL: &str = "https://bridge.security.cab";
@@ -466,6 +470,11 @@ pub struct SecretsConfig {
     /// Path of the secrets-broker token file (handed to the session
     /// broker per request; fleet never opens it).
     pub token_file: Option<String>,
+    /// Bitwarden Secrets Manager project id that secret writes
+    /// (`fleet-secrets`' store path, used by `fleet bridge exchange`)
+    /// create into (#14370). The `FLEET_BWS_PROJECT_ID` environment
+    /// variable overrides it. Reads never need it.
+    pub bws_project_id: Option<String>,
 }
 
 /// `[<role>]` — a broker role's local transport view (#6215,
@@ -702,6 +711,94 @@ pub fn probe_socket(path: &std::path::Path) -> bool {
     std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
+/// File name of the tailnet proxy env the seat bootstrap writes
+/// beside tailscaled's node state in userspace mode
+/// (`scripts/muse/bootstrap.sh`): one `export HTTPS_PROXY=...` line
+/// naming tailscaled's local CONNECT proxy.
+pub const TAILNET_PROXY_ENV_FILE: &str = "fleet-proxy.env";
+
+/// Where to look for [`TAILNET_PROXY_ENV_FILE`], most specific
+/// first: an explicit `$FLEET_PROXY_ENV` path, then the named
+/// agent's isolated node state
+/// (`~/.local/state/tailscale/agents/<slug>`, with the bootstrap's
+/// own slug rule over `$FLEET_AGENT`), then the legacy shared node
+/// state (`~/.local/state/tailscale`). Pure over its inputs so the
+/// order is testable.
+pub fn tailnet_proxy_env_candidates(
+    home: &std::path::Path,
+    fleet_agent: Option<&str>,
+    explicit: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(path) = non_empty_path(explicit) {
+        out.push(resolve_under(home, &path));
+    }
+    let state = home.join(".local").join("state").join("tailscale");
+    if let Some(slug) = fleet_agent.and_then(agent_slug) {
+        out.push(state.join("agents").join(slug).join(TAILNET_PROXY_ENV_FILE));
+    }
+    out.push(state.join(TAILNET_PROXY_ENV_FILE));
+    out
+}
+
+/// The bootstrap's agent slug: lower-cased, every character outside
+/// `[a-z0-9-]` replaced by `-`, leading and trailing dashes trimmed,
+/// cut to 55 characters, then one `muse-` prefix dropped. `None`
+/// when nothing is left, as the bootstrap refuses such a name.
+fn agent_slug(agent: &str) -> Option<String> {
+    let mapped: String = agent
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed: String = mapped.trim_matches('-').chars().take(55).collect();
+    let slug = trimmed.strip_prefix("muse-").unwrap_or(&trimmed);
+    (!slug.is_empty()).then(|| slug.to_string())
+}
+
+/// The `HTTPS_PROXY` value an env file sets, from a line of the form
+/// `[export ]HTTPS_PROXY=value` (the value optionally in matching
+/// single or double quotes). The last such line with a value wins,
+/// as it would when the file is sourced.
+pub fn parse_tailnet_proxy_env(text: &str) -> Option<String> {
+    text.lines().rev().find_map(|line| {
+        let line = line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+        let value = line.strip_prefix("HTTPS_PROXY=")?.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value);
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// The seat's recorded tailnet proxy (#12555): the first readable
+/// [`TAILNET_PROXY_ENV_FILE`] among [`tailnet_proxy_env_candidates`]
+/// that sets `HTTPS_PROXY`. Tailnet tunnels use it in place of the
+/// caller's ambient `HTTPS_PROXY`, which in a sandbox shell is the
+/// platform egress proxy: a broker started from there otherwise
+/// opens every tailnet tunnel through the wrong proxy while it looks
+/// alive. `None` (no file, as on a kernel-mode seat) leaves the
+/// ambient env in charge.
+pub fn tailnet_https_proxy() -> Option<String> {
+    let agent = std::env::var("FLEET_AGENT").ok();
+    tailnet_proxy_env_candidates(
+        &home_dir(),
+        agent.as_deref(),
+        std::env::var_os("FLEET_PROXY_ENV").map(PathBuf::from),
+    )
+    .into_iter()
+    .find_map(|path| parse_tailnet_proxy_env(&std::fs::read_to_string(path).ok()?))
+}
+
 impl Config {
     /// The config file path: `$FLEET_CONFIG`, else
     /// `${XDG_CONFIG_HOME:-~/.config}/fleet/fleet.toml`.
@@ -825,6 +922,8 @@ impl Config {
             (&self.bridge.agent, "[bridge] agent"),
             (&self.bridge.owner_token_name, "[bridge] owner_token_name"),
             (&self.bridge.fleet_token_name, "[bridge] fleet_token_name"),
+            (&self.bridge.notes_token_name, "[bridge] notes_token_name"),
+            (&self.secrets.bws_project_id, "[secrets] bws_project_id"),
         ] {
             if blank(value) {
                 return Err(ConfigError::Parse {
@@ -1525,6 +1624,58 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tailnet_proxy_env_candidates_follow_the_bootstrap_layout() {
+        let home = std::path::Path::new("/home/a");
+        let state = home.join(".local/state/tailscale");
+        assert_eq!(
+            tailnet_proxy_env_candidates(home, None, None),
+            vec![state.join("fleet-proxy.env")]
+        );
+        assert_eq!(
+            tailnet_proxy_env_candidates(home, Some("Muse-Felix"), Some("x/p.env".into())),
+            vec![
+                home.join("x/p.env"),
+                state.join("agents/felix/fleet-proxy.env"),
+                state.join("fleet-proxy.env"),
+            ]
+        );
+        // A name with nothing usable gets no agent path.
+        assert_eq!(
+            tailnet_proxy_env_candidates(home, Some("--"), None),
+            vec![state.join("fleet-proxy.env")]
+        );
+    }
+
+    #[test]
+    fn agent_slug_matches_the_bootstrap_rule() {
+        assert_eq!(agent_slug("felix").as_deref(), Some("felix"));
+        assert_eq!(agent_slug("Muse Archer!").as_deref(), Some("archer"));
+        assert_eq!(agent_slug("muse-archer").as_deref(), Some("archer"));
+        assert_eq!(agent_slug("-a_b-").as_deref(), Some("a-b"));
+        assert_eq!(agent_slug("muse-").as_deref(), Some("muse"));
+        assert_eq!(agent_slug(""), None);
+        assert_eq!(agent_slug(&"x".repeat(80)).map(|s| s.len()), Some(55));
+    }
+
+    #[test]
+    fn parse_tailnet_proxy_env_reads_the_bootstrap_line() {
+        assert_eq!(
+            parse_tailnet_proxy_env("export HTTPS_PROXY=http://127.0.0.1:3130\n").as_deref(),
+            Some("http://127.0.0.1:3130")
+        );
+        assert_eq!(
+            parse_tailnet_proxy_env(
+                "# c\nHTTPS_PROXY='http://a:1'\nexport HTTPS_PROXY=\"http://b:2\"\n"
+            )
+            .as_deref(),
+            Some("http://b:2")
+        );
+        assert_eq!(parse_tailnet_proxy_env("HTTP_PROXY=http://x\n"), None);
+        assert_eq!(parse_tailnet_proxy_env("export HTTPS_PROXY=\n"), None);
+        assert_eq!(parse_tailnet_proxy_env(""), None);
+    }
 
     fn write_temp(contents: &str) -> (tempfile_dir::Dir, PathBuf) {
         let dir = tempfile_dir::Dir::new();

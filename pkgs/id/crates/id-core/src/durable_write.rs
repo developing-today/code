@@ -47,7 +47,10 @@ pub fn write_durable(path: &Path, tmp: &Path, bytes: &[u8]) -> Result<(), Durabl
     write_durable_with_parent_sync(path, tmp, bytes, |dir| File::open(dir)?.sync_all())
 }
 
-fn write_durable_with_parent_sync(
+/// [`write_durable`] with the parent-directory sync step supplied by
+/// the caller, so a caller can observe — and a test can inject — the
+/// post-rename sync failure that [`WriteStage::AfterRename`] reports.
+pub fn write_durable_with_parent_sync(
     path: &Path,
     tmp: &Path,
     bytes: &[u8],
@@ -79,7 +82,7 @@ fn before_rename(source: io::Error) -> DurableWriteError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{write_durable, write_durable_with_parent_sync, WriteStage};
+    use super::{WriteStage, write_durable, write_durable_with_parent_sync};
 
     #[test]
     fn replaces_file_and_leaves_no_temp() {
