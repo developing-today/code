@@ -1,11 +1,18 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { EscalationJournalEntry } from "./escalation.ts";
 import type { SloSample } from "./slo.ts";
 
 /** One append-only line in the SLO journal (#9988): one facet's sample for
  * one minute. The journal never rewrites or compacts a line. */
 export interface SloJournalLine extends SloSample {
   facet: string;
+  /** #9991: escalation entries ride this journal under an
+   *  `escalation:<facet>` facet key (see escalation-tick.ts); the
+   *  entry is the design §3 journal record. Sample readers ignore
+   *  the field, and no SLO definition id matches the facet key, so
+   *  budget summaries never read an escalation line as a sample. */
+  escalation?: EscalationJournalEntry;
 }
 
 export class SloJournal {

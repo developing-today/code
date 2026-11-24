@@ -1,0 +1,873 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+registry · stale · 28479 session records · 6m old
+Sessions — identity registry
+10878 of 28479 sessions
+· window: last 7 days
+
+17601 hidden by the last 7 days window · 10778 more on other pages
+
+
+all history
+·
+next →
+Search  Agent  Task ref  Window 
+last 7 days
+last 24 hours
+last 30 days
+last 90 days
+all history
+ Filter
+
+Every agent/session the fleet can see, with its stable id, the agent identity it ran as, its parent session, and its token total where the source reports one. Task links are loose (from the session's PR, title, or launch record) and improve over time. 100 records shown · 26,780,469 tokens recorded on this page. Machine-first: /api/registry.json.
+
+Coverage honesty: OpenCode sessions register from their servers; Muse sessions only when a launch record was appended at spawn (scripts/record-claude-launch.ts) — a Muse session that never wrote one is invisible here, and the coverage note on Needs you says which sources are wired.
+
+opencode-laptop (100)
+Queue lane (scheduled) - oc-code-08 2026-11-23 20:28
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49e51f1ffeJq9pw6CtLw6i · in-progress · workhorse · started 2026-11-24 02:28:00Z · last seen 2026-11-24 03:32:36Z · 1,494,694 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Queue lane (scheduled) - oc-code-07 2026-11-23 19:58
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4b9c5dfffeHHQt3Xos8QC7 · in-progress · workhorse · started 2026-11-24 01:58:01Z · last seen 2026-11-24 03:32:36Z · 2,367,331 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Queue lane (scheduled) - code-i 2026-11-23 20:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4b7f038ffeDj7mRPgP2yXm · in-progress · workhorse · started 2026-11-24 02:00:02Z · last seen 2026-11-24 03:32:34Z · 1,334,028 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Improvement issue creator — lane B 2026-11-23 21:30
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46590f7ffePp0bwC0p8p7Z · succeeded · workhorse · started 2026-11-24 03:30:00Z · last seen 2026-11-24 03:32:33Z · 7,858 tok
+Opencode lane claimant/executor - #3026 2026-11-23 21:30
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46589b8ffeyQD6ivR0O88a · succeeded · workhorse · started 2026-11-24 03:30:01Z · last seen 2026-11-24 03:32:30Z · 134,101 tok
+Queue lane (scheduled) - oc-code-08 2026-11-23 21:28
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46765b4ffeURjhcMW9vwoU · in-progress · workhorse · started 2026-11-24 03:28:00Z · last seen 2026-11-24 03:32:29Z · 16,192 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Queue lane (scheduled) - oc-code-03 2026-11-23 18:42
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4ff58bfffez6z6mFYfix2y · in-progress · workhorse · started 2026-11-24 00:42:02Z · last seen 2026-11-24 03:32:25Z · 864,842 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Queue lane (scheduled) - oc-code-01 2026-11-23 21:32
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df463ba4fffep90qLtPbUK12 · in-progress · workhorse · started 2026-11-24 03:32:00Z · last seen 2026-11-24 03:32:24Z · 278 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Main CI failure — fix trigger 2026-11-23 21:30
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46588a5ffeNFTL2TmzvQXT · succeeded · workhorse · started 2026-11-24 03:30:02Z · last seen 2026-11-24 03:32:12Z · 3,572 tok
+Orchestration pass — queue triage, tiers, Turso publish 2026-11-23 21:12
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4760b64ffe7245uK6dnKog · succeeded · workhorse · started 2026-11-24 03:12:00Z · last seen 2026-11-24 03:31:44Z · 137,535 tok
+Queue lane (scheduled) - oc-code-07 2026-11-23 21:26
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df469372affehHgrQH67SqS5 · in-progress · workhorse · started 2026-11-24 03:26:01Z · last seen 2026-11-24 03:31:28Z · 31,202 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Queue lane (scheduled) - oc-code-02 2026-11-23 21:06
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df47b8353ffeuRsdQXfy36hG · in-progress · workhorse · started 2026-11-24 03:06:02Z · last seen 2026-11-24 03:31:28Z · 157,018 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Queue lane (scheduled) - oc-code-05 2026-11-23 21:18
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4708be7ffeJO7r5RQk6Exk · in-progress · workhorse · started 2026-11-24 03:18:00Z · last seen 2026-11-24 03:31:24Z · 382,434 tok
+Act as
+Drew
+Muse
+Orchestrator (orchestration-pass) (agent)
+Jules keeper (jules-review) (agent)
+Stewardship cycle (agent)
+Poke
+Nudges the session via its owning server.
+Answer
+Confirm stop
+Stop session
+Two-step: tick Confirm stop, then Stop — the owning job terminates the run.
+Queue lane (scheduled) - code-g 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48107c2ffe5HSvB2bRyD4V · succeeded · workhorse · started 2026-11-24 03:00:00Z · last seen 2026-11-24 03:30:14Z · 923,013 tok
+Opencode lane claimant/executor - #3026 2026-11-23 21:25
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46a20cbffeagzE0fcJU1J8 · succeeded · workhorse · started 2026-11-24 03:25:01Z · last seen 2026-11-24 03:29:46Z · 152,684 tok
+Queue lane (scheduled) - oc-code-06 2026-11-23 21:22
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46cdf2effeuEBp8e602sH2 · succeeded · workhorse · started 2026-11-24 03:22:02Z · last seen 2026-11-24 03:28:27Z · 16,025 tok
+Implement id notice-surface slice
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49a558bffeACeFwzSbdqnj · succeeded · workhorse · started 2026-11-24 02:32:21Z · last seen 2026-11-24 03:28:26Z · 600,837 tok · sub of ses_e5df4ff58bfffez6z6mFYfix2y
+Issue sweep — developing-today/code 2026-11-23 20:07
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4b18b38ffeuuhiW43f9ze9 · succeeded · workhorse · started 2026-11-24 02:07:00Z · last seen 2026-11-24 03:26:14Z · 1,412,668 tok
+Plans Space freshness keeper — complete + fresh quota picture 2026-11-23 21:23
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46bf370ffe22iW7oswLPEk · succeeded · workhorse · started 2026-11-24 03:23:01Z · last seen 2026-11-24 03:24:34Z · 80,312 tok
+Queue lane (scheduled) - any-n 2026-11-23 21:20
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46ead0dffebD279P4yMfHO · succeeded · workhorse · started 2026-11-24 03:20:03Z · last seen 2026-11-24 03:24:13Z · 4,685 tok
+Fleet exec diagnostic for run 45318312367
+opencode-laptop
+OpenCode · main (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46cc8aeffeY64j0Su2eLVt · succeeded · started 2026-11-24 03:22:07Z · last seen 2026-11-24 03:24:09Z · 123,096 tok
+Queue lane (scheduled) - any-n 2026-11-23 20:20
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a59a42ffeXKJ6PUo45ayY · succeeded · workhorse · started 2026-11-24 02:20:03Z · last seen 2026-11-24 03:23:43Z · 1,515,113 tok
+Fleet conductor — session sweep + dispatch 2026-11-23 21:20
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46eae23ffeWx74WcQeScvr · succeeded · workhorse · started 2026-11-24 03:20:03Z · last seen 2026-11-24 03:23:16Z · 10,534 tok
+Opencode lane claimant/executor - #3026 2026-11-23 21:20
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46eb7e5ffeElzcNZA9A0kN · succeeded · workhorse · started 2026-11-24 03:20:00Z · last seen 2026-11-24 03:22:48Z · 56,051 tok
+Main CI failure — fix trigger 2026-11-23 21:20
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46eb793ffeLFwXsmwTdcFR · succeeded · workhorse · started 2026-11-24 03:20:00Z · last seen 2026-11-24 03:22:22Z · 49,177 tok
+Quota gatherer guardian — keep the quota record fresh 2026-11-23 21:20
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df46eb1ddffekvvQH76i7u5d · succeeded · workhorse · started 2026-11-24 03:20:01Z · last seen 2026-11-24 03:21:55Z · 75,324 tok
+Queue lane (scheduled) - oc-code-04 2026-11-23 21:14
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df474303fffeSMBB1nt9KAz7 · succeeded · workhorse · started 2026-11-24 03:14:01Z · last seen 2026-11-24 03:19:09Z · 4,659 tok
+Improvement issue creator 2026-11-23 21:15
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4734315ffeFltOtiK6VvqS · succeeded · workhorse · started 2026-11-24 03:15:02Z · last seen 2026-11-24 03:18:14Z · 123,569 tok
+Opencode lane claimant/executor - #3026 2026-11-23 21:15
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4734b87ffebqkh8Gst8le2 · succeeded · workhorse · started 2026-11-24 03:15:00Z · last seen 2026-11-24 03:17:30Z · 97,452 tok
+Queue lane (scheduled) - oc-code-03 2026-11-23 21:10
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df477df37ffeEGpTSphkFwDs · succeeded · workhorse · started 2026-11-24 03:10:00Z · last seen 2026-11-24 03:15:28Z · 82,995 tok
+Main CI failure — fix trigger 2026-11-23 21:10
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df477db26ffeCENLAyAKwKrI · succeeded · workhorse · started 2026-11-24 03:10:01Z · last seen 2026-11-24 03:14:56Z · 365,693 tok
+Explore edge.ts memory-only fields (workhorse)
+opencode-laptop
+OpenCode · explore (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df474cba7ffevazVQU4yODr7 · succeeded · scout · started 2026-11-24 03:13:22Z · last seen 2026-11-24 03:14:42Z · 6,975 tok · sub of ses_e5df4b18b38ffeuuhiW43f9ze9
+Explore pipeline deadline + jwksCache (workhorse)
+opencode-laptop
+OpenCode · explore (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df474cba6ffeafJ2wTp4ltDd · succeeded · scout · started 2026-11-24 03:13:22Z · last seen 2026-11-24 03:13:48Z · 3,818 tok · sub of ses_e5df4b18b38ffeuuhiW43f9ze9
+Fleet Actions install step diagnosis
+opencode-laptop
+OpenCode · main (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df47814ebffe9M8TOUHlGIuK · succeeded · started 2026-11-24 03:09:46Z · last seen 2026-11-24 03:12:50Z · 144,674 tok
+Opencode lane claimant/executor - #3026 2026-11-23 21:10
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df477de50ffe5ACPnbA4njN7 · succeeded · workhorse · started 2026-11-24 03:10:00Z · last seen 2026-11-24 03:12:48Z · 2,042 tok
+Queue lane (scheduled) - code-i 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480f987ffe7CMiVJkgEahO · succeeded · workhorse · started 2026-11-24 03:00:03Z · last seen 2026-11-24 03:12:48Z · 114,325 tok
+Fleet conductor — session sweep + dispatch 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480f286ffePnqbAmU4EmkH · succeeded · workhorse · started 2026-11-24 03:00:05Z · last seen 2026-11-24 03:10:48Z · 618,937 tok
+Queue lane (scheduled) - code-f 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4935582ffeOza8TQny3Jf1 · succeeded · workhorse · started 2026-11-24 02:40:00Z · last seen 2026-11-24 03:09:27Z · 218,345 tok
+Queue lane (scheduled) - code-f 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480f633ffegs2DheeYFiDN · succeeded · workhorse · started 2026-11-24 03:00:04Z · last seen 2026-11-24 03:07:57Z · 58,739 tok
+Opencode lane claimant/executor - #3026 2026-11-23 21:05
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df47c6da3ffeC95Ax0PInnOK · succeeded · workhorse · started 2026-11-24 03:05:01Z · last seen 2026-11-24 03:07:54Z · 113,443 tok
+Queue lane (scheduled) - code-j 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480f685ffe0FnO1q3KKxsT · succeeded · workhorse · started 2026-11-24 03:00:04Z · last seen 2026-11-24 03:06:24Z · 31,556 tok
+Queue lane (scheduled) - oc-code-01 2026-11-23 21:02
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df47f30f3ffeYkwC10iWGX5O · succeeded · workhorse · started 2026-11-24 03:02:00Z · last seen 2026-11-24 03:05:52Z · 31,085 tok
+Queue lane (scheduled) - not-code-d 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4810768ffe73Pnl0OLOGPe · succeeded · workhorse · started 2026-11-24 03:00:00Z · last seen 2026-11-24 03:04:50Z · 400,041 tok
+Queue lane (scheduled) - any-o 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480fda5ffeuz6dqMLGns1D · succeeded · workhorse · started 2026-11-24 03:00:02Z · last seen 2026-11-24 03:04:11Z · 1,448 tok
+Queue lane (scheduled) - code-h 2026-11-23 20:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4b7e031ffegimLGDXa3cqc · succeeded · workhorse · started 2026-11-24 02:00:05Z · last seen 2026-11-24 03:04:10Z · 1,283,525 tok
+Queue lane (scheduled) - code-h 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480fc07ffepd8mIEpao5is · succeeded · workhorse · started 2026-11-24 03:00:03Z · last seen 2026-11-24 03:04:01Z · 1,254 tok
+Queue lane (scheduled) - any-n 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49352a7ffeAAMXW4DE7EW4 · succeeded · workhorse · started 2026-11-24 02:40:01Z · last seen 2026-11-24 03:03:24Z · 253,609 tok
+Opencode lane claimant/executor - #3026 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480f2c6ffenJwiCGCuzX2z · succeeded · workhorse · started 2026-11-24 03:00:05Z · last seen 2026-11-24 03:03:20Z · 135,065 tok
+Improvement issue creator — lane B 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480f973ffe2HgI5Y16HAvy · succeeded · workhorse · started 2026-11-24 03:00:03Z · last seen 2026-11-24 03:03:01Z · 4,583 tok
+Main CI failure — fix trigger 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48102a8ffeH7JixoMmKdPe · succeeded · workhorse · started 2026-11-24 03:00:01Z · last seen 2026-11-24 03:02:39Z · 48,027 tok
+Builder's advocate — inside the fleet 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480fef3ffeG7ZprF63H0tU · succeeded · workhorse · started 2026-11-24 03:00:02Z · last seen 2026-11-24 03:02:39Z · 3,546 tok
+quota-freshness-summary-20261124T030102Z
+opencode-laptop
+OpenCode · main (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df480138dffelWXQNapSjoJS · succeeded · workhorse · started 2026-11-24 03:01:02Z · last seen 2026-11-24 03:02:23Z · 33,656 tok
+Quota gatherer guardian — keep the quota record fresh 2026-11-23 21:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48105acffe78Lvf4FTkCRI · succeeded · workhorse · started 2026-11-24 03:00:00Z · last seen 2026-11-24 03:02:10Z · 44,306 tok
+Queue lane (scheduled) - code-i 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4934c72ffeZaQI37ZXYMYS · succeeded · workhorse · started 2026-11-24 02:40:03Z · last seen 2026-11-24 03:02:04Z · 568,733 tok
+Scheduled Suggestions — dezren39/darwin-nix
+opencode-laptop
+OpenCode · main (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48438cbffeL1Le3O61by60 · succeeded · started 2026-11-24 02:56:31Z · last seen 2026-11-24 03:01:19Z · 124,288 tok
+Queue lane (scheduled) - oc-code-04 2026-11-23 20:46
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48dd4d2ffeC443tKKwD9Uz · succeeded · workhorse · started 2026-11-24 02:46:01Z · last seen 2026-11-24 02:59:53Z · 283,510 tok
+Queue lane (scheduled) - oc-code-05 2026-11-23 20:50
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48a2fbdffeAs409QM37qgi · succeeded · workhorse · started 2026-11-24 02:50:00Z · last seen 2026-11-24 02:59:38Z · 99,293 tok
+Queue lane (scheduled) - oc-code-06 2026-11-23 20:54
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4868325ffe9pjiGXJq0tck · succeeded · workhorse · started 2026-11-24 02:54:00Z · last seen 2026-11-24 02:59:20Z · 49,409 tok
+Opencode lane claimant/executor - #3026 2026-11-23 20:55
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4859be4ffeD4kgwBCoBbCs · succeeded · workhorse · started 2026-11-24 02:55:00Z · last seen 2026-11-24 02:56:43Z · 82,320 tok
+Opencode lane claimant/executor - #3026 2026-11-23 20:50
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48a2aecffeR44gQCobCBVT · succeeded · workhorse · started 2026-11-24 02:50:01Z · last seen 2026-11-24 02:53:53Z · 138,732 tok
+Main CI failure — fix trigger 2026-11-23 20:50
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48a2f0affeNWC6VbrP0AQQ · succeeded · workhorse · started 2026-11-24 02:50:00Z · last seen 2026-11-24 02:53:27Z · 225,673 tok
+Improvement issue creator 2026-11-23 20:45
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48ebda3ffe33QsDvD2i3hg · succeeded · workhorse · started 2026-11-24 02:45:01Z · last seen 2026-11-24 02:50:49Z · 338,001 tok
+Relay ALPN serve wiring slice
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a95078ffe6si2mOiyz2lh · succeeded · workhorse · started 2026-11-24 02:16:00Z · last seen 2026-11-24 02:49:22Z · 464,779 tok · sub of ses_e5df4b7f038ffeDj7mRPgP2yXm
+Queue lane (scheduled) - code-j 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49346d4ffe06RDOyLb5cR7 · succeeded · workhorse · started 2026-11-24 02:40:04Z · last seen 2026-11-24 02:48:35Z · 37,976 tok
+Diagnosing fleet-exec agent command-channel failure and log leaks
+opencode-laptop
+OpenCode · main (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48e554affeI1Oxc3zjGoDS · succeeded · started 2026-11-24 02:45:28Z · last seen 2026-11-24 02:48:29Z · 149,367 tok
+Queue lane (scheduled) - any-o 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4935026ffez3Vj2Iyw3sLS · succeeded · workhorse · started 2026-11-24 02:40:02Z · last seen 2026-11-24 02:48:22Z · 287,863 tok
+Queue lane (scheduled) - oc-code-03 2026-11-23 20:42
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4918080ffeUUT1Cjdsg03d · succeeded · workhorse · started 2026-11-24 02:42:00Z · last seen 2026-11-24 02:48:14Z · 35,448 tok
+Opencode lane claimant/executor - #3026 2026-11-23 20:45
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48ec21affe12Muhg51tU4Z · succeeded · workhorse · started 2026-11-24 02:45:00Z · last seen 2026-11-24 02:47:58Z · 93,421 tok
+Audit OpenChamber runtime paths
+opencode-laptop
+OpenCode · explore (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df48d7991ffeDv4Q3t923LP3 · succeeded · scout · started 2026-11-24 02:46:25Z · last seen 2026-11-24 02:47:24Z · 5,831 tok · sub of ses_e5df48ebda3ffe33QsDvD2i3hg
+Queue lane (scheduled) - code-g 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df493452bffewsjzkywfOIG0 · succeeded · workhorse · started 2026-11-24 02:40:04Z · last seen 2026-11-24 02:46:58Z · 45,684 tok
+Queue lane (scheduled) - any-o 2026-11-23 19:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4ca33e2ffeW9BnRcQitiPP · succeeded · workhorse · started 2026-11-24 01:40:04Z · last seen 2026-11-24 02:46:48Z · 850,271 tok
+Queue lane (scheduled) - code-h 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4933fa8ffeViu6fSiXiW9A · succeeded · workhorse · started 2026-11-24 02:40:06Z · last seen 2026-11-24 02:44:23Z · 3,601 tok
+Queue 21511 - #8884 fleet orgs registry (workhorse)
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a236b5ffeK3VHwM9vet4m · succeeded · workhorse · started 2026-11-24 02:23:45Z · last seen 2026-11-24 02:44:02Z · 764,221 tok
+Fleet conductor — session sweep + dispatch 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df493573dffeXJVH0gqEBfXn · succeeded · workhorse · started 2026-11-24 02:40:00Z · last seen 2026-11-24 02:43:42Z · 95,866 tok
+Main CI failure — fix trigger 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49341a5ffeUyOiEwHzbJl0 · succeeded · workhorse · started 2026-11-24 02:40:05Z · last seen 2026-11-24 02:42:51Z · 74,223 tok
+Opencode lane claimant/executor - #3026 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4933d46ffeWCLZ5XVYrHfs · succeeded · workhorse · started 2026-11-24 02:40:06Z · last seen 2026-11-24 02:42:45Z · 2,366 tok
+Quota gatherer guardian — keep the quota record fresh 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4934be5ffeNaqZVL7xHek2 · succeeded · workhorse · started 2026-11-24 02:40:03Z · last seen 2026-11-24 02:42:26Z · 72,394 tok
+Queue lane (scheduled) - oc-code-08 2026-11-23 20:38
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49525f3ffeHJBNWSX55jK1 · succeeded · workhorse · started 2026-11-24 02:38:01Z · last seen 2026-11-24 02:42:19Z · 30,987 tok
+Queue lane (scheduled) - oc-code-04 2026-11-23 20:14
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4ab21a9ffeQ7C0MgAzStds · succeeded · workhorse · started 2026-11-24 02:14:01Z · last seen 2026-11-24 02:42:05Z · 387,611 tok
+Queue lane (scheduled) - oc-code-06 2026-11-23 20:22
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a3cf19ffetLpNNbw18x2d · succeeded · workhorse · started 2026-11-24 02:22:00Z · last seen 2026-11-24 02:42:02Z · 1,376,192 tok
+Queue lane (scheduled) - not-code-d 2026-11-23 20:40
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4935375ffecsUUUt2cRgee · succeeded · workhorse · started 2026-11-24 02:40:01Z · last seen 2026-11-24 02:41:30Z · 1,524 tok
+Queue lane (scheduled) - oc-code-05 2026-11-23 20:18
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a774cbffejPQoASj66Bp4 · succeeded · workhorse · started 2026-11-24 02:18:01Z · last seen 2026-11-24 02:41:09Z · 863,522 tok
+Queue lane (scheduled) - oc-code-02 2026-11-23 20:36
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df496fd9dffeRy7hrcLTtnal · succeeded · workhorse · started 2026-11-24 02:36:02Z · last seen 2026-11-24 02:40:16Z · 3,287 tok
+R2 shipped-middle survey draft
+opencode-laptop
+OpenCode · general (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df495e947ffeDPvNw61EuEvi · succeeded · workhorse · started 2026-11-24 02:37:12Z · last seen 2026-11-24 02:39:42Z · 149,822 tok · sub of ses_e5df4b9c5dfffeHHQt3Xos8QC7
+Opencode lane claimant/executor - #3026 2026-11-23 20:35
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df497e7b5ffelwdvslZAHxxu · succeeded · workhorse · started 2026-11-24 02:35:01Z · last seen 2026-11-24 02:39:05Z · 3,063 tok
+Improvement issue creator — lane B 2026-11-23 20:30
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49c7986ffe85nnqrMzw2B5 · succeeded · workhorse · started 2026-11-24 02:30:01Z · last seen 2026-11-24 02:38:19Z · 360,211 tok
+Orchestration pass — queue triage, tiers, Turso publish 2026-11-23 20:12
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4acf2c1ffeAdwPk1bJlu0B · succeeded · workhorse · started 2026-11-24 02:12:01Z · last seen 2026-11-24 02:35:58Z · 381,247 tok
+Queue lane (scheduled) - oc-code-01 2026-11-23 20:32
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49aa72dffe4ji16gm3hYBz · succeeded · workhorse · started 2026-11-24 02:32:01Z · last seen 2026-11-24 02:35:57Z · 2,958 tok
+Opencode lane claimant/executor - #3026 2026-11-23 20:30
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49c7e6bffesOSkYmZg8XpD · succeeded · workhorse · started 2026-11-24 02:30:00Z · last seen 2026-11-24 02:33:03Z · 50,089 tok
+Find OpenCode improvement lead
+opencode-laptop
+OpenCode · explore (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49a8f05ffehcgmpMl6nBMc · succeeded · scout · started 2026-11-24 02:32:07Z · last seen 2026-11-24 02:32:38Z · 2,943 tok · sub of ses_e5df49c7986ffe85nnqrMzw2B5
+Main CI failure — fix trigger 2026-11-23 20:30
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49c7de6ffeCoK6L2HGL4ot · succeeded · workhorse · started 2026-11-24 02:30:00Z · last seen 2026-11-24 02:32:05Z · 52,217 tok
+Queue 21511 - #8884 fleet orgs registry (workhorse, relaunch)
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a0c09bffeoy5vOlMB0I2b · succeeded · workhorse · started 2026-11-24 02:25:21Z · last seen 2026-11-24 02:32:02Z · 55,146 tok
+Build org registry crate
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df49f66baffegh6nnJ1qycs7 · succeeded · workhorse · started 2026-11-24 02:26:50Z · last seen 2026-11-24 02:31:48Z · 196,026 tok · sub of ses_e5df4a236b5ffeK3VHwM9vet4m
+Queue lane (scheduled) - oc-code-07 2026-11-23 20:26
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a022e2ffeDHaGYKTkb7kC · succeeded · workhorse · started 2026-11-24 02:26:02Z · last seen 2026-11-24 02:30:07Z · 1,357 tok
+Queue lane (scheduled) - oc-code-05 2026-11-23 19:50
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4c118b9ffeT2XHiIOGu5n8 · succeeded · workhorse · started 2026-11-24 01:50:01Z · last seen 2026-11-24 02:29:38Z · 258,520 tok
+Queue lane (scheduled) - oc-code-02 2026-11-23 20:06
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4b27539ffeshmAZRVvyrFS · succeeded · workhorse · started 2026-11-24 02:06:01Z · last seen 2026-11-24 02:29:00Z · 687,760 tok
+Opencode lane claimant/executor - #3026 2026-11-23 20:25
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a112f0ffeoiCv5fGxUOek · succeeded · workhorse · started 2026-11-24 02:25:00Z · last seen 2026-11-24 02:28:54Z · 154,343 tok
+Fleet conductor — session sweep + dispatch 2026-11-23 20:20
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a59970ffeqJp45P5EFxF0 · succeeded · workhorse · started 2026-11-24 02:20:03Z · last seen 2026-11-24 02:28:02Z · 12,786 tok
+Diagnosing fleet-exec install step failure
+opencode-laptop
+OpenCode · main (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4a117d5ffeGpFhjq85JgjC · succeeded · started 2026-11-24 02:24:58Z · last seen 2026-11-24 02:27:10Z · 100,060 tok
+Queue lane (scheduled) - any-o 2026-11-23 20:00
+opencode-laptop
+OpenCode · build (laptop)
+asserted-legacy — identity is a claim
+
+
+ses_e5df4b7e020ffeOily1WHjvXli · succeeded · workhorse · started 2026-11-24 02:00:05Z · last seen 2026-11-24 02:27:04Z · 577,557 tok
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870

@@ -41,6 +41,14 @@
 //! never in the asset (§3 invariant 5): the artefact carries
 //! asset and renderer **names**, never content.
 //!
+//! The report also accounts for every resolved assertion
+//! (from the source `assert` slots and composition data alike)
+//! by its disposition under the presentation decision —
+//! governing the standard rendering, standing in on a fallback,
+//! or superseded-but-retained as the fallback when an override
+//! applies (#5854 §2.1 layer 4). No assertion is dropped
+//! silently on this target either.
+//!
 //! Native targets never reach this code: they ignore
 //! presentation overrides for standard controls (§4), which
 //! [`crate::lower_native`] records as exclusions.
@@ -218,10 +226,34 @@ pub struct ExercisedFallback {
     pub warning: String,
 }
 
+/// One resolved assertion of an element, accounted in the
+/// report by what the presentation decision did to it (#5854
+/// §2.1 layer 4): an assertion governs the element's standard
+/// rendering unless a presentation override supersedes it for
+/// appearance — it then remains the fallback standard rendering,
+/// never dead configuration. Raw-CSS winners are not assertions
+/// and are accounted in `reported_overrides`, not here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssertionDisposition {
+    /// Element the assertion applies to.
+    pub element_path: String,
+    /// Assertion dimension.
+    pub property: String,
+    /// Role token that was resolved.
+    pub token: String,
+    /// `standard` (governs the standard rendering),
+    /// `fallback-standard` (an override fell back, so the
+    /// standard rendering it governs stood in, §2.4), or
+    /// `superseded-by-presentation` (an override governs the
+    /// appearance; the assertion remains the fallback).
+    pub disposition: String,
+}
+
 /// The stage-5 report for the GUI target: overrides applied,
-/// fallbacks exercised, and the composition report's reported
-/// overrides carried through. Deterministic in content and
-/// order; no timestamps (#5855 invariant 2).
+/// fallbacks exercised, the assertion accounting, and the
+/// composition report's reported overrides carried through.
+/// Deterministic in content and order; no timestamps (#5855
+/// invariant 2).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GuiReport {
     /// Overrides applied, in document order.
@@ -229,6 +261,9 @@ pub struct GuiReport {
     /// Fallbacks exercised, in document order — reported, never
     /// silent (§2.4).
     pub fallbacks: Vec<ExercisedFallback>,
+    /// Resolved assertions and their dispositions, in document
+    /// order — accounted, never silent (#5854 §2.1 layer 4).
+    pub assertions: Vec<AssertionDisposition>,
     /// Raw-CSS reported overrides, carried from the composition
     /// report (#5854 §6b).
     pub reported_overrides: Vec<crate::compose::ReportedOverride>,
@@ -343,6 +378,28 @@ fn lower_element(
     }
 
     let presentation = decide_presentation(el, data, report, errors)?;
+
+    // Account for the element's resolved assertions under the
+    // presentation decision (#5854 §2.1 layer 4): they govern
+    // the standard rendering, stand in when an override falls
+    // back, and remain the fallback when one supersedes them.
+    let disposition = match &presentation {
+        GuiPresentation::Standard => "standard",
+        GuiPresentation::Fallback { .. } => "fallback-standard",
+        GuiPresentation::Asset { .. } | GuiPresentation::Drawn { .. } => {
+            "superseded-by-presentation"
+        }
+    };
+    for prop in &el.properties {
+        if let Some(token) = &prop.token {
+            report.assertions.push(AssertionDisposition {
+                element_path: el.path.clone(),
+                property: prop.property.clone(),
+                token: token.clone(),
+                disposition: disposition.to_string(),
+            });
+        }
+    }
 
     let mut children = Vec::new();
     for child in &el.children {
@@ -838,6 +895,24 @@ fn push_report_json(out: &mut String, report: &GuiReport, depth: usize) {
         push_json_string(out, &f.name);
         out.push_str(", \"warning\": ");
         push_json_string(out, &f.warning);
+        out.push('}');
+    }
+    out.push(']');
+    out.push_str(",\n");
+    field(out, "assertions");
+    out.push('[');
+    for (i, a) in report.assertions.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str("{\"element\": ");
+        push_json_string(out, &a.element_path);
+        out.push_str(", \"property\": ");
+        push_json_string(out, &a.property);
+        out.push_str(", \"token\": ");
+        push_json_string(out, &a.token);
+        out.push_str(", \"disposition\": ");
+        push_json_string(out, &a.disposition);
         out.push('}');
     }
     out.push(']');

@@ -10,7 +10,7 @@ One-time URL: <HANDOFF_URL>
 ## Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/developing-today/code/codex/muse-agent-enrollment-20261122/scripts/muse/handoff/enroll-agent.py -o /tmp/enroll-agent.py
+curl -fsSL https://raw.githubusercontent.com/developing-today/code/main/scripts/muse/handoff/enroll-agent.py -o /tmp/enroll-agent.py
 python3 /tmp/enroll-agent.py --name <AGENT_NAME> --handoff-url '<HANDOFF_URL>'
 ```
 

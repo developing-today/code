@@ -175,7 +175,7 @@ fn repo_identity(intent: &Intent) -> Option<String> {
         })
 }
 
-fn github_repo_from_remote(remote: &str) -> Option<String> {
+pub(crate) fn github_repo_from_remote(remote: &str) -> Option<String> {
     let path = remote
         .strip_prefix("https://github.com/")
         .or_else(|| remote.strip_prefix("http://github.com/"))

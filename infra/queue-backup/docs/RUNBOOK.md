@@ -48,7 +48,7 @@ drill below.
 
 ## Production wiring (remaining — operator session)
 
-Account scope is already decided (Drew, 2026-11-16, recorded on
+Account scope is already decided (the user, 2026-11-16, recorded on
 #8584): the fleet's existing Cloudflare account for D1, the existing
 Turso org, mirrors under developing-today. In order:
 

@@ -40,6 +40,22 @@ pub const MAX_BLOCK_TEXT_BYTES: usize = 65_536;
 /// The most nesting depth a block tree may have.
 pub const MAX_BLOCK_DEPTH: usize = 64;
 
+/// The most bytes a serialized block tree may have on the wire.
+///
+/// This is the decode resource bound for [`BlockTree::from_bytes`]: a
+/// longer payload is refused before decoding allocates anything
+/// proportional to its length prefixes. It is sized as headroom over
+/// content, not as a content policy — 64 blocks carrying the maximum
+/// text ([`MAX_BLOCK_TEXT_BYTES`] each) encode to just under this
+/// bound, and per-block structural overhead (an ID of at most
+/// [`MAX_BLOCK_ID_BYTES`] plus a few length/discriminant bytes) is
+/// small next to a max-size text. Nesting depth needs no separate
+/// wire bound: every level costs at least 4 bytes on the wire (ID
+/// length, kind discriminant, text length, children length), so this
+/// cap also bounds decode recursion, and [`BlockTree::check`] then
+/// enforces the much smaller [`MAX_BLOCK_DEPTH`] on the decoded tree.
+pub const MAX_BLOCK_TREE_BYTES: usize = 4_194_304;
+
 /// Why a block value was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum BlockError {
@@ -267,20 +283,55 @@ impl BlockTree {
 
     /// Serializes the tree to bytes (postcard).
     ///
+    /// The encoder enforces the same [`MAX_BLOCK_TREE_BYTES`] bound
+    /// the decoder refuses on receipt, so a tree this function encodes
+    /// is never one [`BlockTree::from_bytes`] would refuse as
+    /// oversized.
+    ///
     /// # Errors
     ///
-    /// Returns [`BlockError::Codec`] on failure.
+    /// Returns [`BlockError::Codec`] on failure, including when the
+    /// encoded form exceeds [`MAX_BLOCK_TREE_BYTES`].
     pub fn to_bytes(&self) -> Result<Vec<u8>, BlockError> {
-        postcard::to_allocvec(self).map_err(|err| BlockError::Codec(err.to_string()))
+        let bytes =
+            postcard::to_allocvec(self).map_err(|err| BlockError::Codec(err.to_string()))?;
+        if bytes.len() > MAX_BLOCK_TREE_BYTES {
+            return Err(BlockError::Codec(format!(
+                "encoded block tree is {} bytes, it may be at most {MAX_BLOCK_TREE_BYTES}",
+                bytes.len()
+            )));
+        }
+        Ok(bytes)
     }
 
-    /// Deserializes a tree from bytes (postcard).
+    /// Deserializes a tree from bytes (postcard) and validates it.
+    ///
+    /// The decoded tree must pass [`BlockTree::check`]: serialized
+    /// bytes are the persistence boundary for note revisions, so a
+    /// decoder that silently accepted trees the module itself
+    /// considers invalid (duplicate or invalid IDs, invalid text,
+    /// heading levels outside 1..=6, nesting past
+    /// [`MAX_BLOCK_DEPTH`]) would make correctness depend on every
+    /// reader remembering a second validation call. Payloads longer
+    /// than [`MAX_BLOCK_TREE_BYTES`] are refused before decoding.
     ///
     /// # Errors
     ///
-    /// Returns [`BlockError::Codec`] on failure.
+    /// Returns [`BlockError::Codec`] when the payload is oversized or
+    /// not valid postcard for a block tree, and the specific
+    /// [`BlockError`] [`BlockTree::check`] returns when the decoded
+    /// tree violates an invariant.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, BlockError> {
-        postcard::from_bytes(bytes).map_err(|err| BlockError::Codec(err.to_string()))
+        if bytes.len() > MAX_BLOCK_TREE_BYTES {
+            return Err(BlockError::Codec(format!(
+                "block tree payload is {} bytes, it may be at most {MAX_BLOCK_TREE_BYTES}",
+                bytes.len()
+            )));
+        }
+        let tree: Self =
+            postcard::from_bytes(bytes).map_err(|err| BlockError::Codec(err.to_string()))?;
+        tree.check()?;
+        Ok(tree)
     }
 }
 
@@ -563,6 +614,125 @@ mod tests {
         let bytes = tree.to_bytes().unwrap();
         let back = BlockTree::from_bytes(&bytes).unwrap();
         assert_eq!(tree, back);
+    }
+
+    #[test]
+    fn from_bytes_rejects_duplicate_ids() {
+        let tree = BlockTree {
+            blocks: vec![para("a", "x"), para("a", "y")],
+        };
+        let bytes = tree.to_bytes().unwrap();
+        assert!(matches!(
+            BlockTree::from_bytes(&bytes),
+            Err(BlockError::DuplicateId(_))
+        ));
+    }
+
+    #[test]
+    fn from_bytes_rejects_invalid_ids() {
+        // Empty ID.
+        let tree = BlockTree {
+            blocks: vec![para("", "x")],
+        };
+        let bytes = tree.to_bytes().unwrap();
+        assert!(matches!(
+            BlockTree::from_bytes(&bytes),
+            Err(BlockError::BlockId(_))
+        ));
+        // Non-NFC ID ("e" + combining acute U+0301).
+        let tree = BlockTree {
+            blocks: vec![para("e\u{301}", "x")],
+        };
+        let bytes = tree.to_bytes().unwrap();
+        assert!(matches!(
+            BlockTree::from_bytes(&bytes),
+            Err(BlockError::BlockId(_))
+        ));
+    }
+
+    #[test]
+    fn from_bytes_rejects_invalid_text() {
+        // Oversized text.
+        let tree = BlockTree {
+            blocks: vec![para("a", &"x".repeat(MAX_BLOCK_TEXT_BYTES + 1))],
+        };
+        let bytes = tree.to_bytes().unwrap();
+        assert!(matches!(
+            BlockTree::from_bytes(&bytes),
+            Err(BlockError::Text(_))
+        ));
+        // Non-NFC text.
+        let tree = BlockTree {
+            blocks: vec![para("a", "e\u{301}")],
+        };
+        let bytes = tree.to_bytes().unwrap();
+        assert!(matches!(
+            BlockTree::from_bytes(&bytes),
+            Err(BlockError::Text(_))
+        ));
+    }
+
+    #[test]
+    fn from_bytes_rejects_invalid_heading_level() {
+        for level in [0u8, 7u8] {
+            let tree = BlockTree {
+                blocks: vec![Block {
+                    id: id("h"),
+                    kind: BlockKind::Heading { level },
+                    text: "title".to_owned(),
+                    children: Vec::new(),
+                }],
+            };
+            let bytes = tree.to_bytes().unwrap();
+            assert!(matches!(
+                BlockTree::from_bytes(&bytes),
+                Err(BlockError::Text(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn from_bytes_rejects_excessive_depth() {
+        // A chain nested past MAX_BLOCK_DEPTH, with unique IDs.
+        let mut block = para("leaf", "x");
+        for i in 0..MAX_BLOCK_DEPTH {
+            block = Block {
+                id: id(&format!("wrap-{i}")),
+                kind: BlockKind::Paragraph,
+                text: String::new(),
+                children: vec![block],
+            };
+        }
+        let tree = BlockTree {
+            blocks: vec![block],
+        };
+        assert!(matches!(tree.check(), Err(BlockError::TooDeep)));
+        let bytes = tree.to_bytes().unwrap();
+        assert!(matches!(
+            BlockTree::from_bytes(&bytes),
+            Err(BlockError::TooDeep)
+        ));
+    }
+
+    #[test]
+    fn from_bytes_rejects_oversized_payload_before_decoding() {
+        let payload = vec![0u8; MAX_BLOCK_TREE_BYTES + 1];
+        assert!(matches!(
+            BlockTree::from_bytes(&payload),
+            Err(BlockError::Codec(_))
+        ));
+    }
+
+    #[test]
+    fn to_bytes_refuses_tree_over_the_wire_bound() {
+        // 65 blocks at the maximum text size encode past the bound;
+        // the tree itself is valid, so only the wire bound refuses it.
+        let blocks = (0..65)
+            .map(|i| para(&format!("b{i}"), &"x".repeat(MAX_BLOCK_TEXT_BYTES)))
+            .collect();
+        let tree = BlockTree { blocks };
+        assert!(tree.check().is_ok());
+        assert!(matches!(tree.to_bytes(), Err(BlockError::Codec(_))));
     }
 
     #[test]

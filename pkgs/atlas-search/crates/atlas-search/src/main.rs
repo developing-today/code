@@ -3,6 +3,12 @@
 //! The one-shot CLI (epic developing-today/code#5350, step 3,
 //! #5353): a surface-parity port of the Python `atlas_search.py`'s
 //! front-end over atlas-core (step 2) and atlas-embed (step 1).
+//! Two surface divergences from the Python are intentional
+//! (#13280): search's `--context` defaults to `fleet-internal`
+//! (the Python defaults both verbs to `local-owner`), and
+//! get-chunk has no `--max-sensitivity` — its ceiling arrives
+//! via `--context` (the Python get-chunk takes
+//! `--max-sensitivity`, default `secret-bearing`).
 //! Standalone is the default and is complete — embed the query
 //! in-process, talk to Turso or a local publish file directly.
 //! `--via-service` prefers a running service (the step-4 job
@@ -74,7 +80,7 @@ enum Cmd {
     FetchModel,
     /// ingest query traces as a statistics-and-reports corpus, or run trace retention (design s4)
     Traces(TracesArgs),
-    /// cast a thumbs vote on a served result, or retrieve feedback by its IDs (design s6.1)
+    /// cast a thumbs vote on a served result, or retrieve feedback by its IDs (design s6.1); a vote requires exactly one of --up / --down — use --get to retrieve instead
     Feedback(FeedbackArgs),
 }
 
@@ -104,7 +110,7 @@ struct FeedbackArgs {
     /// stable requester id
     #[arg(long, default_value = "cli")]
     requester_id: String,
-    /// retrieve the feedback for --query [--chunk] instead of casting a vote
+    /// retrieve the feedback for --query [--chunk] instead of casting a vote (with --get, neither --up nor --down is needed; without it, exactly one of them is required)
     #[arg(long)]
     get: bool,
     /// feedback store directory (default: the JsonlFeedbackSink default dir)
@@ -114,7 +120,7 @@ struct FeedbackArgs {
     #[arg(long)]
     via_service: bool,
     /// service base URL for --via-service (env ATLAS_SEARCH_URL)
-    #[arg(long)]
+    #[arg(long, env = "ATLAS_SEARCH_URL")]
     service_url: Option<String>,
 }
 
@@ -132,7 +138,7 @@ enum TracesCmd {
     Retention(TraceRetentionArgs),
     /// daily batch aggregation over stored traces (design s5)
     Stats(TraceStatsArgs),
-    /// weekly statistics report into the statistics-and-reports source set (design s7)
+    /// weekly statistics report into the statistics-and-reports source set (design s7); also writes the report JSONL and a Markdown rendering into the traces dir and reports both paths as report_file / markdown_file
     Report(TraceReportArgs),
     /// agent normalisation pass over the raw feedback store (design s6.2)
     Normalise(TraceNormaliseArgs),
@@ -209,7 +215,7 @@ struct TraceNormaliseArgs {
 #[derive(Args)]
 struct ServeArgs {
     /// service config path (default: ~/.local/state/atlas-search/service.json; env ATLAS_SEARCH_SERVICE_CONFIG)
-    #[arg(long)]
+    #[arg(long, env = "ATLAS_SEARCH_SERVICE_CONFIG")]
     config: Option<PathBuf>,
     /// listen address override (loopback only)
     #[arg(long)]
@@ -225,7 +231,7 @@ struct ServeArgs {
 #[derive(Args)]
 struct InitArgs {
     /// service config path (default: ~/.local/state/atlas-search/service.json; env ATLAS_SEARCH_SERVICE_CONFIG)
-    #[arg(long)]
+    #[arg(long, env = "ATLAS_SEARCH_SERVICE_CONFIG")]
     config: Option<PathBuf>,
     /// replace an existing config (rotates every client token)
     #[arg(long)]
@@ -310,11 +316,15 @@ struct BackendArgs {
     /// local backend: comma-separated vector DB path(s) if the corpus DB has no vec table
     #[arg(long)]
     vecdb: Option<String>,
-    /// prefer a running atlas service; fall back to standalone, loudly
+    /// prefer a running atlas service; fall back to standalone, loudly.
+    /// The service route serves only the Turso backend with the
+    /// production vector table: --backend local or a non-default
+    /// --vec-table fall back with a note, and any --shards spec is
+    /// served standalone without attempting the service
     #[arg(long)]
     via_service: bool,
     /// service base URL for --via-service (env ATLAS_SEARCH_URL)
-    #[arg(long)]
+    #[arg(long, env = "ATLAS_SEARCH_URL")]
     service_url: Option<String>,
 }
 
@@ -436,8 +446,11 @@ struct SearchArgs {
     #[arg(long)]
     text: bool,
     /// EXPERIMENTAL, off by default: serve the vector branch from the atlas core shard fan-out (dir:<path> or turso[:<org>]); FTS, details and --expand stay on the backend (issue #5755). Skips --via-service.
-    #[arg(long, env = "ATLAS_SHARDS", hide = true)]
+    #[arg(long, env = "ATLAS_SHARDS")]
     shards: Option<String>,
+    /// path to the catalog/source-registry database for occurrence attribution (#3125 slice 7): with --shards, occurrence rows resolve their source locators to registered roots (root_id). Requires --shards.
+    #[arg(long = "source-registry", env = "ATLAS_SOURCE_REGISTRY")]
+    source_registry: Option<PathBuf>,
     #[command(flatten)]
     backend: BackendArgs,
     #[command(flatten)]
@@ -933,6 +946,13 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
     // The disclosure context validates up front too (#12404),
     // so a bad value fails identically on every path.
     let context = parse_context(&args.context)?;
+    if args.source_registry.is_some() && args.shards.is_none() {
+        return Err((
+            2,
+            "--source-registry requires --shards: occurrence attribution rides the shard fan-out (#3125)"
+                .to_string(),
+        ));
+    }
     let mut note: Option<String> = None;
     // The shard fan-out is standalone-only: the service does not
     // honor it yet, so a via-service answer would silently come
@@ -965,7 +985,12 @@ fn cmd_search(args: SearchArgs) -> Result<(), CliError> {
             &args.vector.vec_table,
         )
         .map_err(map_err)?;
-        backend = Box::new(ShardedBackend::new(backend, set));
+        let mut sharded = ShardedBackend::new(backend, set);
+        if let Some(path) = args.source_registry.as_deref() {
+            let conn = atlas_core::source_registry::open_source_registry(path).map_err(map_err)?;
+            sharded = sharded.with_source_registry(conn);
+        }
+        backend = Box::new(sharded);
     }
     let embedder = CliEmbedder::new(args.vector.model.clone(), args.vector.embedder);
     let opts = SearchOptions {
@@ -1025,8 +1050,14 @@ fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
     // The Python's get-chunk takes no vector args: pick_backend
     // sees the defaults (getattr fallbacks in its main()).
     let backend = pick_backend(&args.backend, atlas_core::DEFAULT_VEC_TABLE, 0)?;
-    let mut out = run_get_chunk_with_context(backend.as_ref(), args.chunk_id, neighbors, context)
-        .map_err(|e| map_get_chunk_err(e, args.chunk_id))?;
+    let mut out = run_get_chunk_with_context(
+        backend.as_ref(),
+        args.chunk_id,
+        neighbors,
+        context,
+        context.ceiling(),
+    )
+    .map_err(|e| map_get_chunk_err(e, args.chunk_id))?;
     if let Some(note) = note {
         push_note(&mut out, note);
     }
@@ -1083,11 +1114,15 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     if let Some(spec) = &settings.shards {
         let ceiling = serve_discovery_ceiling(&settings.clients);
         let set = open_from_spec(spec, ceiling, &settings.vec_table).map_err(map_err)?;
-        let backend = ShardedBackend::new(backend, set).with_refresh(
+        let mut backend = ShardedBackend::new(backend, set).with_refresh(
             spec.clone(),
             ceiling,
             settings.shard_refresh,
         );
+        if let Some(path) = &settings.source_registry {
+            let conn = atlas_core::source_registry::open_source_registry(path).map_err(map_err)?;
+            backend = backend.with_source_registry(conn);
+        }
         let engine = std::sync::Arc::new(server::CoreSearchEngine::new(
             std::sync::Arc::new(backend),
             shared,

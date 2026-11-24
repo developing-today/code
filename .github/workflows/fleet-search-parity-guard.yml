@@ -8,6 +8,9 @@ name: fleet-search-parity-guard
 # parity headers, or the fleet verb silently stops rendering service
 # envelopes byte-identically to atlas-search. Pure bash -- no nix, no
 # toolchain -- so this stays a seconds-long basic check.
+#
+# Dispatch-only: no push or schedule trigger runs this guard
+# automatically.
 
 on:
   workflow_dispatch:

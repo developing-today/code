@@ -53,6 +53,12 @@ const API = process.env.PM_RELEASE_API ?? "https://api.cloudflare.com/client/v4"
 // there answers a new version within seconds.
 const HEALTH_TRIES = Number(process.env.PM_RELEASE_HEALTH_TRIES ?? 40);
 const HEALTH_WAIT_MS = Number(process.env.PM_RELEASE_HEALTH_WAIT_MS ?? 6_000);
+// Standing a Worker up from nothing is tried more than once. Cloudflare
+// is sometimes not done making a new Worker when wrangler, having
+// uploaded it, goes on to ask about it, and answers "This Worker does
+// not exist" (code 10007); a moment later it does.
+const STAND_UP_TRIES = Number(process.env.PM_RELEASE_STAND_UP_TRIES ?? 4);
+const STAND_UP_WAIT_MS = Number(process.env.PM_RELEASE_STAND_UP_WAIT_MS ?? 5_000);
 
 /** Stop before anything has been done: a bad argument, a missing setting. */
 function fail(message) {
@@ -117,12 +123,31 @@ function wrangler(argv, outputFile) {
   if (done.status !== 0) throw new Error(`wrangler ${argv.slice(0, 2).join(" ")} failed`);
 }
 
+/** Stand an empty Worker up under this name. The command is the same
+ * each time and leaves the same thing, an empty Worker, whether or not
+ * an earlier try got as far as uploading it: so a try that fails is
+ * simply made again, a few times, before the run is failed for it. */
+async function standUp() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      wrangler(["deploy", "--config", "init/wrangler.jsonc", "--name", worker, "--message", `empty Worker, stood up by ${run}`]);
+      return;
+    } catch (error) {
+      if (attempt >= STAND_UP_TRIES) throw error;
+      say(`standing ${worker} up did not go through (try ${attempt} of ${STAND_UP_TRIES}); trying again`);
+      await sleep(STAND_UP_WAIT_MS);
+    }
+  }
+}
+
 async function serving() {
   const { status, body } = await api("GET", `/accounts/${account}/workers/scripts/${worker}/deployments`);
   return status === 200 ? servingVersion(body) : null;
 }
 
 let address = null;
+/** What the last health request heard, for the line that says a wait failed. */
+let heard = "nothing asked yet";
 async function health() {
   if (!address && process.env.PM_RELEASE_HEALTH) address = `${process.env.PM_RELEASE_HEALTH}/${worker}`;
   if (!address) {
@@ -131,10 +156,23 @@ async function health() {
     if (status !== 200 || typeof sub !== "string") throw new Error("cannot read the account's workers.dev subdomain");
     address = `https://${worker}.${sub}.workers.dev/console/health`;
   }
+  // What came back that was not a health answer is kept, in a line, so
+  // that a Worker that did not answer is not just "silent": an error
+  // page, a refusal and no route to it are different faults.
+  let res;
   try {
-    const res = await fetch(address, { signal: AbortSignal.timeout(10_000), headers: { "cache-control": "no-cache" } });
-    return await res.json();
+    res = await fetch(address, { signal: AbortSignal.timeout(10_000), headers: { "cache-control": "no-cache" } });
+  } catch (error) {
+    heard = `no answer (${error.name}: ${String(error.cause?.code ?? error.cause?.message ?? error.message).slice(0, 80)})`;
+    return null;
+  }
+  const text = await res.text().catch(() => "");
+  try {
+    const answer = JSON.parse(text);
+    heard = `http ${res.status}, ${text.slice(0, 160)}`;
+    return answer;
   } catch {
+    heard = `http ${res.status} ${res.headers.get("content-type") ?? "of no type"}: ${text.replace(/\s+/g, " ").slice(0, 160)}`;
     return null;
   }
 }
@@ -147,7 +185,7 @@ async function answers(want) {
     if (last === want) return true;
     await sleep(HEALTH_WAIT_MS);
   }
-  say(`${worker} did not answer as ${want === "this" ? commit.short : want} (last answer: ${last})`);
+  say(`${worker} did not answer as ${want === "this" ? commit.short : want} (last answer: ${last}; it said: ${heard})`);
   return false;
 }
 
@@ -175,7 +213,7 @@ async function release() {
   );
 
   if (steps.includes("stand-up")) {
-    wrangler(["deploy", "--config", "init/wrangler.jsonc", "--name", worker, "--message", `empty Worker, stood up by ${run}`]);
+    await standUp();
     say(`stood up ${worker} empty`);
     // On the scratch Worker the empty one is waited for: that it answers
     // as empty is part of what the run is there to show.

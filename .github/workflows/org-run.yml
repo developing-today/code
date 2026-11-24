@@ -394,10 +394,31 @@ jobs:
             esac
             git clone "${clone_args[@]}" "$url" "$dest"
           done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
+      - name: Prepare Nix build users
+        run: |
+          set -euo pipefail
+          getent group nixbld >/dev/null || groupadd --system nixbld
+          for index in $(seq 1 32); do
+            user="nixbld${index}"
+            if ! getent passwd "$user" >/dev/null; then
+              useradd --system --no-create-home --home-dir /var/empty \
+                --shell /usr/sbin/nologin --gid nixbld "$user"
+            fi
+            # Nix reads the group's explicit member list (getgrnam
+            # gr_mem), not primary-group membership: a build user tied
+            # to nixbld only by its primary group leaves the list
+            # empty, and every local build then fails with "the group
+            # 'nixbld' has no members" (doc/platform/toolchains/nix.md).
+            # List every build user as a supplementary member,
+            # unconditionally -- this also repairs any build users the
+            # image already ships without the listing.
+            usermod --append --groups nixbld "$user"
+          done
       - name: Run command
         if: ${{ matrix.mode == 'single' }}
         env:
           ORG_RUN_COMMAND: ${{ matrix.command }}
+          NIX_CONFIG: "extra-experimental-features = nix-command flakes"
         run: |
           git config --global --add safe.directory '*'
           cd "$GITHUB_WORKSPACE/target"
@@ -408,6 +429,7 @@ jobs:
         env:
           CHECKOUTS_JSON: ${{ toJSON(matrix.checkouts) }}
           ORG_RUN_COMMAND: ${{ matrix.command }}
+          NIX_CONFIG: "extra-experimental-features = nix-command flakes"
         run: |
           git config --global --add safe.directory '*'
           cd "$GITHUB_WORKSPACE"

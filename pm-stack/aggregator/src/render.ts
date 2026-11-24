@@ -69,6 +69,7 @@ import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
 import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
+import { PROMPT_MODES, PROMPT_TARGETS, type PromptRecord } from "./prompts.ts";
 import {
   reconciledInProgress,
   type InProgressSignal,
@@ -609,9 +610,9 @@ function layout(
   return `<!doctype html>
 <html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} · aggregator</title><link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#161b22"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="PM Stack"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><script>try{var __pmTheme=localStorage.getItem('pm-theme');if(__pmTheme==='light'||__pmTheme==='dark')document.documentElement.setAttribute('data-theme',__pmTheme);}catch(e){}</script><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/datastar.js"></script></head>
-<body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
+<body><nav class="navbar bg-base-200 shadow-md flex-wrap items-center gap-x-3 px-4">${links}${dropdown}<a class="badge prompt-unread" href="/chat" data-prompt-unread hidden>✉ <span data-prompt-unread-count>0</span> unread</a>${globalSearch()}${themeToggle()}</nav><main class="w-full">${chipsHtml}${body}
 <div class="foot"><details class="srcdetail"><summary>source detail</summary>board: ${esc(provenance.board)} · roadmap: ${esc(provenance.roadmap)} · items: ${esc(provenance.items)} · comments: ${esc(provenance.comments)} · quota: ${esc(provenance.quota)} · usage: ${esc(provenance.usage)} · attention: ${esc(provenance.attention)} · orchestration: ${esc(provenance.orchestration)} · dns: ${esc(provenance.dns)} · registry: ${esc(provenance.registry)} · aa: ${esc(provenance.aa)}</details><span class="kbd-hint">${KEY_HINT}</span> · tailnet: <a href="${TAILNET_URL}">${TAILNET_URL.replace("http://", "")}</a></div>
-</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
+</main><script src="/assets/push-client.js?v=push-ux-2026-11-01" defer></script><script src="/assets/freshness-client.js?v=freshness-3976" defer></script><script src="/assets/prompt-badge.js?v=prompt-badge-2026-11-23" defer></script>${extra}${paletteHtml()}${KEYBOARD_SCRIPT}</body></html>`;
 }
 
 /** Global search over board/roadmap subjects, linked refs, and the slice-2 sources (#1212): registry sessions, the DNS register, services, and tier items. */
@@ -4186,7 +4187,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         })
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
-  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))}` : ""} — <a href="/health">health</a></div>`;
   // #1116 item (5): when the feed itself has crossed the staleness
   // threshold the dashboard must say so visibly — a "feed X old" suffix
   // is not an actionable warning. The data-signal hook is what the
@@ -4353,7 +4354,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
+import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, costScoreEnvelope, costScoreOls, costScoreTail, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4460,6 +4461,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     sel: null,
     hidden: [],
     sizeBy: {},
+    overlays: {},
     tasksMode: "per",
     baseline: "",
     pfCut: "50",
@@ -4626,6 +4628,35 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     var fr = rows.filter(function (p) { return p[cfg.flag]; }).sort(function (a, b) { return cfg.x(a) - cfg.x(b); });
     if (fr.length > 1) {
       g += '<polyline points="' + fr.map(function (p) { return X(cfg.x(p)).toFixed(1) + "," + Y(cfg.y(p)).toFixed(1); }).join(" ") + '" fill="none" stroke="#e6edf3" stroke-width="1.4" opacity="0.65" stroke-dasharray="5 3"/>';
+    }
+    // comparison-line overlays (#1400): Cost x Score only, toggleable,
+    // off by default. All three read the same visible rows the dots use
+    // and draw in data coordinates through this chart's own X/Y scales.
+    if (id === "xpl-c2") {
+      var ovRows = rows.map(function (p) { return { cost: cfg.x(p), score: cfg.y(p) }; });
+      if (S.overlays.trend) {
+        var fit = costScoreOls(ovRows);
+        if (fit) {
+          var tLo = Math.max(xlo, fit.costMin), tHi = Math.min(xhi, fit.costMax);
+          var yAt = function (c) {
+            var y = fit.intercept + fit.slope * Math.log10(Math.max(c, tLo));
+            return Math.min(Math.max(y, ylo), yhi);
+          };
+          g += '<polyline class="xpl-overlay" points="' + X(tLo).toFixed(1) + "," + Y(yAt(tLo)).toFixed(1) + " " + X(tHi).toFixed(1) + "," + Y(yAt(tHi)).toFixed(1) + '" fill="none" stroke="#e3b341" stroke-width="1.6" opacity="0.85"><title>OLS cost–score trend (score on log10 cost, n=' + fit.n + ")</title></polyline>";
+        }
+      }
+      if (S.overlays.envelope) {
+        var env = costScoreEnvelope(ovRows);
+        if (env.length > 1) {
+          g += '<polyline class="xpl-overlay" points="' + env.map(function (pt) { return X(pt.cost).toFixed(1) + "," + Y(pt.score).toFixed(1); }).join(" ") + '" fill="none" stroke="#3fb950" stroke-width="1.6" opacity="0.85" stroke-dasharray="7 3"><title>Smoothed upper-envelope frontier (cost/score Pareto set)</title></polyline>';
+        }
+      }
+      if (S.overlays.tail) {
+        var tail = costScoreTail(ovRows, 8);
+        if (tail.length > 1) {
+          g += '<polyline class="xpl-overlay" points="' + tail.map(function (pt) { return X(pt.cost).toFixed(1) + "," + Y(pt.score).toFixed(1); }).join(" ") + '" fill="none" stroke="#79c0ff" stroke-width="1.6" opacity="0.85" stroke-dasharray="2 3"><title>Smoothed upper-tail expectation (mean of the top half per log-cost bin)</title></polyline>';
+        }
+      }
     }
     // dot sizing by the chart's third metric (reference design's toggle)
     var sizeVals = null, sizeLo = 0, sizeHi = 1;
@@ -5789,7 +5820,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   var bandsEl = document.getElementById("xf-bands");
   if (bandsEl) bandsEl.addEventListener("change", function (ev) { S.bandCount = Number(ev.target.value); renderRecs(); renderBandComparisons(); enhanceCharts(); });
   var bandScaleEl = document.getElementById("xf-bandscale");
-  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); });
+  if (bandScaleEl) bandScaleEl.addEventListener("change", function (ev) { S.bandScale = Number(ev.target.value); renderBandComparisons(); enhanceCharts(); });
   function syncRecInputs() {
     document.querySelectorAll("[data-rec]").forEach(function (el) {
       var f = el.getAttribute("data-rec");
@@ -5877,6 +5908,9 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
   document.querySelectorAll("[data-sizeby]").forEach(function (cb) {
     cb.addEventListener("change", function () { S.sizeBy[cb.getAttribute("data-sizeby")] = cb.checked; drawCharts(); });
   });
+  document.querySelectorAll("[data-overlay]").forEach(function (cb) {
+    cb.addEventListener("change", function () { S.overlays[cb.getAttribute("data-overlay")] = cb.checked; drawCharts(); });
+  });
   document.querySelectorAll("[data-dl]").forEach(function (b) {
     b.addEventListener("click", function () { downloadPng(b.getAttribute("data-dl")); });
   });
@@ -5924,7 +5958,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     return JSON.parse(JSON.stringify({
       tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
       effortAny: S.effortAny, efforts: S.efforts, providerAny: S.providerAny, providers: S.providers, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
-      measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
+      measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy, overlays: S.overlays,
       tasksMode: S.tasksMode, baseline: S.baseline, sortKey: S.sortKey, sortDir: S.sortDir, dom: S.dom, pfCut: S.pfCut, bandCount: S.bandCount,
       bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
     }));
@@ -5943,11 +5977,12 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     if (ineqCombineEl) ineqCombineEl.value = S.ineq.combine;
     document.querySelectorAll("[data-tmode]").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode); });
     document.querySelectorAll("[data-sizeby]").forEach(function (cb) { cb.checked = !!S.sizeBy[cb.getAttribute("data-sizeby")]; });
+    document.querySelectorAll("[data-overlay]").forEach(function (cb) { cb.checked = !!S.overlays[cb.getAttribute("data-overlay")]; });
   }
   function applySetup(st) {
     if (!st || typeof st !== "object") return;
     ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "providerAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale", "sortKey", "sortDir"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
-    ["efforts", "providers", "off", "hidden", "sizeBy", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "providers", "off", "hidden", "sizeBy", "overlays", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
     POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
     S.sel = null;
     showDetail(null);
@@ -6260,7 +6295,7 @@ ${aaTabAge}
 <div id="xpl-legend" class="strip"></div>
 <div class="xpl-charts" id="xpl-charts">
 <div class="chart" data-chart="xpl-c1"><h3>Completion time × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c1"> size dots by cost</label><button type="button" data-dl="xpl-c1">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c1"><button type="button" data-zact="expand" data-zfor="xpl-c1">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c1" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c1" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c1" aria-label="Reset view">⟲</button></span><svg id="xpl-c1" viewBox="0 0 680 400" role="img" aria-label="Completion time by score scatter chart"></svg><p class="muted" data-note></p></div>
-<div class="chart" data-chart="xpl-c2"><h3>Cost × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c2"> size dots by time</label><button type="button" data-dl="xpl-c2">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c2"><button type="button" data-zact="expand" data-zfor="xpl-c2">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c2" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c2" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c2" aria-label="Reset view">⟲</button></span><svg id="xpl-c2" viewBox="0 0 680 400" role="img" aria-label="Cost by score scatter chart"></svg><p class="muted" data-note></p></div>
+<div class="chart" data-chart="xpl-c2"><h3>Cost × Score</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c2"> size dots by time</label><label><input type="checkbox" data-overlay="trend"> trend</label><label><input type="checkbox" data-overlay="envelope"> envelope</label><label><input type="checkbox" data-overlay="tail"> tail</label><button type="button" data-dl="xpl-c2">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c2"><button type="button" data-zact="expand" data-zfor="xpl-c2">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c2" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c2" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c2" aria-label="Reset view">⟲</button></span><svg id="xpl-c2" viewBox="0 0 680 400" role="img" aria-label="Cost by score scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c3"><h3>Cost × Completion time</h3><span class="xpl-ctl"><label><input type="checkbox" data-sizeby="xpl-c3"> size dots by score</label><button type="button" data-dl="xpl-c3">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c3"><button type="button" data-zact="expand" data-zfor="xpl-c3">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c3" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c3" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c3" aria-label="Reset view">⟲</button></span><svg id="xpl-c3" viewBox="0 0 680 400" role="img" aria-label="Cost by completion time scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c4"><h3>Tasks completed vs duration</h3><span class="xpl-ctl"><button type="button" data-tmode="per">Seconds per task</button><button type="button" data-tmode="tot">Total time to finish all tasks</button><button type="button" data-dl="xpl-c4">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c4"><button type="button" data-zact="expand" data-zfor="xpl-c4">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c4" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c4" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c4" aria-label="Reset view">⟲</button></span><svg id="xpl-c4" viewBox="0 0 680 400" role="img" aria-label="Tasks completed by duration scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c5"><button type="button" data-zact="expand" data-zfor="xpl-c5">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c5" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c5" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c5" aria-label="Reset view">⟲</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
@@ -6639,8 +6674,18 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
     view.mode === "fixtures"
       ? `<div class="banner">Fixtures mode — no live probes are made in this deployment; every service reports “fixtures”.</div>`
       : "";
+  const bootMs = Date.parse(view.bootAt);
+  const uptimeMs = Number.isFinite(bootMs) ? Math.max(0, nowMs - bootMs) : NaN;
+  // #14059(b): surface the deployed commit + its age from the same
+  // HealthView.version / bootAt that /api/health serves — the page and
+  // the API cannot disagree because both read this view.
+  const buildLine =
+    view.version === "unknown"
+      ? `<div class="card">Build <strong>unknown</strong> — this process was not deployed with PM_AGG_BUILD_VERSION, so the deployed commit cannot be shown (boot ${esc(view.bootAt)}).</div>`
+      : `<div class="card">Build <code title="${esc(view.version)}">${esc(view.version.slice(0, 8))}</code> <span class="muted">(<code>${esc(view.version)}</code> · boot ${esc(view.bootAt)} · up ${esc(ageMsText(uptimeMs))})</span> — same commit <a href="/api/health">/api/health</a> serves as version.</div>`;
   const body = `<h1>Health</h1>
 <p class="muted">Every stack service probed live (results cached 60 s), every feed section aged, the last job runs, and this dashboard's own render history — assembled from the same view <a href="/api/health">/api/health</a> serves, at ${esc(view.generatedAt)}.</p>
+${buildLine}
 ${degraded}${modeNote}
 <h2 id="topology">Services &amp; topology</h2>
 <p class="muted">What runs where: the component, its port and bind as actually deployed, what consumes it, and what breaks without it. State is probed, never assumed.</p>
@@ -6733,6 +6778,183 @@ export function renderCommentsQueue(comments: DashComment[], provenance: Provena
 <p>${summary}</p>
 ${list}`;
   return layout("Comments queue", body, provenance, "/comments");
+}
+
+// --- Chat/session surface (#10035 S6, design #9539 §4) ---------------------
+// The threaded view over the prompt store: every submission in its
+// thread (a "session"), oldest first inside the thread, threads by
+// latest activity. Reply posts replyTo the specific prompt (the store
+// inherits its thread); refs render as cross-reference links to the
+// referenced prompt's card; archive/read toggles PATCH the record.
+// Archived prompts are hidden by default, per the design — the
+// ?archived=1 view shows them, marked. The page script (CHAT_SCRIPT)
+// only wires the buttons/forms to the existing API; a no-JS browser
+// still gets the full read view.
+
+const CHAT_EXCERPT_CHARS = 80;
+
+function chatExcerpt(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > CHAT_EXCERPT_CHARS ? `${flat.slice(0, CHAT_EXCERPT_CHARS - 1)}…` : flat;
+}
+
+function chatReplyForm(p: PromptRecord): string {
+  const targets = PROMPT_TARGETS.map(
+    (t) => `<option value="${t}"${t === p.target ? " selected" : ""}>${esc(t)}</option>`,
+  ).join("");
+  const modes = PROMPT_MODES.map(
+    (m) => `<option value="${m}"${m === p.mode ? " selected" : ""}>${esc(m)}</option>`,
+  ).join("");
+  return (
+    `<details class="chat-reply"><summary>Reply</summary>` +
+    `<form class="prompt-widget chat-reply-form" method="post" action="/api/prompt" enctype="multipart/form-data">` +
+    `<input type="hidden" name="scope" value="${esc(p.scope)}">` +
+    `<input type="hidden" name="page" value="${esc(p.page)}">` +
+    (p.sectionRef ? `<input type="hidden" name="sectionRef" value="${esc(p.sectionRef)}">` : "") +
+    `<input type="hidden" name="replyTo" value="${esc(p.id)}">` +
+    `<textarea name="prompt" rows="2" required aria-label="Reply"></textarea>` +
+    `<select name="target" aria-label="Target">${targets}</select>` +
+    `<select name="mode" aria-label="Mode">${modes}</select>` +
+    `<label><input type="checkbox" name="notify" value="true"> Notify me</label>` +
+    `<button type="submit">Reply</button>` +
+    `<span class="status muted" role="status"></span>` +
+    `</form></details>`
+  );
+}
+
+function chatPromptHtml(p: PromptRecord, byId: Map<string, PromptRecord>, visible: Set<string>): string {
+  const badges = [
+    `<span class="badge">${esc(p.status)}</span>`,
+    p.archived ? `<span class="badge closed">archived</span>` : "",
+    !p.read ? `<span class="badge msg">unread</span>` : "",
+    `<span class="muted">${esc(p.target)} · ${esc(p.mode)} · ${esc(p.page)}</span>`,
+    `<time datetime="${esc(p.createdAt)}">${esc(p.createdAt)}</time>`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const parent = p.replyTo ? byId.get(p.replyTo) : undefined;
+  const replyLine = p.replyTo
+    ? `<p class="muted">in reply to ${
+        parent ? `<a href="#prompt-${esc(parent.id)}">${esc(chatExcerpt(parent.prompt))}</a>` : esc(p.replyTo)
+      }</p>`
+    : "";
+  const refs = p.refs.length
+    ? `<p>Cross-references: ${p.refs
+        .map((ref) => {
+          const target = byId.get(ref);
+          if (!target) return `<span class="badge closed">↪ ${esc(ref)} · unknown</span>`;
+          if (!visible.has(ref))
+            return `<a class="badge" href="/chat?archived=1#prompt-${esc(ref)}">↪ ${esc(chatExcerpt(target.prompt))} (archived)</a>`;
+          return `<a class="badge" href="#prompt-${esc(ref)}">↪ ${esc(chatExcerpt(target.prompt))}</a>`;
+        })
+        .join(" ")}</p>`
+    : "";
+  const answer = p.answer ? `<div class="chat-answer"><strong>Answer</strong><p>${esc(p.answer)}</p></div>` : "";
+  const error = p.error ? `<p class="chat-error"><strong>Error:</strong> ${esc(p.error)}</p>` : "";
+  const attachments = p.attachments.length
+    ? `<p>Attachments: ${p.attachments
+        .map(
+          (a) =>
+            `<a href="/api/prompt/${encodeURIComponent(p.id)}/attachments/${encodeURIComponent(a.ref)}">${esc(a.name)}</a>`,
+        )
+        .join(" · ")}</p>`
+    : "";
+  const toggles = [
+    p.read
+      ? ""
+      : `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="read" data-patch-value="true">Mark read</button>`,
+    p.archived
+      ? `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="archived" data-patch-value="false">Unarchive</button>`
+      : `<button type="button" data-prompt-patch data-prompt-id="${esc(p.id)}" data-patch-key="archived" data-patch-value="true">Archive</button>`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<div class="card chat-prompt${p.read ? "" : " unread"}" id="prompt-${esc(p.id)}"><p>${esc(p.prompt)}</p>${replyLine}<p>${badges}</p>${answer}${error}${refs}${attachments}<p>${toggles}</p>${chatReplyForm(p)}</div>`;
+}
+
+const CHAT_SCRIPT = `<script>
+document.querySelectorAll('[data-prompt-patch]').forEach(function (btn) {
+  btn.addEventListener('click', async function () {
+    var body = {};
+    body[btn.dataset.patchKey] = btn.dataset.patchValue === 'true';
+    btn.disabled = true;
+    try {
+      var r = await fetch('/api/prompt/' + encodeURIComponent(btn.dataset.promptId), {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      window.location.reload();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Failed: ' + e.message;
+    }
+  });
+});
+document.querySelectorAll('form.chat-reply-form').forEach(function (form) {
+  form.addEventListener('submit', async function (event) {
+    event.preventDefault();
+    var status = form.querySelector('.status');
+    var button = form.querySelector('button[type=submit]');
+    button.disabled = true;
+    if (status) status.textContent = 'Sending…';
+    try {
+      var r = await fetch('/api/prompt', { method: 'POST', body: new FormData(form) });
+      var body = await r.json().catch(function () { return {}; });
+      if (!r.ok) throw new Error(body.error || 'HTTP ' + r.status);
+      window.location.reload();
+    } catch (e) {
+      if (status) status.textContent = 'Not sent: ' + e.message;
+      button.disabled = false;
+    }
+  });
+});
+</script>`;
+
+export function renderChat(
+  prompts: PromptRecord[],
+  provenance: Provenance,
+  opts: { showArchived?: boolean } = {},
+): string {
+  const showArchived = opts.showArchived === true;
+  const byId = new Map(prompts.map((p) => [p.id, p]));
+  const visiblePrompts = prompts.filter((p) => showArchived || !p.archived);
+  const visible = new Set(visiblePrompts.map((p) => p.id));
+  const archivedCount = prompts.filter((p) => p.archived).length;
+  const unreadCount = prompts.filter((p) => !p.read && !p.archived).length;
+  const byThread = new Map<string, PromptRecord[]>();
+  for (const p of visiblePrompts) {
+    const arr = byThread.get(p.threadId) ?? [];
+    arr.push(p);
+    byThread.set(p.threadId, arr);
+  }
+  const threads = [...byThread.entries()]
+    .map(([threadId, ps]) => {
+      const ordered = ps.slice().sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+      return { threadId, prompts: ordered, latest: ordered[ordered.length - 1]?.createdAt ?? "" };
+    })
+    .sort((a, b) => (a.latest < b.latest ? 1 : a.latest > b.latest ? -1 : 0));
+  const threadHtml = threads.length
+    ? threads
+        .map((t) => {
+          const root = t.prompts.find((p) => p.replyTo === null) ?? t.prompts[0];
+          return `<section class="chat-thread"><h2>${esc(chatExcerpt(root.prompt))}</h2>\n${t.prompts
+            .map((p) => chatPromptHtml(p, byId, visible))
+            .join("\n")}</section>`;
+        })
+        .join("\n")
+    : `<p class="muted">No prompts yet — submissions from the prompt widgets land here, one thread per session.</p>`;
+  const toggle = showArchived
+    ? `<a href="/chat">Hide archived</a>`
+    : archivedCount > 0
+      ? `<a href="/chat?archived=1">Show archived (${archivedCount})</a>`
+      : "";
+  const body = `<h1>Chat</h1>
+<p class="muted">Every prompt submission in its thread (#10035, design #9539 §4): reply in context, cross-reference other prompts, archive when done. Archived prompts are hidden by default. Machine-first: <a href="/api/prompt/threads">/api/prompt/threads</a> · <a href="/api/prompt/unread-count">/api/prompt/unread-count</a>.</p>
+<p>${threads.length} thread${threads.length === 1 ? "" : "s"} · ${unreadCount} unread${toggle ? ` · ${toggle}` : ""}</p>
+${threadHtml}`;
+  return layout("Chat", body, provenance, "/chat", CHAT_SCRIPT);
 }
 
 // --- Projects page (#910 stage 5: the live GitHub Project pool) ------------

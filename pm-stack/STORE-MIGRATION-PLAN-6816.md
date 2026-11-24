@@ -85,12 +85,42 @@ promotion; no configuration permits two active writers.**
 6. Rollback window: keep the laptop volumes untouched and the old config
    for 7 days (see §5).
 
+### The gate: `pm-stack/scripts/kaneo-cutover.sh`
+
+Steps 1 and 5 run through one driver, so the rule "no configuration permits
+two active writers" is mechanical instead of advisory:
+
+- `--mode presync` (step 1, while live): `pg_dump` the source `kaneo`
+  database, `pg_restore` it into the target, and require **schema parity**
+  (same public table count). Row drift is reported, not failed — the final
+  delta has not landed yet.
+- `--mode promote` (step 5, the gate): refuses unless the latest backup
+  record (`--backup-record-file`) describes a complete generation with a
+  valid archive identity and verified local, R2, and Drive copies, finished
+  no more than 36 hours ago by default (`--max-backup-age-hours` can set a
+  stricter window); `pm-stack/scripts/fence-check.sh` reports **FENCED** (fail
+  closed on anything unreadable) **and** the target's exact table count and row
+  count equal the source's. A refused promotion touches no store. Only a pass
+  writes a cutover receipt (fence verdict, both counts, verdict line) with
+  no DSN in it — the operator attaches it to the window record.
+
+DSNs are read from files (`--source-dsn-file`, `--target-dsn-file`), so no
+credential enters argv, logs, or the receipt. Suites:
+`pm-stack/scripts/kaneo-cutover.test.sh` (driver gates) and
+`pm-stack/scripts/fence-check.test.sh` (fencing rule), both run by
+`.github/workflows/pm-stack-tests.yml`.
+
 ## 5. Rollback
 
 - **Kaneo:** stop Kaneo, restore the local DSN, start the local stack. Any
   writes made on Supabase during the window are exported (`pg_dump` of the
   target) and replayed into the local DB before reopening, so rollback
   restores the prior writer **without losing writes** (#6816 acceptance).
+  Driver: `pm-stack/scripts/kaneo-cutover.sh --mode rollback` — refuses
+  unless the promoted writer is fenced, replays the target delta into the
+  source, demands exact table/row parity, and writes a receipt with no
+  DSN. The DSN flip and restarts stay window operator steps; the first
+  window records a run.
 - **Grist / Pad:** stop the promoted instance, point the data directory
   back at the untouched laptop volume, restart. Writes made in the
   Supabase-backed home sync back before the restart — the sync is
@@ -100,7 +130,11 @@ promotion; no configuration permits two active writers.**
 
 ## 6. What remains after this step
 
-- Step 2 (windowed): the cutover itself, per §4.
+- Step 2 (windowed): the cutover itself, per §4 — run `presync`, then the
+  fenced writers, then `promote` (the gate in §4 names the driver and what
+  it refuses). Rollback (§5) is driven by `kaneo-cutover.sh --mode
+rollback` (fence-gated replay with parity receipt, stub-tested); the
+  DSN flip, restarts, and the first window run remain operator steps.
 - Step 3 (windowed): the first isolated laptop-off drill, recorded per
-  `pm-stack/COLD-RESTORE-RUNBOOK.md` with measured RTO/RPO against the
+  `doc/pm-stack/COLD-RESTORE-RUNBOOK.md` with measured RTO/RPO against the
   #1258 targets (4 h core RTO; 1 h Kaneo RPO; 24 h Grist/Pad RPO).

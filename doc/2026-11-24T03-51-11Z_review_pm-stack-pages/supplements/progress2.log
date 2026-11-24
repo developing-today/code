@@ -1,0 +1,32 @@
+overview 4089ms Overview · aggregator || http://127.0.0.1:4870/ 1265x8041
+today 4016ms Today · aggregator || http://127.0.0.1:4870/today 1265x10000
+digest 7709ms Digest 2026-11-24 · aggregator || http://127.0.0.1:4870/digest 1265x3745
+attention 4911ms Needs you · aggregator || http://127.0.0.1:4870/attention 1265x10000
+decisions 3952ms Decision sets — PM Stack || http://127.0.0.1:4870/decisions 1265x10000
+reports 4071ms Report review || http://127.0.0.1:4870/reports 1280x2000
+board 4411ms Cross-repo WIP board · aggregator || http://127.0.0.1:4870/board 1265x10000
+roadmap 4275ms Roadmap · aggregator || http://127.0.0.1:4870/roadmap 1265x10000
+conflicts 5281ms Source conflicts · aggregator || http://127.0.0.1:4870/conflicts 1265x9826
+quota 5402ms Usage & billing · aggregator || http://127.0.0.1:4870/quota 1265x10000
+dns 4227ms DNS register · aggregator || http://127.0.0.1:4870/dns 1265x2255
+aa 5179ms Cost Explorer · aggregator || http://127.0.0.1:4870/aa 1265x10000
+sessions 36419ms Sessions · aggregator || http://127.0.0.1:4870/sessions 1265x10000
+search 13397ms Search · aggregator || http://127.0.0.1:4870/search 1280x2000
+events 4328ms Events — pm-stack || http://127.0.0.1:4870/events 1265x10000
+comments 3588ms Comments queue · aggregator || http://127.0.0.1:4870/comments 1280x2000
+chat 3577ms  || http://127.0.0.1:4870/chat 1280x2000
+program 6724ms Program status · aggregator || http://127.0.0.1:4870/program 1265x10000
+queue 5170ms Queue · aggregator || http://127.0.0.1:4870/queue 1265x10000
+health 28945ms Health · aggregator || http://127.0.0.1:4870/health 1265x8104
+alerts 4981ms Alerts · aggregator || http://127.0.0.1:4870/alerts 1265x10000
+notifications 3654ms Notifications · aggregator || http://127.0.0.1:4870/notifications 1280x2000
+pages 3643ms All pages · aggregator || http://127.0.0.1:4870/pages 1280x2000
+alerts-preferences 7088ms Notification preferences · aggregator || http://127.0.0.1:4870/alerts/preferences 1280x2000
+projects-redirect 13214ms Program status · aggregator || http://127.0.0.1:4870/program#projects-pool 1265x10000
+console-root 4148ms PM || http://127.0.0.1:4872/console/ 1265x10000
+console-page 4020ms PM || http://127.0.0.1:4872/console/ 1265x10000
+dispatch-root 3575ms  || http://127.0.0.1:4879/ 1280x2000
+kaneo-root 3569ms Kaneo - All you need. Nothing you don't. || http://127.0.0.1:5173/dashboard 1280x2000
+pad-root 3592ms Pad || http://127.0.0.1:7777/login 1280x2000
+grist-root 3635ms Welcome to Grist || http://127.0.0.1:8484/boot 1280x2000
+rfa-root 3679ms Ready for Agent || http://127.0.0.1:6056/ 1280x2000

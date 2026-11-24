@@ -3,6 +3,19 @@
  * windows; dashboard pool/service labels are deliberately not accepted as identity.
  * Times are epoch milliseconds. Prior walls/stops must be carried by the caller;
  * omission is NOT a release protocol. This module neither fetches nor persists.
+ *
+ * Stage-3 S4 (#12698, design D4): the caller may also carry forecast rows
+ * (the S1 projection, per exact billing scope like observations). A fresh
+ * forecast projected from the window's current reading that says projected
+ * + wallsBeforeReset, with the projected wall at least the window's
+ * configured forecastMarginMs before the reset, adds pace_hold to an
+ * otherwise eligible window — and can do nothing else: it never overrides
+ * a measured verdict, never manufactures evidence for an unknown window,
+ * and a stale, superseded, conflicting or honesty-state forecast is
+ * exactly current behaviour (#12698 criterion 3). Pool-level consumption
+ * exclusions from S2's calibration (e.g. the bare opencode-go monthly
+ * series) are the caller's duty: display pool identity is not accepted
+ * here, so the caller assembles rows only for scopes it may consume.
  */
 export type Verdict = "eligible" | "unknown" | "pace_hold" | "walled" | "stopped";
 export interface Scope {
@@ -21,6 +34,10 @@ export interface Binding extends Scope {
     collectionMs: number;
     reservePct?: number;
     pacePpHour?: number;
+    /** S4: a projected wall at least this many ms before the reset
+     * yields pace_hold. Absent = forecasts never affect this window
+     * (per-window opt-in; the one live pool's windows carry it). */
+    forecastMarginMs?: number;
   }[];
 }
 export interface Observation extends Scope {
@@ -49,12 +66,28 @@ export interface PriorWall extends Scope {
   resetsAt: number;
   evidenceId: string;
 }
+export interface Forecast extends Scope {
+  kind: string;
+  period: string;
+  /** Evidence id of the forecast row (the S1 product/ledger row). */
+  id: string;
+  /** The underlying reading's stamp the projection was made from. */
+  measuredAt: number;
+  resetsAt: number;
+  /** The S1 projection state, verbatim (quota-analytics ProjectionState). */
+  state: "projected" | "walled" | "no-wall-before-reset" | "insufficient-history";
+  /** Projected instant the window reaches 100%, epoch ms. */
+  projectedWallAt: number | null;
+  wallsBeforeReset: boolean | null;
+}
 export interface AdmissionInput {
   generation: string;
   bindings: readonly Binding[];
   observations: readonly Observation[];
   stops: readonly Stop[];
   priorWalls: readonly PriorWall[];
+  /** S4 forecast rows, per exact scope; absent = pre-S4 behaviour. */
+  forecasts?: readonly Forecast[];
 }
 export interface WindowDecision {
   kind: string;
@@ -93,6 +126,62 @@ const validScope = (s: Scope) => [s.provider, s.account, s.bucket].every(nonempt
 const sorted = (s: readonly string[]) => [...new Set(s)].sort();
 const worst = (v: Verdict[]) => v.reduce((a, b) => (rank[a] >= rank[b] ? a : b), "eligible");
 
+/** The one forecast row that may speak for this window, or null. A row
+ * speaks only when it is the latest, internally consistent, projected
+ * from the window's current reading, and still fresh by the same bound
+ * the measured path applies to observations; every other row — stale,
+ * superseded, conflicting, or an honesty state — is current behaviour
+ * (#12698 criterion 3), never a reason and never a hold. */
+function applicableForecast(
+  input: AdmissionInput,
+  b: Binding,
+  w: Binding["windows"][number],
+  now: number,
+  latestMeasuredAt: number | null,
+): Forecast | null {
+  const rows = (input.forecasts ?? []).filter(
+    (x) => same(x, b) && x.kind === w.kind && x.period === w.period && x.resetsAt === w.resetsAt,
+  );
+  if (!rows.length) return null;
+  const ids = new Map<string, string>();
+  for (const x of rows) {
+    if (
+      !nonempty(x.id) ||
+      !finite(x.measuredAt) ||
+      x.measuredAt > now ||
+      (x.projectedWallAt !== null && !finite(x.projectedWallAt)) ||
+      (x.wallsBeforeReset !== null && typeof x.wallsBeforeReset !== "boolean") ||
+      (x.state !== "projected" &&
+        x.state !== "walled" &&
+        x.state !== "no-wall-before-reset" &&
+        x.state !== "insufficient-history")
+    )
+      return null;
+    const signature = JSON.stringify([x.measuredAt, x.state, x.projectedWallAt, x.wallsBeforeReset]);
+    if (ids.has(x.id) && ids.get(x.id) !== signature) return null;
+    ids.set(x.id, signature);
+  }
+  const unique = [...new Map(rows.map((x) => [x.id, x])).values()].sort(
+    (a, c) => c.measuredAt - a.measuredAt || ordinal(a.id, c.id),
+  );
+  const latest = unique[0];
+  const tied = unique.filter((x) => x.measuredAt === latest.measuredAt);
+  if (
+    tied.some(
+      (x) =>
+        x.state !== latest.state ||
+        x.projectedWallAt !== latest.projectedWallAt ||
+        x.wallsBeforeReset !== latest.wallsBeforeReset,
+    )
+  )
+    return null;
+  if (latest.state !== "projected" || latest.wallsBeforeReset !== true || latest.projectedWallAt === null) return null;
+  if (latest.projectedWallAt >= w.resetsAt) return null;
+  if (now - latest.measuredAt > Math.min(w.freshnessMs, 60 * 60_000)) return null;
+  if (latestMeasuredAt === null || latest.measuredAt < latestMeasuredAt) return null;
+  return latest;
+}
+
 function projectWindow(input: AdmissionInput, b: Binding, w: Binding["windows"][number], now: number): WindowDecision {
   const out: WindowDecision = {
     kind: w.kind,
@@ -120,7 +209,8 @@ function projectWindow(input: AdmissionInput, b: Binding, w: Binding["windows"][
     !finite(w.collectionMs) ||
     w.collectionMs <= 0 ||
     (w.reservePct !== undefined && (!finite(w.reservePct) || w.reservePct < 0 || w.reservePct > 100)) ||
-    (w.pacePpHour !== undefined && (!finite(w.pacePpHour) || w.pacePpHour < 0))
+    (w.pacePpHour !== undefined && (!finite(w.pacePpHour) || w.pacePpHour < 0)) ||
+    (w.forecastMarginMs !== undefined && (!finite(w.forecastMarginMs) || w.forecastMarginMs < 0))
   )
     return unknown("invalid_window_policy");
   if (w.resetsAt <= now) return unknown("period_expired");
@@ -233,6 +323,14 @@ function projectWindow(input: AdmissionInput, b: Binding, w: Binding["windows"][
     out.verdict = "pace_hold";
     out.reasons.push("projected_exhaustion");
     if (previous) out.evidenceIds = sorted([...out.evidenceIds, previous.id]);
+  }
+  if (out.verdict === "eligible" && w.forecastMarginMs !== undefined) {
+    const f = applicableForecast(input, b, w, now, out.measuredAt);
+    if (f && f.projectedWallAt !== null && w.resetsAt - f.projectedWallAt >= w.forecastMarginMs) {
+      out.verdict = "pace_hold";
+      out.reasons.push("forecast_projected_wall");
+      out.evidenceIds = sorted([...out.evidenceIds, f.id]);
+    }
   }
   if (out.verdict === "eligible") out.reasons.push("fresh_window");
   return out;

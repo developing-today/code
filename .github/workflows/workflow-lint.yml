@@ -66,6 +66,12 @@ jobs:
         run: bash .github/scripts/check-suite-registry.test.sh
       - name: Coverage ratchet — registry vs tree and venues (#6188)
         run: bash .github/scripts/check-suite-registry.sh
+      - name: Contract tests for the controlled-pool-tests check (#1342)
+        run: bash .github/scripts/check-controlled-pool-tests.test.sh
+      - name: Controlled-pool-tests references agree with the queue code (#1342)
+        run: bash .github/scripts/check-controlled-pool-tests.sh
+      - name: Contract tests for the CI queue snapshot harness (#2605)
+        run: bash .github/scripts/ci-queue-snapshot.test.sh
 
   # Its own job: the steps above stop at the first failing check, and the
   # suite-registry ratchet has a standing backlog. A file that is in no

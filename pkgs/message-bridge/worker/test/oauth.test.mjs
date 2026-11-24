@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MemoryStore } from "../src/messages.js";
 import { OWNER_COOKIE, seal } from "../src/oauth.js";
-import { route } from "../src/routes.js";
+import { DEFAULT_CONSOLE_URL, route } from "../src/routes.js";
 
 const TOKEN = "o".repeat(20) + "0123456789abcdefXYZ_-";
 const GPT = "g".repeat(20) + "0123456789abcdefXYZ_-";
@@ -117,7 +117,7 @@ test("the bare address asks for OAuth and advertises its metadata", async () => 
   assert.equal((await off.call("/register", { method: "POST", body: "{}" })).status, 404);
 });
 
-test("pasting the page link approves, sets the owner cookie, and the token runs MCP on Claude's channel", async () => {
+test("pasting the owner link approves, sets the owner cookie, and the token runs MCP on Claude's channel", async () => {
   const { call, store } = harness();
   const { tokens, approved } = await signIn(call, { secret: `https://bridge.security.cab/p/${TOKEN}?x=1` });
   assert.match(approved.headers.get("set-cookie"), new RegExp(`^${OWNER_COOKIE}=[^;]+; Path=/; .*Secure; HttpOnly; SameSite=Lax`));
@@ -155,10 +155,13 @@ test("pasting the page link approves, sets the owner cookie, and the token runs 
   assert.equal((await mcp(otherKey.call, "/", tokens.access_token, "ping", {})).status, 401, "rotating the token revokes");
 });
 
-test("a browser that opened the history page approves with one tap", async () => {
+test("a browser that opened the owner link approves with one tap", async () => {
   const { call } = harness();
+  // Since #14378 the owner link is a redirect to the console, not a
+  // page — but opening it still sets the cookie this flow relies on.
   const page = await call(`/p/${TOKEN}`);
-  assert.equal(page.status, 200);
+  assert.equal(page.status, 303);
+  assert.equal(page.headers.get("location"), DEFAULT_CONSOLE_URL);
   const cookie = page.headers.get("set-cookie").split(";")[0];
   const firstPage = await call(authorizeQuery((await registerClient(call)).client_id), { headers: { cookie } });
   const html = await firstPage.text();

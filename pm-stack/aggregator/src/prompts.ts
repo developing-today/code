@@ -7,19 +7,40 @@
 // S6 adds the chat/session surface on top of the same store: threads (replyTo),
 // cross-references (refs), archive toggle, read/unread tracking for the
 // notification count, and an opt-in push flag (notify).
+//
+// S3 (#10033) adds the sync modes on the same store: sync-block waits in-band
+// for the answer via waitForAnswer (design §3.5/§3.7), and sync-ws streams the
+// record over /ws/prompt/:id (see prompt-ws.ts).
+//
+// S7 (#10036) adds attachments: a record carries the storage refs of the
+// files uploaded with the submission (see prompt-attachments.ts). The
+// blobs themselves live in the attachments directory, never in this file.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import { normalizeAttachments, type PromptAttachment } from "./prompt-attachments.ts";
+
+export type { PromptAttachment } from "./prompt-attachments.ts";
 
 export const PROMPT_SCOPES = ["section", "page", "stack", "agent"] as const;
-export const PROMPT_TARGETS = ["claude", "muse", "pool:auto"] as const;
-export const PROMPT_MODES = ["async"] as const;
+export const PROMPT_TARGETS = ["claude", "muse", "pool:auto", "decision"] as const;
+export const PROMPT_MODES = ["async", "sync-block", "sync-ws"] as const;
 export const PROMPT_STATUSES = ["queued", "running", "answered", "failed"] as const;
+export const PROMPT_DECISION_CONTEXT_LEVELS = ["low", "medium", "high"] as const;
 
 export type PromptScope = (typeof PROMPT_SCOPES)[number];
 export type PromptTarget = (typeof PROMPT_TARGETS)[number];
 export type PromptMode = (typeof PROMPT_MODES)[number];
 export type PromptStatus = (typeof PROMPT_STATUSES)[number];
+export type PromptDecisionContextLevel = (typeof PROMPT_DECISION_CONTEXT_LEVELS)[number];
+
+/** #10034 S4 (design #9539 §3.4): the `decision` variant's fields. The
+ *  advanced constraints are conditional-clause objects, stored as given. */
+export interface PromptDecisionSpec {
+  contextLevel: PromptDecisionContextLevel;
+  advancedConstraints: Record<string, unknown>[];
+  contextGenerator: string | null;
+}
 
 export interface NewPrompt {
   scope: PromptScope;
@@ -31,6 +52,11 @@ export interface NewPrompt {
   replyTo?: string | null;
   refs?: string[];
   notify?: boolean;
+  /** S7: storage refs of files already persisted by the upload path
+   *  (prompt-attachments.ts); the store only carries the refs. */
+  attachments?: PromptAttachment[];
+  /** #10034 S4: present when target is "decision". */
+  decision?: PromptDecisionSpec;
 }
 
 export interface PromptRecord extends NewPrompt {
@@ -45,6 +71,7 @@ export interface PromptRecord extends NewPrompt {
   replyTo: string | null;
   refs: string[];
   notify: boolean;
+  attachments: PromptAttachment[];
 }
 
 export interface PromptsFile {
@@ -68,6 +95,8 @@ function normalizeRecord(raw: Partial<PromptRecord> & Record<string, unknown>): 
     replyTo,
     refs,
     notify: raw.notify === true,
+    attachments: normalizeAttachments(raw.attachments),
+    ...(raw.decision && typeof raw.decision === "object" ? { decision: raw.decision as PromptDecisionSpec } : {}),
     id: typeof raw.id === "string" ? raw.id : `prompt:${randomUUID()}`,
     threadId:
       typeof raw.threadId === "string" ? raw.threadId : typeof raw.id === "string" ? raw.id : `thread:${randomUUID()}`,
@@ -88,8 +117,9 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (!PROMPT_SCOPES.includes(b.scope as PromptScope))
     return { ok: false, error: "scope must be section, page, stack or agent" };
   if (!PROMPT_TARGETS.includes(b.target as PromptTarget))
-    return { ok: false, error: "target must be claude, muse or pool:auto" };
-  if (!PROMPT_MODES.includes(b.mode as PromptMode)) return { ok: false, error: "mode must be async" };
+    return { ok: false, error: "target must be claude, muse, pool:auto or decision" };
+  if (!PROMPT_MODES.includes(b.mode as PromptMode))
+    return { ok: false, error: "mode must be async, sync-block or sync-ws" };
   if (typeof b.page !== "string" || !PAGE_ID.test(b.page)) return { ok: false, error: "page must be a page id" };
   if (b.sectionRef !== null && b.sectionRef !== undefined && typeof b.sectionRef !== "string") {
     return { ok: false, error: "sectionRef must be a string or null" };
@@ -135,7 +165,41 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (replyTo !== undefined) value.replyTo = replyTo;
   if (refs !== undefined) value.refs = refs;
   if (notify !== undefined) value.notify = notify;
+  if (b.target === "decision") {
+    const decision = validateDecisionSpec(b.decision);
+    if (!decision.ok) return decision;
+    value.decision = decision.value;
+  }
   return { ok: true, value };
+}
+
+function validateDecisionSpec(raw: unknown): { ok: true; value: PromptDecisionSpec } | { ok: false; error: string } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ok: false, error: "decision must be an object when target is decision" };
+  }
+  const d = raw as Record<string, unknown>;
+  if (!PROMPT_DECISION_CONTEXT_LEVELS.includes(d.contextLevel as PromptDecisionContextLevel))
+    return { ok: false, error: "decision.contextLevel must be low, medium or high" };
+  if (
+    !Array.isArray(d.advancedConstraints) ||
+    !d.advancedConstraints.every((c) => typeof c === "object" && c !== null && !Array.isArray(c))
+  ) {
+    return { ok: false, error: "decision.advancedConstraints must be an array of objects" };
+  }
+  if (
+    d.contextGenerator !== null &&
+    (typeof d.contextGenerator !== "string" || !/^(model|task):.+$/.test(d.contextGenerator))
+  ) {
+    return { ok: false, error: "decision.contextGenerator must be null, model:<id> or task:<queue-id>" };
+  }
+  return {
+    ok: true,
+    value: {
+      contextLevel: d.contextLevel as PromptDecisionContextLevel,
+      advancedConstraints: d.advancedConstraints as Record<string, unknown>[],
+      contextGenerator: d.contextGenerator as string | null,
+    },
+  };
 }
 
 export class PromptsStore {
@@ -184,6 +248,8 @@ export class PromptsStore {
       replyTo,
       refs: input.refs ?? [],
       notify: input.notify ?? false,
+      attachments: normalizeAttachments(input.attachments),
+      ...(input.decision ? { decision: input.decision } : {}),
       id: `prompt:${randomUUID()}`,
       threadId,
       status: "queued",
@@ -312,6 +378,28 @@ export class PromptsStore {
     }).length;
   }
 
+  /**
+   * S3 sync-block support (#10033, design §3.5): wait until the record
+   * reaches a terminal status (answered/failed) or the timeout elapses.
+   * The store is the single in-process writer — answers land through
+   * this instance's update() via PATCH /api/prompt/:id — so polling the
+   * in-memory copy is exact, never a stale read. The outcome is typed so
+   * the route can answer with the design's response shapes.
+   */
+  async waitForAnswer(id: string, opts: { timeoutMs: number; pollMs?: number }): Promise<PromptWaitResult> {
+    const pollMs = Math.max(1, opts.pollMs ?? 25);
+    const deadline = Date.now() + Math.max(0, opts.timeoutMs);
+    for (;;) {
+      const record = await this.get(id);
+      if (!record) return { outcome: "not-found" };
+      if (record.status === "answered") return { outcome: "answered", record };
+      if (record.status === "failed") return { outcome: "failed", record };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { outcome: "timeout", record };
+      await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
+    }
+  }
+
   // Writes are serialized and each one uses a unique temp path (#12222):
   // concurrent adds shared one pid-only temp path, so most renames failed
   // with ENOENT while their records stayed in memory. A failed add is
@@ -330,4 +418,64 @@ export class PromptsStore {
     await writeFile(tmp, JSON.stringify(file, null, 2));
     await rename(tmp, this.path);
   }
+}
+
+/** The typed outcome of a sync-block wait (#10033 S3). */
+export type PromptWaitResult =
+  | { outcome: "answered"; record: PromptRecord }
+  | { outcome: "failed"; record: PromptRecord }
+  | { outcome: "timeout"; record: PromptRecord }
+  | { outcome: "not-found" };
+
+/** Design §3.7: the sync-block response body for an answered prompt.
+ *  The attachments are the submission's S7 storage refs, echoed so a
+ *  sync caller sees the full record shape (§3.2) in the answer body. */
+export function promptAnswerBody(record: PromptRecord): {
+  id: string;
+  status: PromptStatus;
+  answer: string;
+  attachments: PromptAttachment[];
+} {
+  return { id: record.id, status: record.status, answer: record.answer ?? "", attachments: record.attachments };
+}
+
+/**
+ * Maps a sync-block wait outcome to the route's HTTP status + body.
+ * Answered and failed are in-band results (200, the design §3.7/§3.8
+ * shapes); a timeout is a typed 504 result naming the configured wait,
+ * so a caller can tell "no answer yet" apart from a prompt failure.
+ */
+export function syncBlockHttpResult(
+  wait: PromptWaitResult,
+  timeoutMs: number,
+): { status: number; body: Record<string, unknown> } {
+  switch (wait.outcome) {
+    case "answered":
+      return { status: 200, body: { ...promptAnswerBody(wait.record) } };
+    case "failed":
+      return {
+        status: 200,
+        body: { id: wait.record.id, status: "failed", error: wait.record.error ?? "prompt failed" },
+      };
+    case "timeout":
+      return {
+        status: 504,
+        body: {
+          id: wait.record.id,
+          status: "timeout",
+          error: `prompt not answered within ${timeoutMs} ms`,
+          timeoutMs,
+        },
+      };
+    case "not-found":
+      return { status: 404, body: { error: "prompt not found" } };
+  }
+}
+
+/** The /ws/prompt/:id channel message for a record (design §3.8 shape). */
+export function promptChannelMessage(record: PromptRecord): Record<string, unknown> {
+  const msg: Record<string, unknown> = { id: record.id, status: record.status };
+  if (record.answer !== undefined) msg.answer = record.answer;
+  if (record.error !== undefined) msg.error = record.error;
+  return msg;
 }

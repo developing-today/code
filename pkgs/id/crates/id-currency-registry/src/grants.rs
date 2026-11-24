@@ -23,15 +23,23 @@
 //!   the design's stub direction (issue #2292 gates only the
 //!   dev-cluster acceptance runs, not this build);
 //! - the service itself ([`GrantService`]): register / vest / void
-//!   / partial refund, with the gateway's HTTP mapping (design
-//!   section 2.4) left to the gateway layer — an
-//!   [`GrantError::AlreadyResolved`] *is* the API's `409` outcome.
+//!   / partial refund / late-refund clawback, with the gateway's
+//!   HTTP mapping (design section 2.4) left to the gateway
+//!   layer — an [`GrantError::AlreadyResolved`] *is* the API's
+//!   `409` outcome.
 //!
 //! The rule section 4 states plainly, enforced here: **partial
-//! posting is for policy, void-and-reissue is for refunds.** This
-//! slice implements the refund path; a policy partial-vest is a
-//! follow-on. The vesting automation / reconciler that sweeps
-//! expired holds (section 6.3) is likewise a separate issue; the
+//! posting is for policy, void-and-reissue is for refunds.** Both
+//! paths are implemented: [`GrantService::refund_partial`] is the
+//! refund path, and [`GrantService::vest_partial`] is the policy
+//! partial vest (#10070 item 4). A refund that arrives *after*
+//! posting takes the third path, [`GrantService::refund_late`]:
+//! the section 6.2 **clawback then debt** policy — attempt the
+//! clawback transfer; on `exceeds_credits` the grant is marked
+//! `debt`, a recorded receivable, never a negative balance. The
+//! vesting automation /
+//! reconciler that sweeps expired holds (section 6.3) is
+//! likewise a separate issue; the
 //! `Expired` state and the intent-first write order here are what
 //! it will reconcile against.
 //!
@@ -51,6 +59,15 @@ use crate::factory::transfer_code;
 /// factory's reserved table already sets `0xF000..=0xFFFF` aside
 /// for pending-hold redemption, #2065).
 pub const GRANT_TRANSFER_CODE: u16 = transfer_code::PENDING_HOLD_REDEMPTION_START;
+
+/// The `TigerBeetle` transfer `code` for a grant's clawback
+/// transfer (design section 6.2).
+///
+/// The first code of the factory's reserved correction / refund
+/// range (`0x0400..=0x04FF`): a clawback is a plain transfer that
+/// corrects a posted grant, not a pending-hold resolution, so it
+/// does not ride the grant range above.
+pub const CLAWBACK_TRANSFER_CODE: u16 = transfer_code::CORRECTION_START;
 
 /// Default slack added to the vesting window.
 ///
@@ -221,8 +238,11 @@ pub trait GrantStore {
     /// [`GrantStoreError::DuplicateGrantId`] if the id is taken;
     /// [`GrantStoreError::DuplicateKeyHash`] if a live grant
     /// already holds the key hash. A *voided* grant's hash may be
-    /// re-inserted only by its own correction (a reissue whose
-    /// `correction_of` names the voided grant).
+    /// re-inserted only by its own correction chain: a reissue
+    /// whose `correction_of` names the voided tip, with every
+    /// other prior for the hash voided on that tip's ancestry
+    /// (so A->B->C chains are accepted but forks and fresh
+    /// registrations over voided grants are rejected).
     fn insert_grant(&mut self, grant: &Grant) -> Result<(), GrantStoreError>;
 
     /// Replace an existing grant row (the service's
@@ -271,14 +291,43 @@ impl GrantStore for InMemoryGrantStore {
             return Err(GrantStoreError::DuplicateGrantId(grant.id));
         }
         if let Some(ids) = self.by_hash.get(&grant.steam_key_hash) {
-            for id in ids {
-                if let Some(existing) = self.by_id.get(id) {
-                    let is_own_correction = existing.state == GrantState::Voided
-                        && grant.correction_of == Some(existing.id);
-                    if existing.state != GrantState::Voided || !is_own_correction {
-                        return Err(GrantStoreError::DuplicateKeyHash);
-                    }
+            // The incoming grant's correction ancestry: the voided
+            // tip it corrects plus every grant that tip
+            // transitively corrects. A chained reissue (A->B->C) is
+            // a reissue of the voided tip B whose own ancestry
+            // covers A; a fork off a non-tip, or a fresh
+            // registration over a voided grant, names no such chain
+            // and is still rejected.
+            let mut ancestors: Vec<u128> = Vec::new();
+            let mut cursor = grant.correction_of;
+            while let Some(id) = cursor {
+                if ancestors.contains(&id) {
+                    break;
                 }
+                ancestors.push(id);
+                cursor = self.by_id.get(&id).and_then(|g| g.correction_of);
+            }
+            for id in ids {
+                match self.by_id.get(id) {
+                    Some(existing)
+                        if existing.state == GrantState::Voided
+                            && ancestors.contains(&existing.id) => {}
+                    _ => return Err(GrantStoreError::DuplicateKeyHash),
+                }
+            }
+            // The correction must name a real voided tip holding
+            // this same hash — a `correction_of` pointing nowhere,
+            // at a live grant, or at another hash's row is not a
+            // reissue of this chain.
+            match grant.correction_of {
+                Some(parent)
+                    if ancestors.first() == Some(&parent)
+                        && matches!(
+                            self.by_id.get(&parent),
+                            Some(p) if p.state == GrantState::Voided
+                                && p.steam_key_hash == grant.steam_key_hash
+                        ) => {}
+                _ => return Err(GrantStoreError::DuplicateKeyHash),
             }
         }
         self.by_id.insert(grant.id, grant.clone());
@@ -343,6 +392,33 @@ pub struct PendingTransferSpec {
     pub timeout_seconds: u64,
 }
 
+/// One clawback transfer to submit (design section 6.2).
+///
+/// A plain — not pending — transfer of already-posted balance
+/// from the holder back to the grant pool, for a refund that
+/// arrived after the grant posted. Unlike a hold resolution it
+/// can fail on the money itself
+/// ([`LedgerError::ExceedsCredits`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClawbackTransferSpec {
+    /// The transfer's id.
+    pub id: u128,
+    /// Debits side: the holder's premium account.
+    pub debit_account_id: u128,
+    /// Credits side: the issuer grant-pool account.
+    pub credit_account_id: u128,
+    /// Clawback amount (the refunded part of the posted grant).
+    pub amount: u128,
+    /// The premium-token ledger.
+    pub ledger: u32,
+    /// Transfer code ([`CLAWBACK_TRANSFER_CODE`]).
+    pub code: u16,
+    /// The control-plane grant id.
+    pub user_data_128: u128,
+    /// Hash of the Steam key (never the key itself).
+    pub user_data_64: u64,
+}
+
 /// A pending-ledger failure.
 ///
 /// The `Already*` variants are *verdicts* — `TigerBeetle`'s
@@ -368,6 +444,12 @@ pub enum LedgerError {
         /// The attempted resolution amount.
         attempted: u128,
     },
+    /// The clawback transfer would exceed the debit account's
+    /// posted credits (`exceeds_credits`): the holder already
+    /// spent the balance. A *verdict* — design section 6.2's
+    /// debt trigger — not a transport failure; the transfer
+    /// moved nothing. Carries the clawback transfer's id.
+    ExceedsCredits(u128),
     /// A non-verdict cluster failure (transport, timeout,
     /// unavailable).
     Cluster(String),
@@ -388,6 +470,12 @@ impl fmt::Display for LedgerError {
                 f,
                 "resolution amount {attempted} exceeds the {held} held by transfer {pending_id}"
             ),
+            Self::ExceedsCredits(id) => {
+                write!(
+                    f,
+                    "clawback transfer {id} exceeds the holder's posted credits"
+                )
+            }
             Self::Cluster(message) => write!(f, "cluster error: {message}"),
         }
     }
@@ -395,10 +483,13 @@ impl fmt::Display for LedgerError {
 
 impl std::error::Error for LedgerError {}
 
-/// The pending-transfer ledger seam: the three `TigerBeetle`
-/// operations the grant service needs. The production
-/// implementation is the gateway's `TigerBeetle` client; tests
-/// substitute [`StubLedger`].
+/// The ledger seam: the `TigerBeetle` operations the grant
+/// service needs.
+///
+/// That is the three pending-transfer operations plus the
+/// section 6.2 clawback transfer. The production implementation
+/// is the gateway's `TigerBeetle` client; tests substitute
+/// [`StubLedger`].
 pub trait PendingLedger {
     /// Submit a pending transfer. Submitting the same transfer id
     /// twice with the same spec is an idempotent success (the
@@ -436,6 +527,23 @@ pub trait PendingLedger {
     /// The `Already*` verdicts on a repeat resolution;
     /// [`LedgerError::UnknownTransfer`] for an unknown id.
     fn void_pending(&mut self, pending_id: u128, resolution_id: u128) -> Result<(), LedgerError>;
+
+    /// Submit a clawback transfer (design section 6.2): move the
+    /// spec's amount of *posted* balance from the debit (holder)
+    /// account back to the credit (grant pool) account.
+    /// Submitting the same transfer id twice with the same spec
+    /// returns the first attempt's verdict — settled, or the
+    /// same [`LedgerError::ExceedsCredits`] — so a retry never
+    /// moves the money twice.
+    ///
+    /// # Errors
+    ///
+    /// [`LedgerError::ExceedsCredits`] if the debit account's
+    /// posted balance does not cover the amount (the transfer
+    /// moves nothing); [`LedgerError::Cluster`] on a
+    /// non-verdict failure, or if the id is taken by a
+    /// *different* spec.
+    fn clawback(&mut self, spec: &ClawbackTransferSpec) -> Result<(), LedgerError>;
 }
 
 /// The stub's record of one transfer.
@@ -444,6 +552,15 @@ struct StubTransfer {
     spec: PendingTransferSpec,
     state: GrantState,
     resolution_id: Option<u128>,
+}
+
+/// The stub's record of one clawback transfer: the spec and
+/// whether it settled, so a resubmission returns the first
+/// attempt's verdict instead of moving money twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StubClawback {
+    spec: ClawbackTransferSpec,
+    settled: bool,
 }
 
 /// In-memory [`PendingLedger`] enforcing `TigerBeetle`'s two-phase semantics.
@@ -456,6 +573,7 @@ struct StubTransfer {
 #[derive(Debug, Default)]
 pub struct StubLedger {
     transfers: BTreeMap<u128, StubTransfer>,
+    clawbacks: BTreeMap<u128, StubClawback>,
     credits_pending: BTreeMap<u128, u128>,
     credits_posted: BTreeMap<u128, u128>,
     debits_pending: BTreeMap<u128, u128>,
@@ -496,6 +614,15 @@ impl StubLedger {
             release(&mut self.credits_pending, credit, amount);
             release(&mut self.debits_pending, debit, amount);
         }
+    }
+
+    /// Simulate the holder spending posted balance elsewhere
+    /// (the precondition of design section 6.2's debt case: by
+    /// the time a late refund arrives, some or all of the tokens
+    /// are gone). Saturates at zero, like a balance that cannot
+    /// go negative.
+    pub fn spend_posted(&mut self, account_id: u128, amount: u128) {
+        release(&mut self.credits_posted, account_id, amount);
     }
 
     fn resolution_verdict(&self, pending_id: u128) -> Result<&StubTransfer, LedgerError> {
@@ -592,6 +719,46 @@ impl PendingLedger for StubLedger {
         release(&mut self.debits_pending, spec.debit_account_id, spec.amount);
         Ok(())
     }
+
+    fn clawback(&mut self, spec: &ClawbackTransferSpec) -> Result<(), LedgerError> {
+        if let Some(existing) = self.clawbacks.get(&spec.id) {
+            if existing.spec != *spec {
+                return Err(LedgerError::Cluster(format!(
+                    "transfer {} already exists with a different spec",
+                    spec.id
+                )));
+            }
+            return if existing.settled {
+                Ok(())
+            } else {
+                Err(LedgerError::ExceedsCredits(spec.id))
+            };
+        }
+        if self.credits_posted(spec.debit_account_id) < spec.amount {
+            self.clawbacks.insert(
+                spec.id,
+                StubClawback {
+                    spec: spec.clone(),
+                    settled: false,
+                },
+            );
+            return Err(LedgerError::ExceedsCredits(spec.id));
+        }
+        release(&mut self.credits_posted, spec.debit_account_id, spec.amount);
+        add(
+            &mut self.credits_posted,
+            spec.credit_account_id,
+            spec.amount,
+        );
+        self.clawbacks.insert(
+            spec.id,
+            StubClawback {
+                spec: spec.clone(),
+                settled: true,
+            },
+        );
+        Ok(())
+    }
 }
 
 /// Grant-service configuration.
@@ -635,8 +802,19 @@ pub enum GrantError {
     },
     /// No grant exists for this id.
     UnknownGrant(u128),
+    /// The grant has not posted, so there is no posted balance
+    /// to claw back — a refund of a grant that never posted is
+    /// the void path ([`GrantService::void`] /
+    /// [`GrantService::refund_partial`]), never a clawback.
+    NotPosted {
+        /// The grant.
+        grant_id: u128,
+        /// The state the grant is actually in.
+        state: GrantState,
+    },
     /// The amount is not usable for this operation (a zero grant,
-    /// or a refund that is not a proper partial amount).
+    /// or an amount that is not a proper partial of the grant —
+    /// a partial refund or a policy partial vest).
     InvalidAmount {
         /// What was attempted.
         attempted: u128,
@@ -658,6 +836,12 @@ impl fmt::Display for GrantError {
                 write!(f, "grant {grant_id} is already resolved ({state})")
             }
             Self::UnknownGrant(id) => write!(f, "grant {id} does not exist"),
+            Self::NotPosted { grant_id, state } => {
+                write!(
+                    f,
+                    "grant {grant_id} has not posted (state {state}); nothing to claw back"
+                )
+            }
             Self::InvalidAmount {
                 attempted,
                 grant_amount,
@@ -829,6 +1013,48 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
         self.resolve(grant_id, now, Resolution::Vest)
     }
 
+    /// Vest a proper part of a grant by policy (`POST
+    /// /grants/{id}/vest` with an amount): post `vest_amount` of
+    /// the hold; the ledger restores the unposted remainder
+    /// (design section 4 — partial posting is for policy, e.g.
+    /// grant tiers vesting a fraction at window close). A refund
+    /// never takes this path: it voids and reissues via
+    /// [`GrantService::refund_partial`], so a refunded amount can
+    /// never end up posted.
+    ///
+    /// # Errors
+    ///
+    /// [`GrantError::UnknownGrant`]; [`GrantError::AlreadyResolved`]
+    /// (the `409`) if the grant already resolved;
+    /// [`GrantError::InvalidAmount`] unless
+    /// `0 < vest_amount < grant.amount` — posting nothing is a
+    /// [`GrantService::void`], posting everything is a plain
+    /// [`GrantService::vest`].
+    pub fn vest_partial(
+        &mut self,
+        grant_id: u128,
+        vest_amount: u128,
+        now: u64,
+    ) -> Result<Grant, GrantError> {
+        let grant = self
+            .store
+            .grant(grant_id)
+            .ok_or(GrantError::UnknownGrant(grant_id))?;
+        if grant.state.is_resolved() {
+            return Err(GrantError::AlreadyResolved {
+                grant_id,
+                state: grant.state,
+            });
+        }
+        if vest_amount == 0 || vest_amount >= grant.amount {
+            return Err(GrantError::InvalidAmount {
+                attempted: vest_amount,
+                grant_amount: grant.amount,
+            });
+        }
+        self.resolve(grant_id, now, Resolution::VestPartial(vest_amount))
+    }
+
     /// Void a grant (`POST /grants/{id}/void`): release its hold
     /// in full — the refund path.
     ///
@@ -911,6 +1137,125 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
         Ok((voided, reissue))
     }
 
+    /// Refund a posted grant late — a refund that arrives
+    /// after the hold posted (design section 4's last row) — by
+    /// clawing `refund_amount` of posted balance back from the
+    /// holder to the grant pool (design section 6.2).
+    ///
+    /// The section 6.2 policy adopted here is **clawback then
+    /// debt**: if the holder's posted balance still covers the
+    /// amount, the clawback transfer settles and the grant is
+    /// [`GrantState::ClawbackSettled`]; if the holder already
+    /// spent it, the transfer fails `exceeds_credits`, moves
+    /// nothing, and the grant is marked [`GrantState::Debt`] —
+    /// the bounded-exposure record the gateway reads to refuse
+    /// new grants and redemptions for that user until settled.
+    /// Debt is an outcome of the refund, not a service failure:
+    /// both outcomes return `Ok`. The holder's balance never
+    /// goes negative.
+    ///
+    /// For a policy partial vest ([`GrantService::vest_partial`])
+    /// the caller passes the refunded part of the *posted*
+    /// fraction: the grant row carries no posted-amount column
+    /// (migration `0002`), so the bound enforced here is the
+    /// grant amount.
+    ///
+    /// The write order is intent-first, transfer-second,
+    /// confirm-third: the row moves to
+    /// [`GrantState::ClawbackPending`] before the transfer is
+    /// submitted, so a crash in between leaves a row the
+    /// reconciler can see and retry — a retry re-enters here
+    /// against the `ClawbackPending` row. A non-verdict ledger
+    /// failure leaves the row `ClawbackPending` with the attempt
+    /// and the error recorded. (A retry allocates a fresh
+    /// transfer id; the production ledger deduplicates a
+    /// retried clawback by the grant id in `user_data_128`, the
+    /// same lookup that resolves the section 6.3 drift case.)
+    ///
+    /// # Errors
+    ///
+    /// [`GrantError::UnknownGrant`];
+    /// [`GrantError::NotPosted`] if the grant is still pending
+    /// (a refund before vest is the void path);
+    /// [`GrantError::AlreadyResolved`] if the grant resolved
+    /// any other way, or its clawback already finished —
+    /// settled or debt (the `409` outcome);
+    /// [`GrantError::InvalidAmount`] unless
+    /// `0 < refund_amount <= grant.amount` (a zero refund is no
+    /// refund; more than the grant was never posted);
+    /// [`GrantError::Ledger`] on a non-verdict ledger failure.
+    pub fn refund_late(
+        &mut self,
+        grant_id: u128,
+        refund_amount: u128,
+        grant_pool_account_id: u128,
+        holder_account_id: u128,
+        now: u64,
+    ) -> Result<Grant, GrantError> {
+        let mut grant = self
+            .store
+            .grant(grant_id)
+            .ok_or(GrantError::UnknownGrant(grant_id))?;
+        match grant.state {
+            GrantState::Pending => {
+                return Err(GrantError::NotPosted {
+                    grant_id,
+                    state: grant.state,
+                });
+            }
+            GrantState::Posted | GrantState::ClawbackPending => {}
+            state => {
+                return Err(GrantError::AlreadyResolved { grant_id, state });
+            }
+        }
+        if refund_amount == 0 || refund_amount > grant.amount {
+            return Err(GrantError::InvalidAmount {
+                attempted: refund_amount,
+                grant_amount: grant.amount,
+            });
+        }
+        // Intent first: the attempt is on the row before any
+        // money moves.
+        grant.state = GrantState::ClawbackPending;
+        grant.attempt_count += 1;
+        grant.updated_at = now;
+        self.store.update_grant(&grant)?;
+        // Transfer second.
+        let spec = ClawbackTransferSpec {
+            id: self.alloc_transfer_id(),
+            debit_account_id: holder_account_id,
+            credit_account_id: grant_pool_account_id,
+            amount: refund_amount,
+            ledger: grant.ledger,
+            code: CLAWBACK_TRANSFER_CODE,
+            user_data_128: grant.id,
+            user_data_64: steam_key_hash_u64(&grant.steam_key_hash),
+        };
+        match self.ledger.clawback(&spec) {
+            Ok(()) => {
+                grant.state = GrantState::ClawbackSettled;
+                grant.last_error = None;
+            }
+            Err(err @ LedgerError::ExceedsCredits(_)) => {
+                // Section 6.2: the debt record *is* the outcome;
+                // the error string stays on the row as the
+                // recorded reason.
+                grant.state = GrantState::Debt;
+                grant.last_error = Some(err.to_string());
+            }
+            Err(err) => {
+                grant.last_error = Some(err.to_string());
+                grant.updated_at = now;
+                self.store.update_grant(&grant)?;
+                return Err(GrantError::Ledger(err));
+            }
+        }
+        // Confirm third.
+        grant.updated_at = now;
+        self.store.update_grant(&grant)?;
+        Ok(grant)
+    }
+
     /// One grant by id (`GET /grants/{id}`).
     #[must_use]
     pub fn get(&self, grant_id: u128) -> Option<Grant> {
@@ -946,6 +1291,10 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
                 self.ledger
                     .post_pending(grant.pending_transfer_id, resolution_id, grant.amount)
             }
+            Resolution::VestPartial(amount) => {
+                self.ledger
+                    .post_pending(grant.pending_transfer_id, resolution_id, amount)
+            }
             Resolution::Void => self
                 .ledger
                 .void_pending(grant.pending_transfer_id, resolution_id),
@@ -953,7 +1302,7 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
         match outcome {
             Ok(()) => {
                 grant.state = match resolution {
-                    Resolution::Vest => GrantState::Posted,
+                    Resolution::Vest | Resolution::VestPartial(_) => GrantState::Posted,
                     Resolution::Void => GrantState::Voided,
                 };
                 grant.resolution_transfer_id = Some(resolution_id);
@@ -1060,6 +1409,7 @@ impl<S: GrantStore, L: PendingLedger> GrantService<S, L> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Resolution {
     Vest,
+    VestPartial(u128),
     Void,
 }
 
@@ -1104,5 +1454,9 @@ impl<T: PendingLedger + ?Sized> PendingLedger for &mut T {
 
     fn void_pending(&mut self, pending_id: u128, resolution_id: u128) -> Result<(), LedgerError> {
         (**self).void_pending(pending_id, resolution_id)
+    }
+
+    fn clawback(&mut self, spec: &ClawbackTransferSpec) -> Result<(), LedgerError> {
+        (**self).clawback(spec)
     }
 }

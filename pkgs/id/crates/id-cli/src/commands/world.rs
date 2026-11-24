@@ -27,9 +27,11 @@ use crate::{
 
 mod journal;
 mod owner;
+mod scaffold;
 #[cfg(test)]
 use journal::check_journal_bytes;
 use journal::{journal_backup, print_journal_check, print_world_provenance, world_provenance};
+use scaffold::scaffold_world;
 
 /// Dial a world host and open one session.
 async fn connect(
@@ -606,11 +608,17 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             Ok(())
         }
-        WorldCommand::Contract { check: None } => {
+        WorldCommand::Contract {
+            check: None,
+            check_suite: None,
+        } => {
             print!("{}", id_worlds::shell_contract::SHELL_CONTRACT_JSON);
             Ok(())
         }
-        WorldCommand::Contract { check: Some(path) } => {
+        WorldCommand::Contract {
+            check: Some(path),
+            check_suite: None,
+        } => {
             let text = if path.as_os_str() == "-" {
                 std::io::read_to_string(std::io::stdin()).context("read transcript")?
             } else {
@@ -620,6 +628,24 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             let checked = check_contract(&text)?;
             println!("{checked}");
             Ok(())
+        }
+        WorldCommand::Contract {
+            check: None,
+            check_suite: Some(path),
+        } => {
+            let report = check_suite_file(&path)?;
+            println!("{report}");
+            Ok(())
+        }
+        WorldCommand::Contract {
+            check: Some(_),
+            check_suite: Some(_),
+        } => {
+            bail!("--check and --check-suite cannot be combined");
+        }
+        #[cfg(not(feature = "sandbox"))]
+        WorldCommand::Measure(_) => {
+            bail!("this build has no sandbox support")
         }
         #[cfg(feature = "sandbox")]
         WorldCommand::Measure(args) => {
@@ -739,6 +765,10 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             ))
             .await
         }
+        #[cfg(not(feature = "sandbox"))]
+        WorldCommand::Replay(_) => {
+            bail!("this build has no sandbox support")
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Replay(args) => {
             let crate::cli::WorldReplayArgs {
@@ -750,6 +780,10 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             } = args;
             replay_fixture(&module, &fixture, seed, allow_partial)
         }
+        #[cfg(not(feature = "sandbox"))]
+        WorldCommand::Verify(_) => {
+            bail!("this build has no sandbox support")
+        }
         #[cfg(feature = "sandbox")]
         WorldCommand::Verify(args) => {
             let crate::cli::WorldVerifyArgs {
@@ -760,6 +794,10 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 ..
             } = args;
             verify_fixture(&module, &fixture, seed, allow_partial)
+        }
+        #[cfg(not(feature = "sandbox"))]
+        WorldCommand::Dev(_) => {
+            bail!("this build has no sandbox support")
         }
         #[cfg(feature = "sandbox")]
         WorldCommand::Dev(args) => {
@@ -1700,155 +1738,6 @@ fn measure_module(
     }))
 }
 
-/// Scaffold a Roc world app in `dir`.
-///
-/// The directory must be absent or empty. Writes `main.roc`, `build.sh`
-/// (executable), and `README.md`, and prints the directory path.
-///
-/// # Errors
-///
-/// A bad name, a non-empty directory, or a filesystem failure.
-fn scaffold_world(dir: &std::path::Path, name: &str) -> Result<()> {
-    anyhow::ensure!(
-        !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-        "the app name may contain letters, digits, '-' and '_'"
-    );
-    if dir.exists() {
-        anyhow::ensure!(
-            std::fs::read_dir(dir)?.next().is_none(),
-            "{} is not empty",
-            dir.display()
-        );
-    } else {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(dir.join("main.roc"), template_main(name))
-        .with_context(|| format!("write {}", dir.join("main.roc").display()))?;
-    std::fs::write(dir.join("README.md"), template_readme(name))
-        .with_context(|| format!("write {}", dir.join("README.md").display()))?;
-    let build = dir.join("build.sh");
-    std::fs::write(&build, template_build(name))
-        .with_context(|| format!("write {}", build.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&build, std::fs::Permissions::from_mode(0o755))?;
-    }
-    println!("{}", dir.display());
-    Ok(())
-}
-
-fn template_main(name: &str) -> String {
-    format!(
-        r#"app [program] {{ pf: platform "../roc-world/platform.roc" }}
-
-import pf.Screen
-
-# {name}: a scaffolded world app. Replace the model, update, and view with your
-# own. Build with ./build.sh, then install with `id world install` or compile the
-# source with `id world compile`.
-
-Model : {{ count : U64 }}
-
-program = {{ init, update, view, layout, records, wants, snapshot, restore }}
-
-init : U64 -> Model
-init = |_seed| {{ count: 0 }}
-
-update : Model, U64, Str -> Model
-update = |model, _pid, _ev| {{ count: model.count + 1 }}
-
-view : Model -> Str
-view = |model| {{
-    screen = Screen.boxed(Screen.new(24, 3), 0, 0, 24, 3, "{name}")
-    drawn = Screen.put_text(screen, 2, 1, "count=${{model.count.to_str()}}", {{ fg: 2, bg: 0, bold: Bool.True }})
-    Screen.render_json(drawn)
-}}
-
-## Render the same view at any viewport.
-layout : Model, U64, U64 -> Str
-layout = |model, _width, _height| view(model)
-
-records : Model -> Str
-records = |model| "{{\"count\":${{model.count.to_str()}}}}"
-
-wants : Model -> Str
-wants = |_model| "{{}}"
-
-snapshot : Model -> Str
-snapshot = |model| model.count.to_str()
-
-restore : Str -> Model
-restore = |text| match U64.from_str(text) {{
-    Ok(count) => {{ count: count }}
-    Err(_) => {{ count: 0 }}
-}}
-"#
-    )
-}
-
-fn template_readme(name: &str) -> String {
-    format!(
-        r#"# {name}
-
-A world app scaffolded with `id world new`.
-
-## Build
-
-```bash
-./build.sh
-```
-
-The script expects a checkout of the world platform at `../roc-world` and
-produces `{name}.wasm`, validated import-free.
-
-## Run
-
-```bash
-id serve --data-dir ./data --world --world-admin-token "$ADMIN" \
-  --world-module "$PWD/{name}.wasm" --world-ssh-port 2223 --web --port 8787
-```
-
-## Next steps
-
-- Edit `update` to react to input events and `view` to draw a portable screen.
-- Ask for host capabilities through `wants`; grant them with `id world caps`.
-- Keep `snapshot`/`restore` faithful so the host can compact the journal.
-"#
-    )
-}
-
-fn template_build(name: &str) -> String {
-    format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-cd "$(dirname "${{BASH_SOURCE[0]}}")"
-ROC="${{ROC:-roc}}"
-
-if [ -z "${{WASM_TOOLS:-}}" ]; then
-  if command -v wasm-tools >/dev/null 2>&1; then
-    WASM_TOOLS="wasm-tools"
-  else
-    STORE_TOOL=$(ls -d /nix/store/*-wasm-tools-*/bin/wasm-tools 2>/dev/null | head -n1 || true)
-    if [ -n "$STORE_TOOL" ] && [ -x "$STORE_TOOL" ]; then
-      WASM_TOOLS="$STORE_TOOL"
-    else
-      WASM_TOOLS="nix run nixpkgs#wasm-tools --"
-    fi
-  fi
-fi
-
-(cd ../roc-world && ./build-host.sh >/dev/null)
-"$ROC" build main.roc --target=wasm32 --debug --wasm-memory=8454144 --output={name}.wasm
-$WASM_TOOLS validate {name}.wasm
-echo "Built {name}.wasm (import-free Roc world module)"
-"#
-    )
-}
-
 /// An in-memory iroh-docs replica: enough to sync and verify records
 /// without writing anything to disk.
 struct Replica {
@@ -1955,8 +1844,9 @@ async fn terminal_probe(
 /// view carrying a screen or text surface (F13.4). Returns `None` for
 /// every other frame — those keep the JSON-lines presentation — and
 /// `Some("")` for a view the presenter renders as no change. Form,
-/// scene and audio views keep the JSON-lines presentation: the pump
-/// has no form collector, no scene renderer and no audio player.
+/// scene, audio and widget views keep the JSON-lines presentation:
+/// the pump has no form collector, no scene renderer, no audio
+/// player and no widget presenter.
 fn render_view_frame(
     presenter: &mut id_worlds::world_terminal::TierPresenter,
     body: &[u8],
@@ -1984,6 +1874,8 @@ fn render_view_frame(
         id_worlds::world_presentation::WorldSurface::Form(_) => None,
         id_worlds::world_presentation::WorldSurface::Scene(_) => None,
         id_worlds::world_presentation::WorldSurface::Audio(_) => None,
+        id_worlds::world_presentation::WorldSurface::Widget(_) => None,
+        id_worlds::world_presentation::WorldSurface::Media(_) => None,
     }
 }
 
@@ -2187,6 +2079,89 @@ fn check_contract(text: &str) -> Result<String> {
     )
 }
 
+/// Run a conformance-suite manifest: every shell's capability
+/// statement validated, every recorded session checked, in one
+/// pass. Returns the per-shell report.
+///
+/// # Errors
+///
+/// Fails on an unreadable or invalid manifest, or with the full
+/// report as the error when any shell fails the suite.
+fn check_suite_file(path: &std::path::Path) -> Result<String> {
+    use id_worlds::shell_contract::{SessionSource, ShellSuite, SuiteEntry, check_suite};
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read suite manifest {}", path.display()))?;
+    let suite = ShellSuite::parse(&text).map_err(anyhow::Error::msg)?;
+    let contract =
+        id_worlds::shell_contract::ShellContract::embedded().map_err(anyhow::Error::msg)?;
+    let base = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let loaded: Vec<Option<Result<String, String>>> = suite
+        .shells
+        .iter()
+        .map(|shell| {
+            shell.session.as_ref().map(|relative| {
+                let full = base.join(relative);
+                std::fs::read_to_string(&full)
+                    .map_err(|error| format!("read {}: {error}", full.display()))
+            })
+        })
+        .collect();
+    let entries: Vec<SuiteEntry<'_>> = suite
+        .shells
+        .iter()
+        .zip(&loaded)
+        .map(|(shell, loaded)| SuiteEntry {
+            name: &shell.name,
+            statement: shell.statement.as_ref(),
+            session: match loaded {
+                None => SessionSource::Unrecorded,
+                Some(Ok(text)) => SessionSource::Recorded(text),
+                Some(Err(why)) => SessionSource::Unreadable(why),
+            },
+        })
+        .collect();
+    let verdicts = check_suite(contract, &entries);
+    let mut lines = Vec::new();
+    let mut failed = 0_usize;
+    let mut recorded = 0_usize;
+    for verdict in &verdicts {
+        if verdict.recorded {
+            recorded += 1;
+        }
+        if verdict.passed() {
+            if verdict.recorded {
+                lines.push(format!(
+                    "{}: PASS ({} frames, recorded session)",
+                    verdict.name, verdict.frames
+                ));
+            } else {
+                lines.push(format!(
+                    "{}: UNRECORDED (capability statement ok, no recorded session yet)",
+                    verdict.name
+                ));
+            }
+        } else {
+            failed += 1;
+            lines.push(format!("{}: FAIL", verdict.name));
+            for failure in &verdict.failures {
+                lines.push(format!("  {failure}"));
+            }
+        }
+    }
+    lines.push(format!(
+        "suite: {} of {} shells pass, {recorded} recorded session(s) checked against shell contract v{}.{}",
+        verdicts.len() - failed,
+        verdicts.len(),
+        contract.version,
+        contract.revision
+    ));
+    let report = lines.join("\n");
+    if failed > 0 {
+        bail!("{report}");
+    }
+    Ok(report)
+}
+
 /// What one stdin line does in the `id world join` pump.
 #[derive(Debug, PartialEq, Eq)]
 enum PumpLine {
@@ -2310,9 +2285,9 @@ fn read_execution_profile(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        PumpLine, check_contract, check_journal_bytes, journal_backup, local_transcript_record,
-        print_journal_check, pump_command, read_execution_profile, scaffold_world, step_is_applied,
-        world_list_plain_row, world_provenance,
+        PumpLine, check_contract, check_journal_bytes, check_suite_file, journal_backup,
+        local_transcript_record, print_journal_check, pump_command, read_execution_profile,
+        scaffold_world, step_is_applied, world_list_plain_row, world_provenance,
     };
 
     #[test]
@@ -2608,11 +2583,12 @@ mod tests {
             r#"{"from": "client", "frame": {"type": "resize", "width": 80, "height": 24}}"#,
             r#"{"from": "server", "frame": {"type": "view", "sequence": 1, "data": "Harbor", "view_revision": 1, "surface": {"kind": "scene", "version": 1, "title": "Harbor", "nodes": [{"id": "boat", "label": "Boat", "shape": "box", "position": [0, 0.5, -2], "size": [2, 1, 1]}]}}}"#,
             r#"{"from": "server", "frame": {"type": "view", "sequence": 2, "data": "Harbor Sounds", "view_revision": 2, "surface": {"kind": "audio", "version": 1, "title": "Harbor Sounds", "cues": [{"id": "rain", "label": "Rain", "format": "ogg", "duration_ms": 90000, "repeat": true}]}}}"#,
+            r#"{"from": "server", "frame": {"type": "view", "sequence": 3, "data": "Harbor Controls", "view_revision": 3, "surface": {"kind": "widget", "version": 1, "title": "Harbor Controls", "controls": [{"kind": "toggle", "id": "lights", "label": "Lights", "action": "lights", "on": true}]}}}"#,
         ]
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "5 frames conform to shell contract v1.14"
+            "6 frames conform to shell contract v1.16"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
@@ -2624,6 +2600,37 @@ mod tests {
         assert!(error.contains("frame 0 (client)"), "{error}");
         assert!(error.contains("frame 1 (server)"), "{error}");
         assert!(check_contract("{").is_err());
+    }
+
+    #[test]
+    fn the_suite_command_runs_every_shell_in_a_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("session.jsonl"),
+            "{\"from\": \"client\", \"frame\": {\"type\": \"join\", \"capability\": \"c\"}}\n{\"from\": \"server\", \"frame\": {\"type\": \"snapshot\", \"snapshot\": {}}}\n",
+        )
+        .unwrap();
+        let manifest = dir.path().join("suite.json");
+        std::fs::write(
+            &manifest,
+            r#"{"suite": "shell-suite", "version": 1, "shells": [
+                {"name": "recorded", "statement": {"sends": ["join"], "presents": ["snapshot"], "providers": [], "workflow": ["join"]}, "session": "session.jsonl"},
+                {"name": "pending", "statement": {"sends": ["join"], "presents": ["snapshot"], "providers": [], "workflow": ["join"]}, "session": null}
+            ]}"#,
+        )
+        .unwrap();
+        let report = check_suite_file(&manifest).unwrap();
+        assert!(report.contains("recorded: PASS"), "{report}");
+        assert!(report.contains("pending: UNRECORDED"), "{report}");
+        // A shell with no capability statement fails the whole run, loudly.
+        std::fs::write(
+            &manifest,
+            r#"{"suite": "shell-suite", "version": 1, "shells": [{"name": "silent", "statement": null, "session": null}]}"#,
+        )
+        .unwrap();
+        let error = check_suite_file(&manifest).unwrap_err().to_string();
+        assert!(error.contains("silent: FAIL"), "{error}");
+        assert!(error.contains("no capability statement"), "{error}");
     }
 
     #[test]

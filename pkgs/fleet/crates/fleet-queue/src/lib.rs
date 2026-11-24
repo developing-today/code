@@ -20,6 +20,34 @@
 //! binaries under their historical names (src/bin/) — the
 //! migration's standing rollback inventory (design note §7).
 
+/// The most tasks one batch claim may take (#8217). A batch is
+/// only legitimate paired with immediate per-item dispatch, and
+/// the dispatcher must launch + verify-bind every item inside one
+/// touch before leases age: five dedicated launches fit that
+/// window with margin, and a bigger batch would recreate the
+/// claimed-and-idle pile the single-session design forbids.
+///
+/// The bound lives at the crate root because both surfaces share
+/// it: the client validates `--count` locally so a bad value
+/// fails instantly, and the broker enforces the same bound on
+/// the wire request (`turso_queue` re-exports it from here).
+/// Before #13078 the definition sat inside the broker-gated
+/// `turso_queue` tree, so a client-only build could not compile.
+pub const BATCH_CLAIM_MAX: i64 = 5;
+
+/// The bundle cap (#11333): one launch — one (lane, session)
+/// pair — may make at most this many ordinary claims. The
+/// scheduled-lane runbooks promise "up to 10 tasks per launch",
+/// but until #11333 the only enforcement was the claiming
+/// model's own count, and a claim loop walked straight past it
+/// (a scheduled session claimed 12 on 2026-11-17). The broker
+/// now counts a launch's ordinary claims itself and refuses the
+/// claim that would pass the cap; see
+/// `turso_queue::lifecycle::bundle_claim_count`. Defined at the
+/// crate root beside BATCH_CLAIM_MAX so both surfaces share the
+/// value.
+pub const BUNDLE_CLAIM_CAP: i64 = 10;
+
 pub mod backoff;
 pub mod bin_args;
 pub mod creation_outbox;
@@ -48,5 +76,10 @@ pub mod secrets_broker;
 pub mod turso_queue;
 #[cfg(any(feature = "queue-broker", feature = "secrets-broker"))]
 pub mod uds_http;
-#[cfg(feature = "queue-broker")]
+// The validation library is shared by both surfaces: the broker
+// validates whole packets, and the client validates individual
+// flag values (e.g. `--not-before`) against the same rules, so
+// the module compiles for either surface (#13078). It depends
+// only on serde_json, never on a broker-only dependency.
+#[cfg(any(feature = "client", feature = "queue-broker"))]
 pub mod validate;

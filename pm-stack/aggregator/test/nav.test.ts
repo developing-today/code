@@ -37,10 +37,11 @@ function serverPaths(): { exact: string[]; prefixes: string[] } {
 }
 
 /** Routes that are not pages a person navigates to: JSON twins, POST
- * endpoints, datastar fragments, static assets, the /board alias, and
- * the /freshness/stream SSE endpoint (machine-consumed, never navigated to). */
+ * endpoints, datastar fragments, static assets, the /board alias, the
+ * /freshness/stream SSE endpoint (machine-consumed, never navigated to),
+ * and the /webhooks/* GitHub delivery endpoints (#9076, machine POST only). */
 const NON_PAGE =
-  /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$|^\/quota\/refresh$|^\/freshness\/stream$/;
+  /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$|^\/quota\/refresh$|^\/freshness\/stream$|^\/webhooks\//;
 
 describe("the manifest groups every page (#1135)", () => {
   test("every page names one of PAGE_GROUPS, and groups have no page-less id", () => {

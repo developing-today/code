@@ -149,12 +149,12 @@ async function main(): Promise<void> {
     );
     return;
   }
-  await postAlert(result);
   if (result.alert === "needs-orchestrator") {
     // Publish the escalation on the same independent channel as the
-    // page: the page-health-push report reaches the orchestrator's main
-    // chat whether or not the aggregator is up. The post-alert incident
-    // above is the ledger record; a warning incident alone is never
+    // page, before the ledger write: the page-health-push report reaches
+    // the orchestrator's main chat whether or not the aggregator is up,
+    // and a failed post-alert must not lose this line. The post-alert
+    // incident is the ledger record; a warning incident alone is never
     // delivered (the alert engine delivers criticals only) and the
     // attention feed's orchestrator tier is derived inside the
     // aggregator, so the incident title by itself routes nothing.
@@ -162,6 +162,7 @@ async function main(): Promise<void> {
       `NEEDS_ORCHESTRATOR: PM-stack watchdog heartbeat missing. ${reference} ${result.missedCycles} five-minute cycles have been missed.`,
     );
   }
+  await postAlert(result);
 }
 
 await main();

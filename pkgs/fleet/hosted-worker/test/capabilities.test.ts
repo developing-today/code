@@ -1,8 +1,11 @@
 // Health + capabilities tests (#12583). Oracle: the native
 // `fleet capabilities` document shape (fleet-registry / print_capabilities)
 // for the mirrored fields, and the design §2 dispositions for the
-// hosted values. The skeleton must be truthful: route modules exist,
-// no door carries business logic yet, so nothing reports available.
+// hosted values. The document must be truthful: a domain reports
+// available only when its filling issue landed — the
+// hosted-transformed `gh` domain via the stamping door (#12585),
+// the `queue` domain via the queue door (#12589), and the `bridge`
+// domain via the bridge door (#14373).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -22,7 +25,7 @@ test("health answers publicly with the hosted door's identity", async () => {
   };
   assert.equal(body.status, "ok");
   assert.equal(body.service, "fleet-hosted");
-  assert.deepEqual(body.doors, ["stamping", "query", "queue", "ingestion", "sync"]);
+  assert.deepEqual(body.doors, ["stamping", "query", "queue", "ingestion", "sync", "bridge"]);
   assert.deepEqual(body.auth, { rp_configured: true, tenancy_configured: true });
 });
 
@@ -60,20 +63,39 @@ test("capabilities mirrors the native shape with hosted values", async () => {
     assert.equal(typeof d.summary, "string");
     assert.ok(Array.isArray(d.aliases));
     assert.ok(Array.isArray(d.capabilities));
-    // Skeleton truth: no business domain is available at this door yet.
-    assert.equal(d.available, false, `${d.name} must not report available in the skeleton`);
+    if (d.name === "gh") continue; // asserted below: landed by #12585
+    if (d.name === "queue") continue; // asserted below: landed by #12589
+    if (d.name === "bridge") continue; // asserted below: landed by #14373
+    // Truth: no other business domain is available at this door yet.
+    assert.equal(d.available, false, `${d.name} must not report available yet`);
     assert.equal(d.state, "not-in-build");
   }
 
   const byName = new Map(doc.domains.map((d) => [d.name, d]));
   assert.equal(byName.get("gh")?.hosted, "hosted-transformed");
   assert.equal(byName.get("gh")?.filling_issue, "#12585");
+  // #12585 landed the hosted gh create path (through the stamping
+  // door): the domain reports available and its capability is listed.
+  assert.equal(byName.get("gh")?.available, true);
+  assert.equal(byName.get("gh")?.state, "available");
+  // #12589 landed the queue front door: the queue domain reports
+  // available too, ahead of gh in the registry's domain order.
+  assert.equal(byName.get("queue")?.available, true);
+  assert.equal(byName.get("queue")?.state, "available");
+  // #14373 wired the bridge domain to the message bridge over its
+  // service binding: available too, after gh in the registry's order.
+  assert.equal(byName.get("bridge")?.available, true);
+  assert.equal(byName.get("bridge")?.state, "available");
+  assert.deepEqual(doc.capabilities, ["queue", "gh", "bridge"]);
+  assert.deepEqual(doc.compiled_capabilities, ["queue", "gh", "bridge"]);
   assert.equal(byName.get("queue")?.hosted, "hosted-front-door");
   assert.equal(byName.get("queue")?.filling_issue, "#12589");
   assert.equal(byName.get("secrets")?.hosted, "native-only");
   assert.equal(byName.get("bridge")?.hosted, "already-hosted");
+  assert.equal(byName.get("bridge")?.filling_issue, "#14373");
 
-  // The component-C doors and the issues that fill them.
+  // The component-C doors and the issues that fill them, and the
+  // bridge door after them.
   assert.deepEqual(
     doc.doors.map((d) => [d.id, d.filling_issue]),
     [
@@ -82,6 +104,15 @@ test("capabilities mirrors the native shape with hosted values", async () => {
       ["queue", "#12589"],
       ["ingestion", "#12590"],
       ["sync", "#12591"],
+      ["bridge", "#14373"],
     ],
   );
+  const doorById = new Map(doc.doors.map((d) => [d.id, d]));
+  assert.equal(doorById.get("stamping")?.state, "live");
+  assert.equal(doorById.get("query")?.state, "live");
+  assert.equal(doorById.get("queue")?.state, "live");
+  assert.equal(doorById.get("ingestion")?.state, "live");
+  // #12591 landed the sync door: every component-C door is live.
+  assert.equal(doorById.get("sync")?.state, "live");
+  assert.equal(doorById.get("bridge")?.state, "live");
 });

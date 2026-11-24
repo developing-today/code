@@ -108,8 +108,8 @@ just serve      # Serve with web UI [requires bun]
 just run        # Run CLI with arguments
 just test       # All fast tests (Rust + TypeScript unit + typecheck)
 just test-unit  # Unit tests only (fast)
-just test-e2e   # Playwright E2E (146 tests, chromium + firefox)
-just test-nix   # nix flake check (27 checks — runs everything)
+just test-e2e   # Playwright E2E (chromium + firefox)
+just test-nix   # nix flake check (all checks — runs everything)
 ```
 
 **Testing architecture:** See [`doc/testing-architecture`](../../doc/2026-03-29T00-00-00Z_reference_testing_architecture/2026-03-29T00-00-00Z_reference_testing_architecture.md) for the complete 6-layer testing reference, browser coverage matrix, environment comparison, and "when to add tests where" decision tree.
@@ -118,7 +118,7 @@ Adding or updating dependencies is allowed. Inform the user of each one (name, v
 
 ## CLI Commands
 
-Run `id --help` for command list, `id <command> --help` for options. See `src/cli.rs` for full definitions.
+Run `id --help` for command list, `id <command> --help` for options. See `crates/id-cli/src/cli/mod.rs` for full definitions.
 
 ## Project Structure
 

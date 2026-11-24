@@ -41,7 +41,7 @@
           overlays = [ (import rust-overlay) ];
         };
         # The pinned toolchain (rust-toolchain.toml, channel
-        # 1.99.0) — the same rustup toolchain the step 1-4 gates
+        # 1.99.1) — the same rustup toolchain the step 1-4 gates
         # ran under on the laptop, so the packaged build compiles
         # with the compiler the parity evidence belongs to.
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;

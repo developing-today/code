@@ -26,9 +26,7 @@
 //!
 //! Signature checks, owner/admin edit authorization and the V3 comment
 //! carry-forward view belong to other owners; this module takes already
-//! verified versions and owner selections as inputs. Module wiring into
-//! `graph/mod.rs` belongs to slice 9110-09; until then the integration
-//! test includes this file by path.
+//! verified versions and owner selections as inputs.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
