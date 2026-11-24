@@ -143,10 +143,15 @@ const outside: {
   tag?: string | null;
   status?: number;
   etag?: string;
+  /** How GitHub was asked: a read, or something written. */
+  method?: string;
 }[] = [];
 /** GitHub turning every call away as one too many, until this second
  * (as it says it: nothing left of the allowance, and when it is back). */
 const spent = { until: 0 };
+/** The host out of reach while GitHub and the queue store still
+ * answer: what is in front of it says so, as the tunnel does. */
+const hostAway = { on: false };
 /** The list of Workers answered at length, as GitHub answers a list of
  * open pull requests: well over a million characters, each of two
  * units (the Worker's store holds about two million bytes a value, so
@@ -189,6 +194,7 @@ const server = Bun.serve({
         path,
         auth: req.headers.get("authorization"),
         agent: req.headers.get("user-agent"),
+        method: req.method,
       };
       outside.push(entry);
       if (spent.until > 0) {
@@ -219,6 +225,11 @@ const server = Bun.serve({
           },
         ]);
       }
+      if (req.method === "POST" && /\/issues\/\d+\/comments$/.test(path)) {
+        // A comment is made, as GitHub answers one.
+        entry.status = 201;
+        return Response.json({ html_url: `https://github.com/${path.replace("repos/", "")}#made` }, { status: 201 });
+      }
       if (path === "search/issues") return tagged(req, entry, { total_count: 0, items: [] });
       if (path.endsWith("/issues")) return tagged(req, entry, []);
       return tagged(req, entry, { message: "Not Found" }, 404);
@@ -235,6 +246,7 @@ const server = Bun.serve({
         ),
       });
     }
+    if (hostAway.on) return new Response("the host cannot be reached", { status: 503 });
     seen.push(`${req.method} ${url.pathname}`);
     // Everything that arrives here came through the Worker, as it does
     // through the tunnel: never a caller on this machine. (Deployed, the
@@ -540,6 +552,48 @@ try {
         (await githubSaid())?.quiet.core === null,
       `quiet until ${shortSaid}, GitHub said ${shortTo}; ${heldThen - askedThen} calls while quiet, ${hourly() - askedThen} after`,
     );
+    // What is held that Cloudflare can do itself, it does, with no
+    // machine. The host is out of reach and GitHub turns the account
+    // away, so a comment the owner makes is held. Then GitHub answers
+    // again and the owner says to try again now: the Worker asks to be
+    // woken, the runtime wakes it, and it makes the comment itself, once.
+    {
+      const commentId = "55555555-5555-4555-8555-555555555555";
+      const comments = (status: number) =>
+        outside.filter(
+          (o) =>
+            o.to === "github" && o.method === "POST" && o.path.endsWith("/issues/7/comments") && o.status === status,
+        ).length;
+      hostAway.on = true;
+      spent.until = Math.ceil(Date.now() / 1000) + 600;
+      const heldComment = (await (
+        await actAsOwner(
+          "issue.comment",
+          { issue: 7, text: "held by the smoke run, then done by the Worker" },
+          commentId,
+        )
+      ).json()) as { ok?: boolean; held?: boolean };
+      spent.until = 0;
+      check(
+        "turned away by GitHub with the host out of reach, a comment is held, and nothing was written",
+        heldComment.held === true && comments(403) === 1 && comments(201) === 0,
+        `${JSON.stringify(heldComment)}; ${comments(403)} turned away, ${comments(201)} made`,
+      );
+      const tryAgain = await actAsOwner("edge.retry", {});
+      await tryAgain.text();
+      for (let waited = 0; waited < 20_000 && comments(201) === 0; waited += 500) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      // (Time for it to be done a second time, if it were going to be.)
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      const waiting = (await (await asOwner("/console/api/machines")).json()) as { held?: { id: string }[] };
+      check(
+        "and when GitHub answers and the owner says to try again, the Worker wakes itself and makes the comment: once, with no machine",
+        tryAgain.status === 200 && comments(201) === 1 && !(waiting.held ?? []).some((h) => h.id === commentId),
+        `try again ${tryAgain.status}; ${comments(201)} made; still waiting ${JSON.stringify(waiting.held)}`,
+      );
+      hostAway.on = false;
+    }
     // Someone to tell: a device takes notifications (its service is a
     // known one and its key a real point; nothing is sent to it in
     // this run unless the clock's news is worth sending).

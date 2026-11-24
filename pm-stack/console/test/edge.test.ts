@@ -5236,6 +5236,500 @@ describe("the edge does the core itself", () => {
     expect(posted.slice(-1)).toEqual(["unrelated"]);
     expect(w.stored.get(`a:${newerId}`)).toMatchObject({ kind: "issue.comment", state: "done" });
   });
+
+  // ---- what is held, done here when this side can again (#13831) -----------
+
+  const COMMENT = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/comments$/.test(url);
+  type HeldWorld = Awaited<ReturnType<typeof primary>>;
+  /** The words of every comment asked of GitHub, in order (refused ones too). */
+  const commented = (w: HeldWorld) =>
+    w.githubCalls
+      .filter((c) => COMMENT(c.method, c.url))
+      .map((c) => (JSON.parse(c.body ?? "{}") as { body?: string }).body);
+  const heldIds = (w: HeldWorld) => ((w.stored.get("held") as { id: string }[] | undefined) ?? []).map((h) => h.id);
+  /** This side wakes itself: at the time it asked for, and (as in service) as an object that has just started. */
+  const wake = async (w: HeldWorld) => {
+    w.now.t = Math.max(w.now.t, w.alarm.at);
+    w.edge.now = w.makeEdge();
+    await w.edge.now.alarm();
+    await settle(w);
+  };
+  /** Turned away for comments with every machine away: each comment asked for is held. */
+  const heldComments = async (w: HeldWorld, comments: [id: string, issue: number, text: string][]) => {
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    for (const [id, issue, text] of comments) {
+      expect(await (await w.act("issue.comment", { issue, text }, id)).json()).toEqual({
+        ok: true,
+        held: true,
+        result: null,
+      });
+      w.now.t += 1_000;
+    }
+  };
+  const ID = (n: number) => `0f000000-0000-4000-8000-${String(100_000 + n).padStart(12, "0")}`;
+
+  test("what is held and never reached a machine is done here when this side can again: with no machine, once, and the owner sees it done", async () => {
+    const w = await primary();
+    const t0 = w.now.t;
+    await heldComments(w, [[ID(1), 7, "held, then done here"]]);
+    expect(w.stored.get(`a:${ID(1)}`)).toMatchObject({ state: "given" });
+    expect(commented(w)).toEqual(["held, then done here"]);
+    // The token is put right. Nothing tells this side so: it finds out when its hour for the
+    // kind is up, and it has asked to be woken then. A wake before that (to notice the laptop
+    // gone quiet) asks GitHub nothing about it.
+    w.ghRefuses.length = 0;
+    await wake(w);
+    expect(w.now.t).toBeLessThan(t0 + 60 * 60_000);
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(1)]]);
+    await wake(w);
+    expect(w.now.t).toBe(t0 + 60 * 60_000);
+    // Done here: asked of GitHub once more and no more, by no machine.
+    expect(commented(w)).toEqual(["held, then done here", "held, then done here"]);
+    expect([heldIds(w), w.stored.get("taken") ?? [], w.stored.get("handed") ?? [], w.ran]).toEqual([[], [], [], []]);
+    expect(w.stored.get(`a:${ID(1)}`)).toMatchObject({ kind: "issue.comment", state: "done", status: 200 });
+    const { doc } = await w.core();
+    expect(doc.edge).toEqual({ held: 0, primary: true });
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(1))).toMatchObject({
+      kind: "issue.comment",
+      status: "done",
+    });
+    // Sent again under its name, it is answered from the record, not done again; and a
+    // machine that comes back is handed nothing.
+    const again = (await (await w.act("issue.comment", { issue: 7, text: "held, then done here" }, ID(1))).json()) as {
+      again?: boolean;
+    };
+    expect([again.again, commented(w).length]).toEqual([true, 2]);
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands).toEqual([]);
+    expect(w.ran).toEqual([]);
+  });
+
+  test("kept with the laptop long gone and nobody to tell, it still asks to be woken for it: nothing else would wake it", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // The laptop went quiet, and that has been said. Nothing is left to wake this side.
+    await wake(w);
+    expect(w.stored.get("silent")).toBe(true);
+    const idle = w.alarm.at;
+    w.now.t += 3 * 60 * 60_000;
+    const kept = w.now.t;
+    await heldComments(w, [[ID(91), 7, "kept late at night"]]);
+    expect(idle).toBeLessThan(kept);
+    expect(w.alarm.at).toBe(kept + 60 * 60_000);
+    w.ghRefuses.length = 0;
+    await wake(w);
+    expect([commented(w), heldIds(w)]).toEqual([["kept late at night", "kept late at night"], []]);
+    // With nothing held, and nothing else to wake for, it asks for no wake at all.
+    const after = w.alarm.at;
+    await wake(w);
+    expect(w.alarm.at).toBe(after);
+  });
+
+  test("turned away for calling too often, what is held is done at the time GitHub gave and not before", async () => {
+    const w = await primary();
+    const t0 = w.now.t;
+    const back = Math.floor((t0 + 40 * 60_000) / 1000) * 1000;
+    w.ghLimits.push(COMMENT);
+    w.ghLimitSays.headers = { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(back / 1000) };
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "when GitHub answers" }, ID(2))).json()).toEqual({
+      ok: true,
+      held: true,
+      result: null,
+    });
+    w.ghLimits.length = 0;
+    const asked = w.githubCalls.length;
+    // Woken before the time (for the laptop gone quiet): nothing is asked of GitHub at all.
+    await wake(w);
+    expect([w.now.t < back, w.githubCalls.length, heldIds(w)]).toEqual([true, asked, [ID(2)]]);
+    // Its next wake is the time GitHub gave, and then it is done.
+    await wake(w);
+    expect(w.now.t).toBe(back);
+    expect(commented(w)).toEqual(["when GitHub answers", "when GitHub answers"]);
+    expect([heldIds(w), w.ran]).toEqual([[], []]);
+    expect(w.stored.get(`a:${ID(2)}`)).toMatchObject({ state: "done", status: 200 });
+  });
+
+  test("done in the order they were done: two about one thing one after the other, and one about another thing not kept behind them", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(11), 7, "first about seven"],
+      [ID(12), 8, "about eight"],
+      [ID(13), 7, "second about seven"],
+    ]);
+    w.ghRefuses.length = 0;
+    await wake(w);
+    await wake(w);
+    expect(commented(w).slice(1)).toEqual(["first about seven", "about eight", "second about seven"]);
+    expect([heldIds(w), w.ran]).toEqual([[], []]);
+  });
+
+  test("one a machine has been handed is the machine's: this side does not do it, nor anything else about the same thing", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(21), 7, "handed"],
+      [ID(22), 9, "about nine"],
+    ]);
+    // The laptop comes back and is handed both. It goes again before saying what became of them.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(21), ID(22)]);
+    expect(w.stored.get("handed")).toEqual([ID(21), ID(22)]);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    // A later one about the same thing as a handed one waits behind it, held.
+    w.now.t += 2 * 60 * 60_000;
+    w.ghRefuses.length = 0;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "behind it" }, ID(23))).json()).toMatchObject({
+      held: true,
+    });
+    const before = commented(w).length;
+    const kept = (w.stored.get("held") as { id: string; at: string }[]).map((h) => Date.parse(h.at));
+    // Woken (to notice the laptop gone quiet), none of the three is done here: two are the
+    // laptop's, which may have done them, and the third waits behind one of those.
+    await wake(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([before, [ID(21), ID(22), ID(23)]]);
+    expect(w.stored.get("taken") ?? []).toEqual([]);
+    // Nor does it wake itself over them again and again: nothing here is its own to do, and
+    // its next wake is the day's end of the oldest.
+    expect(w.alarm.at).toBe(kept[0] + 24 * 60 * 60_000 + 1_000);
+    // The laptop never comes back. At the day's end the first it was handed is dropped, and
+    // said to have been; what waited behind it is then this side's, and is done here, once.
+    await wake(w);
+    expect(heldIds(w)).toEqual([ID(22)]);
+    expect(commented(w).slice(before)).toEqual(["behind it"]);
+    const { doc } = await w.core();
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(21))).toMatchObject({
+      status: "failed",
+      note: expect.stringMatching(/more than a day/),
+    });
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(23))).toMatchObject({ status: "done" });
+  });
+
+  test("a machine reporting while this side is doing one: it is not handed that one, nor one behind it about the same thing, and each is done once", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(31), 7, "A"],
+      [ID(32), 7, "B"],
+      [ID(33), 8, "C"],
+    ]);
+    w.ghRefuses.length = 0;
+    w.now.t += 60 * 60_000;
+    // This side wakes and begins A; GitHub is slow to answer.
+    let answerNow: () => void = () => {};
+    w.ghHolds.push({
+      match: COMMENT,
+      wait: new Promise<void>((resolve) => {
+        answerNow = resolve;
+      }),
+    });
+    const waking = w.edge.now.alarm();
+    for (let turn = 0; turn < 200 && commented(w).length < 2; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(commented(w)).toEqual(["A", "A"]);
+    expect([heldIds(w), (w.stored.get("taken") as { id: string }[]).map((t) => t.id)]).toEqual([
+      [ID(32), ID(33)],
+      [ID(31)],
+    ]);
+    // The laptop is back, and reports while A is still being done.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    const answer = await w.link.now.once();
+    expect(answer?.commands.map((c) => c.id)).toEqual([ID(33)]);
+    expect(w.stored.get("handed")).toEqual([ID(33)]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment").map((r) => r.args.text)).toEqual(["C"]);
+    // GitHub answers. A is done here, then B behind it; C was the laptop's and is not done here.
+    w.ghHolds.length = 0;
+    answerNow();
+    await waking;
+    await settle(w);
+    expect(commented(w)).toEqual(["A", "A", "B"]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    expect(heldIds(w)).toEqual([ID(33)]);
+    // The laptop says C is done, and nothing waits.
+    await w.hostReads();
+    await w.link.now.once();
+    expect([heldIds(w), w.stored.get("handed") ?? []]).toEqual([[], []]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    for (const n of [31, 32]) expect(w.stored.get(`a:${ID(n)}`)).toMatchObject({ state: "done", status: 200 });
+  });
+
+  test("a newer one about a thing arriving while an older held one is being done here waits for it, and is done after", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(41), 7, "older"]]);
+    w.ghRefuses.length = 0;
+    w.now.t += 60 * 60_000;
+    let answerNow: () => void = () => {};
+    w.ghHolds.push({
+      match: (method, url) => COMMENT(method, url),
+      wait: new Promise<void>((resolve) => {
+        answerNow = resolve;
+      }),
+    });
+    const waking = w.edge.now.alarm();
+    for (let turn = 0; turn < 200 && commented(w).length < 2; turn++) await new Promise((r) => setTimeout(r, 1));
+    // The owner comments again on the same issue. It is not asked of GitHub until the older has ended.
+    w.net.edgeUp = true;
+    const newer = w.act("issue.comment", { issue: 7, text: "newer" }, ID(42));
+    for (let turn = 0; turn < 20; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(commented(w)).toEqual(["older", "older"]);
+    w.ghHolds.length = 0;
+    answerNow();
+    await waking;
+    expect(await (await newer).json()).toMatchObject({ ok: true });
+    await settle(w);
+    expect(commented(w)).toEqual(["older", "older", "newer"]);
+    expect(heldIds(w)).toEqual([]);
+  });
+
+  test("turned away again when it tries: what it took goes back as it was, where it was, and a machine can still be handed it", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(51), 7, "still refused"],
+      [ID(52), 8, "behind"],
+    ]);
+    // The hour passes and the token is as it was.
+    await wake(w);
+    await wake(w);
+    const tried = w.now.t;
+    expect(commented(w)).toEqual(["still refused", "still refused"]);
+    expect(heldIds(w)).toEqual([ID(51), ID(52)]);
+    expect([w.stored.get("taken") ?? [], w.stored.get("handed") ?? []]).toEqual([[], []]);
+    expect(w.stored.get(`a:${ID(51)}`)).toMatchObject({ state: "given" });
+    // Not tried again before the kind's next hour is up.
+    expect(w.alarm.at).toBe(tried + 60 * 60_000);
+    // Sent again under its name meanwhile, it is not done here: it is a machine's by name, and waits once.
+    w.ghRefuses.length = 0;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "still refused" }, ID(51))).json()).toMatchObject({
+      held: true,
+      again: true,
+    });
+    expect(commented(w)).toHaveLength(2);
+    // The laptop comes back, is handed both in order, and does each once.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(51), ID(52)]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment").map((r) => r.args.text)).toEqual([
+      "still refused",
+      "behind",
+    ]);
+    await w.hostReads();
+    await w.link.now.once();
+    expect(heldIds(w)).toEqual([]);
+    // Nothing more was asked of GitHub here.
+    expect(commented(w)).toHaveLength(2);
+  });
+
+  test("put away while it had one taken: an object that starts again settles each by its record, and nothing is done twice", async () => {
+    const w = await primary();
+    await heldComments(w, [
+      [ID(61), 7, "begun, and not known to have ended"],
+      [ID(62), 8, "never begun"],
+      [ID(63), 9, "back in the list already"],
+      [ID(64), 10, "ended"],
+      [ID(65), 11, "untouched"],
+    ]);
+    const held = w.stored.get("held") as { id: string; at: string }[];
+    const by = (n: number) => held.find((h) => h.id === ID(n)) as { id: string; at: string };
+    // As an object put away part-way would leave things: four taken, three of them out of the list.
+    w.stored.set("taken", [by(61), by(62), by(63), by(64), "not one", { id: 7 }]);
+    w.stored.set("held", [by(63), by(65)]);
+    w.stored.set(`a:${ID(61)}`, { at: w.now.t, kind: "issue.comment", state: "running" });
+    w.stored.set(`a:${ID(64)}`, { at: w.now.t, kind: "issue.comment", state: "done", status: 200, body: { ok: true } });
+    // (The one never begun was put away just after being turned away again: its name's record
+    // had been cleared for the try, and not yet written back.)
+    w.stored.delete(`a:${ID(62)}`);
+    const asked = commented(w).length;
+    w.edge.now = w.makeEdge();
+    const { doc } = await w.core();
+    // Never begun: it waits again, in its place (before the two that were kept after it).
+    expect(heldIds(w)).toEqual([ID(62), ID(63), ID(65)]);
+    expect(w.stored.get(`a:${ID(62)}`)).toMatchObject({ state: "given" });
+    expect(w.stored.has("taken")).toBe(false);
+    // Begun and not known to have ended: neither side does it again, and the owner is told to look.
+    expect(w.stored.get(`a:${ID(61)}`)).toMatchObject({ state: "done", status: 502 });
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(61))).toMatchObject({
+      status: "failed",
+      note: expect.stringMatching(/restarted while doing this/),
+    });
+    // The one that had ended is as its record says.
+    expect(w.stored.get(`a:${ID(64)}`)).toMatchObject({ state: "done", status: 200 });
+    expect(doc.edge).toEqual({ held: 3, primary: true });
+    // The laptop comes back: it is handed the three that wait, and no other.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(62), ID(63), ID(65)]);
+    expect(commented(w)).toHaveLength(asked);
+    // Something in storage that is not a list of them is nothing taken.
+    for (const odd of [7, "x", { id: ID(61) }, null]) {
+      w.stored.set("taken", odd);
+      w.edge.now = w.makeEdge();
+      expect([odd, (await w.core()).res.status]).toEqual([odd, 200]);
+    }
+  });
+
+  test("one that only a machine can do is a machine's: this side does not try it, and what comes after it about the same thing waits behind it", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const ref = "developing-today/code#1";
+    // Marking a need done is the laptop's to do; a comment on it is something this side does.
+    expect(await (await w.act("hands.done", { ref }, ID(111))).json()).toMatchObject({ held: true });
+    w.now.t += 1_000;
+    const asked = w.githubCalls.length;
+    expect(await (await w.act("need.comment", { ref, text: "after it" }, ID(112))).json()).toMatchObject({
+      held: true,
+    });
+    // Nothing was tried here for either, and neither was failed.
+    expect(heldIds(w)).toEqual([ID(111), ID(112)]);
+    expect(w.stored.get(`a:${ID(111)}`)).toMatchObject({ state: "given" });
+    // Woken, this side still does neither: the comment is behind what is a machine's.
+    await wake(w);
+    expect([heldIds(w), w.githubCalls.length]).toEqual([[ID(111), ID(112)], asked]);
+    const { doc } = await w.core();
+    expect(doc.acts.filter((a: { status: string }) => a.status === "failed")).toEqual([]);
+    // The laptop comes back and does both, in order.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(111), ID(112)]);
+  });
+
+  test("a pass that could do nothing is not tried again at once, until the owner says to", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(121), 7, "when storage is well"]]);
+    w.ghRefuses.length = 0;
+    w.now.t += 60 * 60_000;
+    // What it takes cannot be written down: it is not taken, and still waits.
+    w.storeFails.add("taken");
+    await w.edge.now.alarm();
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(121)]]);
+    expect(((await w.core()).doc.edge as { held: number }).held).toBe(1);
+    // Its next wake for it is a minute on, not the next second.
+    expect(w.alarm.at).toBe(w.now.t + 60_000);
+    // Storage is well again, and the owner says to try again now: it wakes at once, and does it.
+    w.storeFails.clear();
+    w.net.edgeUp = true;
+    expect((await w.act("edge.retry", {})).status).toBe(200);
+    expect(w.alarm.at).toBe(w.now.t + 1_000);
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect([commented(w).length, heldIds(w)]).toEqual([2, []]);
+  });
+
+  test("a side that no longer does the core does none of what is held: it stays a machine's, and is not failed", async () => {
+    const w = await primary();
+    await heldComments(w, [[ID(131), 7, "for whoever does the core"]]);
+    w.ghRefuses.length = 0;
+    // The switch is turned off (which restarts the Worker), and the hour passes.
+    w.edge.now = w.makeEdge(false);
+    w.now.t += 61 * 60_000;
+    await w.edge.now.alarm();
+    await settle(w);
+    expect([commented(w).length, heldIds(w)]).toEqual([1, [ID(131)]]);
+    expect(w.stored.get(`a:${ID(131)}`)).toMatchObject({ state: "given" });
+    // The laptop comes back and does it.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(131)]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+  });
+
+  test("an older held one this side is turned away for again keeps a newer one about the same thing behind it, though the newer is a kind it can do", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/labels$/.test(url);
+    w.ghRefuses.push(labels);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    expect(await (await w.act("issue.rank", { issue: 201, rank: "now" }, ID(141))).json()).toMatchObject({
+      held: true,
+    });
+    // The hour for ranking is up, GitHub still refuses it, and the owner comments on the same
+    // issue. The rank is tried first, refused again, and goes back; the comment, which this
+    // side could make, waits behind it and is not made out of turn.
+    w.now.t += 61 * 60_000;
+    expect(await (await w.act("issue.comment", { issue: 201, text: "after the rank" }, ID(142))).json()).toMatchObject({
+      held: true,
+    });
+    expect([commented(w), heldIds(w)]).toEqual([[], [ID(141), ID(142)]]);
+    expect(w.stored.get(`a:${ID(141)}`)).toMatchObject({ state: "given" });
+    // The laptop comes back and does both, in order.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    await w.hostReads();
+    expect((await w.link.now.once())?.commands.map((c) => c.id)).toEqual([ID(141), ID(142)]);
+  });
+
+  test("of two ranks held for one issue the last wins, and a comment about an issue does not replace its rank", async () => {
+    const w = await primary();
+    const labels = (method: string, url: string) => method === "POST" && /\/issues\/\d+\/labels$/.test(url);
+    w.ghRefuses.push(labels);
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    for (const [id, issue, rank] of [
+      [ID(71), 201, "next"],
+      [ID(72), 201, "now"],
+      [ID(73), 202, "priority/high"],
+    ] as const) {
+      expect(await (await w.act("issue.rank", { issue, rank }, id)).json()).toMatchObject({ held: true });
+      w.now.t += 1_000;
+    }
+    w.ghRefuses.length = 0;
+    // The hour for ranking is up, and before this side has woken the owner comments on #202:
+    // its rank, held and older, is done first. A comment is not a newer rank.
+    w.now.t += 60 * 60_000;
+    w.net.edgeUp = true;
+    expect(await (await w.act("issue.comment", { issue: 202, text: "and a word" }, ID(74))).json()).toMatchObject({
+      ok: true,
+    });
+    expect(w.ghLabels[202]).toContain("priority/high");
+    expect(w.stored.get(`a:${ID(73)}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 200 });
+    expect(commented(w)).toEqual(["and a word"]);
+    // Then it wakes: of the two ranks for #201 the older is dropped as replaced, and the newer done.
+    await wake(w);
+    expect(w.stored.get(`a:${ID(71)}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 409 });
+    expect(w.stored.get(`a:${ID(72)}`)).toMatchObject({ kind: "issue.rank", state: "done", status: 200 });
+    expect(w.ghLabels[201]).toContain("now");
+    expect(w.ghLabels[201]).not.toContain("next");
+    expect(heldIds(w)).toEqual([]);
+    const { doc } = await w.core();
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(71))).toMatchObject({
+      status: "failed",
+      note: expect.stringMatching(/Replaced by a newer issue\.rank/),
+    });
+  });
+
+  test("with no machine ever reporting, what only a machine can do is still dropped after a day, and said to have been", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const t0 = w.now.t;
+    expect(await (await w.act("message.send", { to: ["lane-1"], text: "nobody came" }, ID(81))).json()).toMatchObject({
+      held: true,
+    });
+    // Woken meanwhile (for the laptop gone quiet), it is still held, and not this side's to try.
+    await wake(w);
+    expect([w.now.t < t0 + 60 * 60_000, heldIds(w)]).toEqual([true, [ID(81)]]);
+    // Its next wake is the day's end of it.
+    await wake(w);
+    expect(w.now.t).toBe(t0 + 24 * 60 * 60_000 + 1_000);
+    expect(heldIds(w)).toEqual([]);
+    const { doc } = await w.core();
+    expect(doc.acts.find((a: { id: string }) => a.id === ID(81))).toMatchObject({
+      status: "failed",
+      note: expect.stringMatching(/more than a day/),
+    });
+  });
 });
 
 describe("telling the owner, with no machine", () => {

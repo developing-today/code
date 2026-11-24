@@ -973,3 +973,82 @@ One small thing seen with it: the check's time moved from 03:42:46 to
 03:42:49 between two reads of health. Two health reads arrived while
 the hourly check was due, and each ran it. At most a few reads of
 GitHub once an hour, and nothing shown wrongly; noted and left.
+
+## 2026-11-24T04:30Z Update: what is held, done here when the edge can (#13831)
+
+**What it was.** Something the owner did while the edge was turned
+away and no machine could be reached was held for a machine, and only
+a machine ever did it. Since the edge keeps to GitHub's own time for
+asking again, that could be most of an hour of waiting for a laptop
+that was not coming, for a comment or a rank the edge could have made
+itself a few minutes later.
+
+**What it does now.** When it can act again (the time GitHub gave has
+come, the hour it leaves a kind alone is up, or the owner says to try
+again) the edge wakes itself and does what it holds of the kinds it
+runs: the oldest first, each thing's actions in the order they were
+done, and nothing about a thing behind one it could not do. The wake
+is the object's own alarm, asked for whenever something is kept; there
+is no other place the held list is worked through.
+
+**Never twice.** An action is one side's or the other's, never both.
+
+- _A machine's_ once a report's answer has handed it out: the machine
+  may be doing it. The edge never takes it, nor anything else about
+  the same thing while it waits.
+- _The edge's_ once it is out of the held list, which happens, and is
+  written down (`taken`), before anything is begun. A machine that
+  reports meanwhile is not handed it, nor what waits behind it about
+  the same thing (that would be done out of turn).
+- _Turned away again_ before anything was written, it goes back where
+  it was, a machine's by name as before.
+- _Put away part-way_, it is settled by the next object from its
+  record: ended; never begun, and it waits again; or begun and not
+  known to have ended, which neither side does again, and the owner is
+  told to look.
+
+**Four faults in what was there, found doing this.** The edge already
+did an older held action itself in one case, when a newer one about
+the same thing arrived (#13398, a fleet lane's #13652).
+
+- It began the older one while it was still in the held list. A
+  machine reporting before it ended was handed it too, and would have
+  done it a second time.
+- Turned away while trying it, the record that made the name a
+  machine's was cleared and not put back: sent again under that name
+  later, it could have been done here and by a machine.
+- A held rank was dropped as "replaced" by any newer action about the
+  same issue, a comment included. Only a newer rank replaces a rank.
+- An older held action that only a machine can do (marking a need
+  done) was tried here when a comment on the same need arrived, failed
+  for want of the means, and was lost. The newer one now waits behind
+  it.
+
+**Also.** The day's limit on what is held was only kept when a machine
+reported; it is kept on the edge's own wake now. A pass that could do
+nothing is not tried again for a minute, so that a fault cannot have
+the object waking every second.
+
+**Checked.** Fifteen tests at the edge, each starting from the owner's
+action being held: done here once with no machine; at GitHub's time
+and not before; in order; a handed one left alone, with what waits
+behind it; a machine reporting half-way through; a newer one arriving
+half-way through; turned away again; put away part-way (each of the
+three records); the last rank winning, and a comment not replacing
+one; what only a machine can do left for it; a side that no longer
+does the core doing none of it; the day's limit with no machine; a
+wake asked for with nothing else to wake it; and the pause after a
+pass that did nothing. 41 single faults planted in the new code: 40
+fail a test. The one that does not takes a failure of storage in the
+middle of an action for being turned away; the store the tests have
+cannot fail in the middle of one and work again for the next write,
+so the two cannot be told apart there. In the real runtime: with the
+host out of reach and GitHub's stand-in turning the Worker away, a
+comment is held and nothing written; when it answers and the owner
+says to try again, the Worker's own alarm fires and the comment is
+made once.
+
+**Not done.** An action handed to a machine that then never reports
+stays the machine's until the day is up: the edge cannot know whether
+it was done. Every kind is kept to GitHub's time, though moving a task
+asks only the queue store.

@@ -457,8 +457,31 @@ open nothing.
   same issue, task, reference or set of questions) that a machine has
   not taken yet, even when the machine can be reached again: sent
   straight on it would be done first, and the older one would undo it.
-  What is about something else goes straight on. Not covered (#13398):
-  an older action held for a machine and a newer one about the same
-  thing that the edge does itself.
+  What is about something else goes straight on. Where the newer one is
+  the edge's own to do, the older held one still comes first: if a
+  machine has been handed it, or only a machine can do it, the newer
+  waits behind it; otherwise the edge does the older itself first (or,
+  for a rank followed by a newer rank of the same issue, drops it as
+  replaced: the last one wins, and only over its own kind).
+- **What is held and the edge can do, it does itself when it can.**
+  What the owner did while the edge was turned away and no machine
+  could be reached is held "for a machine", but it does not have to
+  wait for one. When the time GitHub gave has come, or the hour the
+  edge leaves a kind alone is up, or the owner says to try again, the
+  edge wakes itself and does what it holds of the kinds it runs: the
+  oldest first, and each thing's actions in the order they were done.
+  Nothing is done twice, by one rule: an action is one side's or the
+  other's. It is a machine's once a report's answer has handed it out
+  (the machine may be doing it, so the edge never takes it, nor
+  anything else about the same thing), and the edge's once it has
+  taken it out of the held list, which it does, and writes down
+  (`taken`), before it begins. A machine reporting meanwhile is not
+  handed it, nor what waits behind it about the same thing. Turned away
+  again before anything was written, the action goes back where it
+  was, a machine's by name as before. An object put away with an action
+  taken is settled by the next one from its record: ended; never begun,
+  so it waits again; or begun and not known to have ended, which
+  neither side does again and the owner is told to look at. What has
+  waited a day is dropped whether or not a machine ever reports.
 - The storage is one Durable Object. A section larger than one stored
   value is kept in pieces.
