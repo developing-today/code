@@ -741,12 +741,20 @@ mod tests {
     }
 
     #[test]
-    fn zstd_codec_is_rejected_until_the_writer_settles_it() {
+    fn zstd_codec_decompresses_before_applying_span_offsets() {
         let mut manifest = standard_manifest();
         manifest["span_codec"] = json!("zstd");
-        let fixture = build(manifest, b"hello world!", &f32le(&[1.0, -2.5, 0.5, 3.25]));
-        let err = ColdShard::open(&fixture.bytes).expect_err("zstd is out of this slice");
-        assert!(err.to_string().contains("zstd"), "error: {err}");
+        let encoded = zstd::encode_all(&b"hello world!"[..], 0).expect("test span compresses");
+        let fixture = build(manifest, &encoded, &f32le(&[1.0, -2.5, 0.5, 3.25]));
+        let shard = ColdShard::open(&fixture.bytes).expect("zstd span section opens");
+        assert_eq!(
+            shard.reconstruct_version("file-1", 1).expect("v1 reconstructs"),
+            b"hello world"
+        );
+        assert_eq!(
+            shard.reconstruct_version("file-1", 2).expect("v2 reconstructs"),
+            b"hello !"
+        );
     }
 
     #[test]
