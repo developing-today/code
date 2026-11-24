@@ -1610,3 +1610,25 @@ words, all caught after three tests were tightened.
 
 **Not seen.** The screen as Cloudflare serves it to a signed-in owner.
 It was looked at on the machine, drawn from the live queue and GitHub.
+
+## 2026-11-24T09:29Z Correction: whole numbers from the queue's store came as text
+
+**Found.** The first look at the Done screen on the machine, drawn from
+the live queue: 709 tasks finished in the last day, and not one of them
+showed its issue. The tasks had issues. The queue's store sends a whole
+number over HTTP as text marked as an integer (`{"type":"integer","value":"7920"}`),
+and the console read the text and dropped the mark. Every screen so far
+had coped, by treating numbers loosely. The new read asked for a number
+and, given text, showed nothing.
+
+**Why the tests had not said so.** The tests' stand-in for the store
+answered with plain numbers, which the store never does. The oracle did
+not match the thing it stood in for.
+
+**Fixed.** The store's values are read by their marks: a whole number
+that a number can hold exactly is read as that number, one that is too
+large stays the text it came as, and text that looks like a number
+stays text. The work tests' store now answers the way the real one
+does, so a read that mishandles it fails there. Checked against the
+store's own format, six faults planted and caught, and seen on the
+machine: the same 709 tasks, each with its issue.

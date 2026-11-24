@@ -24,6 +24,16 @@ const CFG = readConfig({ HOME: "/h" });
 const REPO = "developing-today/code";
 
 type Sql = { sql: string; args: (string | number)[] };
+/** A value as the queue's store sends it over HTTP: a whole number is
+ * sent as text marked as an integer, nothing as a null with no value. */
+const asTheStore = (value: unknown) =>
+  value === null || value === undefined
+    ? { type: "null" }
+    : typeof value === "number" && Number.isInteger(value)
+      ? { type: "integer", value: String(value) }
+      : typeof value === "number"
+        ? { type: "float", value }
+        : { type: "text", value: String(value) };
 /** A queue store and a dashboard in one fetch, both recording. */
 function world(opts: {
   rows?: (st: Sql) => Record<string, unknown>[] | { affected: number };
@@ -57,7 +67,7 @@ function world(opts: {
             const cols = Object.keys(out[0] ?? {}).map((name) => ({ name }));
             return {
               type: "ok",
-              response: { result: { cols, rows: out.map((r) => cols.map((c) => ({ value: r[c.name] }))) } },
+              response: { result: { cols, rows: out.map((r) => cols.map((c) => asTheStore(r[c.name]))) } },
             };
           }),
         }),
