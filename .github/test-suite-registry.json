@@ -338,6 +338,19 @@
       "notes": "The native-shell check runs every integration target in this non-default workspace member; suite paths trued up 2026-11-17 while repairing the registry ratchet (#10329)."
     },
     {
+      "id": "id.tui-shell.capability-statement",
+      "paths": ["pkgs/id/crates/id-tui-shell/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-tui-shell runs cargo nextest -p id-tui-shell)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-tui-shell",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The tui-shell check runs every integration target in this non-default workspace member; the first target is the capability-statement check recorded for #12818 (shells v2 slice 2, decision D3)."
+    },
+    {
       "id": "id.rust.id-hw-shell.integration",
       "paths": ["pkgs/id/crates/id-hw-shell/tests/live_wake.rs"],
       "invocation": "nix flake check ./pkgs/id (check test-hw-shell runs cargo nextest -p id-hw-shell)",
