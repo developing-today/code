@@ -45,7 +45,7 @@ jobs:
             echo "CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are required to deploy decision-events." >&2
             exit 1
           fi
-          bunx wrangler deploy --var "VERSION:${GITHUB_SHA}" --message "${GITHUB_SHA}"
+          bunx wrangler deploy --var "VERSION:${GITHUB_SHA}"
       - name: Require the deployed health version to match this commit
         working-directory: pm-stack/decision-events-worker
         run: >-
