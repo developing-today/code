@@ -107,6 +107,9 @@ their mailbox, mark what they handled, and post replies and reports back
 | `GET /api/<token>/fleet/agents`   | owner | registered agents, groups, last seen, unread counts                                       |
 | `GET /api/<token>/fleet/messages` | owner | `agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`                   |
 | `POST /api/<token>/fleet/send`    | owner | `{body, to, kind?, sender?}`; `kind` is `message` (default) or `command`                  |
+| `POST /api/<token>/fleet/credentials/mint` | owner | `{agent, scopes?, addr?}`: mint a credential for an agent or a service (below); the value is returned once, only its hash stored |
+| `GET /fleet/<credential>/agents`  | credential (`read`) | the agents list, as the owner's                                                          |
+| `GET /fleet/<credential>/messages` | credential (`read`) | the fleet message log, as the owner's (`agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`) |
 
 The **fleet token** opens only `/fleet/...`. It is derived from the access
 token (HMAC-SHA256 of `ACCESS_TOKEN` over the label
@@ -123,6 +126,18 @@ holding the fleet token (or the bridge's own tokens) can send what reads
 as the user's word to any connector or agent; per-agent tokens would narrow
 that. An agent's inbox shows a command with `sender` and `from_addr`
 `null`, like one from central.
+
+A credential can also be bound to a **service identity** (#14373):
+minted with `addr: "service:<name>"` (the name must be the
+credential's own agent name), its sends go out from `service:<name>`
+instead of `agent:<name>`, so the log tells a service's sends apart
+from an agent's and from central's. The PM stack holds such a
+credential — minted for `pm-stack`, scopes `send` + `read`, kept as a
+Worker secret by name — and its console edge and hosted door call the
+bridge over a service binding with it, so a message to an agent is
+delivered with no machine relaying it. The `read` scope is never
+minted for agents (enroll mints `inbox` + `send` only). Revoking the
+agent's credentials on the bridge stops the service's sends there.
 
 Commands reach agents by mailbox rather than by webhook. The event
 wake-ups below push to a callback URL; fleet agents have none (Muse lanes

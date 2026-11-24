@@ -54,6 +54,14 @@
 //                                     fleet credential + notes token once
 //   POST /api/<token>/fleet/credentials/revoke  owner: revoke an agent's
 //                                     fleet credential(s)
+//   POST /api/<token>/fleet/credentials/mint  owner: mint a credential
+//                                     directly ({agent, scopes?, addr?};
+//                                     addr service:<own name> + scope
+//                                     "read" is a service credential,
+//                                     #14373): the value is returned once
+//   GET  /fleet/<credential>/agents|messages  the owner's pipeline
+//                                     views, for a credential holding
+//                                     the "read" scope (#14373)
 //   POST /api/<token>/notes-tokens/revoke  owner: revoke an identity's
 //                                     notes token(s)
 //   POST /notes/register              owner Bearer token; registers a

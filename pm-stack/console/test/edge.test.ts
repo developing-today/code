@@ -70,7 +70,7 @@ const SECTION_NAMES = [
   "more",
 ];
 
-async function setup(options: { direct?: boolean; kinds?: readonly string[] } = {}) {
+async function setup(options: { direct?: boolean; kinds?: readonly string[]; bridge?: boolean } = {}) {
   const now = { t: START };
   const clock = () => now.t;
   const access = await signer("k1");
@@ -666,6 +666,37 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     }
     throw new Error(`unexpected GitHub call ${method} ${url}`);
   };
+  /** The bridge, as the edge reaches it over its service binding
+   * (#14373): every call recorded, and the agents and the message log
+   * it answers with. `bridgeRefuses` makes its next answer the plain
+   * 404 of a credential the bridge no longer knows. */
+  const bridgeCalls: { method: string; url: string; body?: string }[] = [];
+  const bridgeAgents = [
+    { name: "lane-1", groups: ["muse"], first_seen: "2026-11-24T00:00:00Z", last_seen: "2026-11-24T01:00:00Z" },
+  ];
+  const bridgeLog = [
+    { id: 3, agent: "lane-1", direction: "inbound", kind: "message", sender: "service:pm-stack", body: "earlier" },
+  ];
+  const bridgeRefuses = { on: false };
+  const bridgeFetch = (async (
+    url: string,
+    init: { method?: string; headers?: Record<string, string>; body?: string },
+  ) => {
+    const u = String(url);
+    const method = init?.method ?? "GET";
+    bridgeCalls.push({ method, url: u, body: init?.body });
+    if (bridgeRefuses.on) return { ok: false, status: 404, json: async () => JSON.parse("") };
+    if (method === "POST" && u.endsWith("/send")) {
+      return { ok: true, status: 201, json: async () => ({ messages: [], fleet: [{ id: 9, agent: "lane-1" }] }) };
+    }
+    if (method === "GET" && u.endsWith("/agents")) {
+      return { ok: true, status: 200, json: async () => ({ agents: bridgeAgents }) };
+    }
+    if (method === "GET" && u.includes("/messages")) {
+      return { ok: true, status: 200, json: async () => ({ messages: bridgeLog }) };
+    }
+    throw new Error(`unexpected bridge fetch ${method} ${u}`);
+  }) as never;
   /** The direct source, made to fail by a test that turns it on. */
   const directDown = { on: false };
   const directFetch = (async (
@@ -801,6 +832,7 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
             enabled: true,
             githubToken: "gh-test",
             queueToken: "queue-test",
+            ...(options.bridge ? { bridgeToken: "pm-cred-test", bridgeFetch } : {}),
             fetchImpl: asThePlatformFetch(directFetch) as typeof directFetch,
             ...(options.kinds ? { kinds: options.kinds } : {}),
           }
@@ -1225,6 +1257,10 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     access,
     edgeConfig,
     directDown,
+    bridgeCalls,
+    bridgeAgents,
+    bridgeLog,
+    bridgeRefuses,
     githubCalls,
     queueCalls,
     strays,
@@ -3767,6 +3803,60 @@ describe("the edge does the core itself", () => {
     expect(later.res.status).toBe(200);
     expect(later.doc.board.counts).toEqual({ claimed: 2, blocked: 1 });
     expect(later.doc.read.board).toBe(new Date(w.now.t).toISOString());
+  });
+
+  test("a message is delivered by the edge through the bridge, with every machine away, and the agents and the log are read there", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.hostSaw.length = 0;
+    // Every machine goes away: nothing can be relayed or held for one.
+    w.net.hostUp = false;
+    const sent = await w.act("message.send", { to: ["lane-1"], text: "from the edge" });
+    expect(await sent.json()).toEqual({ ok: true, result: { to: ["lane-1"], command: false } });
+    // The bridge was asked once, over its binding, as the PM stack.
+    expect(w.bridgeCalls).toHaveLength(1);
+    expect(w.bridgeCalls[0].method).toBe("POST");
+    expect(w.bridgeCalls[0].url).toBe("https://bridge.internal/fleet/pm-cred-test/send");
+    expect(JSON.parse(w.bridgeCalls[0].body ?? "{}")).toEqual({
+      agent: "pm-stack",
+      to: ["lane-1"],
+      body: "from the edge",
+      kind: "message",
+    });
+    // Nothing waits for a machine, and no machine was asked for anything.
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held).toEqual([]);
+    expect(w.ran).toEqual([]);
+    // The agents list is the bridge's, read here: the ops document
+    // shows the agent the bridge named, not the host's empty list.
+    const ops = (await (await w.browse("/console/api/doc/ops")).json()) as { agents: { name: string }[] };
+    expect(ops.agents.map((a) => a.name)).toEqual(["lane-1"]);
+    // The message log is the bridge's too, at the address the app asks.
+    const log = (await (await w.browse("/console/api/messages?limit=15")).json()) as { body: string }[];
+    expect(log.map((m) => m.body)).toEqual(["earlier"]);
+    expect(w.bridgeCalls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "POST https://bridge.internal/fleet/pm-cred-test/send",
+      "GET https://bridge.internal/fleet/pm-cred-test/agents",
+      "GET https://bridge.internal/fleet/pm-cred-test/messages?limit=15&order=desc",
+    ]);
+    expect(w.hostSaw).not.toContain("GET /console/api/messages?limit=15");
+  });
+
+  test("a bridge credential the bridge no longer knows stops the send here, with the reason said", async () => {
+    const w = await setup({ direct: true, bridge: true });
+    await w.hostReads();
+    await w.link.now.once();
+    w.net.hostUp = false;
+    w.bridgeRefuses.on = true;
+    const sent = await w.act("message.send", { to: ["lane-1"], text: "never sent" });
+    expect(sent.status).toBe(502);
+    expect(((await sent.json()) as { error: string }).error).toContain("turned the PM credential away");
+    // It was not handed to a machine either: the refusal is the
+    // credential's, and a machine's own dispatch is another matter.
+    const machines = (await (await w.browse("/console/api/machines")).json()) as MachinesAnswer;
+    expect(machines.held).toEqual([]);
+    expect(w.ran).toEqual([]);
   });
 
   test("a section is read again when its own interval has passed, behind the answer and never in its way", async () => {
