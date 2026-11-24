@@ -127,9 +127,7 @@ class BundleCapCount(unittest.TestCase):
     def test_incident_launch_counted_in_full(self):
         self.assertEqual(self.count("any-n", "ses_incident"), 12)
         # At or past the cap: the next ordinary claim refuses.
-        self.assertGreaterEqual(
-            self.count("any-n", "ses_incident"), BUNDLE_CLAIM_CAP
-        )
+        self.assertGreaterEqual(self.count("any-n", "ses_incident"), BUNDLE_CLAIM_CAP)
 
     def test_fresh_launch_has_one_claim_left(self):
         self.assertEqual(self.count("any-n", "ses_fresh"), 9)

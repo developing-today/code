@@ -7,11 +7,14 @@ verb links: backlinks, neighbourhood, recent changes.
 Model gap: D3 v1 has no collection kind and no collect verb. The PoC admits
 `collect` provisionally (see README.md) and records the gap on #13885.
 """
+
 import json
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-FIXTURES = REPO / "doc" / "2026-11-24_design_id-graph-layer-typed-links-verbs" / "fixtures"
+FIXTURES = (
+    REPO / "doc" / "2026-11-24_design_id-graph-layer-typed-links-verbs" / "fixtures"
+)
 
 CONTENT_FILES = [
     "chat-message.json",
@@ -78,7 +81,11 @@ def collect(objects, links, member_ids, created_claim):
 def backlinks(links, target_id, verb=None):
     """Derived index: links whose target is target_id (what links here)."""
     return sorted(
-        (l for l in links.values() if l["target"] == target_id and (verb is None or l["verb"] == verb)),
+        (
+            l
+            for l in links.values()
+            if l["target"] == target_id and (verb is None or l["verb"] == verb)
+        ),
         key=lambda l: l["object_id"],
     )
 
@@ -101,7 +108,11 @@ def recent_changes(objects, links, limit=10):
 
 
 def collection_members(links, collection_id):
-    return sorted(l["target"] for l in links.values() if l["verb"] == "collect" and l["source"] == collection_id)
+    return sorted(
+        l["target"]
+        for l in links.values()
+        if l["verb"] == "collect" and l["source"] == collection_id
+    )
 
 
 def verbs_in(links):

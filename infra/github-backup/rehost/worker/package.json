@@ -1,1 +1,8 @@
-{"name":"fleet-git-rehost","private":true,"scripts":{"test":"node --test test/"},"type":"module"}
+{
+  "name": "fleet-git-rehost",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "type": "module"
+}

@@ -313,6 +313,10 @@ export function summary(sections: Record<string, unknown>, at: number): Record<s
   const waiting = list((sections.sessions as { waiting?: unknown } | null)?.waiting).length;
   const asks = list(sections.asks);
   const questions = count((sections.questionCount as { total?: unknown } | null)?.total);
+  // Unread instructions in the owner's pipeline (#14377): the count
+  // the pipeline section is counted down to, and nothing of the feed
+  // itself — the token that reads this summary stays summary-scoped.
+  const unreadInstructions = count((sections.pipeline as { unreadInstructions?: unknown } | null)?.unreadInstructions);
   // The same sum as the app's own "Needs me" badge.
   const hands = list(census.hands).length + waiting;
   const reviews = list(census.reviews).length;
@@ -332,6 +336,7 @@ export function summary(sections: Record<string, unknown>, at: number): Record<s
         .map((t) => clip(t.title, 90)),
     },
     needs: { total: questions + hands + reviews, questions, hands, reviews },
+    messages: { unreadInstructions },
     asks: {
       answered: asks.filter((a) => a.status === "answered").length,
       waiting: asks.filter((a) => a.status !== "answered" && a.status !== "done").length,

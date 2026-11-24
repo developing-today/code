@@ -33,4 +33,34 @@ final class Links {
         }
         return open(context, "ask/say=" + Uri.encode(text));
     }
+
+    /**
+     * Whether shared text is an enroll command (#14377): a
+     * `fleet agent enroll … --bootstrap <token>` line, as the
+     * console's provisioning form shows it. The token is opaque — it
+     * has no shape of its own — so a command is known by its words:
+     * it must name the enroll step and carry a bootstrap token. The
+     * console reads the binding out of it the same way.
+     */
+    static boolean enrollCommand(CharSequence text) {
+        if (text == null) {
+            return false;
+        }
+        String shared = text.toString();
+        return shared.contains("enroll") && shared.contains("--bootstrap");
+    }
+
+    /**
+     * Open provisioning on the Agents screen with an enroll command
+     * that was shared to the phone. The command travels after the
+     * "#" like words for the Ask box do: it stays on the phone, and
+     * the console shows it there once, as it shows a mint.
+     */
+    static Intent provision(Context context, CharSequence words) {
+        String text = words.toString().trim();
+        if (text.length() > MAX_TEXT) {
+            text = text.substring(0, MAX_TEXT);
+        }
+        return open(context, "more/agents/enroll=" + Uri.encode(text));
+    }
 }

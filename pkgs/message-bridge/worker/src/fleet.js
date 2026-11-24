@@ -18,6 +18,13 @@
 //                                      &unread_only=&mark_read=&limit=: the
 //                                      agent's inbound rows, oldest first
 //   POST /fleet/<fleet token>/ack      {agent, up_to_id | ids}: mark read
+//   POST /fleet/<fleet token>/work     {agent, id, state, task_id?}:
+//                                      record the work-item lifecycle of
+//                                      one of the agent's own inbound
+//                                      rows (design §4.6): state is
+//                                      acted | queued | done, moving
+//                                      only forward from received;
+//                                      queued names its queue task id
 //   POST /fleet/<fleet token>/send     {agent, body, to?, kind?, reply_to?}:
 //                                      a message from the agent. With no
 //                                      to it goes to central (or, with
@@ -72,7 +79,8 @@
 // notes-token model); it acts only as its own agent — hello/inbox/ack
 // for its own name (scope "inbox"), send with from_addr fixed to
 // agent:<its name> (scope "send") — and every refusal is the usual
-// plain 404. The owner mints single-use, expiring bootstrap tokens
+// plain 404. Its groups are the ones bound at mint time: a
+// credentialed hello or inbox call cannot change them (#14370). The owner mints single-use, expiring bootstrap tokens
 // bound at mint time to a name, kind and groups (enroll_token, hash
 // only):
 //
@@ -111,13 +119,27 @@
 // agent-sent (agent:<name>) ones in the owner's log; a command still
 // reaches its agent with no sender, as every command does.
 //
-// A third scope, "read", opens the owner's two pipeline views to the
-// credential that holds it, at the agent-side address:
+// A third scope, "read", opens the owner's views to the credential
+// that holds it, at the agent-side address:
 //
 //   GET  /fleet/<credential>/agents    the registered agents (the
 //                                      ownerRoute "agents" store op)
 //   GET  /fleet/<credential>/messages  the fleet message log (the
 //                                      ownerRoute "messages" store op)
+//   GET  /fleet/<credential>/pipeline  the unified pipeline feed
+//                                      (pipeline.js, #14374)
+//   GET  /fleet/<credential>/directory the unified agents list —
+//                                      fleet registry + note
+//                                      identities (pipeline.js)
+//   GET  /fleet/<credential>/credentials  per-agent credential state
+//                                      (active / revoked; never a
+//                                      hash), as the owner's own
+//                                      GET /api/<owner>/fleet/credentials
+//   GET  /fleet/<credential>/offers   every offer with its claims,
+//                                      as the owner's own
+//                                      GET /api/<owner>/fleet/offers
+//                                      (#14375: the console composer's
+//                                      offer rows read through this)
 //
 // Enroll-minted agent credentials never carry "read" (the exchange
 // mints CREDENTIAL_SCOPES only): the pipeline stays the owner's and
@@ -156,8 +178,9 @@
 
 import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./auth.js";
 import { GLOB_SEGMENT, globMatch, isGlob } from "./glob.js";
-import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
+import { InputError, MAX_BODY, MAX_SENDER, normalizeWorkMark, workTransitionError } from "./messages.js";
 import { normalizeNoteIdentity, noteTokenHash } from "./notes.js";
+import { pipelineFeed, unifiedAgents } from "./pipeline.js";
 import { relay, replyAddress } from "./relay.js";
 
 export const FLEET_KINDS = ["message", "command"];
@@ -362,6 +385,8 @@ export function normalizeFleetOp(op, a = {}) {
       };
     case "ack":
       return { agent: normalizeName(a.agent), ...ackArgs(a) };
+    case "work":
+      return { agent: normalizeName(a.agent), ...normalizeWorkMark(a) };
     case "post":
       return {
         agent: normalizeName(a.agent),
@@ -474,6 +499,10 @@ export function fleetSchema(sql) {
   // Rows from before connectors and agents could message agents all came from central.
   const cols = sql.exec("PRAGMA table_info(fleet_message)").toArray();
   if (!cols.some((c) => c.name === "from_addr")) sql.exec("ALTER TABLE fleet_message ADD COLUMN from_addr TEXT");
+  // The instruction work-item lifecycle (#14372, design §4.6): null
+  // until the receiving agent marks the row; null reads as "received".
+  if (!cols.some((c) => c.name === "work_state")) sql.exec("ALTER TABLE fleet_message ADD COLUMN work_state TEXT");
+  if (!cols.some((c) => c.name === "work_task_id")) sql.exec("ALTER TABLE fleet_message ADD COLUMN work_task_id INTEGER");
   sql.exec("CREATE INDEX IF NOT EXISTS fleet_message_mailbox ON fleet_message (agent, direction, read_at)");
   // Per-agent credentials (#14368): only the SHA-256 hash of a credential
   // is stored, never the value. scopes is a JSON array drawn from
@@ -787,6 +816,33 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
       }
       touch(sql, a.agent, null, now);
       return { acked, stats: mailboxStats(sql, a.agent) };
+    }
+    case "work": {
+      // Only the receiving agent's own inbound rows can be marked: the
+      // lookup is scoped to this mailbox, so another agent's row (or a
+      // row this agent sent) is simply not found. Transitions are
+      // forward-only (messages.js workTransitionError); a queued mark
+      // already named its task id at validation time, and a later mark
+      // without one keeps the recorded id.
+      const row = sql
+        .exec(
+          "SELECT id, work_state, work_task_id FROM fleet_message WHERE id = ? AND agent = ? AND direction = 'inbound'",
+          a.id,
+          a.agent,
+        )
+        .toArray()[0];
+      if (!row) return { error: `message ${a.id} is not in ${a.agent}'s mailbox` };
+      const err = workTransitionError(row.work_state, a.state);
+      if (err) return { error: err };
+      sql.exec(
+        "UPDATE fleet_message SET work_state = ?, work_task_id = ? WHERE id = ?",
+        a.state,
+        a.task_id ?? row.work_task_id ?? null,
+        a.id,
+      );
+      touch(sql, a.agent, null, now);
+      const message = { ...sql.exec("SELECT * FROM fleet_message WHERE id = ?", a.id).toArray()[0] };
+      return { message, stats: mailboxStats(sql, a.agent) };
     }
     case "post": {
       let batch = null;
@@ -1161,6 +1217,65 @@ export async function mintFleetCredential(store, data, now = new Date().toISOStr
   return { agent: m.agent, addr: m.addr, scopes: m.scopes, credential: value };
 }
 
+/**
+ * Folds credential rows (hashes already stripped by the caller) into
+ * one state row per agent: whether the agent's credential stands
+ * active (at least one live credential) or revoked, the scopes its
+ * live credentials carry between them, the address a live service
+ * credential sends as, and when the state last changed (the first
+ * mint, or the final revocation). An agent part-revoked and part-live
+ * is active, and says no revocation time: a superseded credential's
+ * end is not the agent's.
+ */
+export function foldCredentialState(rows) {
+  const byAgent = new Map();
+  for (const r of rows) {
+    let a = byAgent.get(r.agent);
+    if (!a) {
+      a = {
+        agent: r.agent,
+        state: "revoked",
+        scopes: [],
+        addr: null,
+        credentials: 0,
+        live: 0,
+        created: r.created,
+        revoked_at: null,
+      };
+      byAgent.set(r.agent, a);
+    }
+    a.credentials++;
+    if (r.created < a.created) a.created = r.created;
+    if (r.revoked_at) {
+      if (!a.revoked_at || r.revoked_at > a.revoked_at) a.revoked_at = r.revoked_at;
+    } else {
+      a.live++;
+      for (const s of JSON.parse(r.scopes)) if (!a.scopes.includes(s)) a.scopes.push(s);
+      if (r.addr) a.addr = r.addr;
+    }
+  }
+  const out = [...byAgent.values()];
+  for (const a of out) {
+    if (a.live > 0) {
+      a.state = "active";
+      a.revoked_at = null;
+    }
+  }
+  return out.sort((x, y) => (x.agent < y.agent ? -1 : x.agent > y.agent ? 1 : 0));
+}
+
+/**
+ * Per-agent credential state for the owner's console (design §4.9):
+ * the fold above over every credential row. Only hashes are excluded
+ * — they never leave the store; this is state, not key material.
+ */
+export function fleetCredentialStateSql(sql) {
+  const rows = sql
+    .exec("SELECT agent, scopes, addr, created, revoked_at FROM fleet_credential ORDER BY agent, created")
+    .toArray();
+  return foldCredentialState(rows);
+}
+
 /** Revokes every live credential of the agent; returns how many. */
 export function fleetCredentialRevokeSql(sql, agent, now) {
   return sql
@@ -1192,6 +1307,49 @@ export function enrollTokenMintSql(sql, row) {
     expires_at: row.expires_at,
     created: row.created,
   };
+}
+
+/** Every minted enroll token's state for the owner's list (fleet.js,
+ * #14376): every column but the hash. The hash names a token only to
+ * the revoke route; the list never carries it, and no value was ever
+ * stored to show. */
+export function enrollTokenListSql(sql) {
+  return sql
+    .exec(
+      `SELECT agent, kind, groups, notes_identity, created, expires_at, used_at, revoked_at
+         FROM enroll_token ORDER BY created DESC, agent`,
+    )
+    .toArray()
+    .map((r) => ({
+      agent: r.agent,
+      kind: r.kind,
+      groups: JSON.parse(r.groups),
+      notes_identity: r.notes_identity,
+      created: r.created,
+      expires_at: r.expires_at,
+      used_at: r.used_at,
+      revoked_at: r.revoked_at,
+    }));
+}
+
+/** The state a minted enroll token stands in, derived the same way
+ * over either store's rows (#14376): revoked by the owner, used by the
+ * exchange that burned it, expired by the clock, else pending. The
+ * closing times ride along, so the console can say when each token
+ * closed and by what: the exchange (used_at), the owner's revoke
+ * (revoked_at), or the lapse of its TTL (expires_at). */
+export function foldEnrollTokens(rows, now) {
+  return rows.map((r) => ({
+    agent: r.agent,
+    kind: r.kind,
+    groups: r.groups ?? [],
+    notes_identity: r.notes_identity ?? null,
+    created: r.created,
+    expires_at: r.expires_at,
+    used_at: r.used_at ?? null,
+    revoked_at: r.revoked_at ?? null,
+    state: r.revoked_at ? "revoked" : r.used_at ? "used" : r.expires_at <= now ? "expired" : "pending",
+  }));
 }
 
 export function enrollTokenGetSql(sql, token_hash) {
@@ -1245,6 +1403,23 @@ export function enrollTokenRevokeSql(sql, token_hash, now) {
   );
 }
 
+/** Revokes every still-pending bootstrap token minted for one agent
+ * (#14376); returns how many. The console's revoke works by name: the
+ * token list never shows a hash, so the owner's "take back what I
+ * minted for this agent" cannot name one. Used tokens are untouched
+ * (they became credentials — revoking those is the credential
+ * revoke), and expired ones are already dead and keep their state. */
+export function enrollTokenRevokeAgentSql(sql, agent, now) {
+  return sql
+    .exec(
+      "UPDATE enroll_token SET revoked_at = ? WHERE agent = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > ? RETURNING token_hash",
+      now,
+      agent,
+      now,
+    )
+    .toArray().length;
+}
+
 /** Validates a bootstrap mint body; the token is bound to what this returns. */
 export function normalizeEnrollMint(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
@@ -1291,6 +1466,16 @@ export async function mintEnrollToken(store, data, nowMs = Date.now()) {
     expires_at,
     bootstrap_token: value,
   };
+}
+
+/**
+ * The owner's list of minted bootstrap tokens (#14376): state only —
+ * pending, used, expired or revoked, with the times that closed each
+ * one. No hash and no value: the value was shown once at mint and
+ * exists nowhere on the bridge to show again.
+ */
+export async function listEnrollTokens(store, now = new Date().toISOString()) {
+  return { enroll_tokens: foldEnrollTokens(await store.enrollTokenList(), now) };
 }
 
 /**
@@ -1473,12 +1658,19 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     if (request.method !== "POST") return notAllowed("POST");
     const d = await readJson(request);
     if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
-    return json(await store.fleet("hello", d));
+    // A credential's groups were bound at mint time and set by the
+    // exchange's hello; a credentialed hello refreshes last_seen
+    // only, so the caller cannot re-register its own name into
+    // arbitrary groups after the fact (#14370, Felix's S3 review
+    // note). The shared fleet token keeps caller-supplied groups.
+    return json(await store.fleet("hello", cred ? { agent: cred.agent } : d));
   }
   if (what === "inbox") {
     if (request.method !== "GET") return notAllowed("GET");
     if (cred && (!scoped("inbox") || credOwnName(url.searchParams.get("agent"), cred) === null)) return notFound();
-    const out = await store.fleet("inbox", query(url));
+    const q = query(url);
+    if (cred) delete q.groups; // groups are mint-bound; see hello above
+    const out = await store.fleet("inbox", q);
     return json({ ...out, messages: out.messages.map(commandForAgent) });
   }
   if (what === "ack") {
@@ -1486,6 +1678,20 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     const d = await readJson(request);
     if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
     return json(await store.fleet("ack", d));
+  }
+  if (what === "work") {
+    if (request.method !== "POST") return notAllowed("POST");
+    const d = await readJson(request);
+    if (cred && (!scoped("inbox") || credOwnName(d.agent, cred) === null)) return notFound();
+    try {
+      return json(await store.fleet("work", d));
+    } catch (e) {
+      // With a credential every work refusal is the plain 404, like
+      // every other credential refusal: the caller learns nothing
+      // about rows that are not its own.
+      if (cred && e instanceof InputError) return notFound();
+      throw e;
+    }
   }
   if (what === "send") {
     if (request.method !== "POST") return notAllowed("POST");
@@ -1502,6 +1708,14 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
   }
   if (what === "offers") {
     if (request.method !== "GET") return notAllowed("GET");
+    // A read-scope credential naming no agent reads the owner's list
+    // — every offer with its claims (#14375, the console composer's
+    // offer rows), the same projection as GET /api/<owner>/fleet/offers.
+    // Naming an agent (or holding no read scope) is the agent's own
+    // eligible-offers view below, as before.
+    if (cred && scoped("read") && !url.searchParams.get("agent")) {
+      return json(await store.fleet("offer-list", {}));
+    }
     if (cred && (!scoped("inbox") || credOwnName(url.searchParams.get("agent"), cred) === null)) return notFound();
     return json(await store.fleet("offers", query(url)));
   }
@@ -1538,15 +1752,37 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     // command names no sender.
     return json({ ...out, message: commandForAgent(out.message) });
   }
-  // The owner's pipeline views, for a credential holding the "read"
-  // scope (a service credential, #14373): the same store ops the owner
-  // routes answer, nothing more. Enroll-minted agent credentials never
-  // hold the scope, and the shared fleet token does not open these.
-  if (what === "agents" || what === "messages") {
+  // The owner's views, for a credential holding the "read" scope (a
+  // service credential, #14373): the same store ops the owner routes
+  // answer, nothing more. #14374 adds the unified projections the
+  // console's Messages and Agents surfaces read — the pipeline feed,
+  // the unified agents list and per-agent credential state — the very
+  // functions the owner's /api routes answer with. (The offers list
+  // is the sixth such view, #14375; it is answered in the offers
+  // branch above, where the agent's own eligible-offers view lives.)
+  // #14376 adds the minted enroll tokens' state the same way.
+  // All are reads; no
+  // credential value or hash is in any of them, and revoking stays an
+  // owner-token route: a service credential can see that a credential
+  // stands revoked, never revoke one. Enroll-minted agent credentials
+  // never hold the scope, and the shared fleet token does not open
+  // these.
+  if (
+    what === "agents" ||
+    what === "messages" ||
+    what === "pipeline" ||
+    what === "directory" ||
+    what === "credentials" ||
+    what === "enroll-tokens"
+  ) {
     if (request.method !== "GET") return notAllowed("GET");
     if (!cred || !scoped("read")) return notFound();
     if (what === "agents") return json(await store.fleet("agents", {}));
-    return json(await store.fleet("messages", query(url)));
+    if (what === "messages") return json(await store.fleet("messages", query(url)));
+    if (what === "pipeline") return json(await pipelineFeed(store, Object.fromEntries(url.searchParams.entries())));
+    if (what === "directory") return json(await unifiedAgents(store));
+    if (what === "enroll-tokens") return json(await listEnrollTokens(store));
+    return json({ credentials: await store.fleetCredentialState() });
   }
   return notFound();
 }
@@ -1633,6 +1869,10 @@ export async function handleFleet(request, env, url, getStore, deliveredFor = ()
       if (!m || m.role !== "owner") return null; // not ours: the caller 404s
       const store = getStore();
       if (parts[2] === "fleet") {
+        if (parts.length === 4 && parts[3] === "credentials") {
+          if (request.method !== "GET") return notAllowed("GET");
+          return json({ credentials: await store.fleetCredentialState() });
+        }
         if (parts.length === 4) return await ownerRoute(request, store, parts[3], url, deliveredFor(store));
         if (parts.length === 5 && parts[3] === "credentials" && parts[4] === "revoke") {
           if (request.method !== "POST") return notAllowed("POST");
@@ -1647,12 +1887,20 @@ export async function handleFleet(request, env, url, getStore, deliveredFor = ()
       }
       if (parts[2] === "enroll-tokens") {
         if (parts.length === 3) {
+          if (request.method === "GET") return json(await listEnrollTokens(store));
           if (request.method !== "POST") return notAllowed("POST");
           return json(await mintEnrollToken(store, await readJson(request)), 201);
         }
         if (parts.length === 4 && parts[3] === "revoke") {
           if (request.method !== "POST") return notAllowed("POST");
-          const hash = await enrollRevokeHash(await readJson(request));
+          const data = await readJson(request);
+          // By name (#14376): revoke the agent's outstanding tokens.
+          // The hash forms below name one token exactly.
+          if (typeof data.agent === "string" && data.agent !== "") {
+            const agent = normalizeName(data.agent);
+            return json({ agent, revoked: await store.enrollTokenRevokeAgent(agent) });
+          }
+          const hash = await enrollRevokeHash(data);
           return json({ revoked: await store.enrollTokenRevoke(hash) });
         }
         return notFound();

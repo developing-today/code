@@ -16,7 +16,7 @@ backend).
 ## 1. Problem and context
 
 Atlas stores bytes content-addressed and immutable, uploaded once and never
-changed, but answers questions about *places*: "everything referencing
+changed, but answers questions about _places_: "everything referencing
 `geordi.png`" must return every path/location naming those bytes, across
 hosts and stores. The same bytes in five places are one upload plus five
 location records, each carrying its own metadata (path, host, date,
@@ -41,7 +41,7 @@ What remains undecided — and is decided here — is the VFS layer itself: the
 location-record presentation schema, where the aggregated serving index lives,
 whether Basin or Parquet earns a place, how VFS updates ride the #9115
 harvester, and what a location deletion means for GC. #9084's reference-vs-copy
-evaluation is explicitly *not* pre-settled here (§6).
+evaluation is explicitly _not_ pre-settled here (§6).
 
 Corpus scale grounding: ~108K chunks / ~1 GB Turso at 2026-10-31 (#3125), laptop
 ~/atlas ~12 GB of distinct versions, plan envelope $24.92/mo with storage and
@@ -156,12 +156,12 @@ vfs_locations(content_id, namespace, tenant_scope, locator_type, locator,
 
 **Rejected alternatives:**
 
-- *Its own Turso database:* extra quota, backup, and connection surface for no
+- _Its own Turso database:_ extra quota, backup, and connection surface for no
   query-shape benefit; cross-DB joins (locations × corpus metadata) get harder,
   not easier.
-- *Sidecar-only with no serving tables (scan manifests per query):* violates
+- _Sidecar-only with no serving tables (scan manifests per query):_ violates
   the aggregated-index rule — every lookup becomes a corpus scan.
-- *Manifest scan cached in Workers KV/memory:* an unversioned third copy with
+- _Manifest scan cached in Workers KV/memory:_ an unversioned third copy with
   no authority story; tombstone reconciliation has no home.
 
 ## 5. Decision 3 — Basin/Parquet evaluation (required)
@@ -173,11 +173,11 @@ open Iceberg REST (DuckDB/Spark/Snowflake readable), zero egress; analytics
 fit, not transactional; real-time processing and finer sovereignty controls
 still planned, not shipped.
 
-| Candidate | VFS serving fit | Verdict |
-| --- | --- | --- |
-| Turso aggregated tables (§4) | ms indexed point/prefix lookups; transactional writes; already in-footprint | **Serving path. Decided.** |
-| Parquet snapshots on R2 | Cheap immutable interchange; DuckDB-queryable offline; no serving latency SLA | **Cold interchange + offline export. Adopt as format, not as serving index.** |
-| Basin (Iceberg + SQL) | Analytics engine: per-query 10 MB scan minimum, batch latency profile, no point-lookup SLA; strengths are corpus-wide scans, maintenance-free tables, open access from any engine | **Opt-in analytics tier for corpus-wide questions only** (orphan audit, growth rollups, lineage rollups that *would* scan the corpus). Not the serving path. Revisit trigger in §9. |
+| Candidate                    | VFS serving fit                                                                                                                                                                   | Verdict                                                                                                                                                                             |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Turso aggregated tables (§4) | ms indexed point/prefix lookups; transactional writes; already in-footprint                                                                                                       | **Serving path. Decided.**                                                                                                                                                          |
+| Parquet snapshots on R2      | Cheap immutable interchange; DuckDB-queryable offline; no serving latency SLA                                                                                                     | **Cold interchange + offline export. Adopt as format, not as serving index.**                                                                                                       |
+| Basin (Iceberg + SQL)        | Analytics engine: per-query 10 MB scan minimum, batch latency profile, no point-lookup SLA; strengths are corpus-wide scans, maintenance-free tables, open access from any engine | **Opt-in analytics tier for corpus-wide questions only** (orphan audit, growth rollups, lineage rollups that _would_ scan the corpus). Not the serving path. Revisit trigger in §9. |
 
 Judged on the three required axes:
 
@@ -262,12 +262,12 @@ references. One collector; VFS is a signal source, not a collector.
 
 ## 8. VFS query set and latency expectations
 
-| # | Query | Served by | Expectation (current scale) |
-| --- | --- | --- | --- |
-| 1 | By content hash: all locations naming bytes | `vfs_locations BY content_id` | ms point lookup; never a corpus scan |
-| 2 | By filename: all locations named X | `vfs_locations BY filename` | ms; filename is projection, collisions expected and returned |
-| 3 | By path prefix: browse subtree | `display_path LIKE 'prefix%'` + cursor | bounded pages; no unbounded subtree materialization |
-| 4 | By host: per-host inventory | `vfs_locations BY host` | paged; the standby/restore path |
+| #   | Query                                       | Served by                              | Expectation (current scale)                                  |
+| --- | ------------------------------------------- | -------------------------------------- | ------------------------------------------------------------ |
+| 1   | By content hash: all locations naming bytes | `vfs_locations BY content_id`          | ms point lookup; never a corpus scan                         |
+| 2   | By filename: all locations named X          | `vfs_locations BY filename`            | ms; filename is projection, collisions expected and returned |
+| 3   | By path prefix: browse subtree              | `display_path LIKE 'prefix%'` + cursor | bounded pages; no unbounded subtree materialization          |
+| 4   | By host: per-host inventory                 | `vfs_locations BY host`                | paged; the standby/restore path                              |
 
 Authorization filters (tenant_scope, access_class) apply **before** ranking
 and before candidate counts (A-9115.2 privacy rule, inherited). Public
@@ -315,7 +315,7 @@ Verification:
   `deleted` row traces to a tombstone; rebuild-from-sidecars reproduces the
   tables exactly.
 - Adversarial: unknown locator variant preserved in `extras`, never coerced;
-  unauthorized scope returns zero rows *and zero counts* (privacy rule probe).
+  unauthorized scope returns zero rows _and zero counts_ (privacy rule probe).
 - Conformance: #9095 fixtures (PR #13527 set) extended with the location
   profile; cross-check `location_index` fold vs VFS projection on the same
   sidecar stream.
@@ -329,13 +329,13 @@ measurements.
 
 ## 11. Open questions (named deciders)
 
-| Question | Default in this design | Decider / revisit |
-| --- | --- | --- |
+| Question                                                                 | Default in this design                                                  | Decider / revisit                                                            |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | Exact `display_path` normalization (case, separators, tar-member syntax) | byte-exact as observed; no normalization beyond documented prefix rules | Atlas VFS owner with #9095 registry review; before cross-host dedup of paths |
-| Parquet snapshot cadence and partitioning | per bucket generation, partitioned by `tenant_scope`/date | owning namespace operator; after first export measurements |
-| Basin warehouse stand-up timing | only on §10 trigger or a concrete offline question | Atlas program owner (#8983); not before trigger fires |
-| Hard-purge policy for `deleted` rows | retain with tombstone indefinitely; purge is retention-policy action | joint with #9084/#3125 lineage owners; never unilateral VFS action |
-| New locator variants (new stores) | additive registry; unknown variants preserved, not coerced | ID/location owners (A-9115.2 registry); each addition reviewed |
+| Parquet snapshot cadence and partitioning                                | per bucket generation, partitioned by `tenant_scope`/date               | owning namespace operator; after first export measurements                   |
+| Basin warehouse stand-up timing                                          | only on §10 trigger or a concrete offline question                      | Atlas program owner (#8983); not before trigger fires                        |
+| Hard-purge policy for `deleted` rows                                     | retain with tombstone indefinitely; purge is retention-policy action    | joint with #9084/#3125 lineage owners; never unilateral VFS action           |
+| New locator variants (new stores)                                        | additive registry; unknown variants preserved, not coerced              | ID/location owners (A-9115.2 registry); each addition reviewed               |
 
 ## 12. Implementation split (granular issues to file under #9100)
 

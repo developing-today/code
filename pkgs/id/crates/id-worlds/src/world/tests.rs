@@ -9200,6 +9200,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failover_after_expiry_grants_the_caught_up_pool_successor() {
+        // Oracle: design #5787 §7 — the holder dies mid-term with a
+        // caught-up replica in the pool. The grantor fences first
+        // (revoke at e+1), grants the successor at e+2, and the grant's
+        // journal position is the barrier the successor resumes at.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+
+        // native-2 has served as a reader at the tip for the full
+        // observation window; the grantor's tip for this grant is 2.
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+
+        // The term lapses on the authority clock (start 1_000 + 60_000).
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+        assert_eq!(execution.grant_position(), 3);
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+
+        // The journal carries the fence before the grant, positions
+        // continuing the lease chain (handoff 1, revoke 2, grant 3).
+        let entries = w.journal.entries();
+        assert!(matches!(
+            &entries[entries.len() - 2],
+            JournalEntry::LeaseRevoked {
+                former_holder,
+                epoch: 2,
+                position: 2,
+                ..
+            } if former_holder == "native-1"
+        ));
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseGranted {
+                holder,
+                epoch: 3,
+                position: 3,
+                ..
+            }) if holder == "native-2"
+        ));
+
+        // Replay is the oracle: the journal alone rebuilds native-2
+        // holding epoch 3, watermark at the grant position, and the
+        // dead holder fenced.
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-2"));
+        assert_eq!(lease.epoch, 3);
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+        assert_eq!(
+            lease.check_writer("native-1", 1, 61_000),
+            Err(LeaseRejectionReason::NotHolder)
+        );
+
+        // The DO executor no longer holds the lease: its commands are
+        // refused, exactly as after a handoff.
+        let refused = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert_eq!(
+            lease_error(&refused.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+    }
+
+    #[tokio::test]
+    async fn failover_with_no_eligible_successor_recovers_to_the_do() {
+        // Oracle: design #5787 §7 — no eligible successor: the DO
+        // grants to itself rather than to a lagging replica, and the
+        // world resumes under its authority.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(spill_pool::SpillPool::default(), 0, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), DO_WRITE_LEASE_HOLDER);
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(committed_inputs(&w.journal), 1);
+    }
+
+    #[tokio::test]
     async fn stale_handoff_proposals_are_refused_and_journal_nothing() {
         // A host working from a stale lease view proposes an epoch the
         // authority has already passed.
