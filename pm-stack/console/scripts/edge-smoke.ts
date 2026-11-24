@@ -582,10 +582,13 @@ try {
         Array.isArray(trends.tasks?.all),
       JSON.stringify(trends).slice(0, 300),
     );
-    // Asked again it reads the older stretches on, until the whole of
-    // the history is in; after that it answers from what it kept.
+    // The older stretches come in behind the first answer; after that
+    // it answers from what it kept.
+    // (The screen was asked for, so the Worker's own clock reads the
+    // older stretches on behind it: asked again, it has them.)
     let whole = false;
-    for (let i = 0; i < 6 && !whole; i++) {
+    for (let i = 0; i < 20 && !whole; i++) {
+      await Bun.sleep(1500);
       const more = (await (await asOwner("/console/api/trends?days=7")).json()) as typeof trends;
       whole = more.history?.whole === true;
     }

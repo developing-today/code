@@ -155,7 +155,8 @@ function world(items: Item[], db?: Database) {
   const ops = new Ops(CFG, run, asThePlatformFetch(fetchImpl) as Fetch);
   const shelf = memoryShelf();
   const clock = { now: NOW };
-  const trends = new Trends(ops, shelf, () => clock.now);
+  // As Cloudflare runs it: what the screen does not wait for is left to a clock, so each test says when it is read.
+  const trends = new Trends(ops, shelf, () => clock.now, "leave");
   const day = async (date: string) => JSON.parse((await shelf.get(`day:${date}`)) ?? "null") as Day | null;
   const meta = async () =>
     JSON.parse((await shelf.get("meta")) ?? "null") as {
@@ -734,22 +735,60 @@ describe("the document the Trends screen draws", () => {
     expect(doc.features.projects.mcpx[doc.days.length - 1]).toBe(15);
   });
 
-  test("opened before the history is whole, the screen reads three pages on each time and says how far back it is whole", async () => {
+  test("the screen waits for GitHub only for the first reading and for a look at what is new; in between it shows what is kept", async () => {
     const w = world(items(), queueDb().db);
     const first = await w.trends.read("7");
-    // The last day (to its end), and two older stretches.
+    // The first ask waits: the last day (to its end), and two older stretches.
     expect(w.asked.length).toBe(3);
     expect([first.history.whole, first.history.covered]).toEqual([false, "2026-11-17T12:00:00Z"]);
     // What changed in the last week is all there already: the three merged on the 24th.
     expect(first.merged.all.slice(-1)).toEqual([3]);
     // Not yet the one from the 12th, which is older than a week.
     expect(first.merged.all[1]).toBe(0);
+    // Asked again while the older stretches are still to come, it answers at once from what is kept.
     const second = await w.trends.read("7");
-    expect(w.asked.length).toBe(6);
-    expect([second.history.whole, second.history.covered]).toEqual([false, "2026-10-25T12:00:00Z"]);
-    expect(second.merged.all[1]).toBe(1);
+    expect(w.asked.length).toBe(3);
+    expect([second.history.whole, second.history.covered, second.merged.all[1]]).toEqual([
+      false,
+      "2026-11-17T12:00:00Z",
+      0,
+    ]);
+    // The clock reads on behind it (here, the test does).
+    await w.trends.advance(3);
     const third = await w.trends.read("7");
-    expect([third.history.whole, third.history.covered, w.asked.length]).toEqual([true, "2026-08-26T00:00:00Z", 9]);
+    expect([third.history.covered, third.merged.all[1], w.asked.length]).toEqual(["2026-10-25T12:00:00Z", 1, 6]);
+    // Pressing refresh reads on now, whatever state it is in.
+    const pressed = await w.trends.read("7", true);
+    expect([pressed.history.whole, pressed.history.covered, w.asked.length]).toEqual([true, "2026-08-26T00:00:00Z", 9]);
+    // Whole: five minutes on, the screen waits for one look at what is new.
+    w.clock.now = new Date(NOW.getTime() + 6 * 60_000);
+    await w.trends.read("7");
+    expect(w.asked.length).toBe(10);
+  });
+
+  test("on a machine, with no clock of its own, the rest is read on behind the answer", async () => {
+    const w = world(items(), queueDb().db);
+    const machine = new Trends(w.ops, w.shelf, () => w.clock.now);
+    await machine.read("7");
+    expect(w.asked.length).toBe(3);
+    // The next ask answers from what is kept, and starts the reading-on without waiting for it.
+    const second = await machine.read("7");
+    expect(second.history.whole).toBe(false);
+    // (Asking it to read on while it is reading waits for that same reading.)
+    await machine.advance();
+    expect(w.asked.length).toBe(6);
+    await machine.read("7");
+    await machine.advance();
+    expect((await machine.read("7")).history.whole).toBe(true);
+    expect(w.asked.length).toBe(9);
+    // GitHub going out of reach behind the answer troubles nobody: the next ask says what it has.
+    const other = world(items(), queueDb().db);
+    const m2 = new Trends(other.ops, other.shelf, () => other.clock.now);
+    await m2.read("7");
+    other.state.fail = () => "GitHub could not be reached: timed out";
+    const quiet = await m2.read("7");
+    expect([quiet.partial, quiet.history.whole]).toEqual([undefined, false]);
+    await m2.advance().catch(() => {});
   });
 
   test("read again within five minutes GitHub is not asked; pressed to refresh, it is", async () => {

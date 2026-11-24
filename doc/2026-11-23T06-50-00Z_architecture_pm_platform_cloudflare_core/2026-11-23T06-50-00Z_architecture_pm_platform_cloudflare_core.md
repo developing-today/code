@@ -1889,6 +1889,14 @@ machine is needed.
   GitHub's answers by address to ask "changed?" cheaply. An address
   with a time in it is never asked twice, so those are not remembered:
   they would push out the ones that are.
+- _The screen waits for GitHub only when the wait is short._ Looked at
+  on the laptop, a screen that read three pages on at every opening
+  made every opening slow for as long as the older stretches were
+  coming in. It waits now only for the first reading (until the last
+  day is in), for one look at what changed once the history is whole,
+  and when the owner presses refresh. In between it answers from what
+  is kept and says how far back that is whole; the rest is read behind
+  it, by Cloudflare's clock, or after the answer on a machine.
 - _It reads on only while somebody looks._ For a day after the screen
   was last asked for, the object's own clock reads the history on (six
   pages a minute until whole, then what changed, each half hour). After
@@ -1930,12 +1938,13 @@ the file, a line in `pages/index.js` and a line in `files.json`; a test
 checks the three agree. The element builder moved to `public/ui.js` so
 that pages and the app build with the same one.
 
-**Checked.** 635 tests. Sixty-one faults planted one at a time; the
-four that survived were closed (a one-word scope taken for a kind; an
+**Checked.** 636 tests. Sixty-five faults planted one at a time; the
+five that survived were closed (a one-word scope taken for a kind; an
 older stretch counting what was not its own, now held by which days it
 writes; a condition that could not be false, removed; the dot at the
 end of a tile's shape drawn half off its edge, which is how it first
-looked on the laptop). In the real
+looked on the laptop; Cloudflare reading on behind an answer instead of
+by its clock). In the real
 Worker runtime (58 checks) the Worker reads the history from the
 stand-in GitHub, keeps it in its storage, and answers a second ask
 without asking again. In Chromium on the laptop, on the real

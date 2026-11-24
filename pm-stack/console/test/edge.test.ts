@@ -5347,6 +5347,11 @@ describe("the edge does the core itself", () => {
         true,
         false,
       ]);
+      // Asked for again before then, it answers from what it has: nothing is read on behind the
+      // answer, where it could be cut off part-way. Its clock does that.
+      const sooner = (await (await w.browse("/console/api/trends?days=7")).json()) as typeof doc;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect([sooner.history.whole, history().length]).toEqual([false, 3]);
       // The screen was asked for, so the object's own clock reads the rest on, starting at once: a
       // look at what is new and five pages of older stretches, which is all of them.
       expect(w.alarm.at).toBe(w.now.t + 1000);

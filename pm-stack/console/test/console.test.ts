@@ -1213,8 +1213,10 @@ describe("HTTP surface", () => {
     // One ask of the screen reads three pages; asked until the history is whole (the last day, six older
     // stretches, and a look at what is new before each further go), the same reader goes on from where it was.
     expect(asked()).toBe(3);
+    // (After the first, an ask answers from what is kept and the machine reads on behind it.)
     let last = doc;
-    for (let i = 0; i < 4 && !last.history.whole; i++) {
+    for (let i = 0; i < 200 && !last.history.whole; i++) {
+      await Bun.sleep(5);
       last = (await (await handle(get("/console/api/trends?days=90"), d)).json()) as typeof doc;
     }
     expect([last.history.whole, asked()]).toEqual([true, 9]);

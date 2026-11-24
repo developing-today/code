@@ -288,10 +288,16 @@ export interface TrendsDoc {
 export class Trends {
   private reading: Promise<Meta> | null = null;
 
+  /** `behind` says what happens to the long first reading of the
+   * history once there is something to show: "run" reads on after the
+   * screen has been answered (a machine, whose process stays up);
+   * "leave" leaves it to whoever calls `advance` by a clock of their
+   * own (Cloudflare, which wakes for it). */
   constructor(
     private ops: Ops,
     private shelf: Shelf,
     private clock: () => Date = () => new Date(),
+    private behind: "run" | "leave" = "run",
   ) {}
 
   private get repo(): string {
@@ -476,12 +482,21 @@ export class Trends {
   async read(asked: string | null, fresh = false): Promise<TrendsDoc> {
     const window = (WINDOWS as readonly number[]).includes(Number(asked)) ? Number(asked) : 30;
     let why: string | undefined;
-    if (fresh || (await this.due())) {
+    // The screen waits for GitHub only when the wait is short or there
+    // is nothing to show without it: the very first reading (until the
+    // last day is in), one look at what changed once the history is
+    // whole, and when the owner pressed refresh. In between, while the
+    // older stretches are still coming in, it shows what is kept and
+    // says how far back that is whole; the rest is read behind it.
+    const before = await this.meta();
+    if (fresh || ((!before.live || before.whole) && (await this.due()))) {
       try {
         await this.advance();
       } catch (error) {
         why = `GitHub's history could not be read on: ${(error as Error).message}`;
       }
+    } else if (!before.whole && this.behind === "run") {
+      void this.advance().catch(() => {});
     }
     const meta = await this.meta();
     const today = this.clock().toISOString().slice(0, 10);

@@ -793,7 +793,7 @@ export function directClasses(edge: EdgeConfig, options: DirectOptions): DirectC
     ops,
     work,
     plan: new Plan(ops, work, clock),
-    trends: new Trends(ops, options.shelf ?? memoryShelf(), clock),
+    trends: new Trends(ops, options.shelf ?? memoryShelf(), clock, "leave"),
   };
 }
 
