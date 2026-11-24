@@ -24,15 +24,15 @@ Headline official sources:
 Nothing in the platform requires a Durable Object to call its storage API.
 A DO is a class with RPC methods / a `fetch()` handler plus a `ctx` object;
 `ctx.storage` is an available API, not a toll every object must pay. The
-official Rules guide describes three *state layers* a DO may use, one of
+official Rules guide describes three _state layers_ a DO may use, one of
 which is external storage — i.e. the object's meaningful state can live
 entirely outside its own storage:
 
-| Type | Speed | Persistence | Use case |
-| --- | --- | --- | --- |
-| In-memory (class properties) | Fastest | Lost on eviction or crash | Caching, active connections |
-| SQLite storage | Fast | Durable across restarts | Primary data storage |
-| External (R2, D1) | Variable | Durable, cross-DO accessible | Large files, shared data |
+| Type                         | Speed    | Persistence                  | Use case                    |
+| ---------------------------- | -------- | ---------------------------- | --------------------------- |
+| In-memory (class properties) | Fastest  | Lost on eviction or crash    | Caching, active connections |
+| SQLite storage               | Fast     | Durable across restarts      | Primary data storage        |
+| External (R2, D1)            | Variable | Durable, cross-DO accessible | Large files, shared data    |
 
 Source: Rules of Durable Objects,
 https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/
@@ -80,7 +80,7 @@ DO storage or "the DO's disk."** The DO is compute + coordination; R2 is
 the blob store. (A DO has no user-visible disk at all — its only "disk" is
 the optional storage API.)
 
-### 1.3 Streaming data *through* a Worker or a DO into R2
+### 1.3 Streaming data _through_ a Worker or a DO into R2
 
 Three distinct data-plane options, in increasing order of "keep bytes away
 from your compute":
@@ -114,7 +114,7 @@ per part → `upload.complete(parts)` / `upload.abort()`, and
 `bucket.resumeMultipartUpload(key, uploadId)` to continue an upload across
 invocations. Parts are a minimum of 5 MB each except the last; uncompleted
 multipart uploads are automatically aborted after 7 days. The official
-guide's design has the *client* track `uploadId` + part etags and call the
+guide's design has the _client_ track `uploadId` + part etags and call the
 Worker per part — state does not need to live in the Worker at all.
 Sources (official):
 https://developers.cloudflare.com/r2/api/workers/workers-multipart-usage/
@@ -135,7 +135,7 @@ inside the Workers runtime; in-Worker signing is typically done with a
 small SigV4 library such as `aws4fetch` —
 https://gebna.gg/blog/fix-fs-readfile-is-not-implemented-yet]
 
-### 1.4 The memory constraint when data flows *through* compute
+### 1.4 The memory constraint when data flows _through_ compute
 
 - **Both Workers and Durable Objects run in V8 isolates with a hard
   128 MB memory limit per isolate** — same on Free and Paid, not
@@ -150,7 +150,7 @@ https://gebna.gg/blog/fix-fs-readfile-is-not-implemented-yet]
   as if they are allocated a full 128 MB of memory."
   Source: https://developers.cloudflare.com/workers/platform/pricing/
 - **[community] consequence, well documented in production write-ups:**
-  because the 128 MB is per *isolate* and isolates are shared, the object
+  because the 128 MB is per _isolate_ and isolates are shared, the object
   that gets reset for exceeding memory is often not the object that used
   the memory ("noisy neighbour" resets), and you cannot profile a
   production DO's heap — only after-the-fact GraphQL percentile metrics:
@@ -160,26 +160,26 @@ What this means for streaming designs:
 
 - **Buffering is the trap.** `await request.arrayBuffer()` / `.text()` /
   `.json()` on a large body puts the whole payload in the isolate heap —
-  for a DO *and* for a plain Worker — and is the most common way to hit
+  for a DO _and_ for a plain Worker — and is the most common way to hit
   the 128 MB wall.
 - **True streaming** (`put(key, request.body)`, `uploadPart(n, request.body)`,
   `response.body.pipeThrough(...)`) keeps heap use roughly constant
-  regardless of object size. The data passes *through* the isolate's I/O
-  layer, not *into* its memory.
+  regardless of object size. The data passes _through_ the isolate's I/O
+  layer, not _into_ its memory.
 - **But a DO is the wrong bulk data plane even when streaming**, for two
   reasons a plain Worker doesn't have:
-  1. *Serialization.* One object = one thread. A fat stream routed
+  1. _Serialization._ One object = one thread. A fat stream routed
      through a per-entity DO occupies that object's single execution
      context for the whole transfer; other requests to the same object
      interleave only at `await` points and compete for the same isolate.
-  2. *Duration billing.* DO compute is billed on **wall-clock duration**
+  2. _Duration billing._ DO compute is billed on **wall-clock duration**
      while the object is active (see §3.8), so a slow 500 MB upload
      trickling through a DO bills DO duration for the entire transfer.
      A plain Worker bills CPU time (I/O wait is not CPU), and Workers
      have "no charge or limit for duration" on the Standard model.
      Source: https://developers.cloudflare.com/workers/platform/pricing/
 
-### 1.5 So what *is* the DO's role in an upload/blob architecture?
+### 1.5 So what _is_ the DO's role in an upload/blob architecture?
 
 The pattern that falls out of the docs (and the Rules guide's own layering
 table) is: **DO as coordinator, R2 as blob store, D1/KV as index.**
@@ -225,7 +225,7 @@ All from official sources unless marked.
    synchronous JavaScript never runs concurrently with itself inside an
    object. Interleaving can only happen at `await` points, and the
    runtime's input/output gates (§5.4) constrain even that. This removes
-   lock-based reasoning *within* an object — and caps its throughput.
+   lock-based reasoning _within_ an object — and caps its throughput.
 3. **Throughput ceiling per object.** Official Rules guide: a single DO
    handles roughly **500–1,000 requests/second** depending on work per
    request (~1,000 simple pass-through, ~500–750 with JSON/validation,
@@ -247,7 +247,7 @@ All from official sources unless marked.
    effectively fixed once created — there is no live migration of a hot
    object to follow its users. [community detail: jurisdictions
    (`namespace.jurisdiction("eu" | "us" | "fedramp")`) are the hard
-   version of this — a separate sub-namespace whose objects *only* run
+   version of this — a separate sub-namespace whose objects _only_ run
    and store data inside the jurisdiction, used for data residency;
    summarized in https://www.aicassindra.com/blogs/cloud/cloudflare_durable_objects.html
    — I did not open the dedicated Data Location doc page, so treat the
@@ -257,7 +257,7 @@ All from official sources unless marked.
    on crashes/uncaught exceptions, on deploys and runtime updates.
    Official in-memory-state doc: "Variables in a Durable Object will
    maintain state as long as your Durable Object is not evicted from
-   memory," and warns that *global* variables are actively dangerous
+   memory," and warns that _global_ variables are actively dangerous
    because multiple object instances can share one isolate's globals.
    Sources: https://developers.cloudflare.com/durable-objects/examples/durable-object-in-memory-state/index.md
    and Rules guide ("In-memory state is **not preserved** if the Durable
@@ -284,6 +284,7 @@ All from official sources unless marked.
 ## 3. Pitfalls (sourced)
 
 ### 3.1 The hot object / global singleton
+
 The Rules guide's headline anti-pattern: one DO for everything (a global
 counter, a **global rate limiter**, one chat room for all rooms) funnels
 all traffic through one single-threaded instance. The guide calls out
@@ -294,6 +295,7 @@ that callers are expected to handle with backoff (Rules guide, Error
 handling section). Fix is always sharding: more, smaller objects.
 
 ### 3.2 `blockConcurrencyWhile()` misuse
+
 It "guarantees that no other events are processed until the provided
 callback completes, even if the callback performs asynchronous I/O"
 (Rules guide). Legitimate use: one-time initialization/migrations in the
@@ -305,7 +307,8 @@ which the object is reset, so never wrap slow network calls in it —
 https://www.aicassindra.com/blogs/cloud/cloudflare_durable_objects.html]
 
 ### 3.3 Assuming single-threaded means race-free across `await`s
-Input gates protect you *during storage operations*. They open during
+
+Input gates protect you _during storage operations_. They open during
 non-storage I/O. The Rules guide's own example is directly relevant to
 R2-centric designs: read item → `await fetch(...)` (or write to R2) →
 write item back is a race, because another request can run during the
@@ -314,6 +317,7 @@ numbers (optimistic locking) around any read-modify-write that spans
 non-storage I/O.
 
 ### 3.4 Write coalescing breaks if you `await` between writes
+
 Synchronous, un-awaited storage writes are batched into one implicit
 atomic transaction. Interleaving `await`s on KV-style `get`/`put` calls
 breaks coalescing: the guide's broken-transfer example shows a debit
@@ -322,6 +326,7 @@ With the SQL API, keep multi-write sequences synchronous, or use an
 explicit transaction.
 
 ### 3.5 Non-hibernating WebSockets burn duration — the classic cost surprise
+
 Official pricing doc, verbatim in substance: "Calling `accept()` on a
 WebSocket in an Object will incur duration charges for the entire time
 the WebSocket is connected. It is recommended to use the WebSocket
@@ -341,6 +346,7 @@ Rules guide (WebSockets section).
 distinction — https://thomasgauvin.com/writing/how-cloudflare-durable-objects-websocket-hibernation-works/]
 
 ### 3.6 Holding the object open: `waitUntil`, long handlers, open requests
+
 Anything that keeps an event in flight keeps the object "active" and
 billing duration: slow external calls inside handlers, `ctx.waitUntil()`
 promises doing slow work, long-lived response streams. Community
@@ -353,6 +359,7 @@ WebSocket, or pending I/O is in flight" (official Workers limits page,
 https://developers.cloudflare.com/workers/platform/limits/).
 
 ### 3.7 In-memory state assumptions
+
 Covered in §2.6–2.7: fields vanish on eviction/crash/hibernation wake;
 constructors re-run on every activation, so expensive constructors tax
 every cold wake; per-connection state kept in JS variables is lost
@@ -363,10 +370,12 @@ UNVERIFIED against a doc page I opened]). The Rules guide's rule:
 the in-memory copy.
 
 ### 3.8 Cost surprises (beyond WebSockets)
+
 From the official pricing page (Workers Paid):
+
 - **Duration**: 400,000 GB-s/month included, then $12.50 per million
   GB-s — billed on the full 128 MB allocation per object regardless of
-  actual usage, and rounded *up* to the next billable unit.
+  actual usage, and rounded _up_ to the next billable unit.
 - **Requests**: 1M/month included, then $0.15/M. "Requests" includes HTTP
   requests, **each RPC method call** (one stub call = one RPC session =
   one billed request), **alarm invocations**, and incoming WebSocket
@@ -388,9 +397,10 @@ From the official pricing page (Workers Paid):
   included then $0.20/GB-month; a request unit is 4 KB.
 - Free plan: DOs limited to SQLite-backed classes; 100K requests/day and
   13,000 GB-s/day included.
-All from https://developers.cloudflare.com/workers/platform/pricing/
+  All from https://developers.cloudflare.com/workers/platform/pricing/
 
 ### 3.9 Hard limits that bite
+
 - **128 MB per isolate** (shared between co-located objects of the same
   class + Worker code) — §1.4. Exceeding it resets objects; the reset
   victim may not be the memory hog [community: Polylane write-up above].
@@ -415,7 +425,8 @@ All from https://developers.cloudflare.com/workers/platform/pricing/
   [pattern per Rules guide alarms section + community gotchas].
 
 ### 3.10 Placement latency for far-away users
-The object is born near its *first* requester and stays there (§2.5).
+
+The object is born near its _first_ requester and stays there (§2.5).
 Every subsequent request from anywhere on Earth pays a round trip to
 that one location. A room created by a user in Frankfurt serves Sydney
 users at Frankfurt latency forever. Mitigations are all design-time:
@@ -425,28 +436,30 @@ first request, and keep far-flung read paths on KV/D1/R2 (globally
 replicated) with the DO only on the write/coordinate path.
 
 ### 3.11 Class lifecycle, migrations, and versioning pain
+
 - A class's **storage backend is chosen at creation** (`new_sqlite_classes`
   vs legacy `new_classes` in migrations) and cannot be flipped in place;
   picking `new_classes` for a new class is a common self-own [community
-  + Rules guide's insistence on SQLite for new classes]. Cloudflare says
-  a KV→SQLite migration path will be offered "in the future" (official
-  changelog, 2025-04-07).
+  - Rules guide's insistence on SQLite for new classes]. Cloudflare says
+    a KV→SQLite migration path will be offered "in the future" (official
+    changelog, 2025-04-07).
 - Class renames/deletes/transfers are deploy-time operations (migrations
   array, or the newer declarative `exports` field — Rules guide shows
   `state: "renamed"` / `state: "deleted"` entries). Deleting a class
   **destroys all its objects' data**; migration tags must be unique and
   cannot be rolled back [community gotchas table, consistent with docs:
   https://deepwiki.com/dmmulroy/cloudflare-skill/6.4-durable-objects-gotchas].
-- **Data-schema** migrations are *your* problem and run lazily, per
+- **Data-schema** migrations are _your_ problem and run lazily, per
   object, in the constructor under `blockConcurrencyWhile()` (Rules
   guide's `_sql_schema_migrations` pattern) — meaning old-schema and
   new-schema objects coexist across deploys, and a bad migration only
   detonates when that particular object next wakes.
-- Code deploys replace the code for *all* objects of a class at once;
+- Code deploys replace the code for _all_ objects of a class at once;
   in-flight objects are restarted under the new code (another reason
   in-memory state is not a contract).
 
 ### 3.12 Testing pain points
+
 Officially, testing is now first-class: `@cloudflare/vitest-plugin` /
 `@cloudflare/vitest-pool-workers` run DOs in the real runtime with
 isolated storage, `runInDurableObject(stub, (instance, state) => …)` for
@@ -464,15 +477,15 @@ under realistic concurrent load, not unit tests.
 
 ## 4. Advantages vs the alternatives
 
-| | Durable Objects | Workers KV | D1 | Plain Workers | External Redis/Postgres |
-| --- | --- | --- | --- | --- | --- |
-| Consistency | **Strong**, per object; serialized execution + transactional storage | Eventual (global propagation, typically seconds–~60 s) | Strong at the single primary; read replicas are eventually consistent | None (stateless) | Depends (Redis: per-node; Postgres: strong) |
-| Coordination | **Native** — single-writer actor per entity; no locks, no CAS loops | None — read-modify-write races are real | SQL transactions, but contended global hot rows serialize at one primary | None | Redis locks/Lua, Postgres advisory locks — you build and operate it |
-| Connections | **Hibernatable WebSockets owned per object**; fan-out is a loop over `ctx.getWebSockets()` | n/a | n/a | Can proxy WebSockets but holds no per-room state | You run the socket servers |
-| Scheduling | **Per-entity alarms** (one timer per object, wakes the object) | n/a | n/a | Cron Triggers are per-Worker, global schedule | External cron/queues |
-| Latency shape | ~0 ms to own storage (co-located); possibly a cross-planet trip to *reach* the object | ~0 ms reads at every edge (cached) | Reads near user with replication; writes travel to the primary's location | Runs at the nearest edge, always | A network hop (mitigated by Hyperdrive pooling/caching) from every Worker |
-| Scale model | Scales by adding objects (IDs); each object caps at ~500–1,000 req/s | Effectively unlimited reads; writes ~1/s per key guidance [UNVERIFIED in this pass] | One database: 10 GB cap, single-writer throughput | Effectively unlimited | Whatever you provision |
-| Ops burden | Zero servers; pay requests + duration + rows | Zero | Zero | Zero | Yours (or a vendor's) |
+|               | Durable Objects                                                                            | Workers KV                                                                          | D1                                                                        | Plain Workers                                    | External Redis/Postgres                                                   |
+| ------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------------- |
+| Consistency   | **Strong**, per object; serialized execution + transactional storage                       | Eventual (global propagation, typically seconds–~60 s)                              | Strong at the single primary; read replicas are eventually consistent     | None (stateless)                                 | Depends (Redis: per-node; Postgres: strong)                               |
+| Coordination  | **Native** — single-writer actor per entity; no locks, no CAS loops                        | None — read-modify-write races are real                                             | SQL transactions, but contended global hot rows serialize at one primary  | None                                             | Redis locks/Lua, Postgres advisory locks — you build and operate it       |
+| Connections   | **Hibernatable WebSockets owned per object**; fan-out is a loop over `ctx.getWebSockets()` | n/a                                                                                 | n/a                                                                       | Can proxy WebSockets but holds no per-room state | You run the socket servers                                                |
+| Scheduling    | **Per-entity alarms** (one timer per object, wakes the object)                             | n/a                                                                                 | n/a                                                                       | Cron Triggers are per-Worker, global schedule    | External cron/queues                                                      |
+| Latency shape | ~0 ms to own storage (co-located); possibly a cross-planet trip to _reach_ the object      | ~0 ms reads at every edge (cached)                                                  | Reads near user with replication; writes travel to the primary's location | Runs at the nearest edge, always                 | A network hop (mitigated by Hyperdrive pooling/caching) from every Worker |
+| Scale model   | Scales by adding objects (IDs); each object caps at ~500–1,000 req/s                       | Effectively unlimited reads; writes ~1/s per key guidance [UNVERIFIED in this pass] | One database: 10 GB cap, single-writer throughput                         | Effectively unlimited                            | Whatever you provision                                                    |
+| Ops burden    | Zero servers; pay requests + duration + rows                                               | Zero                                                                                | Zero                                                                      | Zero                                             | Yours (or a vendor's)                                                     |
 
 Narrative version:
 
@@ -506,8 +519,8 @@ Narrative version:
   not port.
 
 The advantages that have no real substitute elsewhere on the platform:
-strong consistency + transactions *per entity* without a database round
-trip; WebSocket fan-out where the connection owner *is* the state owner;
+strong consistency + transactions _per entity_ without a database round
+trip; WebSocket fan-out where the connection owner _is_ the state owner;
 per-entity alarms (a million independent timers with zero polling); and
 the actor-model fit — code reads like a single-threaded class, because
 it is one.
@@ -521,6 +534,7 @@ Mostly from the official Rules guide
 published 2025-12-15, plus marked community sources.
 
 ### 5.1 One DO per entity — the "atom of coordination"
+
 "Create one Durable Object per logical unit that needs coordination: a
 chat room, a game session, a document, a user's data, or a tenant's
 workspace." Route deterministically with `getByName()` / `idFromName()`
@@ -532,6 +546,7 @@ operations off the hot objects. Compute needed shard count up front:
 total req/s ÷ ~500–1,000 per object.
 
 ### 5.2 Hibernatable WebSockets, always
+
 Use `ctx.acceptWebSocket()` + `webSocketMessage/Close/Error` handlers
 instead of the legacy `ws.accept()` pattern (§3.5). Store per-connection
 metadata (user ID, session info) with `serializeAttachment()` so it
@@ -541,10 +556,11 @@ On compatibility dates ≥ 2026-04-07 the runtime auto-replies to Close
 frames (`web_socket_auto_reply_to_close`); on older dates you must call
 `ws.close()` in `webSocketClose` or clients see 1006 errors (Rules
 guide). Incoming messages bill at 20:1 as requests, outgoing are free —
-chatty *inbound* protocols are the cost driver, so batch client updates
+chatty _inbound_ protocols are the cost driver, so batch client updates
 where the protocol allows.
 
 ### 5.3 Alarms instead of polling
+
 One alarm per object (`ctx.storage.setAlarm(timestamp)`, ms precision;
 re-set it inside `alarm()` for recurrence — alarms don't repeat on
 their own). Canonical uses: session/game expiry, subscription renewal,
@@ -559,9 +575,10 @@ also a billed row write, §3.8). For multiple logical timers, keep a
 sorted events table in SQLite and set the single alarm to the earliest.
 
 ### 5.4 Let the gates work for you; keep write paths synchronous
+
 - Input gates: no new event is delivered while your synchronous code
   runs, and storage awaits hold the gate — so a read-modify-write done
-  entirely against storage is race-free *without* locks.
+  entirely against storage is race-free _without_ locks.
 - Output gates: responses and outgoing fetches are held until pending
   storage writes commit — clients can never observe success for data
   that wasn't persisted. This is why `sql.exec()` writes don't need to
@@ -574,6 +591,7 @@ sorted events table in SQLite and set the single alarm to the earliest.
   atomicity in request handling without freezing the object.
 
 ### 5.5 Storage hygiene
+
 - New classes: SQLite backend (`new_sqlite_classes`), SQL API, indexes
   on filtered columns, schema versioned via a `_sql_schema_migrations`
   table applied in the constructor (all Rules guide patterns).
@@ -588,12 +606,13 @@ sorted events table in SQLite and set the single alarm to the earliest.
   the highest-value DO patterns [technique; illustrated in community
   write-ups, e.g. dedupe-by-event-ID in
   https://dev.to/instawebhook/routing-webhooks-through-cloudflare-workers-kv-and-durable-objects-building-a-globally-distributed-1gje].
-- Cache in memory *after* persisting; treat every wake as a cold start;
+- Cache in memory _after_ persisting; treat every wake as a cold start;
   keep constructors cheap (schema DDL with `IF NOT EXISTS` only).
 - `deleteAll()` to fully retire an object (data + alarm; compat-date
   nuances in the Rules guide).
 
 ### 5.6 The reference architecture: DO coordinates, R2 stores blobs, D1 indexes
+
 For artifact/file-shaped systems (the §1.5 pattern, generalized):
 
 ```
@@ -614,6 +633,7 @@ Worker/Queue consumer ──▶ D1 (cross-entity index, search, admin queries)
   domain delivery, bypassing the DO entirely.
 
 ### 5.7 Canonical DO roles (with the sharding caveat applied)
+
 - **Chat room / live presence** — one DO per room; hibernatable
   WebSockets; history in SQLite; attachments in R2.
 - **Multiplayer game session / collaborative document** — one DO per
@@ -621,11 +641,11 @@ Worker/Queue consumer ──▶ D1 (cross-entity index, search, admin queries)
   coordination for the live state; alarm as the game tick/timeout.
 - **Rate limiter / token bucket** — one DO **per entity being limited**
   (per user, per API key, per tenant). Atomic check-and-increment in
-  synchronous code against storage. A *global* limiter DO is the Rules
+  synchronous code against storage. A _global_ limiter DO is the Rules
   guide's named anti-pattern (§3.1) — shard by entity or use
   approximate counting in the Worker with periodic DO reconciliation.
 - **Leader election / single-flight** — one DO per lock name: the
-  platform's guarantee that only one instance exists *is* the election;
+  platform's guarantee that only one instance exists _is_ the election;
   the holder renews via alarm, contenders ask the DO. Dedup/single-flight
   for webhook processing and cache-stampede protection are the same
   shape [pattern assessment; the uniqueness guarantee it rests on is
@@ -639,6 +659,7 @@ Worker/Queue consumer ──▶ D1 (cross-entity index, search, admin queries)
   the isolate while ordering stays in the DO.
 
 ### 5.8 RPC over `fetch()` for DO APIs
+
 Official guidance (Rules guide): for projects with compatibility date
 ≥ 2024-04-03, define public methods on the DO class and call them on the
 stub (`await stub.bookSeat(...)`) instead of implementing a `fetch()`
@@ -654,6 +675,7 @@ somewhere else (e.g. §1.3a) — a body stream is not an RPC-shaped value.
 not stated in the pages opened here; design as if it does not.]
 
 ### 5.9 Errors and overload are part of the API
+
 Stub calls can fail with errors exposing `.retryable` and `.overloaded`
 (Rules guide). Production callers should retry retryable errors with
 exponential backoff + jitter and treat `overloaded` as the signal that
@@ -664,20 +686,20 @@ transient blip.
 
 ## Appendix: numbers used above, with provenance
 
-| Fact | Value | Source |
-| --- | --- | --- |
-| Memory limit | 128 MB per isolate, all plans | Official: workers/platform/limits |
-| DO duration billing basis | Wall-clock while active & not hibernation-eligible; billed as full 128 MB allocation | Official: workers/platform/pricing |
-| DO requests (Paid) | 1M/mo incl., +$0.15/M; incl. HTTP, per-RPC-call, alarm invocations, WS msgs at 20:1 | Official: workers/platform/pricing |
-| DO duration (Paid) | 400,000 GB-s/mo incl., +$12.50/M GB-s | Official: workers/platform/pricing |
-| SQLite rows read (Paid) | 25B/mo incl., +$0.001/M | Official: workers/platform/pricing |
-| SQLite rows written (Paid) | 50M/mo incl., +$1.00/M; setAlarm = 1 write; deletes = writes | Official: workers/platform/pricing |
-| SQLite stored data (Paid) | 5 GB-month incl., +$0.20/GB-month | Official: workers/platform/pricing |
-| SQLite storage per object | 10 GB | Official: changelog 2025-04-07 (SQLite GA) |
-| Per-object throughput | ~500–1,000 req/s | Official: Rules of Durable Objects |
-| WebSocket max message size | 32 MiB (since 2025-10-25) | Official: DO release notes |
-| CPU per invocation (Paid) | 30 s default, 5 min max; alarm duration limit 15 min | Official: workers/platform/limits |
-| KV value cap on SQLite-backed DOs; SQL statement/column caps | 2 MB; 100 KB; 100 cols | [community compilation — UNVERIFIED against primary limits page in this pass] |
-| DO classes per account | 100 (Free) / 500 (Paid) | [community compilation — UNVERIFIED in this pass] |
-| blockConcurrencyWhile callback timeout | ~30 s, then object resets | [community — aicassindra deep-dive] |
-| WebSocket attachment size cap | 2 KB commonly cited | [community — UNVERIFIED in this pass] |
+| Fact                                                         | Value                                                                                | Source                                                                        |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| Memory limit                                                 | 128 MB per isolate, all plans                                                        | Official: workers/platform/limits                                             |
+| DO duration billing basis                                    | Wall-clock while active & not hibernation-eligible; billed as full 128 MB allocation | Official: workers/platform/pricing                                            |
+| DO requests (Paid)                                           | 1M/mo incl., +$0.15/M; incl. HTTP, per-RPC-call, alarm invocations, WS msgs at 20:1  | Official: workers/platform/pricing                                            |
+| DO duration (Paid)                                           | 400,000 GB-s/mo incl., +$12.50/M GB-s                                                | Official: workers/platform/pricing                                            |
+| SQLite rows read (Paid)                                      | 25B/mo incl., +$0.001/M                                                              | Official: workers/platform/pricing                                            |
+| SQLite rows written (Paid)                                   | 50M/mo incl., +$1.00/M; setAlarm = 1 write; deletes = writes                         | Official: workers/platform/pricing                                            |
+| SQLite stored data (Paid)                                    | 5 GB-month incl., +$0.20/GB-month                                                    | Official: workers/platform/pricing                                            |
+| SQLite storage per object                                    | 10 GB                                                                                | Official: changelog 2025-04-07 (SQLite GA)                                    |
+| Per-object throughput                                        | ~500–1,000 req/s                                                                     | Official: Rules of Durable Objects                                            |
+| WebSocket max message size                                   | 32 MiB (since 2025-10-25)                                                            | Official: DO release notes                                                    |
+| CPU per invocation (Paid)                                    | 30 s default, 5 min max; alarm duration limit 15 min                                 | Official: workers/platform/limits                                             |
+| KV value cap on SQLite-backed DOs; SQL statement/column caps | 2 MB; 100 KB; 100 cols                                                               | [community compilation — UNVERIFIED against primary limits page in this pass] |
+| DO classes per account                                       | 100 (Free) / 500 (Paid)                                                              | [community compilation — UNVERIFIED in this pass]                             |
+| blockConcurrencyWhile callback timeout                       | ~30 s, then object resets                                                            | [community — aicassindra deep-dive]                                           |
+| WebSocket attachment size cap                                | 2 KB commonly cited                                                                  | [community — UNVERIFIED in this pass]                                         |

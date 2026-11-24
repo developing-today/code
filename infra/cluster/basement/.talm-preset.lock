@@ -1,0 +1,6 @@
+# Managed by talm. Records the preset this project was generated from and the
+# content hash of that preset at init time, so talm can warn when the installed
+# binary ships a newer preset. Do not edit by hand; run
+# `talm init --update --preset <preset>` to refresh.
+preset: cozystack
+presetHash: 4a9ee930b296874969dccb4a993eb03f06467295054da52bf1eacbfb338dd3ba

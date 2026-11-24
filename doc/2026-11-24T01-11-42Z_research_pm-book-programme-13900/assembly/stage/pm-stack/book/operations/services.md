@@ -6,12 +6,12 @@ The PM stack deploys on laptop host `amd` with one `nixos-rebuild switch`, per `
 
 The deployment frame names four units declared in the NixOS module `nixos/services/pm-stack`:
 
-| Unit | Service | Port |
-|---|---|---|
-| `pm-aggregator` | The aggregator dashboard (`pm-stack/aggregator/`) | 4870, plus freshness IPC on 4871 |
-| `pm-projector` | The projector (`pm-stack/projector/`) | 7801 |
-| `pm-dispatch` | The dispatch intake service (`pm-stack/dispatch/`) | 4879, public as `dispatch.security.cab` |
-| `pm-tunnel` | The Cloudflare Tunnel unit (`pm-stack/systemd/pm-tunnel.service`) | — |
+| Unit            | Service                                                           | Port                                    |
+| --------------- | ----------------------------------------------------------------- | --------------------------------------- |
+| `pm-aggregator` | The aggregator dashboard (`pm-stack/aggregator/`)                 | 4870, plus freshness IPC on 4871        |
+| `pm-projector`  | The projector (`pm-stack/projector/`)                             | 7801                                    |
+| `pm-dispatch`   | The dispatch intake service (`pm-stack/dispatch/`)                | 4879, public as `dispatch.security.cab` |
+| `pm-tunnel`     | The Cloudflare Tunnel unit (`pm-stack/systemd/pm-tunnel.service`) | —                                       |
 
 The console runs as unit `pm-console` on port 4872 (`pm-stack/console/`). It has no `pkgs/pm-console` package; its deploy runs through `console/install.sh` and `console/redeploy.sh` and the edge release path. Whether the NixOS module builds the console another way is UNVERIFIED from the surveys.
 
@@ -52,20 +52,20 @@ Since #8171, pm-git-sync never restarts PM services. Deploy is by merge, then `n
 
 The coverage ledger assigns 12 Workers to this book. Their deployment state, as surveyed:
 
-| Worker | Config | State as surveyed |
-|---|---|---|
-| `decision-events` | `pm-stack/decision-events-worker/wrangler.toml` | In service; deployed by hand |
-| `voice-line` | `pm-stack/voice-line-worker/wrangler.toml` | In service |
-| `pm-notify` (notify-relay) | `pm-stack/notify-relay/wrangler.toml` | **Not deployed** — `platform/workers.json` records a null address (D5) |
-| `pm-console-edge` | `pm-stack/console/edge/wrangler.jsonc`, plus `edge/init/wrangler.jsonc` | Deployed from Actions; its route is attached by the host script `scripts/expose.py` after a health check |
-| `pkarr` | `pkgs/pkarr-worker/wrangler.jsonc` | Pkarr relay Worker, with its Durable Object store and rate limiters |
-| `lab-ops-hub` | `pkgs/lab-ops-hub/wrangler.jsonc` | Worker with LiveRoom and CrawlerContainer Durable Objects, D1 `labops-db`, R2 `labops-files` |
-| `cf-container-hello` | `pkgs/cf-container-hello/wrangler.jsonc` | Containers probe Worker |
-| `muse-agent-handoff` | `scripts/muse/handoff/worker/wrangler.jsonc` | Handoff Worker, Handoff Durable Object |
-| `github-ci` | `pkgs/github-ci/worker/` | CI helper Worker; the name comes from its directory and workflow — no wrangler config sits at the package root |
-| exec door (security.cab) | — | No wrangler config found in the repo census; documented in home config and the #13404 / #13657 / #13774 issue family |
-| pm-stack aggregator worker | — | Named by the #13844 audit as a Cloudflare Worker writing `fleet-platform`; no wrangler config exists in `pm-stack/aggregator/`, and its deploy path is UNVERIFIED |
-| pm-stack dashboard worker | — | Named by the audit as a reader and writer of `fleet-platform` ingest families; no wrangler config found in the census |
+| Worker                     | Config                                                                  | State as surveyed                                                                                                                                                 |
+| -------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `decision-events`          | `pm-stack/decision-events-worker/wrangler.toml`                         | In service; deployed by hand                                                                                                                                      |
+| `voice-line`               | `pm-stack/voice-line-worker/wrangler.toml`                              | In service                                                                                                                                                        |
+| `pm-notify` (notify-relay) | `pm-stack/notify-relay/wrangler.toml`                                   | **Not deployed** — `platform/workers.json` records a null address (D5)                                                                                            |
+| `pm-console-edge`          | `pm-stack/console/edge/wrangler.jsonc`, plus `edge/init/wrangler.jsonc` | Deployed from Actions; its route is attached by the host script `scripts/expose.py` after a health check                                                          |
+| `pkarr`                    | `pkgs/pkarr-worker/wrangler.jsonc`                                      | Pkarr relay Worker, with its Durable Object store and rate limiters                                                                                               |
+| `lab-ops-hub`              | `pkgs/lab-ops-hub/wrangler.jsonc`                                       | Worker with LiveRoom and CrawlerContainer Durable Objects, D1 `labops-db`, R2 `labops-files`                                                                      |
+| `cf-container-hello`       | `pkgs/cf-container-hello/wrangler.jsonc`                                | Containers probe Worker                                                                                                                                           |
+| `muse-agent-handoff`       | `scripts/muse/handoff/worker/wrangler.jsonc`                            | Handoff Worker, Handoff Durable Object                                                                                                                            |
+| `github-ci`                | `pkgs/github-ci/worker/`                                                | CI helper Worker; the name comes from its directory and workflow — no wrangler config sits at the package root                                                    |
+| exec door (security.cab)   | —                                                                       | No wrangler config found in the repo census; documented in home config and the #13404 / #13657 / #13774 issue family                                              |
+| pm-stack aggregator worker | —                                                                       | Named by the #13844 audit as a Cloudflare Worker writing `fleet-platform`; no wrangler config exists in `pm-stack/aggregator/`, and its deploy path is UNVERIFIED |
+| pm-stack dashboard worker  | —                                                                       | Named by the audit as a reader and writer of `fleet-platform` ingest families; no wrangler config found in the census                                             |
 
 The platform registry itself, `pm-stack/platform/workers.json`, lists 20 Workers across the estate (D6). The console's Platform screen at `#more/platform` is drawn from that file.
 

@@ -79,7 +79,7 @@ the release of v1.0.0."
   no binding to external identity systems (no X.509, no DID, no OIDC) in any
   crate ([docs.rs p2panda-core](https://docs.rs/p2panda-core/latest/p2panda_core/)).
 - The network identity is iroh's NodeId — also an Ed25519 public key — but
-  it is a *separate* key from the author key: `p2panda-net` exposes
+  it is a _separate_ key from the author key: `p2panda-net` exposes
   `NodeId`/`EndpointAddr` from iroh alongside core's `VerifyingKey`
   ([docs.rs p2panda](https://docs.rs/p2panda/latest/p2panda/)).
 - For encrypted spaces, a member additionally holds encryption key material:
@@ -98,7 +98,7 @@ the release of v1.0.0."
   key escrow, hardware-key support, or any bridge to a CA/PKI. Lose the
   signing key and that author identity is gone; the design answer is the
   group-as-identity pattern (a manager can re-add a fresh device key). For
-  this estate that means p2panda identities would live *alongside* the fleet
+  this estate that means p2panda identities would live _alongside_ the fleet
   CA / IdP CA, not under them — nothing in p2panda consumes certificates.
 
 ## 3. Capability model — what p2panda-auth actually is
@@ -131,7 +131,7 @@ derived locally:
   party" operation. The nearest mechanisms are (a) a manager adding someone
   at a lower level, and (b) **groups as members of groups** — an actor can
   be a group (0.8.0 added "checking if actor id is a group" to the auth API),
-  so authority can be delegated to a *collective* whose own managers control
+  so authority can be delegated to a _collective_ whose own managers control
   its membership ([CHANGELOG](https://raw.githubusercontent.com/p2panda/p2panda/main/CHANGELOG.md),
   [p2panda-spaces README](https://raw.githubusercontent.com/p2panda/p2panda/main/p2panda-spaces/README.md)).
   Notably, the project's own high-level docs name Willow's **Meadowcap** and
@@ -149,8 +149,8 @@ derived locally:
   member but still invalidates their concurrent actions. The `Resolver`
   trait is replaceable if an application wants different politics
   ([docs.rs p2panda-auth](https://docs.rs/p2panda-auth/latest/p2panda_auth/)).
-  Revocation is therefore *eventually consistent and retroactive over
-  concurrent work* — a removed member's in-flight operations are annulled
+  Revocation is therefore _eventually consistent and retroactive over
+  concurrent work_ — a removed member's in-flight operations are annulled
   once the removal is seen, but there is no instant global revocation, and
   data already replicated to (and decrypted by) the removed member is not
   clawed back; forward protection comes from encryption key rotation (§5).
@@ -183,7 +183,7 @@ derived locally:
 - Practical shape for this estate: a "fleet" group with Manage = operator
   keys, Write = seats allowed to publish, Read = observers, Pull = dumb
   relays — and per-seat device groups nested inside. That maps well. What
-  groups do *not* give you: scoped one-shot grants ("this runner may read
+  groups do _not_ give you: scoped one-shot grants ("this runner may read
   artifact X for 10 minutes") — that pattern needs conditions gymnastics or
   an external capability layer (§3).
 
@@ -194,8 +194,8 @@ Three distinct layers, often conflated:
 1. **In transit (pairwise):** iroh connections are QUIC with TLS 1.3 using
    self-certified Ed25519 node keys. The high-level docs state plainly that
    data exchanged over direct topic streams "is always end-to-end encrypted"
-   by iroh's TLS — but that protects a *direct connection between two
-   nodes*, not data replicated through intermediaries
+   by iroh's TLS — but that protects a _direct connection between two
+   nodes_, not data replicated through intermediaries
    ([docs.rs p2panda](https://docs.rs/p2panda/latest/p2panda/)).
 2. **End-to-end group encryption (`p2panda-encryption`):** a Rust
    implementation of **DCGKA** — Decentralised Continuous Group Key
@@ -203,21 +203,21 @@ Three distinct layers, often conflated:
    MLS. Two-party key agreement ("2SM") bootstraps with Signal's **X3DH**
    (with XEdDSA) over published pre-key bundles and continues with **HPKE**;
    group secret distribution is O(n) in group size. Two schemes on top:
-   - *Data Encryption* (the default, and the one spaces use): a shared
+   - _Data Encryption_ (the default, and the one spaces use): a shared
      symmetric group key, XChaCha20-Poly1305, rotated when a member is
      removed; late joiners can decrypt history; keys are retained for old
      data unless the application deletes them, so forward secrecy is
-     *optional and application-managed*, while post-compromise security
+     _optional and application-managed_, while post-compromise security
      comes from the key-agreement rounds.
-   - *Message Encryption*: a per-member Double-Ratchet-style scheme with
+   - _Message Encryption_: a per-member Double-Ratchet-style scheme with
      per-message keys dropped after use — strong forward secrecy, aimed at
      chat ([docs.rs p2panda-encryption](https://docs.rs/p2panda-encryption/latest/p2panda_encryption/),
      [p2panda-encryption README](https://raw.githubusercontent.com/p2panda/p2panda/main/p2panda-encryption/README.md)).
-   So: **yes, there is real E2EE for group data, and it exists today** in a
-   published crate (first released 2025-07-07) — this is not a roadmap item.
-   But the README's own security section is unusually candid:
+     So: **yes, there is real E2EE for group data, and it exists today** in a
+     published crate (first released 2025-07-07) — this is not a roadmap item.
+     But the README's own security section is unusually candid:
    - "**This crate has not yet received a security audit.**"
-   - "We currently *cannot* recommend using this technology for high-risk
+   - "We currently _cannot_ recommend using this technology for high-risk
      use-cases."
    - **Group control messages are currently unencrypted** — membership
      metadata (who is in which group) is observable to anyone who can see
@@ -291,7 +291,7 @@ flaky spaces tests, acking of space control messages, repair-task rewrites)
   topic, the highest sequence number held — then a `PreSync` summary
   (total operations / bytes), then the missing operations stream in
   sequence, then `Done`. Because logs are single-writer with contiguous
-  sequence numbers, the height vector *is* the state vector; reconciliation
+  sequence numbers, the height vector _is_ the state vector; reconciliation
   is exact set difference, not a heuristic
   ([docs.rs, LogSyncMessage enum](https://docs.rs/p2panda-sync/latest/p2panda_sync/protocols/enum.LogSyncMessage.html)).
 - Sync is partial by topic: a node replicates only the topics it subscribes
@@ -308,7 +308,7 @@ flaky spaces tests, acking of space control messages, repair-task rewrites)
   ships none), in the auth CRDT's resolver (§3), and in the encryption
   layer's handling of concurrent membership changes.
 - The crate also exposes `Protocol`/`Manager` traits so applications can
-  sync *other* convergent data types (sets, Merkle trees) through the same
+  sync _other_ convergent data types (sets, Merkle trees) through the same
   session machinery — sync is a framework, with log sync as the one built-in
   ([docs.rs p2panda-sync](https://docs.rs/p2panda-sync/latest/p2panda_sync/)).
 - Maturity signal from the changelog: the unreleased section already
@@ -332,12 +332,12 @@ flaky spaces tests, acking of space control messages, repair-task rewrites)
   [DeepWiki storage page](https://deepwiki.com/p2panda/p2panda/5-storage-and-data-management) — secondary).
 - **Turso/libsql: no support exists.** Nothing in the workspace depends on
   libsql. The trait surface is small enough that a libsql-backed store is
-  *implementable* (libsql speaks SQLite semantics), but it would be our
+  _implementable_ (libsql speaks SQLite semantics), but it would be our
   code to write and maintain, and SQLx is wired into the shipped store's
   query layer (0.8.0 moved to "sqlx 0.9.0, safer query builder").
 - Fit assessment for the estate: fleet's stores are SQLite/Turso already,
   so a p2panda node keeping its own SQLite file beside the broker's stores
-  is operationally natural; expecting p2panda operations to live *inside*
+  is operationally natural; expecting p2panda operations to live _inside_
   Turso (with its replication) is not something the project offers.
 
 ## 9. Rust maturity — the crate table
@@ -349,24 +349,24 @@ people: Andreas Dzialocha (adzialocha), Sam Andreae (sandreae), glyph
 (mycognosist) ([GitHub repo](https://github.com/p2panda/p2panda),
 [crates.io API](https://crates.io/api/v1/crates/p2panda-core)).
 
-| Crate | Latest | First published | Total downloads | Recent downloads | Role |
-|---|---|---|---|---|---|
-| p2panda-core | 0.8.1 | 2024-12-06 | 26,649 | 8,600 | Operation/log data types |
-| p2panda-store | 0.8.1 | 2024-12-06 | 14,925 | 5,138 | Store traits + SQLite (SQLx) |
-| p2panda-sync | 0.8.1 | 2024-12-06 | 12,797 | 3,535 | Log sync + sync traits |
-| p2panda-discovery | 0.8.1 | 2024-12-06 | 12,137 | 2,982 | PSI topic discovery, random walk |
-| p2panda-net | 0.8.1 | 2024-12-06 | 10,879 | 1,969 | iroh endpoint, gossip, sync manager |
-| p2panda-encryption | 0.8.1 | 2025-07-07 | 10,304 | 3,288 | DCGKA group encryption |
-| p2panda-stream | 0.8.1 | 2024-12-06 | 9,158 | 1,579 | Ingest/order/prune pipeline |
-| p2panda-blobs | 0.8.1 | 2024-12-06 | 4,649 | 47 | iroh-blobs wrapper |
-| p2panda-auth | 0.8.1 | 2025-07-07 | 4,532 | 2,667 | Group CRDT, access levels |
-| p2panda-spaces | 0.8.1 | 2026-07-07 | 3,061 | 2,165 | Auth+encryption integration |
-| p2panda | 0.8.1 | 2026-05-18 | 2,094 | 850 | High-level Node API |
+| Crate              | Latest | First published | Total downloads | Recent downloads | Role                                |
+| ------------------ | ------ | --------------- | --------------- | ---------------- | ----------------------------------- |
+| p2panda-core       | 0.8.1  | 2024-12-06      | 26,649          | 8,600            | Operation/log data types            |
+| p2panda-store      | 0.8.1  | 2024-12-06      | 14,925          | 5,138            | Store traits + SQLite (SQLx)        |
+| p2panda-sync       | 0.8.1  | 2024-12-06      | 12,797          | 3,535            | Log sync + sync traits              |
+| p2panda-discovery  | 0.8.1  | 2024-12-06      | 12,137          | 2,982            | PSI topic discovery, random walk    |
+| p2panda-net        | 0.8.1  | 2024-12-06      | 10,879          | 1,969            | iroh endpoint, gossip, sync manager |
+| p2panda-encryption | 0.8.1  | 2025-07-07      | 10,304          | 3,288            | DCGKA group encryption              |
+| p2panda-stream     | 0.8.1  | 2024-12-06      | 9,158           | 1,579            | Ingest/order/prune pipeline         |
+| p2panda-blobs      | 0.8.1  | 2024-12-06      | 4,649           | 47               | iroh-blobs wrapper                  |
+| p2panda-auth       | 0.8.1  | 2025-07-07      | 4,532           | 2,667            | Group CRDT, access levels           |
+| p2panda-spaces     | 0.8.1  | 2026-07-07      | 3,061           | 2,165            | Auth+encryption integration         |
+| p2panda            | 0.8.1  | 2026-05-18      | 2,094           | 850              | High-level Node API                 |
 
 (Source: crates.io API per crate, read 2026-11-23; "recent" is crates.io's
 trailing-window figure.)
 
-Reading the table: the *lower* layers (core/store/sync/net) have ~2 years of
+Reading the table: the _lower_ layers (core/store/sync/net) have ~2 years of
 published history and steady monthly releases (0.5.0 Jan 2026 → 0.8.1 Nov
 2026, breaking changes between minors). The layers this estate cares most
 about — auth, encryption, and especially their integration (spaces) and the
@@ -402,7 +402,7 @@ test utilities, but no crate is 1.0 and none claims API stability.
 
 ## 11. iroh fit
 
-- **Native — p2panda-net *is* an iroh application.** Endpoint (connections),
+- **Native — p2panda-net _is_ an iroh application.** Endpoint (connections),
   iroh-gossip (overlays), iroh-blobs (files), iroh-mdns (LAN discovery) are
   all n0's crates; p2panda tracks iroh closely (0.8.0 moved to iroh 1.4.1 /
   iroh-gossip 0.102; unreleased work already bumps iroh to 1.5.0)
@@ -507,7 +507,7 @@ fixed this month.
   map onto Manage/Write/Read/Pull and nested device groups without forcing.
 - **Encrypted replicated data**: spaces give E2EE group data over untrusted
   relays/intermediaries — something neither raw iroh nor the current
-  Tailscale/tsnet setup provides for *stored, replicated* content.
+  Tailscale/tsnet setup provides for _stored, replicated_ content.
 - **Rust, SQLite, permissive license, self-hostable relays** — every estate
   hard-preference is natively satisfied by the lower two-thirds of the
   stack (core/store/sync/net/discovery).

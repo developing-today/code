@@ -679,7 +679,10 @@ pub(super) fn cmd_lane(rest: &[String]) -> i32 {
             "clear_platform_limit": args.has("clear-platform-limit"),
         }),
     ));
-    print_json(&served_row(require_row(&resp, "assign_repo_task_lane"), "lane"));
+    print_json(&served_row(
+        require_row(&resp, "assign_repo_task_lane"),
+        "lane",
+    ));
     0
 }
 
@@ -1311,7 +1314,10 @@ pub(super) fn cmd_dep_recheck(rest: &[String]) -> i32 {
         body["limit"] = json!(l);
     }
     let resp = unwrap_ok(call("/dep-recheck", &body));
-    print_json(&served_row(require_row(&resp, "dep_recheck"), "dep-recheck"));
+    print_json(&served_row(
+        require_row(&resp, "dep_recheck"),
+        "dep-recheck",
+    ));
     0
 }
 

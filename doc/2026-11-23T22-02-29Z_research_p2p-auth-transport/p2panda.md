@@ -51,7 +51,7 @@ guarantees will improve with v1.0.0. There is no 1.0 yet.
 Identity **is** an Ed25519 keypair; the verifying key is the author ID in
 every operation header. There is no account layer, no naming system, and
 no binding to external identity systems (no X.509, no DID, no OIDC). The
-network identity is iroh's NodeId — also Ed25519, but a *separate* key
+network identity is iroh's NodeId — also Ed25519, but a _separate_ key
 from the author key. For encrypted spaces, members additionally publish
 **key bundles** (identity + X3DH pre-keys) so others can invite them
 asynchronously; 0.8.0 added cross-signing of identity keys and automatic
@@ -61,7 +61,7 @@ Multi-device is modelled socially: each device has its own keypair, and a
 **group whose members are your devices** acts as your collective identity.
 What does not exist: author-key rotation, recovery, escrow, hardware-key
 support, or any bridge to a CA/PKI. For this estate, p2panda identities
-would live *alongside* the fleet CA / IdP CA, not under them — nothing in
+would live _alongside_ the fleet CA / IdP CA, not under them — nothing in
 p2panda consumes certificates.
 
 ## Auth: what p2panda-auth actually is
@@ -87,7 +87,7 @@ from which authorisation decisions are derived locally:
 - **Delegation:** there is no "delegate a subset of my rights" operation.
   The nearest mechanisms are a manager adding someone at a lower level,
   and **groups as members of groups** — authority can be delegated to a
-  *collective* whose own managers control its membership. Notably, the
+  _collective_ whose own managers control its membership. Notably, the
   project's own high-level docs name Willow's **Meadowcap** and **UCAN**
   as external capability systems that can be integrated via header
   extensions — p2panda itself frames delegated capability auth as
@@ -99,7 +99,7 @@ from which authorisation decisions are derived locally:
   invalidated, transitively; mutual concurrent removals both apply; a
   remove-then-re-add keeps the member but still invalidates their
   concurrent actions. The `Resolver` trait is replaceable. Revocation is
-  therefore *eventually consistent and retroactive over concurrent work* —
+  therefore _eventually consistent and retroactive over concurrent work_ —
   but data already replicated to (and decrypted by) a removed member is
   not clawed back; forward protection comes from encryption key rotation.
 - **Expiry:** none. Membership does not time out.
@@ -133,17 +133,17 @@ Three distinct layers:
 2. **End-to-end group encryption (`p2panda-encryption`):** a Rust
    implementation of **DCGKA** (Decentralised Continuous Group Key
    Agreement), not MLS. Two-party key agreement bootstraps with Signal's
-   X3DH and continues with HPKE. Two schemes on top: *Data Encryption*
+   X3DH and continues with HPKE. Two schemes on top: _Data Encryption_
    (the default, used by spaces) — a shared symmetric group key
    (XChaCha20-Poly1305) rotated when a member is removed; late joiners
    can decrypt history; forward secrecy is optional and
-   application-managed — and *Message Encryption*, a per-member
+   application-managed — and _Message Encryption_, a per-member
    Double-Ratchet-style scheme with strong forward secrecy, aimed at
    chat ([docs.rs: p2panda-encryption](https://docs.rs/p2panda-encryption/latest/p2panda_encryption/)).
    Real E2EE for group data exists today in a published crate (first
    released 2025-07-07). But the README's security section is unusually
    candid: the crate **has not received a security audit**; the authors
-   currently *cannot recommend it for high-risk use-cases*; **group
+   currently _cannot recommend it for high-risk use-cases_; **group
    control messages are currently unencrypted** (membership metadata is
    observable); and it is **not post-quantum**.
 3. **At rest:** nothing. The SQLite database holds operations in the
@@ -189,7 +189,7 @@ The shipped protocol is `LogSync`: a two-party, per-topic, **log-height
 exchange**. Both sides send `Have(LogHeights)` — for every author and log
 in the topic, the highest sequence number held — then a `PreSync` summary,
 then the missing operations stream in sequence, then `Done`. Because logs
-are single-writer with contiguous sequence numbers, the height vector *is*
+are single-writer with contiguous sequence numbers, the height vector _is_
 the state vector; reconciliation is exact set difference, not a heuristic
 ([docs.rs: p2panda-sync](https://docs.rs/p2panda-sync/latest/p2panda_sync/protocols/enum.LogSyncMessage.html)).
 
@@ -202,7 +202,7 @@ the state vector; reconciliation is exact set difference, not a heuristic
   data types (bring your own — core ships none), in the auth CRDT's
   resolver, and in the encryption layer's handling of concurrent
   membership changes.
-- The crate also exposes traits so applications can sync *other*
+- The crate also exposes traits so applications can sync _other_
   convergent data types through the same session machinery.
 - Maturity signal: the unreleased changelog section already contains a
   sync-session-management rewrite and fixes for a session memory leak and
@@ -221,7 +221,7 @@ enough that a libsql-backed store is implementable (libsql speaks SQLite
 semantics), but it would be our code to write and maintain. Fit for the
 estate: a p2panda node keeping its own SQLite file beside the broker's
 stores is operationally natural; expecting p2panda operations to live
-*inside* Turso replication is not something the project offers.
+_inside_ Turso replication is not something the project offers.
 
 ## Rust maturity
 
@@ -249,7 +249,7 @@ HTTP ↔ topics. KV/R2/Durable Objects have no p2panda bindings.
 
 ## iroh fit
 
-Native — p2panda-net *is* an iroh application (Endpoint, iroh-gossip,
+Native — p2panda-net _is_ an iroh application (Endpoint, iroh-gossip,
 iroh-blobs, iroh-mdns), and p2panda tracks iroh closely (0.8.0 moved to
 iroh 1.4.1 / iroh-gossip 0.102). For the estate's
 [#13752](https://github.com/developing-today/code/issues/13752) design,

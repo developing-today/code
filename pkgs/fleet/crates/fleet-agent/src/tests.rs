@@ -400,9 +400,11 @@ fn next_keeps_the_agent_as_worker_for_an_unknown_oc_lane() {
     );
     assert_eq!(code, EXIT_OK);
     assert_eq!(out["rung"], "queue");
-    assert!(fake.called(
-        "fleet queue claim --worker oc-bogus-02 --lane oc-bogus-02 --lease-seconds 14400"
-    ));
+    assert!(
+        fake.called(
+            "fleet queue claim --worker oc-bogus-02 --lane oc-bogus-02 --lease-seconds 14400"
+        )
+    );
 }
 
 #[test]

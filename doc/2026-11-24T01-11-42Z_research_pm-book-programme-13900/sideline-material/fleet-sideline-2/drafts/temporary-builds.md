@@ -61,7 +61,7 @@ Three pieces make one flow:
    the max lifespan plus grace).
 3. **The subcommand** — the `actions` domain in the fleet binary:
    `fleet actions exec start / run / attach / watch / renew / extend /
-   decide / close`, plus `fleet actions put <file>` for egress.
+decide / close`, plus `fleet actions put <file>` for egress.
 
 ## The handoff: workflow id, run attempt, handle
 
@@ -165,14 +165,14 @@ session's extension count, its cumulative approved extension seconds,
 and the raw ask. The tunables are named constants in
 `turso_queue::actions_exec`:
 
-| Tunable | Default | Meaning |
-| --- | --- | --- |
-| `EXT_AUTO_SIZE_CAP_S` | 1800 (30 min) | The largest single ask the auto tiers may grant; a raw ask above it is tier 3 even as a first extension |
-| `EXT_TIER1_MAX_COUNT` | 1 | Extension #1 of a session is tier 1 |
-| `EXT_TIER2_MAX_COUNT` | 2 | Extension #2 is tier 2, subject to the caps; #3 and beyond are tier 3 |
-| `EXT_AUTO_TOTAL_CAP_S` | 3600 (60 min) | Cumulative approved extension seconds the auto tiers may grant over a session's life |
-| `EXT_DENY_WINDOW_S` | 600 (10 min) | Tier 2's deny window: silence at window end approves |
-| `EXTENSION_GRACE_S` | 300 | The decision grace past the lease while an extension pends |
+| Tunable                | Default       | Meaning                                                                                                 |
+| ---------------------- | ------------- | ------------------------------------------------------------------------------------------------------- |
+| `EXT_AUTO_SIZE_CAP_S`  | 1800 (30 min) | The largest single ask the auto tiers may grant; a raw ask above it is tier 3 even as a first extension |
+| `EXT_TIER1_MAX_COUNT`  | 1             | Extension #1 of a session is tier 1                                                                     |
+| `EXT_TIER2_MAX_COUNT`  | 2             | Extension #2 is tier 2, subject to the caps; #3 and beyond are tier 3                                   |
+| `EXT_AUTO_TOTAL_CAP_S` | 3600 (60 min) | Cumulative approved extension seconds the auto tiers may grant over a session's life                    |
+| `EXT_DENY_WINDOW_S`    | 600 (10 min)  | Tier 2's deny window: silence at window end approves                                                    |
+| `EXTENSION_GRACE_S`    | 300           | The decision grace past the lease while an extension pends                                              |
 
 - **Tier 1 — auto + notify.** The first extension, within the caps,
   is applied inside the request itself and recorded

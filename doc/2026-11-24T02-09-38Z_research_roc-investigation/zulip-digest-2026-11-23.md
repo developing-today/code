@@ -1,7 +1,7 @@
 # Roc Zulip digest — 2026-10-24 → 2026-11-23
 
-*Compiled 2026-11-23 from roc.zulipchat.com via the Zulip REST API, using Drew's
-own account (Drewry Pope, user 747334, member since 2024-08-20).*
+_Compiled 2026-11-23 from roc.zulipchat.com via the Zulip REST API, using Drew's
+own account (Drewry Pope, user 747334, member since 2024-08-20)._
 
 **Access used:** an existing `zuliprc` on the laptop — `/home/user/zuliprc`
 (mode 600; `[api]` section, site `https://roc.zulipchat.com`, key stored under
@@ -31,8 +31,8 @@ the window — nothing is waiting for him personally.
 ## TL;DR — the five things that matter
 
 1. **Roc 0.1.0-RC1 shipped on 2026-11-21** — the first release candidate in
-   Roc's history, from the new (Zig) compiler. As of 2026-11-23, *no blocker
-   bugs have been reported*, and Feldman says RC1 may be promoted directly to
+   Roc's history, from the new (Zig) compiler. As of 2026-11-23, _no blocker
+   bugs have been reported_, and Feldman says RC1 may be promoted directly to
    0.1.0. An RC2 is still his base expectation.
 2. **The new compiler is simply "the compiler" now.** Nightlies, the RC, and
    package ports all target it; design discussion assumes it.
@@ -63,12 +63,12 @@ topic of the month):
   an important bug; **no performance improvements at all** (compiler or
   runtime) until 0.1.1, which is planned "shortly after" 0.1.0.
 - **Bugfix bar for 0.1.0:** only bugs that (a) block real-world Roc programs
-  (hobby projects and learning materials count) *and* (b) can't be worked
+  (hobby projects and learning materials count) _and_ (b) can't be worked
   around. Everything else — even compiler crashes — defaults to 0.1.1, with a
   deliberately high bar for exceptions.
-- **Status as of 2026-11-23:** Feldman, surprised: *"has anyone actually
+- **Status as of 2026-11-23:** Feldman, surprised: _"has anyone actually
   encountered a blocker bug in RC1? It seems … RC1 is eligible to be promoted
-  directly to 0.1.0."* Community reports agree: packages and platforms updated
+  directly to 0.1.0."_ Community reports agree: packages and platforms updated
   without issue (Niclas Ahden; kaza's roxum; pixelsprout's rocco-engine;
   Bryce Miller's Tigerbeetle client and roc-pg). Roux builds except
   [roc#13382](https://github.com/roc-lang/roc/issues/13382), which Zak Kohler
@@ -141,7 +141,7 @@ topic of the month):
   his roc-chat server. Feldman's answer, in detail: verifying compile-time
   uniqueness requires either a very restrictive memory model (e.g. Goose) or
   "approximately the same amount of type-system complexity and annotation
-  verbosity as Rust" — *"the cure is worse than the disease."* Roc's answer
+  verbosity as Rust" — _"the cure is worse than the disease."_ Roc's answer
   remains **FBIP** (Functional But In-Place), which Feldman notes came from
   Koka via Folkert's thesis adviser. Expect this request to keep recurring;
   the reasoning is now on record.
@@ -161,8 +161,8 @@ topic of the month):
   hand-rolled parsers or `--introspect` hacks. Luke Boswell pointed to an
   old tooling gist; Feldman is cautious — in the linear-types thread he
   generalised: exposing IR/APIs makes them unchangeable ("a main reason Atom
-  got surpassed by VS Code"), so *"be very careful about what APIs to
-  expose."*
+  got surpassed by VS Code"), so _"be very careful about what APIs to
+  expose."_
 - **Smaller design threads:** "Reworking Rust Glue" (19 msgs — Karl's
   RustGlue.roc may replace the repo's glue scripts as the recommended
   starting point); "requiring more type annotations?" (18 msgs); "In file
@@ -207,9 +207,9 @@ because it may produce policy:
   (#show and tell, 125 msgs) — started from the Zig project auto-closing an
   LLM-disclosed issue with a clear reproducer, and ranged widely over
   upstream-project LLM policies.
-- **Feldman's response** (Nov 20): warm goodbye to Hannes; on policy, *"short
+- **Feldman's response** (Nov 20): warm goodbye to Hannes; on policy, _"short
   answer: I'm not sure, need to think about it more based on what other
-  communities have done"*; every community is going through some version of
+  communities have done"_; every community is going through some version of
   this and compositions are changing either way; his stated personal view is
   to advocate common ground and kindness. **No policy has been adopted.**
 - Constructive proposals floated: self-reported "human-code scores" /
@@ -232,8 +232,8 @@ Platforms:
   monitor allocations, stub or hot-swap effect implementations.
 - **DST platform thesis** (Jan Rüggeberg, #platform development) — a
   deterministic-simulation-testing platform simulating a basic-cli subset
-  for a Raft KV store; Luke Boswell: DST *"would be an excellent pitch for
-  Roc"* and may validate compiler determinism.
+  for a Raft KV store; Luke Boswell: DST _"would be an excellent pitch for
+  Roc"_ and may validate compiler determinism.
 - **trantor** (Karl) — "an extensible platform system", listed for the 0.1.0
   showcase.
 - **Kite** (Karl, Nov 23) — a native GUI platform, just pushed to GitHub,
@@ -295,7 +295,7 @@ r/programming at peak.
 **Yes, cheaply, with the access already in place.**
 
 - **Access:** the laptop's `/home/user/zuliprc` user API key works for reads
-  today. A digest job should run *from the laptop* (via laptop-agent, like
+  today. A digest job should run _from the laptop_ (via laptop-agent, like
   this run) so the key never has to be copied to the sandbox. Note the key is
   a full account API key, not a read-only credential — a digest job only
   reads, but anything holding the key could post as Drew; keeping it on the
@@ -320,25 +320,25 @@ r/programming at peak.
 
 ## Appendix — messages per stream (2026-10-24 → 2026-11-23)
 
-| Stream | Msgs | Drew subscribed |
-|---|---:|---|
-| ideas | 682 | yes |
-| show and tell | 458 | yes |
-| beginners | 411 | yes |
-| contributing | 293 | yes |
-| off topic | 148 | yes |
-| bugs | 100 | yes |
-| announcements | 92 | yes |
-| community | 31 | yes |
-| gatherings | 27 | yes |
-| performance | 27 | yes |
-| compiler development | 26 | no (public, included) |
-| introductions | 25 | yes |
-| advent of code | 18 | no (public, included) |
-| platform development | 17 | no (public, included) |
-| API design / book / editor / roctoberfest / software unscripted podcast | 0 | no (public, quiet) |
-| **Total** | **2,355** | |
+| Stream                                                                  |      Msgs | Drew subscribed       |
+| ----------------------------------------------------------------------- | --------: | --------------------- |
+| ideas                                                                   |       682 | yes                   |
+| show and tell                                                           |       458 | yes                   |
+| beginners                                                               |       411 | yes                   |
+| contributing                                                            |       293 | yes                   |
+| off topic                                                               |       148 | yes                   |
+| bugs                                                                    |       100 | yes                   |
+| announcements                                                           |        92 | yes                   |
+| community                                                               |        31 | yes                   |
+| gatherings                                                              |        27 | yes                   |
+| performance                                                             |        27 | yes                   |
+| compiler development                                                    |        26 | no (public, included) |
+| introductions                                                           |        25 | yes                   |
+| advent of code                                                          |        18 | no (public, included) |
+| platform development                                                    |        17 | no (public, included) |
+| API design / book / editor / roctoberfest / software unscripted podcast |         0 | no (public, quiet)    |
+| **Total**                                                               | **2,355** |                       |
 
-*Raw fetched records and the analysis tables remain on the laptop at
+_Raw fetched records and the analysis tables remain on the laptop at
 `/tmp/roc-zulip/` (messages.jsonl, fetch-stats.json, analysis.txt) — note
-/tmp is ephemeral; this digest is the durable copy.*
+/tmp is ephemeral; this digest is the durable copy._

@@ -44,9 +44,7 @@ def _write_registry(tmp: Path, state: str) -> Path:
 
 class RetirementRecordTest(unittest.TestCase):
     def test_residue_matches_issue_2136(self):
-        residue = sorted(
-            e["duty"] for e in opr.DUTIES if e.get("status") == "residue"
-        )
+        residue = sorted(e["duty"] for e in opr.DUTIES if e.get("status") == "residue")
         self.assertEqual(residue, sorted(EXPECTED_RESIDUE))
 
     def test_every_duty_has_exactly_one_known_owner(self):
@@ -95,21 +93,24 @@ class RetirementRecordTest(unittest.TestCase):
         root = _write_registry(Path(tempfile.mkdtemp()), "enabled")
         with mock.patch.object(opr, "RETIRED", True):
             report = opr.check(root)
-        self.assertTrue(
-            any("says retired" in v for v in report["violations"]), report
-        )
+        self.assertTrue(any("says retired" in v for v in report["violations"]), report)
 
     def test_registry_drift_detected_while_active(self):
         root = _write_registry(Path(tempfile.mkdtemp()), "disabled")
         report = opr.check(root)
-        self.assertTrue(
-            any("says active" in v for v in report["violations"]), report
-        )
+        self.assertTrue(any("says active" in v for v in report["violations"]), report)
 
     def test_cli_check_reports_json(self):
         proc = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT_DIR / "orchestration_pass_retirement.py"),
-             "--check", "--json", "--root", str(REPO_ROOT)],
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT_DIR / "orchestration_pass_retirement.py"),
+                "--check",
+                "--json",
+                "--root",
+                str(REPO_ROOT),
+            ],
             capture_output=True,
             text=True,
             timeout=60,
@@ -121,8 +122,12 @@ class RetirementRecordTest(unittest.TestCase):
 
     def test_cli_unknown_flag_exits_2(self):
         proc = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT_DIR / "orchestration_pass_retirement.py"),
-             "--bogus"],
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT_DIR / "orchestration_pass_retirement.py"),
+                "--bogus",
+            ],
             capture_output=True,
             text=True,
             timeout=60,
@@ -132,7 +137,11 @@ class RetirementRecordTest(unittest.TestCase):
 
     def test_cli_without_check_exits_2(self):
         proc = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT_DIR / "orchestration_pass_retirement.py")],
+            [
+                sys.executable,
+                "-I",
+                str(SCRIPT_DIR / "orchestration_pass_retirement.py"),
+            ],
             capture_output=True,
             text=True,
             timeout=60,

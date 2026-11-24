@@ -6,17 +6,17 @@ The programme carries two forks. The opencode fork is the agent: the program tha
 
 The repository record, from the GitHub API repo objects read in the survey (2026-11-24T00:35–01:05Z):
 
-| | opencode fork | openchamber fork |
-|---|---|---|
-| Repo | [developing-today-forks/opencode](https://github.com/developing-today-forks/opencode) | [developing-today-forks/openchamber](https://github.com/developing-today-forks/openchamber) |
-| API `parent` | dezren39/opencode | dezren39/openchamber |
-| API `source` (root of fork network) | anomalyco/opencode | openchamber/openchamber |
-| Default branch | `main` | `main` |
-| Org fork created | 2026-10-09T04:04:23Z | 2026-10-09T04:04:25Z |
-| Last push at read time | 2026-11-23T23:54:52Z | 2026-11-23T23:16:56Z |
-| Branches (API) | 61 | 32 |
-| Labels defined | 168 | 150 |
-| Description | "The open source coding agent." | "Agentic Development Environment based on OpenCode AI agent" |
+|                                     | opencode fork                                                                         | openchamber fork                                                                            |
+| ----------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Repo                                | [developing-today-forks/opencode](https://github.com/developing-today-forks/opencode) | [developing-today-forks/openchamber](https://github.com/developing-today-forks/openchamber) |
+| API `parent`                        | dezren39/opencode                                                                     | dezren39/openchamber                                                                        |
+| API `source` (root of fork network) | anomalyco/opencode                                                                    | openchamber/openchamber                                                                     |
+| Default branch                      | `main`                                                                                | `main`                                                                                      |
+| Org fork created                    | 2026-10-09T04:04:23Z                                                                  | 2026-10-09T04:04:25Z                                                                        |
+| Last push at read time              | 2026-11-23T23:54:52Z                                                                  | 2026-11-23T23:16:56Z                                                                        |
+| Branches (API)                      | 61                                                                                    | 32                                                                                          |
+| Labels defined                      | 168                                                                                   | 150                                                                                         |
+| Description                         | "The open source coding agent."                                                       | "Agentic Development Environment based on OpenCode AI agent"                                |
 
 The chain is two-step: upstream → Drew's personal fork (dezren39) → the org fork (developing-today-forks). Both fork READMEs describe the repo as a fork of the upstream project; the API places the personal fork between the org fork and upstream (D51). On the laptop, `~/git/opencode` carries remotes `origin`/`devtoday` = the org fork, `upstream` = dezren39/opencode, `upstream-anomalyco` = anomalyco/opencode; `~/git/openchamber-fork` carries `origin` = the org fork and `upstream` = openchamber/openchamber directly.
 

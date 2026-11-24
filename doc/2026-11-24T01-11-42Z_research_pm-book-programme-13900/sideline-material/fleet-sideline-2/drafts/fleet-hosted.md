@@ -41,11 +41,11 @@ assertion is a 403) → service-token route scope (403) → handler.
 
 Three caller kinds share one Bearer credential form:
 
-| Caller kind | Credential | What caps it |
-| --- | --- | --- |
-| `rp` | A #9077 relying-party token: a JWS validated against the provider JWKS (WebCrypto, RS256/ES256), then issuer, audience and lifetime | The tenancy mapping for its subject |
-| `agent` | An RP token carrying the #1253 agent role | Its lane and session claims are required, and cap what the caller may assert |
-| `service` | An opaque per-caller service token recorded in the tenancy plane, looked up by SHA-256 | The named doors its scope lists |
+| Caller kind | Credential                                                                                                                          | What caps it                                                                 |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `rp`        | A #9077 relying-party token: a JWS validated against the provider JWKS (WebCrypto, RS256/ES256), then issuer, audience and lifetime | The tenancy mapping for its subject                                          |
+| `agent`     | An RP token carrying the #1253 agent role                                                                                           | Its lane and session claims are required, and cap what the caller may assert |
+| `service`   | An opaque per-caller service token recorded in the tenancy plane, looked up by SHA-256                                              | The named doors its scope lists                                              |
 
 A validated subject maps to a tenancy account keyed by its minted
 `binding_id` — 32 lowercase hex characters, the component E / #2258
@@ -79,7 +79,7 @@ malformed block refuses the create — stamps every fleet-owned
 provenance field from service sources only, signs the provenance
 (#12586, Ed25519), creates the GitHub item through the App
 installation-token rotation point, and inserts the full record in the
-same request. Signing is refused *before* any GitHub write when the
+same request. Signing is refused _before_ any GitHub write when the
 signing material is unconfigured (503). A create whose database insert
 failed is not failed back to the caller: the response reports
 `metadata_inserted: false`, and the ingestion check below heals it.
@@ -116,8 +116,8 @@ hosted door requires authentication and refuses anonymous claims.
 ### Ingestion — one check, two triggers
 
 The ingestion door (#12590; design §7.3, #9060 §16) is the hosted half
-of ingestion; native ingestion (#9076) is the peer, and both run *the
-same check*. The check reads the item fresh through the GitHub item
+of ingestion; native ingestion (#9076) is the peer, and both run _the
+same check_. The check reads the item fresh through the GitHub item
 source — never the delivery payload's copy — parses its pm-metadata
 block, and inserts or refreshes the database record keyed on the item
 under the block's own stamped tenancy. A block-less item gets an
@@ -190,12 +190,12 @@ expose the mint (grep-verified in the survey).
 `src/worker.ts` wires fixture, in-memory, module-scope
 implementations of every store interface:
 
-| Seam in the Worker | Production home |
-| --- | --- |
-| `FixtureSessionRegistry` | The session registry's production store |
-| `FixtureMetadataStore` | The #9074 metadata database |
-| `FixtureQueueStore` | The existing `fleet-queue` Turso database (#6741), behind a libSQL `QueueStore` |
-| The fixture tenancy directory (`TENANCY_FIXTURE_JSON`) | Component E's tenancy database, which does not exist yet |
+| Seam in the Worker                                     | Production home                                                                 |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| `FixtureSessionRegistry`                               | The session registry's production store                                         |
+| `FixtureMetadataStore`                                 | The #9074 metadata database                                                     |
+| `FixtureQueueStore`                                    | The existing `fleet-queue` Turso database (#6741), behind a libSQL `QueueStore` |
+| The fixture tenancy directory (`TENANCY_FIXTURE_JSON`) | Component E's tenancy database, which does not exist yet                        |
 
 `wrangler.toml` declares no bindings at all — no D1, KV, R2, Durable
 Objects or queues — and `INGESTION_REPOS` is commented out, so the
@@ -213,13 +213,13 @@ end to end in-process, and `npm run typecheck` covers the types.
 Every refusal is a `FailClosed` rendered as
 `{ "error": <code>, "message": ... }`:
 
-| Shape | Meaning |
-| --- | --- |
-| 404 `not_found` | Unmatched path; the Worker advertises nothing |
-| 401 `missing_token` | No credential on a route that requires one |
-| 403 | Cross-tenant assertion, or a service token outside its door scope |
-| 503 | One row per unconfigured dependency: auth, stamp signing (refused before any GitHub write), session registry, metadata store, queue store, webhook secret |
-| 500 `{error: "internal"}` | An unhandled error |
+| Shape                     | Meaning                                                                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 404 `not_found`           | Unmatched path; the Worker advertises nothing                                                                                                             |
+| 401 `missing_token`       | No credential on a route that requires one                                                                                                                |
+| 403                       | Cross-tenant assertion, or a service token outside its door scope                                                                                         |
+| 503                       | One row per unconfigured dependency: auth, stamp signing (refused before any GitHub write), session registry, metadata store, queue store, webhook secret |
+| 500 `{error: "internal"}` | An unhandled error                                                                                                                                        |
 
 Door-specific shapes sit on top of the plumbing ones: sessions add
 404 `session_unknown`, 409 `session_closed` and 400

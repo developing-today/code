@@ -55,7 +55,7 @@ Source: https://developers.cloudflare.com/workers/platform/limits/
 
 - The documentation treats "Workers Free" vs "Workers Paid" as a single plan attribute of **an account**, not a stackable quantity you buy in multiples for the same account.
 - **No official page found describes buying two Workers Paid subscriptions on the same account to double the included allotment, and no dashboard/API mechanism for that is documented.** If you need more than the included amount on one account, the documented model is simply pay-as-you-go overage on that same account (e.g. $0.30 / million extra requests), not a second subscription.
-- Therefore, in practice: *one account = at most one Workers Paid plan*. To get a second Workers Paid plan you need a second account (see Q2).
+- Therefore, in practice: _one account = at most one Workers Paid plan_. To get a second Workers Paid plan you need a second account (see Q2).
 
 ---
 
@@ -66,7 +66,7 @@ Source: https://developers.cloudflare.com/workers/platform/limits/
 - **(b)** Cloudflare itself documents and supports one user creating additional accounts — multiple accounts are a normal product feature, not a hidden workaround.
 - **(a)** The legal text does **not** contain a plain blanket sentence such as "you may only have one account" or "you may not buy a Workers plan on more than one account."
 - **(a)** The legal text **does** prohibit two specific things that are directly relevant: (i) circumventing usage limits/quotas, and (ii) using software/automation to produce multiple accounts.
-- **(c)** So a second *paid* account for a genuinely separate project/business purpose is not prohibited by any clause found; creating accounts specifically as a scheme to multiply free/included allotments, evade a limit, or farm free tiers is exactly the fact pattern the anti-circumvention clauses are written to catch — see quotes below.
+- **(c)** So a second _paid_ account for a genuinely separate project/business purpose is not prohibited by any clause found; creating accounts specifically as a scheme to multiply free/included allotments, evade a limit, or farm free tiers is exactly the fact pattern the anti-circumvention clauses are written to catch — see quotes below.
 
 ### (a) Legal text — the two key clauses
 
@@ -76,7 +76,7 @@ Self-Serve Subscription Agreement, §2.2.1 Restrictions — https://www.cloudfla
 
 > "(c) access or use the Services in a manner that violates or is intended to circumvent Service-specific usage limits, quotas, or other restrictions set forth in the Agreement;"
 
-§2.2.1(e) — note carefully: this bans *automated* production of multiple accounts, not manual creation as such:
+§2.2.1(e) — note carefully: this bans _automated_ production of multiple accounts, not manual creation as such:
 
 > "(e) introduce software or automated agents or scripts into the Services so as to produce multiple accounts, generate automated searches, requests or queries, or to strip or mine data from the Services;"
 
@@ -126,17 +126,17 @@ The same page documents creating accounts via dashboard and via API (user-owned 
 
 > "| You reached an account creation limit. | Use an existing account or contact your account team. |"
 
-This is a documented, self-serve flow for *additional* accounts under the *same user* — which strongly cuts against reading the agreement as a one-account-per-person rule.
+This is a documented, self-serve flow for _additional_ accounts under the _same user_ — which strongly cuts against reading the agreement as a one-account-per-person rule.
 
 ### (c) Inference — how the clauses likely apply to two paid accounts
 
 Labelled inference, not a quote and not legal advice:
 
 1. **Paying twice is not itself "circumvention" on the face of the text.** Each additional account pays its own $5 minimum and gets its own included allotment, and pays overage beyond that on that account. Nothing found says "one included allotment per natural person / per company, worldwide."
-2. **Motive and mechanism matter under §2.2.1(c) and (e).** If the *purpose* of splitting is to avoid a per-account limit/quota that would otherwise apply to what is in substance one workload — e.g. sharding a single app across N accounts solely to harvest N × free daily limits, or spinning accounts with scripts/bots (§2.2.1(e)), or creating fresh accounts to reset a free trial / free tier — Cloudflare could characterise that as use "intended to circumvent Service-specific usage limits, quotas, or other restrictions," and §8 gives it a suspend/terminate remedy.
+2. **Motive and mechanism matter under §2.2.1(c) and (e).** If the _purpose_ of splitting is to avoid a per-account limit/quota that would otherwise apply to what is in substance one workload — e.g. sharding a single app across N accounts solely to harvest N × free daily limits, or spinning accounts with scripts/bots (§2.2.1(e)), or creating fresh accounts to reset a free trial / free tier — Cloudflare could characterise that as use "intended to circumvent Service-specific usage limits, quotas, or other restrictions," and §8 gives it a suspend/terminate remedy.
 3. **Separate-purpose accounts are the low-risk pattern the product is built for:** separate projects, separate clients, dev/staging/prod, separate businesses — each with its own billing — are exactly the use case the "create an additional account" docs and the Organizations feature (Q4) describe. The terms do not require you to prove that purpose in advance, but they also do not grant a safe harbour for limit-farming.
-4. **Do not use multiple *user identities* to evade the account-creation limits** in Q4 (e.g. five-account cap, seven-day rule). No clause quoted above says "one user per person" in those words, but doing that specifically to evade a documented creation limit falls squarely within the ordinary meaning of §2.2.1(c) circumvention — inference.
-5. **Silence statement:** The Self-Serve Subscription Agreement, as fetched 2026-10-20, is **silent** on (i) a maximum number of *paid* accounts per person/company, (ii) whether affiliated companies may each buy Workers Paid, and (iii) any requirement to disclose common ownership of multiple self-serve accounts. Do not treat silence as permission for limit-evading schemes — the anti-circumvention clause is purpose-based, not count-based.
+4. **Do not use multiple _user identities_ to evade the account-creation limits** in Q4 (e.g. five-account cap, seven-day rule). No clause quoted above says "one user per person" in those words, but doing that specifically to evade a documented creation limit falls squarely within the ordinary meaning of §2.2.1(c) circumvention — inference.
+5. **Silence statement:** The Self-Serve Subscription Agreement, as fetched 2026-10-20, is **silent** on (i) a maximum number of _paid_ accounts per person/company, (ii) whether affiliated companies may each buy Workers Paid, and (iii) any requirement to disclose common ownership of multiple self-serve accounts. Do not treat silence as permission for limit-evading schemes — the anti-circumvention clause is purpose-based, not count-based.
 
 ---
 
@@ -152,22 +152,22 @@ From the pricing page (URL above):
 
 Consequences that follow mechanically from (b):
 
-| | One account, Workers Paid | Two accounts, each Workers Paid |
-|---|---|---|
-| Minimum charge | $5 / month | $5 + $5 = $10 / month |
-| Included requests | 10M / month, pooled across all Workers in the account | 10M / month **per account**, separate pools |
-| Included CPU | 30M CPU-ms / month, pooled | 30M CPU-ms / month per account |
-| Workers per account | 500 | 500 per account |
-| Cron Triggers per account | 250 | 250 per account |
-| Billing / renewal date | One subscription | Two separate subscriptions, potentially different renewal dates |
-| Data / bindings | KV, D1, R2, DO, Queues live in that account | Separate namespaces/databases/buckets per account; no automatic sharing |
+|                           | One account, Workers Paid                             | Two accounts, each Workers Paid                                         |
+| ------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------- |
+| Minimum charge            | $5 / month                                            | $5 + $5 = $10 / month                                                   |
+| Included requests         | 10M / month, pooled across all Workers in the account | 10M / month **per account**, separate pools                             |
+| Included CPU              | 30M CPU-ms / month, pooled                            | 30M CPU-ms / month per account                                          |
+| Workers per account       | 500                                                   | 500 per account                                                         |
+| Cron Triggers per account | 250                                                   | 250 per account                                                         |
+| Billing / renewal date    | One subscription                                      | Two separate subscriptions, potentially different renewal dates         |
+| Data / bindings           | KV, D1, R2, DO, Queues live in that account           | Separate namespaces/databases/buckets per account; no automatic sharing |
 
 Workers in different accounts do not share an included pool, and overage in one account is not offset by unused included usage in another.
 
 ### (a) / (c) Is having multiple pools a violation?
 
 - **(a)** No clause found says "thou shalt have only one included pool." The existence of separate pools is simply how per-account billing works.
-- **(c)** The violation risk is not *having* two pools, it is *why and how* you got them — see Q2 inference points 2 and 4. Two paid accounts for two real projects, each paying its own minimum: no clause found prohibits it. A fleet of accounts created by automation, or split for the sole purpose of defeating a per-account quota/free limit that would otherwise bind a single workload: §2.2.1(c)/(e) risk, plus §2.6 gives Cloudflare sole-discretion termination for Free Services.
+- **(c)** The violation risk is not _having_ two pools, it is _why and how_ you got them — see Q2 inference points 2 and 4. Two paid accounts for two real projects, each paying its own minimum: no clause found prohibits it. A fleet of accounts created by automation, or split for the sole purpose of defeating a per-account quota/free limit that would otherwise bind a single workload: §2.2.1(c)/(e) risk, plus §2.6 gives Cloudflare sole-discretion termination for Free Services.
 
 ---
 
@@ -209,7 +209,7 @@ Source: https://developers.cloudflare.com/workers/platform/limits/ ("Account pla
 
 ### Zones
 
-- No hard self-serve per-account zone (domain) cap was stated in the official pages fetched, other than the Organization-level 200,000 zones above. That is a finding of *absence in the sources checked*, not a guarantee that no internal/anti-abuse zone limit exists. Do not cite a specific self-serve zone maximum from this file.
+- No hard self-serve per-account zone (domain) cap was stated in the official pages fetched, other than the Organization-level 200,000 zones above. That is a finding of _absence in the sources checked_, not a guarantee that no internal/anti-abuse zone limit exists. Do not cite a specific self-serve zone maximum from this file.
 
 ---
 

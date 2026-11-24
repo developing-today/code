@@ -32,8 +32,8 @@ The behaviours it is adopted to watch for, named plainly:
   [The cluster programme](../cluster/the-cluster-programme.md)).
 
 For an estate running agent workloads, those three are the
-tripwire's centre: each is something an agent *can* do
-legitimately in the right context and an intruder *must* do in
+tripwire's centre: each is something an agent _can_ do
+legitimately in the right context and an intruder _must_ do in
 almost any context, which is exactly what makes the tuning cost
 below real rather than hypothetical.
 

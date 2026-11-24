@@ -25,12 +25,12 @@ flattening.
 
 ## 1. Authority inventory
 
-| Surface | Owner | Seam (source) | Backing storage | Authority |
-| --- | --- | --- | --- | --- |
-| blob | `id-store` | `pkgs/id/crates/id-store/src/store.rs` — `StoreType::Persistent(FsStore)` / `Ephemeral(MemStore)` | iroh-blobs `FsStore`: redb metadata plus blob data files under `.iroh-store/`; `MemStore` in memory | content-addressed blob bytes and name-to-hash tags |
-| event | `id-events` | `pkgs/id/crates/id-events/src/event_store/mod.rs` — `EventStore` behind the `Storage` / `FileStorage` file seam | one redb database file per store directory; direct redb API use across `event_store/` | signed event log: chains, heads, fork proofs, waiting pool |
-| world | `id-worlds` | `pkgs/id/crates/id-worlds/src/world_store.rs` — `FileJournal`, `ModuleDir` | append-only `journal.jsonl` (fsynced per append in the default ack mode) plus `modules/<blake3>.wasm`; **not redb** | durable world state: journal replay and installed modules |
-| sync | `id-sync` | `pkgs/id/crates/id-sync/src/envelope_outbox.rs` — `Outbox` | append-only outbox journal file (`outbox.jsonl`), replayed on open | pending envelope delivery only; **no stored-data authority** |
+| Surface | Owner       | Seam (source)                                                                                                   | Backing storage                                                                                                     | Authority                                                    |
+| ------- | ----------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| blob    | `id-store`  | `pkgs/id/crates/id-store/src/store.rs` — `StoreType::Persistent(FsStore)` / `Ephemeral(MemStore)`               | iroh-blobs `FsStore`: redb metadata plus blob data files under `.iroh-store/`; `MemStore` in memory                 | content-addressed blob bytes and name-to-hash tags           |
+| event   | `id-events` | `pkgs/id/crates/id-events/src/event_store/mod.rs` — `EventStore` behind the `Storage` / `FileStorage` file seam | one redb database file per store directory; direct redb API use across `event_store/`                               | signed event log: chains, heads, fork proofs, waiting pool   |
+| world   | `id-worlds` | `pkgs/id/crates/id-worlds/src/world_store.rs` — `FileJournal`, `ModuleDir`                                      | append-only `journal.jsonl` (fsynced per append in the default ack mode) plus `modules/<blake3>.wasm`; **not redb** | durable world state: journal replay and installed modules    |
+| sync    | `id-sync`   | `pkgs/id/crates/id-sync/src/envelope_outbox.rs` — `Outbox`                                                      | append-only outbox journal file (`outbox.jsonl`), replayed on open                                                  | pending envelope delivery only; **no stored-data authority** |
 
 Adjacent surface — **metadata-index** (`id-store`,
 `pkgs/id/crates/id-store/src/tags.rs`): name, tag, and namespace
@@ -99,13 +99,13 @@ Four distinct typed commitments appear in this inventory. Two share
 an algorithm name; so do the other two. A shared algorithm name does
 not make two profiles interchangeable.
 
-| Profile | Algorithm | Input bytes | Established by |
-| --- | --- | --- | --- |
-| `iroh-blob-blake3` | BLAKE3-256 | exact stored bytes | iroh-blobs `Hash::new` at import |
-| `event-payload-blake3` | BLAKE3-256 | raw event payload bytes | p2panda `Hash::digest` committed in the signed event header; verified at ingest |
-| `world-module-blake3` | BLAKE3-256 | exact wasm module bytes | module install; the hash is the file name |
-| `artifact-sha256` | SHA-256 | canonical JSON bytes of `SignedBody` (`serde_json::to_vec`) | `SignedArtifact` signing at authoring |
-| `atlas-content-hash` | SHA-256 (observed) | exact UTF-8 chunk text (observed) | **no checked-in producer** — see §5 |
+| Profile                | Algorithm          | Input bytes                                                 | Established by                                                                  |
+| ---------------------- | ------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `iroh-blob-blake3`     | BLAKE3-256         | exact stored bytes                                          | iroh-blobs `Hash::new` at import                                                |
+| `event-payload-blake3` | BLAKE3-256         | raw event payload bytes                                     | p2panda `Hash::digest` committed in the signed event header; verified at ingest |
+| `world-module-blake3`  | BLAKE3-256         | exact wasm module bytes                                     | module install; the hash is the file name                                       |
+| `artifact-sha256`      | SHA-256            | canonical JSON bytes of `SignedBody` (`serde_json::to_vec`) | `SignedArtifact` signing at authoring                                           |
+| `atlas-content-hash`   | SHA-256 (observed) | exact UTF-8 chunk text (observed)                           | **no checked-in producer** — see §5                                             |
 
 Forbidden equivalences (checked mechanically by the validator and
 the contract test): `iroh-blob-blake3` ≠ `event-payload-blake3`
@@ -257,6 +257,6 @@ Per the slice's rollback rule, this inventory is append-only:
 errors are corrected by a dated correction row appended here,
 never by rewriting the record or the identity history above.
 
-| Date | Correction |
-| --- | --- |
-| — | none at issuance |
+| Date | Correction       |
+| ---- | ---------------- |
+| —    | none at issuance |

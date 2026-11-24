@@ -10,4 +10,4 @@ Survey file: `~/workspace/pm-book/survey/oc-programme.md` (3,837 lines) — stru
 
 Also in the survey: goals & intentions with issue links (§2, incl. the code#1344/#1357/#1363 attach family, the claimant/session-contract work, and the OpenCode 2 migration), the PM-stack integration surface (§4: opencode-claimant, opencode-scheduled-jobs, opencode-usage-export, one section each, read in the laptop clone), dependency notes (§5, only edges actually seen in titles/bodies/READMEs), and a numbered disagreements list (§6, 9 items — headline: both fork READMEs still claim the latest upstream merge is Oct 16 2026, while upstream sync PRs merged Nov 22–23 on both forks).
 
-Ordering rule for the issue maps is stated in §3: the repos *do* carry explicit `priority/*` labels, so order is priority tier → `user/escalated` → blocked → oldest; no open issue on either fork (or in the code set) carries a milestone.
+Ordering rule for the issue maps is stated in §3: the repos _do_ carry explicit `priority/*` labels, so order is priority tier → `user/escalated` → blocked → oldest; no open issue on either fork (or in the code set) carries a milestone.

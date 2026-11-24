@@ -16,7 +16,7 @@ It reads no Pad planning data (D3). No source adapter consumes Pad content. The 
 
 ## Who writes GitHub labels for needs-Drew items?
 
-The console does, and the aggregator service does not (D4). The aggregator's census header states its own rule: the aggregator never writes labels back. The console, in the same stack, writes them through its action table: `handsDone()` posts a comment and deletes the `user/escalated` label through `gh`, and `Ops.setRank()` adds and removes rank labels. The orchestrator remains the single writer of Project *fields*; labels are the seam, and the console is a label writer.
+The console does, and the aggregator service does not (D4). The aggregator's census header states its own rule: the aggregator never writes labels back. The console, in the same stack, writes them through its action table: `handsDone()` posts a comment and deletes the `user/escalated` label through `gh`, and `Ops.setRank()` adds and removes rank labels. The orchestrator remains the single writer of Project _fields_; labels are the seam, and the console is a label writer.
 
 ## How many Cloudflare Workers are there?
 

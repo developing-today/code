@@ -60,7 +60,7 @@ This is not a greenfield design. The tree today has:
   currency-poc-tb = ["dep:tigerbeetle"]
   ```
 
-  Features gate *implementations*, not CLI surface: every command
+  Features gate _implementations_, not CLI surface: every command
   stays in the clap tree in every build and fails at dispatch with
   "this build has no X support" (`src/main.rs`, `id-cli`
   `serve.rs`/`world.rs`). CI's default posture is `--all-features`
@@ -68,6 +68,7 @@ This is not a greenfield design. The tree today has:
   the test-only features (`test-utils`, `test-provider` — the
   latter documented "never enabled by a production build") and the
   TigerBeetle PoC harness.
+
 - **No store-backend feature exists.** Store choice is runtime or
   concrete per port, under an explicit port discipline
   (`ARCHITECTURE.md` "Store Port Boundaries": record store, blob
@@ -96,16 +97,16 @@ This is not a greenfield design. The tree today has:
   `--no-default-features`), and the justfile (where "lib" means
   plain `cargo build`, defaults on). `scripts/five-minute-path.sh`
   runs the only minimal build: `cargo build --release
-  --no-default-features -p id` — which today strips worlds
+--no-default-features -p id` — which today strips worlds
   entirely while keeping the full CLI tree, i.e. the current
   "minimal" build is close to the dumb client Drew wants in
-  *linkage* but wrong in *contract* (commands parse, then bail).
+  _linkage_ but wrong in _contract_ (commands parse, then bail).
 
 ### 0.2 Relation to #5788 — what this plan keeps, what it changes
 
 #5788's record settled four fixed levels and **rejected**
 feature-only variants and per-consumer variants, on two grounds:
-features on one package cannot express a *negative* guarantee (a
+features on one package cannot express a _negative_ guarantee (a
 client-only build must not **contain** the server stack), and
 consumer-local feature sets are unowned drift. Drew's 2026-11-23
 direction asks for arbitrary served-environment compositions,
@@ -116,8 +117,8 @@ rather than quietly overriding a settled record:
   thickets; the negative guarantee is a `cargo tree` property
   enforced in CI per published artefact; conformance is the
   determinism replay fixtures run as cross-variant oracles plus
-  the shell/receipt contracts; no "lite server" as a *named
-  product*; the currency-PoC binding is a harness artefact in no
+  the shell/receipt contracts; no "lite server" as a _named
+  product_; the currency-PoC binding is a harness artefact in no
   composition; upgrade behaviour per #1066 including the
   client-only degrade contract.
 - **Changed, by Drew's direct order, using the composer design's
@@ -136,27 +137,27 @@ rather than quietly overriding a settled record:
   and bug report (§5).
 - **Changed:** #5788 froze the root package's features as "the
   legacy L3 profile" and put all new capability in seam crates.
-  That stands for *capabilities*; this plan additionally admits
-  root-level *profile* features whose only job is to name a
+  That stands for _capabilities_; this plan additionally admits
+  root-level _profile_ features whose only job is to name a
   curated feature set (meta-features, §4.3), because served
   environments need a single `--features` handle per profile.
 
 ### 0.3 Premises that turned out false
 
-- *"The plain binary is today's default minus flags."* False:
+- _"The plain binary is today's default minus flags."_ False:
   today's default **is** the fat client (`sandbox,world` — the
   wasmtime sandbox included). The plain profile is a new,
   deliberate composition, and reaching it requires splitting
   today's `world` feature (§7.2), because `world` currently gates
-  both world *state/replay* (which the dumb client needs) and the
+  both world _state/replay_ (which the dumb client needs) and the
   command surface around program execution (which it must not
   carry).
-- *"Alternate stores are a flag away."* False: §0.1 — the seam is
+- _"Alternate stores are a flag away."_ False: §0.1 — the seam is
   designed (port contract v2) and one alternate profile is
   declared, but no alternate authoritative store is wired. The
   store features in §4 are real implementation slices (§10 S6),
   not manifest entries over existing code.
-- *"All flags on" is a well-defined build.* False as stated:
+- _"All flags on" is a well-defined build._ False as stated:
   `--all-features` includes test-only and PoC features that must
   never ship. The full profile in §6 is a **curated** all-on set,
   defined in the catalogue, explicitly excluding `test-*` and
@@ -177,11 +178,11 @@ fixes into the composer's own implementation plan).
 1. **Composition lives in platform production, never at app
    binding** (§3.4, §2.1). Roc's "platforms do not compose" is
    permanent upstream policy; the composer survives by producing
-   *one ordinary platform* before any app compiles. Any
+   _one ordinary platform_ before any app compiles. Any
    implementation that composes inside the app's platform slot
    contradicts the premise.
 2. **Omission is the gate** (§2.1, §3.1, §3.3). The composed
-   platform's effect surface is *exactly* the union of selected
+   platform's effect surface is _exactly_ the union of selected
    caps because unselected caps are unnameable in the generated
    `pf.*` interface. Runtime wrappers are defence-in-depth for
    scoped grants, never the primary mechanism.
@@ -200,7 +201,7 @@ fixes into the composer's own implementation plan).
    target class, the sorted cap `name@version` list, the
    catalogue version, **each selected cap's host-implementation
    version for that target**, and the pinned Roc nightly. Two
-   manifests that hash equal *are* the same platform; the
+   manifests that hash equal _are_ the same platform; the
    composer is a pure function with a cache. A nightly bump
    honestly produces new identities (§3.8.3).
 6. **Immutability + two-tier registry** (§3.2, §3.5): artefacts
@@ -242,50 +243,50 @@ fixes into the composer's own implementation plan).
    encoding, or hash algorithm is given; §3.7 defers "manifest
    schema + canonical hashing" to Composer v0. Two honest
    implementations would hash the same composition differently
-   and the pure-function/cache claim collapses. *Plan fix (§8.2):
+   and the pure-function/cache claim collapses. _Plan fix (§8.2):
    the canonical form is specified before any other composer
    code — canonical CBOR (the estate already maintains a
    canonical-CBOR discipline in `id-core`), BLAKE3 (already the
    estate's hash), golden test vectors published with the
-   schema.*
+   schema._
 2. **Composition-time parameters vs the hash (§3.1 vs §3.2).**
    Parameters are "part of the platform's shape" but are absent
    from §3.2's enumerated hash inputs and have no schema, typing,
    or defaults anywhere. Whether two manifests differing only in
-   a parameter collide is undecidable from the text. *Plan fix:
+   a parameter collide is undecidable from the text. _Plan fix:
    parameters are inside the canonical manifest and therefore
-   hash inputs, stated as a rule with the schema (§8.2).*
+   hash inputs, stated as a rule with the schema (§8.2)._
 3. **Diamond and collision problems are silent (§3.1, §3.6.3).**
    The manifest is a flat list; nothing addresses two caps
    requiring different versions of a shared dependency cap,
    colliding `pf.*` module/function names or hosted functions,
    two caps claiming the same entrypoint, or transitive cap
    dependencies at all. The union property is stated as if union
-   were always well-defined. *Plan fix (§8.3): catalogue entries
+   were always well-defined. _Plan fix (§8.3): catalogue entries
    gain `requires`/`conflicts` declarations; the composer
    resolves or refuses — refusal, never silent weakening, is the
-   design's own stance (§3.1) extended to structure.*
+   design's own stance (§3.1) extended to structure._
 4. **`composable: yes/no` has no certification process and the
    wrong granularity (§3.1).** Who certifies "closed under the
    contract — no ambient authority, no escape hatches", by what
    test? Host implementations are per-target (§2.2), so a cap
    can be closed on server and leaky on Android, yet the field
    is a single boolean. §3.8's remediation (fix it in our
-   variant) has no flip criteria. *Plan fix (§8.3): the field
+   variant) has no flip criteria. _Plan fix (§8.3): the field
    becomes a per-target-class map; `yes` requires the cap's
    conformance suite (§1.2.6) green on that target plus a
-   recorded reviewer; `no` requires the reason, as today.*
+   recorded reviewer; `no` requires the reason, as today._
 5. **Revocation is unaddressed and in tension with
    immutability (§3.2, §3.5).** Artefacts are immutable, old
    versions stay published, "pinned apps are unaffected" — and
    unused compositions are "garbage-collectable" with no
    criterion, and no yank path exists for a composition later
-   found vulnerable. *Plan fix (§8.5): revocation lives at the
+   found vulnerable. _Plan fix (§8.5): revocation lives at the
    grant layer, the one mutable layer the design already has —
    the registry marks a composition yanked; the provisioner
    refuses new grants against it and flags existing ones;
    artefacts stay immutable and honest. GC criterion stated:
-   no pinning apps and no grants for a full nightly cycle.*
+   no pinning apps and no grants for a full nightly cycle._
 6. **Generated-host security is a label, not a process (§3.5,
    §3.6.1).** Author-composed platforms are "marked unreviewed";
    profiles get "operator review" of unspecified content; under
@@ -293,70 +294,70 @@ fixes into the composer's own implementation plan).
    interface boundary and host correctness" with all cap code
    present in the binary, and no verification regime (conformance
    tests, fuzzing, signing, provenance) is named for either
-   shape. *Plan fix (§8.4/§8.5): profile publication requires the
+   shape. _Plan fix (§8.4/§8.5): profile publication requires the
    per-cap conformance suites + the §3.7 surface-diff test +
    artefact signing with the estate CA; the universal host is
    never a production artefact (the design's own recommendation,
-   made a rule).*
+   made a rule)._
 7. **Catalogue versioning policy is absent (§2.2, §3.2).** Both
    `cap@version` and a catalogue version exist and both feed the
    hash; no rule says when each bumps, what a breaking vs
    additive API change does, or whether old cap versions remain
-   composable. *Plan fix (§8.3): additive change = catalogue
+   composable. _Plan fix (§8.3): additive change = catalogue
    patch bump, cap version unchanged; breaking cap API change =
    new `cap@version`, old version remains composable until a
    recorded deprecation; catalogue major bump = the family event,
-   rehearsed like a nightly bump.*
+   rehearsed like a nightly bump._
 8. **Cross-target conformance has no test regime (§2.2, §2.5).**
    The family's promise — same app code, same limits, any
    target — rests on per-target host implementations in four
    languages behaving identically, including metering units;
-   nothing specifies the suite that proves it. *Plan fix (§8.4):
+   nothing specifies the suite that proves it. _Plan fix (§8.4):
    each catalogue cap ships a conformance suite (seeded fakes per
    §2.6's shim discipline) that every host implementation must
-   pass on its target before its version may appear in a hash.*
+   pass on its target before its version may appear in a hash._
 9. **Profile governance is named, not constituted (§3.2, §3.5).**
    Operators curate and promote — but no graduation criteria
    beyond "a second app wants it", no naming authority or
    collision rules, no deprecation lifecycle, and no process for
-   who may add catalogue entries at all. *Plan fix (§8.5): the
+   who may add catalogue entries at all. _Plan fix (§8.5): the
    registry record gains curator + review fields; graduation
    requires the §3.7 done test against the composition plus one
    operator review recorded in the registry — deliberately the
-   lightest process that makes a name a supported promise.*
+   lightest process that makes a name a supported promise._
 10. **The manifest format does not exist (§3.1, §3.7).** No
     syntax, schema version, or malformed-manifest behaviour —
     yet the hash, the registry record, and the bundle-embedded
     manifest (§3.3's declaration check) all depend on it.
-    *Plan fix: §8.2 designs it (TOML surface, canonical CBOR
-    core, schema version inside the hash).*
+    _Plan fix: §8.2 designs it (TOML surface, canonical CBOR
+    core, schema version inside the hash)._
 11. **On-demand latency and capacity are two numbers and no
     policy (§3.5, §3.6.1).** Generation "seconds", bespoke build
     "minutes, cacheable"; no cache-miss latency target, no
     queue/timeout semantics, no definition of a "permitted
     composer" or composition authentication, and rate limits are
-    mentioned without values. *Plan fix (§8.6): budgets stated
+    mentioned without values. _Plan fix (§8.6): budgets stated
     against the estate's real build capacity (compile
     coordinator + Actions), with the same discipline as §9 of
-    this plan.*
+    this plan._
 12. **Declaration-checking mechanics drift between sections
     (§2.1 vs §3.3).** §2.1 fails ungranted declarations "at
     load"; §3.3 checks declaration at app build time against
     "the manifest recorded in the platform bundle" — whose
     format is undefined, and no checker tool (the `roc-cfw
-    sync` analogue) is assigned to anyone. *Plan fix (§8.2):
+sync` analogue) is assigned to anyone. _Plan fix (§8.2):
     the bundle embeds the canonical manifest bytes; the checker
     is a named Composer v0 deliverable, run at app build time;
-    load-time failure remains as the backstop, per §2.1.*
+    load-time failure remains as the backstop, per §2.1._
 13. **Nightly-bump fate of arbitrary compositions is
     unspecified (§3.2, §3.6.3).** Every bump orphans every
     arbitrary composition's identity by construction; no expiry
     terms, no notice to pinning apps, no behaviour when
     re-derivation fails (cap broke or turned non-composable).
-    *Plan fix (§8.5): arbitrary compositions carry a recorded
+    _Plan fix (§8.5): arbitrary compositions carry a recorded
     "derived-under nightly N" and a re-derivation report per
     bump; failure to re-derive marks the composition stale in
-    the registry — visible, never silent.*
+    the registry — visible, never silent._
 14. **Internal tensions to respect, not silently fix (§2.1→
     §3.6.2; §2.5→§3.8; §3.3's heading).** "One platform per
     target class" became "a profile family per target class"
@@ -376,11 +377,11 @@ fixes into the composer's own implementation plan).
 16. **Composition-level metering is not revisited in Part 3
     (§2.3 vs Part 3).** Two caps over one underlying resource
     (two storage caps, one database) — double-counted, shared
-    budget, or per-cap only? The text is silent. *Plan fix
+    budget, or per-cap only? The text is silent. _Plan fix
     (§8.3): metering stays per-cap in the catalogue; the grant
     record (§2.3) gains an optional shared-pool field for caps
     the operator knows share fate — operator knowledge, not
-    composer inference.*
+    composer inference._
 
 ---
 
@@ -399,7 +400,7 @@ observable in today's tree (§0.1, §2.2).
   excluded from the workspace precisely because membership would
   join their feature graph to the lock resolve
   (`p2panda-sync/test_utils → p2panda-store/test_utils →
-  sqlite → sqlx`), guarded today by a `cargo tree` test. (b)
+sqlite → sqlx`), guarded today by a `cargo tree` test. (b)
   Dev-dependencies leak features into test builds: root dev-deps
   enable `id-core/test-utils` + `test-provider`,
   `id-caps/test-provider`, `id-sync/test-utils`; `id-store`'s
@@ -421,16 +422,16 @@ observable in today's tree (§0.1, §2.2).
   contains no serve stack") is never a feature property; it is
   a **composition** property — which crates are linked at all.
   This is #5788 §4's rule and it survives intact: features gate
-  optional dependencies *inside* seam crates; profiles are
+  optional dependencies _inside_ seam crates; profiles are
   defined by composition crates (§7.1).
 
 ### 2.2 Mutually exclusive alternatives — Drew's named case
 
 Cargo has no exclusion mechanism: nothing stops `--features
 store-a,store-b`. Stores are the instance Drew named, and the
-port discipline (§0.1) sharpens it: two *authoritative* backends
+port discipline (§0.1) sharpens it: two _authoritative_ backends
 for the same port in one binary is a correctness hazard (which
-one is the truth?), while multiple *read-only foreign* sources
+one is the truth?), while multiple _read-only foreign_ sources
 already coexist safely (`foreign_libsql` precedent — writes
 inexpressible). The plan's rule (§4.4):
 
@@ -456,7 +457,7 @@ profile**, fully (build, clippy, test suite, conformance); (b)
 each **seam crate's features in isolation** (cargo-hack-style
 `--each-feature` sweeps on seam crates only, on a slow cadence —
 §9 budgets this); (c) per-profile `cargo tree` negative-guarantee
-assertions (cheap, run always); (d) #5788 §6's powerset *spot*
+assertions (cheap, run always); (d) #5788 §6's powerset _spot_
 checks on composed seam crates. Arbitrary compositions get (c)
 plus the replay-oracle conformance run (§9) — the same journal,
 every shipped composition, the same state hash — which is the
@@ -478,7 +479,7 @@ memory, binary size per profile, added to the #5685
 per-interface matrix per #5788 §5) whose results set the budgets.
 Until it runs, every boot/size claim in either direction is a
 hypothesis. The one claim the evidence does support: the plain
-profile's *linkage* budget is enforceable today via §2.3(c)
+profile's _linkage_ budget is enforceable today via §2.3(c)
 assertions, whatever the timings turn out to be.
 
 ### 2.5 Support burden of many build variants
@@ -517,10 +518,10 @@ profile **`plain`** (≈ #5788 L1 with the corrections of §0.3).
 - Sync: iroh transport with gossip + mDNS + relay (today's
   defaults). No DHT (opt-in feature, §4).
 - Client commands: `put/get/get-hash/put-hash/cat/show/peek/
-  find/search/list/tag/doc/claim/peers/petname/group` client
+find/search/list/tag/doc/claim/peers/petname/group` client
   halves, the REPL — i.e. everything except hosting. Per the
   F13.8 boundary (#3846), `serve` is the only hosting command;
-  plain's `serve` is absent as a *capability*: following today's
+  plain's `serve` is absent as a _capability_: following today's
   established pattern the subcommand may parse, but the build
   carries no serve implementation and dispatch says so.
 - World **state**: journal replay and read/render of world state
@@ -533,12 +534,12 @@ profile **`plain`** (≈ #5788 L1 with the corrections of §0.3).
 
 - wasmtime / program execution (no `sandbox-exec`) — the single
   largest dependency and the plain profile's defining omission;
-- world *hosting* and serving of any kind (no `serve`, no SSH
+- world _hosting_ and serving of any kind (no `serve`, no SSH
   world serving, no web UI, no gallery hosting);
 - the directory's server roles, currency anything, importers;
 - DHT, transports beyond the iroh defaults, MCP anything;
 - platform composition (it is a served-environment capability,
-  §8 — a plain client *consumes* composed platforms as an app
+  §8 — a plain client _consumes_ composed platforms as an app
   target, it does not run the composer).
 
 The done-test for plain is #5788's L1 test, kept: a `cargo tree`
@@ -570,26 +571,26 @@ render worlds it cannot execute).
 
 ### 4.2 Opt-in features
 
-| Feature | Adds | Requires | Status |
-|---|---|---|---|
-| `sandbox-exec` | wasmtime program execution (today's `sandbox`, renamed in effect: forwards `id-worlds/sandbox` + markers) | `world-state` | shipped (as `sandbox`) |
-| `serve` | hosting: file/world serving, the `serve` command's host halves (today unconditional code with sub-gates; becomes a real feature) | — | seam |
-| `web` | Axum web UI (`id-web`) | `serve`, `world-state` | shipped |
-| `ssh-serve` | world serving over SSH (today's `ssh`, russh in `id-worlds`) | `serve`, `sandbox-exec` | shipped (as `ssh`) |
-| `dht` | Mainline DHT address lookup (today's `dht`) | — | shipped |
-| `directory` | home-server directory: views, auth, mail, invites (`id-directory`) | `serve` | seam (crate ships; root feature does not exist) |
-| `currency` | currency registry + gateways (`id-currency-registry`, facade currency modules) | `serve` | seam |
-| `roc-composer` | the Roc platform composer (§8): manifest → composed platform → registry | `serve`, `sandbox-exec` | designed (§3.7 v0 scope) |
-| `mcp-server` | standalone MCP server binary surface over the `id-caps` MCP bridge (book: library-only today, no server binary exists) | `serve` | designed |
-| `import-notion` | Notion importer CLI wiring (`id-import-notion`, orphan library today) | — | seam |
-| `import-obsidian` / `import-evernote` / `import-logseq` / `import-joplin` / `import-onenote` | the #2048-model importer family | — | designed (#5845–#5848 family) |
-| `transport-mcp` | MCP-door transport adapter (#13929) | — | designed |
-| `transport-email` | email transport adapter (asymmetric levels per #13929) | — | designed |
-| `transport-mqtt` | MQTT adapter + device bridge (#2343) | — | designed |
-| `transport-irc` | IRC relay adapter | — | designed |
-| `transport-overlay` | Tor/Veilid-class overlay adapters (TODO-list candidates; licence-screened per item) | — | placeholder |
-| `transport-sneakernet` | bundle-carried offline transport (ID-graph D4) | — | designed (#13889) |
-| `group-encryption-keyhive` | BeeKEM/keyhive group encryption as the alternative scheme | exclusivity group `group-crypto` | placeholder (TODO long-term) |
+| Feature                                                                                      | Adds                                                                                                                             | Requires                         | Status                                          |
+| -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | ----------------------------------------------- |
+| `sandbox-exec`                                                                               | wasmtime program execution (today's `sandbox`, renamed in effect: forwards `id-worlds/sandbox` + markers)                        | `world-state`                    | shipped (as `sandbox`)                          |
+| `serve`                                                                                      | hosting: file/world serving, the `serve` command's host halves (today unconditional code with sub-gates; becomes a real feature) | —                                | seam                                            |
+| `web`                                                                                        | Axum web UI (`id-web`)                                                                                                           | `serve`, `world-state`           | shipped                                         |
+| `ssh-serve`                                                                                  | world serving over SSH (today's `ssh`, russh in `id-worlds`)                                                                     | `serve`, `sandbox-exec`          | shipped (as `ssh`)                              |
+| `dht`                                                                                        | Mainline DHT address lookup (today's `dht`)                                                                                      | —                                | shipped                                         |
+| `directory`                                                                                  | home-server directory: views, auth, mail, invites (`id-directory`)                                                               | `serve`                          | seam (crate ships; root feature does not exist) |
+| `currency`                                                                                   | currency registry + gateways (`id-currency-registry`, facade currency modules)                                                   | `serve`                          | seam                                            |
+| `roc-composer`                                                                               | the Roc platform composer (§8): manifest → composed platform → registry                                                          | `serve`, `sandbox-exec`          | designed (§3.7 v0 scope)                        |
+| `mcp-server`                                                                                 | standalone MCP server binary surface over the `id-caps` MCP bridge (book: library-only today, no server binary exists)           | `serve`                          | designed                                        |
+| `import-notion`                                                                              | Notion importer CLI wiring (`id-import-notion`, orphan library today)                                                            | —                                | seam                                            |
+| `import-obsidian` / `import-evernote` / `import-logseq` / `import-joplin` / `import-onenote` | the #2048-model importer family                                                                                                  | —                                | designed (#5845–#5848 family)                   |
+| `transport-mcp`                                                                              | MCP-door transport adapter (#13929)                                                                                              | —                                | designed                                        |
+| `transport-email`                                                                            | email transport adapter (asymmetric levels per #13929)                                                                           | —                                | designed                                        |
+| `transport-mqtt`                                                                             | MQTT adapter + device bridge (#2343)                                                                                             | —                                | designed                                        |
+| `transport-irc`                                                                              | IRC relay adapter                                                                                                                | —                                | designed                                        |
+| `transport-overlay`                                                                          | Tor/Veilid-class overlay adapters (TODO-list candidates; licence-screened per item)                                              | —                                | placeholder                                     |
+| `transport-sneakernet`                                                                       | bundle-carried offline transport (ID-graph D4)                                                                                   | —                                | designed (#13889)                               |
+| `group-encryption-keyhive`                                                                   | BeeKEM/keyhive group encryption as the alternative scheme                                                                        | exclusivity group `group-crypto` | placeholder (TODO long-term)                    |
 
 ### 4.3 Profile meta-features
 
@@ -600,7 +601,7 @@ Meta-features contain no code gates anywhere — they exist so a
 served environment has one handle, and so `cargo tree`
 assertions can key on them. This is the one deliberate deviation
 from #5788 §4's "features are never the variant definition": the
-*definition* still lives in the profile's composition crate
+_definition_ still lives in the profile's composition crate
 (§7.1); the meta-feature is a generated mirror of it, and §9's
 CI asserts the two agree — drift between them fails the build
 instead of shipping silently (the §0.1 three-sources-of-truth
@@ -608,11 +609,11 @@ failure, closed mechanically).
 
 ### 4.4 Exclusivity groups
 
-| Group | Members | Rule |
-|---|---|---|
-| `store-record` | `store-redb` (core default), `store-turso` (libSQL port adapter — §0.1's declared profile, wired by §10 S6), `store-postgres-http` (#5805), `store-d1` (hosted) | exactly one authoritative record-store backend per composition |
-| `store-events` | redb file (core), Turso (designed, hosted tenancy #9083) | exactly one |
-| `group-crypto` | p2panda-encryption scheme v1 (core), `group-encryption-keyhive` | exactly one per composition; worlds name their scheme in their manifest, per the vendored scheme-negotiation precedent |
+| Group          | Members                                                                                                                                                         | Rule                                                                                                                   |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `store-record` | `store-redb` (core default), `store-turso` (libSQL port adapter — §0.1's declared profile, wired by §10 S6), `store-postgres-http` (#5805), `store-d1` (hosted) | exactly one authoritative record-store backend per composition                                                         |
+| `store-events` | redb file (core), Turso (designed, hosted tenancy #9083)                                                                                                        | exactly one                                                                                                            |
+| `group-crypto` | p2panda-encryption scheme v1 (core), `group-encryption-keyhive`                                                                                                 | exactly one per composition; worlds name their scheme in their manifest, per the vendored scheme-negotiation precedent |
 
 Store features select the backend **behind the existing port
 traits** — they never introduce a second store abstraction. The
@@ -638,7 +639,7 @@ profile = "basement"                # optional base profile
 features = ["store-turso", "dht"]   # additions / group selections
 ```
 
-Rules: a manifest names a base profile *or* an explicit feature
+Rules: a manifest names a base profile _or_ an explicit feature
 list (not both ambiguously — additions to a profile are stated
 as additions, and the resolved set is what's hashed); every
 feature must exist in the catalogue (§4); exclusivity groups
@@ -654,7 +655,7 @@ workspace lockfile hash; the pinned Rust toolchain. Two
 manifests that hash equal are the same build — the build is a
 pure function with a cache (§9). Grants, config, and data are
 never manifest content (the §3.1 rule, kept): a composition
-decides what a binary *can* do; what it *does* is runtime
+decides what a binary _can_ do; what it _does_ is runtime
 configuration, a different layer.
 
 ### 5.3 The build tool
@@ -693,15 +694,15 @@ profiles, plus the served-environment examples Drew named.
 Profile definitions live in composition crates (§7.1); the
 table is their human rendering.
 
-| Profile | ≈ #5788 | Shape | Published artefact |
-|---|---|---|---|
-| `plain` | L1 (corrected, §3) | core only: dumb client + basic store | yes — the user download |
-| `full` | L3 | **curated all-on**: core + `sandbox-exec`, `serve`, `web`, `ssh-serve`, `dht`, `directory`, `currency`, `roc-composer`, `mcp-server`, importers, all non-exclusive transports, default store group selections | yes — the backend/server build; slower boot accepted, measured per §9 |
-| `basement` | L2 | headless service: core + `serve`, `sandbox-exec`, `directory`, `dht`; no presenters (no `web`, no `ssh-serve`) | built by operators |
-| `embedded` | L0 | library composition, no binary: core minus CLI/REPL, provider link only | library only |
-| `composer-host` (served example) | — | `basement` + `roc-composer` + `store-turso`: the platform-composition environment | operator build, hash-registered |
-| `alt-store-node` (served example) | — | `full` with `store-record` switched to `store-turso`: the alternate-distributed-store environment | operator build, hash-registered |
-| `hosted-edge` (served example) | — | hosted edition shape: `web` + `directory` + `store-d1` against the hosted-worker surface | aspirational — gated on the hosted-edition slices (#2285/#3403 line); catalogued now so the composition has a name when the seams land |
+| Profile                           | ≈ #5788            | Shape                                                                                                                                                                                                         | Published artefact                                                                                                                     |
+| --------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `plain`                           | L1 (corrected, §3) | core only: dumb client + basic store                                                                                                                                                                          | yes — the user download                                                                                                                |
+| `full`                            | L3                 | **curated all-on**: core + `sandbox-exec`, `serve`, `web`, `ssh-serve`, `dht`, `directory`, `currency`, `roc-composer`, `mcp-server`, importers, all non-exclusive transports, default store group selections | yes — the backend/server build; slower boot accepted, measured per §9                                                                  |
+| `basement`                        | L2                 | headless service: core + `serve`, `sandbox-exec`, `directory`, `dht`; no presenters (no `web`, no `ssh-serve`)                                                                                                | built by operators                                                                                                                     |
+| `embedded`                        | L0                 | library composition, no binary: core minus CLI/REPL, provider link only                                                                                                                                       | library only                                                                                                                           |
+| `composer-host` (served example)  | —                  | `basement` + `roc-composer` + `store-turso`: the platform-composition environment                                                                                                                             | operator build, hash-registered                                                                                                        |
+| `alt-store-node` (served example) | —                  | `full` with `store-record` switched to `store-turso`: the alternate-distributed-store environment                                                                                                             | operator build, hash-registered                                                                                                        |
+| `hosted-edge` (served example)    | —                  | hosted edition shape: `web` + `directory` + `store-d1` against the hosted-worker surface                                                                                                                      | aspirational — gated on the hosted-edition slices (#2285/#3403 line); catalogued now so the composition has a name when the seams land |
 
 "Full" is a profile, not `--all-features` (§0.3): if a future
 feature is not in `full`, that is a catalogue decision recorded
@@ -744,10 +745,10 @@ profile's first build).
 ### 7.3 New crates (only where a feature needs a home)
 
 - `crates/id-composer` — the Roc platform composer (§8): library
-  + a `roc-compose` bin target. Depends on `id-core`
-  (canonical CBOR, hashing) and the catalogue; deliberately not
-  on `id-worlds` — the composer produces platforms; it is not
-  itself a world program.
+  - a `roc-compose` bin target. Depends on `id-core`
+    (canonical CBOR, hashing) and the catalogue; deliberately not
+    on `id-worlds` — the composer produces platforms; it is not
+    itself a world program.
 - `tools/id-compose` (or an xtask) — the §5.3 build tool. Kept
   out of the shipped workspace's default members (the §2
   survey's default-members lesson: anything non-default needs
@@ -979,7 +980,7 @@ independent of the rest and unblock everything.
   from the execution surface across root/`id-core`/`id-cli`/
   `id-worlds`. Done test: default build behaviour-identical
   (full existing suite), and `--no-default-features --features
-  world-state` builds with the degrade contract intact.
+world-state` builds with the degrade contract intact.
 - **S4 — The plain profile.** `crates/id-client` composition
   crate (§7.1) + negative-guarantee CI (§3). Done test: plain
   builds, its `cargo tree` assertions pass, the five-minute
@@ -1044,7 +1045,7 @@ independent of the rest and unblock everything.
   recommendation — permitted for served environments when
   hash-registered and operator-granted (the composer's own
   posture), with named profiles the default and the only
-  *published* artefacts. Needs Drew's ratification at S1,
+  _published_ artefacts. Needs Drew's ratification at S1,
   since it is the point where this plan amends #5788.
 - **Profile graduation authority:** the registry curator role
   (§1.2.9) — in practice Drew/operator discretion today;
@@ -1053,6 +1054,6 @@ independent of the rest and unblock everything.
 
 ---
 
-*Record ends. Companion issue: filed with this record as the
+_Record ends. Companion issue: filed with this record as the
 tracking issue for §10's slices; the prioritization is also
-noted on the composer design's record (PR #14029) and on #5788.*
+noted on the composer design's record (PR #14029) and on #5788._
