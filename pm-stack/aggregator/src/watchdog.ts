@@ -36,10 +36,12 @@
 //   snapshot (host-health.ts) — claimant mode file missing /
 //   unreadable / invalid, a PM unit's failed last run, an inactive
 //   unit timer, pm-projector-reconcile stuck in `activating` past
-//   10 min, or pm-dashboard-backup without a success in 36 h (its
-//   cadence is daily) breach immediately; an absent snapshot or one
-//   stale past 15 min (3 missed 5-minute collections) breaches as
-//   its own item, so the surfacer cannot itself fail silently.
+//   10 min, pm-dashboard-backup without a success in 36 h (its
+//   cadence is daily), or a backup generation the run record marks
+//   failed (#3989: the failing step is named, never read as success);
+//   an absent snapshot or one stale past 15 min (3 missed 5-minute
+//   collections) breaches as its own item, so the surfacer cannot
+//   itself fail silently.
 import {
   ageMsText,
   FEED_STALE_MS,
@@ -394,6 +396,47 @@ function deriveHostHealthItems(snapshot: HostHealthSnapshot | null, now: number,
         generatedMs + HOST_HEALTH_STALE_MS,
         now,
         "Check the pm-host-health user timer on the laptop; the card clears itself when the collector runs again.",
+        HOST_HEALTH_REF,
+      ),
+    );
+  }
+
+  // Backup restore point (#3989 criterion 6): a failed generation
+  // breaches immediately and names its failing step — a failed or
+  // empty generation must never read as a successful backup. The
+  // 36 h staleness item below still covers a chain that stopped
+  // without a failed unit to show for it; recovery is the next
+  // complete generation.
+  const backup = snapshot.backup;
+  if (!backup) {
+    const host = snapshot.host ? ` on host ${snapshot.host}` : "";
+    put(
+      item(
+        "backup-restore-point",
+        `Watchdog: verified backup restore point is unavailable${host}`,
+        "watchdog: backup restore point unavailable",
+        `The host-health snapshot has no readable pm-dashboard-backup run record${host}; no generation date, finish time, or verified archive hash is available, so backup age and the restore point cannot be established. An empty or unverified generation is not a successful backup (#3989).`,
+        Number.isNaN(generatedMs) ? now : generatedMs,
+        now,
+        "Check ~/backups/dashboard/.last-run.json and pm-dashboard-backup.service on the laptop; the card clears itself when the collector reads a complete run record.",
+        HOST_HEALTH_REF,
+      ),
+    );
+  } else if (backup.result === "failed") {
+    const host = snapshot.host ? ` on host ${snapshot.host}` : "";
+    const legs = Object.entries(backup.destinations)
+      .map(([leg, outcome]) => `${leg}: ${outcome}`)
+      .join(", ");
+    const finishedMs = Date.parse(backup.finishedAt);
+    put(
+      item(
+        "backup-generation",
+        `Watchdog: backup generation ${backup.date} failed at ${backup.failingStep ?? "an unnamed step"}${host}`,
+        "watchdog: backup generation failed",
+        `pm-dashboard-backup generation ${backup.date} (finished ${backup.finishedAt}) recorded result failed at step ${backup.failingStep ?? "(unnamed)"}${host}, so the newest verified restore point is an older generation — do not mistake this generation for a successful backup. Legs: ${legs || "unreported"}. Diagnosed from the backup run record via the host-health snapshot (#3989).`,
+        Number.isNaN(finishedMs) ? now : finishedMs,
+        now,
+        `Check pm-dashboard-backup.service on the laptop (journalctl --user -u pm-dashboard-backup) for the failing step; the card clears itself when a generation records complete.`,
         HOST_HEALTH_REF,
       ),
     );

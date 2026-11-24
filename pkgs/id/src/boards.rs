@@ -30,6 +30,13 @@
 //! [`BoardGraph::note_embeds`] / [`BoardGraph::note_backlinks`] project the
 //! edge set. Slice 2 adds pure live/pinned presentation and reply-anchor
 //! projections; fetching note content and rendering markup remain caller work.
+//! Scope item 4 of the same model adds the remaining edges —
+//! `reply —anchors→ note-version/passage` from [`Post::note_anchor`] and
+//! `post —discusses→ note` for posts taking part in a thread in which
+//! another post embeds the note — and makes [`BoardGraph::note_backlinks`]
+//! the reverse query over all three edge kinds, so jump-through works
+//! both ways from the same edge store. Removing a post (supersede or
+//! tombstone under the active-records rule) removes its forward edges.
 //! Cross-server resolution is a later slice.
 //! Duplicate `Rules` objects for the same board and revision are legal signed
 //! history. [`BoardGraph::resolve_rules`] selects the greater content hash
@@ -463,6 +470,30 @@ impl SignedBoardObject {
     }
 }
 
+/// A reference edge from a board post to a note in ID's native graph
+/// (#7587 scope item 4, decision #5830 §3). The edge store is the graph
+/// itself — the [`Post`] objects — never a second index: the forward
+/// traversal ([`BoardGraph::note_edges_from`]) and the reverse query
+/// ([`BoardGraph::note_backlinks`]) project the same posts, so the
+/// two-way guarantee cannot desync. The referenced note is never a
+/// graph object; it lives on its home server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoteEdge {
+    /// `post —embeds→ note`: the post shares the note. Carried by
+    /// [`Post::note_ref`]; see [`BoardGraph::note_embeds`].
+    Embeds(NoteRef),
+    /// `reply —anchors→ note-version/passage`: the reply is anchored to
+    /// the note version (and optionally passage) it discusses. Carried
+    /// by [`Post::note_anchor`]; see [`BoardGraph::note_anchors`].
+    Anchors(NoteAnchor),
+    /// `post —discusses→ note`: the post takes part in a thread in
+    /// which another post embeds the note, so the post discusses the
+    /// note even without carrying its own reference or anchor. Derived
+    /// from thread membership, never stored; see
+    /// [`BoardGraph::note_discussions`].
+    Discusses(ArtifactHash),
+}
+
 /// Verified set of board objects, enforcing references and board-scoped authority.
 #[derive(Clone, Debug, Default)]
 pub struct BoardGraph {
@@ -580,15 +611,21 @@ impl BoardGraph {
             .collect()
     }
 
-    /// Every embeds edge in the graph: `(post hash, note reference)`
+    /// Every live embeds edge in the graph: `(post hash, note reference)`
     /// for each post carrying a [`Post::note_ref`], in deterministic
     /// content-hash order. This is the post —embeds→ note edge set of
     /// the #5830 sharing model; the note targets themselves are not
-    /// graph objects and are never listed here as objects.
+    /// graph objects and are never listed here as objects. A post
+    /// removed through an active supersede record or tombstone
+    /// contributes no edge: removing a post removes its forward edges.
     pub fn note_embeds(&self) -> Vec<(ArtifactHash, &NoteRef)> {
+        let removed = self.removed_posts();
         self.objects
             .iter()
             .filter_map(|(hash, signed)| {
+                if removed.contains(hash) {
+                    return None;
+                }
                 let BoardObject::Post(post) = &signed.object else {
                     return None;
                 };
@@ -599,15 +636,173 @@ impl BoardGraph {
             .collect()
     }
 
-    /// Backlinks for one note: the hashes of every post in the graph
-    /// whose [`Post::note_ref`] names `note`, in deterministic
-    /// content-hash order. Empty when nothing in this graph shares it.
-    pub fn note_backlinks(&self, note: &ArtifactHash) -> Vec<ArtifactHash> {
-        self.note_embeds()
-            .into_iter()
-            .filter(|(_, note_ref)| note_ref.object == *note)
-            .map(|(post_hash, _)| post_hash)
+    /// Every live anchors edge in the graph: `(post hash, anchor)` for
+    /// each post carrying a [`Post::note_anchor`], in deterministic
+    /// content-hash order. This is the reply —anchors→
+    /// note-version/passage edge set of the #5830 sharing model; the
+    /// anchor names the note object, the version the thread is about,
+    /// and optionally a passage selector. As with
+    /// [`Self::note_embeds`], a removed post contributes no edge.
+    pub fn note_anchors(&self) -> Vec<(ArtifactHash, &NoteAnchor)> {
+        let removed = self.removed_posts();
+        self.objects
+            .iter()
+            .filter_map(|(hash, signed)| {
+                if removed.contains(hash) {
+                    return None;
+                }
+                let BoardObject::Post(post) = &signed.object else {
+                    return None;
+                };
+                post.note_anchor
+                    .as_ref()
+                    .map(|anchor| (hash.clone(), anchor))
+            })
             .collect()
+    }
+
+    /// Every live discusses edge in the graph: `(post hash, note)` for
+    /// each post taking part in a thread in which another post embeds
+    /// the note, in deterministic content-hash order (post hash, then
+    /// note hash). This is the post —discusses→ note edge set of the
+    /// #5830 sharing model: a reply in a note-sharing thread discusses
+    /// the note even when it carries neither its own reference nor an
+    /// anchor. The embedding post itself carries the embeds edge for
+    /// that note, not a discusses edge; it still discusses any other
+    /// note embedded in the same thread. A removed post contributes no
+    /// edge, and a thread whose embedding post was removed discusses
+    /// nothing — the discusses edge follows the live embeds edge.
+    pub fn note_discussions(&self) -> Vec<(ArtifactHash, ArtifactHash)> {
+        let removed = self.removed_posts();
+        let mut embedded: BTreeMap<ArtifactHash, BTreeSet<ArtifactHash>> = BTreeMap::new();
+        for (hash, signed) in &self.objects {
+            if removed.contains(hash) {
+                continue;
+            }
+            let BoardObject::Post(post) = &signed.object else {
+                continue;
+            };
+            if let Some(note_ref) = &post.note_ref {
+                embedded
+                    .entry(post.thread.clone())
+                    .or_default()
+                    .insert(note_ref.object.clone());
+            }
+        }
+        let mut edges = Vec::new();
+        for (hash, signed) in &self.objects {
+            if removed.contains(hash) {
+                continue;
+            }
+            let BoardObject::Post(post) = &signed.object else {
+                continue;
+            };
+            let Some(notes) = embedded.get(&post.thread) else {
+                continue;
+            };
+            for note in notes {
+                if post
+                    .note_ref
+                    .as_ref()
+                    .is_some_and(|own| own.object == *note)
+                {
+                    continue;
+                }
+                edges.push((hash.clone(), note.clone()));
+            }
+        }
+        edges
+    }
+
+    /// Outgoing note-reference edges of one post, in edge-kind order
+    /// (embeds, then anchors, then discusses, the discusses notes in
+    /// content-hash order). This is the forward jump-through: from a
+    /// post to every note it references. Unknown hashes, non-post
+    /// objects, and removed posts have no outgoing edges.
+    pub fn note_edges_from(&self, post: &ArtifactHash) -> Vec<NoteEdge> {
+        if self.removed_posts().contains(post) {
+            return Vec::new();
+        }
+        let Some(signed) = self.get(post) else {
+            return Vec::new();
+        };
+        let BoardObject::Post(value) = &signed.object else {
+            return Vec::new();
+        };
+        let mut edges = Vec::new();
+        if let Some(note_ref) = &value.note_ref {
+            edges.push(NoteEdge::Embeds(note_ref.clone()));
+        }
+        if let Some(anchor) = &value.note_anchor {
+            edges.push(NoteEdge::Anchors(anchor.clone()));
+        }
+        edges.extend(
+            self.note_discussions()
+                .into_iter()
+                .filter(|(hash, _)| hash == post)
+                .map(|(_, note)| NoteEdge::Discusses(note)),
+        );
+        edges
+    }
+
+    /// Backlinks for one note: the hashes of every post in the graph
+    /// that references `note` through any live edge — embeds, anchors,
+    /// or discusses — in deterministic content-hash order. Empty when
+    /// nothing in this graph references it. This is a query over the
+    /// same edge store the forward traversal reads, not a separately
+    /// maintained index, so a backlink exists exactly when the forward
+    /// jump works. A post contributes at most once however many of its
+    /// edges name the note.
+    pub fn note_backlinks(&self, note: &ArtifactHash) -> Vec<ArtifactHash> {
+        let mut links: BTreeSet<ArtifactHash> = BTreeSet::new();
+        links.extend(
+            self.note_embeds()
+                .into_iter()
+                .filter(|(_, note_ref)| note_ref.object == *note)
+                .map(|(post, _)| post),
+        );
+        links.extend(
+            self.note_anchors()
+                .into_iter()
+                .filter(|(_, anchor)| anchor.object == *note)
+                .map(|(post, _)| post),
+        );
+        links.extend(
+            self.note_discussions()
+                .into_iter()
+                .filter(|(_, target)| target == note)
+                .map(|(post, _)| post),
+        );
+        links.into_iter().collect()
+    }
+
+    /// Hashes of posts whose forward reference edges no longer count:
+    /// a post superseded through an active supersede record, or hidden
+    /// by an active tombstone. The superseded set reuses the same
+    /// active-records frontier [`Self::superseded_objects`] computes
+    /// per board; a tombstone superseded through an active record has
+    /// lost its effect, so its target is live again.
+    fn removed_posts(&self) -> BTreeSet<ArtifactHash> {
+        let boards: BTreeSet<ArtifactHash> = self
+            .objects
+            .values()
+            .filter_map(|signed| match &signed.object {
+                BoardObject::Post(value) => Some(value.board.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut removed = BTreeSet::new();
+        for board in &boards {
+            removed.extend(self.superseded_objects(board));
+        }
+        for (hash, signed) in &self.objects {
+            if let BoardObject::Tombstone(value) = &signed.object {
+                if !removed.contains(hash) {
+                    removed.insert(value.target.clone());
+                }
+            }
+        }
+        removed
     }
 
     fn validate_links(&self, signed: &SignedBoardObject) -> Result<()> {
@@ -2523,6 +2718,47 @@ mod tests {
                 embed_ref: None,
                 note_ref: Some(note_ref),
                 note_anchor: None,
+                note_view: None,
+            }),
+        )
+        .unwrap()
+    }
+
+    fn sample_note_anchor(object: ArtifactHash, version: ArtifactHash) -> NoteAnchor {
+        NoteAnchor {
+            object,
+            version,
+            passage: Some(NotePassageSelector {
+                section_id: "intro".to_owned(),
+                start_byte: 0,
+                end_byte: 7,
+                quote_hash: ArtifactHash::new("c".repeat(64)).unwrap(),
+            }),
+        }
+    }
+
+    fn reply_with_note(
+        key: &SigningKey,
+        board: ArtifactHash,
+        thread: ArtifactHash,
+        parent: ArtifactHash,
+        note_ref: Option<NoteRef>,
+        note_anchor: Option<NoteAnchor>,
+        body: &str,
+    ) -> SignedBoardObject {
+        SignedBoardObject::sign(
+            key,
+            1,
+            "",
+            BoardObject::Post(Post {
+                board,
+                thread,
+                parent_post: Some(parent),
+                body: body.to_owned(),
+                attachments: Vec::new(),
+                embed_ref: None,
+                note_ref,
+                note_anchor,
                 note_view: None,
             }),
         )
@@ -6995,7 +7231,12 @@ mod tests {
         assert_eq!(embeds.len(), 1);
         assert_eq!(embeds[0].0, post_hash);
         assert_eq!(embeds[0].1, &note_ref);
-        assert_eq!(graph.note_backlinks(&note_object), vec![post_hash.clone()]);
+        // Backlinks are the union over all three edge kinds: the plain
+        // post sits in the same thread as the sharing post, so it
+        // carries a discusses edge to the note and backlinks it too.
+        let mut expected_backlinks = vec![post_hash.clone(), plain_hash.clone()];
+        expected_backlinks.sort();
+        assert_eq!(graph.note_backlinks(&note_object), expected_backlinks);
         assert!(
             graph
                 .note_backlinks(&ArtifactHash::new("d".repeat(64)).unwrap())
@@ -7017,6 +7258,245 @@ mod tests {
             "c".repeat(64).as_str()
         );
         assert_eq!(stored_post.body, "sharing a note");
+    }
+
+    #[test]
+    fn note_anchors_discussions_and_backlinks_cover_all_three_edge_kinds() {
+        let creator = key(15);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let thread_hash = graph
+            .insert(thread(&creator, root_hash.clone(), "notes"))
+            .unwrap();
+        let other_thread = graph
+            .insert(thread(&creator, root_hash.clone(), "other"))
+            .unwrap();
+        let note_ref = sample_note_ref(&creator);
+        let note_object = note_ref.object.clone();
+
+        let share_hash = graph
+            .insert(post_with_note_ref(
+                &creator,
+                root_hash.clone(),
+                thread_hash.clone(),
+                note_ref.clone(),
+                "sharing a note",
+            ))
+            .unwrap();
+        // Anchored reply: an anchors edge to the note, plus a
+        // discusses edge through the thread — one backlink, not two.
+        let anchor =
+            sample_note_anchor(note_object.clone(), note_ref.pinned_version.clone());
+        let anchored_hash = graph
+            .insert(reply_with_note(
+                &creator,
+                root_hash.clone(),
+                thread_hash.clone(),
+                share_hash.clone(),
+                None,
+                Some(anchor.clone()),
+                "about the intro",
+            ))
+            .unwrap();
+        // Plain reply in the same thread: discusses edge only.
+        let plain_reply_hash = graph
+            .insert(reply_with_note(
+                &creator,
+                root_hash.clone(),
+                thread_hash.clone(),
+                share_hash.clone(),
+                None,
+                None,
+                "agree",
+            ))
+            .unwrap();
+        // Plain post in another thread: no edge at all.
+        let elsewhere_hash = graph
+            .insert(post(&creator, root_hash, other_thread, "unrelated"))
+            .unwrap();
+
+        let anchors = graph.note_anchors();
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].0, anchored_hash);
+        assert_eq!(anchors[0].1, &anchor);
+
+        let mut expected_discussions = vec![
+            (anchored_hash.clone(), note_object.clone()),
+            (plain_reply_hash.clone(), note_object.clone()),
+        ];
+        expected_discussions.sort();
+        assert_eq!(graph.note_discussions(), expected_discussions);
+
+        // Backlinks are the union over all three edge kinds, deduped,
+        // in content-hash order: the anchored reply counts once.
+        let mut expected_backlinks = vec![
+            share_hash.clone(),
+            anchored_hash.clone(),
+            plain_reply_hash.clone(),
+        ];
+        expected_backlinks.sort();
+        assert_eq!(graph.note_backlinks(&note_object), expected_backlinks);
+
+        // Forward jump-through from each post, in edge-kind order.
+        assert_eq!(
+            graph.note_edges_from(&share_hash),
+            vec![NoteEdge::Embeds(note_ref.clone())]
+        );
+        assert_eq!(
+            graph.note_edges_from(&anchored_hash),
+            vec![
+                NoteEdge::Anchors(anchor.clone()),
+                NoteEdge::Discusses(note_object.clone()),
+            ]
+        );
+        assert_eq!(
+            graph.note_edges_from(&plain_reply_hash),
+            vec![NoteEdge::Discusses(note_object.clone())]
+        );
+        assert!(graph.note_edges_from(&elsewhere_hash).is_empty());
+        assert!(
+            graph
+                .note_edges_from(&ArtifactHash::new("d".repeat(64)).unwrap())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn anchored_reply_to_another_note_backlinks_that_note() {
+        let creator = key(16);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let thread_hash = graph
+            .insert(thread(&creator, root_hash.clone(), "notes"))
+            .unwrap();
+        let note_ref = sample_note_ref(&creator);
+        let note_object = note_ref.object.clone();
+
+        let share_hash = graph
+            .insert(post_with_note_ref(
+                &creator,
+                root_hash.clone(),
+                thread_hash.clone(),
+                note_ref.clone(),
+                "sharing a note",
+            ))
+            .unwrap();
+        // Anchored to a different note than the thread embeds: the
+        // anchors edge names the other note, while the reply still
+        // discusses this thread's note.
+        let other_object = ArtifactHash::new("d".repeat(64)).unwrap();
+        let other_anchor = sample_note_anchor(
+            other_object.clone(),
+            ArtifactHash::new("e".repeat(64)).unwrap(),
+        );
+        let reply_hash = graph
+            .insert(reply_with_note(
+                &creator,
+                root_hash,
+                thread_hash,
+                share_hash.clone(),
+                None,
+                Some(other_anchor),
+                "see also this note",
+            ))
+            .unwrap();
+
+        assert_eq!(
+            graph.note_backlinks(&other_object),
+            vec![reply_hash.clone()]
+        );
+        let mut expected = vec![share_hash, reply_hash];
+        expected.sort();
+        assert_eq!(graph.note_backlinks(&note_object), expected);
+    }
+
+    #[test]
+    fn removing_a_post_removes_its_backlinks() {
+        let creator = key(17);
+        let mut graph = BoardGraph::default();
+        let root_hash = graph.insert(board(&creator)).unwrap();
+        let thread_hash = graph
+            .insert(thread(&creator, root_hash.clone(), "notes"))
+            .unwrap();
+        let note_ref = sample_note_ref(&creator);
+        let note_object = note_ref.object.clone();
+        let share = post_with_note_ref(
+            &creator,
+            root_hash.clone(),
+            thread_hash.clone(),
+            note_ref.clone(),
+            "sharing a note",
+        );
+        let share_hash = graph.insert(share.clone()).unwrap();
+        let reply_hash = graph
+            .insert(reply_with_note(
+                &creator,
+                root_hash.clone(),
+                thread_hash.clone(),
+                share_hash.clone(),
+                None,
+                None,
+                "reply",
+            ))
+            .unwrap();
+        assert_eq!(graph.note_backlinks(&note_object).len(), 2);
+
+        // Tombstone the sharing post: its embeds edge goes, so the
+        // thread no longer embeds the note and the reply's discusses
+        // edge goes with it.
+        let tombstone = SignedBoardObject::sign(
+            &creator,
+            2,
+            "",
+            BoardObject::Tombstone(Tombstone {
+                board: root_hash.clone(),
+                target: share_hash.clone(),
+                reason: Some("retracted".to_owned()),
+            }),
+        )
+        .unwrap();
+        let tombstone_hash = graph.insert(tombstone).unwrap();
+        assert!(graph.note_backlinks(&note_object).is_empty());
+        assert!(graph.note_embeds().is_empty());
+        assert!(graph.note_discussions().is_empty());
+        assert!(graph.note_edges_from(&share_hash).is_empty());
+
+        // Superseding the tombstone restores the share: the tombstone
+        // loses effect, so the embeds edge — and the backlink — come
+        // back, while the reply the replacement tombstone names stays
+        // removed.
+        let replacement = SignedBoardObject::sign(
+            &creator,
+            3,
+            "",
+            BoardObject::Tombstone(Tombstone {
+                board: root_hash.clone(),
+                target: reply_hash,
+                reason: Some("duplicate".to_owned()),
+            }),
+        )
+        .unwrap();
+        let replacement_hash = graph.insert(replacement).unwrap();
+        let supersede = SignedBoardObject::sign(
+            &creator,
+            4,
+            "",
+            BoardObject::Supersede(Supersede {
+                board: root_hash,
+                previous: tombstone_hash,
+                replacement: replacement_hash,
+            }),
+        )
+        .unwrap();
+        graph.insert(supersede).unwrap();
+        assert_eq!(
+            graph.note_backlinks(&note_object),
+            vec![share_hash.clone()]
+        );
+        assert_eq!(
+            graph.note_edges_from(&share_hash),
+            vec![NoteEdge::Embeds(note_ref)]
+        );
     }
 
     #[test]

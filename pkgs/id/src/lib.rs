@@ -253,6 +253,7 @@ pub mod grants;
 pub mod groups;
 pub mod hosted_binding;
 pub mod hosted_export;
+pub mod hosted_freeze;
 pub mod hosted_ingest;
 pub use id_events::idset;
 pub use id_worlds::input_framing;

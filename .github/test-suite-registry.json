@@ -728,6 +728,21 @@
       "related_issues": [9860]
     },
     {
+      "id": "pm-service.tenant-store",
+      "paths": [
+        "pm-stack/pm-service/test/tenant-store.test.ts"
+      ],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service tenant-store suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12825]
+    },
+    {
       "id": "opencode-claimant.install",
       "paths": ["pm-stack/opencode-claimant/test/install.test.mjs"],
       "invocation": "cd pm-stack/opencode-claimant && bun test test/install.test.mjs",
@@ -959,6 +974,20 @@
       "status": "mapped",
       "related_issues": [10423],
       "notes": "Script-style suite (19 checks; not unittest-discoverable). The workflow runs nightly on main with no path filters (2026-11-16 nightly-CI policy), so the step is the coverage; the step asserts the file exists and requires the checks-passed line."
+    },
+    {
+      "id": "pm-stack.host-health-collector",
+      "paths": ["pm-stack/tests/test_host_health_collector.py", "pm-stack/host-health-collector.py"],
+      "invocation": "python3 -m unittest discover -s pm-stack/tests -p 'test_host_health_collector.py'",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test host-health collector Python suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [3989],
+      "notes": "Wired for #3989 criterion 6: validates the host-health collector's backup restore-point projection. The workflow runs nightly on main with no path filters."
     },
     {
       "id": "pm-stack.meta-exporter",
