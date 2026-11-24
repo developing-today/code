@@ -1453,7 +1453,7 @@ fn run_tiers(config: &Config, addrs: Vec<String>) -> i32 {
                 any_down = true;
             }
             Err(e) => {
-                println!("{label}\tDOWN\t{}", spawn_failure_message(gh_bin, &e));
+                println!("{label}\tDOWN\t{}", spawn_failure_message(&gh_bin, &e));
                 any_down = true;
             }
         }
@@ -2676,6 +2676,52 @@ mod tests {
             "exactly one call, with no token injected: {calls:?}"
         );
     }
+
+    // oracle: #10311 (d) — a missing `gh` binary must name the
+    // remedy (install gh, or set FLEET_GH_BIN); the spawn-error
+    // path returns exit 3 with no attempt made.
+    #[test]
+    fn missing_gh_error_names_the_remedy() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
+        let msg = spawn_failure_message("gh", &e);
+        assert!(msg.contains("install gh"), "no install remedy: {msg}");
+        assert!(msg.contains("FLEET_GH_BIN"), "no FLEET_GH_BIN remedy: {msg}");
+        assert!(msg.contains("'gh'"), "binary name lost: {msg}");
+    }
+
+    #[test]
+    fn missing_gh_spawn_returns_unresolved() {
+        let mut provider = FakeProvider {
+            fail_sources: vec![],
+        };
+        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
+        let sources = vec![TokenSource::Personal];
+        let code = run_with_provider(
+            &mut provider,
+            "/nonexistent/fleet-gh-test-gh",
+            &args,
+            &sources,
+            false,
+        );
+        assert_eq!(code, EXIT_UNRESOLVED, "spawn failure must exit 3");
+    }
+
+    // oracle: #10311 (d) — the no-credentials path prints each
+    // distinct provider error once, first-seen order.
+    #[test]
+    fn provider_errors_printed_once() {
+        let errors = vec![
+            "broker unreachable".to_string(),
+            "broker unreachable".to_string(),
+            "cache daemon down".to_string(),
+            "broker unreachable".to_string(),
+        ];
+        assert_eq!(
+            distinct_errors(&errors),
+            vec!["broker unreachable", "cache daemon down"]
+        );
+        assert!(distinct_errors(&[]).is_empty());
+    }
 }
 
 /// Property tests for the read classifier behind arbitrary-error
@@ -2815,51 +2861,5 @@ mod graphql_read_props {
             };
             prop_assert!(!is_read_call(&args), "ambiguous call classified as read: {args:?}");
         }
-    }
-
-    // oracle: #10311 (d) — a missing `gh` binary must name the
-    // remedy (install gh, or set FLEET_GH_BIN); the spawn-error
-    // path returns exit 3 with no attempt made.
-    #[test]
-    fn missing_gh_error_names_the_remedy() {
-        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory");
-        let msg = spawn_failure_message("gh", &e);
-        assert!(msg.contains("install gh"), "no install remedy: {msg}");
-        assert!(msg.contains("FLEET_GH_BIN"), "no FLEET_GH_BIN remedy: {msg}");
-        assert!(msg.contains("'gh'"), "binary name lost: {msg}");
-    }
-
-    #[test]
-    fn missing_gh_spawn_returns_unresolved() {
-        let mut provider = FakeProvider {
-            fail_sources: vec![],
-        };
-        let args: Vec<String> = ["issue", "list"].iter().map(|s| s.to_string()).collect();
-        let sources = vec![TokenSource::Personal];
-        let code = run_with_provider(
-            &mut provider,
-            "/nonexistent/fleet-gh-test-gh",
-            &args,
-            &sources,
-            false,
-        );
-        assert_eq!(code, EXIT_UNRESOLVED, "spawn failure must exit 3");
-    }
-
-    // oracle: #10311 (d) — the no-credentials path prints each
-    // distinct provider error once, first-seen order.
-    #[test]
-    fn provider_errors_printed_once() {
-        let errors = vec![
-            "broker unreachable".to_string(),
-            "broker unreachable".to_string(),
-            "cache daemon down".to_string(),
-            "broker unreachable".to_string(),
-        ];
-        assert_eq!(
-            distinct_errors(&errors),
-            vec!["broker unreachable", "cache daemon down"]
-        );
-        assert!(distinct_errors(&[]).is_empty());
     }
 }
