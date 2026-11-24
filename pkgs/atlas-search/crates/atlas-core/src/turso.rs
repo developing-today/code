@@ -4,6 +4,13 @@
 //! mint cache -> turso CLI mint). It never issues writes: every
 //! statement this crate builds is a SELECT, and the token it holds
 //! is read-only by construction of the resolution chain.
+//!
+//! The read-only property rests on the chain's sources, not on
+//! the Turso Platform API: that API's mint endpoint ignores
+//! read-only request bodies (verified 2026-10-31 — it returns
+//! claim `a=rw` regardless), so minting goes through the `turso`
+//! CLI, whose tokens carry `a=ro`, and the named Bitwarden
+//! secrets hold CLI-minted tokens (#13284).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;

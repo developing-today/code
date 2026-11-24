@@ -27,6 +27,7 @@ pub use id_core::port;
 pub mod attestation;
 pub mod event_store;
 pub mod event_sync;
+pub mod graph_admission;
 pub mod groups;
 pub mod idset;
 pub mod local_claims;

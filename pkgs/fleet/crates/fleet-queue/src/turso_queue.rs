@@ -43,22 +43,28 @@ use serde_json::{Map, Value, json};
 
 use crate::validate::{task_from_packet, validate_packet};
 
+mod actions_exec;
 mod admin;
 mod claim;
 mod closed_bound;
 mod core;
 mod label_enrich;
 mod lifecycle;
+mod placement_sessions;
+mod repair;
 mod stacks_outbox;
 mod staleness;
 mod work_identity;
 
+pub use actions_exec::*;
 pub use admin::*;
-pub use closed_bound::*;
 pub use claim::*;
+pub use closed_bound::*;
 pub use core::*;
 pub use label_enrich::*;
 pub use lifecycle::*;
+pub use placement_sessions::*;
+pub use repair::*;
 pub use stacks_outbox::*;
 pub use staleness::*;
 pub use work_identity::*;
@@ -481,6 +487,454 @@ mod tests {
                 .to_string()
                 .contains("mirror enrichment skipped"),
             "{out}"
+        );
+    }
+
+    // ---- #13091: the broker must not re-serve parked or completed
+    // work. The incidents (2026-11-23): a parked task whose recorded
+    // term was a condition/stand-down was timer-served to lanes that
+    // could only re-park it, and a fresh filing for already-completed
+    // work created a new servable task that a lane completed a
+    // second time. The tests below pin both halves at the verb/SQL
+    // surface the serve path actually runs.
+
+    /// A content-routed stub of the Turso pipeline endpoint for the
+    /// #13091 tests: each request is answered by the first route
+    /// whose needle appears in its body; unmatched requests get a
+    /// bare ok execute reply. Captures every request body.
+    fn stub_pipeline_routed_13091(
+        routes: Vec<(&'static str, String)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        let routes = std::sync::Arc::new(routes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { break };
+                let mut reader = BufReader::new(sock.try_clone().unwrap());
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.trim().eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                if reader.read_exact(&mut body).is_err() {
+                    break;
+                }
+                let body = String::from_utf8_lossy(&body).to_string();
+                sink.lock().unwrap().push(body.clone());
+                let resp = routes
+                    .iter()
+                    .find(|(needle, _)| body.contains(needle))
+                    .map(|(_, reply)| reply.clone())
+                    .unwrap_or_else(|| {
+                        json!({"results": [
+                            {"type": "ok", "response": {"type": "execute", "result": {
+                                "cols": [], "rows": [],
+                                "affected_row_count": 0,
+                                "last_insert_rowid": null}}},
+                            {"type": "ok", "response": {"type": "close"}}
+                        ]})
+                        .to_string()
+                    });
+                let out = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    resp.len(),
+                    resp
+                );
+                if sock.write_all(out.as_bytes()).is_err() {
+                    break;
+                }
+            }
+        });
+        (format!("http://{addr}"), captured)
+    }
+
+    /// A SELECT reply carrying full task rows (TASK_COLS order).
+    fn task_select_reply_13091(rows: Vec<Value>) -> String {
+        let cols: Vec<Value> = TASK_COLS
+            .split(", ")
+            .map(|c| json!({"name": c.trim()}))
+            .collect();
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": cols, "rows": rows,
+                "affected_row_count": 0, "last_insert_rowid": null}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// One task row in TASK_COLS order for the #13091 stub replies.
+    fn task_row_13091(id: i64, status: &str, payload: &Value, dedupe_key: &str) -> Value {
+        let text = |v: &str| json!({"type": "text", "value": v});
+        let int = |v: i64| json!({"type": "integer", "value": v.to_string()});
+        let null = json!({"type": "null"});
+        json!([
+            int(id),
+            text("repo-health-code-pilot"),
+            text("probe"),
+            null,
+            text(&payload.to_string()),
+            text(dedupe_key),
+            int(30),
+            text(status),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            int(1),
+            int(1000),
+            null,
+            null,
+            null,
+            null,
+            text("{}"),
+            text("{}"),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            text("2026-11-20T00:00:00Z"),
+            text("2026-11-21T00:00:00Z"),
+            text("2026-11-21T00:00:00Z"),
+            null,
+            null,
+            null,
+            null
+        ])
+    }
+
+    fn insert_ok_13091(id: i64) -> String {
+        json!({"results": [
+            {"type": "ok", "response": {"type": "execute", "result": {
+                "cols": [], "rows": [],
+                "affected_row_count": 1,
+                "last_insert_rowid": id.to_string()}}},
+            {"type": "ok", "response": {"type": "close"}}
+        ]})
+        .to_string()
+    }
+
+    /// A #12744-shaped packet whose payload carries labels, so the
+    /// mirror enrichment (and its backend call) is skipped and the
+    /// first backend call is the dedupe read.
+    fn packet_13091(issue: i64) -> Value {
+        let mut p = packet_12744(issue, 30);
+        p["payload"]["labels"] = json!([]);
+        p
+    }
+
+    /// The full valid packet payload: a holder row only absorbs
+    /// when it is not quarantined, and the claim guard validates
+    /// the holder's payload — a minimal payload would (correctly)
+    /// read as invalid and absorb nothing.
+    fn payload_13091(issue: i64) -> Value {
+        packet_12744(issue, 30)["payload"].clone()
+    }
+
+    #[test]
+    fn enqueue_after_completion_on_the_same_key_files_no_new_task_13091() {
+        // Incident shape: the task for this dedupe key completed
+        // with a verified disposition; a generator re-files the same
+        // packet. The broker must answer with the completed task —
+        // never a fresh servable row.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![done])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["row"]["status"], "done", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "only the dedupe read may run: {bodies:?}");
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_after_completion_under_another_key_files_no_new_task_13091() {
+        // Incident 21296's shape: the completed task sits under a
+        // DIFFERENT dedupe key (generators key the same work
+        // differently), so only the work identity can see it. A done
+        // holder of the identity absorbs the filing the same way.
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283:dispatch:0123abcd",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![done])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = packet_13091(10283);
+        packet["dedupe_key"] =
+            json!("repo-health:v1:fix:developing-today/code:issue:10283:dispatch:0123abcd");
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4242, "{out}");
+        assert_eq!(out["work_identity_collision"]["status"], "done", "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            !bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "no new task may be filed: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_done_predecessor_with_override_files_a_deliberate_parallel_13091() {
+        // The escape hatch stands: a packet that declares
+        // dedupe_override files a deliberate parallel even over a
+        // completed predecessor (the revive-on-enqueue path).
+        let done = task_row_13091(
+            4242,
+            "done",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![done])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let mut packet = packet_13091(10283);
+        packet["payload"]["dedupe_override"] = json!("deliberate parallel after a regression");
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "the override must file: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn enqueue_failed_predecessor_still_revives_13091() {
+        // Only completion is terminal for a filing: a FAILED
+        // predecessor keeps the #6838 revive-on-enqueue behavior.
+        let failed = task_row_13091(
+            4242,
+            "failed",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let fresh = task_row_13091(
+            4243,
+            "queued",
+            &payload_13091(10283),
+            "repo-health:v1:fix:developing-today/code:issue:10283",
+        );
+        let (url, captured) = stub_pipeline_routed_13091(vec![
+            ("dedupe_key = ?", task_select_reply_13091(vec![failed])),
+            ("status IN (", task_select_reply_13091(vec![])),
+            ("status = 'done'", task_select_reply_13091(vec![])),
+            ("INSERT INTO tasks", insert_ok_13091(4243)),
+            (
+                "FROM tasks WHERE id = ?",
+                task_select_reply_13091(vec![fresh]),
+            ),
+        ]);
+        let backend = TursoBackend::new(url, "test".to_string(), ureq::agent());
+        let req = json!({"queue": "repo-health-code-pilot", "packet": packet_13091(10283)});
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["row"]["id"], 4243, "{out}");
+        let bodies = captured.lock().unwrap();
+        assert!(
+            bodies.iter().any(|b| b.contains("INSERT INTO tasks")),
+            "a failed predecessor must still revive: {bodies:?}"
+        );
+    }
+
+    #[test]
+    fn claim_pick_never_serves_broker_or_person_condition_parks_13091() {
+        // The parked half, at the exact SQL the serve path runs:
+        // the default pick predicate (shared verbatim by the pick
+        // SELECT and the claim UPDATE re-check) evaluated per row.
+        // A park whose recorded term is a broker-owned condition
+        // (task_terminal / task_status / event_seen — released by
+        // the park-revalidation sweeper) or a person's answer
+        // (person_answer — released by /wake when the person acts)
+        // is NOT the pick's to timer-serve; every other park keeps
+        // its timer release, and a completed row is never servable.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, queue TEXT, payload TEXT,
+               status TEXT, attempts INTEGER, max_attempts INTEGER, not_before TEXT,
+               wait_kind TEXT, ready_condition TEXT, required_budget_minutes INTEGER,
+               priority INTEGER, created_at TEXT, progress TEXT);
+             CREATE TABLE repo_task_lane_ledger (task_id INTEGER, platform_limit TEXT,
+               platform_limit_reason TEXT);",
+        )
+        .unwrap();
+        let now = "2026-11-23T12:00:00Z";
+        let past = "2026-11-23T11:00:00Z";
+        let rows: [(i64, &str, Option<&str>, Option<&str>); 8] = [
+            (1, "queued", None, None),
+            (2, "parked", Some(past), Some("{\"kind\":\"time\"}")),
+            (3, "parked", Some(past), Some("{\"kind\":\"pr_merged\"}")),
+            (
+                4,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"task_terminal\",\"task_id\":99}"),
+            ),
+            (
+                5,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"person_answer\"}"),
+            ),
+            (
+                6,
+                "parked",
+                Some(past),
+                Some("{\"kind\":\"event_seen\",\"event_kind\":\"x\"}"),
+            ),
+            (7, "done", None, None),
+            (8, "parked", Some(past), None),
+        ];
+        for (id, status, nb, rc) in rows {
+            conn.execute(
+                "INSERT INTO tasks (id, queue, payload, status, attempts, max_attempts, \
+                   not_before, wait_kind, ready_condition, required_budget_minutes, \
+                   priority, created_at) \
+                 VALUES (?, 'repo-health-code-pilot', '{\"kind\":\"small_fix\"}', ?, \
+                   0, 1000, ?, NULL, ?, NULL, 30, '2026-11-20T00:00:00Z')",
+                rusqlite::params![id, status, nb, rc],
+            )
+            .unwrap();
+        }
+        let pred = default_pick_predicate();
+        let scope = claim_scope(None, None, &ClaimerCtx::default());
+        let mut args: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Text(now.to_string()),
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+            rusqlite::types::Value::Null,
+        ];
+        for a in &scope.args {
+            args.push(match a {
+                Arg::Text(s) => rusqlite::types::Value::Text(s.clone()),
+                Arg::Int(i) => rusqlite::types::Value::Integer(*i),
+                Arg::Null => rusqlite::types::Value::Null,
+            });
+        }
+        let servable = |id: i64| -> bool {
+            let sql = format!(
+                "SELECT COUNT(*) FROM tasks WHERE id = ? AND payload IS NOT NULL \
+                 AND payload <> '' AND payload <> '{{}}' AND ( {pred} ) \
+                 {PLATFORM_LIMIT_PICK_CLAUSE}{}",
+                scope.sql
+            );
+            let mut all: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(id)];
+            all.extend(args.iter().cloned());
+            conn.query_row(&sql, rusqlite::params_from_iter(all), |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+                > 0
+        };
+        assert!(servable(1), "a due queued row stays servable");
+        assert!(servable(2), "a timed park keeps its timer release");
+        assert!(
+            servable(3),
+            "a lane-recheck condition park keeps its timer release"
+        );
+        assert!(
+            !servable(4),
+            "a task_terminal park is the sweeper's to release, not the pick's"
+        );
+        assert!(
+            !servable(5),
+            "a person_answer park waits on a person, not on a timer"
+        );
+        assert!(
+            !servable(6),
+            "an event_seen park is the sweeper's to release, not the pick's"
+        );
+        assert!(!servable(7), "a completed task is never served");
+        assert!(
+            servable(8),
+            "a legacy park with no recorded condition keeps its timer release"
+        );
+        // The claim UPDATE re-check embeds the same predicate, so a
+        // row the pick cannot select cannot be claimed by racing it.
+        let upd = claim_update_sql(&pred);
+        assert!(
+            upd.contains("person_answer"),
+            "the claim re-check carries the same exclusion: {upd}"
         );
     }
 
@@ -2281,6 +2735,115 @@ mod tests {
     }
 
     #[test]
+    fn dep_drop_12777() {
+        // Oracle (#12777): the surgical unblock. A stored dep
+        // record drops exactly the entries a spec names — kind
+        // is part of the identity, so an issue spec never eats
+        // a pr record with the same repo and number — and a
+        // spec that matches nothing fails the whole correction.
+        let issue_dep = json!({"kind": "issue", "repo": "developing-today/code",
+            "number": 9513, "state": "open", "reason": "gate"});
+        let pr_dep = json!({"kind": "pr", "repo": "developing-today/code",
+            "number": 9513, "state": "open"});
+        let self_loop = json!({"kind": "task", "task_id": 20408, "state": "open"});
+        let ci_dep = json!({"kind": "ci", "repo": "developing-today/code",
+            "run_id": 777, "state": "open"});
+        let deps = vec![
+            self_loop.clone(),
+            issue_dep.clone(),
+            pr_dep.clone(),
+            ci_dep.clone(),
+        ];
+        // The #12777 case: drop the bogus self-loop entry, keep
+        // the real deps watched, order preserved.
+        let (remaining, dropped) = remove_deps(&deps, &[json!({"kind": "task", "task_id": 20408})])
+            .expect("the self-loop spec matches its record");
+        assert_eq!(dropped, vec![self_loop.clone()]);
+        assert_eq!(
+            remaining,
+            vec![issue_dep.clone(), pr_dep.clone(), ci_dep.clone()]
+        );
+        // Kind is part of the identity.
+        let (remaining, dropped) = remove_deps(
+            &deps,
+            &[json!({"kind": "issue", "repo": "developing-today/code", "number": 9513})],
+        )
+        .expect("the issue spec matches its record");
+        assert_eq!(dropped, vec![issue_dep]);
+        assert!(remaining.contains(&pr_dep));
+        // CI deps match on run_id, not number.
+        let (_, dropped) = remove_deps(
+            &deps,
+            &[json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777})],
+        )
+        .expect("the ci spec matches its record");
+        assert_eq!(dropped, vec![ci_dep]);
+        // Dropping every entry empties the record — the broker
+        // releases the task on exactly this outcome.
+        let (remaining, dropped) = remove_deps(
+            &deps,
+            &[
+                json!({"kind": "task", "task_id": 20408}),
+                json!({"kind": "issue", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "pr", "repo": "developing-today/code", "number": 9513}),
+                json!({"kind": "ci", "repo": "developing-today/code", "run_id": 777}),
+            ],
+        )
+        .expect("all four specs match");
+        assert!(remaining.is_empty());
+        assert_eq!(dropped.len(), 4);
+        // A spec that matches nothing fails the whole correction
+        // and names itself for the refusal message.
+        let err = remove_deps(
+            &deps,
+            &[json!({"kind": "issue", "repo": "developing-today/code", "number": 9999})],
+        )
+        .unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(dep_label(&err[0]), "issue developing-today/code#9999");
+        assert_eq!(dep_label(&self_loop), "task 20408");
+        // parse_drop_deps: the broker-side validation of the
+        // wire shape — strict refs, identity-only specs, and
+        // None for the classic full override.
+        assert_eq!(parse_drop_deps(&json!({})).expect("no field"), None);
+        assert_eq!(
+            parse_drop_deps(&json!({"drop_deps": []})).expect("empty list"),
+            None
+        );
+        assert_eq!(
+            parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 20408}]}))
+                .expect("task spec"),
+            Some(vec![json!({"kind": "task", "task_id": 20408})])
+        );
+        assert!(parse_drop_deps(&json!({"drop_deps": "task:20408"})).is_err());
+        assert!(
+            parse_drop_deps(&json!({"drop_deps": [{"kind": "issue", "repo": "bad", "number": 1}]}))
+                .is_err()
+        );
+        assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "task", "task_id": 0}]})).is_err());
+        assert!(parse_drop_deps(&json!({"drop_deps": [{"kind": "bogus", "task_id": 1}]})).is_err());
+        // Wiring: the client flag and parser, the broker's
+        // audit kind for a partial drop.
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        assert!(client_src.contains("drop-dep"), "client flag drop-dep");
+        assert!(client_src.contains("parse_drop_dep_list"));
+        assert!(client_src.contains("\"drop_deps\""));
+        let src = test_source();
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("\"dep_entry_dropped\""));
+        assert!(impl_src.contains("parse_drop_deps"));
+        assert!(impl_src.contains("unblock_drop"));
+    }
+
+    #[test]
     fn quarantine_atomic_sql_10671() {
         // Oracle: synthetic interleavings execute the exact production SQL
         // against SQLite, not a mocked affected-row count or live broker.
@@ -2622,6 +3185,29 @@ mod tests {
     }
 
     #[test]
+    fn health_malformed_parked_includes_null_not_before_9179() {
+        // Oracle: stored not_before values must pass the same validator
+        // used by the hygiene fold; NULL is not an RFC 3339 timestamp.
+        // Health must therefore fetch NULL rows rather than filtering
+        // them out before the fold can report them.
+        let src = &test_source();
+        let sql = src
+            .split("SELECT queue, not_before FROM tasks")
+            .nth(1)
+            .and_then(|s| s.split("let hrows").next())
+            .unwrap_or("");
+        assert!(sql.contains("status = 'parked'"), "{sql}");
+        assert!(
+            !sql.contains("not_before IS NOT NULL"),
+            "NULL not_before rows must reach the malformed-row validator: {sql}"
+        );
+        let mut by_queue: Map<String, Value> = Map::new();
+        by_queue.insert("q1".to_string(), health_entry("q1"));
+        apply_malformed_parked(&mut by_queue, &[json!({"queue": "q1", "not_before": null})]);
+        assert_eq!(by_queue["q1"]["malformed_parked"], 1);
+    }
+
+    #[test]
     fn health_entry_defaults_at_cap_queued_to_zero() {
         let e = health_entry("repo-health-code-pilot");
         assert_eq!(e.get("at_cap_queued"), Some(&json!(0)));
@@ -2629,6 +3215,90 @@ mod tests {
         // #8234: the sink is its own health bucket — 'parked' in
         // health output means genuine waits only.
         assert_eq!(e.get("handed_off"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn health_entry_defaults_failed_events_to_zero() {
+        // #1233 criterion 1 ("zero dead-in-queue over a rolling 7
+        // days") is unmeasured today: health lumps failed terminal
+        // events into terminal_events_24h/7d together with completed
+        // ones, so a queue can show 2846 terminal events in 7d with
+        // no way to tell whether any were failures. The failed-only
+        // counters default to zero here and are filled by the
+        // terminal-events fold.
+        let e = health_entry("repo-health-code-pilot");
+        assert_eq!(e.get("failed_events_24h"), Some(&json!(0)));
+        assert_eq!(e.get("failed_events_7d"), Some(&json!(0)));
+    }
+
+    #[test]
+    fn terminal_events_fold_splits_failed_from_completed() {
+        // Fixture for #1233: queue-mixed had 5 terminal events in
+        // 7d (3 in 24h), of which 2 were failures (1 in 24h);
+        // queue-clean had terminal events but zero failures;
+        // queue-quiet had none.
+        let mut by_queue: Map<String, Value> = Map::new();
+        for q in ["queue-mixed", "queue-clean", "queue-quiet"] {
+            by_queue.insert(q.to_string(), health_entry(q));
+        }
+        let rows = vec![
+            json!({"queue": "queue-mixed", "n24": 3, "n7": 5, "f24": 1, "f7": 2}),
+            json!({"queue": "queue-clean", "n24": 4, "n7": 9, "f24": 0, "f7": 0}),
+        ];
+        apply_terminal_events(&mut by_queue, &rows);
+        let mixed = &by_queue["queue-mixed"];
+        assert_eq!(mixed.get("terminal_events_24h"), Some(&json!(3)));
+        assert_eq!(mixed.get("terminal_events_7d"), Some(&json!(5)));
+        assert_eq!(mixed.get("failed_events_24h"), Some(&json!(1)));
+        assert_eq!(mixed.get("failed_events_7d"), Some(&json!(2)));
+        // Completed-only rows leave the failed counters at zero,
+        // and a queue with no terminal events at all keeps every
+        // default.
+        assert_eq!(
+            by_queue["queue-clean"].get("failed_events_7d"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            by_queue["queue-quiet"].get("failed_events_7d"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            by_queue["queue-quiet"].get("terminal_events_7d"),
+            Some(&json!(0))
+        );
+    }
+
+    #[test]
+    fn health_failed_events_count_terminal_failures_only() {
+        // Codex review on #12682 (discussion 4660035001): the
+        // failed-only sums counted every 'failed' event, so a
+        // transient requeue or a block read as a dead-in-queue
+        // failure, while a terminal lease expiry at cap read as
+        // zero. The terminal-events query must distinguish
+        // dispositions: requeued and blocked 'failed' events are
+        // live retries, lease_expired_at_cap is a terminal failure.
+        let src = &test_source();
+        let seg = seg8217(src, "fn verb_health(", "Merge-intent stack storage");
+        assert!(
+            seg.contains("'lease_expired_at_cap'"),
+            "the kind filter includes terminal lease-expiry events"
+        );
+        assert!(
+            seg.contains("json_extract(e.detail, '$.requeued')"),
+            "the failed sums read the requeued disposition from the event detail"
+        );
+        assert!(
+            seg.contains("json_extract(e.detail, '$.reason_class')"),
+            "the failed sums read the reason_class disposition from the event detail"
+        );
+        assert!(
+            seg.contains("'blocked'"),
+            "blocked failures are excluded from the terminal failed sums"
+        );
+        assert!(
+            !seg.contains("e.kind = 'failed' THEN 1"),
+            "the failed sums no longer count every 'failed' event"
+        );
     }
 
     #[test]

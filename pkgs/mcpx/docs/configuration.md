@@ -623,6 +623,10 @@ drifted: two settings were missing an alias their flag really answers to.
 `mcpx config --schema --plumbing` prints the same inventory, and
 `mcpx settings list` prints it with the values that are actually in force.
 
+The final column names the end-to-end test that exercises each setting, or gives the
+registry’s reason for an exemption. A test name records the coverage contract.
+Execution results belong to the test run for the revision being examined.
+
 Entries marked _(plumbing)_ are internals. They work and they are supported,
 but there is no ordinary reason to change one, so they are kept out of
 ordinary help rather than hidden -- a flag a user can find in the source and
@@ -661,475 +665,481 @@ skipped launcher phases).
 
 <!-- BEGIN GENERATED: settings.Registry(); `go test ./internal/settings -run TestTheDocumentationListsEverySetting -update` -->
 
+### adapters
+
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `adapters.allowBare` | bool | `false` | client | no | `--adapters-allow-bare` | `MCPX_ADAPTERS_ALLOW_BARE` | permit bare (passthrough) adapter declarations to load | `TestAdaptersAllowBareGatesABareDeclaration` |
+
 ### artifacts
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `artifacts.chunkBytes` | bytes | `256KiB` | daemon | no | `--artifacts-chunk-bytes` | `MCPX_ARTIFACTS_CHUNK_BYTES` | *(plumbing)* how much of a body one streamed frame carries |
-| `artifacts.delivery` | enum | `reference` | call | yes | `--artifacts-delivery` | `MCPX_ARTIFACTS_DELIVERY` | how artifact bodies reach the caller |
-| `artifacts.dir` | string | *(empty)* | call | yes | `--artifacts-dir` | `MCPX_ARTIFACTS_DIR` | write this run's artifacts here |
-| `artifacts.enabled` | bool | `true` | daemon | no | `--artifacts-enabled` | `MCPX_ARTIFACTS_ENABLED` | whether the daemon keeps files scripts produce |
-| `artifacts.gcInterval` | duration | `10m` | daemon | no | `--artifacts-gc-interval` | `MCPX_ARTIFACTS_GC_INTERVAL` | *(plumbing)* how often expired artifacts are swept |
-| `artifacts.idleTtl` | duration | `0s` | daemon | no | `--artifacts-idle-ttl` | `MCPX_ARTIFACTS_IDLE_TTL` | when set, reading an artifact renews it for this long; off keeps absolute expiry |
-| `artifacts.inlineMaxBytes` | bytes | `1MiB` | call | yes | `--artifacts-inline-max-bytes` | `MCPX_ARTIFACTS_INLINE_MAX_BYTES` | the largest artifact that may be base64'd into a result |
-| `artifacts.interceptImages` | bool | `true` | call | yes | `--artifacts-intercept-images` | `MCPX_ARTIFACTS_INTERCEPT_IMAGES` | turn image and audio content in a result into artifact references |
-| `artifacts.maxAge` | duration | `168h` | daemon | no | `--artifacts-max-age` | `MCPX_ARTIFACTS_MAX_AGE` | the absolute ceiling on a renewed artifact's life, however often it is read |
-| `artifacts.maxBytes` | bytes | `64MiB` | daemon | no | `--artifacts-max-bytes` | `MCPX_ARTIFACTS_MAX_BYTES` | the largest single artifact that may be stored |
-| `artifacts.quota` | bytes | `1GiB` | daemon | no | `--artifacts-quota` | `MCPX_ARTIFACTS_QUOTA` | the total the artifact store may hold |
-| `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `artifacts.chunkBytes` | bytes | `256KiB` | daemon | no | `--artifacts-chunk-bytes` | `MCPX_ARTIFACTS_CHUNK_BYTES` | *(plumbing)* how much of a body one streamed frame carries | `TestArtifactsChunkBytesSplitsAStreamedBody` |
+| `artifacts.delivery` | enum | `reference` | call | yes | `--artifacts-delivery` | `MCPX_ARTIFACTS_DELIVERY` | how artifact bodies reach the caller | `TestArtifactsDeliveryInlinesTheBody` |
+| `artifacts.dir` | string | *(empty)* | call | yes | `--artifacts-dir` | `MCPX_ARTIFACTS_DIR` | write this run's artifacts here | `TestArtifactsDirReceivesTheRunsArtifacts` |
+| `artifacts.enabled` | bool | `true` | daemon | no | `--artifacts-enabled` | `MCPX_ARTIFACTS_ENABLED` | whether the daemon keeps files scripts produce | `TestArtifactsEnabledGatesTheStore` |
+| `artifacts.gcInterval` | duration | `10m` | daemon | no | `--artifacts-gc-interval` | `MCPX_ARTIFACTS_GC_INTERVAL` | *(plumbing)* how often expired artifacts are swept | `TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment` |
+| `artifacts.idleTtl` | duration | `0s` | daemon | no | `--artifacts-idle-ttl` | `MCPX_ARTIFACTS_IDLE_TTL` | when set, reading an artifact renews it for this long; off keeps absolute expiry | `TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment` |
+| `artifacts.inlineMaxBytes` | bytes | `1MiB` | call | yes | `--artifacts-inline-max-bytes` | `MCPX_ARTIFACTS_INLINE_MAX_BYTES` | the largest artifact that may be base64'd into a result | `TestArtifactsInlineMaxBytesBoundsAnInlinedBody` |
+| `artifacts.interceptImages` | bool | `true` | call | yes | `--artifacts-intercept-images` | `MCPX_ARTIFACTS_INTERCEPT_IMAGES` | turn image and audio content in a result into artifact references | `TestArtifactsInterceptImagesStoresAnEmittedImage` |
+| `artifacts.maxAge` | duration | `168h` | daemon | no | `--artifacts-max-age` | `MCPX_ARTIFACTS_MAX_AGE` | the absolute ceiling on a renewed artifact's life, however often it is read | `TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment` |
+| `artifacts.maxBytes` | bytes | `64MiB` | daemon | no | `--artifacts-max-bytes` | `MCPX_ARTIFACTS_MAX_BYTES` | the largest single artifact that may be stored | `TestArtifactsMaxBytesRefusesALargeArtifact` |
+| `artifacts.quota` | bytes | `1GiB` | daemon | no | `--artifacts-quota` | `MCPX_ARTIFACTS_QUOTA` | the total the artifact store may hold | `TestArtifactsQuotaBoundsTheStore` |
+| `artifacts.ttl` | duration | `24h` | daemon | no | `--artifacts-ttl` | `MCPX_ARTIFACTS_TTL` | how long an artifact is kept before it is collected | `TestArtifactsTTLExpiresAnArtifactFromTheEnvironment` |
 
 ### autonomy
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `autonomy.max` | enum | `run` | daemon | no | `--autonomy-max` | `MCPX_AUTONOMY_MAX` | the most autonomy this daemon exercises, whatever a caller asks for |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `autonomy.max` | enum | `run` | daemon | no | `--autonomy-max` | `MCPX_AUTONOMY_MAX` | the most autonomy this daemon exercises, whatever a caller asks for | `TestAutonomyMaxClampsARecipeRunFromTheEnvironment` |
 
 ### autostart
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `autostart.args` | list | `daemon,--detached` | client | no | `--autostart-args` | `MCPX_AUTOSTART_ARGS` | *(plumbing)* the arguments an auto-started daemon is given |
-| `autostart.bin` | string | *(empty)* | client | no | `--autostart-bin` | `MCPX_AUTOSTART_BIN` | which executable is started as the daemon |
-| `autostart.connectTimeout` | duration | `20s` | client | no | `--autostart-connect-timeout` | `MCPX_AUTOSTART_CONNECT_TIMEOUT` | how long to wait for a started daemon to answer |
-| `autostart.idleExit` | duration | `4h0m0s` | client | no | `--autostart-idle-exit` | `MCPX_AUTOSTART_IDLE_EXIT` | how long an auto-started daemon survives with nothing to do |
-| `autostart.logTail` | bytes | `2000` | client | no | `--autostart-log-tail` | `MCPX_AUTOSTART_LOG_TAIL` | *(plumbing)* how much of the daemon log is shown when it will not start |
-| `autostart.pingTimeout` | duration | `2s` | client | no | `--autostart-ping-timeout` | `MCPX_AUTOSTART_PING_TIMEOUT` | *(plumbing)* how long a health check waits before calling it dead |
-| `autostart.pollInterval` | duration | `50ms` | client | no | `--autostart-poll-interval` | `MCPX_AUTOSTART_POLL_INTERVAL` | *(plumbing)* how often a starting daemon is probed |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `autostart.args` | list | `daemon,--detached` | client | no | `--autostart-args` | `MCPX_AUTOSTART_ARGS` | *(plumbing)* the arguments an auto-started daemon is given | `TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment` |
+| `autostart.bin` | string | *(empty)* | client | no | `--autostart-bin` | `MCPX_AUTOSTART_BIN` | which executable is started as the daemon | `TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment` |
+| `autostart.connectTimeout` | duration | `20s` | client | no | `--autostart-connect-timeout` | `MCPX_AUTOSTART_CONNECT_TIMEOUT` | how long to wait for a started daemon to answer | `TestAutostartConnectTimeoutBoundsTheWaitForADaemon` |
+| `autostart.idleExit` | duration | `4h0m0s` | client | no | `--autostart-idle-exit` | `MCPX_AUTOSTART_IDLE_EXIT` | how long an auto-started daemon survives with nothing to do | `TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment` |
+| `autostart.logTail` | bytes | `2000` | client | no | `--autostart-log-tail` | `MCPX_AUTOSTART_LOG_TAIL` | *(plumbing)* how much of the daemon log is shown when it will not start | `TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment` |
+| `autostart.pingTimeout` | duration | `2s` | client | no | `--autostart-ping-timeout` | `MCPX_AUTOSTART_PING_TIMEOUT` | *(plumbing)* how long a health check waits before calling it dead | `TestAutostartPingTimeoutBoundsEachReadinessPing` |
+| `autostart.pollInterval` | duration | `50ms` | client | no | `--autostart-poll-interval` | `MCPX_AUTOSTART_POLL_INTERVAL` | *(plumbing)* how often a starting daemon is probed | `TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment` |
 
 ### catalog
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `catalog.bias` | list | *(empty)* | call | yes | `--catalog-bias`, `--bias` | `MCPX_CATALOG_BIAS` | words that pull matching tools toward the front |
-| `catalog.budget` | int | `2000` | call | yes | `--catalog-budget`, `--budget` | `MCPX_CATALOG_BUDGET` | token ceiling for the catalog listing |
-| `catalog.instructions` | bool | `true` | call | yes | `--catalog-instructions` | `MCPX_CATALOG_INSTRUCTIONS` | include each server's own instructions |
-| `catalog.pinnedTools` | list | *(empty)* | daemon | no | `--catalog-pinned-tools` | `MCPX_CATALOG_PINNED_TOOLS` | tools always exposed in reactive mode |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `catalog.bias` | list | *(empty)* | call | yes | `--catalog-bias`, `--bias` | `MCPX_CATALOG_BIAS` | words that pull matching tools toward the front | `TestCatalogBiasPicksWhatATightBudgetShows` |
+| `catalog.budget` | int | `2000` | call | yes | `--catalog-budget`, `--budget` | `MCPX_CATALOG_BUDGET` | token ceiling for the catalog listing | `TestCatalogBudgetFitsTheSignatures` |
+| `catalog.instructions` | bool | `true` | call | yes | `--catalog-instructions` | `MCPX_CATALOG_INSTRUCTIONS` | include each server's own instructions | `TestCatalogInstructionsShowsServerGuidance` |
+| `catalog.pinnedTools` | list | *(empty)* | daemon | no | `--catalog-pinned-tools` | `MCPX_CATALOG_PINNED_TOOLS` | tools always exposed in reactive mode | `TestCatalogPinnedToolsAlwaysListInReactiveMode` |
 
 ### completion
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `completion.maxValues` | int | `100` | daemon | yes | `--completion-max-values` | `MCPX_COMPLETION_MAX_VALUES` | *(plumbing)* how many completions one reply carries |
-| `completion.perMinute` | int | `120` | daemon | yes | `--completion-per-minute` | `MCPX_COMPLETION_PER_MINUTE` | *(plumbing)* how many completion requests one caller may make against one server per minute; 0 disables |
-| `completion.serverPerMinute` | int | `600` | daemon | yes | `--completion-server-per-minute` | `MCPX_COMPLETION_SERVER_PER_MINUTE` | *(plumbing)* how many completion requests one server may receive per minute across all callers; 0 disables |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `completion.maxValues` | int | `100` | daemon | yes | `--completion-max-values` | `MCPX_COMPLETION_MAX_VALUES` | *(plumbing)* how many completions one reply carries | `TestCompletionMaxValuesCapsTheValues` |
+| `completion.perMinute` | int | `120` | daemon | yes | `--completion-per-minute` | `MCPX_COMPLETION_PER_MINUTE` | *(plumbing)* how many completion requests one caller may make against one server per minute; 0 disables | `TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment` |
+| `completion.serverPerMinute` | int | `600` | daemon | yes | `--completion-server-per-minute` | `MCPX_COMPLETION_SERVER_PER_MINUTE` | *(plumbing)* how many completion requests one server may receive per minute across all callers; 0 disables | `TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment` |
 
 ### daemon
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `daemon.address` | string | `127.0.0.1` | daemon | no | `--daemon-address`, `--address` | `MCPX_DAEMON_ADDRESS` | which interface the daemon listens on |
-| `daemon.autostart` | bool | `true` | client | no | `--daemon-autostart` | `MCPX_DAEMON_AUTOSTART` | start the daemon on demand when it is not running |
-| `daemon.endpoint` | string | *(empty)* | client | no | `--daemon-endpoint` | `MCPX_DAEMON_ENDPOINT` | a daemon somewhere else, instead of the local socket |
-| `daemon.idleExit` | duration | `0s` | daemon | no | `--daemon-idle-exit`, `--idle-exit` | `MCPX_DAEMON_IDLE_EXIT` | stop the daemon after this long with nothing to do |
-| `daemon.inline` | enum | `off` | client | no | `--daemon-inline` | `MCPX_DAEMON_INLINE` | as a last resort, run servers inside this process; one of off (also false), fallback (also true), always |
-| `daemon.inlineStartPoll` | duration | `20ms` | client | no | `--daemon-inline-start-poll` | `MCPX_DAEMON_INLINE_START_POLL` | *(plumbing)* how often a starting in-process daemon is probed |
-| `daemon.inlineStartTimeout` | duration | `5s` | client | no | `--daemon-inline-start-timeout` | `MCPX_DAEMON_INLINE_START_TIMEOUT` | *(plumbing)* how long an in-process daemon has to become reachable |
-| `daemon.leaseTTL` | duration | `30m0s` | daemon | yes | `--daemon-lease-ttl` | `MCPX_DAEMON_LEASE_TTL` | *(plumbing)* how long a silent caller's instances are remembered |
-| `daemon.port` | int | `0` | daemon | no | `--daemon-port`, `--port` | `MCPX_DAEMON_PORT` | listen on a TCP port instead of choosing one |
-| `daemon.probeTimeout` | duration | `200ms` | client | no | `--daemon-probe-timeout` | `MCPX_DAEMON_PROBE_TIMEOUT` | *(plumbing)* how long another daemon's socket is given to answer |
-| `daemon.reapInterval` | duration | `30s` | daemon | no | `--daemon-reap-interval` | `MCPX_DAEMON_REAP_INTERVAL` | *(plumbing)* how often idle instances are swept |
-| `daemon.refreshTimeout` | duration | `3m0s` | daemon | yes | `--daemon-refresh-timeout` | `MCPX_DAEMON_REFRESH_TIMEOUT` | how long POST /v1/refresh may take |
-| `daemon.roots` | paths | *(empty)* | daemon | no | `--daemon-roots` | `MCPX_DAEMON_ROOTS` | filesystem paths exposed to upstream servers through roots/list |
-| `daemon.saveInterval` | duration | `5m` | daemon | no | `--daemon-save-interval` | `MCPX_DAEMON_SAVE_INTERVAL` | *(plumbing)* how often daemon state is written to disk |
-| `daemon.socketProbeTimeout` | duration | `500ms` | daemon | no | `--daemon-socket-probe-timeout` | `MCPX_DAEMON_SOCKET_PROBE_TIMEOUT` | *(plumbing)* how long a socket left by a crashed daemon is given to answer |
-| `daemon.takeoverTimeout` | duration | `15s` | daemon | no | `--daemon-takeover-timeout` | `MCPX_DAEMON_TAKEOVER_TIMEOUT` | *(plumbing)* how long a handoff may take, and how long the old daemon waits for its successor to hang up |
-| `daemon.tsnet.hostname` | string | *(empty)* | daemon | no | `--daemon-tsnet-hostname` | `MCPX_DAEMON_TSNET_HOSTNAME` | also serve the daemon on a tailnet, under this name |
-| `daemon.tsnetUpTimeout` | duration | `30s` | daemon | no | `--daemon-tsnet-up-timeout` | `MCPX_DAEMON_TSNET_UP_TIMEOUT` | *(plumbing)* how long a node may take to authenticate |
-| `daemon.ui` | bool | `true` | daemon | yes | `--daemon-ui`, `--ui` | `MCPX_DAEMON_UI` | serve the dashboard page at /dashboard |
-| `daemon.uiDir` | string | *(empty)* | daemon | yes | `--daemon-ui-dir`, `--ui-dir` | `MCPX_DAEMON_UI_DIR` | serve your own pages instead of the embedded dashboard |
-| `daemon.warm` | bool | `true` | daemon | no | `--daemon-warm`, `--warm` | `MCPX_DAEMON_WARM` | read every server's schemas in the background at startup |
-| `daemon.warmTimeout` | duration | `3m0s` | daemon | no | `--daemon-warm-timeout` | `MCPX_DAEMON_WARM_TIMEOUT` | *(plumbing)* how long the background schema fetch may take |
-| `daemon.watchConfig` | bool | `true` | daemon | yes | `--daemon-watch-config` | `MCPX_DAEMON_WATCH_CONFIG` | re-read the configuration files when they change on disk |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `daemon.address` | string | `127.0.0.1` | daemon | no | `--daemon-address`, `--address` | `MCPX_DAEMON_ADDRESS` | which interface the daemon listens on | `TestDaemonAddressIsReachableFromTheEnvironment` |
+| `daemon.autostart` | bool | `true` | client | no | `--daemon-autostart` | `MCPX_DAEMON_AUTOSTART` | start the daemon on demand when it is not running | `TestDaemonAutostartIsReachableFromTheEnvironment` |
+| `daemon.endpoint` | string | *(empty)* | client | no | `--daemon-endpoint` | `MCPX_DAEMON_ENDPOINT` | a daemon somewhere else, instead of the local socket | `TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment` |
+| `daemon.idleExit` | duration | `0s` | daemon | no | `--daemon-idle-exit`, `--idle-exit` | `MCPX_DAEMON_IDLE_EXIT` | stop the daemon after this long with nothing to do | `TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment` |
+| `daemon.inline` | enum | `off` | client | no | `--daemon-inline` | `MCPX_DAEMON_INLINE` | as a last resort, run servers inside this process; one of off (also false), fallback (also true), always | `TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment` |
+| `daemon.inlineStartPoll` | duration | `20ms` | client | no | `--daemon-inline-start-poll` | `MCPX_DAEMON_INLINE_START_POLL` | *(plumbing)* how often a starting in-process daemon is probed | Exempt — daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically |
+| `daemon.inlineStartTimeout` | duration | `5s` | client | no | `--daemon-inline-start-timeout` | `MCPX_DAEMON_INLINE_START_TIMEOUT` | *(plumbing)* how long an in-process daemon has to become reachable | `TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment` |
+| `daemon.leaseTTL` | duration | `30m0s` | daemon | yes | `--daemon-lease-ttl` | `MCPX_DAEMON_LEASE_TTL` | *(plumbing)* how long a silent caller's instances are remembered | `TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment` |
+| `daemon.port` | int | `0` | daemon | no | `--daemon-port`, `--port` | `MCPX_DAEMON_PORT` | listen on a TCP port instead of choosing one | `TestDaemonPortBindsTheChosenPortFromTheEnvironment` |
+| `daemon.probeTimeout` | duration | `200ms` | client | no | `--daemon-probe-timeout` | `MCPX_DAEMON_PROBE_TIMEOUT` | *(plumbing)* how long another daemon's socket is given to answer | `TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment` |
+| `daemon.reapInterval` | duration | `30s` | daemon | no | `--daemon-reap-interval` | `MCPX_DAEMON_REAP_INTERVAL` | *(plumbing)* how often idle instances are swept | `TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment` |
+| `daemon.refreshTimeout` | duration | `3m0s` | daemon | yes | `--daemon-refresh-timeout` | `MCPX_DAEMON_REFRESH_TIMEOUT` | how long POST /v1/refresh may take | `TestDaemonRefreshTimeoutBoundsARefresh` |
+| `daemon.roots` | paths | *(empty)* | daemon | no | `--daemon-roots` | `MCPX_DAEMON_ROOTS` | filesystem paths exposed to upstream servers through roots/list | `TestDaemonRootsAnswersAnUpstreamRootsRequest` |
+| `daemon.saveInterval` | duration | `5m` | daemon | no | `--daemon-save-interval` | `MCPX_DAEMON_SAVE_INTERVAL` | *(plumbing)* how often daemon state is written to disk | `TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment` |
+| `daemon.socketProbeTimeout` | duration | `500ms` | daemon | no | `--daemon-socket-probe-timeout` | `MCPX_DAEMON_SOCKET_PROBE_TIMEOUT` | *(plumbing)* how long a socket left by a crashed daemon is given to answer | `TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale` |
+| `daemon.takeoverTimeout` | duration | `15s` | daemon | no | `--daemon-takeover-timeout` | `MCPX_DAEMON_TAKEOVER_TIMEOUT` | *(plumbing)* how long a handoff may take, and how long the old daemon waits for its successor to hang up | `TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment` |
+| `daemon.tsnet.hostname` | string | *(empty)* | daemon | no | `--daemon-tsnet-hostname` | `MCPX_DAEMON_TSNET_HOSTNAME` | also serve the daemon on a tailnet, under this name | Exempt — daemon lifecycle, binding, or timing: its effect is a bound, an interval, or a network identity the isolated harness cannot vary deterministically |
+| `daemon.tsnetUpTimeout` | duration | `30s` | daemon | no | `--daemon-tsnet-up-timeout` | `MCPX_DAEMON_TSNET_UP_TIMEOUT` | *(plumbing)* how long a node may take to authenticate | Exempt — tsnet bring-up needs a tailnet the harness does not have |
+| `daemon.ui` | bool | `true` | daemon | yes | `--daemon-ui`, `--ui` | `MCPX_DAEMON_UI` | serve the dashboard page at /dashboard | `TestDaemonUITurnsTheDashboardOff` |
+| `daemon.uiDir` | string | *(empty)* | daemon | yes | `--daemon-ui-dir`, `--ui-dir` | `MCPX_DAEMON_UI_DIR` | serve your own pages instead of the embedded dashboard | `TestDaemonUIDirOverridesTheDashboard` |
+| `daemon.warm` | bool | `true` | daemon | no | `--daemon-warm`, `--warm` | `MCPX_DAEMON_WARM` | read every server's schemas in the background at startup | `TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment` |
+| `daemon.warmTimeout` | duration | `3m0s` | daemon | no | `--daemon-warm-timeout` | `MCPX_DAEMON_WARM_TIMEOUT` | *(plumbing)* how long the background schema fetch may take | `TestDaemonWarmTimeoutBoundsTheStartupWarm` |
+| `daemon.watchConfig` | bool | `true` | daemon | yes | `--daemon-watch-config` | `MCPX_DAEMON_WATCH_CONFIG` | re-read the configuration files when they change on disk | `TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment` |
 
 ### deps
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `deps.autoInstall` | enum | `off` | client | no | `--deps-auto-install` | `MCPX_DEPS_AUTO_INSTALL` | whether the runtime may fetch a missing package on its own |
-| `deps.manifest` | source | *(empty)* | client | no | `--deps-manifest` | `MCPX_DEPS_MANIFEST` | the package.json or package.jsonc naming a script's packages |
-| `deps.packages` | list | *(empty)* | client | no | `--deps-packages`, `--package` | `MCPX_DEPS_PACKAGES` | packages a script may import, as name or name@version |
-| `deps.source` | enum | `host` | client | no | `--deps-source` | `MCPX_DEPS_SOURCE` | where a script's packages come from when nothing more specific says |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `deps.autoInstall` | enum | `off` | client | no | `--deps-auto-install` | `MCPX_DEPS_AUTO_INSTALL` | whether the runtime may fetch a missing package on its own | `TestDepsAutoInstallSelectsTheBunInstallPolicyFromTheEnvironment` |
+| `deps.manifest` | source | *(empty)* | client | no | `--deps-manifest` | `MCPX_DEPS_MANIFEST` | the package.json or package.jsonc naming a script's packages | `TestDepsManifestNamesTheManifestResolutionReads` |
+| `deps.packages` | list | *(empty)* | client | no | `--deps-packages`, `--package` | `MCPX_DEPS_PACKAGES` | packages a script may import, as name or name@version | `TestDepsPackagesPinContradictingTheManifestFailsTheRun` |
+| `deps.source` | enum | `host` | client | no | `--deps-source` | `MCPX_DEPS_SOURCE` | where a script's packages come from when nothing more specific says | `TestDepsSourceNoneDropsTheManifestLayer` |
 
 ### diagnose
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `diagnose.history` | int | `8` | daemon | no | `--diagnose-history` | `MCPX_DIAGNOSE_HISTORY` | *(plumbing)* how many changes are kept per tool |
-| `diagnose.preflight` | bool | `true` | call | yes | `--diagnose-preflight` | `MCPX_DIAGNOSE_PREFLIGHT` | check a script's tool calls against the live schemas first |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `diagnose.history` | int | `8` | daemon | no | `--diagnose-history` | `MCPX_DIAGNOSE_HISTORY` | *(plumbing)* how many changes are kept per tool | `TestDiagnoseHistoryCapsRecordedSchemaChanges` |
+| `diagnose.preflight` | bool | `true` | call | yes | `--diagnose-preflight` | `MCPX_DIAGNOSE_PREFLIGHT` | check a script's tool calls against the live schemas first | `TestDiagnosePreflightStopsAMismatchedScript` |
 
 ### doctor
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `doctor.timeout` | duration | `20s` | client | no | `--doctor-timeout` | `MCPX_DOCTOR_TIMEOUT` | how long `mcpx doctor` gives the daemon to answer |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `doctor.timeout` | duration | `20s` | client | no | `--doctor-timeout` | `MCPX_DOCTOR_TIMEOUT` | how long `mcpx doctor` gives the daemon to answer | `TestDoctorTimeoutBoundsTheDaemonCheck` |
 
 ### elicit
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `elicit.askTimeout` | duration | `45s` | daemon | no | `--elicit-ask-timeout` | `MCPX_ELICIT_ASK_TIMEOUT` | how long mcpx waits for an answer to a question it raised itself |
-| `elicit.confirmDestructive` | bool | `false` | daemon | no | `--elicit-confirm-destructive` | `MCPX_ELICIT_CONFIRM_DESTRUCTIVE` | ask before a call to a tool that may be destructive |
-| `elicit.disambiguate` | enum | `never` | daemon | no | `--elicit-disambiguate` | `MCPX_ELICIT_DISAMBIGUATE` | ask which instance of a stateful server to use when several are live and the script did not choose |
-| `elicit.disambiguateDefault` | enum | `new` | daemon | no | `--elicit-disambiguate-default` | `MCPX_ELICIT_DISAMBIGUATE_DEFAULT` | which instance is used when nobody answers in time: the one the scope would have chosen, or the most recently used |
-| `elicit.maxAge` | duration | `30m` | daemon | no | `--elicit-max-age` | `MCPX_ELICIT_MAX_AGE` | the absolute ceiling on a question's life, however often it is read |
-| `elicit.pendingLimit` | int | `100` | daemon | yes | `--elicit-pending-limit` | `MCPX_ELICIT_PENDING_LIMIT` | *(plumbing)* how many unanswered questions one listing returns |
-| `elicit.ttl` | duration | `120s` | daemon | no | `--elicit-ttl` | `MCPX_ELICIT_TTL` | how long a question waits for an answer, renewed by use |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `elicit.askTimeout` | duration | `45s` | daemon | no | `--elicit-ask-timeout` | `MCPX_ELICIT_ASK_TIMEOUT` | how long mcpx waits for an answer to a question it raised itself | `TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment` |
+| `elicit.confirmDestructive` | bool | `false` | daemon | no | `--elicit-confirm-destructive` | `MCPX_ELICIT_CONFIRM_DESTRUCTIVE` | ask before a call to a tool that may be destructive | `TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment` |
+| `elicit.disambiguate` | enum | `never` | daemon | no | `--elicit-disambiguate` | `MCPX_ELICIT_DISAMBIGUATE` | ask which instance of a stateful server to use when several are live and the script did not choose | `TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment` |
+| `elicit.disambiguateDefault` | enum | `new` | daemon | no | `--elicit-disambiguate-default` | `MCPX_ELICIT_DISAMBIGUATE_DEFAULT` | which instance is used when nobody answers in time: the one the scope would have chosen, or the most recently used | `TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment` |
+| `elicit.maxAge` | duration | `30m` | daemon | no | `--elicit-max-age` | `MCPX_ELICIT_MAX_AGE` | the absolute ceiling on a question's life, however often it is read | `TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment` |
+| `elicit.pendingLimit` | int | `100` | daemon | yes | `--elicit-pending-limit` | `MCPX_ELICIT_PENDING_LIMIT` | *(plumbing)* how many unanswered questions one listing returns | `TestElicitPendingLimitBoundsTheListingFromTheEnvironment` |
+| `elicit.ttl` | duration | `120s` | daemon | no | `--elicit-ttl` | `MCPX_ELICIT_TTL` | how long a question waits for an answer, renewed by use | `TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment` |
 
 ### embeddings
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `embeddings.apiKey` | string | *(empty)* | daemon | yes | `--embeddings-api-key` | `MCPX_EMBEDDINGS_API_KEY` | API key for remote embeddings endpoint |
-| `embeddings.backend` | string | `auto` | daemon | yes | `--embeddings-backend` | `MCPX_EMBEDDINGS_BACKEND` | which embedding engine to use (auto, local, remote, wasm) |
-| `embeddings.model` | string | `text-embedding-3-small` | daemon | yes | `--embeddings-model` | `MCPX_EMBEDDINGS_MODEL` | model name for remote embeddings endpoint |
-| `embeddings.url` | string | *(empty)* | daemon | yes | `--embeddings-url` | `MCPX_EMBEDDINGS_URL` | OpenAI-compatible embeddings endpoint URL |
-| `embeddings.wasmPath` | string | *(empty)* | daemon | yes | `--embeddings-wasm-path` | `MCPX_EMBEDDINGS_WASM_PATH` | path to compiled WebAssembly neural embedding model |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `embeddings.apiKey` | string | *(empty)* | daemon | yes | `--embeddings-api-key` | `MCPX_EMBEDDINGS_API_KEY` | API key for remote embeddings endpoint | `TestEmbeddingsAPIKeyIsSentAsABearerToken` |
+| `embeddings.backend` | string | `auto` | daemon | yes | `--embeddings-backend` | `MCPX_EMBEDDINGS_BACKEND` | which embedding engine to use (auto, local, remote, wasm) | `TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint` |
+| `embeddings.model` | string | `text-embedding-3-small` | daemon | yes | `--embeddings-model` | `MCPX_EMBEDDINGS_MODEL` | model name for remote embeddings endpoint | `TestEmbeddingsModelNamesTheRequestedModel` |
+| `embeddings.url` | string | *(empty)* | daemon | yes | `--embeddings-url` | `MCPX_EMBEDDINGS_URL` | OpenAI-compatible embeddings endpoint URL | `TestEmbeddingsURLSendsSemanticSearchToTheEndpoint` |
+| `embeddings.wasmPath` | string | *(empty)* | daemon | yes | `--embeddings-wasm-path` | `MCPX_EMBEDDINGS_WASM_PATH` | path to compiled WebAssembly neural embedding model | Exempt — embeddings backend: needs a compiled wasm model fixture the harness does not provide; the Go wasm runtime (wazero) can compile a module but no embed-exporting model ships with the repo, so the setting's effect (wasm embedder availability) is not observable end to end |
 
 ### events
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `events.history` | int | `1024` | daemon | no | `--events-history` | `MCPX_EVENTS_HISTORY` | how many past events a late subscriber can replay |
-| `events.reconnect` | duration | `2s` | client | no | `--events-reconnect` | `MCPX_EVENTS_RECONNECT` | how long a client waits before resuming a dropped stream |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `events.history` | int | `1024` | daemon | no | `--events-history` | `MCPX_EVENTS_HISTORY` | how many past events a late subscriber can replay | `TestEventsHistoryBoundsTheReplay` |
+| `events.reconnect` | duration | `2s` | client | no | `--events-reconnect` | `MCPX_EVENTS_RECONNECT` | how long a client waits before resuming a dropped stream | `TestEventsReconnectWaitsForTheConfiguredDelay` |
 
 ### exec
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `exec.maxOutputBytes` | bytes | `64KiB` | call | yes | `--exec-max-output-bytes` | `MCPX_EXEC_MAX_OUTPUT_BYTES` | cap the stdout a run returns, with a truncation marker |
-| `exec.output` | enum | `text` | call | yes | `--exec-output`, `--output` | `MCPX_EXEC_OUTPUT` | text for a terminal, structured for one document, stream for frames |
-| `exec.timeout` | duration | `120s` | call | yes | `--exec-timeout` | `MCPX_EXEC_TIMEOUT` | kill a script after this long |
-| `exec.where` | enum | `auto` | call | yes | `--exec-where` | `MCPX_EXEC_WHERE` | in this process, or on the daemon |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `exec.maxOutputBytes` | bytes | `64KiB` | call | yes | `--exec-max-output-bytes` | `MCPX_EXEC_MAX_OUTPUT_BYTES` | cap the stdout a run returns, with a truncation marker | `TestExecMaxOutputBytesCapsStdoutFromTheEnvironment` |
+| `exec.output` | enum | `text` | call | yes | `--exec-output`, `--output` | `MCPX_EXEC_OUTPUT` | text for a terminal, structured for one document, stream for frames | `TestExecOutputShapesTheResultFromTheEnvironment` |
+| `exec.timeout` | duration | `120s` | call | yes | `--exec-timeout` | `MCPX_EXEC_TIMEOUT` | kill a script after this long | `TestExecTimeoutStopsALongScriptFromTheEnvironment` |
+| `exec.where` | enum | `auto` | call | yes | `--exec-where` | `MCPX_EXEC_WHERE` | in this process, or on the daemon | `TestExecWhereRemoteRunsOnTheDaemon` |
 
 ### hooks
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `hooks` | string | *(empty)* | daemon | no | `--hooks` | `MCPX_HOOKS` | config-declared hooks over the event bus: a JSON array of hook objects |
-| `hooks.autonomy` | enum | `run` | call | yes | `--hooks-autonomy` | `MCPX_HOOKS_AUTONOMY` | whether configured script hooks (before, onSuccess, onError) run |
-| `hooks.timeout` | duration | `2s` | daemon | no | `--hooks-timeout` | `MCPX_HOOKS_TIMEOUT` | the hard timeout for a declared hook that does not set its own |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `hooks` | string | *(empty)* | daemon | no | `--hooks` | `MCPX_HOOKS` | config-declared hooks over the event bus: a JSON array of hook objects | `TestHooksRunOnTheirEvent` |
+| `hooks.autonomy` | enum | `run` | call | yes | `--hooks-autonomy` | `MCPX_HOOKS_AUTONOMY` | whether configured script hooks (before, onSuccess, onError) run | `TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment` |
+| `hooks.timeout` | duration | `2s` | daemon | no | `--hooks-timeout` | `MCPX_HOOKS_TIMEOUT` | the hard timeout for a declared hook that does not set its own | `TestHooksTimeoutStopsASlowHook` |
 
 ### http
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `http.bodyLimit` | bytes | `1048576` | daemon | yes | `--http-body-limit` | `MCPX_HTTP_BODY_LIMIT` | *(plumbing)* the ceiling on an ordinary /v1 request body |
-| `http.callBodyLimit` | bytes | `67108864` | daemon | yes | `--http-call-body-limit` | `MCPX_HTTP_CALL_BODY_LIMIT` | the ceiling on a POST /v1/call body |
-| `http.controlBodyLimit` | bytes | `65536` | daemon | yes | `--http-control-body-limit` | `MCPX_HTTP_CONTROL_BODY_LIMIT` | *(plumbing)* the ceiling on a body that should hold one field |
-| `http.idleConnTimeout` | duration | `30s` | client | no | `--http-idle-conn-timeout` | `MCPX_HTTP_IDLE_CONN_TIMEOUT` | *(plumbing)* how long an unused connection is kept |
-| `http.idleConns` | int | `8` | client | no | `--http-idle-conns` | `MCPX_HTTP_IDLE_CONNS` | *(plumbing)* idle connections kept to a local daemon |
-| `http.readHeaderTimeout` | duration | `10s` | daemon | no | `--http-read-header-timeout` | `MCPX_HTTP_READ_HEADER_TIMEOUT` | *(plumbing)* how long a client has to finish sending its headers |
-| `http.remoteIdleConns` | int | `16` | client | no | `--http-remote-idle-conns` | `MCPX_HTTP_REMOTE_IDLE_CONNS` | *(plumbing)* idle connections kept to a daemon over the network |
-| `http.requestTimeout` | duration | `10m0s` | client | no | `--http-request-timeout` | `MCPX_HTTP_REQUEST_TIMEOUT` | how long a CLI request to the daemon may take |
-| `http.shutdownGrace` | duration | `5s` | daemon | yes | `--http-shutdown-grace` | `MCPX_HTTP_SHUTDOWN_GRACE` | how long in-flight requests have when the daemon stops |
-| `http.ssePing` | duration | `15s` | daemon | yes | `--http-sse-ping` | `MCPX_HTTP_SSE_PING` | *(plumbing)* how often a comment is sent on an idle event stream |
-| `http.sseRetry` | duration | `2s` | daemon | yes | `--http-sse-retry` | `MCPX_HTTP_SSE_RETRY` | *(plumbing)* how long a dropped subscriber is told to wait |
-| `http.streamBufferInit` | bytes | `65536` | client | no | `--http-stream-buffer-init` | `MCPX_HTTP_STREAM_BUFFER_INIT` | *(plumbing)* the initial line buffer when reading an event stream |
-| `http.streamBufferMax` | bytes | `8388608` | client | no | `--http-stream-buffer-max` | `MCPX_HTTP_STREAM_BUFFER_MAX` | *(plumbing)* the largest single event line that will be read |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `http.bodyLimit` | bytes | `1048576` | daemon | yes | `--http-body-limit` | `MCPX_HTTP_BODY_LIMIT` | *(plumbing)* the ceiling on an ordinary /v1 request body | `TestHTTPBodyLimitsRejectOversizedBodies` |
+| `http.callBodyLimit` | bytes | `67108864` | daemon | yes | `--http-call-body-limit` | `MCPX_HTTP_CALL_BODY_LIMIT` | the ceiling on a POST /v1/call body | `TestHTTPBodyLimitsRejectOversizedBodies` |
+| `http.controlBodyLimit` | bytes | `65536` | daemon | yes | `--http-control-body-limit` | `MCPX_HTTP_CONTROL_BODY_LIMIT` | *(plumbing)* the ceiling on a body that should hold one field | `TestHTTPBodyLimitsRejectOversizedBodies` |
+| `http.idleConnTimeout` | duration | `30s` | client | no | `--http-idle-conn-timeout` | `MCPX_HTTP_IDLE_CONN_TIMEOUT` | *(plumbing)* how long an unused connection is kept | `TestHTTPIdleConnTimeoutExpiresAnIdleClientConnection` |
+| `http.idleConns` | int | `8` | client | no | `--http-idle-conns` | `MCPX_HTTP_IDLE_CONNS` | *(plumbing)* idle connections kept to a local daemon | `TestHTTPIdleConnectionPoolSettingsChangeReuse` |
+| `http.readHeaderTimeout` | duration | `10s` | daemon | no | `--http-read-header-timeout` | `MCPX_HTTP_READ_HEADER_TIMEOUT` | *(plumbing)* how long a client has to finish sending its headers | `TestHTTPReadHeaderTimeoutClosesSlowClients` |
+| `http.remoteIdleConns` | int | `16` | client | no | `--http-remote-idle-conns` | `MCPX_HTTP_REMOTE_IDLE_CONNS` | *(plumbing)* idle connections kept to a daemon over the network | `TestHTTPIdleConnectionPoolSettingsChangeReuse` |
+| `http.requestTimeout` | duration | `10m0s` | client | no | `--http-request-timeout` | `MCPX_HTTP_REQUEST_TIMEOUT` | how long a CLI request to the daemon may take | `TestHTTPRequestTimeoutBoundsAClientCall` |
+| `http.shutdownGrace` | duration | `5s` | daemon | yes | `--http-shutdown-grace` | `MCPX_HTTP_SHUTDOWN_GRACE` | how long in-flight requests have when the daemon stops | `TestHTTPShutdownGraceBoundsHowLongAStopWaits` |
+| `http.ssePing` | duration | `15s` | daemon | yes | `--http-sse-ping` | `MCPX_HTTP_SSE_PING` | *(plumbing)* how often a comment is sent on an idle event stream | `TestHTTPEventStreamSettingsChangeTheStream` |
+| `http.sseRetry` | duration | `2s` | daemon | yes | `--http-sse-retry` | `MCPX_HTTP_SSE_RETRY` | *(plumbing)* how long a dropped subscriber is told to wait | `TestHTTPEventStreamSettingsChangeTheStream` |
+| `http.streamBufferInit` | bytes | `65536` | client | no | `--http-stream-buffer-init` | `MCPX_HTTP_STREAM_BUFFER_INIT` | *(plumbing)* the initial line buffer when reading an event stream | Exempt — Scanner allocation-capacity hint only; changing it does not change emitted events or line limits, and allocation size is not a stable e2e behavior oracle |
+| `http.streamBufferMax` | bytes | `8388608` | client | no | `--http-stream-buffer-max` | `MCPX_HTTP_STREAM_BUFFER_MAX` | *(plumbing)* the largest single event line that will be read | `TestHTTPStreamBufferMaxEndsAnOversizedEventLine` |
 
 ### logging
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `logging.dir` | string | *(empty)* | daemon | no | `--logging-dir`, `--log-dir` | `MCPX_LOGGING_DIR` | where the JSONL files are written |
-| `logging.file` | bool | `true` | daemon | no | `--logging-file` | `MCPX_LOGGING_FILE` | whether the durable JSONL log is written at all |
-| `logging.format` | enum | `text` | client | no | `--logging-format`, `--format` | `MCPX_LOGGING_FORMAT` | how records are rendered |
-| `logging.include` | list | `host,user,process,version` | daemon | no | `--logging-include`, `--include` | `MCPX_LOGGING_INCLUDE` | which context blocks are attached to lifecycle records |
-| `logging.keep` | int | `8` | daemon | no | `--logging-keep`, `--keep` | `MCPX_LOGGING_KEEP` | how many rolled files to keep |
-| `logging.level` | enum | `info` | daemon | yes | `--logging-level`, `--log-level` | `MCPX_LOGGING_LEVEL`, `MCPX_LOG_LEVEL` | the lowest level that is kept |
-| `logging.maxAge` | duration | `24h` | daemon | no | `--logging-max-age` | `MCPX_LOGGING_MAX_AGE` | roll the log file once it is this old |
-| `logging.maxBytes` | bytes | `16MB` | daemon | no | `--logging-max-bytes` | `MCPX_LOGGING_MAX_BYTES` | roll the log file once it reaches this size |
-| `logging.maxLines` | int | `0` | daemon | no | `--logging-max-lines` | `MCPX_LOGGING_MAX_LINES` | roll the log file once it holds this many records |
-| `logging.source` | enum | `warn` | daemon | yes | `--logging-source`, `--log-source` | `MCPX_LOGGING_SOURCE` | from which level upward to record the calling file and line |
-| `logging.trace` | bool | `false` | daemon | no | `--logging-trace` | `MCPX_TRACE` | log which instance served every tool call |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `logging.dir` | string | *(empty)* | daemon | no | `--logging-dir`, `--log-dir` | `MCPX_LOGGING_DIR` | where the JSONL files are written | `TestLoggingDirHoldsTheDurableLog` |
+| `logging.file` | bool | `true` | daemon | no | `--logging-file` | `MCPX_LOGGING_FILE` | whether the durable JSONL log is written at all | `TestLoggingFileOffWritesNoDurableLog` |
+| `logging.format` | enum | `text` | client | no | `--logging-format`, `--format` | `MCPX_LOGGING_FORMAT` | how records are rendered | `TestLoggingFormatRendersJSON` |
+| `logging.include` | list | `host,user,process,version` | daemon | no | `--logging-include`, `--include` | `MCPX_LOGGING_INCLUDE` | which context blocks are attached to lifecycle records | `TestLoggingIncludeChoosesTheAmbientBlocks` |
+| `logging.keep` | int | `8` | daemon | no | `--logging-keep`, `--keep` | `MCPX_LOGGING_KEEP` | how many rolled files to keep | `TestLoggingKeepPrunesRotatedFiles` |
+| `logging.level` | enum | `info` | daemon | yes | `--logging-level`, `--log-level` | `MCPX_LOGGING_LEVEL`, `MCPX_LOG_LEVEL` | the lowest level that is kept | `TestLoggingLevelShowsDebugRecords` |
+| `logging.maxAge` | duration | `24h` | daemon | no | `--logging-max-age` | `MCPX_LOGGING_MAX_AGE` | roll the log file once it is this old | `TestLoggingMaxAgeRotatesAnAgedFile` |
+| `logging.maxBytes` | bytes | `16MB` | daemon | no | `--logging-max-bytes` | `MCPX_LOGGING_MAX_BYTES` | roll the log file once it reaches this size | `TestLoggingMaxBytesRotatesTheFile` |
+| `logging.maxLines` | int | `0` | daemon | no | `--logging-max-lines` | `MCPX_LOGGING_MAX_LINES` | roll the log file once it holds this many records | `TestLoggingMaxLinesRotatesTheFile` |
+| `logging.source` | enum | `warn` | daemon | yes | `--logging-source`, `--log-source` | `MCPX_LOGGING_SOURCE` | from which level upward to record the calling file and line | `TestLoggingSourceAddsTheCallSite` |
+| `logging.trace` | bool | `false` | daemon | no | `--logging-trace` | `MCPX_TRACE` | log which instance served every tool call | `TestLoggingTraceLogsEachCall` |
 
 ### logstore
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `logstore.followBacklog` | int | `1000` | client | no | `--logstore-follow-backlog` | `MCPX_LOGSTORE_FOLLOW_BACKLOG` | *(plumbing)* how many records one poll of `mcpx log --follow` may emit |
-| `logstore.queryLimit` | int | `100` | call | yes | `--logstore-query-limit` | `MCPX_LOGSTORE_QUERY_LIMIT` | how many records a log query returns by default |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `logstore.followBacklog` | int | `1000` | client | no | `--logstore-follow-backlog` | `MCPX_LOGSTORE_FOLLOW_BACKLOG` | *(plumbing)* how many records one poll of `mcpx log --follow` may emit | `TestFollowBacklogCapsWhatOneFollowPollEmits` |
+| `logstore.queryLimit` | int | `100` | call | yes | `--logstore-query-limit` | `MCPX_LOGSTORE_QUERY_LIMIT` | how many records a log query returns by default | `TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment` |
 
 ### mcp
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `mcp.pageSize` | int | `100` | client | no | `--mcp-page-size` | `MCPX_MCP_PAGE_SIZE` | how many items one tools/list reply carries |
-| `mcp.passthrough` | string | *(empty)* | client | no | `--mcp-passthrough`, `--passthrough` | `MCPX_MCP_PASSTHROUGH` | serve upstreams' tools, prompts and resources under their own names |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `mcp.pageSize` | int | `100` | client | no | `--mcp-page-size` | `MCPX_MCP_PAGE_SIZE` | how many items one tools/list reply carries | `TestMCPPageSizePagesToolsListFromTheEnvironment` |
+| `mcp.passthrough` | string | *(empty)* | client | no | `--mcp-passthrough`, `--passthrough` | `MCPX_MCP_PASSTHROUGH` | serve upstreams' tools, prompts and resources under their own names | `TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment` |
 
 ### model
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `model.apiKeyEnv` | string | *(empty)* | daemon | no | `--model-api-key-env` | `MCPX_MODEL_API_KEY_ENV` | the environment variable holding the configured provider's API key |
-| `model.baseURL` | string | *(empty)* | daemon | no | `--model-base-url` | `MCPX_MODEL_BASE_URL` | the OpenAI-compatible endpoint the configured provider calls |
-| `model.budget` | int | `0` | daemon | no | `--model-budget` | `MCPX_MODEL_BUDGET` | hard ceiling on the tokens one generation through the layer may ask for; 0 is no ceiling |
-| `model.default` | string | *(empty)* | daemon | no | `--model-default` | `MCPX_MODEL_DEFAULT` | the model id used when an operation names none, as provider/model |
-| `model.profiles` | string | `{}` | daemon | no | `--model-profiles` | `MCPX_MODEL_PROFILES` | JSON object of named ordered provider/model fallback chains |
-| `model.provider` | enum | `none` | daemon | no | `--model-provider` | `MCPX_MODEL_PROVIDER` | where mcpx's own generation gets a model: a configured provider, sampling through the caller, or none |
-| `model.providers` | string | `{}` | daemon | no | `--model-providers` | `MCPX_MODEL_PROVIDERS` | JSON object mapping provider names to baseURL and apiKeyEnv |
-| `model.timeout` | duration | `1m30s` | daemon | no | `--model-timeout` | `MCPX_MODEL_TIMEOUT` | how long one generation through the layer may take |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `model.apiKeyEnv` | string | *(empty)* | daemon | no | `--model-api-key-env` | `MCPX_MODEL_API_KEY_ENV` | the environment variable holding the configured provider's API key | `TestModelAPIKeyEnvNamesTheKeyVariableFromTheEnvironment` |
+| `model.baseURL` | string | *(empty)* | daemon | no | `--model-base-url` | `MCPX_MODEL_BASE_URL` | the OpenAI-compatible endpoint the configured provider calls | `TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment` |
+| `model.budget` | int | `0` | daemon | no | `--model-budget` | `MCPX_MODEL_BUDGET` | hard ceiling on the tokens one generation through the layer may ask for; 0 is no ceiling | `TestModelBudgetCapsAHooksTokensFromTheEnvironment` |
+| `model.default` | string | *(empty)* | daemon | no | `--model-default` | `MCPX_MODEL_DEFAULT` | the model id used when an operation names none, as provider/model | `TestModelDefaultNamesTheModelFromTheEnvironment` |
+| `model.profiles` | string | `{}` | daemon | no | `--model-profiles` | `MCPX_MODEL_PROFILES` | JSON object of named ordered provider/model fallback chains | `TestModelProfilesResolvesANamedChainFromTheEnvironment` |
+| `model.provider` | enum | `none` | daemon | no | `--model-provider` | `MCPX_MODEL_PROVIDER` | where mcpx's own generation gets a model: a configured provider, sampling through the caller, or none | `TestModelProviderSelectsTheBackendFromTheEnvironment` |
+| `model.providers` | string | `{}` | daemon | no | `--model-providers` | `MCPX_MODEL_PROVIDERS` | JSON object mapping provider names to baseURL and apiKeyEnv | `TestModelProvidersRoutesAProviderToItsEndpointFromTheEnvironment` |
+| `model.timeout` | duration | `1m30s` | daemon | no | `--model-timeout` | `MCPX_MODEL_TIMEOUT` | how long one generation through the layer may take | `TestModelTimeoutBoundsAGenerationFromTheEnvironment` |
 
 ### output
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `output.color` | enum | `auto` | client | no | `--output-color` | `MCPX_OUTPUT_COLOR` | whether to colourise the browser |
-| `output.json` | bool | `false` | client | no | `--output-json`, `--json` | `MCPX_OUTPUT_JSON` | emit one machine-readable document |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `output.color` | enum | `auto` | client | no | `--output-color` | `MCPX_OUTPUT_COLOR` | whether to colourise the browser | `TestOutputColorIsReachableFromTheEnvironment` |
+| `output.json` | bool | `false` | client | no | `--output-json`, `--json` | `MCPX_OUTPUT_JSON` | emit one machine-readable document | `TestOutputJSONIsReachableFromTheEnvironment` |
 
 ### paths
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `paths.adapters` | paths | *(empty)* | client | no | `--paths-adapters` | `MCPX_PATHS_ADAPTERS` | files declaring command-line programs as MCP servers |
-| `paths.apis` | paths | *(empty)* | client | no | `--paths-apis` | `MCPX_PATHS_APIS` | files naming OpenAPI documents to expose as tools |
-| `paths.cache` | string | *(empty)* | client | no | `--paths-cache` | `MCPX_PATHS_CACHE`, `MCPX_CACHE_DIR` | where generated clients and schemas are kept |
-| `paths.config` | paths | *(empty)* | client | no | `--paths-config` | `MCPX_PATHS_CONFIG` | where configuration files are looked for |
-| `paths.configFile` | string | *(empty)* | client | no | `--config` | `MCPX_CONFIG` | read exactly this configuration file instead of searching |
-| `paths.deps` | paths | *(empty)* | client | no | `--paths-deps` | `MCPX_PATHS_DEPS` | where a script's package.json / package.jsonc is looked for |
-| `paths.placeholders` | paths | *(empty)* | client | no | `--paths-placeholders` | `MCPX_PATHS_PLACEHOLDERS` | directories of files declaring launcher placeholders |
-| `paths.plugins` | paths | *(empty)* | client | no | `--paths-plugins` | `MCPX_PATHS_PLUGINS` | directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins |
-| `paths.scripts` | paths | *(empty)* | client | no | `--paths-scripts` | `MCPX_PATHS_SCRIPTS` | where named scripts are looked for |
-| `paths.state` | string | *(empty)* | client | no | `--paths-state` | `MCPX_PATHS_STATE`, `MCPX_STATE_DIR` | where the daemon socket, logs and index live |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `paths.adapters` | paths | *(empty)* | client | no | `--paths-adapters` | `MCPX_PATHS_ADAPTERS` | files declaring command-line programs as MCP servers | `TestPathsAdaptersFindsADeclarationFile` |
+| `paths.apis` | paths | *(empty)* | client | no | `--paths-apis` | `MCPX_PATHS_APIS` | files naming OpenAPI documents to expose as tools | `TestPathsAPIsFindsADeclarationFile` |
+| `paths.cache` | string | *(empty)* | client | no | `--paths-cache` | `MCPX_PATHS_CACHE`, `MCPX_CACHE_DIR` | where generated clients and schemas are kept | `TestPathsCacheChangesTheDoctorDirectory` |
+| `paths.config` | paths | *(empty)* | client | no | `--paths-config` | `MCPX_PATHS_CONFIG` | where configuration files are looked for | `TestPathsConfigReadsAConfigOnlyThatPathHolds` |
+| `paths.configFile` | string | *(empty)* | client | no | `--config` | `MCPX_CONFIG` | read exactly this configuration file instead of searching | `TestPathsConfigFileChangesWhichConfigLoads` |
+| `paths.deps` | paths | *(empty)* | client | no | `--paths-deps` | `MCPX_PATHS_DEPS` | where a script's package.json / package.jsonc is looked for | `TestPathsDepsExtendsManifestDiscovery` |
+| `paths.placeholders` | paths | *(empty)* | client | no | `--paths-placeholders` | `MCPX_PATHS_PLACEHOLDERS` | directories of files declaring launcher placeholders | `TestPathsPlaceholdersDeclaresALauncherPlaceholder` |
+| `paths.plugins` | paths | *(empty)* | client | no | `--paths-plugins` | `MCPX_PATHS_PLUGINS` | directories of plugins: an mcpx-plugin.json manifest, or executables loaded as zero-manifest plugins | `TestPathsPluginsDiscoversAPluginThatLivesOnlyThere` |
+| `paths.scripts` | paths | *(empty)* | client | no | `--paths-scripts` | `MCPX_PATHS_SCRIPTS` | where named scripts are looked for | `TestPathsScriptsFindsRecipesThatLiveOnlyThere` |
+| `paths.state` | string | *(empty)* | client | no | `--paths-state` | `MCPX_PATHS_STATE`, `MCPX_STATE_DIR` | where the daemon socket, logs and index live | `TestStateDirectoryIsReachableAsASetting` |
 
 ### plugin
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `plugin.annotate` | bool | `true` | plugin | no | `--plugin-annotate` | `MCPX_PLUGIN_ANNOTATE` | add mcpx's own notes to a tool result |
-| `plugin.backend` | enum | `auto` | plugin | no | `--plugin-backend` | `MCPX_PLUGIN_BACKEND` | whether the plugin talks to the daemon or spawns the binary |
-| `plugin.bin` | string | `mcpx` | plugin | no | `--plugin-bin` | `MCPX_PLUGIN_BIN` | the executable the plugin invokes |
-| `plugin.binArgs` | list | *(empty)* | plugin | no | `--plugin-bin-args` | `MCPX_PLUGIN_BIN_ARGS` | arguments put in front of every plugin invocation of mcpx |
-| `plugin.daemonTools` | enum | `auto` | plugin | no | `--plugin-daemon-tools` | `MCPX_PLUGIN_DAEMON_TOOLS` | offer the tools that list and choose between daemons |
-| `plugin.disabledTools` | list | *(empty)* | plugin | no | `--plugin-disabled-tools` | `MCPX_PLUGIN_DISABLED_TOOLS` | model-facing mcpx tools hidden from every session |
-| `plugin.discoveryRetry` | duration | `1m0s` | plugin | no | `--plugin-discovery-retry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | how long the plugin waits before looking for mcpx again |
-| `plugin.env` | enum | `full` | plugin | no | `--plugin-env` | `MCPX_PLUGIN_ENV` | how much session context is put into each command's environment |
-| `plugin.headless` | enum | `auto` | plugin | no | `--plugin-headless` | `MCPX_PLUGIN_HEADLESS` | suppress toasts, because nobody is looking at a screen |
-| `plugin.instructions` | bool | `false` | plugin | no | `--plugin-instructions` | `MCPX_PLUGIN_INSTRUCTIONS` | add mcpx usage guidance to the system prompt |
-| `plugin.remember` | enum | `session` | plugin | no | `--plugin-remember` | `MCPX_PLUGIN_REMEMBER` | how long a chosen daemon stays chosen |
-| `plugin.toolTiming` | bool | `false` | plugin | no | `--plugin-tool-timing` | `MCPX_PLUGIN_TOOL_TIMING` | write every tool outcome into mcpx's log |
-| `plugin.tools` | bool | `false` | plugin | no | `--plugin-tools` | `MCPX_PLUGIN_TOOLS` | expose mcpx itself as tools the model can call |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `plugin.annotate` | bool | `true` | plugin | no | `--plugin-annotate` | `MCPX_PLUGIN_ANNOTATE` | add mcpx's own notes to a tool result | `TestPluginAnnotateChangesToolResultsFromTheEnvironment` |
+| `plugin.backend` | enum | `auto` | plugin | no | `--plugin-backend` | `MCPX_PLUGIN_BACKEND` | whether the plugin talks to the daemon or spawns the binary | `TestPluginBackendChoosesDaemonOrBinaryFromTheEnvironment` |
+| `plugin.bin` | string | `mcpx` | plugin | no | `--plugin-bin` | `MCPX_PLUGIN_BIN` | the executable the plugin invokes | `TestPluginBinInvokesTheConfiguredExecutableFromTheEnvironment` |
+| `plugin.binArgs` | list | *(empty)* | plugin | no | `--plugin-bin-args` | `MCPX_PLUGIN_BIN_ARGS` | arguments put in front of every plugin invocation of mcpx | `TestPluginBinArgsPrependsTheConfiguredArgumentsFromTheEnvironment` |
+| `plugin.daemonTools` | enum | `auto` | plugin | no | `--plugin-daemon-tools` | `MCPX_PLUGIN_DAEMON_TOOLS` | offer the tools that list and choose between daemons | `TestPluginDaemonToolsAreOfferedFromTheEnvironment` |
+| `plugin.disabledTools` | list | *(empty)* | plugin | no | `--plugin-disabled-tools` | `MCPX_PLUGIN_DISABLED_TOOLS` | model-facing mcpx tools hidden from every session | `TestPluginDisabledToolsHidesToolsFromTheEnvironment` |
+| `plugin.discoveryRetry` | duration | `1m0s` | plugin | no | `--plugin-discovery-retry` | `MCPX_PLUGIN_DISCOVERY_RETRY` | how long the plugin waits before looking for mcpx again | `TestPluginDiscoveryRetryDelaysRediscoveryFromTheEnvironment` |
+| `plugin.env` | enum | `full` | plugin | no | `--plugin-env` | `MCPX_PLUGIN_ENV` | how much session context is put into each command's environment | `TestPluginEnvLevelChangesShellEnvFromTheEnvironment` |
+| `plugin.headless` | enum | `auto` | plugin | no | `--plugin-headless` | `MCPX_PLUGIN_HEADLESS` | suppress toasts, because nobody is looking at a screen | `TestPluginHeadlessSuppressesToastsFromTheEnvironment` |
+| `plugin.instructions` | bool | `false` | plugin | no | `--plugin-instructions` | `MCPX_PLUGIN_INSTRUCTIONS` | add mcpx usage guidance to the system prompt | `TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment` |
+| `plugin.remember` | enum | `session` | plugin | no | `--plugin-remember` | `MCPX_PLUGIN_REMEMBER` | how long a chosen daemon stays chosen | `TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment` |
+| `plugin.toolTiming` | bool | `false` | plugin | no | `--plugin-tool-timing` | `MCPX_PLUGIN_TOOL_TIMING` | write every tool outcome into mcpx's log | `TestPluginToolTimingRecordsToolCallsFromTheEnvironment` |
+| `plugin.tools` | bool | `false` | plugin | no | `--plugin-tools` | `MCPX_PLUGIN_TOOLS` | expose mcpx itself as tools the model can call | `TestPluginToolsRegistersTheToolSetFromTheEnvironment` |
 
 ### plumbing
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `plumbing.allowTsJsOverlap` | bool | `false` | client | no | `--plumbing-allow-ts-js-overlap` | `MCPX_PLUMBING_ALLOW_TS_JS_OVERLAP` | *(plumbing)* permit a script directory holding both foo.ts and foo.js |
-| `plumbing.indexOnQuery` | bool | `true` | daemon | no | `--plumbing-index-on-query` | `MCPX_PLUMBING_INDEX_ON_QUERY` | *(plumbing)* bring the log index up to date before answering a query |
-| `plumbing.launcherPlaceholderRepeat` | list | *(empty)* | client | no | `--plumbing-launcher-placeholder-repeat` | `MCPX_PLUMBING_LAUNCHER_PLACEHOLDER_REPEAT` | *(plumbing)* launcher placeholders permitted to resolve more than once |
-| `plumbing.sourceDirAllowed` | bool | `true` | client | no | `--plumbing-source-dir-allowed` | `MCPX_PLUMBING_SOURCE_DIR_ALLOWED` | *(plumbing)* whether a directory may stand in for a source string at all |
-| `plumbing.sourceDirRecursive` | bool | `false` | client | no | `--plumbing-source-dir-recursive` | `MCPX_PLUMBING_SOURCE_DIR_RECURSIVE` | *(plumbing)* when a directory is given as source, descend into subdirectories |
-| `plumbing.sourceProbePaths` | bool | `true` | client | no | `--plumbing-source-probe-paths` | `MCPX_PLUMBING_SOURCE_PROBE_PATHS` | *(plumbing)* treat a source argument that names an existing file as a file |
-| `plumbing.strictUnknownKeys` | bool | `false` | client | no | `--plumbing-strict-unknown-keys` | `MCPX_PLUMBING_STRICT_UNKNOWN_KEYS` | *(plumbing)* fail on a configuration key no setting claims |
-| `plumbing.validatePaths` | bool | `true` | client | no | `--plumbing-validate-paths` | `MCPX_PLUMBING_VALIDATE_PATHS` | *(plumbing)* resolve and verify every referenced path before doing any work |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `plumbing.allowTsJsOverlap` | bool | `false` | client | no | `--plumbing-allow-ts-js-overlap` | `MCPX_PLUMBING_ALLOW_TS_JS_OVERLAP` | *(plumbing)* permit a script directory holding both foo.ts and foo.js | `TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts` |
+| `plumbing.indexOnQuery` | bool | `true` | daemon | no | `--plumbing-index-on-query` | `MCPX_PLUMBING_INDEX_ON_QUERY` | *(plumbing)* bring the log index up to date before answering a query | `TestPlumbingIndexOnQueryIngestsBeforeALogQuery` |
+| `plumbing.launcherPlaceholderRepeat` | list | *(empty)* | client | no | `--plumbing-launcher-placeholder-repeat` | `MCPX_PLUMBING_LAUNCHER_PLACEHOLDER_REPEAT` | *(plumbing)* launcher placeholders permitted to resolve more than once | `TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName` |
+| `plumbing.sourceDirAllowed` | bool | `true` | client | no | `--plumbing-source-dir-allowed` | `MCPX_PLUMBING_SOURCE_DIR_ALLOWED` | *(plumbing)* whether a directory may stand in for a source string at all | `TestPlumbingSourceDirAllowedTakesADirectoryAsSource` |
+| `plumbing.sourceDirRecursive` | bool | `false` | client | no | `--plumbing-source-dir-recursive` | `MCPX_PLUMBING_SOURCE_DIR_RECURSIVE` | *(plumbing)* when a directory is given as source, descend into subdirectories | `TestPlumbingSourceDirRecursiveReadsSubdirectories` |
+| `plumbing.sourceProbePaths` | bool | `true` | client | no | `--plumbing-source-probe-paths` | `MCPX_PLUMBING_SOURCE_PROBE_PATHS` | *(plumbing)* treat a source argument that names an existing file as a file | `TestPlumbingSourceProbePathsReadsANamedFile` |
+| `plumbing.strictUnknownKeys` | bool | `false` | client | no | `--plumbing-strict-unknown-keys` | `MCPX_PLUMBING_STRICT_UNKNOWN_KEYS` | *(plumbing)* fail on a configuration key no setting claims | `TestStrictUnknownKeysRefusesATypo` |
+| `plumbing.validatePaths` | bool | `true` | client | no | `--plumbing-validate-paths` | `MCPX_PLUMBING_VALIDATE_PATHS` | *(plumbing)* resolve and verify every referenced path before doing any work | `TestPlumbingValidatePathsChecksTheLogDirUpFront` |
 
 ### policy
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `policy.write` | enum | `ask` | daemon | no | `--policy-write` | `MCPX_POLICY_WRITE` | what to do before a call that may write: ask for confirmation, allow it, or deny it |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `policy.write` | enum | `ask` | daemon | no | `--policy-write` | `MCPX_POLICY_WRITE` | what to do before a call that may write: ask for confirmation, allow it, or deny it | `TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment` |
 
 ### pool
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `pool.callTimeout` | duration | `120s` | daemon | yes | `--pool-call-timeout` | `MCPX_POOL_CALL_TIMEOUT` | how long one tool call may take |
-| `pool.idleTimeout` | duration | `5m` | daemon | yes | `--pool-idle-timeout` | `MCPX_POOL_IDLE_TIMEOUT` | how long an unused server lingers before it is stopped |
-| `pool.max` | int | `4` | daemon | yes | `--pool-max` | `MCPX_POOL_MAX` | how many copies of one server may run at once |
-| `pool.min` | int | `0` | daemon | yes | `--pool-min` | `MCPX_POOL_MIN` | how many copies to keep started even when idle |
-| `pool.scope` | enum | `global` | daemon | no | `--pool-scope` | `MCPX_POOL_SCOPE` | what counts as the same caller for sharing purposes |
-| `pool.sharing` | enum | `shared` | daemon | no | `--pool-sharing` | `MCPX_POOL_SHARING` | whether callers reuse one instance or each get their own |
-| `pool.startTimeout` | duration | `60s` | daemon | yes | `--pool-start-timeout` | `MCPX_POOL_START_TIMEOUT` | how long a server has to become ready |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `pool.callTimeout` | duration | `120s` | daemon | yes | `--pool-call-timeout` | `MCPX_POOL_CALL_TIMEOUT` | how long one tool call may take | `TestPoolCallTimeoutBoundsASlowCall` |
+| `pool.idleTimeout` | duration | `5m` | daemon | yes | `--pool-idle-timeout` | `MCPX_POOL_IDLE_TIMEOUT` | how long an unused server lingers before it is stopped | `TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment` |
+| `pool.max` | int | `4` | daemon | yes | `--pool-max` | `MCPX_POOL_MAX` | how many copies of one server may run at once | `TestPoolDefaultsAreReachableFromTheEnvironment` |
+| `pool.min` | int | `0` | daemon | yes | `--pool-min` | `MCPX_POOL_MIN` | how many copies to keep started even when idle | `TestPoolMinKeepsAnInstanceWarmFromTheEnvironment` |
+| `pool.scope` | enum | `global` | daemon | no | `--pool-scope` | `MCPX_POOL_SCOPE` | what counts as the same caller for sharing purposes | `TestPoolDefaultsAreReachableFromTheEnvironment` |
+| `pool.sharing` | enum | `shared` | daemon | no | `--pool-sharing` | `MCPX_POOL_SHARING` | whether callers reuse one instance or each get their own | `TestPoolDefaultsAreReachableFromTheEnvironment` |
+| `pool.startTimeout` | duration | `60s` | daemon | yes | `--pool-start-timeout` | `MCPX_POOL_START_TIMEOUT` | how long a server has to become ready | `TestPoolStartTimeoutBoundsServerStart` |
 
 ### preset
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `preset` | list | *(empty)* | client | no | `--preset` | `MCPX_PRESET` | which presets to apply, in order |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `preset` | list | *(empty)* | client | no | `--preset` | `MCPX_PRESET` | which presets to apply, in order | `TestPresetSelectsADefinedBundle` |
 
 ### presets
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `presets` | string | *(empty)* | client | no | `--presets` | `MCPX_PRESETS` | named flag bundles: {name: ["--json", "--timeout=30s"]} |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `presets` | string | *(empty)* | client | no | `--presets` | `MCPX_PRESETS` | named flag bundles: {name: ["--json", "--timeout=30s"]} | `TestPresetsDefinesNamedFlagBundles` |
 
 ### prompt
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `prompt.autonomy` | enum | `propose` | call | yes | `--prompt-autonomy` | `MCPX_PROMPT_AUTONOMY` | whether a request returns the script (propose) or runs it (run) |
-| `prompt.catalogBudget` | int | `1200` | call | yes | `--prompt-catalog-budget` | `MCPX_PROMPT_CATALOG_BUDGET` | approximate token ceiling for the slice of catalog sent with a sampling request |
-| `prompt.maxTokens` | int | `1500` | call | yes | `--prompt-max-tokens` | `MCPX_PROMPT_MAX_TOKENS` | *(plumbing)* maxTokens on the sampling request |
-| `prompt.runTimeout` | duration | `5m0s` | call | yes | `--prompt-run-timeout` | `MCPX_PROMPT_RUN_TIMEOUT` | how long a recipe or generated script may run |
-| `prompt.sample` | enum | `never` | daemon | no | `--prompt-sample` | `MCPX_PROMPT_SAMPLE` | whether a request with no matching recipe may ask the caller's model to write one |
-| `prompt.sampleTimeout` | duration | `1m30s` | daemon | no | `--prompt-sample-timeout` | `MCPX_PROMPT_SAMPLE_TIMEOUT` | how long a generation request waits for a model |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `prompt.autonomy` | enum | `propose` | call | yes | `--prompt-autonomy` | `MCPX_PROMPT_AUTONOMY` | whether a request returns the script (propose) or runs it (run) | `TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment` |
+| `prompt.catalogBudget` | int | `1200` | call | yes | `--prompt-catalog-budget` | `MCPX_PROMPT_CATALOG_BUDGET` | approximate token ceiling for the slice of catalog sent with a sampling request | `TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel` |
+| `prompt.maxTokens` | int | `1500` | call | yes | `--prompt-max-tokens` | `MCPX_PROMPT_MAX_TOKENS` | *(plumbing)* maxTokens on the sampling request | `TestPromptMaxTokensSetsAHooksTokenCapFromTheEnvironment` |
+| `prompt.runTimeout` | duration | `5m0s` | call | yes | `--prompt-run-timeout` | `MCPX_PROMPT_RUN_TIMEOUT` | how long a recipe or generated script may run | `TestPromptRunTimeoutBoundsARecipeRun` |
+| `prompt.sample` | enum | `never` | daemon | no | `--prompt-sample` | `MCPX_PROMPT_SAMPLE` | whether a request with no matching recipe may ask the caller's model to write one | `TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel` |
+| `prompt.sampleTimeout` | duration | `1m30s` | daemon | no | `--prompt-sample-timeout` | `MCPX_PROMPT_SAMPLE_TIMEOUT` | how long a generation request waits for a model | `TestPromptSampleTimeoutBoundsASamplingQuestion` |
 
 ### proto
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `proto.askPoll` | duration | `500ms` | daemon | no | `--proto-ask-poll` | `MCPX_PROTO_ASK_POLL` | *(plumbing)* how long one wait for a question may block |
-| `proto.askRounds` | int | `8` | daemon | no | `--proto-ask-rounds` | `MCPX_PROTO_ASK_ROUNDS` | how many times one request may come back asking for more |
-| `proto.askTTL` | duration | `15m` | daemon | no | `--proto-ask-ttl` | `MCPX_PROTO_ASK_TTL` | *(plumbing)* how long the daemon keeps a call waiting for an answer |
-| `proto.askTimeout` | duration | `10m` | daemon | no | `--proto-ask-timeout` | `MCPX_PROTO_ASK_TIMEOUT` | how long one request may be held while a question goes unanswered |
-| `proto.elicitationPerMinute` | int | `30` | daemon | no | `--proto-elicitation-per-minute` | `MCPX_PROTO_ELICITATION_PER_MINUTE` | max elicitation requests one upstream server may make per minute, across all its sessions |
-| `proto.mcpPath` | string | `/mcp` | daemon | no | `--proto-mcp-path` | `MCPX_PROTO_MCP_PATH` | where the daemon serves MCP |
-| `proto.native` | bool | `true` | daemon | no | `--proto-native` | `MCPX_PROTO_NATIVE` | put an upstream server's questions to mcpx's own MCP client |
-| `proto.samplingPerMinute` | int | `60` | daemon | no | `--proto-sampling-per-minute` | `MCPX_PROTO_SAMPLING_PER_MINUTE` | max sampling requests one upstream server may make per minute, across all its sessions |
-| `proto.samplingSessionPerMinute` | int | `20` | daemon | no | `--proto-sampling-session-per-minute` | `MCPX_PROTO_SAMPLING_SESSION_PER_MINUTE` | max sampling requests one upstream server may make within a single session per minute |
-| `proto.serveMCP` | bool | `true` | daemon | no | `--proto-serve-mcp` | `MCPX_PROTO_SERVE_MCP` | mount mcpx's own MCP server on the daemon's listeners |
-| `proto.sessionIdle` | duration | `30m` | daemon | no | `--proto-session-idle` | `MCPX_PROTO_SESSION_IDLE` | *(plumbing)* how long an unused Streamable HTTP session is kept |
-| `proto.stateTTL` | duration | `30m` | daemon | no | `--proto-state-ttl` | `MCPX_PROTO_STATE_TTL` | *(plumbing)* how long a client may resume an interrupted request with |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `proto.askPoll` | duration | `500ms` | daemon | no | `--proto-ask-poll` | `MCPX_PROTO_ASK_POLL` | *(plumbing)* how long one wait for a question may block | `TestAskPollCeilingIsReachableFromTheEnvironment` |
+| `proto.askRounds` | int | `8` | daemon | no | `--proto-ask-rounds` | `MCPX_PROTO_ASK_ROUNDS` | how many times one request may come back asking for more | `TestAskRoundsLimitIsReachableFromTheEnvironment` |
+| `proto.askTTL` | duration | `15m` | daemon | no | `--proto-ask-ttl` | `MCPX_PROTO_ASK_TTL` | *(plumbing)* how long the daemon keeps a call waiting for an answer | `TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment` |
+| `proto.askTimeout` | duration | `10m` | daemon | no | `--proto-ask-timeout` | `MCPX_PROTO_ASK_TIMEOUT` | how long one request may be held while a question goes unanswered | `TestAskTimeoutReleasesAHeldRequestFromTheEnvironment` |
+| `proto.elicitationPerMinute` | int | `30` | daemon | no | `--proto-elicitation-per-minute` | `MCPX_PROTO_ELICITATION_PER_MINUTE` | max elicitation requests one upstream server may make per minute, across all its sessions | `TestElicitationPerMinuteRefusesAServersSecondQuestion` |
+| `proto.mcpPath` | string | `/mcp` | daemon | no | `--proto-mcp-path` | `MCPX_PROTO_MCP_PATH` | where the daemon serves MCP | `TestMCPPathMovesTheEndpointFromTheEnvironment` |
+| `proto.native` | bool | `true` | daemon | no | `--proto-native` | `MCPX_PROTO_NATIVE` | put an upstream server's questions to mcpx's own MCP client | `TestNativeAsksTheCallingClientFromTheEnvironment` |
+| `proto.samplingPerMinute` | int | `60` | daemon | no | `--proto-sampling-per-minute` | `MCPX_PROTO_SAMPLING_PER_MINUTE` | max sampling requests one upstream server may make per minute, across all its sessions | `TestSamplingPerMinuteRefusesAServersSecondSampling` |
+| `proto.samplingSessionPerMinute` | int | `20` | daemon | no | `--proto-sampling-session-per-minute` | `MCPX_PROTO_SAMPLING_SESSION_PER_MINUTE` | max sampling requests one upstream server may make within a single session per minute | `TestSamplingSessionPerMinuteRefusesASessionsSecondSampling` |
+| `proto.serveMCP` | bool | `true` | daemon | no | `--proto-serve-mcp` | `MCPX_PROTO_SERVE_MCP` | mount mcpx's own MCP server on the daemon's listeners | `TestServeMCPUnmountsTheEndpointFromTheEnvironment` |
+| `proto.sessionIdle` | duration | `30m` | daemon | no | `--proto-session-idle` | `MCPX_PROTO_SESSION_IDLE` | *(plumbing)* how long an unused Streamable HTTP session is kept | `TestSessionIdleReapsAnUnusedSessionFromTheEnvironment` |
+| `proto.stateTTL` | duration | `30m` | daemon | no | `--proto-state-ttl` | `MCPX_PROTO_STATE_TTL` | *(plumbing)* how long a client may resume an interrupted request with | `TestStateTTLExpiresAResumableRequestFromTheEnvironment` |
 
 ### protoMessages
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `protoMessages.listMaxAge` | duration | `1m0s` | daemon | no | `--proto-messages-list-max-age` | `MCPX_PROTO_MESSAGES_LIST_MAX_AGE` | ttlMs on server/discover and every list result sent to a 2026-07-28 client |
-| `protoMessages.readMaxAge` | duration | `0s` | daemon | no | `--proto-messages-read-max-age` | `MCPX_PROTO_MESSAGES_READ_MAX_AGE` | ttlMs on resources/read results sent to a 2026-07-28 client |
-| `protoMessages.taskAfter` | duration | `2s` | daemon | no | `--proto-messages-task-after` | `MCPX_PROTO_MESSAGES_TASK_AFTER` | how long a tools/call runs in line before a tasks-extension client is handed a task |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `protoMessages.listMaxAge` | duration | `1m0s` | daemon | no | `--proto-messages-list-max-age` | `MCPX_PROTO_MESSAGES_LIST_MAX_AGE` | ttlMs on server/discover and every list result sent to a 2026-07-28 client | `TestListMaxAgeSetsTheListCacheHintFromTheEnvironment` |
+| `protoMessages.readMaxAge` | duration | `0s` | daemon | no | `--proto-messages-read-max-age` | `MCPX_PROTO_MESSAGES_READ_MAX_AGE` | ttlMs on resources/read results sent to a 2026-07-28 client | `TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment` |
+| `protoMessages.taskAfter` | duration | `2s` | daemon | no | `--proto-messages-task-after` | `MCPX_PROTO_MESSAGES_TASK_AFTER` | how long a tools/call runs in line before a tasks-extension client is handed a task | `TestTaskAfterHandsASlowCallATaskFromTheEnvironment` |
 
 ### protoTasks
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `protoTasks.cancelGrace` | duration | `5s` | daemon | no | `--proto-tasks-cancel-grace` | `MCPX_PROTO_TASKS_CANCEL_GRACE` | how long cooperative task work may finish after cancellation |
-| `protoTasks.maxPerRequestor` | int | `32` | daemon | no | `--proto-tasks-max-per-requestor` | `MCPX_PROTO_TASKS_MAX_PER_REQUESTOR` | how many non-terminal tasks one requestor may hold at once |
-| `protoTasks.maxTTL` | duration | `1h0m0s` | daemon | no | `--proto-tasks-max-ttl` | `MCPX_PROTO_TASKS_MAX_TTL` | the longest TTL a task may ask for; longer requests are clamped |
-| `protoTasks.perMinute` | int | `120` | daemon | no | `--proto-tasks-per-minute` | `MCPX_PROTO_TASKS_PER_MINUTE` | the tasks/* admission window per requestor; 0 disables it |
-| `protoTasks.pollInterval` | duration | `1s` | daemon | no | `--proto-tasks-poll-interval` | `MCPX_PROTO_TASKS_POLL_INTERVAL` | the pollInterval every task carries |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `protoTasks.cancelGrace` | duration | `5s` | daemon | no | `--proto-tasks-cancel-grace` | `MCPX_PROTO_TASKS_CANCEL_GRACE` | how long cooperative task work may finish after cancellation | `TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment` |
+| `protoTasks.maxPerRequestor` | int | `32` | daemon | no | `--proto-tasks-max-per-requestor` | `MCPX_PROTO_TASKS_MAX_PER_REQUESTOR` | how many non-terminal tasks one requestor may hold at once | `TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment` |
+| `protoTasks.maxTTL` | duration | `1h0m0s` | daemon | no | `--proto-tasks-max-ttl` | `MCPX_PROTO_TASKS_MAX_TTL` | the longest TTL a task may ask for; longer requests are clamped | `TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment` |
+| `protoTasks.perMinute` | int | `120` | daemon | no | `--proto-tasks-per-minute` | `MCPX_PROTO_TASKS_PER_MINUTE` | the tasks/* admission window per requestor; 0 disables it | `TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment` |
+| `protoTasks.pollInterval` | duration | `1s` | daemon | no | `--proto-tasks-poll-interval` | `MCPX_PROTO_TASKS_POLL_INTERVAL` | the pollInterval every task carries | `TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment` |
 
 ### proxy
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `proxy.timeout` | duration | `10m` | daemon | no | `--proxy-timeout` | `MCPX_PROXY_TIMEOUT` | how long the daemon waits for a chat-completions upstream |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `proxy.timeout` | duration | `10m` | daemon | no | `--proxy-timeout` | `MCPX_PROXY_TIMEOUT` | how long the daemon waits for a chat-completions upstream | `TestProxyUpstreamTimeoutIsReachableFromTheEnvironment` |
 
 ### recipes
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `recipes.limit` | int | `5` | call | yes | `--recipes-limit` | `MCPX_RECIPES_LIMIT` | how many ranked recipes are returned |
-| `recipes.matchMargin` | int | `150` | call | yes | `--recipes-match-margin` | `MCPX_RECIPES_MATCH_MARGIN` | how far ahead the best recipe must be, as a percentage of the next one |
-| `recipes.minScore` | int | `30` | call | yes | `--recipes-min-score` | `MCPX_RECIPES_MIN_SCORE` | the score below which a request is not considered a match for any recipe |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `recipes.limit` | int | `5` | call | yes | `--recipes-limit` | `MCPX_RECIPES_LIMIT` | how many ranked recipes are returned | `TestRecipesLimitBoundsTheRankingFromTheEnvironment` |
+| `recipes.matchMargin` | int | `150` | call | yes | `--recipes-match-margin` | `MCPX_RECIPES_MATCH_MARGIN` | how far ahead the best recipe must be, as a percentage of the next one | `TestRecipesMatchMarginSettlesATieFromTheEnvironment` |
+| `recipes.minScore` | int | `30` | call | yes | `--recipes-min-score` | `MCPX_RECIPES_MIN_SCORE` | the score below which a request is not considered a match for any recipe | `TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment` |
 
 ### registry
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `registry.limit` | int | `20` | call | yes | `--registry-limit` | `MCPX_REGISTRY_LIMIT` | how many registry results are returned |
-| `registry.maxPages` | int | `10` | client | no | `--registry-max-pages` | `MCPX_REGISTRY_MAX_PAGES` | *(plumbing)* how many requests one registry search may make |
-| `registry.pageSize` | int | `30` | client | no | `--registry-page-size` | `MCPX_REGISTRY_PAGE_SIZE` | *(plumbing)* how many entries are fetched per registry request |
-| `registry.timeout` | duration | `30s` | client | no | `--registry-timeout` | `MCPX_REGISTRY_TIMEOUT` | how long a registry request may take |
-| `registry.url` | string | `https://registry.modelcontextprotocol.io` | client | no | `--registry-url` | `MCPX_REGISTRY_URL` | where `mcpx registry` looks for servers |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `registry.limit` | int | `20` | call | yes | `--registry-limit` | `MCPX_REGISTRY_LIMIT` | how many registry results are returned | `TestRegistryLimitReachesTheCLI` |
+| `registry.maxPages` | int | `10` | client | no | `--registry-max-pages` | `MCPX_REGISTRY_MAX_PAGES` | *(plumbing)* how many requests one registry search may make | `TestTheRegistryPageCapSaysItStoppedEarly` |
+| `registry.pageSize` | int | `30` | client | no | `--registry-page-size` | `MCPX_REGISTRY_PAGE_SIZE` | *(plumbing)* how many entries are fetched per registry request | `TestRegistryPageSizeChangesWhatTheCLIAsksFor` |
+| `registry.timeout` | duration | `30s` | client | no | `--registry-timeout` | `MCPX_REGISTRY_TIMEOUT` | how long a registry request may take | `TestRegistryTimeoutBoundsARegistryRequest` |
+| `registry.url` | string | `https://registry.modelcontextprotocol.io` | client | no | `--registry-url` | `MCPX_REGISTRY_URL` | where `mcpx registry` looks for servers | `TestRegistryPageSizeChangesWhatTheCLIAsksFor` |
 
 ### repair
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `repair.autonomy` | enum | `advise` | call | yes | `--repair-autonomy` | `MCPX_REPAIR_AUTONOMY` | how far mcpx goes about a failed call: off attaches nothing, advise attaches diagnostics |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `repair.autonomy` | enum | `advise` | call | yes | `--repair-autonomy` | `MCPX_REPAIR_AUTONOMY` | how far mcpx goes about a failed call: off attaches nothing, advise attaches diagnostics | `TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment` |
 
 ### retention
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `retention.maxTools` | int | `24` | daemon | no | `--retention-max-tools` | `MCPX_RETENTION_MAX_TOOLS` | maximum active tools in reactive working set |
-| `retention.stickyWindow` | duration | `2h` | daemon | no | `--retention-sticky-window` | `MCPX_RETENTION_STICKY_WINDOW` | duration explicitly requested tools remain retained |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `retention.maxTools` | int | `24` | daemon | no | `--retention-max-tools` | `MCPX_RETENTION_MAX_TOOLS` | maximum active tools in reactive working set | `TestRetentionMaxToolsCapsTheReactiveWorkingSet` |
+| `retention.stickyWindow` | duration | `2h` | daemon | no | `--retention-sticky-window` | `MCPX_RETENTION_STICKY_WINDOW` | duration explicitly requested tools remain retained | `TestRetentionStickyWindowExpiresReactiveTools` |
 
 ### sampling
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `sampling.answerLocally` | bool | `false` | daemon | no | `--sampling-answer-locally` | `MCPX_SAMPLING_ANSWER_LOCALLY` | answer upstream sampling requests with mcpx's configured model provider instead of relaying them to the caller |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `sampling.answerLocally` | bool | `false` | daemon | no | `--sampling-answer-locally` | `MCPX_SAMPLING_ANSWER_LOCALLY` | answer upstream sampling requests with mcpx's configured model provider instead of relaying them to the caller | `TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment` |
 
 ### script
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed |
-| `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log |
-| `script.check` | enum | `off` | client | no | `--script-check`, `--script-typecheck`, `--typecheck` | `MCPX_SCRIPT_CHECK`, `MCPX_SCRIPT_TYPECHECK` | check the generated program before running it; path alias: script.typecheck; one of off, types (also on), strict |
-| `script.checkOnError` | enum | `fail` | client | no | `--script-check-on-error` | `MCPX_SCRIPT_CHECK_ON_ERROR` | what to do when script checking finds an error |
-| `script.checkOnUnsupported` | enum | `warn` | client | no | `--script-check-on-unsupported` | `MCPX_SCRIPT_CHECK_ON_UNSUPPORTED` | what to do when the selected runtime cannot check the script |
-| `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir |
-| `script.devshell` | string | `host` | client | no | `--script-devshell` | `MCPX_SCRIPT_DEVSHELL` | environment the script runs inside: host, or flake:<ref> for a Nix flake devshell |
-| `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment |
-| `script.imports` | enum | `report` | client | no | `--script-imports` | `MCPX_SCRIPT_IMPORTS` | resolve the script's import graph before running it |
-| `script.importsCrossProject` | enum | `isolate` | client | no | `--script-imports-cross-project` | `MCPX_SCRIPT_IMPORTS_CROSS_PROJECT` | how to handle a file edge into another project's manifest |
-| `script.importsNetwork` | enum | `on` | client | no | `--script-imports-network` | `MCPX_SCRIPT_IMPORTS_NETWORK` | allow registry lookups when a package has no declared version |
-| `script.importsOnDynamic` | enum | `warn` | client | no | `--script-imports-on-dynamic` | `MCPX_SCRIPT_IMPORTS_ON_DYNAMIC` | what to do about an import() whose specifier is computed |
-| `script.importsOnMissing` | enum | `fail` | client | no | `--script-imports-on-missing` | `MCPX_SCRIPT_IMPORTS_ON_MISSING` | how to handle a package absent from the dependency set |
-| `script.interpreter` | string | *(empty)* | client | no | `--script-interpreter`, `--interpreter`, `--shell` | `MCPX_SCRIPT_INTERPRETER` | command line that runs scripts instead of a JavaScript runtime |
-| `script.language` | enum | `auto` | client | no | `--script-language`, `--language` | `MCPX_SCRIPT_LANGUAGE` | language a script is written in: auto, typescript, javascript, python or roc |
-| `script.launcher` | source | *(empty)* | client | no | `--script-launcher` | `MCPX_SCRIPT_LAUNCHER` | replace the generated launcher entirely |
-| `script.onError` | source | *(empty)* | client | no | `--script-on-error` | `MCPX_SCRIPT_ON_ERROR` | runs when the script throws; the error still propagates |
-| `script.onSuccess` | source | *(empty)* | client | no | `--script-on-success` | `MCPX_SCRIPT_ON_SUCCESS` | runs when the script returns without throwing |
-| `script.permissions` | string | `all` | client | no | `--script-permissions`, `--permissions` | `MCPX_SCRIPT_PERMISSIONS`, `MCPX_PERMISSIONS` | permission profiles, composed in order, or raw: flags |
-| `script.prefix` | source | *(empty)* | client | no | `--script-prefix` | `MCPX_SCRIPT_PREFIX` | runs after globals are installed, before the script |
-| `script.profiles` | string | *(empty)* | client | no | `--script-profiles` | `MCPX_SCRIPT_PROFILES` | user profiles: {name: {deno: [flags], node: [flags]}} or {name: "raw flags"} |
-| `script.runtime` | string | `auto` | client | no | `--script-runtime`, `--runtime` | `MCPX_SCRIPT_RUNTIME` | which JavaScript runtime executes the script |
-| `script.runtimeOrder` | list | `deno,bun,node` | client | no | `--script-runtime-order` | `MCPX_SCRIPT_RUNTIME_ORDER` | the runtimes auto tries, in order |
-| `script.runtimes` | string | *(empty)* | client | no | `--script-runtimes` | `MCPX_SCRIPT_RUNTIMES` | named runtime binaries: {name: {kind, bin, args}} |
-| `script.suffix` | source | *(empty)* | client | no | `--script-suffix` | `MCPX_SCRIPT_SUFFIX` | runs last on both paths, like a finally |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `script.before` | source | *(empty)* | client | no | `--script-before` | `MCPX_SCRIPT_BEFORE` | runs first, ahead of the globals being installed | `TestScriptPhasesRunFromTheEnvironment` |
+| `script.captureConsole` | bool | `true` | client | no | `--script-capture-console` | `MCPX_SCRIPT_CAPTURE_CONSOLE` | route console calls into the log | `TestScriptCaptureConsoleOffDropsConsoleOutput` |
+| `script.check` | enum | `off` | client | no | `--script-check`, `--script-typecheck`, `--typecheck` | `MCPX_SCRIPT_CHECK`, `MCPX_SCRIPT_TYPECHECK` | check the generated program before running it; path alias: script.typecheck; one of off, types (also on), strict | `TestScriptTypecheckOnRefusesATypeError` |
+| `script.checkOnError` | enum | `fail` | client | no | `--script-check-on-error` | `MCPX_SCRIPT_CHECK_ON_ERROR` | what to do when script checking finds an error | `TestScriptCheckOnErrorDecidesOnACheckError` |
+| `script.checkOnUnsupported` | enum | `warn` | client | no | `--script-check-on-unsupported` | `MCPX_SCRIPT_CHECK_ON_UNSUPPORTED` | what to do when the selected runtime cannot check the script | `TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes` |
+| `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir | `TestScriptCwdIsReachableFromTheEnvironment` |
+| `script.devshell` | string | `host` | client | no | `--script-devshell` | `MCPX_SCRIPT_DEVSHELL` | environment the script runs inside: host, or `flake:<ref>` for a Nix flake devshell | `TestScriptDevshellIsReachableFromTheEnvironment` |
+| `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment | `TestScriptEnvIsReachableFromTheEnvironment` |
+| `script.imports` | enum | `report` | client | no | `--script-imports` | `MCPX_SCRIPT_IMPORTS` | resolve the script's import graph before running it | `TestScriptImportsOffSkipsTheImportPipeline` |
+| `script.importsCrossProject` | enum | `isolate` | client | no | `--script-imports-cross-project` | `MCPX_SCRIPT_IMPORTS_CROSS_PROJECT` | how to handle a file edge into another project's manifest | `TestScriptImportsCrossProjectDecidesAForeignProjectEdge` |
+| `script.importsNetwork` | enum | `on` | client | no | `--script-imports-network` | `MCPX_SCRIPT_IMPORTS_NETWORK` | allow registry lookups when a package has no declared version | `TestScriptImportsNetworkDecidesWhetherToPinAnUndeclaredPackage` |
+| `script.importsOnDynamic` | enum | `warn` | client | no | `--script-imports-on-dynamic` | `MCPX_SCRIPT_IMPORTS_ON_DYNAMIC` | what to do about an import() whose specifier is computed | `TestScriptImportsOnDynamicDecidesAComputedImport` |
+| `script.importsOnMissing` | enum | `fail` | client | no | `--script-imports-on-missing` | `MCPX_SCRIPT_IMPORTS_ON_MISSING` | how to handle a package absent from the dependency set | `TestScriptImportsOnMissingDecidesOnAMissingPackage` |
+| `script.interpreter` | string | *(empty)* | client | no | `--script-interpreter`, `--interpreter`, `--shell` | `MCPX_SCRIPT_INTERPRETER` | command line that runs scripts instead of a JavaScript runtime | `TestScriptInterpreterIsReachableFromTheEnvironment` |
+| `script.language` | enum | `auto` | client | no | `--script-language`, `--language` | `MCPX_SCRIPT_LANGUAGE` | language a script is written in: auto, typescript, javascript, python or roc | `TestScriptLanguageRunsPython` |
+| `script.launcher` | source | *(empty)* | client | no | `--script-launcher` | `MCPX_SCRIPT_LAUNCHER` | replace the generated launcher entirely | `TestScriptLauncherReplacesTheLauncher` |
+| `script.onError` | source | *(empty)* | client | no | `--script-on-error` | `MCPX_SCRIPT_ON_ERROR` | runs when the script throws; the error still propagates | `TestScriptPhasesRunFromTheEnvironment` |
+| `script.onSuccess` | source | *(empty)* | client | no | `--script-on-success` | `MCPX_SCRIPT_ON_SUCCESS` | runs when the script returns without throwing | `TestScriptPhasesRunFromTheEnvironment` |
+| `script.permissions` | string | `all` | client | no | `--script-permissions`, `--permissions` | `MCPX_SCRIPT_PERMISSIONS`, `MCPX_PERMISSIONS` | permission profiles, composed in order, or raw: flags | `TestScriptPermissionsSandboxesNode` |
+| `script.prefix` | source | *(empty)* | client | no | `--script-prefix` | `MCPX_SCRIPT_PREFIX` | runs after globals are installed, before the script | `TestScriptPrefixIsReachableFromTheEnvironment` |
+| `script.profiles` | string | *(empty)* | client | no | `--script-profiles` | `MCPX_SCRIPT_PROFILES` | user profiles: {name: {deno: [flags], node: [flags]}} or {name: "raw flags"} | `TestScriptProfilesDefinesAProfile` |
+| `script.runtime` | string | `auto` | client | no | `--script-runtime`, `--runtime` | `MCPX_SCRIPT_RUNTIME` | which JavaScript runtime executes the script | `TestScriptRuntimeSelectsTheRuntime` |
+| `script.runtimeOrder` | list | `deno,bun,node` | client | no | `--script-runtime-order` | `MCPX_SCRIPT_RUNTIME_ORDER` | the runtimes auto tries, in order | `TestScriptRuntimeOrderRanksTheAutoPick` |
+| `script.runtimes` | string | *(empty)* | client | no | `--script-runtimes` | `MCPX_SCRIPT_RUNTIMES` | named runtime binaries: {name: {kind, bin, args}} | `TestScriptRuntimesDeclaresARuntime` |
+| `script.suffix` | source | *(empty)* | client | no | `--script-suffix` | `MCPX_SCRIPT_SUFFIX` | runs last on both paths, like a finally | `TestScriptPhasesRunFromTheEnvironment` |
 
 ### search
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `search.limit` | int | `20` | call | yes | `--search-limit`, `--limit`, `--n` | `MCPX_SEARCH_LIMIT` | how many tools a search returns |
-| `search.semantic` | bool | `false` | call | yes | `--search-semantic` | `MCPX_SEARCH_SEMANTIC` | rank search results using local dense vector embeddings |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `search.limit` | int | `20` | call | yes | `--search-limit`, `--limit`, `--n` | `MCPX_SEARCH_LIMIT` | how many tools a search returns | `TestSearchLimitCapsTheResults` |
+| `search.semantic` | bool | `false` | call | yes | `--search-semantic` | `MCPX_SEARCH_SEMANTIC` | rank search results using local dense vector embeddings | `TestSearchSemanticRanksWithTheConfiguredEmbedder` |
 
 ### serve
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `serve.mode` | string | `code-mode` | daemon | no | `--serve-mode`, `--mode` | `MCPX_SERVE_MODE` | server mode: code-mode, reactive, or full |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `serve.mode` | string | `code-mode` | daemon | no | `--serve-mode`, `--mode` | `MCPX_SERVE_MODE` | server mode: code-mode, reactive, or full | `TestServeModeSelectsTheServedSurface` |
 
 ### session
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `session.releaseTimeout` | duration | `10s` | client | no | `--session-release-timeout` | `MCPX_SESSION_RELEASE_TIMEOUT` | *(plumbing)* how long releasing a finished session may take |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `session.releaseTimeout` | duration | `10s` | client | no | `--session-release-timeout` | `MCPX_SESSION_RELEASE_TIMEOUT` | *(plumbing)* how long releasing a finished session may take | `TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment` |
 
 ### spec
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `spec.first` | string | *(empty)* | daemon | no | `--mcp-spec` | `MCPX_MCP_SPEC` | move one MCP revision to the front of spec.precedence |
-| `spec.lenient` | list | *(empty)* | daemon | no | `--spec-lenient` | `MCPX_SPEC_LENIENT` | MCP revisions not held strictly; every revision not listed is strict |
-| `spec.precedence` | list | `2026-07-28,2025-11-25,2025-06-18,2025-03-26,2024-11-05` | daemon | no | `--spec-precedence` | `MCPX_SPEC_PRECEDENCE` | MCP revisions in the order their rules win a conflict, first wins |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `spec.first` | string | *(empty)* | daemon | no | `--mcp-spec` | `MCPX_MCP_SPEC` | move one MCP revision to the front of spec.precedence | `TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage` |
+| `spec.lenient` | list | *(empty)* | daemon | no | `--spec-lenient` | `MCPX_SPEC_LENIENT` | MCP revisions not held strictly; every revision not listed is strict | `TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered` |
+| `spec.precedence` | list | `2026-07-28,2025-11-25,2025-06-18,2025-03-26,2024-11-05` | daemon | no | `--spec-precedence` | `MCPX_SPEC_PRECEDENCE` | MCP revisions in the order their rules win a conflict, first wins | `TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment` |
 
 ### stats
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `stats.top` | int | `20` | call | yes | `--stats-top` | `MCPX_STATS_TOP` | how many rows a ranked statistic shows |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `stats.top` | int | `20` | call | yes | `--stats-top` | `MCPX_STATS_TOP` | how many rows a ranked statistic shows | `TestStatsTopLimitsTheRowsTheStatsAPIReports` |
 
 ### tasks
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `tasks.maxAge` | duration | `1h0m0s` | daemon | yes | `--tasks-max-age` | `MCPX_TASKS_MAX_AGE` | the maximum retention period for a terminal task result, even when repeatedly read |
-| `tasks.resultWait` | duration | `2m0s` | call | yes | `--tasks-result-wait` | `MCPX_TASKS_RESULT_WAIT` | how long collecting a task result blocks before giving up |
-| `tasks.ttl` | duration | `10m0s` | daemon | yes | `--tasks-ttl` | `MCPX_TASKS_TTL` | how long a finished task's result is kept |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `tasks.maxAge` | duration | `1h0m0s` | daemon | yes | `--tasks-max-age` | `MCPX_TASKS_MAX_AGE` | the maximum retention period for a terminal task result, even when repeatedly read | `TestTasksMaxAgeIsReachableFromEnvironment` |
+| `tasks.resultWait` | duration | `2m0s` | call | yes | `--tasks-result-wait` | `MCPX_TASKS_RESULT_WAIT` | how long collecting a task result blocks before giving up | `TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment` |
+| `tasks.ttl` | duration | `10m0s` | daemon | yes | `--tasks-ttl` | `MCPX_TASKS_TTL` | how long a finished task's result is kept | `TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment` |
 
 ### transport
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `transport.allowedOrigins` | list | *(empty)* | daemon | no | `--transport-allowed-origins` | `MCPX_TRANSPORT_ALLOWED_ORIGINS` | browser Origins, beyond loopback, that may reach /mcp |
-| `transport.bearerToken` | string | *(empty)* | daemon | no | `--transport-bearer-token` | `MCPX_TRANSPORT_BEARER_TOKEN` | when set, every /v1 and /mcp request must carry this token as a Bearer credential |
-| `transport.sessionMetaKeys` | list | `dev.mcpx/session,ai.opencode/sessionID` | daemon | yes | `--transport-session-meta-keys` | `MCPX_TRANSPORT_SESSION_META_KEYS` | the _meta keys a client may name its session with, first present wins |
-| `transport.sseKeepAlive` | duration | `15s` | daemon | no | `--transport-sse-keep-alive` | `MCPX_TRANSPORT_SSE_KEEP_ALIVE` | how often a quiet MCP event stream carries a comment line |
-| `transport.stdioDrain` | duration | `30s` | client | no | `--transport-stdio-drain` | `MCPX_TRANSPORT_STDIO_DRAIN` | how long `mcpx serve` finishes in-flight requests after its input closes |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `transport.allowedOrigins` | list | *(empty)* | daemon | no | `--transport-allowed-origins` | `MCPX_TRANSPORT_ALLOWED_ORIGINS` | browser Origins, beyond loopback, that may reach /mcp | `TestTransportAllowedOriginsAreServed` |
+| `transport.bearerToken` | string | *(empty)* | daemon | no | `--transport-bearer-token` | `MCPX_TRANSPORT_BEARER_TOKEN` | when set, every /v1 and /mcp request must carry this token as a Bearer credential | `TestTransportBearerTokenGatesTheDaemon` |
+| `transport.sessionMetaKeys` | list | `dev.mcpx/session,ai.opencode/sessionID` | daemon | yes | `--transport-session-meta-keys` | `MCPX_TRANSPORT_SESSION_META_KEYS` | the _meta keys a client may name its session with, first present wins | `TestTransportSessionMetaKeysNameTheSession` |
+| `transport.sseKeepAlive` | duration | `15s` | daemon | no | `--transport-sse-keep-alive` | `MCPX_TRANSPORT_SSE_KEEP_ALIVE` | how often a quiet MCP event stream carries a comment line | `TestTransportSSEKeepAliveCommentsOnAQuietStream` |
+| `transport.stdioDrain` | duration | `30s` | client | no | `--transport-stdio-drain` | `MCPX_TRANSPORT_STDIO_DRAIN` | how long `mcpx serve` finishes in-flight requests after its input closes | `TestTransportStdioDrainBoundsServeShutdown` |
 
 ### upstream
 
-| setting | kind | default | scope | hot | flag | variable | governs |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `upstream.eraCache` | bool | `true` | daemon | no | `--upstream-era-cache` | `MCPX_UPSTREAM_ERA_CACHE` | remember which era each server configuration speaks, across restarts |
-| `upstream.probeTimeout` | duration | `2s` | daemon | no | `--upstream-probe-timeout` | `MCPX_UPSTREAM_PROBE_TIMEOUT` | how long a stdio server/discover may go unanswered before initialize is also sent |
-| `upstream.protocol` | enum | `prefer-discover` | daemon | no | `--upstream-protocol` | `MCPX_UPSTREAM_PROTOCOL` | which request to send first to a server that names no protocol of its own; one of prefer-discover (also modern, prefer-modern, prefer-stateless, prefer-newest), prefer-initialize (also legacy, prefer-legacy, prefer-session, prefer-oldest), force-discover (also force-modern, force-stateless), force-initialize (also force-legacy, force-session), follow |
+| setting | kind | default | scope | hot | flag | variable | governs | effect probe or exemption |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `upstream.eraCache` | bool | `true` | daemon | no | `--upstream-era-cache` | `MCPX_UPSTREAM_ERA_CACHE` | remember which era each server configuration speaks, across restarts | `TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts` |
+| `upstream.probeTimeout` | duration | `2s` | daemon | no | `--upstream-probe-timeout` | `MCPX_UPSTREAM_PROBE_TIMEOUT` | how long a stdio server/discover may go unanswered before initialize is also sent | `TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment` |
+| `upstream.protocol` | enum | `prefer-discover` | daemon | no | `--upstream-protocol` | `MCPX_UPSTREAM_PROTOCOL` | which request to send first to a server that names no protocol of its own; one of prefer-discover (also modern, prefer-modern, prefer-stateless, prefer-newest), prefer-initialize (also legacy, prefer-legacy, prefer-session, prefer-oldest), force-discover (also force-modern, force-stateless), force-initialize (also force-legacy, force-session), follow | `TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts` |
 
 <!-- END GENERATED -->
 

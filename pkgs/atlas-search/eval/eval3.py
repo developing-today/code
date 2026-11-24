@@ -15,6 +15,12 @@ Everything else is a faithful port of the v2 harness:
   top-30 fused by reciprocal rank fusion, k=60; the hybrid FTS branch
   uses words >3 chars WITHOUT the STOP filter and LIMIT 30, exactly as
   the v2 harness did).
+- Configuration note (#13283): this hybrid is the Python eval
+  lineage — top-30 branches, RRF k=60, vectors truncated under
+  --trunc (384 in the gate lineage). The production shape is a
+  different configuration (RRF k=10, pool 100 per branch, full 768
+  dimensions; see ../atlas_search.py). Numbers from this harness are
+  eval-lineage numbers; cite them with their configuration.
 - bge query prefix: same rule as eval_vectors.py ("bge" in model name ->
   "Represent this sentence for searching relevant passages: ").
 - ST models: queries encoded with prompt_name="query" so the model's own
@@ -25,6 +31,11 @@ Everything else is a faithful port of the v2 harness:
 Corpus guard: before scoring, chunk count and the v3 fingerprint
 (content_hash of chunks with id % 997 = 0, SHA-256 of concatenation)
 are recomputed and compared with the frozen values; mismatch = abort.
+
+Log hygiene (#13599): progress lines carry question id, category, rank
+and position only — never query text — so stdout retained from a fleet
+run cannot expose free-form queries. Scores, per-question output file
+format, fingerprint enforcement and query processing are unchanged.
 
 Usage:
   eval3.py --mode fts   --corpus DB --queries fixtures/golden-311.json --out res.json
@@ -220,6 +231,7 @@ def main():
     hits5 = hits10 = 0
     mrr_sum = 0.0
     per_cat = {}
+    n = len(queries)
     for qi, q in enumerate(queries):
         gold = set(q["chunk_ids"])
         if args.mode == "fts":
@@ -268,12 +280,13 @@ def main():
         c[0] += 1 if (rank and rank <= 10) else 0
         c[2] += (1.0 / rank) if rank else 0.0
         per_q.append({"id": q["id"], "category": q["category"], "rank": rank})
+        # Aggregate progress only: id, category, rank and position.
+        # Query text must never reach stdout/stderr (#13599).
         print(
-            "%-8s %-16s %5s  %s"
-            % (q["id"], q["category"], str(rank or "-"), q["query"][:60])
+            "%-8s %-16s %5s  [%d/%d]"
+            % (q["id"], q["category"], str(rank or "-"), qi + 1, n)
         )
 
-    n = len(queries)
     summary = {
         "tag": args.tag,
         "mode": args.mode,

@@ -3,6 +3,7 @@
 // decimal digits only, range-checked, and a bad value stops the process
 // at boot naming the variable.
 import { readFileSync } from "node:fs";
+import { machineName } from "./edge-proto.ts";
 
 /** A token issuer whose signed tokens identify a caller. */
 export interface Issuer {
@@ -61,6 +62,9 @@ export interface Config {
   edgeKeyFile: string;
   /** What became of each action the edge held for this host. */
   edgeDoneFile: string;
+  /** What this machine is called, where machines are listed. Empty when
+   * the environment does not say: the host's own name is used then. */
+  machineName: string;
   /** The dashboard's decision-set store: the questions waiting on the
    * owner, and the per-set tokens that authorise an answer. */
   decisionsFile: string;
@@ -256,6 +260,7 @@ export function readConfig(
     edgeUrl,
     edgeKeyFile: env.PM_CONSOLE_EDGE_KEY_FILE ?? `${home}/.local/state/pm-console/edge-key.json`,
     edgeDoneFile: env.PM_CONSOLE_EDGE_DONE_FILE ?? `${home}/.local/state/pm-console/edge-done.json`,
+    machineName: machineName(env.PM_CONSOLE_MACHINE),
     decisionsFile: env.PM_CONSOLE_DECISIONS_FILE ?? `${home}/.local/state/pm-aggregator/decisions.json`,
     promptLabel: env.PM_CONSOLE_PROMPT_LABEL ?? "owner/prompt",
     needsRepos: list(env, "PM_CONSOLE_NEEDS_REPOS", [

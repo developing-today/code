@@ -414,9 +414,17 @@ fn py_opt(v: &Value) -> String {
     }
 }
 
+/// Seconds between `poll` status requests after `polls` completed polls
+/// (#5757: exponential 1 s doubling, capped at 10 s, so long jobs cost
+/// ~5x fewer round trips at a worst-case detection latency of 10 s).
+pub fn poll_interval(polls: u32) -> Duration {
+    Duration::from_secs(1u64.saturating_mul(1 << polls.min(4)).min(10))
+}
+
 pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
     let deadline = Instant::now() + Duration::from_secs(wait_s);
     let mut offs = load_offsets(job);
+    let mut polls: u32 = 0;
     loop {
         let trip = crate::new_trip();
         let path = format!("/jobs/{job}?out_off={}&err_off={}", offs.out, offs.err);
@@ -468,7 +476,8 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
             eprintln!("[laptop-agent] job {job} still running");
             return 0;
         }
-        thread::sleep((deadline - now).min(Duration::from_secs(3)));
+        thread::sleep((deadline - now).min(poll_interval(polls)));
+        polls = polls.saturating_add(1);
     }
 }
 
@@ -592,4 +601,33 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
         data.len()
     );
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #5757 poll-backoff oracle: 1 s doubling capped at 10 s.
+    #[test]
+    fn poll_interval_starts_at_1s_doubles_and_caps_at_10s_5757() {
+        assert_eq!(poll_interval(0), Duration::from_secs(1));
+        assert_eq!(poll_interval(1), Duration::from_secs(2));
+        assert_eq!(poll_interval(2), Duration::from_secs(4));
+        assert_eq!(poll_interval(3), Duration::from_secs(8));
+        assert_eq!(poll_interval(4), Duration::from_secs(10));
+        assert_eq!(poll_interval(5), Duration::from_secs(10));
+        assert_eq!(poll_interval(100), Duration::from_secs(10));
+    }
+
+    /// Monotonic and never above the 10 s detection-latency cap.
+    #[test]
+    fn poll_interval_never_exceeds_the_10s_cap_5757() {
+        let mut prev = Duration::ZERO;
+        for n in 0..20 {
+            let cur = poll_interval(n);
+            assert!(cur >= prev, "non-decreasing at poll {n}");
+            assert!(cur <= Duration::from_secs(10), "capped at poll {n}");
+            prev = cur;
+        }
+    }
 }

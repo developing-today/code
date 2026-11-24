@@ -43,6 +43,14 @@
 //! Versioning policy: the integer is the protocol *major*; a broker
 //! accepts majors N and N−1 (see [`broker_accepts`]); fields are
 //! additive within a major and unknown fields are ignored.
+//!
+//! The `proxy-mux` stream family ([`mux`]) layers multiplexed
+//! streams over one tunnel on this same framing (issue #5756, seam
+//! record `doc/2026-11-16T10-40-00Z_design_id5756_multiplexed_streams_seam.md`):
+//! dormant until both hello peers advertise the capability, with the
+//! request/response path above as the permanent fallback.
+
+pub mod mux;
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};

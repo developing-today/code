@@ -220,6 +220,33 @@ reports:
 The validator lives in `pkgs/id/src/shell_contract.rs`, with a TypeScript port
 for the browser tests in `pkgs/id/web/src/shell-contract.ts`.
 
+## The conformance suite
+
+One shell's check is not the gate for a family of shells. The suite
+manifest (`pkgs/id/contract/shell-suite.v1.json`) names every v1
+shell with its **capability statement** — the client frames it
+sends, the server frames it presents, the capability providers it
+declares, and the client frames its required workflow must
+exercise — plus the path of its recorded session
+(`pkgs/id/contract/sessions/`). One command runs them all:
+
+```sh
+id world contract --check-suite pkgs/id/contract/shell-suite.v1.json
+```
+
+For each shell the suite validates the statement against the
+contract (a statement claiming a frame the contract does not name
+fails), runs the recorded session through the conformance check
+above, and verifies the session stays inside the statement and
+actually exercises the workflow frames it requires — a thin
+transcript that never performs the shell's workflow is not a pass
+(review finding, PR #8243). Any failure is reported per shell, by
+name, and the command exits nonzero. A shell whose own slice has
+not recorded a session yet is reported as `UNRECORDED`, never
+silently skipped; adding its session path to the manifest puts it
+under the same gate with no code change. The suite is the product
+(core topic #6279; packaging slice #10931).
+
 ## How the contract stays true
 
 The contract would be worthless if it drifted from the host. These tests in
