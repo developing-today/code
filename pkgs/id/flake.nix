@@ -648,6 +648,15 @@
                     rocCompiler
                     pkgs.python3
                   ];
+                  # pkgs/id/doc is a symlink to the repo-root doc/, which
+                  # dangles inside the check sandbox (src is pkgs/id
+                  # alone), so the key-parity corpus reads as missing.
+                  # Materialize just that file before the recipe runs.
+                  beforeCheck = ''
+                    rm doc
+                    mkdir doc
+                    cp ${../../doc/kitty-disambiguate-v1-fixtures.json} doc/kitty-disambiguate-v1-fixtures.json
+                  '';
                   justCmd = "roc-test";
                 };
                 # Rebuild all checked-in Roc examples with the pinned compiler, then
