@@ -192,12 +192,11 @@ session_closed`, malformed ids `400 invalid_session_id`. An agent
 
 ## What is a stub
 
-The remaining door routes authenticate, then answer
-`501 not_implemented` naming the issue that fills them:
-
-| Door | Routes                                                | Filled by |
-| ---- | ----------------------------------------------------- | --------- |
-| sync | `POST /v1/sync/project`, `POST /v1/sync/queue-github` | #12591    |
+No door routes remain stubs. The last one was the sync door —
+`POST /v1/sync/project` and `POST /v1/sync/queue-github`, filled
+by #12591 — whose routes previously authenticated, then answered
+`501 not_implemented`. They are implemented now; the smoke suite
+exercises both end to end.
 
 Stamp signing (#12586) is a separate slice, deliberately not
 absorbed here. The session registry (#12584) is real, above — it is
