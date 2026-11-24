@@ -111,13 +111,22 @@
 // agent-sent (agent:<name>) ones in the owner's log; a command still
 // reaches its agent with no sender, as every command does.
 //
-// A third scope, "read", opens the owner's two pipeline views to the
-// credential that holds it, at the agent-side address:
+// A third scope, "read", opens the owner's views to the credential
+// that holds it, at the agent-side address:
 //
 //   GET  /fleet/<credential>/agents    the registered agents (the
 //                                      ownerRoute "agents" store op)
 //   GET  /fleet/<credential>/messages  the fleet message log (the
 //                                      ownerRoute "messages" store op)
+//   GET  /fleet/<credential>/pipeline  the unified pipeline feed
+//                                      (pipeline.js, #14374)
+//   GET  /fleet/<credential>/directory the unified agents list —
+//                                      fleet registry + note
+//                                      identities (pipeline.js)
+//   GET  /fleet/<credential>/credentials  per-agent credential state
+//                                      (active / revoked; never a
+//                                      hash), as the owner's own
+//                                      GET /api/<owner>/fleet/credentials
 //
 // Enroll-minted agent credentials never carry "read" (the exchange
 // mints CREDENTIAL_SCOPES only): the pipeline stays the owner's and
@@ -158,6 +167,7 @@ import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./
 import { GLOB_SEGMENT, globMatch, isGlob } from "./glob.js";
 import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
 import { normalizeNoteIdentity, noteTokenHash } from "./notes.js";
+import { pipelineFeed, unifiedAgents } from "./pipeline.js";
 import { relay, replyAddress } from "./relay.js";
 
 export const FLEET_KINDS = ["message", "command"];
@@ -1161,6 +1171,65 @@ export async function mintFleetCredential(store, data, now = new Date().toISOStr
   return { agent: m.agent, addr: m.addr, scopes: m.scopes, credential: value };
 }
 
+/**
+ * Folds credential rows (hashes already stripped by the caller) into
+ * one state row per agent: whether the agent's credential stands
+ * active (at least one live credential) or revoked, the scopes its
+ * live credentials carry between them, the address a live service
+ * credential sends as, and when the state last changed (the first
+ * mint, or the final revocation). An agent part-revoked and part-live
+ * is active, and says no revocation time: a superseded credential's
+ * end is not the agent's.
+ */
+export function foldCredentialState(rows) {
+  const byAgent = new Map();
+  for (const r of rows) {
+    let a = byAgent.get(r.agent);
+    if (!a) {
+      a = {
+        agent: r.agent,
+        state: "revoked",
+        scopes: [],
+        addr: null,
+        credentials: 0,
+        live: 0,
+        created: r.created,
+        revoked_at: null,
+      };
+      byAgent.set(r.agent, a);
+    }
+    a.credentials++;
+    if (r.created < a.created) a.created = r.created;
+    if (r.revoked_at) {
+      if (!a.revoked_at || r.revoked_at > a.revoked_at) a.revoked_at = r.revoked_at;
+    } else {
+      a.live++;
+      for (const s of JSON.parse(r.scopes)) if (!a.scopes.includes(s)) a.scopes.push(s);
+      if (r.addr) a.addr = r.addr;
+    }
+  }
+  const out = [...byAgent.values()];
+  for (const a of out) {
+    if (a.live > 0) {
+      a.state = "active";
+      a.revoked_at = null;
+    }
+  }
+  return out.sort((x, y) => (x.agent < y.agent ? -1 : x.agent > y.agent ? 1 : 0));
+}
+
+/**
+ * Per-agent credential state for the owner's console (design §4.9):
+ * the fold above over every credential row. Only hashes are excluded
+ * — they never leave the store; this is state, not key material.
+ */
+export function fleetCredentialStateSql(sql) {
+  const rows = sql
+    .exec("SELECT agent, scopes, addr, created, revoked_at FROM fleet_credential ORDER BY agent, created")
+    .toArray();
+  return foldCredentialState(rows);
+}
+
 /** Revokes every live credential of the agent; returns how many. */
 export function fleetCredentialRevokeSql(sql, agent, now) {
   return sql
@@ -1538,15 +1607,25 @@ async function agentRoute(request, store, what, url, delivered, cred = null) {
     // command names no sender.
     return json({ ...out, message: commandForAgent(out.message) });
   }
-  // The owner's pipeline views, for a credential holding the "read"
-  // scope (a service credential, #14373): the same store ops the owner
-  // routes answer, nothing more. Enroll-minted agent credentials never
-  // hold the scope, and the shared fleet token does not open these.
-  if (what === "agents" || what === "messages") {
+  // The owner's views, for a credential holding the "read" scope (a
+  // service credential, #14373): the same store ops the owner routes
+  // answer, nothing more. #14374 adds the unified projections the
+  // console's Messages and Agents surfaces read — the pipeline feed,
+  // the unified agents list and per-agent credential state — the very
+  // functions the owner's /api routes answer with. All are reads; no
+  // credential value or hash is in any of them, and revoking stays an
+  // owner-token route: a service credential can see that a credential
+  // stands revoked, never revoke one. Enroll-minted agent credentials
+  // never hold the scope, and the shared fleet token does not open
+  // these.
+  if (what === "agents" || what === "messages" || what === "pipeline" || what === "directory" || what === "credentials") {
     if (request.method !== "GET") return notAllowed("GET");
     if (!cred || !scoped("read")) return notFound();
     if (what === "agents") return json(await store.fleet("agents", {}));
-    return json(await store.fleet("messages", query(url)));
+    if (what === "messages") return json(await store.fleet("messages", query(url)));
+    if (what === "pipeline") return json(await pipelineFeed(store, Object.fromEntries(url.searchParams.entries())));
+    if (what === "directory") return json(await unifiedAgents(store));
+    return json({ credentials: await store.fleetCredentialState() });
   }
   return notFound();
 }
@@ -1633,6 +1712,10 @@ export async function handleFleet(request, env, url, getStore, deliveredFor = ()
       if (!m || m.role !== "owner") return null; // not ours: the caller 404s
       const store = getStore();
       if (parts[2] === "fleet") {
+        if (parts.length === 4 && parts[3] === "credentials") {
+          if (request.method !== "GET") return notAllowed("GET");
+          return json({ credentials: await store.fleetCredentialState() });
+        }
         if (parts.length === 4) return await ownerRoute(request, store, parts[3], url, deliveredFor(store));
         if (parts.length === 5 && parts[3] === "credentials" && parts[4] === "revoke") {
           if (request.method !== "POST") return notAllowed("POST");
