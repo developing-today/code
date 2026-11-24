@@ -1735,6 +1735,10 @@ pub enum KeysetCommand {
     },
     /// Enrol another device key. The device's 32-byte key file is read
     /// to countersign the enrolment, proving the device holds the key.
+    /// Prefer the `enrol-offer` / `enrol-accept` / `enrol-complete`
+    /// pairing flow when the secret must not travel: same record, but
+    /// the new device only reveals a countersignature over a scanned
+    /// offer.
     Enrol {
         /// The new device's key file (the `.iroh-key` it was created with).
         device_key_file: PathBuf,
@@ -1742,6 +1746,51 @@ pub enum KeysetCommand {
         #[arg(long)]
         label: String,
         /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Mint an enrolment offer for a new device to scan (#2380 packet
+    /// 2). Prints the `id:keyset-enrol?…` payload: show it as a QR
+    /// code or paste it to the new device. It names the exact head
+    /// the enrolment will extend, so a captured offer cannot enrol
+    /// twice across a moved head. The device answers with `id keyset
+    /// enrol-accept`; file its answer with `id keyset enrol-complete`.
+    EnrolOffer {
+        /// A name for the device, shown by `id keyset show`.
+        #[arg(long)]
+        label: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Answer an enrolment offer on the joining device. Countersigns
+    /// the scanned offer with this device's key and prints the accept
+    /// for the admin to file with `id keyset enrol-complete`. The
+    /// secret never leaves this device: only the public key and its
+    /// proof-of-possession signature travel.
+    EnrolAccept {
+        /// The offer string, as printed by `id keyset enrol-offer` or
+        /// scanned from its QR code.
+        offer: String,
+        /// This device's key file (the `.iroh-key` it was created with).
+        device_key_file: PathBuf,
+    },
+    /// File a scanned enrolment accept, printed by `id keyset
+    /// enrol-accept` on the new device, as a `DeviceEnrolled` record.
+    /// Stale accepts (the head moved on), accepts for another admin,
+    /// and bad countersignatures are refused and change nothing.
+    EnrolComplete {
+        /// The accept string, as printed or scanned.
+        accept: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Print this identity's device payload for an admin to scan
+    /// before `id keyset revoke`: the revocation half of pairing, so
+    /// no hex is typed. The payload names only the public key.
+    DeviceQr {
+        /// Show the client identity's payload instead of the server's.
         #[arg(long)]
         client: bool,
     },

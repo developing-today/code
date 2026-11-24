@@ -87,7 +87,7 @@ struct SignedBody<'a> {
     entry: &'a KeysetEntry,
 }
 
-fn body_bytes(author: &str, lamport: u64, prev_hash: &str, entry: &KeysetEntry) -> Result<Vec<u8>> {
+pub(crate) fn body_bytes(author: &str, lamport: u64, prev_hash: &str, entry: &KeysetEntry) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&SignedBody {
         author,
         lamport,
