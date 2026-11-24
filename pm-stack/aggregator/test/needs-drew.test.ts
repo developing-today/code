@@ -8,7 +8,7 @@ import {
   needsDrewWait,
   needsDrewWaitCounts,
   needsDrewIncidentKey,
-  needsDrewSearchUrl,
+  needsDrewListUrl,
   type NeedsDrewFetchPage,
   shouldFetchNeedsDrewCensus,
 } from "../src/needs-drew.ts";
@@ -30,38 +30,40 @@ function item(number: number, labels: string[], extra: Record<string, unknown> =
   };
 }
 
-/** Fake search API keyed by (repo, label, page) from the query URL. */
+/** Fake list endpoint keyed by (repo, label, page) from the request URL. */
 function fakeFetch(
-  handler: (repo: string, label: string, page: number) => { total: number; items: unknown[] } | Error,
+  handler: (repo: string, label: string, page: number) => { items: unknown[] } | Error,
 ): NeedsDrewFetchPage {
   return async (url: string) => {
     const u = new URL(url);
-    const q = u.searchParams.get("q") ?? "";
-    const repo = /repo:(\S+)/.exec(q)?.[1] ?? "";
-    const label = /label:"([^"]+)"/.exec(q)?.[1] ?? "";
+    const repo = /^\/repos\/([^/]+\/[^/]+)\/issues$/.exec(u.pathname)?.[1] ?? "";
+    const label = u.searchParams.get("labels") ?? "";
     const page = Number(u.searchParams.get("page") ?? "1");
     const r = handler(repo, label, page);
     if (r instanceof Error) return { ok: false, json: { error: r.message } };
-    return { ok: true, json: { total_count: r.total, items: r.items } };
+    return { ok: true, json: r.items };
   };
 }
 
 describe("needs-drew census (#1226)", () => {
-  test("search URL is open-only, per-label, paginated", () => {
-    const url = needsDrewSearchUrl(REPO, "user/review", 2);
-    expect(url).toContain("page=2");
-    const q = new URL(url).searchParams.get("q") ?? "";
-    expect(q).toContain("state:open");
-    expect(q).toContain('label:"user/review"');
-    expect(q).toContain(`repo:${REPO}`);
+  // #14103: the census reads the list endpoint, not the search API —
+  // a search query with neither is:issue nor is:pull-request is a 422.
+  test("list URL is open-only, per-label, paginated", () => {
+    const url = needsDrewListUrl(REPO, "user/review", 2);
+    const u = new URL(url);
+    expect(u.pathname).toBe(`/repos/${REPO}/issues`);
+    expect(u.searchParams.get("state")).toBe("open");
+    expect(u.searchParams.get("labels")).toBe("user/review");
+    expect(u.searchParams.get("per_page")).toBe("100");
+    expect(u.searchParams.get("page")).toBe("2");
   });
 
   test("both labels censused; an item carrying both appears once with both", async () => {
     const both = item(7, ["user/review", "user/escalated"]);
     const fetchPage = fakeFetch((repo, label) => {
-      if (repo !== REPO) return { total: 0, items: [] };
-      if (label === "user/review") return { total: 2, items: [both, item(8, ["user/review"])] };
-      return { total: 1, items: [both] };
+      if (repo !== REPO) return { items: [] };
+      if (label === "user/review") return { items: [both, item(8, ["user/review"])] };
+      return { items: [both] };
     });
     const census = await buildNeedsDrewCensus(fetchPage, { now: NOW });
     expect(census.complete).toBe(true);
@@ -75,8 +77,8 @@ describe("needs-drew census (#1226)", () => {
   test("PRs are included and distinguished from issues", async () => {
     const fetchPage = fakeFetch((repo, label) =>
       repo === REPO && label === "user/escalated"
-        ? { total: 1, items: [item(9, ["user/escalated"], { pull_request: { url: "x" } })] }
-        : { total: 0, items: [] },
+        ? { items: [item(9, ["user/escalated"], { pull_request: { url: "x" } })] }
+        : { items: [] },
     );
     const census = await buildNeedsDrewCensus(fetchPage, { now: NOW });
     expect(census.items).toHaveLength(1);
@@ -86,18 +88,18 @@ describe("needs-drew census (#1226)", () => {
   test("closed items in a payload are excluded even though the query is open-only", async () => {
     const fetchPage = fakeFetch((repo, label) =>
       repo === REPO && label === "user/review"
-        ? { total: 2, items: [item(10, ["user/review"]), item(11, ["user/review"], { state: "closed" })] }
-        : { total: 0, items: [] },
+        ? { items: [item(10, ["user/review"]), item(11, ["user/review"], { state: "closed" })] }
+        : { items: [] },
     );
     const census = await buildNeedsDrewCensus(fetchPage, { now: NOW });
     expect(census.items.map((i) => i.number)).toEqual([10]);
   });
 
-  test("pagination walks pages until total_count is covered", async () => {
+  test("pagination walks pages until a short page ends the list", async () => {
     const page1 = Array.from({ length: 100 }, (_, i) => item(i + 1, ["user/review"]));
     const fetchPage = fakeFetch((repo, label, page) => {
-      if (repo !== REPO || label !== "user/review") return { total: 0, items: [] };
-      return page === 1 ? { total: 101, items: page1 } : { total: 101, items: [item(101, ["user/review"])] };
+      if (repo !== REPO || label !== "user/review") return { items: [] };
+      return page === 1 ? { items: page1 } : { items: [item(101, ["user/review"])] };
     });
     const census = await buildNeedsDrewCensus(fetchPage, { now: NOW });
     expect(census.items.filter((i) => i.repo === REPO)).toHaveLength(101);
@@ -107,11 +109,24 @@ describe("needs-drew census (#1226)", () => {
     expect(census.complete).toBe(true);
   });
 
+  test("a full page at the cap is truncated, not complete", async () => {
+    const full = Array.from({ length: 100 }, (_, i) => item(i + 1, ["user/review"]));
+    const fetchPage = fakeFetch((repo, label) => {
+      if (repo !== REPO || label !== "user/review") return { items: [] };
+      return { items: full };
+    });
+    const census = await buildNeedsDrewCensus(fetchPage, { now: NOW, repos: [REPO], labels: ["user/review"] });
+    expect(census.items).toHaveLength(1000);
+    expect(census.complete).toBe(false);
+    expect(census.sources[0].count).toBe(1000);
+    expect(census.sources[0].truncated).toBe(true);
+  });
+
   test("a failed source is named, the census is incomplete, other sources still count", async () => {
     const fetchPage = fakeFetch((repo, label) => {
       if (repo === "dezren39/darwin-nix") return new Error("HTTP 403");
-      if (repo === REPO && label === "user/review") return { total: 1, items: [item(12, ["user/review"])] };
-      return { total: 0, items: [] };
+      if (repo === REPO && label === "user/review") return { items: [item(12, ["user/review"])] };
+      return { items: [] };
     });
     const census = await buildNeedsDrewCensus(fetchPage, { now: NOW });
     expect(census.complete).toBe(false);
@@ -121,28 +136,24 @@ describe("needs-drew census (#1226)", () => {
     expect(nix.every((x) => !x.ok && x.error?.includes("403"))).toBe(true);
   });
 
-  // Codex P2 on PR #3970: a search that answers 200 with
-  // incomplete_results:true is a partial sweep, not an empty queue.
-  test("GitHub's incomplete_results flag keeps an authoritative-looking payload incomplete", async () => {
-    const fetchPage: NeedsDrewFetchPage = async () => ({
-      ok: true,
-      json: { total_count: 0, items: [], incomplete_results: true },
-    });
+  // #14103: a query GitHub refuses outright (a 4xx that is not a rate
+  // limit) is a fault of the query, not a transient failure to wait out.
+  test("a refused query is named as a fault of the query", async () => {
+    const fetchPage: NeedsDrewFetchPage = async () => ({ ok: false, json: { status: 422 } });
     const census = await buildNeedsDrewCensus(fetchPage, { now: NOW, repos: [REPO], labels: ["user/review"] });
     expect(census.items).toHaveLength(0);
     expect(census.complete).toBe(false);
-    expect(census.sources[0].incomplete).toBe(true);
-    expect(census.sources[0].truncated).toBeUndefined();
-    // The page must warn, not present an authoritative empty queue.
+    expect(census.sources[0].ok).toBe(false);
+    expect(census.sources[0].error).toContain("query refused by GitHub (HTTP 422)");
+    // The page names the refusal, not just an incomplete census.
     const html = needsDrewCensusHtml(census);
     expect(html).toContain("Label census incomplete");
-    expect(html).toContain("incomplete results");
-    expect(html).toContain("in the sources that answered");
+    expect(html).toContain("query refused by GitHub (HTTP 422)");
   });
 
   test("only a flagged page marks the source incomplete; a clean sweep stays complete", async () => {
     const clean = await buildNeedsDrewCensus(
-      fakeFetch(() => ({ total: 0, items: [] })),
+      fakeFetch(() => ({ items: [] })),
       {
         now: NOW,
         repos: [REPO],
@@ -173,7 +184,7 @@ describe("needs-drew census (#1226)", () => {
     const fetchPage: NeedsDrewFetchPage = async () => {
       calls++;
       await gate;
-      return { ok: true, json: { total_count: 0, items: [] } };
+      return { ok: true, json: [] };
     };
     const sweep = createNeedsDrewSweeper(fetchPage, { repos: [REPO], labels: ["user/review"] });
     const a = sweep();
@@ -197,7 +208,7 @@ describe("needs-drew census (#1226)", () => {
     let calls = 0;
     const fetchPage: NeedsDrewFetchPage = async () => {
       calls++;
-      return { ok: true, json: { total_count: 0, items: [] } };
+      return { ok: true, json: [] };
     };
     const sweep = createNeedsDrewSweeper(
       fetchPage,
@@ -277,10 +288,9 @@ describe("how an item waits", () => {
 
   test("the census reads the marker from the item body and counts each kind of wait", async () => {
     const fetchPage = fakeFetch((repo, label) => {
-      if (repo !== REPO) return { total: 0, items: [] };
-      if (label === "user/review") return { total: 1, items: [item(1, ["user/review"])] };
+      if (repo !== REPO) return { items: [] };
+      if (label === "user/review") return { items: [item(1, ["user/review"])] };
       return {
-        total: 3,
         items: [
           item(2, ["user/escalated"]),
           item(3, ["user/escalated"], { body: '<!-- hands:v1 kind=physical action="Plug in the rack PDU." -->' }),

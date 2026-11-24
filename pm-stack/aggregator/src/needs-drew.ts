@@ -2,7 +2,7 @@
 // system of record for "waits on Drew", and this module reconciles them
 // into the aggregator's attention view as a read-only source. It censuses
 // OPEN issues and PRs carrying user/review or user/escalated across the
-// four repos via the GitHub search API (paginated), deduplicates items
+// four repos via the GitHub list endpoint (paginated, #14103), deduplicates items
 // carrying both labels, and reports per-source failures and freshness
 // honestly — a failed repo/label query is named in `sources`, never
 // silently rendered as "nothing waiting".
@@ -76,10 +76,11 @@ export interface NeedsDrewSourceStatus {
   /** True when the page cap stopped the census early — the count is a
    *  floor, and the census says so instead of looking complete. */
   truncated?: boolean;
-  /** True when any page of this query came back with GitHub's
-   *  `incomplete_results: true` (search timed out / partially indexed).
-   *  The count is then a floor even when it equals `total_count`, so the
-   *  census must never present it as authoritative (Codex P2 on #3970). */
+  /** Retained for the render contract (Codex P2 on #3970): the old
+   *  search endpoint could answer 200 with `incomplete_results: true`
+   *  (search timed out / partially indexed), and the count was then a
+   *  floor even when it equalled `total_count`. The list endpoint
+   *  (#14103) has no such flag, so nothing sets this today. */
   incomplete?: boolean;
 }
 
@@ -98,12 +99,16 @@ export type NeedsDrewFetchPage = (url: string) => Promise<{ ok: boolean; json: u
 const PER_PAGE = 100;
 const MAX_PAGES = 10;
 
-export function needsDrewSearchUrl(repo: string, label: NeedsDrewLabel, page: number): string {
-  const q = `repo:${repo} state:open label:"${label}"`;
-  return `https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=${PER_PAGE}&page=${page}`;
+/** One page of a repo's open issues and PRs carrying a label, as
+ *  GitHub's REST list endpoint has it (#14103): the search endpoint
+ *  refuses a query with neither `is:issue` nor `is:pull-request`
+ *  (HTTP 422), and the list endpoint is on the core allowance, not
+ *  the search allowance, and answers 304 to an unchanged list. */
+export function needsDrewListUrl(repo: string, label: NeedsDrewLabel, page: number): string {
+  return `https://api.github.com/repos/${repo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=${PER_PAGE}&page=${page}`;
 }
 
-interface RawSearchItem {
+interface RawListItem {
   number?: unknown;
   title?: unknown;
   html_url?: unknown;
@@ -194,7 +199,7 @@ export interface NeedsDrewSweeperOptions {
  *
  * Only the attention page render consumes the census; the overview,
  * Today, /api/attention.json and /api/coverage.json discard it. The
- * sweep is up to eight sequential GitHub searches, so paying it for
+ * sweep is up to eight sequential GitHub list reads, so paying it for
  * callers that ignore the result made every view depend on an external
  * API it never needed. Default is "do not fetch" — opting in is
  * explicit, so a new caller cannot inherit the dependency by accident.
@@ -208,7 +213,7 @@ export function shouldFetchNeedsDrewCensus(opts?: { census?: boolean }): boolean
  *
  * A cold or expired cache used to let every concurrent caller start its
  * own sweep — the three attention fragments rendering together produced
- * 24 GitHub search requests instead of 8, burning the search rate limit
+ * 24 GitHub list requests instead of 8, burning the rate limit
  * and then caching a rate-limited partial result for five minutes.
  * Callers that arrive mid-sweep now share the in-flight promise. Only a
  * resolved sweep is cached, so a failure is never served as real data.
@@ -251,21 +256,33 @@ export async function buildNeedsDrewCensus(
       const status: NeedsDrewSourceStatus = { repo, label, ok: true, count: 0, fetchedAt };
       try {
         let page = 1;
-        let total = Number.POSITIVE_INFINITY;
         while (page <= MAX_PAGES) {
-          const res = await fetchPage(needsDrewSearchUrl(repo, label, page));
+          const res = await fetchPage(needsDrewListUrl(repo, label, page));
           if (!res.ok) {
             const j = res.json as { status?: unknown; error?: unknown } | null;
-            throw new Error(typeof j?.status === "number" ? `HTTP ${j.status}` : String(j?.error ?? "fetch failed"));
+            const statusCode = typeof j?.status === "number" ? j.status : null;
+            // A 4xx that is not a rate limit (403/429) is a fault of
+            // the query itself (#14103): waiting cannot fix it, so the
+            // error says so instead of reading as a transient failure.
+            if (
+              statusCode !== null &&
+              statusCode >= 400 &&
+              statusCode < 500 &&
+              statusCode !== 403 &&
+              statusCode !== 429
+            ) {
+              throw new Error(
+                `query refused by GitHub (HTTP ${statusCode}): the request is invalid, retrying will not help`,
+              );
+            }
+            throw new Error(
+              statusCode !== null ? `HTTP ${statusCode}` : String(j?.error ?? "fetch failed"),
+            );
           }
-          const payload = res.json as { total_count?: unknown; items?: unknown; incomplete_results?: unknown };
-          if (typeof payload?.total_count === "number") total = payload.total_count;
-          // GitHub returns 200 + incomplete_results for a search that
-          // timed out or is only partially indexed. Ignoring the flag
-          // would let a truncated sweep look complete — worst case an
-          // authoritative empty queue (Codex P2 on #3970).
-          if (payload?.incomplete_results === true) status.incomplete = true;
-          const rawItems = Array.isArray(payload?.items) ? (payload.items as RawSearchItem[]) : [];
+          // The list endpoint answers a bare array: no total_count, no
+          // incomplete_results flag. A short page ends the list; a full
+          // page at the cap means the census stopped early (#14103).
+          const rawItems = Array.isArray(res.json) ? (res.json as RawListItem[]) : [];
           for (const raw of rawItems) {
             // Defensive: the query asks for state:open, but a stale or
             // hand-built payload must never leak a closed item in.
@@ -295,10 +312,10 @@ export async function buildNeedsDrewCensus(
               hands: extractNeedsDrewHands(raw.body),
             });
           }
-          if (rawItems.length < PER_PAGE || status.count >= total) break;
+          if (rawItems.length < PER_PAGE) break;
+          if (page === MAX_PAGES) status.truncated = true;
           page++;
         }
-        if (status.count < total) status.truncated = true;
       } catch (err) {
         status.ok = false;
         status.error = err instanceof Error ? err.message : String(err);
