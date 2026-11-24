@@ -260,9 +260,10 @@ it (the laptop's, the sign-in issuer's).
   the rest. A test holds the two readings to each other on the same
   issues. The search is not used for this: it is counted by the minute,
   it lags, and it takes issues and pull requests in separate queries
-  (asked for both at once it answers 422, which is what the dashboard's
-  own census did until #14103; it asks the same lists now, and a test
-  holds the two to asking for the same pages). The lists are asked for
+  (asked for both at once it answers 422 to some tokens, a GitHub App's
+  among them, though not to the one the dashboard runs with, whose
+  census asked it so until #14103; it asks the same lists now, and a
+  test holds the two to asking for the same pages). The lists are asked for
   by their tags like any other, so the eight of them cost nothing while
   nothing changes. A repository the token cannot see (404, or a 403
   that is not about calling too often) is named in what is shown, and

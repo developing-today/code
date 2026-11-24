@@ -1456,3 +1456,53 @@ lists of what it does and reads.
 comment, each with the Worker's token and once, no machine asked, and
 the item gone from the next look. Nine faults planted one at a time
 under bun, each caught.
+
+## 2026-11-24T08:50Z Correction: the dashboard's census was not failing in service (#14103)
+
+The section of 06:55Z says the dashboard's census "asked GitHub's
+search for `repo:<repo> state:open label:"<label>"`, which GitHub
+answers 422 to". That was read from what GitHub answered the token of
+the session that wrote it, and never checked against the dashboard that
+runs. Checked on the machine that runs it (`amd`, 08:10Z):
+
+- `GET http://127.0.0.1:4870/api/needs-drew.json`: `complete: true`,
+  eight of eight sources good, 54 items, fetched a minute before.
+- The search in the old form, asked with the fleet's identity:
+  `total_count 13`. The repository's own list: the same 13.
+
+So the 422 is what GitHub gives some tokens (a GitHub App's) and not
+the one the dashboard runs with. Nothing the owner saw was broken, and
+nothing was fixed for him by #14165. What stands of it: the census
+reads the same items from the list, on the core allowance, whichever
+kind of token it is given; and the console's list of repositories is
+the dashboard's. The issue's title, its priority and the comments in
+the code that said "every query failed" are corrected.
+
+**What it shows about checking.** A claim about what is in service was
+made from outside the service. The machine can be asked now (below),
+and a claim of that kind is made from its answer.
+
+## 2026-11-24T08:50Z Update: the live pages, looked at on the machine
+
+The console at main, started on the machine beside the one in service
+(its own port, its own empty state, no report to the edge), read by a
+headless browser at a phone's width. What was wrong, and what was done:
+
+- **"394 need you"** on the first screen, and "99+" on the tab: 347 of
+  them were questions the fleet had put with an answer it recommends.
+  What leads now is what only the owner can do (29); the tab's count
+  adds the reviews asked of him. The Needs screen opens on that list,
+  and the questions have one button that takes every recommendation.
+- **"Why 272 tasks are blocked"** stood above six lines that added up
+  to fifteen: almost every blocked task carries a reason of its own, so
+  the commonest six said nothing of the rest. The board now counts them
+  by the kind of reason (one written on the task, a time waited for and
+  whether it has passed, other tasks, none), which adds up to all of
+  them. The query is run on a real SQLite in its test.
+- **A task being worked on could not be steered from its card.** It has
+  "Comment" (on its issue, which Cloudflare posts itself) and "Message
+  its agent".
+- **"failed · failed"** on a failed unit: said once.
+- The console in service on the machine runs from `~/git/code`, which
+  was on a lane's branch: the app it served was that branch's, and its
+  code was seven hours behind main (#13833). Not fixed by this.

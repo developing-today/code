@@ -863,7 +863,7 @@ export function liveSource(
   const LAPTOP_FAILURE_CACHE_MS = 15_000;
   // #1226: the Needs-Drew label census asks each repository's list of
   // open issues by label (8 requests per sweep; the search API until
-  // #14103, which GitHub came to refuse in the form it was asked). The
+  // #14103, which GitHub refuses some tokens in the form it was asked). The
   // sweeper caches for 5 minutes and shares one in-flight sweep between
   // concurrent callers, so the three attention fragments rendering
   // together do not each pay that cost (#3970).
