@@ -31,5 +31,13 @@ Evidence: failing-first run
 exposed missing `compacted`. Initial shared-helper run
 [45500954292](https://github.com/developing-today-forks/fleet/actions/runs/45500954292)
 actually executed two tests successfully (shared persistence and partial rollback).
-Generated rows and transaction-fault tests were added after that run and require
-their own verification; submission alone is not passing evidence.
+Expanded run
+[45503182413](https://github.com/developing-today-forks/fleet/actions/runs/45503182413)
+at `3375dd6355d` executed all nine persistence tests (including generated rows,
+uncertain BEGIN/COMMIT and fork rollback), all eleven Turso tests (including
+`compacted`), and the native id-events library check: all passed. Read-only
+review found no remaining concrete issues after transaction hardening.
+Supplemental compile-fail doctest and full id-events unit verification was
+submitted as
+[45504741928](https://github.com/developing-today-forks/fleet/actions/runs/45504741928);
+it was still pending at this checkpoint, not passing evidence.
