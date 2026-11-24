@@ -102,7 +102,10 @@ buildMcpxGoModule {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-WixeikMvYYYvvOssmUiVqlglEprQjP2p1pMXpkOLTME=";
+  # TEMPORARY (xaltha/13911): lib.fakeHash forces nix to print the true
+  # go-modules hash for the post-dependabot go.mod/go.sum; replaced with
+  # the computed hash before this branch lands.
+  vendorHash = lib.fakeHash;
 
   subPackages = [ "cmd/mcpx" ];
 

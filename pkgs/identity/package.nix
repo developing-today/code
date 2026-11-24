@@ -2,7 +2,10 @@
   lib,
   buildGoModule,
   buildTag ? "sqlite",
-  vendorHash ? "sha256-teRh+AXehLGDkgeqB/SWI9NiKTBXO7obMcQWlYc/eT0=",
+  # TEMPORARY (xaltha/13911): lib.fakeHash forces nix to print the true
+  # go-modules hash for the post-dependabot go.mod/go.sum; replaced with
+  # the computed hash before this branch lands.
+  vendorHash ? lib.fakeHash,
 }:
 buildGoModule {
   pname = "charm-${buildTag}";
