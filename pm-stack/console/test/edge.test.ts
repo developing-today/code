@@ -7134,9 +7134,15 @@ describe("telling the owner, with no machine", () => {
     w.edge.now = w.makeEdge();
     await w.edge.now.alarm();
     expect(w.pushes).toHaveLength(1);
+    // What to do, on what, and a button that says it is done: as it
+    // reaches the phone, after the trip through the push service's own encryption.
     expect(JSON.parse(await phone.open(w.pushes[0].body))).toMatchObject({
       title: "Something needs you",
-      body: "Plug the hardware key into the build host.",
+      body: "Plug the hardware key into the build host. (developing-today/code#21)",
+      actions: [
+        { action: "done", title: "I did it", kind: "hands.done", args: { ref: "developing-today/code#21" } },
+        { action: "open", title: "Open", url: "/console/#needs/hands" },
+      ],
     });
     // Told once: a later wake that finds the same thing says nothing more.
     w.now.t += 121_000;

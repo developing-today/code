@@ -225,6 +225,23 @@ it (the laptop's, the sign-in issuer's).
   says when it answers again and which of the two it was. Health has
   the times as `github.quiet.core` and `github.quiet.search`. "Try
   again now" lifts both.
+- **A notification says what happened and carries what can be done
+  about it.** Each message the notifier sends has up to two buttons
+  (`PushAction` in `src/notify.ts`): on a reply from the fleet, "Reply"
+  (a line typed on the notification itself, where the device can take
+  one; where it cannot, the thread is opened) and "Close it"; on
+  something only the owner can do, "I did it" and "Open"; on a unit
+  that failed, "Restart it" and "Look". A button that does something
+  does it the way the app does anything: the service worker writes it
+  down on the device, sends it under a name, and with no connection it
+  is kept and sent later, never twice. With the app closed a
+  notification in the same place says what became of it ("Done.",
+  "Kept on this device…", or that it could not be done); with the app
+  open, the app says it. The body says enough to act on: the reply
+  itself, what to do and on which item, which unit and what it is for.
+  A push service takes a message of 4096 bytes and may refuse a longer
+  one (RFC 8030), so a message that would be longer as it is sealed is
+  cut to the longest start that fits, marked as cut, buttons kept.
 - **The app is told when something changes.** The open app holds a
   WebSocket to the Worker (`/console/api/events`, the owner signed in
   like any other request). The Worker's object keeps it by the

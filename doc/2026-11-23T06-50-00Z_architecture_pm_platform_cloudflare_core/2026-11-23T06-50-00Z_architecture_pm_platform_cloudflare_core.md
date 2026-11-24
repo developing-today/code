@@ -1537,3 +1537,42 @@ and the nineteenth showed a flag that did nothing, which was removed.
 
 **Not seen.** A phone connected in service: `listening` in the health
 answer says when one is.
+
+## 2026-11-24T08:45Z Update: a notification carries what can be done about it
+
+**Intent.** A notification said that something had happened and opened
+the app. The owner asked for notifications with the details in them and
+buttons that answer.
+
+**Done.** Each message has up to two buttons, most useful first: on a
+reply from the fleet, "Reply" (typed on the notification where the
+device can take a line of text; where it cannot, the thread is opened)
+and "Close it"; on something only he can do, "I did it" and "Open"; on
+a unit that failed, "Restart it" and "Look". The body says enough to
+act on. Pressing a button that does something goes through the same
+keeping and sending as the app: written down on the device first, sent
+under a name, kept and sent later with no connection, never done twice.
+The Android app shows the site's notifications as its own, so it has
+the buttons too.
+
+A message had no bound on its length: a body of twenty thousand
+characters was sealed and posted as twenty thousand bytes, which a push
+service refuses (it takes 4096, RFC 8030 section 7.2). With fuller
+bodies that mattered more, so a message that would be too long as it is
+sealed is now cut to the longest start that fits, in whole characters,
+marked as cut, with its buttons kept.
+
+**Checked.** The service worker's file is run against a stand-in for
+the browser's worker scope: the buttons shown, what pressing each does
+(one request, as the app would send it), a typed reply, no text given,
+no connection, the platform turning it down, the app open. Fourteen
+faults planted one at a time, all caught. The cut is measured on what
+is really posted, against the 4096 bytes, and read back the way a phone
+reads it, for characters of one, two and four bytes and one that JSON
+writes as two; eight faults planted, all caught. (Cutting by code unit
+and not by character would give the same result, since half a
+character costs more bytes written out than the whole one: it is cut
+by character because that is what makes the search plainly right.)
+
+**Not seen.** A real phone showing the buttons: it takes a real push to
+a subscribed device, which is the owner's.
