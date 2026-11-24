@@ -13,6 +13,7 @@
 - [mcpx as a consumer](consumer.md)
 - [Running mcpx in a container](container.md)
 - [Coverage: the book against the binary](coverage.md)
+- [Daemon authentication](daemon-auth.md)
 - [Declared but never read](declared-but-unread.md)
 - [Dependencies](dependencies.md)
 - [Deploying this book](deploying.md)
