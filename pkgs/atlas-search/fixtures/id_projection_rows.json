@@ -1,0 +1,32 @@
+[
+  {
+    "file_id": "file-alpha",
+    "version_seq": 1,
+    "media_type": "text/markdown",
+    "content": "# Atlas fixture\n",
+    "path": "docs/alpha.md",
+    "source_locator": "repo@0123456789abcdef0123456789abcdef01234567:docs/alpha.md",
+    "ingested_at": "2026-11-20T10:00:00Z",
+    "batch_id": "batch-alpha-1"
+  },
+  {
+    "file_id": "file-alpha",
+    "version_seq": 2,
+    "media_type": "text/markdown",
+    "content": "# Atlas fixture, revised\n",
+    "path": "docs/renamed-alpha.md",
+    "source_locator": "repo@89abcdef0123456789abcdef0123456789abcdef:docs/renamed-alpha.md",
+    "ingested_at": "2026-11-21T10:00:00Z",
+    "batch_id": "batch-alpha-2"
+  },
+  {
+    "file_id": "file-beta",
+    "version_seq": 1,
+    "media_type": "text/plain",
+    "content": "Independent file.\n",
+    "path": "notes/beta.txt",
+    "source_locator": "system@fixture@2026-11-22",
+    "ingested_at": "2026-11-22T10:00:00Z",
+    "batch_id": "batch-beta-1"
+  }
+]
