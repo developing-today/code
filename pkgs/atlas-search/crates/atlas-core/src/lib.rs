@@ -144,8 +144,9 @@ pub use search::{
     run_search_with_executor_traced,
 };
 pub use source_registry::{
-    LocatorRegistration, RootRegistration, SOURCE_REGISTRY_DDL, SourceRoot, ensure_source_registry,
-    locators_for_root, register_locator, register_source_root, source_root,
+    LocatorRegistration, RootRegistration, SOURCE_REGISTRY_DDL, SourceResolution, SourceRoot,
+    ensure_source_registry, locators_for_root, register_locator, register_source_root,
+    resolve_source, source_root,
 };
 pub use stage::{
     ChunkClassification, REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL,
