@@ -10548,7 +10548,9 @@ mod schedule_tests {
                         _ => {}
                     }
                 }
-                WorldEventKind::Chat(_) | WorldEventKind::ProgramInstalled { .. } => {}
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
             }
             Ok(())
         }
