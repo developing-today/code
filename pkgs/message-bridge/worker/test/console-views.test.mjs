@@ -263,8 +263,10 @@ test("sql: credential state folds live and revoked rows per agent, hashes never 
 
 test("read scope: the offers list through the PM credential shows offers with their claims (#14375)", async () => {
   const h = await seeded();
+  const postJson = (path, body) =>
+    h.call(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   // The owner posts an offer; felix claims the one slot.
-  const posted = await h.post(`/api/${TOKEN}/fleet/offer`, {
+  const posted = await postJson(`/api/${TOKEN}/fleet/offer`, {
     body: "take the next bridge task",
     to: "agent:f*",
     kind: "command",
@@ -275,7 +277,7 @@ test("read scope: the offers list through the PM credential shows offers with th
   const ownerList = await (await h.call(`/api/${TOKEN}/fleet/offers`)).json();
   assert.equal(ownerList.offers.length, 1);
   const offerId = ownerList.offers[0].id;
-  const claim = await h.post(`/fleet/${h.ft}/claim`, { agent: "felix", offer_id: offerId });
+  const claim = await postJson(`/fleet/${h.ft}/claim`, { agent: "felix", offer_id: offerId });
   assert.equal(claim.status, 200, await claim.text().catch(() => ""));
 
   // The PM credential reads the same list, claims and claimant named.
