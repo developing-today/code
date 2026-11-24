@@ -1915,7 +1915,9 @@ export function changeAsked(form) {
 export function intakeSaid(r) {
   if (!r) return "Sent";
   const task = r.queued ? "" : "; its task follows when a machine is connected";
-  return r.commented ? `Note left on #${r.issue}${task}` : `Filed as #${r.issue}${task}`;
+  if (r.commented) return `Note left on #${r.issue}${task}`;
+  if (r.pr) return `Filed as #${r.issue}; the roadmap change was made as a pull request: ${r.pr}${task}`;
+  return `Filed as #${r.issue}${task}`;
 }
 
 /** The heading of one phase of a roadmap page: how many it shows, and
