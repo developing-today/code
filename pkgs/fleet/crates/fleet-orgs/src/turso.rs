@@ -57,7 +57,9 @@ pub fn pipeline_body(sql: &str, args: &[Value]) -> Value {
 fn cell_to_json(cell: &Value) -> Value {
     let raw = cell.get("value");
     match cell.get("type").and_then(Value::as_str).unwrap_or("null") {
-        "text" => raw.and_then(Value::as_str).map_or(Value::Null, |s| json!(s)),
+        "text" => raw
+            .and_then(Value::as_str)
+            .map_or(Value::Null, |s| json!(s)),
         "integer" => raw
             .and_then(Value::as_str)
             .and_then(|s| s.parse::<i64>().ok())
@@ -134,7 +136,10 @@ mod tests {
     #[test]
     fn typed_args() {
         assert_eq!(arg_json(&json!("x")), json!({"type": "text", "value": "x"}));
-        assert_eq!(arg_json(&json!(7)), json!({"type": "integer", "value": "7"}));
+        assert_eq!(
+            arg_json(&json!(7)),
+            json!({"type": "integer", "value": "7"})
+        );
         assert_eq!(arg_json(&Value::Null), json!({"type": "null"}));
     }
 
@@ -157,7 +162,8 @@ mod tests {
     #[test]
     fn failures_are_errors_not_empty_results() {
         assert!(parse_rows(&json!({"error": "boom"})).is_err());
-        let per_request = json!({"results": [{"type": "error", "error": {"message": "no such table"}}]});
+        let per_request =
+            json!({"results": [{"type": "error", "error": {"message": "no such table"}}]});
         assert!(parse_rows(&per_request).is_err());
     }
 }

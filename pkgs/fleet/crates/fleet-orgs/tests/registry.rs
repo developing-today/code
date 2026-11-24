@@ -125,6 +125,7 @@ fn meta(slug: &str, id: i64) -> AppMeta {
         slug: slug.into(),
         app_id: id,
         name: slug.into(),
+        owner: "developing-today".into(),
         permissions: json!({"contents": "write", "issues": "read"}),
         events: json!(["push"]),
     }
@@ -166,13 +167,41 @@ fn sync_writes_apps_orgs_and_installations_from_all_pages() {
     let db = Sqlite::memory();
     let gh = fleet();
     let report = sync(&db, &gh, &Jwts, &["app", "backup"], &clock()).unwrap();
-    assert_eq!(report.apps, vec![("developing-today-fleet".into(), 3), ("developing-today-backup".into(), 1)]);
+    assert_eq!(
+        report.apps,
+        vec![
+            ("developing-today-fleet".into(), 3),
+            ("developing-today-backup".into(), 1)
+        ]
+    );
 
     let reg = list::load(&db).unwrap();
     assert_eq!(reg.entries.len(), 4);
     assert!(reg.last_sync.is_some());
 
-    let orgs = db.execute("SELECT login FROM orgs ORDER BY login", &[]).unwrap();
+    let app = db
+        .execute(
+            "SELECT owner FROM apps WHERE slug = 'developing-today-fleet'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(app.rows, vec![vec![json!("developing-today")]]);
+    let org_columns = db.execute("PRAGMA table_info(orgs)", &[]).unwrap();
+    let names: Vec<&str> = org_columns
+        .rows
+        .iter()
+        .filter_map(|r| r.get(1).and_then(Value::as_str))
+        .collect();
+    for expected in ["login", "role", "repo_count", "verified_at"] {
+        assert!(
+            names.contains(&expected),
+            "orgs schema must include {expected}"
+        );
+    }
+
+    let orgs = db
+        .execute("SELECT login FROM orgs ORDER BY login", &[])
+        .unwrap();
     assert_eq!(orgs.rows, vec![vec![json!("acme")], vec![json!("beta")]]);
 }
 
@@ -185,8 +214,60 @@ fn a_resync_is_idempotent() {
     sync(&db, &gh, &Jwts, &["app", "backup"], &clock()).unwrap();
     let after = list::load(&db).unwrap();
     assert_eq!(before, after.entries);
-    let runs = db.execute("SELECT COUNT(*), SUM(status = 'ok') FROM sync_runs", &[]).unwrap();
+    let runs = db
+        .execute("SELECT COUNT(*), SUM(status = 'ok') FROM sync_runs", &[])
+        .unwrap();
     assert_eq!(runs.rows, vec![vec![json!(2), json!(2)]]);
+}
+
+#[test]
+fn same_app_and_account_upsert_updates_installation_and_verified_time() {
+    let db = Sqlite::memory();
+    let mut gh = FakeGitHub::default();
+    gh.apps.insert(
+        "app".into(),
+        (
+            meta("fleet", 1),
+            vec![inst(
+                10,
+                "acme",
+                "Organization",
+                json!({"contents": "read"}),
+            )],
+        ),
+    );
+    let time = clock();
+    sync(&db, &gh, &Jwts, &["app"], &time).unwrap();
+    let prior = db.execute(
+        "SELECT MAX(verified_at) FROM installations WHERE app_slug = 'fleet' AND account_login = 'acme'",
+        &[],
+    ).unwrap().rows[0][0].as_i64().unwrap();
+    gh.apps.get_mut("app").unwrap().1 = vec![inst(
+        11,
+        "acme",
+        "Organization",
+        json!({"contents": "write"}),
+    )];
+    sync(&db, &gh, &Jwts, &["app"], &time).unwrap();
+
+    let rows = db.execute(
+        "SELECT COUNT(*), MAX(installation_id), MAX(verified_at) FROM installations WHERE app_slug = 'fleet' AND account_login = 'acme'",
+        &[],
+    ).unwrap();
+    assert_eq!(
+        rows.rows[0][0],
+        json!(1),
+        "oracle: one (App, account) row remains"
+    );
+    assert_eq!(
+        rows.rows[0][1],
+        json!(11),
+        "oracle: the latest installation id is stored"
+    );
+    assert!(
+        rows.rows[0][2].as_i64().unwrap() > prior,
+        "oracle: verified_at advances on upsert"
+    );
 }
 
 #[test]
@@ -194,9 +275,18 @@ fn an_installation_removed_on_github_is_pruned_on_the_next_run() {
     let db = Sqlite::memory();
     let mut gh = fleet();
     sync(&db, &gh, &Jwts, &["app"], &clock()).unwrap();
-    gh.apps.get_mut("app").unwrap().1.retain(|i| i.installation_id != 2);
+    gh.apps
+        .get_mut("app")
+        .unwrap()
+        .1
+        .retain(|i| i.installation_id != 2);
     sync(&db, &gh, &Jwts, &["app"], &clock()).unwrap();
-    let ids: Vec<i64> = list::load(&db).unwrap().entries.iter().map(|e| e.installation_id).collect();
+    let ids: Vec<i64> = list::load(&db)
+        .unwrap()
+        .entries
+        .iter()
+        .map(|e| e.installation_id)
+        .collect();
     assert_eq!(ids, vec![1, 3]);
 }
 
@@ -214,7 +304,11 @@ fn a_failed_app_is_recorded_as_failed_and_its_rows_are_kept() {
     assert_eq!(runs.rows[1][0], json!("failed"));
     assert!(runs.rows[1][1].as_str().unwrap().contains("HTTP 500"));
     let reg = list::load(&db).unwrap();
-    assert_eq!(reg.entries.len(), 3, "the failed App keeps its last good rows");
+    assert_eq!(
+        reg.entries.len(),
+        3,
+        "the failed App keeps its last good rows"
+    );
 }
 
 #[test]
@@ -244,7 +338,13 @@ fn list_filters_and_renders_over_the_stored_registry() {
     assert_eq!(writers.len(), 1);
     assert_eq!(writers[0].org, "acme");
 
-    let backup = list::filter(&reg.entries, &Filter { app: Some("developing-today-backup".into()), ..Default::default() });
+    let backup = list::filter(
+        &reg.entries,
+        &Filter {
+            app: Some("developing-today-backup".into()),
+            ..Default::default()
+        },
+    );
     assert_eq!(backup.len(), 1);
 
     let table = list::render_table(&reg, &writers);

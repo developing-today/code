@@ -54,7 +54,9 @@ fn rs256_sign(key_pem: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
             Ok(())
         });
     }
-    let mut child = cmd.spawn().map_err(|e| format!("openssl sign: spawn failed: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("openssl sign: spawn failed: {e}"))?;
     drop(reader);
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(data);
@@ -73,7 +75,11 @@ pub fn base64url(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         for i in 0..=chunk.len() {
             out.push(ALPHABET[((n >> (18 - 6 * i)) & 0x3f) as usize] as char);

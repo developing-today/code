@@ -13,6 +13,7 @@ pub struct AppMeta {
     pub slug: String,
     pub app_id: i64,
     pub name: String,
+    pub owner: String,
     pub permissions: Value,
     pub events: Value,
 }
@@ -130,6 +131,7 @@ fn write_app(db: &dyn Sql, meta: &AppMeta, now: i64) -> Result<(), String> {
             json!(meta.slug),
             json!(meta.app_id),
             json!(meta.name),
+            json!(meta.owner),
             json!(meta.permissions.to_string()),
             json!(meta.events.to_string()),
             json!(now),

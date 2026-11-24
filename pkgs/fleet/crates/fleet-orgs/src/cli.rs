@@ -37,11 +37,7 @@ Store: FLEET_ORGS_TURSO_URL, token secret turso.fleet-orgs-token.";
 /// The fleet's Apps by fleet slug, as `gh`'s rotation names them, with
 /// the secret holding each App's private key and, if not public, its ID.
 const APPS: [(&str, &str, Option<&str>); 3] = [
-    (
-        "app",
-        "github-app.developing-today-fleet.private-key",
-        None,
-    ),
+    ("app", "github-app.developing-today-fleet.private-key", None),
     (
         "devtoday",
         "kaneo.github-app-private-key",
@@ -139,7 +135,10 @@ fn list_cmd(config: &Config, args: &[String]) -> Result<String, Failure> {
     let entries = list::filter(&registry.entries, &filter);
     if json {
         let body = list::render_json(&registry, &entries);
-        Ok(format!("{}\n", serde_json::to_string_pretty(&body).unwrap_or_default()))
+        Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&body).unwrap_or_default()
+        ))
     } else {
         Ok(list::render_table(&registry, &entries))
     }
@@ -156,7 +155,8 @@ fn sync_cmd(config: &Config) -> Result<String, Failure> {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0)
     };
-    let report = sync(&db as &dyn Sql, &gh, &source, &apps, &clock).map_err(Failure::Unavailable)?;
+    let report =
+        sync(&db as &dyn Sql, &gh, &source, &apps, &clock).map_err(Failure::Unavailable)?;
     let parts: Vec<String> = report
         .apps
         .iter()

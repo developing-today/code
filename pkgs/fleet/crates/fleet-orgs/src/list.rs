@@ -81,9 +81,10 @@ pub fn filter(entries: &[Entry], f: &Filter) -> Vec<Entry> {
         .filter(|e| f.org.as_ref().is_none_or(|o| &e.org == o))
         .filter(|e| match &f.permission {
             None => true,
-            Some((name, level)) => e.permissions.iter().any(|(k, v)| {
-                k == name && level.as_ref().is_none_or(|l| l == v)
-            }),
+            Some((name, level)) => e
+                .permissions
+                .iter()
+                .any(|(k, v)| k == name && level.as_ref().is_none_or(|l| l == v)),
         })
         .cloned()
         .collect()
@@ -201,7 +202,10 @@ mod tests {
 
     #[test]
     fn permission_spec_forms() {
-        assert_eq!(parse_permission("contents").unwrap(), ("contents".into(), None));
+        assert_eq!(
+            parse_permission("contents").unwrap(),
+            ("contents".into(), None)
+        );
         assert_eq!(
             parse_permission("contents=write").unwrap(),
             ("contents".into(), Some("write".into()))
@@ -217,7 +221,10 @@ mod tests {
             app: app.into(),
             installation_id: 1,
             repository_selection: "all".into(),
-            permissions: perms.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            permissions: perms
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         }
     }
 
@@ -230,8 +237,20 @@ mod tests {
         ];
         let by = |f: Filter| filter(&all, &f).len();
         assert_eq!(by(Filter::default()), 3);
-        assert_eq!(by(Filter { app: Some("app".into()), ..Default::default() }), 2);
-        assert_eq!(by(Filter { org: Some("acme".into()), ..Default::default() }), 2);
+        assert_eq!(
+            by(Filter {
+                app: Some("app".into()),
+                ..Default::default()
+            }),
+            2
+        );
+        assert_eq!(
+            by(Filter {
+                org: Some("acme".into()),
+                ..Default::default()
+            }),
+            2
+        );
         assert_eq!(
             by(Filter {
                 permission: Some(("contents".into(), Some("write".into()))),

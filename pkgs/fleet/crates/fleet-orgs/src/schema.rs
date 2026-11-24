@@ -17,12 +17,15 @@ pub const SCHEMA: &[&str] = &[
         slug TEXT PRIMARY KEY,
         app_id INTEGER NOT NULL,
         name TEXT NOT NULL,
+        owner TEXT NOT NULL,
         permissions TEXT NOT NULL,
         events TEXT NOT NULL,
         verified_at INTEGER NOT NULL
     )",
     "CREATE TABLE IF NOT EXISTS orgs (
         login TEXT PRIMARY KEY,
+        role TEXT,
+        repo_count INTEGER,
         verified_at INTEGER NOT NULL
     )",
     "CREATE TABLE IF NOT EXISTS installations (
@@ -34,7 +37,7 @@ pub const SCHEMA: &[&str] = &[
         permissions TEXT NOT NULL,
         sync_run_id INTEGER NOT NULL,
         verified_at INTEGER NOT NULL,
-        PRIMARY KEY (app_slug, installation_id)
+        PRIMARY KEY (app_slug, account_login)
     )",
 ];
 
@@ -44,24 +47,28 @@ pub const START_RUN: &str =
 pub const FINISH_RUN: &str =
     "UPDATE sync_runs SET finished_at = ?, status = ?, installations = ?, error = ? WHERE id = ?";
 
-pub const UPSERT_APP: &str = "INSERT INTO apps (slug, app_id, name, permissions, events, verified_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+pub const UPSERT_APP: &str =
+    "INSERT INTO apps (slug, app_id, name, owner, permissions, events, verified_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (slug) DO UPDATE SET
         app_id = excluded.app_id,
         name = excluded.name,
+        owner = excluded.owner,
         permissions = excluded.permissions,
         events = excluded.events,
         verified_at = excluded.verified_at";
 
-pub const UPSERT_ORG: &str = "INSERT INTO orgs (login, verified_at) VALUES (?, ?)
+pub const UPSERT_ORG: &str =
+    "INSERT INTO orgs (login, role, repo_count, verified_at) VALUES (?, NULL, NULL, ?)
     ON CONFLICT (login) DO UPDATE SET verified_at = excluded.verified_at";
 
 pub const UPSERT_INSTALLATION: &str = "INSERT INTO installations
         (app_slug, installation_id, account_login, account_type, repository_selection,
          permissions, sync_run_id, verified_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (app_slug, installation_id) DO UPDATE SET
+    ON CONFLICT (app_slug, account_login) DO UPDATE SET
         account_login = excluded.account_login,
+        installation_id = excluded.installation_id,
         account_type = excluded.account_type,
         repository_selection = excluded.repository_selection,
         permissions = excluded.permissions,

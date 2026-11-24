@@ -40,14 +40,29 @@ pub fn parse_app(body: &Value) -> Result<AppMeta, String> {
         .ok_or("GET /app: no slug")?;
     Ok(AppMeta {
         slug: slug.to_string(),
-        app_id: body.get("id").and_then(Value::as_i64).ok_or("GET /app: no id")?,
+        app_id: body
+            .get("id")
+            .and_then(Value::as_i64)
+            .ok_or("GET /app: no id")?,
         name: body
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or(slug)
             .to_string(),
-        permissions: body.get("permissions").cloned().unwrap_or(Value::Object(Default::default())),
-        events: body.get("events").cloned().unwrap_or(Value::Array(Vec::new())),
+        owner: body
+            .get("owner")
+            .and_then(|o| o.get("login"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        permissions: body
+            .get("permissions")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default())),
+        events: body
+            .get("events")
+            .cloned()
+            .unwrap_or(Value::Array(Vec::new())),
     })
 }
 
@@ -66,7 +81,10 @@ pub fn parse_installation(entry: &Value) -> Option<Installation> {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        permissions: entry.get("permissions").cloned().unwrap_or(Value::Object(Default::default())),
+        permissions: entry
+            .get("permissions")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default())),
     })
 }
 
@@ -124,7 +142,8 @@ impl HttpGitHub {
         if status != 200 {
             return Err(format!("GET {url}: HTTP {status}"));
         }
-        let body = serde_json::from_str(&text).map_err(|_| format!("GET {url}: unparseable body"))?;
+        let body =
+            serde_json::from_str(&text).map_err(|_| format!("GET {url}: unparseable body"))?;
         Ok((body, next))
     }
 }
@@ -140,7 +159,9 @@ impl GitHubApi for HttpGitHub {
         let entries = collect_pages(&first, |url| self.get(jwt, url))?;
         entries
             .iter()
-            .map(|e| parse_installation(e).ok_or_else(|| "installation entry missing fields".to_string()))
+            .map(|e| {
+                parse_installation(e).ok_or_else(|| "installation entry missing fields".to_string())
+            })
             .collect()
     }
 }
@@ -187,8 +208,83 @@ mod tests {
     }
 
     #[test]
+    fn parses_app_identity_permissions_events_and_owner() {
+        let app = parse_app(&json!({
+            "slug": "fleet-app",
+            "id": 42,
+            "name": "Fleet App",
+            "owner": {"login": "developing-today"},
+            "permissions": {"contents": "write"},
+            "events": ["push"]
+        }))
+        .unwrap();
+        assert_eq!(app.slug, "fleet-app");
+        assert_eq!(app.owner, "developing-today");
+        assert_eq!(app.permissions["contents"], "write");
+        assert_eq!(app.events, json!(["push"]));
+    }
+
+    #[test]
     fn an_entry_without_an_id_or_account_is_skipped_as_invalid() {
         assert!(parse_installation(&json!({"id": 1})).is_none());
         assert!(parse_installation(&json!({"account": {"login": "a"}})).is_none());
+    }
+
+    #[test]
+    fn app_jwt_installation_listing_follows_pages_not_oauth_org_reads() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for page in 1..=2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0; 4096];
+                let n = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..n]);
+                let first = request.lines().next().unwrap();
+                assert!(first.starts_with("GET "));
+                assert!(first.contains("/app/installations?per_page=100"));
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer app-jwt")
+                );
+                let values: Vec<Value> = (0..if page == 1 { 32 } else { 1 })
+                    .map(|i| json!({
+                        "id": (page - 1) * 32 + i + 1,
+                        "account": {"login": format!("org{}", (page - 1) * 32 + i + 1), "type": "Organization"},
+                        "repository_selection": "all",
+                        "permissions": {"contents": "read"}
+                    }))
+                    .collect();
+                let body = serde_json::to_string(&values).unwrap();
+                let link = if page == 1 {
+                    format!(
+                        "Link: <http://{addr}/app/installations?per_page=100&page=2>; rel=\"next\"\r\n"
+                    )
+                } else {
+                    String::new()
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{link}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+
+        let github = HttpGitHub::new(&format!("http://{addr}"));
+        let installations = github.installations("app-jwt").unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            installations.len(),
+            33,
+            "oracle: all 33 fixture org installations are covered"
+        );
+        assert_eq!(installations[32].account_login, "org33");
     }
 }
