@@ -39,6 +39,8 @@ When migrating or filing material, ask which kind it is before choosing a home: 
 
 ## Research packages
 
+- `2026-11-24T00-24-54Z_audit_design-gaps/` — AUDIT-7 Lane 6 DESIGN-GAPS audit: designs missing, demanded, or insufficient across the four repos, with the prioritised packet list (tracking #13873).
+
 This list is the workflow's request catalog (`request_catalog` in [`.agents/research-workflow.json`](../.agents/research-workflow.json)). Add one line per new package. For a package's current state, run `python3 -I scripts/research_workflow.py status --package doc/<folder>`.
 
 - [Research intake to implementation](2026-10-19T06-09-02Z_research_research-intake-to-implementation/main.md). Created 2026-10-19 from the request that defined this workflow. It has 14 concepts. The design record is [research workflow](2026-10-19T06-09-02Z_design_research_workflow/2026-10-19T06-09-02Z_design_research_workflow.md).
