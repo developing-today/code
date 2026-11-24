@@ -1644,3 +1644,35 @@ does, so a read that mishandles it fails there. Checked against the
 store's own format, six faults planted and caught, and seen on the
 machine afterwards: each of the forty latest with its issue, where none
 had shown one.
+
+## 2026-11-24T09:55Z Update: a question, something to do, or a standing instruction
+
+**Intent.** Ask had one box, and everything typed into it became
+"something he wants done, or a question he wants answered", for an
+agent to work out which. He asked to be able to ask questions and give
+general directives as well as start work.
+
+**Done.** He says which it is: "Do this", "Answer this" or "From now
+on". The issue is titled for it and its note and task ask for what that
+kind needs. A question is answered in a comment with what the answer
+rests on; nothing is changed to answer it, and the issue is left open
+for him to close. A standing instruction is recorded where every agent
+reads it, by a merged pull request, and work already queued or under
+way is brought in line with it. Something to do is as it always was,
+down to the last character of what is filed and queued. The kind
+travels with the task when Cloudflare files the issue and a machine
+files the task later, and a reply on a question is queued as a question.
+The list marks questions and standing instructions, a kept one is said
+as what it is, and the fleet's reply on a question is announced as its
+answer.
+
+**What it does not do.** A standing instruction is still carried out by
+whichever agent takes its task: nothing here writes to AGENTS.md
+itself. The queue has one key for "someone must look at this issue",
+and all three kinds use it, so an issue never has two tasks.
+
+**Checked.** The issue and the packet for each kind are compared with
+what each must make an agent do differently, written out in the tests;
+something to do is compared with what was filed before, whole.
+Twenty-two faults planted one at a time, all caught. In the Worker's
+real runtime, 54 of 54.

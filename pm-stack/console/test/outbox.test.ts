@@ -111,6 +111,13 @@ test("each action is said in a line the owner will know it by", () => {
     "Prompt: “Ship the parser rework this week”",
   );
   expect(said("ask.send", { text: "x".repeat(200) })).toBe(`Prompt: “${"x".repeat(59)}…”`);
+  // A question and a standing instruction are said as what they are.
+  expect(said("ask.send", { text: "Why did it stall?", intent: "question" })).toBe("Question: “Why did it stall?”");
+  expect(said("ask.send", { text: "No red merges", intent: "directive" })).toBe(
+    "Standing instruction: “No red merges”",
+  );
+  expect(said("ask.send", { text: "Do it", intent: "task" })).toBe("Prompt: “Do it”");
+  expect(said("ask.send", { text: "Do it", intent: "something else" })).toBe("Prompt: “Do it”");
   expect(said("ask.reply", { issue: 201, text: "Yes" })).toBe("Reply on #201: “Yes”");
   expect(said("ask.close", { issue: 202 })).toBe("Mark prompt #202 done");
   expect(said("issue.comment", { issue: 301, text: "" })).toBe("Comment on #301");

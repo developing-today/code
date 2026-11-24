@@ -548,8 +548,10 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
     const issueMatch = /^issues\/(\d+)$/.exec(path);
     if (method === "GET" && issueMatch) {
       const n = Number(issueMatch[1]);
+      // As GitHub answers for one issue: its title with the rest.
       return ok({
         number: n,
+        ...(ghIssues[n] ? { title: ghIssues[n].title } : {}),
         state: ghIssues[n]?.state ?? "open",
         labels: (ghLabels[n] ?? []).map((name) => ({ name })),
       });
@@ -4723,6 +4725,73 @@ describe("the edge does the core itself", () => {
     expect(w.ran.filter((r) => r.kind === "prompt.enqueue")).toHaveLength(1);
     expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues"))).toHaveLength(1);
     expect((await w.core()).doc.edge).toEqual({ held: 0, primary: true });
+  });
+
+  // A question or a standing instruction is filed here as what it is,
+  // and the machine that files its task is told which: the task then
+  // asks for an answer, or for the instruction to be recorded, and not
+  // for "something to be done". The oracle is GitHub's stand-in (the
+  // issue as filed) and what the machine was handed.
+  test("a question and a standing instruction are filed here as what they are, and the machine is told which when it files the task", async () => {
+    const w = await primary();
+    w.net.hostUp = false;
+    w.net.edgeUp = false;
+    const asked = await w.act("ask.send", { text: "Why did the join slice stall?", intent: "question" });
+    expect(((await asked.json()) as { result: { issue: number } }).result.issue).toBe(500);
+    await w.act("ask.send", { text: "No merges on a red check.", intent: "directive" });
+    await w.act("ask.send", { text: "Do the docs" });
+    expect([500, 501, 502].map((n) => w.ghIssues[n].title)).toEqual([
+      "Owner asks: Why did the join slice stall?",
+      "Owner directs: No merges on a red check.",
+      "Owner: Do the docs",
+    ]);
+    expect(w.ghIssues[500].body).toContain("Change nothing to answer it");
+    const held = w.stored.get("held") as { kind: string; args: Record<string, unknown> }[];
+    expect(held.map((h) => [h.kind, h.args.issue, h.args.intent])).toEqual([
+      ["prompt.enqueue", 500, "question"],
+      ["prompt.enqueue", 501, "directive"],
+      // Something to do is held as it always was: nothing more is said of it.
+      ["prompt.enqueue", 502, undefined],
+    ]);
+    expect(Object.keys(held[2].args).sort()).toEqual(["at", "issue", "text"]);
+    // The list he sees says which each is.
+    w.now.t += 46_000;
+    await w.core();
+    await settle(w);
+    const listed = (await w.core()).doc.asks as { issue: number; intent: string }[];
+    expect(
+      listed
+        .filter((a) => a.issue >= 500)
+        .map((a) => [a.issue, a.intent])
+        .sort(),
+    ).toEqual([
+      [500, "question"],
+      [501, "directive"],
+      [502, "task"],
+    ]);
+    // A reply on the question is held as a question too.
+    await w.act("ask.reply", { issue: 500, text: "Since when?" });
+    expect((w.stored.get("held") as typeof held).at(-1)?.args).toMatchObject({
+      issue: 500,
+      intent: "question",
+      text: "Since when?",
+    });
+    // An intent that is none of the three is refused, and nothing is filed for it.
+    const before = w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues")).length;
+    const odd = await w.act("ask.send", { text: "x", intent: "rant" });
+    expect(odd.status).toBe(400);
+    expect(w.githubCalls.filter((c) => c.method === "POST" && c.url.endsWith("/issues")).length).toBe(before);
+    // The machine comes back and is handed each with what it is.
+    w.net.hostUp = true;
+    w.net.edgeUp = true;
+    w.now.t += 60_000;
+    await w.link.now.once();
+    expect(w.ran.filter((r) => r.kind === "prompt.enqueue").map((r) => [r.args.issue, r.args.intent])).toEqual([
+      [500, "question"],
+      [501, "directive"],
+      [502, undefined],
+      [500, "question"],
+    ]);
   });
 
   test("a task the laptop files late is on the board here as soon as the laptop says it is done", async () => {

@@ -1766,7 +1766,7 @@ export class Edge {
     const entry = { id: id ?? crypto.randomUUID(), kind, at: base.at, by, note: "" };
     /** The task of a prompt: the packet carries the issue's number, and
      * the text is the owner's own. */
-    const prompt = (packet: unknown) =>
+    const prompt = (packet: unknown, intent?: string) =>
       this.holdLater(
         {
           kind: "prompt.enqueue",
@@ -1774,6 +1774,9 @@ export class Edge {
             issue: Number((packet as { payload?: { issue?: { number?: unknown } } })?.payload?.issue?.number),
             text: String(args.text ?? ""),
             at: new Date(this.now()).toISOString(),
+            // What kind of prompt it is, where it is not simply something
+            // to do: the machine files the task for that kind.
+            ...(intent !== undefined && intent !== "task" ? { intent } : {}),
           },
         },
         by,

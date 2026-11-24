@@ -560,6 +560,50 @@ describe("operations", () => {
     ).resolves.toEqual({ issue: 201, queued: true });
   });
 
+  // The second half of a question or a standing instruction the edge
+  // filed: the machine files the task for what it is. The oracle is the
+  // packet handed to the queue's own command.
+  test("a held prompt is queued as the kind it was sent as, and a kind that is none of them is refused", async () => {
+    type Packet = { title: string; payload: { timebox_minutes: number; issue: { title: string } } };
+    const packets: Packet[] = [];
+    // The packet is a file for as long as the queue's command runs: read then.
+    const run: Run = async (argv) => {
+      if (argv[1] === "queue" && argv[2] === "enqueue") packets.push(JSON.parse(readFileSync(argv[3], "utf8")));
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const table = actions(new Ops(CFG, run), {} as never);
+    const queuedAs = async (intent?: unknown) => {
+      await table["prompt.enqueue"].run({
+        issue: 201,
+        text: "Why did it stall?",
+        at: "2026-11-22T12:00:00Z",
+        ...(intent === undefined ? {} : { intent }),
+      });
+      const packet = packets.at(-1) as Packet;
+      return [packet.title, packet.payload.issue.title, packet.payload.timebox_minutes];
+    };
+    expect(await queuedAs("question")).toEqual([
+      "Owner question developing-today/code#201: Why did it stall?",
+      "Owner asks: Why did it stall?",
+      30,
+    ]);
+    expect(await queuedAs("directive")).toEqual([
+      "Owner directive developing-today/code#201: Why did it stall?",
+      "Owner directs: Why did it stall?",
+      60,
+    ]);
+    // From an edge that says nothing of the kind (an older one): something to do, as before.
+    expect(await queuedAs()).toEqual(await queuedAs("task"));
+    expect((await queuedAs())[0]).toBe("Owner prompt developing-today/code#201: Why did it stall?");
+    const filed = packets.length;
+    for (const intent of ["rant", "", 7, null]) {
+      await expect(
+        table["prompt.enqueue"].run({ issue: 201, text: "x", at: "2026-11-22T12:00:00Z", intent }),
+      ).rejects.toThrow(/intent: one of task, question, directive/);
+    }
+    expect(packets.length).toBe(filed);
+  });
+
   test("the queue is read with bound parameters and never written", async () => {
     const r = recorder(() => "secret-token\n");
     const sent: { url: string; body: { requests: { stmt?: { sql: string; args: unknown[] } }[] }; auth: string }[] = [];

@@ -104,7 +104,8 @@
     const quoted = (text) => (short(text) ? `: “${short(text)}”` : "");
     switch (kind) {
       case "ask.send":
-        return `Prompt${quoted(a.text)}`;
+        // A question and a standing instruction are said as what they are.
+        return `${a.intent === "question" ? "Question" : a.intent === "directive" ? "Standing instruction" : "Prompt"}${quoted(a.text)}`;
       case "ask.reply":
         return `Reply on #${a.issue}${quoted(a.text)}`;
       case "ask.close":
