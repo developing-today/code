@@ -3230,6 +3230,61 @@ mod tests {
         (handle, token)
     }
 
+    /// A fuel-rate admission refusal is recoverable at the actor level
+    /// (#1067, Codex review on #12557): exhausting the budget must not
+    /// mark the program unhealthy, so the same input succeeds once the
+    /// window rolls instead of requiring a program replacement.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_keeps_the_actor_healthy() {
+        use crate::sandbox::{Sandbox, SandboxLimits};
+
+        // The same echo program as the sandbox tests: `plaza_update`
+        // returns the participant id and never traps.
+        const ECHO: &str = r#"
+        (module
+          (memory (export "memory") 1 1)
+          (data (i32.const 32) "hello")
+          (func (export "plaza_alloc") (param i32) (result i32) (i32.const 0))
+          (func (export "plaza_free") (param i32 i32))
+          (func (export "plaza_init") (param i64) (result i32) (i32.const 0))
+          (func (export "plaza_update") (param i32 i32 i32 i32) (result i32)
+            local.get 0)
+          (func (export "plaza_view") (param i32) (result i32)
+            (i32.const 32))
+          (func (export "plaza_out_len") (result i32) (i32.const 5)))
+    "#;
+        let limits = SandboxLimits {
+            fuel: 10_000,
+            ..SandboxLimits::default()
+        };
+        let wasm = wat::parse_str(ECHO).unwrap();
+        let runner = Sandbox::compile(&wasm, limits).unwrap();
+        let mut program = runner.instantiate(123).unwrap();
+        // One allowance exactly fills the account's window.
+        program.set_fuel_rate_budget(id_caps::account_quota::FuelRateBudget::new(limits.fuel));
+        let core = WorldCore::new("fuel-rate", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn_with_program(core, Box::new(program));
+        let (_, token) = world.issue("ann", WorldScopes::GUEST).await.unwrap();
+        world.input(token.clone(), b"event".to_vec()).await.unwrap();
+        // The next input is refused at admission — but the actor stays
+        // healthy: the error names the fuel rate, not an unavailable
+        // program.
+        let refusal = world
+            .input(token.clone(), b"event".to_vec())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("fuel rate"), "{refusal}");
+        assert!(
+            !refusal.contains("unavailable after a previous failure"),
+            "{refusal}"
+        );
+        // Once the window rolls, the same input succeeds: the refusal
+        // did not poison the program.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        world.input(token, b"event".to_vec()).await.unwrap();
+    }
+
     #[tokio::test]
     async fn an_ungranted_request_is_refused_and_counted() {
         let (world, token) = caps_world_sync(false).await;
@@ -10008,6 +10063,8 @@ mod isolation_tests {
 mod schedule_tests {
     use super::*;
     use crate::world::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     fn world(retained_events: usize) -> WorldCore {
         WorldCore::new(
@@ -10236,6 +10293,14 @@ mod schedule_tests {
         id: &str,
         bounds: CapabilityBounds,
     ) -> (WorldActor, JoinCapability, BatchJournal) {
+        batch_actor_with(id, bounds, Box::new(BatchProgram))
+    }
+
+    fn batch_actor_with(
+        id: &str,
+        bounds: CapabilityBounds,
+        program: Box<dyn WorldProgram>,
+    ) -> (WorldActor, JoinCapability, BatchJournal) {
         let journal = BatchJournal::for_world(id);
         let mut core = WorldCore::new(id, WorldLimits::default()).unwrap();
         let (ann, token) = core
@@ -10243,11 +10308,7 @@ mod schedule_tests {
             .unwrap();
         let issued = core.issued_entry(ann.id).unwrap();
         journal.entries.lock().unwrap().push(issued);
-        let actor = WorldActor::for_test(
-            core,
-            Box::new(BatchProgram),
-            Some(Box::new(journal.clone())),
-        );
+        let actor = WorldActor::for_test(core, program, Some(Box::new(journal.clone())));
         (actor, token, journal)
     }
 
@@ -10322,6 +10383,363 @@ mod schedule_tests {
         assert_eq!(journal.committed().len(), 1);
         assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
         assert!(!actor.program_healthy);
+    }
+
+    /// A program that refuses the input `limited` at the account's
+    /// fuel rate and accepts everything else (#1067).
+    struct FuelLimitedBatchProgram;
+
+    impl WorldProgram for FuelLimitedBatchProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::Input(input) = &event.kind {
+                if input == b"limited" {
+                    return Err(anyhow::Error::new(
+                        id_caps::account_quota::FuelRateRefusal {
+                            limit_per_second: 10_000,
+                            charged_in_window: 10_000,
+                            requested_fuel: 10_000,
+                        },
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // #1067 oracle: a fuel-rate refusal inside a batch is recoverable -
+    // the staged prefix commits, the refused input is answered with the
+    // refusal, and the input after it goes through the single path, where
+    // the still-healthy program accepts it instead of refusing it as
+    // unavailable.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_in_a_batch_keeps_the_actor_healthy() {
+        let (mut actor, token, journal) = batch_actor_with(
+            "batch-fuel-rate",
+            CapabilityBounds::default(),
+            Box::new(FuelLimitedBatchProgram),
+        );
+        let results = batch_replies(&mut actor, &token, &[b"one", b"limited", b"two"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        let refused = format!("{:#}", results[1].as_ref().unwrap_err());
+        assert!(refused.contains("fuel rate"), "{refused}");
+        assert!(
+            !refused.contains("unavailable after a previous failure"),
+            "{refused}"
+        );
+        assert!(results[2].is_ok(), "{:?}", results[2]);
+        assert!(actor.program_healthy);
+        assert_eq!(journal.committed().len(), 2);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
+    }
+
+    /// A program that refuses host (system) events at the account's
+    /// fuel rate and accepts everything else (#1067).
+    struct FuelLimitedSystemProgram;
+
+    impl WorldProgram for FuelLimitedSystemProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { .. } = &event.kind {
+                return Err(anyhow::Error::new(
+                    id_caps::account_quota::FuelRateRefusal {
+                        limit_per_second: 10_000,
+                        charged_in_window: 10_000,
+                        requested_fuel: 10_000,
+                    },
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    // #1067 oracle: a fuel-rate refusal of a host event is
+    // recoverable — a refused schedule fire leaves the schedule
+    // pending and the program healthy, and the next participant
+    // input still succeeds.
+    #[tokio::test]
+    async fn a_fuel_rate_refusal_of_a_host_event_keeps_the_actor_healthy() {
+        let journal = Recorded::for_world("system-fuel-rate");
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core = WorldCore::new_with_clock(
+            "system-fuel-rate",
+            WorldLimits::default(),
+            clock.clone(),
+        )
+        .unwrap();
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(FuelLimitedSystemProgram),
+            Some(Box::new(journal.clone())),
+        );
+        actor.core.schedules.insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        actor.fire_schedules().await;
+        assert!(actor.program_healthy);
+        assert!(actor.core.schedules.contains_key("tick"));
+        let results = batch_replies(&mut actor, &token, &[b"after"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+    }
+
+    /// A program for the #1067 fuel-window tests: it asks for one
+    /// `time.now` result, records every result and schedule fire it
+    /// receives, and refuses system events at the account's fuel rate
+    /// while the manual clock is before `refuse_until_ms` — so the
+    /// test drives the rollover by advancing the clock, not the wall.
+    /// The attempt counters are shared with the test, so a refused
+    /// delivery that must not have been attempted is observable.
+    struct FuelWindowProgram {
+        clock: Arc<ManualClock>,
+        refuse_until_ms: u64,
+        requests: Vec<serde_json::Value>,
+        answered: BTreeSet<String>,
+        results: BTreeMap<String, serde_json::Value>,
+        result_deliveries: Arc<AtomicUsize>,
+        fire_attempts: Arc<AtomicUsize>,
+        fires: Vec<serde_json::Value>,
+    }
+
+    impl FuelWindowProgram {
+        fn fuel_refusal() -> anyhow::Error {
+            anyhow::Error::new(id_caps::account_quota::FuelRateRefusal {
+                limit_per_second: 10_000,
+                charged_in_window: 10_000,
+                requested_fuel: 10_000,
+            })
+        }
+    }
+
+    impl WorldProgram for FuelWindowProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            match &event.kind {
+                WorldEventKind::Input(bytes) => {
+                    let document: serde_json::Value = serde_json::from_slice(bytes)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
+                WorldEventKind::EntityInput { input, .. } => {
+                    let document: serde_json::Value = serde_json::from_slice(input)?;
+                    self.requests = document["requests"].as_array().cloned().unwrap_or_default();
+                }
+                WorldEventKind::System { event: text } => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+                        return Ok(());
+                    };
+                    let refused = self.clock.now_ms() < self.refuse_until_ms;
+                    match value["cap"].as_str() {
+                        Some("result") => {
+                            if refused {
+                                return Err(Self::fuel_refusal());
+                            }
+                            if let Some(id) = value["id"].as_str() {
+                                self.answered.insert(id.to_owned());
+                                self.results.insert(id.to_owned(), value.clone());
+                                self.result_deliveries.fetch_add(1, Ordering::SeqCst);
+                            }
+                        }
+                        Some("schedule") => {
+                            self.fire_attempts.fetch_add(1, Ordering::SeqCst);
+                            if refused {
+                                return Err(Self::fuel_refusal());
+                            }
+                            self.fires.push(value.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                WorldEventKind::Chat(_)
+                | WorldEventKind::ProgramInstalled { .. }
+                | WorldEventKind::Notification { .. } => {}
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let pending: Vec<&serde_json::Value> = self
+                .requests
+                .iter()
+                .filter(|request| {
+                    !request["id"]
+                        .as_str()
+                        .is_some_and(|id| self.answered.contains(id))
+                })
+                .collect();
+            Ok(Some(
+                serde_json::json!({"v": 1, "requests": pending}).to_string(),
+            ))
+        }
+
+        fn records(&mut self) -> Result<Option<String>> {
+            Ok(Some(
+                serde_json::json!({"fired": self.fires, "results": self.results}).to_string(),
+            ))
+        }
+    }
+
+    /// A `FuelWindowProgram` actor on a manual clock, with `time.now`
+    /// granted and one participant. Mirrors the
+    /// `FuelLimitedSystemProgram` setup above; the test drives
+    /// [`WorldActor::handle`], [`WorldActor::after_change`] and
+    /// [`WorldActor::fire_schedules`] directly.
+    #[allow(clippy::type_complexity)]
+    fn fuel_window_actor(
+        id: &str,
+        refuse_until_ms: u64,
+    ) -> (
+        WorldActor,
+        Arc<ManualClock>,
+        JoinCapability,
+        Recorded,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+    ) {
+        let journal = Recorded::for_world(id);
+        let clock: Arc<ManualClock> = Arc::new(ManualClock::new(EPOCH_MS));
+        let mut core =
+            WorldCore::new_with_clock(id, WorldLimits::default(), clock.clone()).unwrap();
+        core.ledger
+            .set_granted(BTreeSet::from(["time.now".to_owned()]));
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, CapabilityBounds::default())
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        super::tests::push_bumped(&mut journal.0.lock().unwrap(), &issued);
+        let result_deliveries = Arc::new(AtomicUsize::new(0));
+        let fire_attempts = Arc::new(AtomicUsize::new(0));
+        let program = FuelWindowProgram {
+            clock: clock.clone(),
+            refuse_until_ms,
+            requests: Vec::new(),
+            answered: BTreeSet::new(),
+            results: BTreeMap::new(),
+            result_deliveries: result_deliveries.clone(),
+            fire_attempts: fire_attempts.clone(),
+            fires: Vec::new(),
+        };
+        let actor = WorldActor::for_test(core, Box::new(program), Some(Box::new(journal.clone())));
+        (
+            actor,
+            clock,
+            token,
+            journal,
+            result_deliveries,
+            fire_attempts,
+        )
+    }
+
+    /// How many capability results for request `id` the journal
+    /// delivered to the program: the exactly-once oracle for a
+    /// fuel-refused result.
+    fn journaled_results(journal: &Recorded, id: &str) -> usize {
+        journal
+            .entries()
+            .into_iter()
+            .filter(|entry| match entry {
+                JournalEntry::System { event } => match &event.kind {
+                    WorldEventKind::System { event: text } => {
+                        serde_json::from_str::<serde_json::Value>(text)
+                            .is_ok_and(|value| {
+                                value["cap"] == "result" && value["id"] == id
+                            })
+                    }
+                    _ => false,
+                },
+                _ => false,
+            })
+            .count()
+    }
+
+    // #1067 oracle (Codex review on #12557): a capability result
+    // whose delivery is refused at the fuel rate is queued, not
+    // lost — the side effect already ran, so the result must not be
+    // re-executed — and is delivered exactly once after the window
+    // rolls, without another attempt before then.
+    #[tokio::test]
+    async fn a_fuel_refused_capability_result_is_queued_and_retried_after_rollover() {
+        let (mut actor, clock, token, journal, result_deliveries, _) =
+            fuel_window_actor("fuel-result", EPOCH_MS + 1_000);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "now-1", "cap": "time.now"},
+            ]}),
+        )
+        .await;
+        // The request executed — its id is handled — but the program
+        // never saw the result: it waits in the queue instead.
+        assert!(actor.program_healthy);
+        assert!(actor.handled_requests.contains("now-1"));
+        assert_eq!(actor.pending_results.len(), 1);
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 0);
+        assert_eq!(journaled_results(&journal, "now-1"), 0);
+        // No retry before the window rolls, however often the actor
+        // settles: the queue is not a hot loop.
+        actor.after_change().await;
+        clock.advance(500);
+        actor.after_change().await;
+        assert_eq!(actor.pending_results.len(), 1);
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 0);
+        // Past the rollover the queued result is delivered, exactly
+        // once, and the program answers with it — no re-execution, no
+        // duplicate on a further settle.
+        clock.advance(600);
+        actor.after_change().await;
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 1);
+        assert!(actor.pending_results.is_empty());
+        assert!(actor.fuel_retry_not_before.is_none());
+        let result = schedule_result(&actor, "now-1").expect("the result arrived");
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(journaled_results(&journal, "now-1"), 1);
+        actor.after_change().await;
+        assert_eq!(result_deliveries.load(Ordering::SeqCst), 1);
+        assert_eq!(journaled_results(&journal, "now-1"), 1);
+    }
+
+    // #1067 oracle (Codex review on #12557): a schedule fire refused
+    // at the fuel rate backs off until the window rolls instead of
+    // waking the loop now — no retry is attempted before the retry
+    // deadline — and the same occurrence then fires exactly once.
+    #[tokio::test]
+    async fn a_fuel_refused_schedule_fire_backs_off_until_rollover() {
+        let (mut actor, clock, _token, _journal, _, fire_attempts) =
+            fuel_window_actor("fuel-schedule", EPOCH_MS + 1_500);
+        actor
+            .core
+            .schedules
+            .insert("tick".to_owned(), PendingSchedule::one_shot(EPOCH_MS));
+        // Before any refusal the overdue schedule wakes the loop now.
+        assert_eq!(actor.next_deadline(), Some(clock.now_instant()));
+        actor.fire_schedules().await;
+        assert!(actor.program_healthy);
+        assert!(actor.core.schedules.contains_key("tick"));
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 1);
+        // The refusal backs the next attempt off a full window.
+        assert_eq!(
+            actor.next_deadline(),
+            Some(clock.now_instant() + Duration::from_secs(1))
+        );
+        // A second fire without advancing the clock attempts nothing.
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 1);
+        assert!(actor.core.schedules.contains_key("tick"));
+        // At the retry deadline the fire is attempted again — refused
+        // again while the window is still closed — and backs off
+        // another full window.
+        clock.advance(1_000);
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            actor.next_deadline(),
+            Some(clock.now_instant() + Duration::from_secs(1))
+        );
+        // Once the window rolls, the same occurrence fires exactly once.
+        clock.advance(1_000);
+        actor.fire_schedules().await;
+        assert_eq!(fire_attempts.load(Ordering::SeqCst), 3);
+        assert!(!actor.core.schedules.contains_key("tick"));
+        assert_eq!(schedule_fires(&actor).len(), 1);
     }
 
     // #8239 oracle: staged spends count against the uses limit before
@@ -12653,16 +13071,50 @@ mod schedule_tests {
         let mut schedules = BTreeMap::new();
         schedules.insert("a".to_owned(), PendingSchedule::one_shot(2_000));
         let now = std::time::Instant::now();
-        assert!(next_schedule_wake(&schedules, 1_000, now, true).is_some());
+        assert!(next_schedule_wake(&schedules, 1_000, now, true, None).is_some());
         assert!(
-            next_schedule_wake(&schedules, 3_000, now, true).is_some(),
+            next_schedule_wake(&schedules, 3_000, now, true, None).is_some(),
             "an overdue schedule wakes the loop now"
         );
         assert!(
-            next_schedule_wake(&schedules, 3_000, now, false).is_none(),
+            next_schedule_wake(&schedules, 3_000, now, false, None).is_none(),
             "a program that refuses fires never wakes the loop for one"
         );
-        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, now, true).is_none());
+        assert!(next_schedule_wake(&BTreeMap::new(), 1_000, now, true, None).is_none());
+        // #1067: a due schedule whose fire was refused at the fuel rate
+        // waits until the retry deadline instead of waking the loop now.
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                3_000,
+                now,
+                true,
+                Some(now + Duration::from_secs(1))
+            ),
+            Some(now + Duration::from_secs(1)),
+        );
+        // A schedule that is not due yet keeps its own wake, and a
+        // spent retry deadline holds nothing back.
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                1_000,
+                now,
+                true,
+                Some(now + Duration::from_secs(1))
+            ),
+            Some(now + Duration::from_millis(1_000)),
+        );
+        assert_eq!(
+            next_schedule_wake(
+                &schedules,
+                3_000,
+                now,
+                true,
+                Some(now - Duration::from_secs(1))
+            ),
+            Some(now),
+        );
     }
 
     #[test]
