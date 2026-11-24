@@ -7,10 +7,13 @@
 //! Slice 4 comment claims (§2.4) live in [`comments`].
 //! Slice 3 (databases: note identity and per-data-source schema claims)
 //! lives in [`databases`].
+//! Slice 3 remainder (row notes, property claims, relations) lives in
+//! [`rows`].
 
 pub mod comments;
 pub mod content;
 pub mod databases;
+pub mod rows;
 
 #[cfg(unix)]
 use std::fs::File;
@@ -606,6 +609,11 @@ pub struct Manifest {
     /// Absent from pre-slice-4 manifests, so it defaults empty.
     #[serde(default)]
     pub comments_coverage: BTreeMap<String, crate::comments::CommentsCoverage>,
+    /// Row page UUID -> its row conversion record (§2.2), recorded by
+    /// [`rows::convert_row`]. Absent from pre-slice-3-remainder
+    /// manifests, so it defaults empty when an older manifest is loaded.
+    #[serde(default)]
+    pub row_records: BTreeMap<String, crate::rows::RowConversion>,
     /// Progress checkpoints exist for page, database, and block UUIDs in
     /// `inventory.objects`; a database checkpoint represents its complete
     /// embedded data-source set in `inventory.data_sources`.
@@ -667,6 +675,7 @@ impl Manifest {
             file_blobs: BTreeMap::new(),
             comment_claims: BTreeMap::new(),
             comments_coverage: BTreeMap::new(),
+            row_records: BTreeMap::new(),
         })
     }
 
