@@ -68,6 +68,63 @@ use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
+/// The numeric→category mapping for #14100 (from the issue spec's
+/// table, derived from the scale, the label descriptions, and the
+/// 2026-11-12 census bands): 10 → critical; 20/30 (and stored
+/// 15/25 from #7030) → high; 40/50 → normal; 70/90 → low.
+/// Defined over ranges so any stored value resolves
+/// deterministically: ≤10 critical · 11–30 high · 31–50 normal ·
+/// ≥51 low. `expedite` and `next-up` are separate labels with
+/// their own enqueue-time derivations, never priority categories.
+pub fn category_for_priority(n: i64) -> Option<&'static str> {
+    if n <= 10 {
+        Some("critical")
+    } else if n <= 30 {
+        Some("high")
+    } else if n <= 50 {
+        Some("normal")
+    } else {
+        Some("low")
+    }
+}
+
+/// GitHub label for a queue priority number (#14100): the mapped
+/// category rendered as `priority/<slug>`. Total over the same
+/// range domain as `category_for_priority`, so stored off-scale
+/// values (15/25) resolve to their band label.
+pub fn label_for_priority(n: i64) -> Option<&'static str> {
+    match category_for_priority(n) {
+        Some("critical") => Some("priority/critical"),
+        Some("high") => Some("priority/high"),
+        Some("normal") => Some("priority/normal"),
+        Some("low") => Some("priority/low"),
+        _ => None,
+    }
+}
+
+/// Resolve a user-supplied reprioritize target (#14100): an integer
+/// on PRIORITY_SCALE (numeric strings are accepted and parsed).
+/// Off-scale is rejected with the existing scale error; category
+/// names are not accepted — the CLI takes a number, and the
+/// category is derived from it.
+pub fn resolve_priority(input: &serde_json::Value, field: &str) -> Result<i64, String> {
+    let n = match input {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    };
+    match n {
+        Some(v) if PRIORITY_SCALE.contains(&v) => Ok(v),
+        Some(v) => Err(format!(
+            "{field}: {v} is not on the design scale {:?}",
+            PRIORITY_SCALE
+        )),
+        None => Err(format!(
+            "{field}: must be an integer on the design scale {:?} (10, 20, 30, 40, 50, 70, 90)",
+            PRIORITY_SCALE
+        )),
+    }
+}
 /// #7030: Drew's ratified label bands (ratified 2026-11-07): an issue
 /// carrying the `expedite` label queues at priority 15 (the 10–20
 /// band) and one carrying `next-up` at 25 (the 20–30 band). These are
@@ -1370,6 +1427,49 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[test]
+    fn reprioritize_scale_and_category_mapping() {
+        // #14100: the design scale is exactly these seven numbers.
+        assert_eq!(PRIORITY_SCALE, [10, 20, 30, 40, 50, 70, 90]);
+        // Spec table: 10 critical; 20/30 high; 40/50 normal; 70/90 low.
+        assert_eq!(category_for_priority(10), Some("critical"));
+        assert_eq!(label_for_priority(10), Some("priority/critical"));
+        for n in [20, 30] {
+            assert_eq!(category_for_priority(n), Some("high"), "{n}");
+            assert_eq!(label_for_priority(n), Some("priority/high"), "{n}");
+        }
+        for n in [40, 50] {
+            assert_eq!(category_for_priority(n), Some("normal"), "{n}");
+            assert_eq!(label_for_priority(n), Some("priority/normal"), "{n}");
+        }
+        for n in [70, 90] {
+            assert_eq!(category_for_priority(n), Some("low"), "{n}");
+            assert_eq!(label_for_priority(n), Some("priority/low"), "{n}");
+        }
+        // Stored off-scale values resolve to their band (high).
+        for n in [15, 25] {
+            assert_eq!(category_for_priority(n), Some("high"), "{n}");
+            assert_eq!(label_for_priority(n), Some("priority/high"), "{n}");
+            assert!(
+                resolve_priority(&json!(n), "priority").is_err(),
+                "{n} is stored-only, never a valid target"
+            );
+        }
+        // Every scale number resolves; off-scale numbers are refused
+        // with the scale error; non-numeric input is refused.
+        for n in PRIORITY_SCALE {
+            assert_eq!(resolve_priority(&json!(n), "priority").unwrap(), n);
+            assert_eq!(
+                resolve_priority(&json!(n.to_string()), "priority").unwrap(),
+                n
+            );
+        }
+        for bad in [5, 15, 25, 60, 80, 100] {
+            assert!(resolve_priority(&json!(bad), "priority").is_err(), "{bad}");
+        }
+        assert!(resolve_priority(&json!("high"), "priority").is_err());
+    }
     /// #13177: the published packet schema (pkgs/fleet/repo-task-v1.schema.json)
     /// and this validator must agree on the kind and repo enums. The
     /// validator is canonical: KINDS carries second_pass/feature_slice

@@ -72,6 +72,7 @@ pub fn run(args: &[String]) -> i32 {
         "heartbeat" => cmd_heartbeat(rest),
         "checkpoint" => cmd_checkpoint(rest),
         "park" => cmd_park(rest),
+        "reprioritize" => cmd_reprioritize(rest),
         "wake" => cmd_wake(rest),
         "block" => cmd_block(rest),
         "unblock" => cmd_unblock(rest),
