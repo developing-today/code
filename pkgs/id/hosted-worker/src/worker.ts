@@ -15,6 +15,11 @@ import { FailClosed, parseBindingId, parseJurisdiction, userStub, type ObjectNam
 import { HDR_BINDING, HDR_IROH, HDR_JURISDICTION, HDR_ROUTED, bodyTooLarge, requestBodyLimit } from "./user-do.ts";
 
 export { UserDO } from "./user-do.ts";
+// The tenancy control plane's per-tenant operations object (E2 of
+// #9083, #12797). Exported and bound so the platform knows the
+// class; the front door does not route to it — the tenancy Worker
+// drives it over internal calls.
+export { TenantOpsDO } from "./tenant-ops.ts";
 
 interface Env {
   USERS: ObjectNamespaceLike;

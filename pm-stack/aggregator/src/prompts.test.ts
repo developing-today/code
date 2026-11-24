@@ -55,6 +55,60 @@ describe("validateNewPrompt", () => {
   test("rejects page ids that are not slugs", () => {
     expect(validateNewPrompt({ ...valid, page: "../etc" }).ok).toBe(false);
   });
+
+  test("accepts the decision target with its design 3.4 fields", () => {
+    const decision = {
+      contextLevel: "medium",
+      advancedConstraints: [{ when: { field: "a", eq: 1 }, then: { field: "b", required: true } }],
+      contextGenerator: "model:claude-haiku-5-5",
+    };
+    const r = validateNewPrompt({ ...valid, target: "decision", decision });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.decision).toEqual(decision);
+  });
+
+  test("accepts a null contextGenerator and an empty constraint list", () => {
+    const r = validateNewPrompt({
+      ...valid,
+      target: "decision",
+      decision: { contextLevel: "high", advancedConstraints: [], contextGenerator: null },
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("rejects a decision target with a missing or malformed decision object", () => {
+    expect(validateNewPrompt({ ...valid, target: "decision" }).ok).toBe(false);
+    expect(
+      validateNewPrompt({
+        ...valid,
+        target: "decision",
+        decision: { contextLevel: "extreme", advancedConstraints: [], contextGenerator: null },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateNewPrompt({
+        ...valid,
+        target: "decision",
+        decision: { contextLevel: "low", advancedConstraints: ["x"], contextGenerator: null },
+      }).ok,
+    ).toBe(false);
+    expect(
+      validateNewPrompt({
+        ...valid,
+        target: "decision",
+        decision: { contextLevel: "low", advancedConstraints: [], contextGenerator: "gpt" },
+      }).ok,
+    ).toBe(false);
+  });
+
+  test("ignores a decision object on non-decision targets", () => {
+    const r = validateNewPrompt({
+      ...valid,
+      decision: { contextLevel: "low", advancedConstraints: [], contextGenerator: null },
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.decision).toBeUndefined();
+  });
 });
 
 describe("PromptsStore", () => {

@@ -22,12 +22,17 @@ Implements the fleet architecture spec v0.3
 - `fleet cert chain build|test` — signature-verified path building
   (shortest path, path-length pruned) and validation under
   all/classical/PQ trust selections.
+- `fleet cert ocsp sign|inspect|test` — RFC 6960 responses from
+  issuer bundles: direct issuer signing or a delegated responder
+  certificate (leaf profile `ocsp-responder`: EKU id-kp-OCSPSigning
+  - NoCheck, 30d default), verified against the crate chain code.
+    This is the §4.3 functional responder core; it embeds no OCSP URL.
 - `fleet cert bundle inspect`, `profile list|show`,
   `algorithms list|describe`, `explain`, `doctor`.
 - Text and `--json` output; fleet exit-code contract (0/2/1).
 
 Not yet built (tracked as child issues under #9157): `revoke`/`crl`,
-`ocsp`, `publish`, `dns`, `trust`, `key`, `format`, profile
+`publish`, `dns`, `trust`, `key`, `format`, profile
 validate/scaffold, algorithm benchmark/doctor, `batch`,
 `inventory`, renew/rotate verbs, bundle pack/unpack/diff/migrate.
 

@@ -1,7 +1,7 @@
 # The crates
 
-The fleet binary is one Rust workspace, `pkgs/fleet/`, with 13 crates:
-12 library crates and the one binary crate that assembles them. The
+The fleet binary is one Rust workspace, `pkgs/fleet/`, with 16 crates:
+15 library crates and the one binary crate that assembles them. The
 workspace is self-contained — its own `Cargo.toml`, `Cargo.lock` and
 `rust-toolchain.toml`, no workspace relationship to the repository root
 — at version `0.1.0`, edition 2024, rust-version 1.85, licensed
@@ -20,7 +20,7 @@ embedder touches most: [The queue client](queue-client.md),
 [Placement and surfaces as data](placement.md), and
 [Registry, config and capabilities](registry-and-config.md).
 
-## The 13 crates
+## The 16 crates
 
 ### `fleet`
 
@@ -56,6 +56,16 @@ tests: the mailbox client for the bridge service, with the two token
 classes (owner token for central verbs, fleet token for agent verbs)
 resolved by name through `fleet-secrets`.
 
+### `fleet-cert`
+
+> "The `fleet cert` domain: PKI/X.509 roots, issuers, leaves, chains and bundles over a library-first Rust API (developing-today/code#9157, spec doc/2026-11-13T01-34-11Z_design_fleet_ca_credentials_secrets)."
+
+Owns the `cert` domain (`fleet cert`, alias `fleet pki`), entry point
+`fleet_cert::run`, with the domain's own usage text in `fleet_cert::cli`.
+The verb surface covers roots, issuers, leaves, chains, bundles and
+profiles; the OCSP verb group (sign, inspect, test) and the
+`ocsp-responder` profile landed in #13722.
+
 ### `fleet-config`
 
 > "fleet configuration: ~/.config/fleet/fleet.toml + env resolution, the [domains] enable/disable table, and state-dir paths."
@@ -87,6 +97,13 @@ Owns the `dispatch-test` domain (`scan`, `submit`, `status`). Nothing in
 it is trigger-driven: every verb runs only when a caller invokes it, and
 `submit` dispatches a `workflow_dispatch` run explicitly.
 
+### `fleet-kv`
+
+> "Identity-scoped local SQLite storage for fleet-kv."
+
+A platform crate, not a domain: the identity-scoped SQLite storage core
+(#13362) that other fleet surfaces build on.
+
 ### `fleet-laptop-agent`
 
 > "The fleet laptop-agent domain: the transport ladder (broker, Cloudflare, Tailscale, SSH) and the verbs over the laptop-agent daemon (epic developing-today/code#5412, issue #10796)."
@@ -96,6 +113,18 @@ Owns the `laptop-agent` domain (`health`, `jobs`, `kill`, `exec`,
 4799, with a four-leg transport ladder — broker, Cloudflare, Tailscale,
 and an SSH leg that exists in the ordering as a stub and never carries
 traffic in this build.
+
+### `fleet-orgs`
+
+> "The `fleet orgs` domain: the Turso-backed org/App registry, synced from each GitHub App's own JWT (developing-today/code#8884)."
+
+Owns the `orgs` domain, entry point `fleet_orgs::run`. The registry
+tables are `sync_runs`, `apps`, `orgs` and `installations`, with
+idempotent upserts; sync uses each App's JWT against `GET /app` and
+`GET /app/installations`. `fleet orgs list` prints the table or
+`--json`, with `--app`, `--org` and `--permission` filters, and shows
+the last successful sync time. The Turso URL comes from
+`FLEET_ORGS_TURSO_URL`; its token is the secret `turso.fleet-orgs-token`.
 
 ### `fleet-proxy`
 
@@ -141,7 +170,7 @@ broker surface, and the feature gates between them — is the subject of
 A platform crate with a hard constraint: **dependency-free** (std only,
 strings and tables, no I/O), so it can be compiled into _every_ variant
 — including the size-gated connect build — and `--help` is always
-complete. It owns the 15 capability atoms, the 12 domains, the three
+complete. It owns the 22 capability atoms, the 19 domains, the three
 build variants and the argv0 alias map. Covered in depth in
 [Registry, config and capabilities](registry-and-config.md).
 
@@ -217,6 +246,8 @@ variant unconditionally.
 | `shell`                                          | `agent`            | `fleet-agent`                                   | `fleet_agent::run_shell`                                             |
 | `search`                                         | `search`           | `fleet-search`                                  | `fleet_search::run`                                                  |
 | `laptop-agent`                                   | `laptop-agent`     | `fleet-laptop-agent`                            | `fleet_laptop_agent::cli::run`                                       |
+| `orgs`                                           | `orgs`             | `fleet-orgs`                                    | `fleet_orgs::run`                                                    |
+| `cert`                                           | `cert`             | `fleet-cert`                                    | `fleet_cert::run`                                                    |
 
 Note the two irregular rows, because embedders trip on both: `shell`
 has **no capability atom of its own** — it rides the `agent` capability

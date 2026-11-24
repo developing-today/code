@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # kaneo-cutover — the gated Kaneo → Supabase cutover driver.
 #
-# Implements the Kaneo half of pm-stack/STORE-MIGRATION-PLAN-6816.md §3-§4
-# for issue #6816. Two modes:
+# Implements the Kaneo half of pm-stack/STORE-MIGRATION-PLAN-6816.md §3-§5
+# for issue #6816. Three modes:
 #
 #   presync  while live: pg_dump the source `kaneo` database, pg_restore it
 #            into the target (muse-dev2), then verify schema parity (same
@@ -22,10 +22,23 @@
 #            The script never rewrites the DSN itself: it gates the step
 #            and records the evidence, so no configuration can promote
 #            while a second writer is alive.
+#   rollback the gate before reopening the local writer (§5). Requires the
+#            promoted writer FENCED — the DSN flip renames no container,
+#            so the existing writer set proves no writer runs against
+#            either store — then exports the window's writes (pg_dump of
+#            the target) and replays them into the source, demanding exact
+#            table/row parity afterwards. Only then is a rollback receipt
+#            written and ROLLBACK OK printed. --unreachable is refused
+#            here: the writer being fenced is local, not gone.
+#            The driver replays the delta but never flips a DSN or
+#            restarts a service: the window operator does that per the
+#            runbook, attaching this receipt to the window record.
 #
-# Acceptance language this implements (#6816 criterion 2): "the old writer
-# is fenced before any failover promotion; no configuration permits two
-# active writers."
+# Acceptance language this implements (#6816 criteria 2 and 4): "the old
+# writer is fenced before any failover promotion; no configuration permits
+# two active writers" and "rollback restores the prior writer without
+# losing writes" (the replay half; the DSN flip and restart stay window
+# operator steps per the runbook).
 #
 # Secrets: DSNs are read from files (--source-dsn-file / --target-dsn-file)
 # and never echoed, logged, or written to the receipt. Credentials resolve
@@ -34,10 +47,10 @@
 # Argument contract (#3352): flags only, no positionals. `--opt value` and
 # `--opt=value` behave identically. Anything else is a usage error (exit 2)
 # before any subprocess runs:
-#   --mode presync|promote     required
+#   --mode presync|promote|rollback required
 #   --source-dsn-file FILE     required; file holding the source DSN
 #   --target-dsn-file FILE     required; file holding the target DSN
-#   --dump-file FILE           required for presync; the dump to write
+#   --dump-file FILE           required for presync and rollback; the dump to write
 #   --receipt FILE             write the receipt here (default: stdout only)
 #   --pg-bin-dir DIR           find pg_dump/pg_restore/psql in DIR (tests)
 #   --fence-check PATH         fence checker (default: sibling fence-check.sh)
@@ -46,11 +59,13 @@
 #   --backup-record-file FILE  latest pm-dashboard-backup .last-run.json;
 #                              required for promote
 #   --max-backup-age-hours N   freshness bound for the backup (default 36)
-#   --unreachable              passed to fence-check: old host unreachable
+#   --unreachable              passed to fence-check: old host unreachable.
+#                              Refused in rollback mode (exit 2): the writer
+#                              being fenced there is local.
 #   -h, --help                 usage, exit 0
 #
-# Exit codes: 0 pass, 2 usage, 3 not fenced (promotion refused), 4 parity
-# failure, 5 command failure.
+# Exit codes: 0 pass, 2 usage, 3 not fenced (promotion/rollback refused),
+# 4 parity failure, 5 command failure.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,6 +77,7 @@ DUMP_FILE=""
 RECEIPT=""
 PG_BIN_DIR=""
 FENCE_CHECK="$SCRIPT_DIR/fence-check.sh"
+UNREACHABLE_FLAG=0
 FENCE_ARGS=()
 BACKUP_RECORD_FILE=""
 MAX_BACKUP_AGE_HOURS=36
@@ -73,7 +89,7 @@ COUNT_SQL="select count(*) || ' ' || coalesce(sum(c), 0) from (select (xpath('/r
 
 usage() {
   cat <<'USAGE'
-usage: kaneo-cutover.sh --mode presync|promote --source-dsn-file FILE
+usage: kaneo-cutover.sh --mode presync|promote|rollback --source-dsn-file FILE
                         --target-dsn-file FILE [--dump-file FILE]
                         [--receipt FILE] [--pg-bin-dir DIR]
                         [--fence-check PATH] [--units-dir DIR]
@@ -85,6 +101,9 @@ usage: kaneo-cutover.sh --mode presync|promote --source-dsn-file FILE
   promote  require a fresh complete backup, the old writer FENCED, and exact
            table/row parity, then write the cutover receipt. Exit: 0 pass,
            2 usage, 3 promotion refused, 4 parity failure, 5 command failure.
+  rollback fence the promoted writer, replay the target delta into the
+           source, require exact parity, write the rollback receipt.
+           --unreachable is refused. Exit codes as promote.
 USAGE
 }
 
@@ -96,66 +115,67 @@ fail_usage() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --unreachable)
-      FENCE_ARGS+=("--unreachable")
-      shift
-      ;;
-    --mode|--source-dsn-file|--target-dsn-file|--dump-file|--receipt|--pg-bin-dir|--fence-check|--units-dir|--containers-file|--backup-record-file|--max-backup-age-hours)
-      opt="$1"
-      [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
-      val="$2"
-      [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
-      case "$opt" in
-        --mode) MODE="$val" ;;
-        --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
-        --target-dsn-file) TARGET_DSN_FILE="$val" ;;
-        --dump-file) DUMP_FILE="$val" ;;
-        --receipt) RECEIPT="$val" ;;
-        --pg-bin-dir) PG_BIN_DIR="$val" ;;
-        --fence-check) FENCE_CHECK="$val" ;;
-        --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
-        --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
-        --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
-        --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
-      esac
-      shift 2
-      ;;
-    --mode=*|--source-dsn-file=*|--target-dsn-file=*|--dump-file=*|--receipt=*|--pg-bin-dir=*|--fence-check=*|--units-dir=*|--containers-file=*|--backup-record-file=*|--max-backup-age-hours=*)
-      opt="${1%%=*}"
-      val="${1#*=}"
-      [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
-      case "$opt" in
-        --mode) MODE="$val" ;;
-        --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
-        --target-dsn-file) TARGET_DSN_FILE="$val" ;;
-        --dump-file) DUMP_FILE="$val" ;;
-        --receipt) RECEIPT="$val" ;;
-        --pg-bin-dir) PG_BIN_DIR="$val" ;;
-        --fence-check) FENCE_CHECK="$val" ;;
-        --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
-        --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
-        --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
-        --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
-      esac
-      shift
-      ;;
-    --*)
-      fail_usage "unexpected argument '$1'"
-      ;;
-    *)
-      fail_usage "unexpected argument '$1' (no positionals)"
-      ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  --unreachable)
+    FENCE_ARGS+=("--unreachable")
+    UNREACHABLE_FLAG=1
+    shift
+    ;;
+  --mode | --source-dsn-file | --target-dsn-file | --dump-file | --receipt | --pg-bin-dir | --fence-check | --units-dir | --containers-file | --backup-record-file | --max-backup-age-hours)
+    opt="$1"
+    [ "$#" -ge 2 ] || fail_usage "$opt requires a value"
+    val="$2"
+    [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
+    case "$opt" in
+    --mode) MODE="$val" ;;
+    --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
+    --target-dsn-file) TARGET_DSN_FILE="$val" ;;
+    --dump-file) DUMP_FILE="$val" ;;
+    --receipt) RECEIPT="$val" ;;
+    --pg-bin-dir) PG_BIN_DIR="$val" ;;
+    --fence-check) FENCE_CHECK="$val" ;;
+    --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
+    --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
+    --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
+    esac
+    shift 2
+    ;;
+  --mode=* | --source-dsn-file=* | --target-dsn-file=* | --dump-file=* | --receipt=* | --pg-bin-dir=* | --fence-check=* | --units-dir=* | --containers-file=* | --backup-record-file=* | --max-backup-age-hours=*)
+    opt="${1%%=*}"
+    val="${1#*=}"
+    [ -n "$val" ] || fail_usage "$opt requires a non-empty value"
+    case "$opt" in
+    --mode) MODE="$val" ;;
+    --source-dsn-file) SOURCE_DSN_FILE="$val" ;;
+    --target-dsn-file) TARGET_DSN_FILE="$val" ;;
+    --dump-file) DUMP_FILE="$val" ;;
+    --receipt) RECEIPT="$val" ;;
+    --pg-bin-dir) PG_BIN_DIR="$val" ;;
+    --fence-check) FENCE_CHECK="$val" ;;
+    --backup-record-file) BACKUP_RECORD_FILE="$val" ;;
+    --max-backup-age-hours) MAX_BACKUP_AGE_HOURS="$val" ;;
+    --units-dir) FENCE_ARGS+=("--units-dir" "$val") ;;
+    --containers-file) FENCE_ARGS+=("--containers-file" "$val") ;;
+    esac
+    shift
+    ;;
+  --*)
+    fail_usage "unexpected argument '$1'"
+    ;;
+  *)
+    fail_usage "unexpected argument '$1' (no positionals)"
+    ;;
   esac
 done
 
 case "$MODE" in
-  presync|promote) ;;
-  "") fail_usage "--mode is required (presync or promote)" ;;
-  *) fail_usage "--mode must be presync or promote (got '$MODE')" ;;
+presync | promote | rollback) ;;
+"") fail_usage "--mode is required (presync, promote or rollback)" ;;
+*) fail_usage "--mode must be presync, promote or rollback (got '$MODE')" ;;
 esac
 
 [ -n "$SOURCE_DSN_FILE" ] || fail_usage "--source-dsn-file is required"
@@ -173,6 +193,10 @@ if [ "$MODE" = "promote" ]; then
     0) fail_usage "--max-backup-age-hours must be a positive integer" ;;
   esac
 fi
+if [ "$MODE" = "rollback" ]; then
+  [ -n "$DUMP_FILE" ] || fail_usage "--dump-file is required for rollback"
+  [ "$UNREACHABLE_FLAG" -eq 0 ] || fail_usage "--unreachable is for failover promote only; rollback fences the local promoted writer"
+fi
 
 if [ -n "$PG_BIN_DIR" ]; then
   [ -d "$PG_BIN_DIR" ] || fail_usage "--pg-bin-dir '$PG_BIN_DIR' is not a directory"
@@ -185,7 +209,10 @@ else
   PSQL="psql"
 fi
 
-[ -x "$FENCE_CHECK" ] || { echo "kaneo-cutover: fence checker '$FENCE_CHECK' is not executable — refusing to gate a promotion on an absent check" >&2; exit 5; }
+[ -x "$FENCE_CHECK" ] || {
+  echo "kaneo-cutover: fence checker '$FENCE_CHECK' is not executable — refusing to gate a promotion on an absent check" >&2
+  exit 5
+}
 
 read_dsn() {
   # Reads a DSN without echoing it. Trailing newline dropped.
@@ -204,8 +231,11 @@ counts_of() {
   fi
   out="$(printf '%s' "$out" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
   case "$out" in
-    [0-9]*" "[0-9]*) printf '%s' "$out" ;;
-    *) echo "kaneo-cutover: unexpected count output from the $1 database: '$out'" >&2; return 5 ;;
+  [0-9]*" "[0-9]*) printf '%s' "$out" ;;
+  *)
+    echo "kaneo-cutover: unexpected count output from the $1 database: '$out'" >&2
+    return 5
+    ;;
   esac
 }
 
@@ -221,18 +251,33 @@ write_receipt() {
 - Verdict: $1
 ${2:-}"
   if [ -n "$RECEIPT" ]; then
-    printf '%s\n' "$RECEIPT_BODY" >"$RECEIPT" || { echo "kaneo-cutover: cannot write receipt '$RECEIPT'" >&2; exit 5; }
+    printf '%s\n' "$RECEIPT_BODY" >"$RECEIPT" || {
+      echo "kaneo-cutover: cannot write receipt '$RECEIPT'" >&2
+      exit 5
+    }
   fi
 }
 
-source_dsn="$(read_dsn "$SOURCE_DSN_FILE")" || { echo "kaneo-cutover: cannot read '$SOURCE_DSN_FILE'" >&2; exit 5; }
-target_dsn="$(read_dsn "$TARGET_DSN_FILE")" || { echo "kaneo-cutover: cannot read '$TARGET_DSN_FILE'" >&2; exit 5; }
+source_dsn="$(read_dsn "$SOURCE_DSN_FILE")" || {
+  echo "kaneo-cutover: cannot read '$SOURCE_DSN_FILE'" >&2
+  exit 5
+}
+target_dsn="$(read_dsn "$TARGET_DSN_FILE")" || {
+  echo "kaneo-cutover: cannot read '$TARGET_DSN_FILE'" >&2
+  exit 5
+}
 
 if [ "$MODE" = "presync" ]; then
   echo "kaneo-cutover: presync — dumping source to '$DUMP_FILE'"
-  "$PG_DUMP" -Fc -f "$DUMP_FILE" -d "$source_dsn" || { echo "kaneo-cutover: pg_dump failed" >&2; exit 5; }
+  "$PG_DUMP" -Fc -f "$DUMP_FILE" -d "$source_dsn" || {
+    echo "kaneo-cutover: pg_dump failed" >&2
+    exit 5
+  }
   echo "kaneo-cutover: presync — restoring into the target"
-  "$PG_RESTORE" --no-owner --no-privileges -d "$target_dsn" "$DUMP_FILE" || { echo "kaneo-cutover: pg_restore failed" >&2; exit 5; }
+  "$PG_RESTORE" --no-owner --no-privileges -d "$target_dsn" "$DUMP_FILE" || {
+    echo "kaneo-cutover: pg_restore failed" >&2
+    exit 5
+  }
 
   SRC_COUNTS="$(counts_of source "$source_dsn")" || exit $?
   TGT_COUNTS="$(counts_of target "$target_dsn")" || exit $?
@@ -250,6 +295,47 @@ if [ "$MODE" = "presync" ]; then
   fi
   write_receipt "PASS (schema + rows) — source and target both $SRC_COUNTS"
   echo "kaneo-cutover: presync OK — $SRC_COUNTS on both sides"
+  exit 0
+fi
+
+# --- rollback: fence the promoted writer first, then replay the window's
+# writes back into the source. The DSN flip renames no container, so the
+# existing writer set proves no writer runs against either store. The
+# driver replays the delta but never flips a DSN or restarts a service:
+# the window operator does that per the runbook, attaching the receipt.
+if [ "$MODE" = "rollback" ]; then
+  if ! FENCE_OUT="$("$FENCE_CHECK" ${FENCE_ARGS[@]+"${FENCE_ARGS[@]}"} 2>&1)" || [ "${FENCE_OUT%%:*}" != "FENCED" ]; then
+    FENCE_LINE="UNFENCED — ${FENCE_OUT:-fence-check produced no output}"
+    write_receipt "REFUSED — rollback requires the promoted writer fenced"
+    echo "kaneo-cutover: REFUSED — promoted writer not fenced; no rollback, no replay. $FENCE_OUT" >&2
+    exit 3
+  fi
+  FENCE_LINE="$FENCE_OUT"
+
+  echo "kaneo-cutover: rollback — exporting the target delta to '$DUMP_FILE'"
+  "$PG_DUMP" -Fc -f "$DUMP_FILE" -d "$target_dsn" || {
+    echo "kaneo-cutover: pg_dump of the target failed" >&2
+    exit 5
+  }
+  echo "kaneo-cutover: rollback — replaying into the source"
+  "$PG_RESTORE" --no-owner --no-privileges -d "$source_dsn" "$DUMP_FILE" || {
+    echo "kaneo-cutover: pg_restore into the source failed" >&2
+    exit 5
+  }
+
+  SRC_COUNTS="$(counts_of source "$source_dsn")" || exit $?
+  TGT_COUNTS="$(counts_of target "$target_dsn")" || exit $?
+  if [ "$SRC_COUNTS" != "$TGT_COUNTS" ]; then
+    write_receipt "FAIL — replay parity: source $SRC_COUNTS, target $TGT_COUNTS"
+    echo "kaneo-cutover: FAIL — replay parity: source $SRC_COUNTS, target $TGT_COUNTS (re-export and replay before reopening the local writer)" >&2
+    exit 4
+  fi
+
+  write_receipt "ROLLBACK OK — fenced, delta replayed, source and target both $SRC_COUNTS"
+  echo "kaneo-cutover: ROLLBACK OK — $FENCE_OUT; source and target both $SRC_COUNTS"
+  if [ -z "$RECEIPT" ]; then
+    printf '\n%s\n' "$RECEIPT_BODY"
+  fi
   exit 0
 fi
 

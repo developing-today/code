@@ -1088,6 +1088,7 @@ async fn joined<I: SessionIo>(
     after: Option<u64>,
     screen_patches: bool,
     screen_msgpack: bool,
+    screen_compress: bool,
     resume_token: Option<String>,
     agent_profile: bool,
     device_input: Option<serde_json::Value>,
@@ -1147,6 +1148,11 @@ async fn joined<I: SessionIo>(
     // no offer, or a text-only transport — keeps the JSON patch path,
     // and a client that never opted in is unaffected either way.
     view_state.msgpack_patches = screen_patches && screen_msgpack && io.supports_bytes();
+    // Compressed patches (F12.11 phase 4, contract revision 16) ride
+    // the same negotiation: only a session that also offered
+    // `screen_compress` receives version-2 compressed frames, and only
+    // when compression makes the complete frame smaller.
+    view_state.compress_patches = view_state.msgpack_patches && screen_compress;
     if let Some(after) = after {
         match world.events_after(token.clone(), after).await {
             Ok(page) if page.needs_snapshot => {

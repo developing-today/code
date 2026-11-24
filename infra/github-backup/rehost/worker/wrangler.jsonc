@@ -1,0 +1,17 @@
+{
+  // fleet-git-rehost: read-only git smart-HTTP server for the #8584
+  // Cloudflare rehost copy. Deployment is a plain wrangler deploy via
+  // pkgs/cf/wrangler-authed.py (see deploy.sh); the account token comes
+  // from the vault by name and never lands in this file or on disk.
+  "name": "fleet-git-rehost",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-25",
+  "observability": { "enabled": true },
+  // The workers.dev address answers too; the canonical clone host is
+  // the custom domain below.
+  "workers_dev": true,
+  "routes": [{ "pattern": "git.security.cab", "custom_domain": true }],
+  // The publisher (bin/rehost_publish.py) writes refs.json + packs
+  // into this bucket; the Worker only ever reads it.
+  "r2_buckets": [{ "binding": "REHOST", "bucket_name": "fleet-git-rehost" }]
+}

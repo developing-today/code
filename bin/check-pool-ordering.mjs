@@ -2,9 +2,12 @@
 
 // Pool-ordering audit for the daily model + route audit (#1173). It checks
 // the one ordering rule that is decidable from the tracked config alone —
-// OpenAI as final reserve — and reports the effective pool order per tier
-// so the daily audit can compare it against the #1270 plan store by hand
-// until burn-by-expiry and cheapest-sufficient are wired (next slice).
+// OpenAI as final reserve — and, when the #1270 plan store is passed with
+// --plans, reports the burn-by-expiry order per tier (each pool's quota
+// window end, derived from the store) so the daily audit can compare it
+// against the config order instead of by hand. Cheapest-sufficient is
+// still unwired: the store's fee is a subscription price, not a cost per
+// unit of work.
 //
 // Rule (decided 2026-11-22, xaltha; see the decision record on #1173):
 // in every ordered chain, an OpenAI-backed pool must come last. Grounded
@@ -18,6 +21,24 @@
 // serving an OpenAI model through another provider's plan
 // (opendesign/gpt-6.1-sol) is that provider's door, not the OpenAI
 // plan's, and does not count as OpenAI here.
+//
+// Burn-by-expiry derivation (decided 2026-11-23, xaltha; #1173/#1149):
+// a plan quota with resetRule "calendar" and windowHours W is the
+// calendar period of length W containing now, so its window ends at the
+// start of the next such period, in UTC: 24h ends at the next midnight,
+// 168h at the next Monday 00:00 (ISO week), 720h at the 1st of the next
+// month. Any other window length, a missing window, or a non-"calendar"
+// resetRule has no derivable end and is reported unknown, never guessed.
+// A pool's expiry is the earliest window end among the plans covering
+// any of its leaf providers; a plan with status present and not "active"
+// does not bind. Pool-to-plan matching normalises provider ids (drop a
+// leading "_", drop a "." alias suffix, drop "-" separators,
+// lowercase), so the store's "open-design" matches the config's
+// "opendesign" and "claude" matches "_claude". A pool with no covering plan, or only
+// underivable windows, is reported unknown. Expiry-order mismatches are
+// notes, not findings, until the derivation is validated against the
+// live store's actual reset instants (follow-up on #1173); the report
+// names the exact pools and dates so the audit can act on them.
 //
 // Scope notes, deliberately:
 // - Only ordered chains are order-checked. In a weighted or round-robin
@@ -34,18 +55,11 @@
 //   further passes, not a continuation of the fallback's chain.
 // - Funds (metered) and disabled leaves never serve as pool quota and
 //   are excluded from the order, matching inspectRouteRules.
-// - Burn-by-expiry and cheapest-sufficient are NOT checked here: the
-//   tracked config carries no machine-readable expiry/cost fields (the
-//   2026-11-10 triage), and the decided source for them — the #1270 plan
-//   store (plans.json) plus the plan-facts block, diffed by
-//   ~/tools/provider-usage/reconcile.py — is not in this repo. The
-//   report prints the pool order so the audit can compare it, and the
-//   next slice wires --plans.
 
 // Argument contract (#3352): the command line is exactly one optional
-// config path plus --json. Any other token — including a single-dash
-// flag such as `-j` — is a usage error raised by parseArgs before the
-// config is read, never a positional.
+// config path plus --json and --plans <plans.json>. Any other token —
+// including a single-dash flag such as `-j` — is a usage error raised
+// by parseArgs before the config is read, never a positional.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -165,7 +179,103 @@ function selectionOf(modelRoutes, route) {
   return typeof selection === 'string' ? selection : 'ordered';
 }
 
-export function inspectPoolOrdering(config) {
+// --- Burn-by-expiry (--plans) -------------------------------------------
+// The decided source is the #1270 plan store (plans.json): the same
+// shape ~/tools/provider-usage/reconcile.py reads — plans[].id,
+// plans[].providerID, plans[].fee{amount,period},
+// plans[].quotas[]{windowHours,limit,resetRule}, plans[].status.
+
+// The end of the calendar period of length windowHours containing now,
+// in UTC ms; null when no end is derivable (see the header comment).
+// 24h is the UTC day, 168h the ISO week (Monday 00:00 UTC), 720h the
+// calendar month. A quota whose window has already ended is impossible
+// by construction: the period containing now always ends in the future.
+export function windowEndForQuota(quota, now = Date.now()) {
+  if (!isObject(quota)) return null;
+  if (quota.resetRule !== 'calendar') return null;
+  const hours = quota.windowHours;
+  if (typeof hours !== 'number' || !Number.isFinite(hours)) return null;
+  const at = new Date(now);
+  if (hours === 24) {
+    return Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() + 1);
+  }
+  if (hours === 168) {
+    // ISO week: Monday 00:00 UTC. getUTCDay: 0 = Sunday .. 6 = Saturday.
+    const day = at.getUTCDay();
+    const daysToMonday = (day + 6) % 7;
+    const monday = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() - daysToMonday);
+    return monday + 7 * 24 * 3600 * 1000;
+  }
+  if (hours === 720) {
+    return Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 1);
+  }
+  return null;
+}
+
+// Normalise a provider id for pool-to-plan matching: the store writes
+// bare ids ("open-design", "claude") while the config seats underscored
+// aliases ("opendesign", "_claude", "_openai.alt"). A leading "_" is
+// dropped, a "." suffix is an alias qualifier ("_openai.alt" is the
+// openai provider's alt door), and "-" separators are dropped.
+export function normaliseProviderId(provider) {
+  return String(provider ?? '')
+    .replace(/^_+/, '')
+    .split('.')[0]
+    .replace(/[-_]/g, '')
+    .toLowerCase();
+}
+
+// Normalised plan rows from a parsed plans.json store: one row per
+// plan with a derivable window end, keyed by normalised provider.
+// Plans with status present and not "active" do not bind; a plan with
+// several quotas binds at its earliest-ending one (the binding
+// constraint for burn order). Malformed input yields no rows, never a
+// throw: the caller reports the pools as unknown.
+export function planWindowEnds(store, now = Date.now()) {
+  const byProvider = new Map();
+  const plans = isObject(store) && Array.isArray(store.plans) ? store.plans : [];
+  for (const plan of plans) {
+    if (!isObject(plan)) continue;
+    if (plan.status !== undefined && plan.status !== 'active') continue;
+    const provider = normaliseProviderId(plan.providerID);
+    if (!provider) continue;
+    const quotas = Array.isArray(plan.quotas) ? plan.quotas : [];
+    let end = null;
+    for (const quota of quotas) {
+      const candidate = windowEndForQuota(quota, now);
+      if (candidate !== null && (end === null || candidate < end)) end = candidate;
+    }
+    if (end === null) continue;
+    const key = provider;
+    if (!byProvider.has(key) || end < byProvider.get(key).windowEndMs) {
+      byProvider.set(key, { plan: plan.id ?? plan.plan ?? null, provider: plan.providerID, windowEndMs: end });
+    }
+  }
+  return byProvider;
+}
+
+// A pool's quota window end: the earliest end among the plans covering
+// any of its leaf providers, or null when no provider is covered. The
+// providers not covered are returned so the report can name them.
+export function poolWindowEnd(providers, plansByProvider) {
+  let end = null;
+  const unknown = [];
+  for (const provider of providers) {
+    const row = plansByProvider.get(normaliseProviderId(provider));
+    if (!row) {
+      unknown.push(provider);
+      continue;
+    }
+    if (end === null || row.windowEndMs < end) end = row.windowEndMs;
+  }
+  return { windowEndMs: end, unknownProviders: unknown };
+}
+
+export function inspectPoolOrdering(config, options = {}) {
+  const plansByProvider =
+    options.plans === undefined || options.plans === null
+      ? null
+      : planWindowEnds(options.plans, options.now ?? Date.now());
   const issues = [];
   const notes = [];
   const noteSet = new Set();
@@ -178,6 +288,7 @@ export function inspectPoolOrdering(config) {
   const routeRules = inspectRouteRules(config);
   const modelRoutes = activeMap(config, 'model_routes') ?? {};
   const tiers = {};
+  let expiry = null;
 
   for (const tier of REQUIRED_TIERS) {
     const resolved = routeRules.tiers[tier];
@@ -192,6 +303,19 @@ export function inspectPoolOrdering(config) {
       const pool = leafPool(candidate, tier);
       if (isOpenAiLeaf(candidate)) openaiBacked[pool] = true;
       else if (!(pool in openaiBacked)) openaiBacked[pool] = false;
+    }
+
+    // The leaf providers behind each pool, from its serving (non-funds)
+    // leaves: the providers whose plans bound the pool's quota window.
+    // A direct pool's provider is its own door; a route pool draws from
+    // every provider seated under it.
+    const providersByPool = new Map();
+    for (const candidate of eligible) {
+      const pool = leafPool(candidate, tier);
+      if (!providersByPool.has(pool)) providersByPool.set(pool, new Set());
+      if (typeof candidate.provider === 'string') {
+        providersByPool.get(pool).add(candidate.provider);
+      }
     }
 
     // A leaf's pass is the sequence of fallback hops on its trace: each
@@ -257,6 +381,7 @@ export function inspectPoolOrdering(config) {
     }
 
     const passes = [];
+    const expiryPasses = [];
     let tierReserve = 'n/a';
     for (const [label, passLeaves] of leavesByPass) {
       const pools = [];
@@ -294,6 +419,57 @@ export function inspectPoolOrdering(config) {
         reserve,
       });
 
+      // Burn-by-expiry (only with --plans): each pool's quota window
+      // end, the expiry order for the pass, and a note when the config
+      // order burns a later-expiring ordered pool before an
+      // earlier-expiring one. Unordered pools have no burn order and
+      // never contribute; unknown pools sort last in config order.
+      // Notes, not findings, until the derivation is validated against
+      // the live store's actual reset instants (#1173 follow-up).
+      if (plansByProvider !== null) {
+        const expiry = {};
+        const unknown = [];
+        const uncovered = new Set();
+        for (const pool of pools) {
+          const providers = [...(providersByPool.get(pool) ?? [])];
+          const { windowEndMs, unknownProviders } = poolWindowEnd(providers, plansByProvider);
+          expiry[pool] = windowEndMs === null ? null : new Date(windowEndMs).toISOString();
+          if (windowEndMs === null) unknown.push(pool);
+          for (const provider of unknownProviders) uncovered.add(provider);
+        }
+        const known = pools.filter((pool) => expiry[pool] !== null);
+        const expiryOrder = [...pools].sort((a, b) => {
+          if (expiry[a] === null && expiry[b] === null) return pools.indexOf(a) - pools.indexOf(b);
+          if (expiry[a] === null) return 1;
+          if (expiry[b] === null) return -1;
+          return expiry[a] < expiry[b] ? -1 : expiry[a] > expiry[b] ? 1 : pools.indexOf(a) - pools.indexOf(b);
+        });
+        expiryPasses.push({ label, pools, expiry, expiryOrder, unknown });
+        const orderedKnown = orderedSeq.filter((pool) => expiry[pool] !== null);
+        let inversion = null;
+        for (let i = 0; i < orderedKnown.length && !inversion; i += 1) {
+          for (let j = i + 1; j < orderedKnown.length; j += 1) {
+            if (expiry[orderedKnown[i]] > expiry[orderedKnown[j]]) {
+              inversion = { later: orderedKnown[i], earlier: orderedKnown[j] };
+              break;
+            }
+          }
+        }
+        if (inversion) {
+          addNote(
+            `${tier} ${label}: burn-by-expiry order differs from config order — ` +
+              `"${inversion.earlier}" expires ${expiry[inversion.earlier]} but is tried after ` +
+              `"${inversion.later}" (expires ${expiry[inversion.later]})`,
+          );
+        }
+        if (uncovered.size > 0) {
+          addNote(
+            `${tier} ${label}: no plan-store expiry for provider(s) ${[...uncovered].sort().join(', ')} ` +
+              `— those pools are unknown in the expiry order`,
+          );
+        }
+      }
+
       // Mixing notes: an OpenAI-backed pool sharing an unordered route
       // with non-OpenAI pools has no reserve encoding visible there.
       for (const leaf of passLeaves) {
@@ -307,8 +483,10 @@ export function inspectPoolOrdering(config) {
         addNote(
           `${tier} ${label}: ${leaf.pool} shares ${route} ` +
             `(selection ${selectionOf(modelRoutes, route)}) with non-OpenAI pools ` +
-            `at equal/default weight — no reserve encoding is visible; ` +
-            `burn-by-expiry and cheapest-sufficient need the #1270 plan store`,
+            `at equal/default weight — no reserve encoding is visible` +
+            (plansByProvider === null
+              ? `; burn-by-expiry and cheapest-sufficient need the #1270 plan store`
+              : `; cheapest-sufficient is still unwired (the store's fee is a subscription price, not a cost per unit of work)`),
         );
       }
     }
@@ -317,9 +495,13 @@ export function inspectPoolOrdering(config) {
       addNote(`${tier}: no eligible leaves; pool ordering not checked`);
     }
     tiers[tier] = { passes, reserve: tierReserve };
+    if (plansByProvider !== null) {
+      if (expiry === null) expiry = {};
+      expiry[tier] = { passes: expiryPasses };
+    }
   }
 
-  return { tiers, issues, notes };
+  return { tiers, issues, notes, expiry };
 }
 
 export function checkPoolOrdering(source) {
@@ -329,11 +511,21 @@ export function checkPoolOrdering(source) {
 
 export function parseArgs(argv) {
   let configPath = null;
+  let plansPath = null;
   let json = false;
-  for (const token of argv) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
     if (token === '--json') {
       if (json) throw new Error('--json was given more than once');
       json = true;
+    } else if (token === '--plans') {
+      if (plansPath) throw new Error('--plans was given more than once');
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('-')) {
+        throw new Error('--plans needs a plans.json path');
+      }
+      plansPath = value;
+      i += 1;
     } else if (token.startsWith('-')) {
       // Any dash-prefixed token that is not a declared flag is a usage
       // error, including single-dash flags such as `-j`: without this
@@ -346,14 +538,22 @@ export function parseArgs(argv) {
       configPath = token;
     }
   }
-  return { configPath: path.resolve(configPath ?? DEFAULT_CONFIG), json };
+  return {
+    configPath: path.resolve(configPath ?? DEFAULT_CONFIG),
+    plansPath: plansPath === null ? null : path.resolve(plansPath),
+    json,
+  };
 }
 
 async function main(argv) {
-  const { configPath, json } = parseArgs(argv);
-  const result = inspectPoolOrdering(parseJsonc(fs.readFileSync(configPath, 'utf8')));
+  const { configPath, plansPath, json } = parseArgs(argv);
+  const plans =
+    plansPath === null ? null : JSON.parse(fs.readFileSync(plansPath, 'utf8'));
+  const result = inspectPoolOrdering(parseJsonc(fs.readFileSync(configPath, 'utf8')), {
+    plans,
+  });
   if (json) {
-    console.log(JSON.stringify({ config: configPath, ...result }, null, 2));
+    console.log(JSON.stringify({ config: configPath, plans: plansPath, ...result }, null, 2));
   } else {
     for (const tier of REQUIRED_TIERS) {
       const summary = result.tiers[tier];
@@ -364,6 +564,15 @@ async function main(argv) {
       }
       if (summary.passes.length === 0) {
         console.log(`${tier}: no passes (reserve: ${summary.reserve})`);
+      }
+      const expiryPasses = result.expiry?.[tier]?.passes ?? [];
+      for (const pass of expiryPasses) {
+        const dated = pass.pools.map(
+          (pool) => `${pool}@${pass.expiry[pool] ?? 'unknown'}`,
+        );
+        console.log(
+          `${tier} ${pass.label}: expiry order [${pass.expiryOrder.join(', ')}] (${dated.join(', ')})`,
+        );
       }
     }
     for (const note of result.notes) console.log(`note: ${note}`);

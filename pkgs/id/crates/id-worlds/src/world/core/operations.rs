@@ -477,6 +477,29 @@ impl WorldCore {
         &self.write_lease
     }
 
+    /// The replay watermark (#13711): the highest stamped lease
+    /// position this world has replayed — `0` when no lease record
+    /// in the journal carries a position. A successor that reports
+    /// this value has replayed through the grant at that position;
+    /// the failover barrier (#7572) admits writes only once the
+    /// watermark reaches the grant's position. History is
+    /// append-only, so the watermark never decreases within a
+    /// journal, and a checkpoint carries the whole history, so it
+    /// survives compaction.
+    #[must_use]
+    pub(crate) fn lease_position_watermark(&self) -> u64 {
+        self.write_lease.last_position()
+    }
+
+    /// The position the next live lease record must carry (#13711):
+    /// one past the watermark. The append authority stamps it in
+    /// the same serialized operation as the append; callers never
+    /// choose a position.
+    #[must_use]
+    pub(crate) fn next_lease_position(&self) -> u64 {
+        self.write_lease.last_position().saturating_add(1)
+    }
+
     /// The per-world resource requests, independent of current server ceilings.
     /// The world's total-memory budget ledger (#557): the effective
     /// limit, the logical charge measured at restore, its high-water

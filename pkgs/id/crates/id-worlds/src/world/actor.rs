@@ -92,6 +92,7 @@ impl WorldCommand {
             Self::ExportEntity { .. } => "ExportEntity",
             Self::ImportEntity { .. } => "ImportEntity",
             Self::HandoffWriteLease { .. } => "HandoffWriteLease",
+            Self::FailoverWriteLease { .. } => "FailoverWriteLease",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -270,6 +271,17 @@ pub(crate) enum WorldCommand {
         epoch: u64,
         expires_at_ms: Option<u64>,
         reply: oneshot::Sender<Result<u64>>,
+    },
+    /// DO-authority control request. The actor plans a spill v2
+    /// failover (design #5787 §1) from its journaled lease and the
+    /// supplied grantor-side pool, then journals the plan's
+    /// revoke/grant entries in order.
+    FailoverWriteLease {
+        pool: spill_pool::SpillPool,
+        journal_tip: u64,
+        max_catch_up_lag: u64,
+        term_ms: u64,
+        reply: oneshot::Sender<Result<spill_pool::FailoverExecution>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -989,17 +1001,72 @@ impl WorldActor {
             );
         }
 
+        // The handoff's journal position is the ownership boundary
+        // (#13711): stamp the next position on the entry and on the
+        // lease history in the same step, before the durable append.
+        // If the append fails, `next_lease` is dropped and the
+        // counter — derived from the history — never advanced, so
+        // the retry reuses the same position.
+        let position = self.core.next_lease_position();
         let mut next_lease = self.core.write_lease().clone();
-        next_lease.apply_handoff(&from, &to, epoch, expires_at_ms)?;
+        next_lease.apply_handoff(&from, &to, epoch, expires_at_ms, position)?;
         self.persist(JournalEntry::LeaseHandedOff {
             from,
             to,
             epoch,
             expires_at_ms,
+            position,
         })?;
         self.core.write_lease = next_lease;
         self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
         Ok(epoch)
+    }
+
+    /// Execute a spill v2 automatic failover (design #5787 §1, #7572):
+    /// plan from the journaled lease and the grantor-side pool, then
+    /// journal the plan's entries in order. The live lease advances to
+    /// match the journaled prefix after each entry, so a crash — or a
+    /// failed grant append — between the revoke and the grant leaves
+    /// the world holder-less (writers refused `holder-lost`), never
+    /// with two holders. The host adapter authenticates this control
+    /// request and supplies the pool observations and the journal tip;
+    /// the returned execution names the grant position the successor
+    /// must replay through before it may write.
+    fn failover_write_lease(
+        &mut self,
+        pool: &spill_pool::SpillPool,
+        journal_tip: u64,
+        max_catch_up_lag: u64,
+        term_ms: u64,
+    ) -> Result<spill_pool::FailoverExecution> {
+        self.check_not_replica()?;
+        self.check_storage()?;
+        ensure!(
+            self.journal.is_some(),
+            "write lease failover requires a durable journal"
+        );
+        let now_ms = self.core.clock().now_ms();
+        let plan = pool
+            .plan_failover(
+                self.core.write_lease(),
+                now_ms,
+                journal_tip,
+                max_catch_up_lag,
+            )
+            .map_err(anyhow::Error::new)?;
+        let execution = plan.execute(self.core.write_lease(), now_ms, term_ms)?;
+        let entries = execution.entries().to_vec();
+        let last = entries.len() - 1;
+        for (index, entry) in entries.into_iter().enumerate() {
+            self.persist(entry)?;
+            self.core.write_lease = if index == last {
+                execution.resulting_lease().clone()
+            } else {
+                execution.intermediate_lease().clone()
+            };
+            self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
+        }
+        Ok(execution)
     }
 
     /// Policy-B admission, checked at every token-admission entry
@@ -1502,6 +1569,17 @@ impl WorldActor {
                 reply,
             } => {
                 let result = self.handoff_write_lease(to, epoch, expires_at_ms);
+                let _ = reply.send(result);
+            }
+            WorldCommand::FailoverWriteLease {
+                pool,
+                journal_tip,
+                max_catch_up_lag,
+                term_ms,
+                reply,
+            } => {
+                let result =
+                    self.failover_write_lease(&pool, journal_tip, max_catch_up_lag, term_ms);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {

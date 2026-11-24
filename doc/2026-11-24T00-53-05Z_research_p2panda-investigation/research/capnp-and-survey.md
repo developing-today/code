@@ -20,7 +20,7 @@ provider.
 **Cap'n Proto** is two things sharing a schema language: (a) a binary
 **serialization format** whose wire layout is the in-memory layout — fixed
 widths, fixed offsets, offset-based pointers, little-endian — so a message
-needs *no* encode/decode pass and can be mmap'd, randomly accessed, and read
+needs _no_ encode/decode pass and can be mmap'd, randomly accessed, and read
 incrementally; and (b) an **RPC system** in which interface references are a
 first-class type in the schema, so a method parameter or return value can be
 a live reference to a remote object
@@ -37,7 +37,7 @@ schema-free, JSON-based object-capability RPC implementation in pure
 TypeScript for browsers and web servers, announced by Cloudflare in
 September 2025 and explicitly "experimental"
 ([Cloudflare blog: Cap'n Web](https://blog.cloudflare.com/capnweb-javascript-rpc-library/)).
-It is *not* wire-compatible with Cap'n Proto; it is a sibling design that
+It is _not_ wire-compatible with Cap'n Proto; it is a sibling design that
 borrows the capability model and promise pipelining and drops the schema and
 the binary format. It interoperates with Workers RPC (which is itself Cap'n
 Proto under the hood) through workerd
@@ -64,7 +64,7 @@ Proto under the hood) through workerd
 
 Estate relevance: Cap'n Proto serialization is a fine fit anywhere the
 estate wants a fast, signable, schema-evolving binary message format, and it
-is *already* the format under Workers RPC. But serialization is not what
+is _already_ the format under Workers RPC. But serialization is not what
 this investigation is deciding; the RPC capability model is.
 
 ## 1.3 The RPC capability model
@@ -87,7 +87,7 @@ Consequences that matter for the estate:
 - **No ambient authority, no ACL table to keep in sync.** Authority is the
   reference graph. A service never checks "who are you and what may you do"
   against a separate policy store for calls arriving on a capability; holding
-  the (connection-scoped, unforgeable) reference *is* the authorization. The
+  the (connection-scoped, unforgeable) reference _is_ the authorization. The
   spec doc notes this design "avoid[s] confused-deputy attacks" while
   keeping legitimate use easy — and that ACLs can still be layered on top if
   wanted ([rpc.html](https://capnproto.org/rpc.html)).
@@ -95,7 +95,7 @@ Consequences that matter for the estate:
   different object — a wrapper exposing fewer methods — not by minting a
   restricted token. Delegation is passing the reference on. There is no
   expiry field, no caveat language, no delegation-chain format: the model is
-  *live objects*, not *bearer documents*.
+  _live objects_, not _bearer documents_.
 - **Promise pipelining is the performance half of the same design.** Every
   call returns a promise whose interface-typed results can themselves be
   called (or passed as parameters) before the first call resolves; the
@@ -114,9 +114,9 @@ Consequences that matter for the estate:
 - **Revocation is a pattern, not a primitive: the membrane.** Neither Cap'n
   Proto nor Cap'n Web has a "revoke this capability" verb. The ocap
   literature's answer, which this family expects you to build, is the
-  **membrane**: a revocable forwarder that wraps the target *and
+  **membrane**: a revocable forwarder that wraps the target _and
   transitively wraps every capability that flows through it in either
-  direction* (arguments and return values), so revoking the membrane
+  direction_ (arguments and return values), so revoking the membrane
   revokes the whole subgraph of access that ever crossed it. A plain
   revocable forwarder leaks authority precisely because capabilities pass
   through it unwrapped; the membrane exists to fix that
@@ -133,12 +133,12 @@ Consequences that matter for the estate:
 The RPC spec divides features into levels an implementation advertises
 ([rpc.html, Protocol Features](https://capnproto.org/rpc.html)):
 
-| Level | Feature | What it means |
-|---|---|---|
-| 1 | Object references + promise pipelining | Two-party capability RPC as described above. |
-| 2 | Persistent capabilities | "Save" a capability to a persistent token (a *sturdy ref*); "restore" it later, on a new connection. The host app must implement save/restore support. |
-| 3 | Three-party handoff | If A hands B a reference to C, B and C automatically form a direct connection; calls stop proxying through A. |
-| 4 | Reference equality / joining | Securely verify that capabilities received from different parties designate the same object (escrow-style patterns). |
+| Level | Feature                                | What it means                                                                                                                                          |
+| ----- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1     | Object references + promise pipelining | Two-party capability RPC as described above.                                                                                                           |
+| 2     | Persistent capabilities                | "Save" a capability to a persistent token (a _sturdy ref_); "restore" it later, on a new connection. The host app must implement save/restore support. |
+| 3     | Three-party handoff                    | If A hands B a reference to C, B and C automatically form a direct connection; calls stop proxying through A.                                          |
+| 4     | Reference equality / joining           | Securely verify that capabilities received from different parties designate the same object (escrow-style patterns).                                   |
 
 What implementations actually ship, per their own documentation:
 
@@ -150,7 +150,7 @@ What implementations actually ship, per their own documentation:
   status text is old, but an independent technology profile re-checked in
   October 2026 still records the C++ implementation as documenting only
   level 1 ([cloudparts.dev](https://cloudparts.dev/technologies/capnproto/)).
-  The C++ library does ship the *primitives* for persistence
+  The C++ library does ship the _primitives_ for persistence
   (`persistent.capnp` save/restore hooks, added in 0.5) — Sandstorm built
   sturdy refs on them — but the restore semantics are the application's
   ([0.5 release notes](https://capnproto.org/news/2014-12-15-capnproto-0.5-generics-msvc-java-csharp.html)).
@@ -182,7 +182,7 @@ What implementations actually ship, per their own documentation:
   ([capnproto list archive, 2017](https://www.mail-archive.com/capnproto@googlegroups.com/msg00612.html)).
 
 **Bottom line for the estate:** when you adopt Cap'n Proto RPC you are
-adopting *Level 1*: two-party, connection-scoped capabilities with
+adopting _Level 1_: two-party, connection-scoped capabilities with
 pipelining. Persistent capabilities, multi-vat handoff, and equality are
 spec text and application-layer work, in every implementation you would
 actually deploy. That is not a defect — Level 1 is the part that is proven
@@ -213,7 +213,7 @@ distributed capabilities across a mesh" is assuming the unbuilt levels.
   ([docs.rs/capnp_rpc](https://docs.rs/capnp-rpc/latest/capnp_rpc/)).
 - No WASM/Workers story for the Rust crates: on Cloudflare you would use
   Cap'n Proto via workerd's JS/Python RPC surface, not via `capnp-rpc`
-  compiled to WASM (Workers' own runtime *is* Cap'n Proto, but that is
+  compiled to WASM (Workers' own runtime _is_ Cap'n Proto, but that is
   Cloudflare's C++ implementation, not the Rust crates)
   ([Cloudflare blog: JavaScript-native RPC](https://blog.cloudflare.com/javascript-native-rpc/)).
 
@@ -227,11 +227,11 @@ distributed capabilities across a mesh" is assuming the unbuilt levels.
   a roadmap aspiration, never a shipped spec
   ([2017 list discussion quoting the roadmap](https://www.mail-archive.com/capnproto@googlegroups.com/msg00612.html)).
 - Therefore Cap'n Proto has **no identity model at all**: no keys, no
-  names, no enrolment. The capability graph starts at a *bootstrap
-  capability* handed to whoever connects; authenticating *who* connected
+  names, no enrolment. The capability graph starts at a _bootstrap
+  capability_ handed to whoever connects; authenticating _who_ connected
   (TLS client certs, a token, an iroh NodeId check) is entirely the
   embedding application's job. The one production-hardened pairing in the
-  wild is OCaml's: TLS for encryption *and* authentication under the
+  wild is OCaml's: TLS for encryption _and_ authentication under the
   capability layer ([ocaml.org](https://ocaml.org/p/capnp-rpc/2.1)).
 - The C++ RPC layer also carries an explicit robustness caveat: per the
   project's FAQ as summarized by the cloudparts profile, the RPC layer
@@ -239,8 +239,8 @@ distributed capabilities across a mesh" is assuming the unbuilt levels.
   and bound in front of it
   ([cloudparts.dev](https://cloudparts.dev/technologies/capnproto/)).
 - **Cap'n Web** is the same shape, web-flavoured: it runs over HTTPS/WSS
-  (transport security is the platform's), and authentication is *in-band by
-  design* — the canonical pattern is an `authenticate(apiKey)` method that
+  (transport security is the platform's), and authentication is _in-band by
+  design_ — the canonical pattern is an `authenticate(apiKey)` method that
   returns an authenticated session object you cannot forge, because the
   only way to hold one is to have it returned to you
   ([Cloudflare blog: Cap'n Web, "Did you spot the security?"](https://blog.cloudflare.com/capnweb-javascript-rpc-library/)).
@@ -270,7 +270,7 @@ distributed capabilities across a mesh" is assuming the unbuilt levels.
   ([blog](https://blog.cloudflare.com/capnweb-javascript-rpc-library/),
   [README](https://github.com/cloudflare/capnweb)).
 - **Capability model:** same ocap core as Cap'n Proto — functions and
-  `RpcTarget` objects pass *by reference* as stubs; calls are bidirectional
+  `RpcTarget` objects pass _by reference_ as stubs; calls are bidirectional
   (a server can call a callback the client passed it); promise pipelining
   works in both WebSocket and HTTP-batch modes, including the signature
   `.map()` over pipelined promise arrays; stubs can be passed onward to
@@ -344,39 +344,39 @@ Neither Cap'n Proto nor Cap'n Web provides, at any shipped level:
 
 Scores 1 (absent/poor) – 5 (excellent), estate-weighted.
 
-| Axis | Cap'n Proto (Rust) | Cap'n Web | Note |
-|---|---|---|---|
-| Identity & key management | 1 | 1 | None in either; bootstrap-cap + your authn. |
-| Capability model | 4 | 4 | True ocap with pipelining; docked for connection-scoped lifetime and pattern-only revocation. |
-| — delegation | 4 | 4 | Reference passing; Cap'n Web stubs pass onward between parties. |
-| — attenuation | 4 | 4 | Facet objects; no caveat language needed or available. |
-| — revocation | 2 | 2 | Membrane pattern only; disconnect revokes incidentally. |
-| — expiry | 1 | 1 | No expiry concept; session/batch lifetime is the bound. |
-| Group management | 1 | 1 | Build-it-yourself objects. |
-| Encryption | 2 | 3 | Proto: bring TLS/Noise yourself. Web: HTTPS/WSS platform default. Neither has an own story or FS beyond the channel's. |
-| Transport & NAT | 2 | 3 | Proto: any byte stream, no rendezvous/NAT help. Web: HTTP/WS/postMessage — excellent on the web, no p2p NAT story. |
-| Sync/replication | 1 | 1 | None; live RPC only. |
-| Storage fit (SQLite/Turso) | 2 | 1 | Proto serialization is a fine signable blob format for rows/blobs; no store integration. Web: JSON only. |
-| Rust maturity | 3 | 1 | `capnp`/`capnp-rpc` real, Level 1, thin maintenance. Cap'n Web in Rust: one 0.1.0 crate. |
-| Cloudflare fit | 5 | 5 | workerd *is* Cap'n Proto; Cap'n Web is a first-party Workers citizen. |
-| iroh fit | 3 | 2 | Proto runs happily *over* an iroh stream (byte-stream transport) and iroh supplies the identity/encryption capnp lacks — composable, not native. Web: no iroh story. |
-| Spec/interop status | 3 | 2 | Proto: stable spec, levels mostly unimplemented, multi-language serialization interop is real. Web: single-vendor spec, pre-1.0, JS-only in practice. |
-| Project health | 4 | 3 | Proto: Cloudflare-maintained, LTS 1.0 (2023) + 2.0 branch, production at huge scale. Web: active and first-party but months old and self-described experimental. |
-| Operational complexity | 3 | 4 | Proto: schema discipline + you build authn/transport/persistence. Web: near-zero setup, but you build everything above RPC. |
-| Offline/local-first | 1 | 1 | Disconnected = broken capabilities, by design. |
+| Axis                       | Cap'n Proto (Rust) | Cap'n Web | Note                                                                                                                                                                 |
+| -------------------------- | ------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Identity & key management  | 1                  | 1         | None in either; bootstrap-cap + your authn.                                                                                                                          |
+| Capability model           | 4                  | 4         | True ocap with pipelining; docked for connection-scoped lifetime and pattern-only revocation.                                                                        |
+| — delegation               | 4                  | 4         | Reference passing; Cap'n Web stubs pass onward between parties.                                                                                                      |
+| — attenuation              | 4                  | 4         | Facet objects; no caveat language needed or available.                                                                                                               |
+| — revocation               | 2                  | 2         | Membrane pattern only; disconnect revokes incidentally.                                                                                                              |
+| — expiry                   | 1                  | 1         | No expiry concept; session/batch lifetime is the bound.                                                                                                              |
+| Group management           | 1                  | 1         | Build-it-yourself objects.                                                                                                                                           |
+| Encryption                 | 2                  | 3         | Proto: bring TLS/Noise yourself. Web: HTTPS/WSS platform default. Neither has an own story or FS beyond the channel's.                                               |
+| Transport & NAT            | 2                  | 3         | Proto: any byte stream, no rendezvous/NAT help. Web: HTTP/WS/postMessage — excellent on the web, no p2p NAT story.                                                   |
+| Sync/replication           | 1                  | 1         | None; live RPC only.                                                                                                                                                 |
+| Storage fit (SQLite/Turso) | 2                  | 1         | Proto serialization is a fine signable blob format for rows/blobs; no store integration. Web: JSON only.                                                             |
+| Rust maturity              | 3                  | 1         | `capnp`/`capnp-rpc` real, Level 1, thin maintenance. Cap'n Web in Rust: one 0.1.0 crate.                                                                             |
+| Cloudflare fit             | 5                  | 5         | workerd _is_ Cap'n Proto; Cap'n Web is a first-party Workers citizen.                                                                                                |
+| iroh fit                   | 3                  | 2         | Proto runs happily _over_ an iroh stream (byte-stream transport) and iroh supplies the identity/encryption capnp lacks — composable, not native. Web: no iroh story. |
+| Spec/interop status        | 3                  | 2         | Proto: stable spec, levels mostly unimplemented, multi-language serialization interop is real. Web: single-vendor spec, pre-1.0, JS-only in practice.                |
+| Project health             | 4                  | 3         | Proto: Cloudflare-maintained, LTS 1.0 (2023) + 2.0 branch, production at huge scale. Web: active and first-party but months old and self-described experimental.     |
+| Operational complexity     | 3                  | 4         | Proto: schema discipline + you build authn/transport/persistence. Web: near-zero setup, but you build everything above RPC.                                          |
+| Offline/local-first        | 1                  | 1         | Disconnected = broken capabilities, by design.                                                                                                                       |
 
 **Part 1 verdict.** Cap'n Proto's real advantage is narrow and deep: it is
-the only candidate in this whole investigation that gives you *live,
-unforgeable, delegable authority as a programming model* — with promise
+the only candidate in this whole investigation that gives you _live,
+unforgeable, delegable authority as a programming model_ — with promise
 pipelining making that model fast enough to use naively — and it is proven
 inside the exact edge runtime this estate already deploys (Workers). Cap'n
 Web extends the same advantage to browsers and Worker HTTP surfaces with
 almost zero ceremony. But both are **call-layer technologies, not auth or
 sync foundations**: identity, persistence of authority, offline operation,
 groups, revocation-as-a-system, storage and replication are all outside
-the boundary (§1.8). In a composed stack, capnp/capnweb sit *above* a
+the boundary (§1.8). In a composed stack, capnp/capnweb sit _above_ a
 transport that gives them identity and encryption (iroh streams; TLS/WSS
-at the edge) and *beside* whatever provides durable, offline-checkable
+at the edge) and _beside_ whatever provides durable, offline-checkable
 authority (tokens/documents) and replication. They do not compete with
 p2panda-auth/sync so much as occupy a layer those systems don't address:
 what an already-authorized live session can do, call by call.
@@ -402,13 +402,13 @@ by the UCAN Working Group with Storacha (Protocol Labs spin-out) as the
 main production lineage
 ([ucan-wg/spec](https://github.com/ucan-wg/spec/)). Its capability model is
 the richest of any token system surveyed: delegation is a required
-sub-spec; attenuation is *mandatory monotonic narrowing* expressed through
+sub-spec; attenuation is _mandatory monotonic narrowing_ expressed through
 hierarchical commands (`/crud` proves `/crud/read`) plus a policy language
 over invocation arguments; **invocation is a separate signed object from
 delegation** (exercising authority ≠ holding it — unique here); revocation
 exists as a reserved-namespace invocation that kills a delegation CID and
-all derivatives, though *how a validator learns of a revocation is
-explicitly out of scope* — the practical weak point. The 1.0 spec is a
+all derivatives, though _how a validator learns of a revocation is
+explicitly out of scope_ — the practical weak point. The 1.0 spec is a
 breaking change most secondary sources miss: ≤0.10 was JWT, but **1.0 is
 canonical DAG-CBOR in a Varsig envelope, content-addressed by CID, with
 `did:key` required and Ed25519 preferred** (P-256/secp256k1 also in suite;
@@ -428,7 +428,7 @@ Scores: capability depth **5** · Rust maturity **2** · Cloudflare/WASM fit
 **3** · spec stability **3** (1.0.0 on main, untagged; JWT→CBOR break
 orphaned 0.10) · project health **3** (active WG + Storacha production;
 small, grant-paced).
-**⚑ Flag:** beats every named family on *token-model semantics* —
+**⚑ Flag:** beats every named family on _token-model semantics_ —
 delegation + invocation + policy + revocation in one spec, with an
 identity form (`did:key`/Ed25519) that is literally the iroh NodeId.
 Deep-dive in synthesis as the semantic reference for offline authority,
@@ -443,7 +443,7 @@ serialized as Protobuf
 ([spec](https://doc.biscuitsec.org/reference/specifications)). The token is
 an append-only chain of signed blocks: block 0 carries the authority's
 rights as Datalog facts/rules; each holder appends blocks using chained
-ephemeral keys, and attenuation is expressed as *checks* that must all
+ephemeral keys, and attenuation is expressed as _checks_ that must all
 succeed at verification; scoping rules prevent later blocks from widening
 rights. Third-party blocks (v3.2+, externally signed, with Datalog able to
 require facts `trusting ed25519/<key>`) are Macaroons' discharge redesigned
@@ -453,7 +453,7 @@ the crate generates a per-block `revocation_id` and the verifier keeps a
 deny-list — revoking a block kills everything attenuated from it, and the
 list is a trivial SQLite table in this estate. Expiry is idiomatic (a
 `time` check), not a built-in field. Identity is out of scope (the docs
-state plainly it is *not an authentication protocol*); keys are Ed25519 by
+state plainly it is _not an authentication protocol_); keys are Ed25519 by
 default, P-256 supported, P-384 not. The estate fit is the best of the
 token family: **Rust is the reference implementation** (`biscuit-auth`
 6.0.0, 2025-07), with parser/macro/CLI/C-API crates in-org, and an
@@ -470,7 +470,7 @@ maturity **5** · Cloudflare/WASM fit **5** · spec stability **4**
 (versioned, additive-first 3.x, conformance fixtures; two breaking
 third-party-block security fixes) · project health **4** (Eclipse
 governance, production at Clever Cloud/Outscale/Pulsar; two-person core).
-**⚑ Flag:** beats the named families on the *deployable offline-token*
+**⚑ Flag:** beats the named families on the _deployable offline-token_
 axis — it is the only candidate in the whole survey that is simultaneously
 Rust-reference-implemented, WASM-official, attenuation-native, and
 public-key verifiable. If the estate needs expiring, attenuable,
@@ -505,7 +505,7 @@ project health **2**.
 
 ## 2.4 Veilid — a second network, not a layer
 
-Veilid is a mobile-first p2p *application framework* from the Cult of the
+Veilid is a mobile-first p2p _application framework_ from the Cult of the
 Dead Cow / Veilid Foundation: Rust-first (`veilid-core`, active 0.5.x line),
 with its own transport set (UDP/TCP/WS/WSS, own hole-punching and relays),
 ed25519 node identity, and a differentiator this estate has not asked for —
@@ -518,7 +518,7 @@ is the app's problem. Auth is thin: DHT record ownership (owner keypair =
 write capability for subkeys) and route blobs as bearer capabilities; no
 scoped, delegatable, revocable capability system. Maturity is pre-1.0 with
 breaking changes, a beta flagship chat app, and no verified large-scale
-third-party production deployment. It *competes* with iroh — incompatible
+third-party production deployment. It _competes_ with iroh — incompatible
 protocol, identity format, and network — and its one thing iroh lacks (the
 DHT) cannot be taken without its transport.
 
@@ -534,7 +534,7 @@ replication), Hyperbee/Hyperdrive (KV/files over logs), Autobase
 discovery, UDP hole-punching, relay fallback), shipped in production in the
 Keet app ([docs.pears.com](https://docs.pears.com/),
 [Hypercore protocol](https://hypercore-protocol.github.io/new-website/protocol/)).
-Identity is an ed25519 keypair per core — the log's public key *is* its
+Identity is an ed25519 keypair per core — the log's public key _is_ its
 identity — and an encrypted core's key functions as a read capability;
 beyond that, auth is a `firewall` callback and app logic. The sync story is
 the strongest in this survey (offline-first append, replicate on reconnect,
@@ -559,7 +559,7 @@ WebTransport; Noise or TLS 1.3; yamux), Kademlia DHT, gossipsub, and a
 `PeerId` identity derived from the peer's public key
 ([libp2p.io](https://www.libp2p.io/docs/standalone-connectivity/)).
 `rust-libp2p` is genuinely mature (facade 0.57.x) but pre-1.0 and
-heavyweight, and NAT traversal is *assembled, not included* — AutoNAT +
+heavyweight, and NAT traversal is _assembled, not included_ — AutoNAT +
 Circuit Relay v2 + DCUtR must each be wired and tuned
 ([libp2p on docs.rs](https://docs.rs/crate/libp2p/latest)). It has no sync
 semantics and no capability/auth model beyond proving key possession. It
@@ -581,7 +581,7 @@ project health **5** · iroh-estate fit **3**.
 
 The new Freenet (ex-Locutus; the Java original became Hyphanet in 2023) is
 a Rust platform for decentralized apps: a small-world ring where each
-*contract* (WASM, identified by code hash + parameters) has state
+_contract_ (WASM, identified by code hash + parameters) has state
 replicated near its ring location, kept current by subscription trees with
 delta sync, under a custom UDP transport (X25519+AEAD, hole-punching,
 public gateways for bootstrap)
@@ -589,10 +589,10 @@ public gateways for bootstrap)
 [transport manual](https://freenet.org/build/manual/architecture/transport/)).
 Its merge semantics are elegant — contract state must form an idempotent
 commutative monoid, so updates apply in any order to the same result — and
-its auth is platform-shaped: the contract's WASM *is* the validity policy
-(e.g. requiring a signature from a particular key), and *delegates* are
+its auth is platform-shaped: the contract's WASM _is_ the validity policy
+(e.g. requiring a signature from a particular key), and _delegates_ are
 local WASM agents that hold secrets and act via attributed messages. But
-adopting it means abandoning iroh *and* the local-first SQLite/Turso model
+adopting it means abandoning iroh _and_ the local-first SQLite/Turso model
 (state lives in the network, hosted by strangers' peers), under AGPL-3.0,
 at 0.2.x alpha maturity with a ~440-peer live network. Borrow the monoid
 merge-contract idea and the delegate pattern; adopt nothing.
@@ -620,7 +620,7 @@ zome functions are inaccessible until an agent creates a `CapGrant`;
 callers exercise it via `CapClaim` under Unrestricted / Transferable
 (bearer secret) / Assigned (secret + authorized-key signature — "the
 closest to a true capability") modes, revocable by deleting the grant, and
-`genesis_self_check` validates a *membrane proof* gating network admission
+`genesis_self_check` validates a _membrane proof_ gating network admission
 ([capabilities docs](https://developer.holochain.org/build/capabilities/)).
 The cost of adoption is architectural: the conductor + DNA/zome model, DHT
 neighbourhood availability (an entry is retrievable only while its
@@ -633,8 +633,8 @@ agent-centric validated-DHT semantics.
 Scores: transport/NAT **4** (iroh's, inherited; docked for the bootstrap/
 relay you must operate) · Rust maturity **4** · sync semantics **3** ·
 project health **3** · iroh-estate fit **3**.
-**⚑ Flag:** the only entry that *adds exactly what iroh lacks* (validated
-shared state + capabilities + admission membranes) *while reusing iroh* —
+**⚑ Flag:** the only entry that _adds exactly what iroh lacks_ (validated
+shared state + capabilities + admission membranes) _while reusing iroh_ —
 deep-dive its capability design in synthesis even if the framework itself
 is not adopted.
 
@@ -645,8 +645,8 @@ a DID (`did:plc` or `did:web`) resolving to a document carrying the handle
 (`alsoKnownAs`), the current signing key, and the current host (PDS)
 endpoint — identity survives changing all three
 ([atproto DID spec](https://atproto.com/specs/did)). The borrowable core is
-its **two-tier key split**: 1–5 priority-ordered *rotation keys* control
-the DID document and can replace *signing keys* and repoint the host even
+its **two-tier key split**: 1–5 priority-ordered _rotation keys_ control
+the DID document and can replace _signing keys_ and repoint the host even
 if the old host is offline or uncooperative (adversarial recovery), while
 signing keys only sign the account's repository — a Merkle Search Tree of
 records under signed commits, exportable whole as a CAR file for backup
@@ -672,7 +672,7 @@ the static key I expected" — naming, enrolment, and trust decisions are
 explicitly the application's problem
 ([noiseprotocol.org](https://noiseprotocol.org/noise.html)). WireGuard is
 one fixed Noise instantiation (`Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`)
-whose model is the purest form: a peer *is* its 32-byte Curve25519 public
+whose model is the purest form: a peer _is_ its 32-byte Curve25519 public
 key, cryptokey routing binds keys to AllowedIPs, and there are no
 certificates, enrolment, or revocation in-protocol — rotation and
 revocation are config edits on every peer
@@ -681,7 +681,7 @@ Tailscale's architecture is the standing proof of how much control plane
 (enrolment, key distribution, naming, ACLs, revocation) must be built
 above that minimal core. Rust support is strong (`snow` for Noise;
 Cloudflare's `boringtun` for userspace WireGuard). For this estate these
-are the channel-security substrate *under* other designs (iroh's QUIC/TLS
+are the channel-security substrate _under_ other designs (iroh's QUIC/TLS
 plays the same role in its stack) — they give a self-certifying peer
 identity and forward secrecy, and pointedly nothing else: no capabilities,
 no delegation, no groups, no lifecycle.
@@ -703,7 +703,7 @@ via the Workload API, with bundle-exchange federation between domains
 [CNCF graduation](https://www.cncf.io/announcements/2022/09/20/spiffe-and-spire-projects-graduate-from-cloud-native-computing-foundation-incubator/)).
 The direct estate answer: a house CA issuing short-lived X.509 with a URI
 SAN plus the existing OIDC provider issuing JWTs with the same URI as
-`sub` *already is* an SVID system in substance (SPIRE can even chain to an
+`sub` _already is_ an SVID system in substance (SPIRE can even chain to an
 existing PKI as upstream CA). SPIFFE adds only (1) attestation-based,
 secretless issuance — real, and the house stack has no equivalent;
 (2) standard wire formats for interop with Istio/Envoy and cloud
@@ -720,23 +720,23 @@ format-only adoption scores far higher) · project health **5**.
 
 ## 2.12 Survey flags for synthesis (summary)
 
-1. **Biscuit ⚑** — beats the field on *deployable offline token*:
+1. **Biscuit ⚑** — beats the field on _deployable offline token_:
    Rust-reference + official WASM + Datalog attenuation + public-key
    verification. The direct filler for capnp's "no offline authority"
    hole (§1.8).
-2. **UCAN ⚑** — beats the field on *token semantics* (delegation +
+2. **UCAN ⚑** — beats the field on _token semantics_ (delegation +
    invocation + policy + revocation; `did:key` = NodeId-shaped identity).
    Rust 1.0 is the blocker; treat as the semantic reference and a
    watch/borrow item.
-3. **Holochain ⚑** — beats the p2p field on *composability + capability
-   design*: runs on iroh today (Kitsune2), and CapGrant/CapClaim +
+3. **Holochain ⚑** — beats the p2p field on _composability + capability
+   design_: runs on iroh today (Kitsune2), and CapGrant/CapClaim +
    membrane proofs are the reference design for an auth layer over iroh.
 4. **AT Protocol patterns** — not a candidate, but its rotation/signing key
    split with adversarial recovery beats the estate's current
    CA-reissue-everything recovery story; borrow into the IdP/CA program.
 5. **SPIFFE** — adopt ID format + short-TTL discipline without SPIRE;
    attestation is the one capability the house stack genuinely lacks.
-6. **Holepunch** — sync *model* (signed logs + Autobase) is the design to
+6. **Holepunch** — sync _model_ (signed logs + Autobase) is the design to
    re-implement over iroh; the stack itself is JS-only and loses.
 7. **libp2p** — keep as interop escape hatch only. **Veilid** and
    **Freenet** compete with the chosen transport and lose for this estate.

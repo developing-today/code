@@ -34,6 +34,22 @@ export type Fetch = (
   headers?: { get(name: string): string | null };
 }>;
 export type Row = Record<string, string | number | null>;
+/** How much of a task's reason the Queue screen is given. One that is
+ * this long was cut here, and the screen says so. */
+export const QUEUE_WHY_CHARS = 300;
+
+/** A value as the queue's store sends it. A whole number comes as text
+ * marked as an integer (the wire carries 64 bits, and a JSON number
+ * does not): it is read as the number it is, where a number can hold
+ * it exactly. Anything else is passed on as it came. */
+function fromStore(cell: { type?: string; value?: string | number | null } | undefined): string | number | null {
+  const value = cell?.value ?? null;
+  if (cell?.type === "integer" && typeof value === "string" && /^-?[0-9]+$/.test(value)) {
+    const n = Number(value);
+    if (Number.isSafeInteger(n)) return n;
+  }
+  return value;
+}
 /** How long the queue store has to answer one asking, body and all. */
 export const QUEUE_ASK_MS = 20_000;
 /** Queue priorities, most urgent first (the queue's design scale). */
@@ -255,7 +271,7 @@ export class Ops {
         response?: {
           result?: {
             cols: { name: string }[];
-            rows: { value?: string | number | null }[][];
+            rows: { type?: string; value?: string | number | null }[][];
             affected_row_count?: number;
           };
         };
@@ -310,7 +326,7 @@ export class Ops {
       if (!/^\s*select\b/i.test(st.sql)) throw new Error("the console only reads the queue store");
     }
     return (await this.pipeline(statements)).map((result) =>
-      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, row[i]?.value ?? null]))),
+      result.rows.map((row) => Object.fromEntries(result.cols.map((c, i) => [c.name, fromStore(row[i])]))),
     );
   }
 
@@ -353,7 +369,7 @@ export class Ops {
     const q = typeof search === "string" ? search.trim().slice(0, 100) : "";
     const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
     return this.sql(
-      "SELECT id, status, priority, title, dedupe_key, substr(updated_at,1,16) AS updated, substr(coalesce(json_extract(progress,'$.reason'), json_extract(progress,'$.blocker'), ready_condition, ''),1,300) AS why FROM tasks WHERE queue = ? AND status = ? AND title LIKE ? ESCAPE '\\' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT ?",
+      `SELECT id, status, priority, title, dedupe_key, substr(updated_at,1,16) AS updated, substr(coalesce(json_extract(progress,'$.reason'), json_extract(progress,'$.blocker'), ready_condition, ''),1,${QUEUE_WHY_CHARS}) AS why FROM tasks WHERE queue = ? AND status = ? AND title LIKE ? ESCAPE '\\' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT ?`,
       [this.cfg.queue, status as string, like, Math.min(n, 200)],
     );
   }
@@ -516,6 +532,278 @@ export class Ops {
     )?.messages;
     // A log with nothing in it is an empty list, never no answer at all.
     return Array.isArray(log) ? log : [];
+  }
+
+  /**
+   * The owner's unified pipeline (#14374, design §4.9): one feed over
+   * connector messages, fleet mailboxes and notes, read through
+   * `fleet bridge pipeline`. The owner's view is never sender-stripped
+   * — an instruction shows who really sent it here; anonymity is what
+   * agents see, never this console. Filters are the bridge's own
+   * (kind / sender / receiver / surface / batch / unread / work
+   * state); each value is validated here and travels as its own
+   * argument. (Named for the bridge's feed, not this class's own
+   * queue-store pipeline above.)
+   */
+  async pipelineFeed(query: URLSearchParams) {
+    const argv = [this.cfg.fleetBin, "bridge", "pipeline", "--order", "desc"];
+    const one = (param: string, flag: string, name: string, ok: RegExp) => {
+      const v = query.get(param);
+      if (v === null || v === "") return;
+      const value = text(v, name, 200);
+      if (!ok.test(value)) throw new OpError(400, `${name}: not a ${name}: ${JSON.stringify(value).slice(0, 80)}`);
+      argv.push(flag, value);
+    };
+    one("kind", "--kind", "kind", /^(message|instruction|command|note)$/);
+    one("surface", "--surface", "surface", /^(connector|fleet|notes)$/);
+    one("sender", "--sender", "sender", /^[A-Za-z0-9][A-Za-z0-9@:._/-]{0,127}$/);
+    one("receiver", "--receiver", "receiver", /^[A-Za-z0-9][A-Za-z0-9@:._/-]{0,127}$/);
+    one("batch", "--batch", "batch", /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
+    one("work_state", "--work-state", "work state", /^[a-z][a-z0-9_-]{0,63}$/);
+    if (query.get("unread") === "1" || query.get("unread_only") === "true") argv.push("--unread");
+    const limit = query.get("limit");
+    argv.push("--limit", String(limit === null || limit === "" ? 100 : Math.min(id(limit, "limit"), 200)));
+    const rows = (JSON.parse(await this.must(argv)) as { messages?: unknown } | null)?.messages;
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /** Per-agent credential state on the bridge (#14374): active or
+   * revoked, the scopes the live credentials carry. State only — the
+   * bridge never returns a hash, and neither does this. */
+  async credentials() {
+    const rows = (
+      JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "credentials"])) as { credentials?: unknown } | null
+    )?.credentials;
+    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  }
+
+  /**
+   * The unified agents list for the Agents screen (#14374, design
+   * §4.9): the bridge's directory (`fleet bridge directory` — fleet
+   * registry rows and notes identities, each marked by surface) with
+   * each row's credential state merged in. A fleet row's state comes
+   * from the credential view under the agent's own name; a notes
+   * row's from its identity's token scopes — an identity whose tokens
+   * were revoked keeps its directory place with both scopes off,
+   * which is the revoked state the screen shows. Notes identities
+   * have no presence: the bridge says `presence: "none"` and this
+   * merge invents nothing.
+   */
+  async directory() {
+    const [dir, creds] = await Promise.all([
+      this.must([this.cfg.fleetBin, "bridge", "directory"]).then(
+        (out) => (JSON.parse(out) as { agents?: unknown } | null)?.agents,
+      ),
+      this.credentials().catch(() => [] as Record<string, unknown>[]),
+    ]);
+    const rows = Array.isArray(dir) ? (dir as Record<string, unknown>[]) : [];
+    const byAgent = new Map(creds.map((c) => [String(c.agent), c]));
+    return rows.map((row) => {
+      if (row.surface === "fleet") {
+        const c = byAgent.get(String(row.name));
+        return {
+          ...row,
+          credential: c
+            ? {
+                state: c.state,
+                scopes: Array.isArray(c.scopes) ? c.scopes : [],
+                credentials: typeof c.credentials === "number" ? c.credentials : 0,
+                created: c.created ?? null,
+                revoked_at: c.revoked_at ?? null,
+              }
+            : null,
+        };
+      }
+      const scopes = (row.scopes ?? {}) as { can_send?: unknown; can_inbox?: unknown };
+      const live = scopes.can_send === true || scopes.can_inbox === true;
+      return {
+        ...row,
+        credential: {
+          state: live ? "active" : "revoked",
+          scopes: [...(scopes.can_send === true ? ["send"] : []), ...(scopes.can_inbox === true ? ["inbox"] : [])],
+          credentials: null,
+          created: row.first_seen ?? null,
+          revoked_at: null,
+        },
+      };
+    });
+  }
+
+  /**
+   * Revoke an agent's bridge credentials from the Agents screen
+   * (#14374): the owner's kill switch, per surface — a fleet agent's
+   * credentials, or a notes identity's tokens. Revoking is the
+   * owner's act: on the laptop it runs here; at the edge the action
+   * is held for a machine (edge-proto.ts), never performed by the
+   * edge's read-scope credential.
+   */
+  async revokeCredential(surface: unknown, name: unknown) {
+    const s = text(surface, "surface", 20);
+    if (s !== "fleet" && s !== "notes") throw new OpError(400, `surface: not a surface: ${JSON.stringify(s)}`);
+    const n = text(name, "name", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+      throw new OpError(400, `name: not an agent name: ${JSON.stringify(n).slice(0, 80)}`);
+    }
+    const argv =
+      s === "fleet"
+        ? [this.cfg.fleetBin, "bridge", "revoke", "--agent", n]
+        : [this.cfg.fleetBin, "bridge", "revoke", "--identity", n];
+    const out = JSON.parse(await this.must(argv)) as { revoked?: unknown };
+    return { surface: s, name: n, revoked: typeof out.revoked === "number" ? out.revoked : 0 };
+  }
+
+  /** The minted bootstrap tokens' state for the Agents screen
+   * (#14376): pending, used, expired or revoked, each with the times
+   * that closed it. State only — the bridge stores hashes and returns
+   * neither a hash nor a value here; a token's value existed once, in
+   * its mint answer. */
+  async enrollTokens() {
+    const rows = (
+      JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "enroll-tokens"])) as {
+        enroll_tokens?: unknown;
+      } | null
+    )?.enroll_tokens;
+    return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+  }
+
+  /**
+   * Mint a bootstrap enroll token from the Agents screen (#14376,
+   * design §4.9), bound at mint to the new agent's name, kind, groups
+   * and class notes identity, for the TTL the owner picked. The
+   * bridge's answer carries the token value, and it passes straight
+   * through to the caller — the one screen that shows it, once.
+   * Nothing keeps it: this class holds no state but the queue token,
+   * the action's audit record names only the binding (actions.ts),
+   * and the value never travels as an argument — the CLI builds the
+   * mint from these flags, and the value comes back on stdout alone.
+   * The binding is checked here first, in the console's own terms,
+   * before anything runs.
+   */
+  async mintEnrollToken(input: {
+    agent?: unknown;
+    kind?: unknown;
+    groups?: unknown;
+    notesIdentity?: unknown;
+    ttlSeconds?: unknown;
+  }) {
+    const name = (value: unknown, what: string, max = 128) => {
+      const n = text(value, what, max);
+      if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+        throw new OpError(400, `${what}: not a name: ${JSON.stringify(n).slice(0, 80)}`);
+      }
+      return n;
+    };
+    const agent = name(input.agent, "agent");
+    const argv = [this.cfg.fleetBin, "bridge", "mint-enroll", "--agent", agent];
+    if (input.kind !== undefined && input.kind !== null && input.kind !== "") {
+      argv.push("--kind", name(input.kind, "kind", 64));
+    }
+    if (input.groups !== undefined && input.groups !== null && input.groups !== "") {
+      const groups = (Array.isArray(input.groups) ? input.groups : String(input.groups).split(","))
+        .map((g) => (typeof g === "string" ? g.trim() : g))
+        .filter((g) => g !== "");
+      if (groups.length > 16) throw new OpError(400, "groups: at most sixteen");
+      for (const g of groups) {
+        if (typeof g !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(g)) {
+          throw new OpError(400, `groups: not a group name: ${JSON.stringify(g).slice(0, 80)}`);
+        }
+      }
+      if (groups.length > 0) argv.push("--groups", groups.join(","));
+    }
+    if (input.notesIdentity !== undefined && input.notesIdentity !== null && input.notesIdentity !== "") {
+      argv.push("--notes-identity", name(input.notesIdentity, "notes identity"));
+    }
+    if (input.ttlSeconds !== undefined && input.ttlSeconds !== null && input.ttlSeconds !== "") {
+      const ttl = id(input.ttlSeconds, "ttl");
+      if (ttl < 60 || ttl > 604_800) throw new OpError(400, "ttl: between a minute and a week, in seconds");
+      argv.push("--ttl", String(ttl));
+    }
+    const out = JSON.parse(await this.must(argv)) as {
+      agent?: unknown;
+      kind?: unknown;
+      groups?: unknown;
+      notes_identity?: unknown;
+      expires_at?: unknown;
+      bootstrap_token?: unknown;
+    } | null;
+    if (typeof out?.bootstrap_token !== "string" || out.bootstrap_token === "") {
+      throw new OpError(502, "the bridge's mint answer carried no token");
+    }
+    return {
+      agent: typeof out.agent === "string" ? out.agent : agent,
+      kind: typeof out.kind === "string" ? out.kind : "agent",
+      groups: Array.isArray(out.groups) ? out.groups.filter((g) => typeof g === "string") : [],
+      notes_identity: typeof out.notes_identity === "string" ? out.notes_identity : null,
+      expires_at: typeof out.expires_at === "string" ? out.expires_at : null,
+      bootstrap_token: out.bootstrap_token,
+    };
+  }
+
+  /**
+   * Take back an agent's unused bootstrap tokens from the Agents
+   * screen (#14376): every still-pending token minted for the agent.
+   * By name, never by value — the list shows no hash, and a token
+   * value has no business travelling to undo its own minting. Used
+   * tokens are not this revoke's (they became credentials; revoke
+   * those above), and expired ones are already dead.
+   */
+  async revokeEnrollTokens(agent: unknown) {
+    const n = text(agent, "agent", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
+      throw new OpError(400, `agent: not an agent name: ${JSON.stringify(n).slice(0, 80)}`);
+    }
+    const out = JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "revoke-enroll", "--agent", n])) as {
+      revoked?: unknown;
+    };
+    return { agent: n, revoked: typeof out.revoked === "number" ? out.revoked : 0 };
+  }
+
+  /**
+   * Mint a per-agent credential directly from the Agents screen
+   * (#14376): for an agent that is already enrolled, or a service
+   * credential with --addr. Like the enroll mint, the value passes
+   * straight through to the one screen that shows it, once, and is
+   * kept nowhere. A service address must name the agent itself — the
+   * bridge binds a service credential to its own name, and the check
+   * is made here first as everywhere else.
+   */
+  async mintCredential(input: { agent?: unknown; scopes?: unknown; addr?: unknown }) {
+    const agent = text(input.agent, "agent", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(agent)) {
+      throw new OpError(400, `agent: not an agent name: ${JSON.stringify(agent).slice(0, 80)}`);
+    }
+    const argv = [this.cfg.fleetBin, "bridge", "mint-credential", "--agent", agent];
+    if (input.scopes !== undefined && input.scopes !== null && input.scopes !== "") {
+      const scopes = (Array.isArray(input.scopes) ? input.scopes : String(input.scopes).split(","))
+        .map((s) => (typeof s === "string" ? s.trim() : s))
+        .filter((s) => s !== "");
+      if (scopes.length === 0 || scopes.some((s) => s !== "inbox" && s !== "send" && s !== "read")) {
+        throw new OpError(400, "scopes: only inbox, send and read exist");
+      }
+      argv.push("--scopes", scopes.join(","));
+    }
+    if (input.addr !== undefined && input.addr !== null && input.addr !== "") {
+      const addr = text(input.addr, "addr", 200);
+      if (addr !== `service:${agent}`) {
+        throw new OpError(400, "addr: a service credential is bound to its own name (service:<agent>)");
+      }
+      argv.push("--addr", addr);
+    }
+    const out = JSON.parse(await this.must(argv)) as {
+      agent?: unknown;
+      scopes?: unknown;
+      addr?: unknown;
+      credential?: unknown;
+    } | null;
+    if (typeof out?.credential !== "string" || out.credential === "") {
+      throw new OpError(502, "the bridge's mint answer carried no credential");
+    }
+    return {
+      agent: typeof out.agent === "string" ? out.agent : agent,
+      scopes: Array.isArray(out.scopes) ? out.scopes.filter((s) => typeof s === "string") : [],
+      addr: typeof out.addr === "string" ? out.addr : null,
+      credential: out.credential,
+    };
   }
 
   /** Send a message or a command to agents, groups, or everyone. */

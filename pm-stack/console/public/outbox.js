@@ -27,6 +27,13 @@
     "issue.rank",
     "task.move",
     "message.send",
+    // A revocation done late is still the right act (#14374).
+    "agent.revoke",
+    // Taking back unused enroll tokens, the same (#14376). The
+    // provisioning mints are NOT here: their answer is a secret shown
+    // once, so they are "now" — done with a connection or not at all,
+    // never kept on this device to be done late.
+    "agent.revoke-enroll",
     "intake.send",
   ]);
   /** Actions on something that may have changed by the time they are
@@ -83,6 +90,13 @@
         return of("pr", a.pr);
       case "unit.act":
         return of("unit", a.unit);
+      case "agent.revoke": {
+        const surface = typeof a.surface === "string" ? a.surface : "";
+        const name = typeof a.name === "string" ? a.name : "";
+        return surface === "" || name === "" ? null : `agent:${surface}:${name}`;
+      }
+      case "agent.revoke-enroll":
+        return of("enroll", a.agent);
       default:
         return null;
     }
@@ -104,7 +118,8 @@
     const quoted = (text) => (short(text) ? `: “${short(text)}”` : "");
     switch (kind) {
       case "ask.send":
-        return `Prompt${quoted(a.text)}`;
+        // A question and a standing instruction are said as what they are.
+        return `${a.intent === "question" ? "Question" : a.intent === "directive" ? "Standing instruction" : "Prompt"}${quoted(a.text)}`;
       case "ask.reply":
         return `Reply on #${a.issue}${quoted(a.text)}`;
       case "ask.close":
@@ -139,6 +154,14 @@
         return "Accept the recommended answers";
       case "message.send":
         return `Message to ${Array.isArray(a.to) ? a.to.join(", ") : a.to}${quoted(a.text)}`;
+      case "agent.revoke":
+        return `Revoke ${a.name ?? "an agent"}'s ${a.surface === "notes" ? "notes tokens" : "bridge credentials"}`;
+      case "agent.revoke-enroll":
+        return `Take back ${a.agent ?? "an agent"}'s unused enroll tokens`;
+      case "agent.mint-enroll":
+        return `Mint an enroll token for ${a.agent ?? "a new agent"}`;
+      case "agent.mint-credential":
+        return `Mint a credential for ${a.agent ?? "an agent"}`;
       case "unit.act":
         return `${a.action} ${a.unit}`;
       // The platform's own second half of something it filed itself:
@@ -159,6 +182,15 @@
     return { id, kind, args: args ?? {}, said: said || sayOf(kind, args), at: now, state: "waiting", note: "", tries: 0 };
   }
 
+  /** What is said of something the platform is holding, by who it
+   * waits for: either side, whichever can first; a machine only; or a
+   * machine that may already have it. */
+  const HELD_NOTES = {
+    either: "Kept: Cloudflare does it as soon as it can again, or the laptop if it is back first.",
+    machine: "Kept for the laptop, which will do it when it is back.",
+    asked: "Kept: the laptop did not answer. It may have got this, and says what became of it when it is back.",
+  };
+
   /** What became of one try at sending. `answer` is what came back:
    * `{ network: true }` when nothing did, else the status, whether the
    * body was JSON, and the body. Returns the entry's new state and what
@@ -173,7 +205,10 @@
     }
     if (status === 200 && body.ok === true) {
       if (body.held === true) {
-        return { state: "held", note: "Kept for the laptop, which will do it when it is back.", result: null };
+        // The platform says who it waits for; one that does not say is
+        // older than the saying, and holds things for the laptop only.
+        const waits = typeof body.waits === "string" && Object.hasOwn(HELD_NOTES, body.waits) ? body.waits : "machine";
+        return { state: "held", note: HELD_NOTES[waits], result: null };
       }
       // Taken, and answered "not recorded" without an error: an answer
       // to a question that was settled in the meantime. That is not

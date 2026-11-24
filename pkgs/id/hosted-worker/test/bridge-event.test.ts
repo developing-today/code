@@ -74,13 +74,7 @@ const U = (v: bigint): CborValue => ({ kind: "uint", value: v });
  * structural rule can be exercised in isolation: parseEvent checks
  * structure without the signature. */
 function handBuilt(extPairs: [CborValue, CborValue][], seq = 0n): Uint8Array {
-  const items: CborValue[] = [
-    U(1n),
-    B(new Uint8Array(32).fill(3)),
-    B(new Uint8Array(64).fill(4)),
-    U(0n),
-    U(seq),
-  ];
+  const items: CborValue[] = [U(1n), B(new Uint8Array(32).fill(3)), B(new Uint8Array(64).fill(4)), U(0n), U(seq)];
   if (seq > 0n) items.push(B(new Uint8Array(32).fill(5)));
   items.push({ kind: "map", value: extPairs });
   return encodeCanonical({ kind: "array", value: items });
@@ -121,9 +115,7 @@ test("structural extension rules (parseEvent, signature aside)", () => {
   // A tag kind without its payload.
   assert.throws(
     () =>
-      parseEvent(
-        handBuilt(baseExt().map(([k, v]) => [k, k.kind === "text" && k.value === "kind" ? T("tag.set") : v])),
-      ),
+      parseEvent(handBuilt(baseExt().map(([k, v]) => [k, k.kind === "text" && k.value === "kind" ? T("tag.set") : v]))),
     /needs its tag payload/,
   );
   // 33 `after` hashes.
@@ -131,7 +123,12 @@ test("structural extension rules (parseEvent, signature aside)", () => {
   assert.throws(
     () =>
       parseEvent(
-        handBuilt(baseExt().map(([k, v]) => [k, k.kind === "text" && k.value === "after" ? { kind: "array", value: many } as CborValue : v])),
+        handBuilt(
+          baseExt().map(([k, v]) => [
+            k,
+            k.kind === "text" && k.value === "after" ? ({ kind: "array", value: many } as CborValue) : v,
+          ]),
+        ),
       ),
     /most allowed is 32/,
   );
@@ -140,7 +137,12 @@ test("structural extension rules (parseEvent, signature aside)", () => {
   assert.throws(
     () =>
       parseEvent(
-        handBuilt(baseExt().map(([k, v]) => [k, k.kind === "text" && k.value === "after" ? { kind: "array", value: dup } as CborValue : v])),
+        handBuilt(
+          baseExt().map(([k, v]) => [
+            k,
+            k.kind === "text" && k.value === "after" ? ({ kind: "array", value: dup } as CborValue) : v,
+          ]),
+        ),
       ),
     /same hash twice/,
   );
@@ -155,16 +157,22 @@ test("structural extension rules (parseEvent, signature aside)", () => {
   // A non-NFC kind.
   assert.throws(
     () =>
-      parseEvent(
-        handBuilt(baseExt().map(([k, v]) => [k, k.kind === "text" && k.value === "kind" ? T("café") : v])),
-      ),
+      parseEvent(handBuilt(baseExt().map(([k, v]) => [k, k.kind === "text" && k.value === "kind" ? T("café") : v]))),
     /not NFC/,
   );
   // seq 0 with a backlink-shaped extra field: the extra item is not
   // the extensions map, so the header is malformed.
   const withBacklink = encodeCanonical({
     kind: "array",
-    value: [U(1n), B(new Uint8Array(32)), B(new Uint8Array(64)), U(0n), U(0n), B(new Uint8Array(32)), { kind: "map", value: baseExt() }],
+    value: [
+      U(1n),
+      B(new Uint8Array(32)),
+      B(new Uint8Array(64)),
+      U(0n),
+      U(0n),
+      B(new Uint8Array(32)),
+      { kind: "map", value: baseExt() },
+    ],
   });
   assert.throws(() => parseEvent(withBacklink), Malformed);
 });
@@ -220,7 +228,18 @@ test("checkpoint payload extraction", async () => {
   const cp0 = await signEvent(key, {
     seq: 0,
     kind: "session.checkpoint",
-    extra: [["checkpoint", { kind: "map", value: [[T("header"), header], [T("segment"), segment(0n, { kind: "null" })]] }]],
+    extra: [
+      [
+        "checkpoint",
+        {
+          kind: "map",
+          value: [
+            [T("header"), header],
+            [T("segment"), segment(0n, { kind: "null" })],
+          ],
+        },
+      ],
+    ],
   });
   assert.equal(cp0.checkpoint?.segmentSeq, 0n);
   assert.equal(cp0.checkpoint?.prev, null);
@@ -228,7 +247,18 @@ test("checkpoint payload extraction", async () => {
     seq: 1,
     backlink: cp0.idBytes,
     kind: "session.checkpoint",
-    extra: [["checkpoint", { kind: "map", value: [[T("header"), header], [T("segment"), segment(1n, B(cp0.idBytes))]] }]],
+    extra: [
+      [
+        "checkpoint",
+        {
+          kind: "map",
+          value: [
+            [T("header"), header],
+            [T("segment"), segment(1n, B(cp0.idBytes))],
+          ],
+        },
+      ],
+    ],
   });
   assert.equal(bytesToHex(cp1.checkpoint?.prev as Uint8Array), cp0.id);
   assert.equal(

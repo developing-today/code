@@ -1,6 +1,6 @@
 # Implications for the fleet
 
-*Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).
+_Part of the [iroh ecosystem research record](2026-11-23T22-00-30Z_research_iroh-ecosystem.md).
 This page connects the census to our own programme: the fleet
 transport design ([#13752](https://github.com/developing-today/code/issues/13752)),
 the capability-auth + p2p-transport investigation
@@ -8,7 +8,7 @@ the capability-auth + p2p-transport investigation
 its synthesis record
 ([capability auth + p2p transport comparison](../2026-11-23T21-39-17Z_design_p2p-auth-transport-comparison/2026-11-23T21-39-17Z_design_p2p-auth-transport-comparison.md)),
 the compile coordinator ([#13765](https://github.com/developing-today/code/issues/13765))
-and Actions-runner exec ([#13774](https://github.com/developing-today/code/issues/13774)).*
+and Actions-runner exec ([#13774](https://github.com/developing-today/code/issues/13774))._
 
 ## 1. The transport bet is confirmed, and it is no longer a bet
 
@@ -44,7 +44,7 @@ to 1.0 (0.103.0, 2026-11-16), blobs is the de-facto stable data
 plane, docs lags.** For our programme:
 
 - Anything we design on gossip today (seat presence, broadcast
-  notices, the p2panda data plane — p2panda-net *is* an iroh
+  notices, the p2panda data plane — p2panda-net _is_ an iroh
   application riding gossip and blobs) should expect one more
   stabilisation step, not a redesign: the wire-freeze pattern core
   went through is the template.
@@ -61,7 +61,7 @@ plane, docs lags.** For our programme:
 ## 3. `subduction_iroh` on iroh 1.0 keeps composition B honest
 
 The synthesis adopted Keyline (Keyhive's auth model) as the estate's
-reference semantics for revocation while deferring Keyhive's *code*
+reference semantics for revocation while deferring Keyhive's _code_
 until its disclosed gaps close. The transport half of that stack is
 no longer hypothetical: **`subduction_iroh` — Subduction's transport
 over iroh — was upgraded to iroh v1.0 in mid-2026**, with its own
@@ -103,7 +103,7 @@ wants, not problems we imagined**:
   conversations upstream (Ed25519 endpoint IDs are the thing a future
   quantum computer would forge; TPM/Secure-Enclave custody is an
   active thread). Neither is a near-term action for us, but both
-  argue for keeping our identity layer *above* the transport key —
+  argue for keeping our identity layer _above_ the transport key —
   CA-attested seat identity that can rotate curves and custody
   without renumbering the fleet — rather than baking raw endpoint
   keys into durable records.
@@ -111,13 +111,13 @@ wants, not problems we imagined**:
 ## 5. iroh-willow stays a research artefact
 
 The synthesis named the evidence that would re-open the data-plane
-question: Willow's Confidential Sync unpausing *and* a maintained
+question: Willow's Confidential Sync unpausing _and_ a maintained
 Rust sync — "or iroh-willow ported to current iroh." This census
 checked: **neither has happened.** iroh-willow is still crate 0.28.0,
 unreleased, built on iroh 0.34-era APIs with git patch-overrides, and
 independently inventoried as a broken build with no consumers.
 Decision point 5 in the synthesis (whether any domain earns the
-Willow data model) therefore stays where it was: the *model* remains
+Willow data model) therefore stays where it was: the _model_ remains
 attractive for mutable infrastructure state, Meadowcap-as-spec
 remains borrowable without it, and adopting iroh-willow itself would
 mean forking and porting it to iroh 1.x as estate-owned code. Nobody
@@ -149,11 +149,11 @@ should plan a dependency on it.
 
 ## 7. Watch list
 
-| Signal | Where it shows up | What it would change |
-|---|---|---|
-| iroh-gossip 1.0 release | n0 blog, crates.io | Locks the broadcast layer our p2panda option rides on; re-check gossip API deltas then |
-| Blinded address lookup landing | n0 blog, iroh releases | Adopt for our lookup config; closes a metadata leak in the default path |
-| iroh-willow ported to iroh 1.x, or Willow Confidential Sync unpausing | n0 org, worm-blossom | Re-opens synthesis decision point 5 (Willow data model for mutable state) |
-| Post-quantum identity design converging upstream | GitHub Discussions #4532, blog | Feeds our CA/IdP curve planning (decision point 4) |
-| A group-discovery or authorisation primitive appearing upstream | Discussions, registry page | Would shrink the layer we compose ourselves under #13779 — check before building big |
-| Discord-only decisions | Not publicly visible | The public record (Discussions + blog) is what this record tracks; anything decided socially in Discord reaches us late or never |
+| Signal                                                                | Where it shows up              | What it would change                                                                                                             |
+| --------------------------------------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| iroh-gossip 1.0 release                                               | n0 blog, crates.io             | Locks the broadcast layer our p2panda option rides on; re-check gossip API deltas then                                           |
+| Blinded address lookup landing                                        | n0 blog, iroh releases         | Adopt for our lookup config; closes a metadata leak in the default path                                                          |
+| iroh-willow ported to iroh 1.x, or Willow Confidential Sync unpausing | n0 org, worm-blossom           | Re-opens synthesis decision point 5 (Willow data model for mutable state)                                                        |
+| Post-quantum identity design converging upstream                      | GitHub Discussions #4532, blog | Feeds our CA/IdP curve planning (decision point 4)                                                                               |
+| A group-discovery or authorisation primitive appearing upstream       | Discussions, registry page     | Would shrink the layer we compose ourselves under #13779 — check before building big                                             |
+| Discord-only decisions                                                | Not publicly visible           | The public record (Discussions + blog) is what this record tracks; anything decided socially in Discord reaches us late or never |

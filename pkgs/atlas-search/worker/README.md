@@ -20,7 +20,10 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
 - `src/service.ts` — calls to `fleet serve search`
   (`POST /v1/embed`, `POST /v1/search`) via the
   `atlas-search.security.cab` tunnel hostname + Cloudflare
-  Access service token. The service enforces this client's
+  Access service token. Search requests explicitly state the
+  `hosted-per-user` disclosure context (#12622, `CONTEXT` in
+  `src/space.ts`, typed as `DisclosureContext`) and this client's
+  `personal` tier ceiling. The service enforces this client's
   `personal` tier ceiling, and the Worker enforces it too: every
   search response's `effective_ceiling` is checked against the
   pinned ceiling and a mismatch is refused (502) before anything
@@ -40,6 +43,16 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   zero; estimated Turso cost avoided; D1 bytes per tenant vs
   quota) rendered as a report for #9098's economics prototype.
   Pure accumulator + renderer, fed by the read path (follow-on 4).
+- `src/admission.ts` — the D1 hot-cache admission policy (#13103,
+  #9134 design §3/§5): heat counters, heavy-query immediate
+  admission, per-tenant quotas (tier weights 1:4:16, 5% floor),
+  entry size cap, negative-result TTL, and the LRU eviction sweep.
+  Pure policy, not yet wired into the read path (follow-on 4).
+- `src/freshness.ts` — the D1 hot-cache freshness evaluator
+  (#13101; design #9134 §1): pure per-class watermark/TTL rules
+  with fail-safe degradation, plus the tenant watermark read seam.
+  Not wired into a read path yet — the D1 store is #13100 and
+  read-path integration is follow-on 4 under #9134.
 
 ## Endpoints
 

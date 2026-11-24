@@ -1371,6 +1371,32 @@ class PersistedJobTimestampTest(unittest.TestCase):
             self.assertTrue(la.JOBS["interrupted-job"]["interrupted"])
             self.assertFalse(la.JOBS["plain-job"]["interrupted"])
 
+    def test_failed_final_meta_write_is_reported_not_silent(self):
+        # Issue #12195 (darwin-nix#2037): a failed final meta write was
+        # swallowed by a bare except OSError, so a finished job restored
+        # as interrupted with exit=null. Oracle: one stderr line naming
+        # the job and the OSError, and no exception escapes.
+        la = self._import_agent()
+        job = {
+            "id": "unwritable-job",
+            "cwd": "/",
+            "cmd_repr": "true",
+            "started_at": 100.0,
+            "ended_at": 150.0,
+            "exit": 0,
+            "state": "done",
+        }
+        with tempfile.TemporaryDirectory() as state_dir:
+            err = io.StringIO()
+            with (
+                patch.object(la, "STATE_DIR", Path(state_dir)),
+                patch.object(la.os, "replace", side_effect=OSError("disk full")),
+                contextlib.redirect_stderr(err),
+            ):
+                la._write_meta(job)
+            self.assertIn("cannot write meta for job unwritable-job", err.getvalue())
+            self.assertIn("disk full", err.getvalue())
+
     def test_invalid_state_skipped_healthy_kept(self):
         # Issue #1556: a persisted state outside {running, done} was
         # restored verbatim, so /jobs served a nonexistent state and

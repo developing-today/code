@@ -22,12 +22,12 @@ PR [#13959](https://github.com/developing-today/code/pull/13959)).
 - **The verdict for this estate: mostly no — not now.** The
   reasons of record: this estate's infrastructure is NixOS and
   Talos declared in Nix and Git, not cloud APIs, so providers
-  have almost no surface to act on; Cozystack already *is* a
+  have almost no surface to act on; Cozystack already _is_ a
   Kubernetes-native provisioning layer for databases, buckets,
   clusters and VMs; and fleet already owns dispatch and
   placement.
 - **The named revisit trigger:** the day the estate needs to
-  provision and continuously reconcile *external* resources —
+  provision and continuously reconcile _external_ resources —
   cloud buckets, **DNS**, GitHub organisation objects, SaaS
   tenants — through the same GitOps flow as cluster state. That
   trigger points straight at [DNS management](dns-management.md).

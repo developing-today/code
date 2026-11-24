@@ -283,6 +283,7 @@
       "id": "id.hosted-worker.routing",
       "paths": [
         "pkgs/id/hosted-worker/test/routing.test.ts",
+        "pkgs/id/hosted-worker/test/persistent-account-directory.test.ts",
         "pkgs/id/hosted-worker/test/admission-gate.test.ts",
         "pkgs/id/hosted-worker/test/provisioning.test.ts",
         "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
@@ -298,9 +299,13 @@
         "pkgs/id/hosted-worker/test/bridge-range.test.ts",
         "pkgs/id/hosted-worker/test/bridge-store.test.ts",
         "pkgs/id/hosted-worker/test/bridge-session.test.ts",
-        "pkgs/id/hosted-worker/test/bridge-do.test.ts"
+        "pkgs/id/hosted-worker/test/bridge-do.test.ts",
+        "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
+        "pkgs/id/hosted-worker/test/export.test.ts",
+        "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
+        "pkgs/id/hosted-worker/test/migration-control.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -336,6 +341,19 @@
       },
       "status": "mapped",
       "notes": "The native-shell check runs every integration target in this non-default workspace member; suite paths trued up 2026-11-17 while repairing the registry ratchet (#10329)."
+    },
+    {
+      "id": "id.tui-shell.capability-statement",
+      "paths": ["pkgs/id/crates/id-tui-shell/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-tui-shell runs cargo nextest -p id-tui-shell)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-tui-shell",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The tui-shell check runs every integration target in this non-default workspace member; the first target is the capability-statement check recorded for #12818 (shells v2 slice 2, decision D3)."
     },
     {
       "id": "id.rust.id-hw-shell.integration",
@@ -729,18 +747,42 @@
     },
     {
       "id": "pm-service.tenant-store",
-      "paths": [
-        "pm-stack/pm-service/test/tenant-store.test.ts"
-      ],
+      "paths": ["pm-stack/pm-service/test/tenant-store.test.ts"],
       "invocation": "cd pm-stack/pm-service && bun test",
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",
-        "job_step": "Test pm-service tenant-store suite",
+        "job_step": "Test pm-service suites",
         "state": "active",
         "dispatchable": true
       },
       "status": "mapped",
       "related_issues": [12825]
+    },
+    {
+      "id": "pm-service.collector",
+      "paths": ["pm-stack/pm-service/test/collector.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12826]
+    },
+    {
+      "id": "pm-service.read-api",
+      "paths": ["pm-stack/pm-service/test/read-api.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service suites",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12828]
     },
     {
       "id": "opencode-claimant.install",
@@ -1605,7 +1647,12 @@
     },
     {
       "id": "id.rust.id-import-notion.integration",
-      "paths": ["pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs"],
+      "paths": [
+        "pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_comments.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_content.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs"
+      ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {
         "workflow": ".github/workflows/id-check.yml",

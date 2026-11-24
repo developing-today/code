@@ -951,6 +951,17 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
     params.not_after = na.0;
     params.serial_number = Some(random_serial());
     params.use_authority_key_identifier_extension = true;
+    if profile.ocsp_no_check {
+        // RFC 6960 §3.2: a delegated OCSP signing certificate
+        // carries id-pkix-ocsp-nocheck (extnValue = DER NULL) so
+        // verifiers do not revocation-check the responder itself.
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 5, 5, 7, 48, 1, 5],
+                vec![0x05, 0x00],
+            ));
+    }
     let cert = issuer.sign(&params, &key)?;
     let der = cert.der().to_vec();
 

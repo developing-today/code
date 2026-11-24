@@ -10,6 +10,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
+import { unread } from "../../src/timed.ts";
 
 interface Env {
   PM: DurableObjectNamespace;
@@ -22,6 +23,14 @@ interface Env {
   GITHUB_TOKEN?: string;
   QUEUE_TOKEN?: string;
   EDGE_DIRECT?: string;
+  /** The message bridge, by service binding (#14373), and the PM
+   * stack's own bridge credential: a Worker secret like the two
+   * tokens, put there by scripts/expose.py --edge-direct from the
+   * vault. With both, the edge sends the owner's messages itself, as
+   * service:pm-stack, and reads the agents list and the message log
+   * from the bridge; without either, those stay a machine's. */
+  BRIDGE?: { fetch(request: Request): Promise<Response> };
+  BRIDGE_TOKEN?: string;
   /** Local development only: where GitHub's API and the queue store
    * are, when they are stand-ins. Never set where this is deployed: the
    * Worker's tokens are sent to whatever these name. */
@@ -68,6 +77,10 @@ export class PmEdge extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // The app says "ping" to keep its connection from being dropped as
+    // idle; the platform answers "pong" itself, without waking this.
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+    const bridge = env.BRIDGE;
     this.edge = new Edge({
       fetchImpl: keysFetch(env),
       kv: {
@@ -81,9 +94,38 @@ export class PmEdge extends DurableObject<Env> {
         enabled: env.EDGE_DIRECT === "on",
         githubToken: env.GITHUB_TOKEN,
         queueToken: env.QUEUE_TOKEN,
+        bridgeToken: env.BRIDGE_TOKEN,
+        // The binding's fetch, shaped as the fetch the classes take:
+        // not to be called as a method, like the platform's own.
+        bridgeFetch: bridge
+          ? (url: string | URL | Request, init?: RequestInit) => bridge.fetch(new Request(url as string, init))
+          : undefined,
         githubApi: env.GITHUB_API_ORIGIN,
         queueDb: env.QUEUE_DB_ORIGIN,
         fetchImpl: fetch,
+      },
+      // Live connections to the app. The platform holds them, so they
+      // stay open while this object is put away between events, and it
+      // is woken (by its alarm) only when there is something to read.
+      sockets: {
+        accept: () => {
+          const pair = new WebSocketPair();
+          ctx.acceptWebSocket(pair[1]);
+          return new Response(null, { status: 101, webSocket: pair[0] });
+        },
+        send: (text) => {
+          let told = 0;
+          for (const ws of ctx.getWebSockets()) {
+            try {
+              ws.send(text);
+              told++;
+            } catch {
+              // Gone between being listed and being told: the platform drops it.
+            }
+          }
+          return told;
+        },
+        count: () => ctx.getWebSockets().length,
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
       getAlarm: () => ctx.storage.getAlarm(),
@@ -100,6 +142,30 @@ export class PmEdge extends DurableObject<Env> {
   alarm(): Promise<void> {
     return this.edge.alarm();
   }
+
+  /** The app says nothing over its connection but "ping" (answered by
+   * the platform, above): what it does goes by its requests, which are
+   * kept and sent again when there is no connection. Anything else
+   * said is not for this. */
+  webSocketMessage(): void {}
+
+  /** The app went away, or the connection broke: finish closing it. */
+  webSocketClose(ws: WebSocket, code: number): void {
+    try {
+      // 1005 and 1006 say how it ended and may not be sent back.
+      ws.close(code === 1005 || code === 1006 ? 1000 : code);
+    } catch {
+      // Already closed.
+    }
+  }
+
+  webSocketError(ws: WebSocket): void {
+    try {
+      ws.close(1011);
+    } catch {
+      // Already closed.
+    }
+  }
 }
 
 /** The host answered, as opposed to something in front of it saying it
@@ -108,9 +174,23 @@ function fromHost(res: Response): boolean {
   return res.headers.get("x-pm-console") === "1" || res.status < 500;
 }
 
+/** What answered in the host's place says that the host was never
+ * reached. Cloudflare answers 530 (with one of its 1xxx errors in the
+ * body: 1033 for a tunnel) when it has no way to the origin at all: for
+ * a tunnel, no connection of the machine's to send the request down.
+ * Nothing was handed to the machine, so nothing asked of it was done.
+ * Any other answer in the host's place does not say as much: a gateway
+ * that lost the connection part-way answers for a host that may have
+ * had the request. */
+function neverReached(res: Response): boolean {
+  return res.status === 530 && res.headers.get("x-pm-console") !== "1";
+}
+
 /** Ask the host. `ms` is how long it has to start answering; a stream it
- * then keeps open (the dashboard's live pages) is left to run. */
-async function host(request: Request, ms: number, origin?: string): Promise<Response | null> {
+ * then keeps open (the dashboard's live pages) is left to run. Null when
+ * it did not answer, and "unreached" when what answered in its place
+ * says it was never reached (see neverReached). */
+async function ask(request: Request, ms: number, origin?: string): Promise<Response | "unreached" | null> {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), ms);
   try {
@@ -118,12 +198,21 @@ async function host(request: Request, ms: number, origin?: string): Promise<Resp
     const url = new URL(request.url);
     const target = origin ? new Request(`${origin}${url.pathname}${url.search}`, request) : request;
     const res = await fetch(new Request(target, { redirect: "manual", signal: abort.signal }));
-    return fromHost(res) ? res : null;
+    if (fromHost(res)) return res;
+    const never = neverReached(res);
+    // Not the host's, and not read: let go of, so nothing is left open.
+    unread(res);
+    return never ? "unreached" : null;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function host(request: Request, ms: number, origin?: string): Promise<Response | null> {
+  const answer = await ask(request, ms, origin);
+  return answer === "unreached" ? null : answer;
 }
 
 export default {
@@ -134,6 +223,7 @@ export default {
       state: (r) => stub.fetch(r),
       asset: (path) => env.ASSETS.fetch(new Request(`https://assets.internal${path}`)),
       host: (r, ms) => host(r, ms, env.HOST_ORIGIN),
+      act: (r, ms) => ask(r, ms, env.HOST_ORIGIN),
       publicHost: env.PUBLIC_HOST,
       version: env.VERSION ?? null,
       later: (work) => ctx.waitUntil(work),

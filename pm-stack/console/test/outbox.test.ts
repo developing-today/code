@@ -111,6 +111,13 @@ test("each action is said in a line the owner will know it by", () => {
     "Prompt: “Ship the parser rework this week”",
   );
   expect(said("ask.send", { text: "x".repeat(200) })).toBe(`Prompt: “${"x".repeat(59)}…”`);
+  // A question and a standing instruction are said as what they are.
+  expect(said("ask.send", { text: "Why did it stall?", intent: "question" })).toBe("Question: “Why did it stall?”");
+  expect(said("ask.send", { text: "No red merges", intent: "directive" })).toBe(
+    "Standing instruction: “No red merges”",
+  );
+  expect(said("ask.send", { text: "Do it", intent: "task" })).toBe("Prompt: “Do it”");
+  expect(said("ask.send", { text: "Do it", intent: "something else" })).toBe("Prompt: “Do it”");
   expect(said("ask.reply", { issue: 201, text: "Yes" })).toBe("Reply on #201: “Yes”");
   expect(said("ask.close", { issue: 202 })).toBe("Mark prompt #202 done");
   expect(said("issue.comment", { issue: 301, text: "" })).toBe("Comment on #301");
@@ -185,6 +192,20 @@ test("what each kind of answer does to an entry", () => {
     note: "Kept for the laptop, which will do it when it is back.",
     result: null,
   });
+  // The platform says who it waits for, and that is what is said of it.
+  const heldNote = (waits: unknown) =>
+    O.classify({ status: 200, body: { ok: true, held: true, result: null, waits } }).note;
+  expect(heldNote("machine")).toBe("Kept for the laptop, which will do it when it is back.");
+  expect(heldNote("either")).toBe(
+    "Kept: Cloudflare does it as soon as it can again, or the laptop if it is back first.",
+  );
+  expect(heldNote("asked")).toBe(
+    "Kept: the laptop did not answer. It may have got this, and says what became of it when it is back.",
+  );
+  // Something it does not know to say is said as the plain case, never as whatever came.
+  for (const waits of ["someone", "constructor", "toString", "", 3, null, {}]) {
+    expect([waits, heldNote(waits)]).toEqual([waits, "Kept for the laptop, which will do it when it is back."]);
+  }
   // Refused or failed, in the platform's own words: not tried again by itself.
   expect(O.classify({ status: 404, body: { error: "no such issue" } })).toEqual({
     state: "failed",

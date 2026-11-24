@@ -1138,11 +1138,7 @@ mod tests {
             registry.get_state("entity-1", "lib-hash-1"),
             Some(b"save-data".as_slice())
         );
-        assert!(
-            registry
-                .inert_entries("entity-1", "lib-hash-1", 1)
-                .is_empty()
-        );
+        assert_eq!(registry.inert_entries("entity-1", "lib-hash-1", 1), []);
     }
 
     #[test]
@@ -1175,11 +1171,7 @@ mod tests {
             registry.drop_inert("owner-1", "entity-1", "lib-hash-1", 1),
             Ok(1)
         );
-        assert!(
-            registry
-                .inert_entries("entity-1", "lib-hash-1", 1)
-                .is_empty()
-        );
+        assert_eq!(registry.inert_entries("entity-1", "lib-hash-1", 1), []);
         // After the drop, a reattach revives nothing.
         let _ = attached(&mut registry, offer("1.0.0", &["chat.say"]));
         assert_eq!(registry.get_state("entity-1", "lib-hash-1"), None);
@@ -1226,11 +1218,7 @@ mod tests {
             registry.get_state("entity-1", "lib-hash-1"),
             Some(b"v1-state".as_slice())
         );
-        assert!(
-            registry
-                .inert_entries("entity-1", "lib-hash-1", 1)
-                .is_empty()
-        );
+        assert_eq!(registry.inert_entries("entity-1", "lib-hash-1", 1), []);
     }
 
     #[test]
@@ -1260,11 +1248,7 @@ mod tests {
             registry.get_state("entity-1", "lib-hash-1"),
             Some(b"v1-state".as_slice())
         );
-        assert!(
-            registry
-                .inert_entries("entity-1", "lib-hash-1", 1)
-                .is_empty()
-        );
+        assert_eq!(registry.inert_entries("entity-1", "lib-hash-1", 1), []);
     }
 
     #[test]

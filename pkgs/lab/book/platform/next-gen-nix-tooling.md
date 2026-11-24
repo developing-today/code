@@ -25,7 +25,7 @@ PR [#13959](https://github.com/developing-today/code/pull/13959)).
   CA-derivations rewrite planned, and 8–20% faster than 2.18 per
   its own materials, as cited by the scan.
 - **Determinate Nix** — the validated downstream. The estate
-  already depends on Determinate's *installer and cache action*
+  already depends on Determinate's _installer and cache action_
   in CI (see [CI/CD: Nix and GitHub Actions](ci-cd.md)), while
   the `determinate` flake input in `flake.nix` sits **commented
   out**.
@@ -44,7 +44,7 @@ so a decision can be made from current facts when one is needed.
 ## Gaps
 
 - No evaluation or adoption record exists for Lix or Determinate
-  Nix *as the system Nix*. The book presents this section as a
+  Nix _as the system Nix_. The book presents this section as a
   research summary with an open decision, because that is what
   the record supports.
 

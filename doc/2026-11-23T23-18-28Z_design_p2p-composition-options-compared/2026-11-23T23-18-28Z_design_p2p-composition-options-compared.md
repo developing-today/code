@@ -5,9 +5,10 @@ p2p-transport investigation (tracking issue
 [developing-today/code#13779](https://github.com/developing-today/code/issues/13779)).
 It compares the synthesis's compositions **against each other and against
 the naive baseline stack Drew named** ("just Willow + Meadowcap + p2panda
-+ iroh"), on the six dimensions Drew specified. It does not re-litigate
-the recommendation; §8 notes the one place the comparison softens the
-recommendation's footing.
+
+- iroh"), on the six dimensions Drew specified. It does not re-litigate
+  the recommendation; §8 notes the one place the comparison softens the
+  recommendation's footing.
 
 **Sources — no new research.** Everything below is drawn from the
 on-disk programme: the synthesis
@@ -28,7 +29,7 @@ sync machinery, iroh as transport. No broker renewal service, no
 session-token layer, no Keyline semantics. This option contains a fork
 the name hides, and the fork matters more than the option:
 
-- **0-M, Willow as data model.** Willow's *semantics* — namespaces,
+- **0-M, Willow as data model.** Willow's _semantics_ — namespaces,
   subspaces, paths, mutable entries, traceless deletion — adopted as the
   estate's data model for the domains they fit, with entries carried on
   p2panda operations so LogSync and iroh do the moving, and Meadowcap
@@ -37,7 +38,7 @@ the name hides, and the fork matters more than the option:
   semantics, prefix pruning, range fingerprinting) over p2panda logs.
   The research programme never designed or priced this composition; its
   cost below is judgement from component facts, flagged as such.
-- **0-P, Willow as protocol.** The willow25 crates *are* the data plane:
+- **0-P, Willow as protocol.** The willow25 crates _are_ the data plane:
   state CRDT, embedded-KV store, Meadowcap native, sync by Willow's own
   protocols. In this reading p2panda has no real job — Willow's sync is
   a separate (missing) layer — so 0-P is really "Willow for everything,"
@@ -64,12 +65,12 @@ hygiene.
 stream (NodeId identity, QUIC/TLS 1.3) carrying Cap'n Proto RPC Level 1
 with facet attenuation and interposition revocation; Biscuit tokens —
 expiring, attenuable, offline-checkable, bound to the holder's NodeId,
-revoked via a per-block deny-list — authorise *opening* the session.
+revoked via a per-block deny-list — authorise _opening_ the session.
 **What C alone leaves undecided, honestly:** everything about
 replicated data. C has no data plane, no data authorisation, no group
 story. Adopted alone, the estate's replicated state stays exactly where
 it is today (broker + Turso + tsnet-era patterns) and C is an
-*addition to the present*, not a stack.
+_addition to the present_, not a stack.
 
 **A + C — the recorded recommended default.** A for replicated data,
 C for live sessions. The two layers answer different questions and
@@ -79,7 +80,7 @@ share only iroh and the broker.
 Keyline's semantics — delegation/revocation certificate sets evaluated
 as derived authority — implemented in-house from Ink & Switch's design
 documents and verified against the `keyline` conformance suite, owning
-*membership, revocation-of-record, and relay power*: the Cloudflare
+_membership, revocation-of-record, and relay power_: the Cloudflare
 doors hold `Relay` (store and forward ciphertext, cryptographically
 unable to read) as a power inside the authorisation graph. Meadowcap
 still authorises each entry write. Two authorisation systems run at
@@ -102,14 +103,14 @@ Compressed to phrases; §3 carries the texture. Build sizes are relative
 judgements (small / moderate / large) from component shape — the
 programme prices nothing in person-time (§9).
 
-| Dimension | 0 Baseline (0-M) | A | C alone | A+C | A+B | A+B+C | B trajectory |
-|---|---|---|---|---|---|---|---|
-| **Develops into** | Willow-semantics dialect of the estate; exit cost grows with data modelled in it. 0-P: estate becomes Willow's third implementation team | Scoped grants + edge verification now; every later move (B, UCAN) still open — auth layer is the only replaceable part | Session surfaces get production authority; data plane untouched, decision deferred, not avoided | The full five-surface cover with the least invented machinery; B stays a switch, not a fork | Permanent revocation + Relay now; converges with B-trajectory from strength if Keyhive matures | Everything in A+B, plus sessions; the most capable end state on the table | A's present, B's future; waiting costs renewal-service operation, nothing structural |
-| **Live sub-choices** | Hash world (WILLIAM3 vs BLAKE3); window discipline without a service; encryption story (none native) | Meadowcap crate vs house re-implementation; root curve (Ed25519 vs P-384); window lengths per surface | Biscuit now vs wait for UCAN 1.0; facets vs bare streams; Cap'n Web at the JS edge or not | A's and C's, independently tunable | Engine's remit (membership only vs all revocation-of-record); who wins a Meadowcap/Keyline disagreement | Sequencing: engine before, with, or after the session layer | The trigger set; adopt upstream code vs keep a house engine if one exists |
-| **Looks like** | Willow-shaped entries on p2panda logs; Meadowcap chains verified offline; live sessions = raw iroh streams, key possession is the whole credential | Logs + travelling area tokens; broker window service at the centre; membership in p2panda-auth | Broker-minted Biscuits open capnp sessions over iroh; deny-list in SQLite; data plane = today's estate | Both sketches, on their own layers, sharing iroh + broker | A, plus certificate tables + evaluator in the broker/seat path; doors hold Relay | A+B's sketch with C's session story at every live surface | A's sketch until the trigger; then grant state re-issued as certificates, renewal service retires, data never moves |
-| **Gains over baseline** | — (it is the baseline). Over doing nothing: a real data model for mutable state + offline-verifiable write auth | Sustainable short windows (revocation latency = minutes, not grant lifetimes); one-shot scoped grants as routine; no second data plane; SQLite intact | Expiring session credentials; immediate revocation by interposition; token verification inside Workers | Both gain sets; the only row that covers all five estate surfaces | Coordination-free permanent revocation; Relay as a cryptographic power; late binding; one membership primitive | All gains in the table | vs A+B now: upstream's fixes instead of G1/G2-era semantics imported into house code |
-| **How much is built** | Specs Final; Rust data-model crates research-grade alphas; **no Rust sync**; TS implementation most complete; one production deployment (Ourcana, Dart, ~9–10k users) | p2panda 0.8.1 pre-1.0 (lower layers ~2 yrs; spaces integration landed 2026-11-09); Meadowcap spec Final 2025-11-21, two implementations; renewal service does not exist anywhere | Biscuit: reference implementation, production use, ~13M crate downloads. capnp-rust: Level 1 only, single-maintainer lineage; C++ proven at Cloudflare scale | The union; the least mature shared piece is p2panda's young auth/encryption integration | Keyline: pre-alpha, in-memory store only, conformance suite as contract; BeeKEM pre-alpha, unaudited, G1/G2 open, paper unreviewed | The union; adds Keyhive's pre-alpha risk to A+C's profile | Trigger conditions are upstream events: G1/G2 closure, independent review, BeeKEM peer review — none has a date |
-| **We build** | IMPLEMENT (moderate–large, undesigned): Willow-semantics layer over logs. 0-P: IMPLEMENT (large) + OWN-FOREVER: Rust sync against a paused spec. E2EE for Willow entries: unexamined | IMPLEMENT (small–moderate): Meadowcap validity core or crate adaptation + header binding. IMPLEMENT (small, policy-heavy): renewal service. GLUE: membership/grant coherence rules | IMPLEMENT (small–moderate): session-opening protocol, facet/membrane library. GLUE: NodeId binding, deny-list service, schemas | A's + C's lists; nothing extra emerges from the combination | IMPLEMENT + OWN-FOREVER (moderate code, high assurance): Keyline engine, SQLite store, conformance runner, subject binding | A+B's + C's lists | At switch time: IMPLEMENT (moderate): subject re-binding + grant re-issuance (a re-issue, not a conversion); data migration: none |
+| Dimension               | 0 Baseline (0-M)                                                                                                                                                                     | A                                                                                                                                                                                  | C alone                                                                                                                                                      | A+C                                                                                         | A+B                                                                                                                                | A+B+C                                                                     | B trajectory                                                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| **Develops into**       | Willow-semantics dialect of the estate; exit cost grows with data modelled in it. 0-P: estate becomes Willow's third implementation team                                             | Scoped grants + edge verification now; every later move (B, UCAN) still open — auth layer is the only replaceable part                                                             | Session surfaces get production authority; data plane untouched, decision deferred, not avoided                                                              | The full five-surface cover with the least invented machinery; B stays a switch, not a fork | Permanent revocation + Relay now; converges with B-trajectory from strength if Keyhive matures                                     | Everything in A+B, plus sessions; the most capable end state on the table | A's present, B's future; waiting costs renewal-service operation, nothing structural                                              |
+| **Live sub-choices**    | Hash world (WILLIAM3 vs BLAKE3); window discipline without a service; encryption story (none native)                                                                                 | Meadowcap crate vs house re-implementation; root curve (Ed25519 vs P-384); window lengths per surface                                                                              | Biscuit now vs wait for UCAN 1.0; facets vs bare streams; Cap'n Web at the JS edge or not                                                                    | A's and C's, independently tunable                                                          | Engine's remit (membership only vs all revocation-of-record); who wins a Meadowcap/Keyline disagreement                            | Sequencing: engine before, with, or after the session layer               | The trigger set; adopt upstream code vs keep a house engine if one exists                                                         |
+| **Looks like**          | Willow-shaped entries on p2panda logs; Meadowcap chains verified offline; live sessions = raw iroh streams, key possession is the whole credential                                   | Logs + travelling area tokens; broker window service at the centre; membership in p2panda-auth                                                                                     | Broker-minted Biscuits open capnp sessions over iroh; deny-list in SQLite; data plane = today's estate                                                       | Both sketches, on their own layers, sharing iroh + broker                                   | A, plus certificate tables + evaluator in the broker/seat path; doors hold Relay                                                   | A+B's sketch with C's session story at every live surface                 | A's sketch until the trigger; then grant state re-issued as certificates, renewal service retires, data never moves               |
+| **Gains over baseline** | — (it is the baseline). Over doing nothing: a real data model for mutable state + offline-verifiable write auth                                                                      | Sustainable short windows (revocation latency = minutes, not grant lifetimes); one-shot scoped grants as routine; no second data plane; SQLite intact                              | Expiring session credentials; immediate revocation by interposition; token verification inside Workers                                                       | Both gain sets; the only row that covers all five estate surfaces                           | Coordination-free permanent revocation; Relay as a cryptographic power; late binding; one membership primitive                     | All gains in the table                                                    | vs A+B now: upstream's fixes instead of G1/G2-era semantics imported into house code                                              |
+| **How much is built**   | Specs Final; Rust data-model crates research-grade alphas; **no Rust sync**; TS implementation most complete; one production deployment (Ourcana, Dart, ~9–10k users)                | p2panda 0.8.1 pre-1.0 (lower layers ~2 yrs; spaces integration landed 2026-11-09); Meadowcap spec Final 2025-11-21, two implementations; renewal service does not exist anywhere   | Biscuit: reference implementation, production use, ~13M crate downloads. capnp-rust: Level 1 only, single-maintainer lineage; C++ proven at Cloudflare scale | The union; the least mature shared piece is p2panda's young auth/encryption integration     | Keyline: pre-alpha, in-memory store only, conformance suite as contract; BeeKEM pre-alpha, unaudited, G1/G2 open, paper unreviewed | The union; adds Keyhive's pre-alpha risk to A+C's profile                 | Trigger conditions are upstream events: G1/G2 closure, independent review, BeeKEM peer review — none has a date                   |
+| **We build**            | IMPLEMENT (moderate–large, undesigned): Willow-semantics layer over logs. 0-P: IMPLEMENT (large) + OWN-FOREVER: Rust sync against a paused spec. E2EE for Willow entries: unexamined | IMPLEMENT (small–moderate): Meadowcap validity core or crate adaptation + header binding. IMPLEMENT (small, policy-heavy): renewal service. GLUE: membership/grant coherence rules | IMPLEMENT (small–moderate): session-opening protocol, facet/membrane library. GLUE: NodeId binding, deny-list service, schemas                               | A's + C's lists; nothing extra emerges from the combination                                 | IMPLEMENT + OWN-FOREVER (moderate code, high assurance): Keyline engine, SQLite store, conformance runner, subject binding         | A+B's + C's lists                                                         | At switch time: IMPLEMENT (moderate): subject re-binding + grant re-issuance (a re-issue, not a conversion); data migration: none |
 
 ---
 
@@ -124,7 +125,7 @@ ecosystem and the estate was early on the right data model. In the
 stall future, worm-blossom remains two grant-funded people
 (donation income ~$3K/year per the Willow note), the semantics layer is
 ours alone, and every dataset modelled in Willow semantics raises the
-cost of leaving. 0-P's stall future is harsher: the estate *is* the
+cost of leaving. 0-P's stall future is harsher: the estate _is_ the
 Rust sync implementation team, against a spec its authors paused
 mid-rewrite. Either way, the baseline forecloses nothing about
 sessions — it simply never addresses them, so the foreclosure happens
@@ -162,7 +163,7 @@ difference-proportional reconciliation — plus Meadowcap's
 offline-verifiable, receiver-bound write authorisation. Against A, the
 baseline gains nothing in authorisation (same Meadowcap, worse
 operated) and loses the log model's auditability: Willow stores keep
-current state only, *by design* — no history is a feature for the data
+current state only, _by design_ — no history is a feature for the data
 and a loss for an estate that audits.
 
 **How much is built.** The two finished layers are finished: data-model
@@ -176,7 +177,7 @@ implementation is the most complete; the one production deployment
 two people.
 
 **What we would need to build ourselves.** 0-M: IMPLEMENT,
-moderate–large and currently *undesigned* — the Willow-semantics layer
+moderate–large and currently _undesigned_ — the Willow-semantics layer
 over p2panda logs (entry model, join, prefix pruning, incremental range
 fingerprints), plus the Meadowcap binding A also needs. 0-P:
 IMPLEMENT, large, and OWN-FOREVER — a Rust sync implementation against
@@ -184,7 +185,7 @@ a paused spec, a store on sled/redb/fjall or a house SQLite store (the
 Willow note prices both hard parts: incremental fingerprints over
 arbitrary area slices, prefix-prune range deletes), and the transport
 integration iroh-willow attempted and abandoned at iroh 0.34. Feeds
-decision points **5** (this *is* DP5, taken estate-wide instead of
+decision points **5** (this _is_ DP5, taken estate-wide instead of
 per-domain), **6** (a non-SQL store beside Turso, or a house store),
 **3** (E2EE unexamined), **7** (deepest dependence on the smallest
 upstream in the set).
@@ -192,12 +193,12 @@ upstream in the set).
 ### 3.1 A — Meadowcap-as-spec with broker renewal
 
 **What develops out further.** A is the option whose future is least
-hostage: the capability layer is a *Final* spec, so upstream stall is
+hostage: the capability layer is a _Final_ spec, so upstream stall is
 survivable (a frozen spec does not rot); p2panda stall is survivable
 (~60k-line codebase, permissively licensed, forkable). If upstreams go
 well, A absorbs the improvements without re-architecture: p2panda 1.0
 strengthens the plane, a conformant UCAN pressures the token format,
-and B remains reachable *because the data plane never changes* — A is
+and B remains reachable _because the data plane never changes_ — A is
 the only authorisation choice in the set that keeps every other choice
 open. What A forecloses: permanent revocation, permanently. Non-renewal
 is a posture, not a mechanism, and no amount of A's own development
@@ -227,7 +228,7 @@ exactly one artifact topic, worthless before and after. Membership —
 who is a seat at all — lives in p2panda-auth as replicated state, and
 a written coherence rule keeps membership and grants from disagreeing.
 
-**What we would gain** (over baseline). Short windows become a *system*
+**What we would gain** (over baseline). Short windows become a _system_
 instead of a discipline: revocation latency drops from grant lifetimes
 to window lengths. Scoped one-shot grants become routine rather than
 hand-built. The data plane stays one plane, on SQLite, with its
@@ -251,12 +252,12 @@ spec Final 2025-11-21, two independent implementations.
 the Meadowcap validity core (or crate adaptation) + the
 header-extension binding to p2panda. IMPLEMENT, small in code and
 heavy in policy: the renewal service — window policy, clock and
-future-dating discipline (capability windows bind *claimed*
+future-dating discipline (capability windows bind _claimed_
 timestamps, so timestamp policy becomes security-critical operations),
 supersession hygiene automation. GLUE: the membership↔grant coherence
 rules. Nothing here is OWN-FOREVER at the scary end: the validity core
 is bounded, spec-pinned, and checkable against two reference
-implementations. Feeds decision points **1** (A *is* DP1's option (a)),
+implementations. Feeds decision points **1** (A _is_ DP1's option (a)),
 **4** (the curve instantiation), **3** (DCGKA accepted as-is, or not),
 **6** (only if the estate also funds the libsql store backend — common
 to every p2panda option, not A's alone).
@@ -270,7 +271,7 @@ evolution risk is upward pressure from UCAN: if a conformant UCAN 1.0
 Rust implementation stabilises, C's token format wants migrating
 (invocation separation, `did:key` identity are strictly nicer) — a
 format migration inside one layer, not a re-architecture. What C alone
-develops *in the estate* is narrower: the Actions-exec and coordinator
+develops _in the estate_ is narrower: the Actions-exec and coordinator
 surfaces get real authority while they are being built this month —
 and the data-plane decision gets deferred into a future where more
 data has accumulated in today's patterns. Deferral is the cost; C
@@ -338,7 +339,7 @@ surfaces (live sessions being built now; replicated fleet/atlas state)
 each get their layer while the layers are young enough to shape.
 Nothing in A+C forecloses B (same data plane), UCAN (one layer's
 format), or per-domain Willow (a data-model addition, §3.0's 0-M,
-could still be adopted *for a domain* later — see §8). If both
+could still be adopted _for a domain_ later — see §8). If both
 upstreams stall, A+C degrades to: a forkable data plane, a frozen
 Final spec, a production token library, and a Level-1 RPC — the
 gentlest stall profile in the table.
@@ -386,7 +387,7 @@ leaves **5** deliberately unanswered per-domain (§8).
 ### 3.4 A + B — Keyline built, on top of A
 
 **What develops out further.** A+B is the only option that changes
-what revocation *means* in the estate: from a posture (windows,
+what revocation _means_ in the estate: from a posture (windows,
 hygiene) to a fact (a certificate that no merge can un-apply). If
 Keyhive matures, A+B converges with the B trajectory from a position
 of strength — the semantics are already lived-with, the subjects
@@ -395,7 +396,7 @@ replaces the house engine. If Keyhive pivots or stalls, the estate
 owns an orphan design; the mitigation is real but partial: the design
 documents are extensive and candid, and the conformance suite pins the
 semantics — owning Keyline deliberately is feasible in a way that
-owning, say, BeeKEM is not. What A+B forecloses: the *simplicity* of
+owning, say, BeeKEM is not. What A+B forecloses: the _simplicity_ of
 one authorisation system. Every future auth question has two places to
 live, forever, until one layer is retired.
 
@@ -404,8 +405,8 @@ membership + relay power; or membership + relay + all
 revocation-of-record (with Meadowcap reduced to a per-entry token
 format whose issuance the engine governs). The coherence rule for
 disagreements (Meadowcap says the write is authorised; Keyline says
-the writer is revoked — the only safe rule is *deny wins*, stated now
-or discovered later). Whether BeeKEM's *shape* informs group keys now
+the writer is revoked — the only safe rule is _deny wins_, stated now
+or discovered later). Whether BeeKEM's _shape_ informs group keys now
 (synthesis: design reference only; DCGKA carries group E2EE until
 BeeKEM is adoptable). And the folklore, adopted as operating policy or
 not at all: constitutional flatness, fresh-key discipline after
@@ -418,12 +419,12 @@ revocation certificates; an evaluator (SQL CTEs for the declarative
 passes, a driver loop for the non-linear fixpoint — the implementers'
 own recipe) answering derived-authority questions in ~1 ms at
 180-member scale in the reference. When an admin revokes a seat, the
-revocation certificate replicates with everything else and *survives
-every merge* — there is no replica state in which the seat is
+revocation certificate replicates with everything else and _survives
+every merge_ — there is no replica state in which the seat is
 un-revoked. The Cloudflare door holds `Relay`: it can prove, inside
 the graph, that it may store and forward ciphertext and may not read.
 A runner's short-lived authority is the awkward fit, stated plainly:
-Keyline has no expiry *by design* (no clocks), so short-lived
+Keyline has no expiry _by design_ (no clocks), so short-lived
 authority must be modelled as prompt revocation — which bites only
 when replicas sync. Frequently-checking-in runners mitigate;
 genuinely offline peers don't. That is why C, not B, owns sessions in
@@ -443,13 +444,13 @@ ambient trust into an auditable power.
 repeated statement: 328 commits, 8 contributors (census, 2026-11-23);
 `keyline` ships with an in-memory store only; the conformance suite
 exists and is treated by the design docs as the contract — which is
-what makes a house implementation *verifiable* rather than vibes.
+what makes a house implementation _verifiable_ rather than vibes.
 BeeKEM: pre-alpha, unaudited; its paper (ePrint 2026/1434) is not yet
 peer-reviewed; and the code carries disclosed gaps **G1** (the CGKA
 authorisation path reads the positive graph, so a revoked member can
 seat a fresh own key — a live revocation bypass in the key layer) and
 **G2** (share keys unchecked against prekeys). A+B as defined here
-adopts Keyline's *semantics* only; BeeKEM's code stays out — but a
+adopts Keyline's _semantics_ only; BeeKEM's code stays out — but a
 house Keyline engine is built in the shadow of a design whose only
 implementation is pre-alpha, and pre-alpha designs move.
 
@@ -479,16 +480,17 @@ windowed for data grants (Meadowcap), immediate for live authority
 (interposition), deny-listed for session tokens (Biscuit) — every
 revocation physics in the field, each on the layer it suits.
 **Third, the ownership bill is the whole bill:** A's list + B's engine
-+ C's protocol and discipline, and an operations surface with four
-authorisation artefacts (chains, certificates, tokens, facets) whose
-coherence rules must be written down once, correctly. Sequencing is
-its live sub-choice: engine-first delays the session layer the
-in-flight builds want this month; sessions-first (the A+C order, B
-added) is the same end state reached through the recorded default —
-which is another way of saying A+B+C is less an alternative to A+C
-than its possible future, differing from the B trajectory mainly in
-*who writes the engine* (us, now, from the design docs) versus
-*who writes it later* (upstream, adopted when its gaps close).
+
+- C's protocol and discipline, and an operations surface with four
+  authorisation artefacts (chains, certificates, tokens, facets) whose
+  coherence rules must be written down once, correctly. Sequencing is
+  its live sub-choice: engine-first delays the session layer the
+  in-flight builds want this month; sessions-first (the A+C order, B
+  added) is the same end state reached through the recorded default —
+  which is another way of saying A+B+C is less an alternative to A+C
+  than its possible future, differing from the B trajectory mainly in
+  _who writes the engine_ (us, now, from the design docs) versus
+  _who writes it later_ (upstream, adopted when its gaps close).
 
 ### 3.6 B as trajectory — the switch, priced
 
@@ -499,7 +501,7 @@ paper through peer review; and — the condition the code conditions
 imply — APIs stable enough that adopting the code is not adopting a
 moving target. None of these is an estate action; all are observable
 upstream events (decision point 7 is where the estate decides whether
-to *fund or hasten* them rather than merely watch).
+to _fund or hasten_ them rather than merely watch).
 
 **What the switch costs, then.** Because A and B share the data plane
 exactly, the switch touches only the authorisation layer: subjects
@@ -517,11 +519,11 @@ composes with B exactly as with A).
 engine is built against a pre-alpha design whose reference
 implementation may still move; G1/G2-era semantics are imported as
 house folklore even if the buggy code is not; and if upstream's design
-*does* move, the estate maintains a dialect. The asymmetry is the
+_does_ move, the estate maintains a dialect. The asymmetry is the
 point: **waiting is cheap precisely because A exists** — every month
 on A is a month of scoped grants and working renewal, not a month of
 exposure — and the switch's price does not grow with time spent on A,
-because nothing in A needs undoing. The one cost that *does* grow with
+because nothing in A needs undoing. The one cost that _does_ grow with
 waiting: if the house engine is eventually wanted regardless (because
 upstream stalls indefinitely), every year of delay is a year the
 estate's revocation stayed windowed. That is a DP1 judgement about how
@@ -537,7 +539,7 @@ else in the matrix is engineering preference by comparison.
 1. **Revocation physics.** Three genuinely different answers to "how
    does a compromised seat's authority die": non-renewal (baseline
    without a service: at grant expiry, whenever that is; A: at window
-   end, minutes away, *if the broker is reachable in the loop*);
+   end, minutes away, _if the broker is reachable in the loop_);
    coordination-free permanence (B in any form: at the speed of
    replication, forever, with no centre); and interposition (C: now,
    for live authority only). No option has all three; A+C has the
@@ -555,7 +557,7 @@ else in the matrix is engineering preference by comparison.
    points 5 and 6 as the baseline's specific forms of it.
 3. **Live sessions exist, or they don't.** The estate's fastest-growing
    surfaces (Actions-runner exec, coordinator handoffs) need expiring
-   credentials and immediate revocation *this quarter*. Only options
+   credentials and immediate revocation _this quarter_. Only options
    containing C provide them; every other option — including the
    strongest data-plane option, A+B — leaves those surfaces on raw
    transport identity. This contrast is independent of the A-vs-B fork,
@@ -581,13 +583,13 @@ resourcing posture.
 ## 5. Flagged: where this comparison touches the recommendation
 
 One softening, stated once. The recommendation (A+C, B as north star)
-treats Willow as *not adopted* — decision point 5 left open
+treats Willow as _not adopted_ — decision point 5 left open
 per-domain. The comparison shows the baseline's strongest reading
 (0-M) is not dominated by A on every axis: for mutable infrastructure
-state, Willow's data model is arguably the better *model*, and
+state, Willow's data model is arguably the better _model_, and
 Meadowcap-over-Willow-semantics is its native shape rather than a
 binding. A+C therefore doesn't refute the baseline's data-model claim;
-it *defers* it, domain by domain. If a domain earns Willow semantics,
+it _defers_ it, domain by domain. If a domain earns Willow semantics,
 0-M is the shape it would take — as an addition alongside A, priced
 with the undesigned-implementation warning of §3.0 — not as the
 estate-wide default the baseline's name suggests. Nothing else in the
@@ -619,10 +621,10 @@ rather than a fork) survive the head-to-head intact.
   design facts.
 - **The baseline's session story is a definition, not a finding.**
   "Raw iroh streams, key possession as the whole credential" is what
-  the baseline *contains* by Drew's definition of it (no session
+  the baseline _contains_ by Drew's definition of it (no session
   layer); the notes evaluate the estate's current surfaces, not a
   hypothetical baseline deployment.
 
-*Sources: synthesis record and research bundle for #13779 (paths in
+_Sources: synthesis record and research bundle for #13779 (paths in
 the header); maturity figures from the 2026-11-23 census snapshot.
-Decision-point numbering is the synthesis's §5, used unchanged.*
+Decision-point numbering is the synthesis's §5, used unchanged._

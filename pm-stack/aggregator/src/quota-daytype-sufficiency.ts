@@ -140,7 +140,7 @@ function cellNames(grain: DayTypeGrain): string[] {
   }
 }
 
-function cellsFor(parts: { weekday: string; daypart: string }): Record<DayTypeGrain, string> {
+export function cellsFor(parts: { weekday: string; daypart: string }): Record<DayTypeGrain, string> {
   const dayclass = parts.weekday === "Sat" || parts.weekday === "Sun" ? "weekend" : "weekday";
   return {
     weekday: parts.weekday,

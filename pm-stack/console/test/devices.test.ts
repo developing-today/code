@@ -316,6 +316,7 @@ describe("over HTTP, without the sign-in", () => {
           "questions",
           "prs",
           "priorities",
+          "done",
           "agents",
           "services",
           "more",
