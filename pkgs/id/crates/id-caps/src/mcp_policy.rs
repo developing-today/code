@@ -59,7 +59,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, Verifying
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::agent_quota_ledger::AgentQuotaLedger;
+use crate::agent_quota_ledger::{AgentQuotaLedger, QuotaLedgerStore};
 use crate::mcp_bridge::{BridgeError, BridgeSession, ToolAction, ToolDefinition};
 use crate::role_config::QuotaClass;
 
@@ -658,6 +658,43 @@ impl PolicySession {
             object_classes: BTreeMap::new(),
             admitted_at: BTreeMap::new(),
         }
+    }
+
+    /// Open a policy session for one role grant, drawing its quota
+    /// ledger from the host's [`QuotaLedgerStore`]. The first open
+    /// for an agent grants the role's budget; a rejoin reopens the
+    /// persisted ledger with its spend intact, so rejoining never
+    /// resets a budget (#8301).
+    pub fn open_stored(
+        grant: RoleGrant,
+        bridge: BridgeSession,
+        host_key: SigningKey,
+        store: &mut QuotaLedgerStore,
+        now: u64,
+    ) -> Self {
+        let ledger = store.open(
+            grant.agent_key,
+            grant.world.clone(),
+            grant.role.clone(),
+            grant.quota_class,
+            now,
+        );
+        Self {
+            grant,
+            bridge,
+            audit: AuditLog::new(host_key),
+            ledger,
+            parked: false,
+            object_classes: BTreeMap::new(),
+            admitted_at: BTreeMap::new(),
+        }
+    }
+
+    /// End the session, handing its quota ledger back to the host's
+    /// [`QuotaLedgerStore`]. The driver calls this on leave (or on
+    /// host shutdown) so the next join reopens the same spend.
+    pub fn close(self, store: &mut QuotaLedgerStore) {
+        store.close(self.ledger);
     }
 
     /// The role grant this session was opened with.
@@ -1508,5 +1545,186 @@ mod tests {
         assert_eq!(summary.refusals, 2);
         assert_eq!(summary.refusals_by_code.get("ceiling"), Some(&2));
         assert_eq!(summary.refusals_by_code.len(), 1);
+    }
+
+    #[test]
+    fn stored_session_survives_leave_and_rejoin_without_resetting_spend() {
+        let mut store = QuotaLedgerStore::new();
+        let first_grant = grant();
+        let agent = first_grant.agent_key;
+        let world = first_grant.world.clone();
+
+        let mut first = PolicySession::open_stored(
+            first_grant,
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW,
+        );
+        assert!(matches!(
+            first.act("world.join", &json!({ "capability": "cap-1" }), TEST_NOW),
+            PolicyOutcome::Executed(_)
+        ));
+        first.act("screen.read", &json!({}), TEST_NOW);
+        let spent = first.spend(TEST_NOW);
+        // The leave is never refused and is charged nothing; the
+        // driver then hands the ledger back to the store.
+        first.act("world.leave", &json!({}), TEST_NOW);
+        let spent_after_leave = first.spend(TEST_NOW);
+        assert_eq!(spent_after_leave, spent);
+        first.close(&mut store);
+
+        // The owner sees the spend while the agent is away.
+        assert_eq!(
+            store.spend_for_agent(&agent, &world, TEST_NOW),
+            Some(spent_after_leave)
+        );
+
+        // Rejoining reopens the same ledger: no fresh budget.
+        let mut second = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW + 1,
+        );
+        assert_eq!(second.spend(TEST_NOW + 1), spent_after_leave);
+        second.act(
+            "world.join",
+            &json!({ "capability": "cap-1" }),
+            TEST_NOW + 1,
+        );
+        second.act("screen.read", &json!({}), TEST_NOW + 1);
+        assert!(second.spend(TEST_NOW + 1).tool_calls > spent_after_leave.tool_calls);
+    }
+
+    /// The #8301 acceptance against the #1067 (F12.10) consumed
+    /// shape: v1 §9.3 keeps the bridge and audit shapes fixed while
+    /// the quota system lands, so the per-agent ledger must emit
+    /// exactly the events F12.10 consumes — per-action
+    /// `quota_charged` on every audit event, a `RefusedQuota` naming
+    /// the axis plus a visible park event on exhaustion — with the
+    /// v1 field sets intact. This test pins those shapes: any
+    /// additive field (like `replenishes_at`) stays additive, and
+    /// any rename or removal fails here first.
+    #[test]
+    fn ledger_events_keep_the_f12_10_consumed_shape() {
+        let mut grant = grant();
+        grant.quota_class = QuotaClass {
+            budget: Quota {
+                frames: 8,
+                tool_calls: 3,
+                program_invocations: 0,
+            },
+            replenishment: Some(crate::role_config::Replenishment {
+                every_secs: 60,
+                amount: Quota {
+                    frames: 0,
+                    tool_calls: 1,
+                    program_invocations: 0,
+                },
+            }),
+        };
+        let budget = grant.quota_class.budget;
+        let mut session = joined(grant);
+
+        // Every admitted action charges exactly the v1 per-action
+        // charge (charging parity with v1, #8301 acceptance).
+        session.act("screen.read", &json!({}), TEST_NOW);
+        session.act("chat.post", &json!({ "text": "hi" }), TEST_NOW);
+        for event in session.audit_events() {
+            assert_eq!(event.quota_charged, charge_for(&event.tool));
+            assert!(matches!(event.outcome, AuditOutcome::Executed));
+            assert_eq!(event.world, "tic-tac-toe");
+        }
+
+        // Exhaustion refuses on the axis, parks visibly, and names
+        // the next replenishment tick.
+        let outcome = session.act("chat.post", &json!({ "text": "again" }), TEST_NOW);
+        let PolicyOutcome::Refused(refusal) = outcome else {
+            panic!("quota refusal expected, got {outcome:?}");
+        };
+        assert_eq!(refusal.kind, RefusalKind::Quota);
+        assert!(matches!(
+            last_outcome(&session),
+            AuditOutcome::RefusedQuota { axis } if axis == "tool_calls"
+        ));
+        let park = refusal.park_event.expect("park event present");
+        assert_eq!(park.reason, "quota_exhausted");
+        assert_eq!(park.quota_budget, budget);
+        assert_eq!(park.quota_spent, session.spend(TEST_NOW));
+        assert_eq!(park.replenishes_at, Some(TEST_NOW + 60));
+
+        // Shape pins: the exact field sets F12.10 consumes. Quota
+        // stays the three-axis vector; the audit event keeps its v1
+        // fields; the park event keeps its v1 fields plus the
+        // additive replenishment time.
+        let quota_keys: BTreeSet<String> = serde_json::to_value(Quota {
+            frames: 1,
+            tool_calls: 2,
+            program_invocations: 3,
+        })
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+        assert_eq!(
+            quota_keys,
+            BTreeSet::from([
+                "frames".to_owned(),
+                "tool_calls".to_owned(),
+                "program_invocations".to_owned(),
+            ])
+        );
+
+        let audit_keys: BTreeSet<String> =
+            serde_json::to_value(session.audit_events().first().unwrap())
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+        assert_eq!(
+            audit_keys,
+            BTreeSet::from([
+                "agent_key".to_owned(),
+                "capability_ref".to_owned(),
+                "hash".to_owned(),
+                "object".to_owned(),
+                "outcome".to_owned(),
+                "owner".to_owned(),
+                "prev_hash".to_owned(),
+                "quota_charged".to_owned(),
+                "seq".to_owned(),
+                "signature".to_owned(),
+                "tool".to_owned(),
+                "world".to_owned(),
+            ])
+        );
+
+        let park_keys: BTreeSet<String> = serde_json::to_value(&park)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(
+            park_keys,
+            BTreeSet::from([
+                "agent_key".to_owned(),
+                "at".to_owned(),
+                "kind".to_owned(),
+                "message".to_owned(),
+                "quota_budget".to_owned(),
+                "quota_spent".to_owned(),
+                "reason".to_owned(),
+                "replenishes_at".to_owned(),
+                "world".to_owned(),
+            ])
+        );
     }
 }
