@@ -22,6 +22,7 @@ import {
   needsReason,
   readCensus,
 } from "../src/needs.ts";
+import { readConfig } from "../src/config.ts";
 import { letters, pick, rng } from "./support.ts";
 
 const DASHBOARD = "../../aggregator/src/needs-drew.ts";
@@ -36,7 +37,10 @@ const dashboard = (await import(DASHBOARD)) as {
   ) => Promise<{ items: (Omit<NeedsItem, "kind"> & { kind: string })[]; complete: boolean }>;
 };
 
-const REPOS = ["developing-today/code", "developing-today/opencode", "dezren39/nix"];
+const DASHBOARD_MODEL = "../../aggregator/src/model.ts";
+const dashboardModel = (await import(DASHBOARD_MODEL)) as { REPOS: readonly string[] };
+
+const REPOS = ["developing-today/code", "developing-today-forks/opencode", "dezren39/darwin-nix"];
 
 interface Raw {
   number: number;
@@ -71,20 +75,19 @@ function github(issues: Record<string, Raw[]>, fails: (path: string) => string |
   return { asked, get };
 }
 
-/** The same issues as the dashboard's census asks for them: through
- * the search, which answers a count and a page. */
-function search(issues: Record<string, Raw[]>) {
+/** The same GitHub for the dashboard's census, which asks by whole
+ * address. It asks for the same lists as the reading here does (it
+ * asked the search until #14103, which GitHub refuses in the form it
+ * was asked); anything else it might ask is not answered, so that a
+ * change in how it asks shows up here. */
+function forDashboard(get: (path: string) => Promise<unknown>) {
   return async (url: string) => {
     const u = new URL(url);
-    const q = u.searchParams.get("q") ?? "";
-    const m = /^repo:(\S+) state:open label:"([^"]+)"$/.exec(q);
-    if (!m) return { ok: false, json: { status: 422 } };
-    const per = Number(u.searchParams.get("per_page"));
-    const page = Number(u.searchParams.get("page"));
-    const all = (issues[m[1]] ?? []).filter(
-      (i) => i.state === "open" && i.labels.some((l) => (typeof l === "string" ? l : l.name) === m[2]),
-    );
-    return { ok: true, json: { total_count: all.length, items: all.slice((page - 1) * per, page * per) } };
+    try {
+      return { ok: true, json: await get(`${u.pathname.slice(1)}${u.search}`) };
+    } catch (error) {
+      return { ok: false, json: { error: (error as Error).message } };
+    }
   };
 }
 
@@ -130,6 +133,18 @@ function bodies(seed: number, n: number): (string | null)[] {
   }
   return out;
 }
+
+describe("where it is read from", () => {
+  // The two lists were written apart and came to differ: the console
+  // named two forks and a repository by names they no longer have.
+  // GitHub answered those by redirecting, so nothing failed, but an
+  // item was named one way by the dashboard and another by the console.
+  test("the repositories the console looks in, unless told otherwise, are the ones the dashboard censuses", () => {
+    expect(readConfig({ HOME: "/h" }).needsRepos).toEqual([...dashboardModel.REPOS]);
+    // Told otherwise, it looks where it is told.
+    expect(readConfig({ HOME: "/h", PM_CONSOLE_NEEDS_REPOS: "a/one, a/two" }).needsRepos).toEqual(["a/one", "a/two"]);
+  });
+});
 
 describe("how a body is read", () => {
   test("the labels and the kinds of hands are the dashboard's", () => {
@@ -246,11 +261,16 @@ describe("read from GitHub", () => {
       }
     }
     const here = await readCensus(REPOS, github(issues).get);
-    const theirs = await dashboard.buildNeedsDrewCensus(search(issues), { repos: REPOS });
+    const asked = github(issues);
+    const theirs = await dashboard.buildNeedsDrewCensus(forDashboard(asked.get), { repos: REPOS });
     // Negative control: there is something of each kind, and more than a page of something.
     expect([here.hands.length > 5, here.reviews.length > 20, here.other.length > 20]).toEqual([true, true, true]);
     expect(Math.max(...REPOS.map((repo) => issues[repo].length))).toBeGreaterThan(NEEDS_PER_PAGE);
     expect([theirs.complete, here.complete, here.unread]).toEqual([true, true, []]);
+    // Both asked GitHub for the same lists, page for page.
+    const mine = github(issues);
+    await readCensus(REPOS, mine.get);
+    expect(asked.asked).toEqual(mine.asked);
     // The console makes its three lists of the dashboard's items with the same function.
     const made = censusOf(
       theirs.items.map((i) => ({ ...i, kind: i.kind === "pr" ? ("pr" as const) : ("issue" as const) })),

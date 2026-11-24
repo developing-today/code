@@ -1238,3 +1238,50 @@ stays open). What a session is waiting on the owner for comes from the
 dashboard's own tiers, not from labels, and is still the laptop's.
 Whether the edge's token can see all four repositories has not been
 seen in service; if it cannot, the screen names the ones it cannot.
+
+## 2026-11-24T06:55Z Update: seen in service, and the dashboard's census put right (#14103)
+
+**Seen in service.** At 06:45:48Z the edge's hourly check of its own
+reads ran with the new read in it: `selfCheck.kinds.census` is `ok`,
+`refused` is empty, and `github.kept` went from 3 to 11, one for each of
+the eight lists. All four repositories are readable by the edge's
+token, so the list the app shows is whole.
+
+**The dashboard's census.** `pm-stack/aggregator/src/needs-drew.ts`
+asked GitHub's search for `repo:<repo> state:open label:"<label>"`,
+which GitHub answers 422 to. It now asks each repository's own list of
+open issues by label, as the edge does: the same items, on the core
+allowance, with no index to lag behind. An answer under a 200 that is
+not a list is a failed query, never an empty queue (the list has no
+"incomplete results" flag to say so itself). A test stands in for
+GitHub as it answers today, refusing the old form with a 422, and
+fails on the census as it was. The console's test that holds the two
+readings to each other now also holds them to asking for the same
+pages.
+
+**The repositories, named two ways.** The console's list of where to
+look (`needsRepos`) named two forks and a repository by names they no
+longer have. The dashboard's list was repointed when they changed (the
+two forks to another organisation on 2026-11-04, the third renamed on
+2026-11-08, #5595); the console's, written on 2026-11-22, took the old
+names. Nothing was seen to fail: all eight lists answered the edge
+under the old names, and asking git where each name leads gives the
+same commit for both of each pair, two of them pushed within hours, so
+GitHub answers the old names with the present repositories. But an item
+was `developing-today/opencode#5` in the app and
+`developing-today-forks/opencode#5` on the dashboard, and the console
+takes a reply only for an item in a repository on its list: a reply
+from the app to an item the dashboard had named would have been refused
+as "not an item on the Needs me list". Whether an answer by way of an
+old name costs a second request against the allowance was not measured.
+The console's default is the dashboard's list now, and a test holds the
+two to each other.
+
+The edge is told the list by the laptop, which is the larger fault: the
+laptop's checkout is behind main (#13833), so the edge goes on asking
+by the old names until the laptop runs this. Which repositories the
+platform looks in should be the platform's own to hold, not whatever
+the last machine to connect was running (#14163).
+
+**Not seen.** The laptop's dashboard itself: it gets this when its
+checkout follows main again (#13833).

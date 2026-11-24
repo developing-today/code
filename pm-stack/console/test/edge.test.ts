@@ -3729,7 +3729,7 @@ describe("the edge does the core itself", () => {
       },
       { number: 12, title: "Review the plan", labels: ["user/review"], pr: true },
     );
-    w.ghNeeds["dezren39/nix"].push({
+    w.ghNeeds["dezren39/darwin-nix"].push({
       number: 3,
       title: "Which host?",
       labels: ["user/escalated"],
@@ -3778,9 +3778,9 @@ describe("the edge does the core itself", () => {
       ],
       other: [
         {
-          ref: "dezren39/nix#3",
+          ref: "dezren39/darwin-nix#3",
           title: "Which host?",
-          url: "https://github.com/dezren39/nix/issues/3",
+          url: "https://github.com/dezren39/darwin-nix/issues/3",
           pr: false,
           updated: "2026-11-21T08:30:00",
           why: "two hosts fit",
@@ -3799,12 +3799,12 @@ describe("the edge does the core itself", () => {
     w.net.hostUp = false;
     w.net.edgeUp = false;
     NEEDS(w);
-    delete w.ghNeeds["developing-today/opencode"];
+    delete w.ghNeeds["developing-today-forks/opencode"];
     w.now.t += 121_000;
     await w.core();
     await settle(w);
     const partial = (await w.core()).doc;
-    expect([partial.census.complete, partial.census.unread]).toEqual([false, ["developing-today/opencode"]]);
+    expect([partial.census.complete, partial.census.unread]).toEqual([false, ["developing-today-forks/opencode"]]);
     expect(partial.census.hands.map((i: { ref: string }) => i.ref)).toEqual(["developing-today/code#11"]);
     expect(partial.health.census).toEqual({ ok: true, error: null });
     // None of them now.
@@ -3846,7 +3846,11 @@ describe("the edge does the core itself", () => {
     const whole = await round();
     expect([whole.length, changed(whole)]).toEqual([
       lists,
-      ["developing-today/code user/review", "developing-today/code user/escalated", "dezren39/nix user/escalated"],
+      [
+        "developing-today/code user/review",
+        "developing-today/code user/escalated",
+        "dezren39/darwin-nix user/escalated",
+      ],
     ]);
     const first = (await w.core()).doc.census;
     expect(first.hands).toHaveLength(1);
@@ -3858,11 +3862,11 @@ describe("the edge does the core itself", () => {
     // What is shown did not change, so the copy kept is not written out again.
     expect(w.puts.slice(written).filter((key) => key.startsWith("m:census:"))).toEqual([]);
     // One of them changes: that list is read whole, and the others are still "not modified".
-    w.ghNeeds["dezren39/nix"].push({ number: 4, title: "Another", labels: ["user/review"] });
-    expect(changed(await round())).toEqual(["dezren39/nix user/review"]);
+    w.ghNeeds["dezren39/darwin-nix"].push({ number: 4, title: "Another", labels: ["user/review"] });
+    expect(changed(await round())).toEqual(["dezren39/darwin-nix user/review"]);
     expect((await w.core()).doc.census.reviews.map((i: { ref: string }) => i.ref)).toEqual([
       "developing-today/code#12",
-      "dezren39/nix#4",
+      "dezren39/darwin-nix#4",
     ]);
   });
 
