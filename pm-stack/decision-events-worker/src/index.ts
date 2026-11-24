@@ -44,6 +44,7 @@ import {
 export interface Env {
   DB: D1Database;
   SET_EVENTS: DurableObjectNamespace;
+  VERSION?: string;
   WEBHOOK_SECRET?: string;
 }
 
@@ -269,7 +270,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/health") {
-      return Response.json({ ok: true, service: "decision-events", webhookConfigured: Boolean(env.WEBHOOK_SECRET) });
+      return Response.json({
+        ok: true,
+        service: "decision-events",
+        webhookConfigured: Boolean(env.WEBHOOK_SECRET),
+        version: env.VERSION ?? "unknown",
+      });
     }
     if ((url.pathname === "/events" || url.pathname === "/webhook") && request.method === "POST") {
       return handlePostEvents(request, env);
