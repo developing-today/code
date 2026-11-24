@@ -256,8 +256,10 @@ it (the laptop's, the sign-in issuer's).
   said "not modified" after. Health counts GitHub's answers and how
   many were "not modified" (`github.answers`, `github.unchanged`,
   counted since `github.since` whichever object answered) and says how
-  many answers are kept (`github.kept`). This does not give the edge
-  an allowance of its own: when the agents use the hour up, the edge
+  many answers are kept (`github.kept`). GitHub gives its search
+  answers no tag, so ranked issues (a search) are a full answer every
+  time; they draw on the search allowance, not the hour's. This does
+  not give the edge an allowance of its own: when the agents use the hour up, the edge
   is turned away with them until it turns (#13489 has what would
   change that).
 - **The object is put away whenever it is idle.** Cloudflare takes an
@@ -278,7 +280,18 @@ it (the laptop's, the sign-in issuer's).
   `AbortSignal.timeout`. The real-runtime check (`scripts/edge-smoke.ts`)
   leaves the Worker alone until health says another object answers,
   and only then asks whether a list is still asked for by its tag and
-  GitHub's wait still kept to.
+  GitHub's wait still kept to. What is known of the released Android
+  build is stored for the same reason (GitHub is asked for it every
+  ten minutes, not by every object that starts), and the queue store
+  has twenty seconds to answer like everything else the edge asks.
+  What is read back from storage is held to what could have been put
+  there: a time further off than could have been set is not kept to
+  at all, since cut down to the longest it would be cut down afresh
+  by every object that started and never end. Health's `clock` says
+  whether the object wakes itself each minute (it does while it does
+  the core itself and a device takes notifications) and when it has
+  next asked to be woken: the time is the platform's to hold, so any
+  object can say it.
 - **The same for what it reads.** A section the edge is refused for is
   the laptop's to read for the hour, exactly as it was before the edge
   read anything: the edge stops naming it under `owns`, the laptop's

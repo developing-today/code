@@ -313,14 +313,16 @@ export function githubMemory(
         },
         {},
       );
-      // Only for as long as a wait could have been set for: a time
-      // read back is not kept to past that.
+      // A wait read back further off than one could have been set
+      // for is not one GitHub gave, and is not kept to at all. (Cut
+      // down to the longest instead, it would be cut down again by
+      // every object that started, each from its own now, and never
+      // end.) If GitHub is still turning this side away, the first
+      // call says so, with a time that is its own.
       const latest = now() + QUIET_MOST_MS;
       for (const allowance of ALLOWANCES) {
         const q = stored[allowance];
-        if (q && (waits[allowance]?.until ?? 0) < q.until) {
-          waits[allowance] = { until: Math.min(q.until, latest), why: q.why };
-        }
+        if (q && q.until <= latest && (waits[allowance]?.until ?? 0) < q.until) waits[allowance] = q;
       }
       const count = await take<Count>(
         "gh:count",

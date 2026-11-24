@@ -256,6 +256,9 @@ export interface EdgeOptions {
   /** Ask to be woken at a time: to read again what the owner is told
    * about, and to notice a machine gone quiet. */
   setAlarm?: (at: number) => Promise<void>;
+  /** When this object has asked to be woken, as the platform holds it:
+   * null when it has not. For health. */
+  getAlarm?: () => Promise<number | null>;
   /** Work that may finish after the answer has gone. */
   later?: (work: Promise<unknown>) => void;
   /** How often the object's own clock wakes to read again what the
@@ -268,6 +271,16 @@ export interface EdgeOptions {
 /** An action this side tried and its token was refused for, with
  * nothing done: to be done by a machine instead. */
 class HandOver extends Error {}
+
+/** What GitHub last said of the released build: when it was asked,
+ * whether it could be asked at all, what it described, and if it could
+ * not be asked, why. */
+interface Released {
+  at: number;
+  asked: boolean;
+  found: AndroidRelease | null;
+  trouble: string | null;
+}
 
 export class Edge {
   private kv: KV;
@@ -316,6 +329,7 @@ export class Edge {
   /** The last self-check: one direct read of each kind, and how it went. */
   private selfCheckResult: { at: number; kinds: Record<string, { ok: boolean; error?: string }> } | null = null;
   private setAlarm: (at: number) => Promise<void>;
+  private getAlarm: () => Promise<number | null>;
   private cfg: EdgeConfig | null | undefined;
   private mirrors = new Map<string, Mirror | null>();
   private held: Held[] | null = null;
@@ -346,8 +360,12 @@ export class Edge {
   /** The build that could not be kept when it was last sent, and when. */
   private apkFailed: { sha256: string; at: number } | null = null;
   /** What GitHub last said of the released build, when, whether it
-   * could be asked at all, and if not, why. */
-  private released: { at: number; asked: boolean; found: AndroidRelease | null; trouble: string | null } | null = null;
+   * could be asked at all, and if not, why. Null when nothing is known;
+   * undefined until it has been read back from storage, where it is
+   * kept under "released": an object that has just started (in service,
+   * nearly every one that is asked) would otherwise ask GitHub again
+   * each time, and the ten minutes between askings would mean nothing. */
+  private released: Released | null | undefined = undefined;
   private syncRefused: KeyedLimiter;
   readonly docs: Docs;
   readonly push: Push;
@@ -367,6 +385,7 @@ export class Edge {
       this.alarmFor = at;
       await setAlarm(at);
     };
+    this.getAlarm = options.getAlarm ?? (async () => null);
     this.later = options.later ?? (() => {});
     this.ownClockMs = options.ownClockMs ?? OWN_CLOCK_MS;
     this.syncRefused = new KeyedLimiter(SYNC_REFUSALS, 60_000, this.now);
@@ -482,8 +501,9 @@ export class Edge {
    * every request; when it cannot be asked, what was last known stands. */
   private async androidRelease(cfg: EdgeConfig): Promise<AndroidRelease | null> {
     const now = this.now();
-    const known = this.released;
+    const known = await this.releasedKnown();
     if (known && now - known.at < (known.asked ? RELEASE_EVERY_MS : RELEASE_RETRY_MS)) return known.found;
+    let said: Released;
     try {
       const asked = await timed(RELEASE_ASK_MS, async (signal) => {
         const res = await this.fetchImpl(this.releaseUrl(cfg, "version.json"), { redirect: "follow", signal });
@@ -492,16 +512,54 @@ export class Edge {
         if (res.status === 404) return { found: null };
         throw new Error(`GitHub answered ${res.status}`);
       });
-      this.released = { at: now, asked: true, found: asked.found, trouble: null };
+      said = { at: now, asked: true, found: asked.found, trouble: null };
     } catch (error) {
       // Why it could not be asked is kept, and health says it: "none
       // published" and "could not ask" are different things, and for a
       // day the second looked like the first.
       const e = error as Error;
       const trouble = `${e.name && e.name !== "Error" ? `${e.name}: ` : ""}${e.message}`.slice(0, 160);
-      this.released = { at: now, asked: false, found: known?.found ?? null, trouble };
+      said = { at: now, asked: false, found: known?.found ?? null, trouble };
     }
-    return this.released.found;
+    await this.releasedIs(said);
+    return said.found;
+  }
+
+  /** What is known of the released build, read back from storage the
+   * first time this object is asked. What was stored is held to what
+   * could have been: a description that is one, and a time that has
+   * come. One yet to come would never fall due, in this object or the
+   * next, so what it is stored with is asked for again at once. */
+  private async releasedKnown(): Promise<Released | null> {
+    if (this.released !== undefined) return this.released;
+    let kept: Partial<Released> | undefined;
+    try {
+      kept = (await this.kv.get("released")) as Partial<Released> | undefined;
+    } catch {
+      kept = undefined;
+    }
+    this.released =
+      kept && typeof kept.at === "number" && typeof kept.asked === "boolean"
+        ? {
+            at: kept.at > this.now() ? 0 : kept.at,
+            asked: kept.asked,
+            found: androidRelease(kept.found),
+            trouble: typeof kept.trouble === "string" ? kept.trouble.slice(0, 160) : null,
+          }
+        : null;
+    return this.released;
+  }
+
+  /** What is known of the released build from now on, here and in
+   * storage; null when it is to be asked for afresh. */
+  private async releasedIs(said: Released | null): Promise<void> {
+    this.released = said;
+    try {
+      if (said) await this.kv.put("released", said);
+      else await this.kv.delete("released");
+    } catch {
+      // Not stored: the next object asks GitHub itself.
+    }
   }
 
   /** What is said of the released build: its name, its code and when it
@@ -529,7 +587,7 @@ export class Edge {
       if (bytes.byteLength !== release.size || sha256 !== release.sha256) {
         // The description is out of step with the file: read it again
         // next time instead of trusting it for ten minutes.
-        this.released = null;
+        await this.releasedIs(null);
         return null;
       }
       return new Response(bytes, {
@@ -867,12 +925,16 @@ export class Edge {
         | { kinds?: Record<string, unknown>; reads?: Record<string, unknown> }
         | undefined;
       const now = this.now();
-      // Only what still stands, and never for longer than it could
-      // have been set for.
+      // Only what still stands, and nothing further off than it could
+      // have been set for (the longest is GitHub's own wait): a time
+      // like that is not one this side wrote, and is not believed at
+      // all. (Cut down to the longest instead, as it once was, it was
+      // cut down afresh by every object that started, each from its
+      // own now, and never came.)
       const still = (from: Record<string, unknown> | undefined, into: Map<string, number>) => {
         for (const [name, until] of Object.entries(from ?? {})) {
-          if (typeof until === "number" && until > now && !into.has(name)) {
-            into.set(name, Math.min(until, now + REFUSED_FOR_MS));
+          if (typeof until === "number" && until > now && until <= now + QUIET_MOST_MS && !into.has(name)) {
+            into.set(name, until);
           }
         }
       };
@@ -1584,6 +1646,13 @@ export class Edge {
         // When this object started (Cloudflare starts another whenever
         // one has been put away).
         woke: this.woke,
+        // Its own clock: whether it wakes itself each minute to read
+        // what the owner is told about (it does while it does the core
+        // itself and a device takes notifications), and when it has
+        // next asked to be woken, for that or to notice a machine gone
+        // quiet. Notifications with no machine depend on this, and it
+        // is how that is seen to be alive from outside.
+        clock: { wanted: await this.clockWanted(cfg), next: await this.getAlarm().catch(() => null) },
         hostSeen: this.hostSeen || null,
         // The commit the host's console is running, as it last said.
         hostVersion: this.hostVersion,
