@@ -986,11 +986,15 @@ fn tys<'s>(
         }
         let space = node_space0.take().parse_next(input)?;
         after_last = space;
-        if peek("(".void()).parse_next(input).is_err() {
+        if peek(open_paren).parse_next(input).is_err() {
             break;
         }
     }
     Ok((annotations, before_first, after_first, after_last))
+}
+
+fn open_paren(input: &mut Input<'_>) -> PResult<()> {
+    "(".void().parse_next(input)
 }
 
 fn badval_ty_char(input: &mut Input<'_>) -> PResult<()> {
