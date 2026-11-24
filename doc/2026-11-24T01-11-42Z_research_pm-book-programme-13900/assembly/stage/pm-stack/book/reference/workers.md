@@ -113,18 +113,17 @@ The final arithmetic, stated once and plainly (D41): **the ledger's 24 rows are 
 
 ## The estate's other ten workers
 
-| Worker | Covering book and chapter (per the ledger) |
-|---|---|
-| `atlas-search` | Atlas book — `concepts/service-and-worker.md`, `reference/worker-api.md`, `operations/services.md`. Covered. Published at [https://developing-today.github.io/code/atlas/](https://developing-today.github.io/code/atlas/) |
-| `message-bridge` | Fleet book — `concepts/bridge.md`, `reference/bridge.md` (concept and CLI covered; Worker deployment detail is the fleet sideline extension). Covered. Published at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/) |
-| `id-hosted-worker` | ID book — `concepts/hosted.md`, `reference/hosted-worker.md`. Covered. |
-| `desktop-commander` | Fleet book — `concepts/commander.md` (The Commander door: Desktop Commander over MCP), landed in this programme (PR #13915). Covered. Published at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/) |
-| `mcpx` | mcpx book — `worker.md` (The door Worker at mcpx.security.cab), landed in this programme (PR #13906). Covered. |
-| `fleet-hosted` | Fleet book — gap assigned to the fleet book; its fleet chapter is landing in the same programme (lane FLEET-SIDELINE-2, unmerged at this book's build time). |
-| `queue-transport-alert` | Fleet book — gap assigned to the fleet book; its fleet chapter is landing in the same programme (lane FLEET-SIDELINE-2, unmerged at this book's build time). |
-| `mail` (id-mail worker) | ID book — `reference/mail-worker.md` (The mail Worker API), landed in this programme (PR #13914). Covered. |
-| `id-worker-poc` | ID book — `reference/worker-poc.md` (id-worker-poc: the World Durable Object proof of concept), landed in this programme (PR #13914). Covered. |
-| `id-d1-journal-poc` | ID book — `reference/d1-journal-poc.md` (id-d1-journal-poc: the D1 journal proof of concept), landed in this programme (PR #13914). Covered. |
-
+| Worker                  | Covering book and chapter (per the ledger)                                                                                                                                                                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `atlas-search`          | Atlas book — `concepts/service-and-worker.md`, `reference/worker-api.md`, `operations/services.md`. Covered. Published at [https://developing-today.github.io/code/atlas/](https://developing-today.github.io/code/atlas/)                                           |
+| `message-bridge`        | Fleet book — `concepts/bridge.md`, `reference/bridge.md` (concept and CLI covered; Worker deployment detail is the fleet sideline extension). Covered. Published at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/) |
+| `id-hosted-worker`      | ID book — `concepts/hosted.md`, `reference/hosted-worker.md`. Covered.                                                                                                                                                                                               |
+| `desktop-commander`     | Fleet book — `concepts/commander.md` (The Commander door: Desktop Commander over MCP), landed in this programme (PR #13915). Covered. Published at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/)                  |
+| `mcpx`                  | mcpx book — `worker.md` (The door Worker at mcpx.security.cab), landed in this programme (PR #13906). Covered.                                                                                                                                                       |
+| `fleet-hosted`          | Fleet book — gap assigned to the fleet book; its fleet chapter is landing in the same programme (lane FLEET-SIDELINE-2, unmerged at this book's build time).                                                                                                         |
+| `queue-transport-alert` | Fleet book — gap assigned to the fleet book; its fleet chapter is landing in the same programme (lane FLEET-SIDELINE-2, unmerged at this book's build time).                                                                                                         |
+| `mail` (id-mail worker) | ID book — `reference/mail-worker.md` (The mail Worker API), landed in this programme (PR #13914). Covered.                                                                                                                                                           |
+| `id-worker-poc`         | ID book — `reference/worker-poc.md` (id-worker-poc: the World Durable Object proof of concept), landed in this programme (PR #13914). Covered.                                                                                                                       |
+| `id-d1-journal-poc`     | ID book — `reference/d1-journal-poc.md` (id-d1-journal-poc: the D1 journal proof of concept), landed in this programme (PR #13914). Covered.                                                                                                                         |
 
 Sources: PM-CENSUS coverage ledger Table A (wrangler configs and `.github/workflows/` on the laptop clone, HEAD `4d937b36409`), PM-SURVEY survey files `apps.md` (§10, §11, §13, §14), `push.md`, `website-pages.md`, and `disagreements.md` (D5, D6); survey `missed-workers.md` (the two D17 entries and the set comparison) and survey `worker-evidence.md` (the three non-worker verdicts, D18), census date 2026-11-23.

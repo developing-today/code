@@ -6,6 +6,7 @@ spawn message). Work ONLY your slice's ids, in order. Baseline snapshot (2026-11
 393 blocked tasks.
 
 ## Tools / routes
+
 - Queue (laptop-side client only; the sandbox queue client is down):
   `~/tools/laptop-ssh.sh '~/.local/bin/fleet queue <verb> ...'`
   - Inspect: `queue show <id>` — the `blocker:` field is the recorded block reason; `issue:` gives the linked issue.
@@ -20,6 +21,7 @@ spawn message). Work ONLY your slice's ids, in order. Baseline snapshot (2026-11
 - GitHub comments (decision records): `~/tools/gh-post comment --repo <owner/repo> --issue <n> --body-file <file>` (App route) or `fleet gh api` POST. Keep comments short: decision + one-line why + "UNBLOCK-393 sweep".
 
 ## Per-task procedure
+
 1. `queue show <id>`: note blocker text, linked issue (repo + number), queue, kind.
 2. Read the linked issue's CURRENT state (issue state + newest comments, count-confirmed). If the blocker names a dependency (issue/PR/CI/task), check that dependency's current state too.
 3. Choose EXACTLY ONE disposition and act:
@@ -34,9 +36,11 @@ spawn message). Work ONLY your slice's ids, in order. Baseline snapshot (2026-11
    Disposition strings exactly: DONE | STALE BLOCK | DEFECTIVE PACKET | DECISION-BLOCKED | STILL BLOCKED.
 
 ## Decision posture (Drew, 2026-11-23 13:17 CST — applies to DECISION-BLOCKED only)
+
 You may approve, ratify, or decide without asking. Bias: prefer options; prefer "both" over either/or; prefer the MORE CAPABLE option — not the most locked-down security option, not the most basic option; extend and improve. Record each decision on the issue.
 
 ## HARD LIMITS (the posture does NOT lift these)
+
 - Never touch anything in the vertexinc org.
 - Task 18533 must never change state (it is not in the blocked list — if you somehow encounter it, skip it entirely).
 - NEVER unblock tasks linked to these standing hard stops — disposition STILL BLOCKED with the standing reason: code#1658, code#2490 (remainder), code#9608 (remainders), code#2140, code#13178, code#10910 (close decision pending).
@@ -48,4 +52,5 @@ You may approve, ratify, or decide without asking. Bias: prefer options; prefer 
 - If a GitHub or queue operation fails twice on the same task, disposition it STILL BLOCKED with the failure as the recorded reason and move on — do not loop.
 
 ## Return
+
 Your final message reports: counts per disposition for your slice; every DECISION-BLOCKED decision (task, issue, decision, why); every re-issued packet (old task → new task); and confirms your slice output file is complete (line count = slice size).

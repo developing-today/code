@@ -17,7 +17,7 @@ project), and MCP exposure of parts as libraries/tools in other apps.
 ## 1. OCapN — Object Capability Network (Spritely Institute)
 
 **What it is.** A suite of protocols for secure distributed object programming
-where *holding a reference is the authority*: "if you don't have it, you can't
+where _holding a reference is the authority_: "if you don't have it, you can't
 use it." No ambient authority, no ACL check at call time — capability security
 as ordinary reference-passing. The stack, per the spec repo, is four documents:
 
@@ -25,7 +25,7 @@ as ordinary reference-passing. The stack, per the spec repo, is four documents:
   objects, promise pipelining (send to a promise's eventual result), distributed
   garbage collection (`op:gc-export` / `op:gc-answer`), third-party handoffs.
 - **Data model / Syrup** — canonical serialization for passable values.
-- **Locators** — `ocapn://` peer URIs and *sturdyrefs* (durable, unguessable
+- **Locators** — `ocapn://` peer URIs and _sturdyrefs_ (durable, unguessable
   object locators with a "swiss number").
 - **Netlayers** — transport abstraction (Tor onion services, TCP/TLS, etc.).
 
@@ -37,8 +37,8 @@ to change.** The Goblins manual itself warns CapTP support "is still in its
 early days; do not rely on the protocol being stable." The pre-standardization
 group is consensus-based, driven primarily by Spritely, with Agoric and
 Cap'n Proto as regular contributors and MetaMask in an advisory role
-[unverified beyond the group's own docs]. Design whitepaper: *The Heart of
-Spritely* (Lemmer-Webber, Farmer, Sims, May 2025) lays out Goblins' vat/turn
+[unverified beyond the group's own docs]. Design whitepaper: _The Heart of
+Spritely_ (Lemmer-Webber, Farmer, Sims, May 2025) lays out Goblins' vat/turn
 model (vats = containers, turns = cheap atomic local transactions), promise
 pipelining, and time-travel debugging.
 
@@ -55,7 +55,7 @@ pipelining, and time-travel debugging.
   wire format, very performance-oriented, Rust crate `capnp` exists.
 
 **vs. a hand-rolled capability system.** OCapN buys: a shared wire protocol
-(promise pipelining, distributed GC, certified third-party handoffs are *hard*
+(promise pipelining, distributed GC, certified third-party handoffs are _hard_
 to get right by hand), cross-language interop ambitions, and a security model
 reviewed by the E/Agoric community for decades. It costs: spec instability,
 Scheme-first implementations, and a programming model (vats/turns) that does
@@ -84,23 +84,23 @@ is a bet on a pre-standard spec with no Rust reference implementation.
 
 **What they are.** Conflict-free Replicated Data Types: replicas edited
 independently converge without coordination. Two families matter here:
-*operation/event-graph* designs (history is a DAG of operations; state is a
-fold) and *state/delta* sync (exchange state vectors + diffs). All three below
+_operation/event-graph_ designs (history is a DAG of operations; state is a
+fold) and _state/delta_ sync (exchange state vectors + diffs). All three below
 are Rust-core libraries.
 
-| | Loro | Yrs | Automerge |
-|---|---|---|---|
-| Core | Rust, WASM/JS + Swift bindings | Rust port of Yjs (JS) | Rust core, JS-first API |
-| Text algorithm | **Fugue** (maximal non-interleaving) + Eg-walker-inspired event graph | YATA | RGA + Peritext-style marks |
-| Types | Text, Rich Text, List, **MovableList**, Map (LWW), **MovableTree**, Counter | YText, YArray, YMap, YXml, etc. (Yjs shared types) | JSON-like: maps, lists, text, counters |
-| History | Full event DAG; fork / merge / time-travel; shallow snapshots | Update-based; history is not a first-class DAG | Full change DAG; git-like fork/merge is the headline feature |
-| Sync model | Export/import updates or snapshots (`ExportMode`) | State-vector diff protocol, byte-compatible with Yjs | Change sync protocol; sync or manual change transfer |
-| Maturity | **1.0 released 2024** (stable data format); actively developed | Stable; inherits Yjs's huge deployed base | Mature; **3.0 (Aug 2025)** columnar format cut memory ~10–100× vs 2.x **[per project/research notes; verify against release notes]** |
+|                | Loro                                                                        | Yrs                                                  | Automerge                                                                                                                            |
+| -------------- | --------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Core           | Rust, WASM/JS + Swift bindings                                              | Rust port of Yjs (JS)                                | Rust core, JS-first API                                                                                                              |
+| Text algorithm | **Fugue** (maximal non-interleaving) + Eg-walker-inspired event graph       | YATA                                                 | RGA + Peritext-style marks                                                                                                           |
+| Types          | Text, Rich Text, List, **MovableList**, Map (LWW), **MovableTree**, Counter | YText, YArray, YMap, YXml, etc. (Yjs shared types)   | JSON-like: maps, lists, text, counters                                                                                               |
+| History        | Full event DAG; fork / merge / time-travel; shallow snapshots               | Update-based; history is not a first-class DAG       | Full change DAG; git-like fork/merge is the headline feature                                                                         |
+| Sync model     | Export/import updates or snapshots (`ExportMode`)                           | State-vector diff protocol, byte-compatible with Yjs | Change sync protocol; sync or manual change transfer                                                                                 |
+| Maturity       | **1.0 released 2024** (stable data format); actively developed              | Stable; inherits Yjs's huge deployed base            | Mature; **3.0 (Aug 2025)** columnar format cut memory ~10–100× vs 2.x **[per project/research notes; verify against release notes]** |
 
 **Fit notes for an event-sourced graph with signed events.**
 
 - **Loro** is architecturally closest to "event-sourced": its Replayable Event
-  Graph *is* a history DAG, and it uniquely offers a movable-tree CRDT
+  Graph _is_ a history DAG, and it uniquely offers a movable-tree CRDT
   (Kleppmann et al.) for hierarchies. But its event graph is internal — not
   exposed as a content-addressed (e.g. BLAKE3-linked) DAG, and it has **no
   general graph type** (edges must be modelled as Map-of-Maps by hand). Signing
@@ -109,13 +109,13 @@ are Rust-core libraries.
   stack on the web (~920k weekly npm downloads per PkgPulse 2026
   **[unverified, secondary source]**), with editor bindings (ProseMirror,
   CodeMirror, Monaco) that work against the same wire format. Best when ID
-  needs collaborative *text/document* editing surfaces rather than graph merge.
-- **Automerge** wins when *versioning is the product*: per-change attribution,
+  needs collaborative _text/document_ editing surfaces rather than graph merge.
+- **Automerge** wins when _versioning is the product_: per-change attribution,
   branching/merging, diffs between versions. Its model is document-centric
   JSON, not an arbitrary property graph.
 - None of the three signs operations natively or enforces capability checks —
   in all cases ID's signed-event envelope and cap checks would wrap the CRDT,
-  and the CRDT would handle convergence of the *content* layer only.
+  and the CRDT would handle convergence of the _content_ layer only.
 
 **Canonical links.**
 
@@ -149,9 +149,9 @@ protocols live in separate repos/crates from core transport.
   collection ("hashseq") storage. This is a CAS transfer + store layer.
 - **iroh-gossip** — topic-based broadcast over epidemic broadcast trees
   (Plumtree / HyParView-style). Broadcast-only: no request/response, no
-  catch-up for late joiners — peers learn *new* things live; old state must
+  catch-up for late joiners — peers learn _new_ things live; old state must
   come from elsewhere (docs reconciliation or blob fetch).
-- **iroh-docs** — a multi-dimensional key-value store: a *Document/Replica* is
+- **iroh-docs** — a multi-dimensional key-value store: a _Document/Replica_ is
   identified by a `NamespaceId` (public key gating write capability); entries
   are `(namespace, author, key) → BLAKE3 hash + size + timestamp`, signed by
   both the namespace key (write capability) and an author key; actual bytes
@@ -205,7 +205,7 @@ wording), without the renderer/windowing stack.
   that pure/server builds omit.
 - Costs: Bevy's release cadence is fast and breaking (0.15→0.16→… API churn is
   normal); pinning bevy_ecs means scheduled upgrade work. ECS also imposes a
-  data layout discipline — arbitrary graph traversal is *not* its home turf;
+  data layout discipline — arbitrary graph traversal is _not_ its home turf;
   keep the graph store as the source of truth and project into ECS for
   simulation ticks.
 
@@ -225,12 +225,12 @@ the ECS should consume projections of the graph, never own it.
 
 ### 5a. Index / storage engines
 
-| Option | What it is | Maturity / shape | Notes |
-|---|---|---|---|
-| **sqlite-vec** | SQLite extension (pure C, zero deps), `vec0` virtual tables | v0.1.x; stable line is **brute-force exact KNN**; IVF/DiskANN only in alpha **[per 2026 surveys; verify]** | Single-file with your SQLite DB; metadata filtering is plain SQL joins. Practical ceiling ~100k vectors for brute force **[secondary-source estimate]**. Cannot be loaded by remote sqld/Turso servers (no dynamic extensions there). |
-| **libSQL / Turso native vectors** | `F32_BLOB` columns + `vector_distance_cos`, optional `vector_top_k` DiskANN index | Built into the libSQL engine; works identically local file / self-hosted sqld / Turso Cloud; embedded replicas supported | Same code path local↔remote is the selling point vs sqlite-vec. The newer Rust rewrite ("Turso Database"/Limbo) is pre-1.0/beta — do not confuse the two. |
-| **usearch** (Unum) | Single-header C++ HNSW library with Rust bindings (`cargo add usearch`) | Mature library, *not* a database: no metadata store, persistence is index save/load you manage | HNSW approximate search, many metrics (cosine, L2, Hamming, Jaccard, Haversine), f32/f16/i8 quantization. For when you outgrow brute force and want an in-process ANN index. |
-| **LanceDB** | Embedded vector DB on the Lance columnar format, Rust core | Apache-2.0; IVF-PQ / HNSW indexes, MVCC versioning, native Tantivy BM25 + vector **hybrid search** with reranking | Heavier than sqlite-vec; directory of files, not single-file. Strong when multimodal/large and hybrid lexical+semantic ranking matters. |
+| Option                            | What it is                                                                        | Maturity / shape                                                                                                         | Notes                                                                                                                                                                                                                                 |
+| --------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **sqlite-vec**                    | SQLite extension (pure C, zero deps), `vec0` virtual tables                       | v0.1.x; stable line is **brute-force exact KNN**; IVF/DiskANN only in alpha **[per 2026 surveys; verify]**               | Single-file with your SQLite DB; metadata filtering is plain SQL joins. Practical ceiling ~100k vectors for brute force **[secondary-source estimate]**. Cannot be loaded by remote sqld/Turso servers (no dynamic extensions there). |
+| **libSQL / Turso native vectors** | `F32_BLOB` columns + `vector_distance_cos`, optional `vector_top_k` DiskANN index | Built into the libSQL engine; works identically local file / self-hosted sqld / Turso Cloud; embedded replicas supported | Same code path local↔remote is the selling point vs sqlite-vec. The newer Rust rewrite ("Turso Database"/Limbo) is pre-1.0/beta — do not confuse the two.                                                                             |
+| **usearch** (Unum)                | Single-header C++ HNSW library with Rust bindings (`cargo add usearch`)           | Mature library, _not_ a database: no metadata store, persistence is index save/load you manage                           | HNSW approximate search, many metrics (cosine, L2, Hamming, Jaccard, Haversine), f32/f16/i8 quantization. For when you outgrow brute force and want an in-process ANN index.                                                          |
+| **LanceDB**                       | Embedded vector DB on the Lance columnar format, Rust core                        | Apache-2.0; IVF-PQ / HNSW indexes, MVCC versioning, native Tantivy BM25 + vector **hybrid search** with reranking        | Heavier than sqlite-vec; directory of files, not single-file. Strong when multimodal/large and hybrid lexical+semantic ranking matters.                                                                                               |
 
 ### 5b. Local embedding models (Rust)
 
@@ -252,10 +252,10 @@ the ECS should consume projections of the graph, never own it.
 The recurring pattern (Atlas-shaped): the **graph/CAS stays canonical**; the
 vector index is a **derived, rebuildable projection** —
 
-1. Each indexable object contributes one or more *chunks* (text spans,
+1. Each indexable object contributes one or more _chunks_ (text spans,
    property serializations, captions) keyed by the object's content hash.
 2. A row/record per chunk: `(content_hash, chunk_id, model_id, dimensions,
-   embedding, metadata…)` — `model_id` is mandatory; embeddings from different
+embedding, metadata…)` — `model_id` is mandatory; embeddings from different
    models are incomparable, and a model change means a re-embed pass.
 3. Query path: embed the query with the same model → ANN/exact KNN → map chunk
    hits back to graph objects → expand/traverse the graph from those entry
@@ -264,7 +264,7 @@ vector index is a **derived, rebuildable projection** —
 4. Because the index is derived, it can live wherever is convenient
    (sqlite-vec beside the metadata DB at small scale; usearch/LanceDB at
    larger) and be dropped/rebuilt from CAS without data loss; sync between
-   peers ships *content*, and each peer builds its own index — embeddings
+   peers ships _content_, and each peer builds its own index — embeddings
    themselves need not federate.
 
 **Canonical links.**
@@ -297,7 +297,7 @@ ANN; never let the index become a second source of truth.
   (Louvain, ForceAtlas2 layout, metrics); Sigma is only the renderer.
   Handles tens of thousands of nodes; no compound nodes; custom node shapes
   need shader work.
-- Rule of thumb from 2026 comparisons: Cytoscape when the graph *is* an
+- Rule of thumb from 2026 comparisons: Cytoscape when the graph _is_ an
   analysis object; Sigma+Graphology when it's a large network to explore;
   React Flow when it's an editable node diagram (~1k DOM-node ceiling).
 
@@ -311,7 +311,7 @@ ANN; never let the index become a second source of truth.
   the interoperable/semantic model, with formal entailment and a big standards
   stack (SPARQL, OWL). More ceremony; properties of edges need reification
   workarounds (or RDF-star).
-- **JSON-LD** — a JSON serialization *of* RDF: ordinary JSON plus an `@context`
+- **JSON-LD** — a JSON serialization _of_ RDF: ordinary JSON plus an `@context`
   mapping keys to IRIs. W3C Recommendation (1.1, 2020). Lets an API speak plain
   JSON to app code and linked data to machines from the same payload.
 - Practical stance for ID: keep the native model a signed property graph
@@ -352,13 +352,13 @@ SDKs for TypeScript and Python, with Rust SDKs community-led (e.g. `rmcp`)
 
 **Using a system's parts as MCP tools.** The pattern ID cares about: any
 library-grade component (CAS lookup, graph query, search, capability-checked
-mutation) can be wrapped once as an MCP server and then consumed by *any* MCP
+mutation) can be wrapped once as an MCP server and then consumed by _any_ MCP
 host — AI assistants, IDEs, other apps — without bespoke integrations per
 consumer. The discipline it imposes is useful even without AI: small, named,
 schema-described operations with explicit read/write character. The security
 note that matters for ID: MCP's own auth story is young (OAuth 2.1 for remote
 servers) and tool hints are explicitly untrusted — **MCP must sit behind ID's
-capability layer, not replace it**: an MCP tool call should arrive *holding*
+capability layer, not replace it**: an MCP tool call should arrive _holding_
 a capability, and ID checks it exactly as for any other caller.
 
 **Canonical links.**
@@ -367,7 +367,7 @@ a capability, and ID checks it exactly as for any other caller.
 - https://github.com/modelcontextprotocol — SDKs and server registry
 
 **Relevance to ID:** MCP is the cheapest "every part usable from other apps"
-story available — expose ID components as MCP tools/resources *through* the
+story available — expose ID components as MCP tools/resources _through_ the
 capability system, so agents and external apps get least-authority access by
 construction.
 
@@ -375,13 +375,13 @@ construction.
 
 ## 8. Falcor vs GraphQL vs path-based graph query
 
-**Falcor** (Netflix, open-sourced 2015) models *all* remote data as one
+**Falcor** (Netflix, open-sourced 2015) models _all_ remote data as one
 virtual **JSON Graph**. Clients fetch by **paths** — `["users", 0, "name"]`,
 ranges like `users[0..9]["name","email"]` — with `get`/`set`/`call` operations;
 references inside the graph are traversed automatically; a client-side Model
 cache batches, dedupes, and normalizes. There is no schema and no type system.
 **Status: effectively dormant** — v2.x, no significant releases in years;
-Netflix-internal legacy. Its *ideas* (single virtual graph, path addressing,
+Netflix-internal legacy. Its _ideas_ (single virtual graph, path addressing,
 cache normalization) are the durable part.
 
 **GraphQL** (Meta, 2015) is the opposite trade: a strongly-typed schema,
@@ -393,7 +393,7 @@ fetching.
 **For a federated graph like ID's, the comparison that matters:**
 
 - Path-based (Falcor-style) addressing fits content-addressed objects
-  unusually well: a path through named references *is* how you navigate a
+  unusually well: a path through named references _is_ how you navigate a
   graph of signed objects, paths compose, cache keys are obvious, and no
   global schema must be agreed before federation can start. Its weakness is
   Falcor's own: no types, weak ad-hoc filtering/search.
@@ -402,7 +402,7 @@ fetching.
   a federated, multi-owner graph makes genuinely hard.
 - The synthesis most such systems land on: **path/reference navigation as the
   native query primitive** (plus ID's own traversal/search), with a typed
-  query surface (GraphQL or similar) offered as a *view* for app developers
+  query surface (GraphQL or similar) offered as a _view_ for app developers
   where a stable schema exists. Do not adopt Falcor the library; adopt its
   model consciously.
 
@@ -421,13 +421,13 @@ not the foundation.
 
 Brief, factual references only; no price speculation.
 
-- **Agoric — ERTP + Zoe.** The most developed *capability-native* asset
+- **Agoric — ERTP + Zoe.** The most developed _capability-native_ asset
   design in production: ERTP (Electronic Rights Transfer Protocol) represents
   fungible and non-fungible assets as objects — **Mint** (sole creation
   authority), **Issuer**, **Brand** (asset-type identity), **Purse**,
   **Payment** — with conservation of supply enforced by the framework, not by
   contract code. Zoe is the contract framework on top: it escrows offer assets
-  and guarantees *offer safety* (a participant gets what they asked for or
+  and guarantees _offer safety_ (a participant gets what they asked for or
   their assets back, even from buggy contracts). Contracts are metered;
   Agoric's chain charges execution fees in its stable token (IST), staking in
   BLD. Audited by Least Authority (2021). Links:
@@ -445,7 +445,7 @@ Brief, factual references only; no price speculation.
   determinism is not required. Link:
   https://docs.rs/wasmtime — `Config::consume_fuel`.
 - **Spritely / OCapN world.** Capability systems in this lineage typically
-  treat *attenuated, revocable* rights (a purse-like object that can only
+  treat _attenuated, revocable_ rights (a purse-like object that can only
   spend up to X, a caretaker that can be revoked) as the accounting unit
   rather than a transferable token — i.e., "fuel" as a capability budget
   object. No single canonical published design was verified in this pass
@@ -453,9 +453,9 @@ Brief, factual references only; no price speculation.
   the "caretaker" pattern in the E literature]**.
 
 **Design shape these references converge on for ID:** (1) execution is
-*metered deterministically* (fuel) at the runtime layer; (2) fuel is *paid
-from an asset object* governed by conservation rules (ERTP-style
-mint/issuer/purse); (3) access to the purse is itself a *capability* —
+_metered deterministically_ (fuel) at the runtime layer; (2) fuel is _paid
+from an asset object_ governed by conservation rules (ERTP-style
+mint/issuer/purse); (3) access to the purse is itself a _capability_ —
 attenuable (per-app, per-session budgets) and revocable — so in-app items,
 app fuel, and market trades are one mechanism, not three.
 

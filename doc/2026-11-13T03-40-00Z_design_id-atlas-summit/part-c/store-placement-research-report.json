@@ -1,1 +1,131 @@
-{"adjacent_surfaces":[{"authority":"name, tag, and namespace mappings over blob identity (alpha/omega iroh-docs namespaces; .iroh-meta/registry.json maps names to namespace IDs). Not a fifth authority: names are mappings, never identity","design_note":"the S2.7-S2.9 design separates MetadataIndex as its own placement surface; in current code it lives inside id-store beside the blob surface, with no separate port","owner_crate":"id-store","source_markers":["registry.json"],"source_path":"pkgs/id/crates/id-store/src/tags.rs","surface":"metadata-index"}],"atlas_content_hash":{"algorithm":"SHA-256 (observed)","authority_record":"doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/atlas-content-hash-producer.md","input":"exact UTF-8 chunk text (observed)","interop_claims":"forbidden","note":"no checked-in producer computes Atlas chunk content_hash (slice 9110-R2); it must not be mapped to the blob, event, world, or artifact identity profiles in this report","observed_profile":"SHA-256 of exact UTF-8 chunk text, observed on external corpus snapshots (V1 audit, full-row match); a data fact only, not a producer contract","producer":null,"profile":"atlas-content-hash","status":"producer_unavailable"},"authorities":[{"authority":"content-addressed blob bytes and name-to-hash tags","backing":"iroh-blobs FsStore: redb metadata plus blob data files under .iroh-store/; MemStore in memory","concrete_types":["StoreType::Persistent(FsStore)","StoreType::Ephemeral(MemStore)"],"identity":{"algorithm":"BLAKE3-256","digest_bytes":32,"established_by":"iroh-blobs Hash::new over the exact bytes at import","input":"exact stored bytes","profile":"iroh-blob-blake3"},"owner_crate":"id-store","source_markers":["FsStore","MemStore","STORE_PATH"],"source_path":"pkgs/id/crates/id-store/src/store.rs","surface":"blob"},{"authority":"signed event log: chains, heads, fork proofs, waiting pool","backing":"one redb database file per store directory; direct redb API use across event_store/","concrete_types":["EventStore","Storage / FileStorage"],"evidence_markers":["Hash::digest"],"evidence_path":"pkgs/id/crates/id-events/src/event_store/ingest.rs","identity":{"algorithm":"BLAKE3-256","digest_bytes":32,"established_by":"p2panda Hash::digest committed as payload_hash (with payload size) in the signed event header; verified at ingest before anything is stored","input":"raw event payload bytes","profile":"event-payload-blake3"},"owner_crate":"id-events","source_markers":["TableDefinition","FileStorage"],"source_path":"pkgs/id/crates/id-events/src/event_store/mod.rs","surface":"event"},{"authority":"durable world state: journal replay and installed modules","backing":"append-only journal.jsonl (fsynced per append in the default ack mode) plus modules/<blake3>.wasm; not redb","concrete_types":["FileJournal","ModuleDir"],"identity":{"algorithm":"BLAKE3-256","digest_bytes":32,"established_by":"the module file name is the BLAKE3 hash of its exact bytes at install; the journal itself is an unhashed append-only log whose replay order is the authority","input":"exact wasm module bytes","profile":"world-module-blake3"},"owner_crate":"id-worlds","source_markers":["journal.jsonl","FileJournal","ModuleDir"],"source_path":"pkgs/id/crates/id-worlds/src/world_store.rs","surface":"world"},{"authority":"pending envelope delivery only; no stored-data authority","backing":"append-only outbox journal file (outbox.jsonl), replayed on open; signed artifact records kept per account chain","concrete_types":["Outbox","SignedArtifact"],"evidence_markers":["signed_bytes","Sha256"],"evidence_path":"pkgs/id/crates/id-sync/src/artifact.rs","identity":{"algorithm":"SHA-256","digest_bytes":32,"established_by":"SignedArtifact signing at authoring: the record hash is hex SHA-256 over signed_bytes and the chain links author/seq/prev; legacy bytes are never re-serialized, re-hashed, or re-signed","input":"canonical JSON bytes of SignedBody (serde_json::to_vec)","profile":"artifact-sha256"},"owner_crate":"id-sync","source_markers":["Outbox"],"source_path":"pkgs/id/crates/id-sync/src/envelope_outbox.rs","surface":"sync"}],"baseline":{"commit":"3be23e4943af3527f8c3b4b7d895f39a5820ea51","date":"2026-11-23","method":"source inspection at the stated commit; no build, runtime, or deployment verification"},"design_basis":{"path":"doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md","section":"#9135 store placement adapter (S2.7-S2.9)"},"issue":10167,"kind":"research-matrix","non_conflation":{"forbidden_equivalences":[["iroh-blob-blake3","event-payload-blake3"],["artifact-sha256","atlas-content-hash"],["iroh-blob-blake3","atlas-content-hash"]],"rule":"each identity profile in this report is a distinct typed commitment; a shared algorithm name (BLAKE3-256, SHA-256) does not make two profiles interchangeable"},"parent":9135,"redb_inventory":{"locked_versions":["4.6.0","3.1.3"],"manifest_pin":"redb = \"=4.6.0\" (pkgs/id/Cargo.toml workspace dependency)","note":"redb backs two different authorities (blob metadata via iroh-blobs, the event log directly) at two major versions in one lockfile; 'replace redb' is not one migration","usage":[{"consumer":"id-events","mode":"direct redb API (Database, TableDefinition) for the event log"},{"consumer":"id-store / iroh-blobs 0.103.1","mode":"redb 4.6.0 as the FsStore metadata backing"},{"consumer":"iroh-docs 0.101.0","mode":"resolves redb 3.1.3 and 4.6.0 for namespace/document storage under id-store tags and docs"},{"consumer":"id-web, benchmarks, root id package","mode":"declare the =4.6.0 dependency"},{"consumer":"id-worlds","mode":"no redb: journal.jsonl plus module files"},{"consumer":"id-sync","mode":"no redb: append-only journal files"}]},"slice":"C9135-01","statements":["S2.7","S2.8","S2.9"]}
+{
+  "adjacent_surfaces": [
+    {
+      "authority": "name, tag, and namespace mappings over blob identity (alpha/omega iroh-docs namespaces; .iroh-meta/registry.json maps names to namespace IDs). Not a fifth authority: names are mappings, never identity",
+      "design_note": "the S2.7-S2.9 design separates MetadataIndex as its own placement surface; in current code it lives inside id-store beside the blob surface, with no separate port",
+      "owner_crate": "id-store",
+      "source_markers": ["registry.json"],
+      "source_path": "pkgs/id/crates/id-store/src/tags.rs",
+      "surface": "metadata-index"
+    }
+  ],
+  "atlas_content_hash": {
+    "algorithm": "SHA-256 (observed)",
+    "authority_record": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/research-results/atlas-content-hash-producer.md",
+    "input": "exact UTF-8 chunk text (observed)",
+    "interop_claims": "forbidden",
+    "note": "no checked-in producer computes Atlas chunk content_hash (slice 9110-R2); it must not be mapped to the blob, event, world, or artifact identity profiles in this report",
+    "observed_profile": "SHA-256 of exact UTF-8 chunk text, observed on external corpus snapshots (V1 audit, full-row match); a data fact only, not a producer contract",
+    "producer": null,
+    "profile": "atlas-content-hash",
+    "status": "producer_unavailable"
+  },
+  "authorities": [
+    {
+      "authority": "content-addressed blob bytes and name-to-hash tags",
+      "backing": "iroh-blobs FsStore: redb metadata plus blob data files under .iroh-store/; MemStore in memory",
+      "concrete_types": ["StoreType::Persistent(FsStore)", "StoreType::Ephemeral(MemStore)"],
+      "identity": {
+        "algorithm": "BLAKE3-256",
+        "digest_bytes": 32,
+        "established_by": "iroh-blobs Hash::new over the exact bytes at import",
+        "input": "exact stored bytes",
+        "profile": "iroh-blob-blake3"
+      },
+      "owner_crate": "id-store",
+      "source_markers": ["FsStore", "MemStore", "STORE_PATH"],
+      "source_path": "pkgs/id/crates/id-store/src/store.rs",
+      "surface": "blob"
+    },
+    {
+      "authority": "signed event log: chains, heads, fork proofs, waiting pool",
+      "backing": "one redb database file per store directory; direct redb API use across event_store/",
+      "concrete_types": ["EventStore", "Storage / FileStorage"],
+      "evidence_markers": ["Hash::digest"],
+      "evidence_path": "pkgs/id/crates/id-events/src/event_store/ingest.rs",
+      "identity": {
+        "algorithm": "BLAKE3-256",
+        "digest_bytes": 32,
+        "established_by": "p2panda Hash::digest committed as payload_hash (with payload size) in the signed event header; verified at ingest before anything is stored",
+        "input": "raw event payload bytes",
+        "profile": "event-payload-blake3"
+      },
+      "owner_crate": "id-events",
+      "source_markers": ["TableDefinition", "FileStorage"],
+      "source_path": "pkgs/id/crates/id-events/src/event_store/mod.rs",
+      "surface": "event"
+    },
+    {
+      "authority": "durable world state: journal replay and installed modules",
+      "backing": "append-only journal.jsonl (fsynced per append in the default ack mode) plus modules/<blake3>.wasm; not redb",
+      "concrete_types": ["FileJournal", "ModuleDir"],
+      "identity": {
+        "algorithm": "BLAKE3-256",
+        "digest_bytes": 32,
+        "established_by": "the module file name is the BLAKE3 hash of its exact bytes at install; the journal itself is an unhashed append-only log whose replay order is the authority",
+        "input": "exact wasm module bytes",
+        "profile": "world-module-blake3"
+      },
+      "owner_crate": "id-worlds",
+      "source_markers": ["journal.jsonl", "FileJournal", "ModuleDir"],
+      "source_path": "pkgs/id/crates/id-worlds/src/world_store.rs",
+      "surface": "world"
+    },
+    {
+      "authority": "pending envelope delivery only; no stored-data authority",
+      "backing": "append-only outbox journal file (outbox.jsonl), replayed on open; signed artifact records kept per account chain",
+      "concrete_types": ["Outbox", "SignedArtifact"],
+      "evidence_markers": ["signed_bytes", "Sha256"],
+      "evidence_path": "pkgs/id/crates/id-sync/src/artifact.rs",
+      "identity": {
+        "algorithm": "SHA-256",
+        "digest_bytes": 32,
+        "established_by": "SignedArtifact signing at authoring: the record hash is hex SHA-256 over signed_bytes and the chain links author/seq/prev; legacy bytes are never re-serialized, re-hashed, or re-signed",
+        "input": "canonical JSON bytes of SignedBody (serde_json::to_vec)",
+        "profile": "artifact-sha256"
+      },
+      "owner_crate": "id-sync",
+      "source_markers": ["Outbox"],
+      "source_path": "pkgs/id/crates/id-sync/src/envelope_outbox.rs",
+      "surface": "sync"
+    }
+  ],
+  "baseline": {
+    "commit": "3be23e4943af3527f8c3b4b7d895f39a5820ea51",
+    "date": "2026-11-23",
+    "method": "source inspection at the stated commit; no build, runtime, or deployment verification"
+  },
+  "design_basis": {
+    "path": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-c/versioned-design.md",
+    "section": "#9135 store placement adapter (S2.7-S2.9)"
+  },
+  "issue": 10167,
+  "kind": "research-matrix",
+  "non_conflation": {
+    "forbidden_equivalences": [
+      ["iroh-blob-blake3", "event-payload-blake3"],
+      ["artifact-sha256", "atlas-content-hash"],
+      ["iroh-blob-blake3", "atlas-content-hash"]
+    ],
+    "rule": "each identity profile in this report is a distinct typed commitment; a shared algorithm name (BLAKE3-256, SHA-256) does not make two profiles interchangeable"
+  },
+  "parent": 9135,
+  "redb_inventory": {
+    "locked_versions": ["4.6.0", "3.1.3"],
+    "manifest_pin": "redb = \"=4.6.0\" (pkgs/id/Cargo.toml workspace dependency)",
+    "note": "redb backs two different authorities (blob metadata via iroh-blobs, the event log directly) at two major versions in one lockfile; 'replace redb' is not one migration",
+    "usage": [
+      { "consumer": "id-events", "mode": "direct redb API (Database, TableDefinition) for the event log" },
+      { "consumer": "id-store / iroh-blobs 0.103.1", "mode": "redb 4.6.0 as the FsStore metadata backing" },
+      {
+        "consumer": "iroh-docs 0.101.0",
+        "mode": "resolves redb 3.1.3 and 4.6.0 for namespace/document storage under id-store tags and docs"
+      },
+      { "consumer": "id-web, benchmarks, root id package", "mode": "declare the =4.6.0 dependency" },
+      { "consumer": "id-worlds", "mode": "no redb: journal.jsonl plus module files" },
+      { "consumer": "id-sync", "mode": "no redb: append-only journal files" }
+    ]
+  },
+  "slice": "C9135-01",
+  "statements": ["S2.7", "S2.8", "S2.9"]
+}

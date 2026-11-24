@@ -8,12 +8,12 @@ Runtime liveness is not part of this map. The survey's ground truth is the repos
 
 Four Bun services on the laptop host `amd` carry the stack. One `nixos-rebuild switch` deploys them; their user units are declared in `nixos/services/pm-stack`.
 
-| Component | Port | Job |
-|---|---|---|
-| Aggregator (`pm-stack/aggregator/`, `pkgs/pm-aggregator`) | 4870 | The dashboard: about 180 modules covering pages, health, quota, decisions, prompts, alerts, and sources; plus scripts for quota gathering, the digest, the fleet-feed collector, charge candidates, and decision-set production |
-| Console (`pm-stack/console/`) | 4872 | The phone and owner app: a Bun server, a single-page app, an edge Worker, and an Android wrapper. Its modules split by concern — `ops.ts` for fleet verbs, `work.ts` for questions and asks, `plan.ts` for roadmap and intake, `actions.ts` for the audited action table, `push.ts` and `notify.ts`, `devices.ts`, `auth.ts`, `sync.ts`, `docs.ts` |
-| Projector (`pm-stack/projector/`, `pkgs/pm-projector`) | 7801 | Links and projections. See [The projector and projections](projector.md) |
-| pm-dispatch (`pm-stack/dispatch/`, `pkgs/pm-dispatch`) | 4879 | Authenticated launch-or-enqueue intake for OpenCode sessions, with a placement guard that fails before commit on a walled quota pool |
+| Component                                                 | Port | Job                                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Aggregator (`pm-stack/aggregator/`, `pkgs/pm-aggregator`) | 4870 | The dashboard: about 180 modules covering pages, health, quota, decisions, prompts, alerts, and sources; plus scripts for quota gathering, the digest, the fleet-feed collector, charge candidates, and decision-set production                                                                                                                    |
+| Console (`pm-stack/console/`)                             | 4872 | The phone and owner app: a Bun server, a single-page app, an edge Worker, and an Android wrapper. Its modules split by concern — `ops.ts` for fleet verbs, `work.ts` for questions and asks, `plan.ts` for roadmap and intake, `actions.ts` for the audited action table, `push.ts` and `notify.ts`, `devices.ts`, `auth.ts`, `sync.ts`, `docs.ts` |
+| Projector (`pm-stack/projector/`, `pkgs/pm-projector`)    | 7801 | Links and projections. See [The projector and projections](projector.md)                                                                                                                                                                                                                                                                           |
+| pm-dispatch (`pm-stack/dispatch/`, `pkgs/pm-dispatch`)    | 4879 | Authenticated launch-or-enqueue intake for OpenCode sessions, with a placement guard that fails before commit on a walled quota pool                                                                                                                                                                                                               |
 
 Around them: `pm-git-sync` keeps the laptop's primary clone on a clean current `main` and never restarts services; the tunnel unit publishes Kaneo and dispatch; and the unit files in `pm-stack/systemd/` carry the timers for host health, the invariant sweeper, the Kaneo sync guard, the quota watchdog, and the console expose, redeploy, and Android-release jobs. Which of those repo copies are installed as-is and which are rendered by Nix is UNVERIFIED.
 
@@ -30,12 +30,12 @@ Four applications the stack did not write provide its boards, tables, planning s
 
 `pm-stack/platform/` is not a service. It is the registry: `workers.json` lists 20 Workers, and `workers.test.ts` holds that list to the repository's wrangler files. The platform README's count of eighteen is stale (D6). The console's Platform screen is drawn from this file. Four of the 20 belong to this stack's own operation:
 
-| Worker | State in `workers.json` | Job |
-|---|---|---|
-| `pm-console-edge` | Deployed from Actions | Serves the console when the laptop is away; holds actions and answers for replay |
-| `decision-events` | In service, deployed by hand | Decision-set activity events to Turso, to its own D1, and to a per-set Durable Object that fans out live to WebSocket subscribers |
-| `voice-line` | In service | Push-to-talk over a WebSocket in a Durable Object; Workers AI speech-to-text and text-to-speech; answers are template-built from intent and a Turso queue snapshot, with no LLM |
-| `pm-notify` (notify relay) | Not deployed, address null | The dead-man's switch design: heartbeat in, one silence push out. Step 1 only in code; the event-mirror and edge answer-intake routes are not routed (D5) |
+| Worker                     | State in `workers.json`      | Job                                                                                                                                                                             |
+| -------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pm-console-edge`          | Deployed from Actions        | Serves the console when the laptop is away; holds actions and answers for replay                                                                                                |
+| `decision-events`          | In service, deployed by hand | Decision-set activity events to Turso, to its own D1, and to a per-set Durable Object that fans out live to WebSocket subscribers                                               |
+| `voice-line`               | In service                   | Push-to-talk over a WebSocket in a Durable Object; Workers AI speech-to-text and text-to-speech; answers are template-built from intent and a Turso queue snapshot, with no LLM |
+| `pm-notify` (notify relay) | Not deployed, address null   | The dead-man's switch design: heartbeat in, one silence push out. Step 1 only in code; the event-mirror and edge answer-intake routes are not routed (D5)                       |
 
 The other 16 Workers in the registry belong to the wider estate and are covered by their own books; the registry is the shared list, not a claim that this stack operates them.
 

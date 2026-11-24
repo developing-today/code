@@ -119,15 +119,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Check the orchestration-pass retirement record (#2136)."
     )
-    parser.add_argument(
-        "--check", action="store_true", help="run the record check"
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="print the report as JSON"
-    )
-    parser.add_argument(
-        "--root", default=str(_default_root()), help="repository root"
-    )
+    parser.add_argument("--check", action="store_true", help="run the record check")
+    parser.add_argument("--json", action="store_true", help="print the report as JSON")
+    parser.add_argument("--root", default=str(_default_root()), help="repository root")
     args = parser.parse_args(argv)
     if not args.check:
         parser.print_usage(sys.stderr)
@@ -170,13 +164,9 @@ def check(root: Path) -> dict:
     if state is None:
         violations.append("orchestration-pass row missing from the registry")
     elif RETIRED and state != "disabled":
-        violations.append(
-            f"record says retired but the registry row is {state!r}"
-        )
+        violations.append(f"record says retired but the registry row is {state!r}")
     elif not RETIRED and state != "enabled":
-        violations.append(
-            f"record says active but the registry row is {state!r}"
-        )
+        violations.append(f"record says active but the registry row is {state!r}")
     residue = sorted(e["duty"] for e in DUTIES if e.get("status") == "residue")
     return {
         "retired": RETIRED,

@@ -11,49 +11,49 @@ Census compiled 2026-11-23 by Census A, the retrospective lane of the Code Book 
 - `doc-dated-records-census.md` — the doc/ census: counts by month, the complete pre-October record list, and the October phase records relied on.
 - `memory-completion-extracts.md` — keyword-filtered completion/merge/launch headings extracted from the daily memory notes, per date.
 - `cycle-log-inventory.md` — the stewardship cycle-log file inventory and how the census used it.
-Every claim below cites a source: an issue/PR number, a file path, or a log entry.
-Merged-PR counts are GitHub Search totals (`is:pr is:merged merged:<range>`) read
-2026-11-23 via the laptop fleet client (`fleet gh api search/issues`), per repo, per week.
+  Every claim below cites a source: an issue/PR number, a file path, or a log entry.
+  Merged-PR counts are GitHub Search totals (`is:pr is:merged merged:<range>`) read
+  2026-11-23 via the laptop fleet client (`fleet gh api search/issues`), per repo, per week.
 
 ## The honestly covered period — read this first
 
 The sources do not cover the same ground, and this census does not pretend they do.
 
-| Source | What it actually covers | Density |
-|---|---|---|
-| `doc/` dated records in developing-today/code (laptop checkout `~/git/code/doc`) | 619 entries total; dated records: **6 in 2026-03, 2 in 2026-04, 103 in 2026-10, 452 in 2026-11** (counted from directory names, 2026-11-23) | Sparse design records Mar–Apr; dense from 2026-10-07 |
-| Daily memory notes (`~/memory/2026-*.md`) | **2026-09-28 → 2026-11-12 continuous**, then **2026-11-22 and 2026-11-23 only**. Nothing for 2026-11-13 → 2026-11-21. (The programme brief said memory begins ~2026-10-19; the files on disk begin 2026-09-28 — the files win.) | Very dense, but noisy: much of Sep 28 – Oct 18 is 15-minute nix/mcpx watch entries |
-| Stewardship cycle log (`…/stewardship-commission…/hidden_files/cycles/`) | Hourly cycles from the inaugural cycle **2026-10-24T07:37:51Z** (`CYCLE-LOG-archive-2026-10-28.md`) through cycle ~475 on 2026-11-23 (`CYCLE-LOG.md`) | The densest *activity* record, but it records oversight, queues and blockers — not feature history |
-| GitHub merged PRs (the spine) | developing-today/code: **0 merged PRs found for 2026-03-01 → 2026-09-27**; 2 in W41, then 59 → 304 → 946 → 1,554 → 1,152 → 1,142 → 526 (single day, Nov 23) | Authoritative for Oct–Nov; silent before October |
-| The four books (fleet, atlas, id, mcpx) | Written 2026-11-23 as surveys of the then-current state; their roadmap chapters are snapshots dated 2026-11-23 (e.g. atlas book, `design/roadmap-and-issue-map.md`: "a dated snapshot… Where this chapter and #13241 disagree, #13241 is right") | Secondary only; used for corroboration, never as the sole source |
+| Source                                                                           | What it actually covers                                                                                                                                                                                                                          | Density                                                                                            |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `doc/` dated records in developing-today/code (laptop checkout `~/git/code/doc`) | 619 entries total; dated records: **6 in 2026-03, 2 in 2026-04, 103 in 2026-10, 452 in 2026-11** (counted from directory names, 2026-11-23)                                                                                                      | Sparse design records Mar–Apr; dense from 2026-10-07                                               |
+| Daily memory notes (`~/memory/2026-*.md`)                                        | **2026-09-28 → 2026-11-12 continuous**, then **2026-11-22 and 2026-11-23 only**. Nothing for 2026-11-13 → 2026-11-21. (The programme brief said memory begins ~2026-10-19; the files on disk begin 2026-09-28 — the files win.)                  | Very dense, but noisy: much of Sep 28 – Oct 18 is 15-minute nix/mcpx watch entries                 |
+| Stewardship cycle log (`…/stewardship-commission…/hidden_files/cycles/`)         | Hourly cycles from the inaugural cycle **2026-10-24T07:37:51Z** (`CYCLE-LOG-archive-2026-10-28.md`) through cycle ~475 on 2026-11-23 (`CYCLE-LOG.md`)                                                                                            | The densest _activity_ record, but it records oversight, queues and blockers — not feature history |
+| GitHub merged PRs (the spine)                                                    | developing-today/code: **0 merged PRs found for 2026-03-01 → 2026-09-27**; 2 in W41, then 59 → 304 → 946 → 1,554 → 1,152 → 1,142 → 526 (single day, Nov 23)                                                                                      | Authoritative for Oct–Nov; silent before October                                                   |
+| The four books (fleet, atlas, id, mcpx)                                          | Written 2026-11-23 as surveys of the then-current state; their roadmap chapters are snapshots dated 2026-11-23 (e.g. atlas book, `design/roadmap-and-issue-map.md`: "a dated snapshot… Where this chapter and #13241 disagree, #13241 is right") | Secondary only; used for corroboration, never as the sole source                                   |
 
 **Verdict on coverage:**
 
 - **Fully supportable, week by week: 2026-10-19 → 2026-11-23 (W43–W48)** — GitHub, memory, cycle log and doc/ all overlap.
 - **Supportable but thinner: 2026-09-28 → 2026-10-18 (W40–W42)** — memory + doc/ carry it; GitHub PR counts are near zero, so "what shipped" claims rest on the design records and the daily notes.
-- **Design-record only: 2026-03-20 → 2026-04-01 (W12–W14)** — eight dated doc/ records and nothing else. Note the disagreement: the records are *dated* March–April, but the GitHub merged-PR spine shows no merged PRs in that window at all, so these read as design work later committed under its original dates, not as a verifiable March build history. The primary source (GitHub) wins; the weeks below are labelled accordingly.
+- **Design-record only: 2026-03-20 → 2026-04-01 (W12–W14)** — eight dated doc/ records and nothing else. Note the disagreement: the records are _dated_ March–April, but the GitHub merged-PR spine shows no merged PRs in that window at all, so these read as design work later committed under its original dates, not as a verifiable March build history. The primary source (GitHub) wins; the weeks below are labelled accordingly.
 - **No evidence in any mined source: 2026-04-02 → 2026-09-27 (W14–W39) and 2026-11-13 → 2026-11-21 inside the daily notes** (GitHub and doc/ do cover Nov 13–21; memory does not). Those weeks are stated as uncovered, not padded.
 
 ---
 
 ## Week by week
 
-### W12 — 2026-03-16 → 2026-03-22 *(design records only)*
+### W12 — 2026-03-16 → 2026-03-22 _(design records only)_
 
 - **Biggest things built:** Nothing verifiable as built. Three design/feature records are dated this week: collaborative cursor enhancements (2026-03-20), content modes (2026-03-21), peer discovery (2026-03-22) — `doc/2026-03-20T05-30-00Z_feature_collaborative_cursor_enhancements`, `doc/2026-03-21T05-47-48Z_feature_content_modes`, `doc/2026-03-22T00-00-00Z_feature_peer-discovery`.
 - **Hardest challenges / where the time went / capabilities unlocked / what we can do now:** No source supports any of these for this week. Stated plainly rather than reconstructed.
 
-### W13 — 2026-03-23 → 2026-03-29 *(design records only)*
+### W13 — 2026-03-23 → 2026-03-29 _(design records only)_
 
 - **Biggest things built:** Records dated this week: file-list UI and metadata tags (both 2026-03-23) and a testing-architecture reference (2026-03-29) — `doc/2026-03-23T00:00:00Z_feature_file_list_ui`, `doc/2026-03-23T12-00-00Z_feature_metadata_tags`, `doc/2026-03-29T00-00-00Z_reference_testing_architecture`.
 - **Everything else:** No supporting source. See W12.
 
-### W14 — 2026-03-30 → 2026-04-05 *(design records only; week straddles the gap)*
+### W14 — 2026-03-30 → 2026-04-05 _(design records only; week straddles the gap)_
 
 - **Biggest things built:** Two records dated 2026-04-01: image upload and multi-instance — `doc/2026-04-01T00-00-00Z_feature_image_upload`, `doc/2026-04-01T00-00-00Z_feature_multi_instance`. After 2026-04-01 the record stops entirely until October.
 - **Everything else:** No supporting source.
 
-### W15–W39 — 2026-04-06 → 2026-09-27 *(uncovered)*
+### W15–W39 — 2026-04-06 → 2026-09-27 _(uncovered)_
 
 - One line, honestly: no dated doc/ records, no daily memory notes, and zero merged PRs in developing-today/code were found in any mined source for these 25 weeks. A retrospective cannot say what happened here from these sources, and this census does not guess.
 
@@ -80,7 +80,7 @@ The sources do not cover the same ground, and this census does not pretend they 
 - **Capabilities unlocked:** Concurrency rollout COMPLETE 2026-10-18 (`memory/2026-10-18.md`); CI concurrency groups to cancel superseded runs (code PR #289).
 - **What we can do now:** A swept, self-fixing repo routine exists — issues are filed, fixed and merged by scheduled sweeps, not only by hand.
 
-### W43 — 2026-10-19 → 2026-10-25 *(first fully covered week)*
+### W43 — 2026-10-19 → 2026-10-25 _(first fully covered week)_
 
 Merged PRs: **code 304, opencode fork 181, openchamber fork 181** (GitHub search).
 
@@ -110,7 +110,7 @@ Merged PRs: **code 1,554 (the peak week), opencode fork 377, openchamber fork 34
 - **Capabilities unlocked:** Agents can reach the laptop without SSH (laptop-agent); the fleet has its own queue and secrets brokers instead of borrowed ones; the lab is reachable through a public tunnel hostname.
 - **What we can do now:** Run the whole multi-agent operation — claim, dispatch, secrets, laptop exec — on fleet-owned infrastructure.
 
-### W46 — 2026-11-09 → 2026-11-15 *(memory covers only to 2026-11-12)*
+### W46 — 2026-11-09 → 2026-11-15 _(memory covers only to 2026-11-12)_
 
 Merged PRs: **code 1,152, opencode fork 128, openchamber fork 60, hatch-personal 10** (GitHub search).
 
@@ -120,7 +120,7 @@ Merged PRs: **code 1,152, opencode fork 128, openchamber fork 60, hatch-personal
 - **Capabilities unlocked:** Free-model legs lead the route pools (formalised as the free-first rule on 2026-11-23 from this period's census work, `MEMORY.md`).
 - **What we can do now:** A native ID shell renders a live world session (code PR #10536). After 2026-11-12 this week is GitHub-and-doc only — the daily notes stop, and this census does not fill the gap from titles alone beyond what is listed above.
 
-### W47 — 2026-11-16 → 2026-11-22 *(daily notes resume only on 2026-11-22)*
+### W47 — 2026-11-16 → 2026-11-22 _(daily notes resume only on 2026-11-22)_
 
 Merged PRs: **code 1,142**; opencode fork 170 and openchamber fork 192 across 2026-11-16 → 2026-11-23 combined; **dezren39/fleet 20** in the same combined window (GitHub search).
 
@@ -130,7 +130,7 @@ Merged PRs: **code 1,142**; opencode fork 170 and openchamber fork 192 across 20
 - **Capabilities unlocked:** Fleet access verified without SSH (`fleet agent next` run directly from the sandbox, shortlist refilled 8/8, verified 2026-11-21, recorded 2026-11-22; `MEMORY.md`); a Grok seat enrolled (muse-grok, 2026-11-22, `MEMORY.md`).
 - **What we can do now:** Any enrolled agent, of any kind, can claim any queue job under any name — the lane model that the Nov 23 burn then ran on.
 
-### W48 — 2026-11-23 → 2026-11-29 *(only 2026-11-23 exists so far; one day)*
+### W48 — 2026-11-23 → 2026-11-29 _(only 2026-11-23 exists so far; one day)_
 
 Merged PRs on 2026-11-23 alone: **code 526** (GitHub search).
 
@@ -144,19 +144,19 @@ Merged PRs on 2026-11-23 alone: **code 526** (GitHub search).
 
 ## Month rollups
 
-### March 2026 *(thin — design records only)*
+### March 2026 _(thin — design records only)_
 
 Six dated doc/ records (W12–W13): collaborative cursors, content modes, peer discovery, file-list UI, metadata tags, testing architecture. No GitHub, memory or log corroboration. The honest March rollup is one sentence: design records exist under March dates; nothing else about March can be verified from the mined sources.
 
-### April 2026 *(thin — two records, then silence)*
+### April 2026 _(thin — two records, then silence)_
 
 Two records dated 2026-04-01 (image upload, multi-instance), then no evidence of any kind until 2026-09-28. April cannot carry the five retrospective fields.
 
-### May – September 2026 *(uncovered, except the last four days of September)*
+### May – September 2026 _(uncovered, except the last four days of September)_
 
 No mined source covers May through 2026-09-27. September's covered tail is W40 (from 2026-09-28): the nix/mcpx watch-and-rebuild programme and the Nix persistence work. A "September" rollup would be a rollup of four days, and is labelled as such if used.
 
-### October 2026 *(covered 2026-10-05 → 2026-10-31; dense from 2026-10-19)*
+### October 2026 _(covered 2026-10-05 → 2026-10-31; dense from 2026-10-19)_
 
 - **Biggest things built:** The ID/worlds platform design (phases 0–8, W41–W42); the PM aggregator/dashboard (W43); the queue cutover, Atlas on Turso in production, and the `/quota` loop (W44). October's merged-PR spine: code 2 + 59 + 304 + (946 spanning Oct 26 – Nov 1), with the forks at 181–366 per week in the same span.
 - **Hardest challenges:** mcpx daemon lifecycle correctness (W42); deploy-chain/switch blockage from mcpx and id test breaks (W44).
@@ -164,7 +164,7 @@ No mined source covers May through 2026-09-27. September's covered tail is W40 (
 - **Capabilities unlocked:** Stewardship as a standing hourly institution (from 2026-10-24); a live PM dashboard; production Atlas.
 - **What we can do now that we couldn't on Oct 1:** Run work through a fleet queue, watch it and its quota cost live, and search a production corpus.
 
-### November 2026 *(covered 2026-11-01 → 2026-11-23; daily notes missing 2026-11-13 → 2026-11-21)*
+### November 2026 _(covered 2026-11-01 → 2026-11-23; daily notes missing 2026-11-13 → 2026-11-21)_
 
 - **Biggest things built:** The fleet's own infrastructure — laptop-agent, queue + secrets brokers, repo-queue → fleet migration (W45); the lab's first Cloudflare Tunnel (W46 boundary, 2026-11-06); queue durability (SQLite replica, D1 backup/restore drill, W47); and the documentation capstone — three books completed and four investigation programmes run in a single day (W48, 2026-11-23). November's spine to Nov 23: code ≈ 1,554 + 1,152 + 1,142 + 526 merged PRs by week (W45–W48).
 - **Hardest challenges:** The Supabase incident and its migrations (W45); the laptop channel collapse and rebuild (W47); the execution-risk flag regime (W48).
@@ -224,7 +224,7 @@ Capability → week it landed → citation. "Landed" means the cited source reco
 
 ## Source disagreements and caveats
 
-- **Books vs primary sources:** the atlas book's roadmap chapter explicitly dates itself 2026-11-23 and defers to issue #13241; where its design-record table and the daily notes differ on what *shipped* (e.g. the Nov 8–12 Atlas records are designs, several marked "design only" in the book itself), this census follows the notes/GitHub and counts them as design work, not capability.
+- **Books vs primary sources:** the atlas book's roadmap chapter explicitly dates itself 2026-11-23 and defers to issue #13241; where its design-record table and the daily notes differ on what _shipped_ (e.g. the Nov 8–12 Atlas records are designs, several marked "design only" in the book itself), this census follows the notes/GitHub and counts them as design work, not capability.
 - **doc/ dates vs GitHub:** March–April dated records exist with zero merged PRs in the same window (GitHub search, 2026-03-01 → 2026-09-27, code repo). Treated above as design records, not build history.
 - **Fork counts:** opencode and openchamber fork merged-PR counts are near-identical in W43 (181/181) and W44 (366/365) as returned by GitHub search; they are reported as returned, not adjusted.
 - **Stewardship log scope:** the cycle log proves oversight cadence and blocker history (e.g. the five-item blocked-on-Drew carry still named at cycle ~471, `CYCLE-LOG.md`); it was not used as evidence that any feature shipped.

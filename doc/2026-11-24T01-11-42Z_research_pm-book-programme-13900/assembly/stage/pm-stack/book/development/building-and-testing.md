@@ -10,15 +10,15 @@ The aggregator, the console, the projector, and pm-dispatch are Bun applications
 
 `pm-stack/aggregator/package.json` (name `pm-aggregator-ui`, version 0.1.0) records the scripts:
 
-| Command, run in `pm-stack/aggregator/` | What it does |
-|---|---|
-| `bun run dev` | Runs `src/server.ts` with `PM_AGG_DEV=1` |
-| `bun run start` | Runs `src/server.ts` |
-| `bun test` | The test suite: the `test/` directory's `*.test.ts` files (the `test` script is `bun test`) |
-| `bun run typecheck` | `bunx tsc --noEmit` against `tsconfig.json` |
-| `bun run build:css` | Builds `src/assets/app.css` from `src/ui.css` with the Tailwind CLI. The built CSS is checked in; the Nix package treats the Tailwind and TypeScript dev-dependencies as build-time-only for that checked-in artifact |
-| `bun run provenance:check` | The provenance-matrix check, `scripts/check-provenance-matrix.ts`. CI runs this as its own job |
-| `bun run contract:check` | The contract-corpus check, `scripts/check-contract-corpus.ts` |
+| Command, run in `pm-stack/aggregator/` | What it does                                                                                                                                                                                                          |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bun run dev`                          | Runs `src/server.ts` with `PM_AGG_DEV=1`                                                                                                                                                                              |
+| `bun run start`                        | Runs `src/server.ts`                                                                                                                                                                                                  |
+| `bun test`                             | The test suite: the `test/` directory's `*.test.ts` files (the `test` script is `bun test`)                                                                                                                           |
+| `bun run typecheck`                    | `bunx tsc --noEmit` against `tsconfig.json`                                                                                                                                                                           |
+| `bun run build:css`                    | Builds `src/assets/app.css` from `src/ui.css` with the Tailwind CLI. The built CSS is checked in; the Nix package treats the Tailwind and TypeScript dev-dependencies as build-time-only for that checked-in artifact |
+| `bun run provenance:check`             | The provenance-matrix check, `scripts/check-provenance-matrix.ts`. CI runs this as its own job                                                                                                                        |
+| `bun run contract:check`               | The contract-corpus check, `scripts/check-contract-corpus.ts`                                                                                                                                                         |
 
 The remaining scripts are data jobs, not builds: the report generator, the quota-forecast backtest, the quota-anomaly replay, the reweight-proposal and weekly-review producers.
 
@@ -40,17 +40,17 @@ One registry test stands apart. `pm-stack/platform/workers.test.ts` holds `pm-st
 
 The stack's non-Bun components test in Python and shell, and the stack workflow names each suite explicitly:
 
-| Suite | Runner, as the workflow records it |
-|---|---|
-| `pm-stack/tests/` — Kaneo sync guard, closure watchdog, host-health collector, invariant-sweeper timeouts | Python `unittest` discovery over `pm-stack/tests/`, per named file |
-| `pm-stack/opencode-claimant/` — claimant, poll, launch, handoff, batch dispatch, babysitter, nudges suites | Python `unittest`, per named file; the claimant install suite is a Bun suite (`test/install.test.mjs`, run with `bun test`) |
-| `pm-stack/grist/test_update_choice_options.py` | Python `unittest`, named explicitly |
-| `pm-stack/lane-guard/test_lane_guard.py` | Python `unittest`, named explicitly |
-| `pm-stack/external-comms/test_push_quarantine.py` | Python `unittest`, named explicitly |
+| Suite                                                                                                                                     | Runner, as the workflow records it                                                                                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pm-stack/tests/` — Kaneo sync guard, closure watchdog, host-health collector, invariant-sweeper timeouts                                 | Python `unittest` discovery over `pm-stack/tests/`, per named file                                                                                                                                |
+| `pm-stack/opencode-claimant/` — claimant, poll, launch, handoff, batch dispatch, babysitter, nudges suites                                | Python `unittest`, per named file; the claimant install suite is a Bun suite (`test/install.test.mjs`, run with `bun test`)                                                                       |
+| `pm-stack/grist/test_update_choice_options.py`                                                                                            | Python `unittest`, named explicitly                                                                                                                                                               |
+| `pm-stack/lane-guard/test_lane_guard.py`                                                                                                  | Python `unittest`, named explicitly                                                                                                                                                               |
+| `pm-stack/external-comms/test_push_quarantine.py`                                                                                         | Python `unittest`, named explicitly                                                                                                                                                               |
 | `pm-stack/fleet-monitor/`, `pm-stack/scheduled-history/`, `pm-stack/provider-usage/`, `pm-stack/health-hooks/`, `pm-stack/shared-schema/` | Each directory carries its own Python tests in the tree. Which of these the stack workflow runs is UNVERIFIED from the workflow sections read for this chapter; run them in their own directories |
-| `pm-stack/scripts/fence-check.test.sh` and `pm-stack/scripts/kaneo-cutover.test.sh` | Shell suites for the store-migration fence and cutover gate. See [PM stack research and implementation roadmap](program-roadmap.md) |
-| `pm-stack/scripts/tailnet-bindings.test.sh` | Shell suite pinning the Pad and Grist tailnet bindings. The workflow fails the job if the suite reports SKIP, because a skip means the pin did not run |
-| Quota exporter suites: `pm-stack/opencode-usage-export/`, `pm-stack/cloudflare-export/`, `pm-stack/meta-exporter/` | Node test suites. The workflow records that the usage-export suite needs Node 24, because it imports `node:sqlite` |
+| `pm-stack/scripts/fence-check.test.sh` and `pm-stack/scripts/kaneo-cutover.test.sh`                                                       | Shell suites for the store-migration fence and cutover gate. See [PM stack research and implementation roadmap](program-roadmap.md)                                                               |
+| `pm-stack/scripts/tailnet-bindings.test.sh`                                                                                               | Shell suite pinning the Pad and Grist tailnet bindings. The workflow fails the job if the suite reports SKIP, because a skip means the pin did not run                                            |
+| Quota exporter suites: `pm-stack/opencode-usage-export/`, `pm-stack/cloudflare-export/`, `pm-stack/meta-exporter/`                        | Node test suites. The workflow records that the usage-export suite needs Node 24, because it imports `node:sqlite`                                                                                |
 
 ## The Nix build
 

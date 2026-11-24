@@ -266,8 +266,7 @@ describe("property oracle — no serve happens outside the bound", () => {
       let now = T0;
       let sourceDown = false;
       let lastInvalidationAt: number | null = null;
-      let requestedContentHash: string | undefined =
-        dataClass === "A" && rand() < 0.7 ? e.contentHash : undefined;
+      let requestedContentHash: string | undefined = dataClass === "A" && rand() < 0.7 ? e.contentHash : undefined;
 
       const steps = 1 + Math.floor(rand() * 12);
       for (let step = 0; step < steps; step++) {

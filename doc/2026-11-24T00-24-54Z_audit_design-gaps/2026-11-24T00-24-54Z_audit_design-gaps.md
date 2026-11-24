@@ -16,12 +16,12 @@ GitHub reads via `fleet gh api` search only (per_page=100, count-confirmed total
 
 ## Counts
 
-| Repo | design-title open | design-title closed | "needs design" open bodies |
-|---|---|---|---|
-| developing-today/code | 245 (241 issues excl. PRs) | 750 | 113 (71 not design-titled) |
-| developing-today-forks/opencode | 4 | 40 | 5 |
-| developing-today-forks/openchamber | 1 | 37 | 3 |
-| dezren39/fleet | 0 | 0 | 0 (9 open issues total, none design) |
+| Repo                               | design-title open          | design-title closed | "needs design" open bodies           |
+| ---------------------------------- | -------------------------- | ------------------- | ------------------------------------ |
+| developing-today/code              | 245 (241 issues excl. PRs) | 750                 | 113 (71 not design-titled)           |
+| developing-today-forks/opencode    | 4                          | 40                  | 5                                    |
+| developing-today-forks/openchamber | 1                          | 37                  | 3                                    |
+| dezren39/fleet                     | 0                          | 0                   | 0 (9 open issues total, none design) |
 
 code sufficiency histogram (of 9 standard sections absent from the issue body): 0 absent: 1 (the Lane 6 tracking issue itself); ≤2 absent: 8; 3–9 absent: 232. Short body (<3,500 chars) with ≥5 sections absent — design missing or very simple: **111**. Designs demanded by open issues (design-titled open + needs-design extras): **312** in code.
 
@@ -43,49 +43,53 @@ In the forks, closed design families are structurally sufficient (design issue +
 ## Prioritised design gaps — packets created (queue repo-health-code-pilot, kind feature_slice)
 
 ### P1 — blocking / family homes (priority 70/50)
-| Source | Gap | Task |
-|---|---|---|
-| code#8986 | design-register epic: designs tracked/boarded/monitored — register design family unwritten | 21560 |
-| code#12950 | F4 fleet orchestration & dispatch design-family home; designs unwritten | 21539 |
-| code#12951 | P2 decisions-system design-family home; designs unwritten | 21540 |
-| code#9521 | Nix cache as content store design program; no design doc | 21569 |
-| code#2025 | review-loop design cited by #2312/#2313 (§7.3/§8) but body lacks problem/goals/alternatives/approach/slices/acceptance/rollout/open-questions | 21542 |
+
+| Source     | Gap                                                                                                                                           | Task  |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| code#8986  | design-register epic: designs tracked/boarded/monitored — register design family unwritten                                                    | 21560 |
+| code#12950 | F4 fleet orchestration & dispatch design-family home; designs unwritten                                                                       | 21539 |
+| code#12951 | P2 decisions-system design-family home; designs unwritten                                                                                     | 21540 |
+| code#9521  | Nix cache as content store design program; no design doc                                                                                      | 21569 |
+| code#2025  | review-loop design cited by #2312/#2313 (§7.3/§8) but body lacks problem/goals/alternatives/approach/slices/acceptance/rollout/open-questions | 21542 |
 
 ### P2 — designs demanded by open issues, missing (priority 50/40)
-| Source | Gap | Task |
-|---|---|---|
-| code#2036 | ID messaging/relay protocol v1 — all 9 sections absent | 21536 |
-| code#6003 | feature-object library attachment — impl #12640 waits on it | 21556 |
-| code#5959 | capability-change notices — impl #12921 waits on it | 21555 |
-| code#9140 | atlas recommendation objects — 631-char ask | 21566 |
-| code#9111 | id modes & configuration surface — 660-char ask | 21499 (pre-existing dedupe hit — packet already existed) |
-| code#9122 | id numeric registry namespaces — 690-char ask | 21565 |
-| code#9147 | id reputation + claims/dispute log — 692-char ask | 21568 |
-| code#9142 | id implicit-trust sync — 721-char ask | 21567 |
-| code#9132 | id delegation + cross-signed ceremony — 792-char ask | 21500 (pre-existing dedupe hit) |
-| code#5692 | Supabase→Turso sheet-derived staging (19 tables) | 21553 |
-| code#5693 | ci.events ledger Supabase→Turso | 21554 |
-| code#2137 | event-driven Slack collector design + PoC | 21537 |
-| code#2290 | RateAuthorisation as signed ID-graph object | 21538 |
-| code#2819 | native-spill write lease protocol | 21547 |
-| code#10306 | provider/model kind + input-modality marking | 21535 |
-| code#9085 | fleet second version in TypeScript (scope/WASM/transports) | 21563 |
-| code#9081 | fleet tool Workers/TypeScript equivalent | 21562 |
-| code#9079 | PM service Workers edition | 21561 |
-| code#9086 | SSO relying-party integration | 21564 |
+
+| Source     | Gap                                                         | Task                                                     |
+| ---------- | ----------------------------------------------------------- | -------------------------------------------------------- |
+| code#2036  | ID messaging/relay protocol v1 — all 9 sections absent      | 21536                                                    |
+| code#6003  | feature-object library attachment — impl #12640 waits on it | 21556                                                    |
+| code#5959  | capability-change notices — impl #12921 waits on it         | 21555                                                    |
+| code#9140  | atlas recommendation objects — 631-char ask                 | 21566                                                    |
+| code#9111  | id modes & configuration surface — 660-char ask             | 21499 (pre-existing dedupe hit — packet already existed) |
+| code#9122  | id numeric registry namespaces — 690-char ask               | 21565                                                    |
+| code#9147  | id reputation + claims/dispute log — 692-char ask           | 21568                                                    |
+| code#9142  | id implicit-trust sync — 721-char ask                       | 21567                                                    |
+| code#9132  | id delegation + cross-signed ceremony — 792-char ask        | 21500 (pre-existing dedupe hit)                          |
+| code#5692  | Supabase→Turso sheet-derived staging (19 tables)            | 21553                                                    |
+| code#5693  | ci.events ledger Supabase→Turso                             | 21554                                                    |
+| code#2137  | event-driven Slack collector design + PoC                   | 21537                                                    |
+| code#2290  | RateAuthorisation as signed ID-graph object                 | 21538                                                    |
+| code#2819  | native-spill write lease protocol                           | 21547                                                    |
+| code#10306 | provider/model kind + input-modality marking                | 21535                                                    |
+| code#9085  | fleet second version in TypeScript (scope/WASM/transports)  | 21563                                                    |
+| code#9081  | fleet tool Workers/TypeScript equivalent                    | 21562                                                    |
+| code#9079  | PM service Workers edition                                  | 21561                                                    |
+| code#9086  | SSO relying-party integration                               | 21564                                                    |
 
 ### P3 — deficient designs to upgrade (priority 40/30)
-| Source | Gap | Task |
-|---|---|---|
-| code#8870 | P6 Turso+Cloudflare — unratified DRAFT, 7 sections absent | 21557 |
-| code#8872 | P8 Storage program — unratified DRAFT, 7 sections absent | 21558 |
-| code#8873 | P9 Lab integration — unratified DRAFT, 7 sections absent | 21559 |
+
+| Source        | Gap                                                                                 | Task  |
+| ------------- | ----------------------------------------------------------------------------------- | ----- |
+| code#8870     | P6 Turso+Cloudflare — unratified DRAFT, 7 sections absent                           | 21557 |
+| code#8872     | P8 Storage program — unratified DRAFT, 7 sections absent                            | 21558 |
+| code#8873     | P9 Lab integration — unratified DRAFT, 7 sections absent                            | 21559 |
 | opencode#1680 | realtime/duplex audio façade — design PR #2033 exists; verify + upgrade vs standard | 21541 |
 
 ### Continuation packets (remainder batches)
-| Packet | Work | Task |
-|---|---|---|
-| #13873 slice-2 | packetise next 25 of Appendix A | 21579 |
+
+| Packet         | Work                                                   | Task  |
+| -------------- | ------------------------------------------------------ | ----- |
+| #13873 slice-2 | packetise next 25 of Appendix A                        | 21579 |
 | #13873 slice-3 | triage + packetise Appendix C (71 needs-design issues) | 21580 |
 
 Duplicate tasks 21543/21544 (concurrent-enqueue race for #2025) were cancelled with reason recorded; canonical task is 21542.

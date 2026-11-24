@@ -5526,7 +5526,9 @@ if (cfg.source === "live") {
   void startPmCoreJobs({
     warn: (message) => console.log(`[pm-core] ${message}`),
   }).catch((error) => {
-    console.error(`[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`,
+    );
   });
 }
 
