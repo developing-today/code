@@ -10,7 +10,13 @@ and nothing else. Design record:
 This directory is the schema home for that database. The tenant
 **data** plane (per-user databases and the `UserDO` that serves them)
 is `../src/`; this is the control plane above it, queried by tenancy
-Workers and the `TenancyOpsDO` of later E slices.
+Workers and driven, per tenant, by the `TenantOpsDO` in
+`../src/tenant-ops.ts` (E2, #12797): the §4 provisioning state
+machine over the `tenant_db` row — intent-first idempotent creation,
+retry, compensation, and the two-phase deletion. E2 needed no schema
+change: the baseline row already carries every field the machine
+writes, and the machine's own journal lives in the object's storage,
+not in this database.
 
 ## The invariant (design §2.3, "never central")
 
@@ -37,8 +43,9 @@ tables and the sync/publish protocols never branch on "hosted".
 
 Numbered, append-only SQL files in `migrations/`, applied in order.
 `0001_tenancy_baseline.sql` is the §2.1 baseline (E1, #12796); later
-E slices (E2 provisioning, E4 credentials, E5 publish) add migrations
-here rather than editing landed ones. `meta.schema_version` records
+E slices add migrations here rather than editing landed ones when
+they need schema the baseline lacks (E2 provisioning needed none;
+E4 credentials and E5 publish are the expected next authors). `meta.schema_version` records
 the applied baseline, mirroring the `UserDO` bootstrap pattern in
 `../src/user-do.ts`.
 
