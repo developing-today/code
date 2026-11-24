@@ -80,6 +80,8 @@ export default {
 };
 
 export class PmNotify {
+  private operation: Promise<void> = Promise.resolve();
+
   constructor(
     private state: DurableObjectState,
     private env: Env,
@@ -94,6 +96,22 @@ export class PmNotify {
 
   private async save(state: RelayState): Promise<void> {
     await this.state.storage.put(STATE_KEY, state);
+  }
+
+  /** Serialize read-modify-write operations so overlapping event, beat,
+   * and alarm work cannot overwrite each other's whole-state updates. */
+  private async serialize<T>(work: () => Promise<T>): Promise<T> {
+    const previous = this.operation;
+    let release!: () => void;
+    this.operation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
   }
 
   /** Send one episode payload to every mirrored subscription that
@@ -131,6 +149,10 @@ export class PmNotify {
   }
 
   async fetch(req: Request): Promise<Response> {
+    return this.serialize(() => this.handleFetch(req));
+  }
+
+  private async handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     let state = await this.load();
     const origin = req.headers.get("X-Relay-Origin");
@@ -201,6 +223,12 @@ export class PmNotify {
   /** The dead-man's switch itself: no beat inside the window =>
    * open the episode and send the one stack.silent push. */
   async alarm(): Promise<void> {
+    return this.serialize(async () => {
+      await this.handleAlarm();
+    });
+  }
+
+  private async handleAlarm(): Promise<void> {
     const loaded = await this.load();
     const outcome = applyAlarm(loaded, Date.now());
     if (!outcome.opened) return;

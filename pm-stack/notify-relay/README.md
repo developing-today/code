@@ -42,6 +42,12 @@ Everything else 404s. The heartbeat response carries
 `pendingAnswers` — step 3's drain count, always 0 in step 1, so
 the client contract is stable from the first beat.
 
+`test/event.test.ts` is the event-mirror comparison harness: it keeps a
+source-ledger fixture for incident, needs-Drew, and quota-wall events,
+posts those events (including a concurrent duplicate), and compares the
+source IDs with the Durable Object's stored mirror log. It also verifies
+that the event path leaves edge delivery state untouched.
+
 ## Recorded deviation from the design letter
 
 Design §3 names an epoch change as the recovery signal, on the

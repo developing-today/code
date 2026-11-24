@@ -14,8 +14,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PushSubscriptionRow } from "../src/alerts.ts";
-import { buildHeartbeatBody, buildSnapshotBody, NotifyRelayClient } from "../src/notify-relay.ts";
+import type { IncidentMirrorRow, PushSubscriptionRow } from "../src/alerts.ts";
+import type { NotificationCandidate } from "../src/notifications.ts";
+import { buildHeartbeatBody, buildSnapshotBody, incidentMirrorEvent, NotifyRelayClient } from "../src/notify-relay.ts";
 
 const row = (over: Partial<PushSubscriptionRow> = {}): PushSubscriptionRow => ({
   id: "sub-1",
@@ -51,15 +52,19 @@ async function makeClient(
     rows?: PushSubscriptionRow[];
     storeNull?: boolean;
     secret?: string | null;
+    blockStateFile?: boolean;
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "notify-relay-test-"));
   dirs.push(dir);
+  const blocker = join(dir, "state-parent-blocker");
+  if (opts.blockStateFile) await writeFile(blocker, "file where a parent directory is required");
+  const stateFile = opts.blockStateFile ? join(blocker, "notify-relay.json") : join(dir, "notify-relay.json");
   const calls: RecordedCall[] = [];
   const rows = opts.rows ?? [row()];
   const client = new NotifyRelayClient({
     url: "https://pm-notify.example.workers.dev",
-    stateFile: join(dir, "notify-relay.json"),
+    stateFile,
     getStore: async () => (opts.storeNull ? null : { listSubscriptions: async () => rows }),
     resolveSecret: async () => (opts.secret === undefined ? "test-secret" : opts.secret),
     fetchImpl: (async (url: string, init: RequestInit) => {
@@ -81,7 +86,7 @@ async function makeClient(
     now: () => Date.parse("2026-11-23T12:00:00Z"),
   });
   clients.push(client);
-  return { client, calls, rows, stateFile: join(dir, "notify-relay.json") };
+  return { client, calls, rows, stateFile };
 }
 
 const okHandler = (call: RecordedCall) =>
@@ -109,6 +114,42 @@ describe("snapshot + heartbeat bodies (design §1 shapes)", () => {
       stackEpoch: "epoch-x",
       seq: 3,
       at: "2026-11-23T12:00:00Z",
+    });
+  });
+});
+
+describe("incident ledger replay (authoritative transition payload)", () => {
+  test("an opened critical event is mirrored by its event id even if the incident has since closed", () => {
+    const row: IncidentMirrorRow = {
+      id: "incident-42",
+      source: "sentinel",
+      incident_key: "db-down",
+      severity: "critical",
+      title: "Database unavailable",
+      body: "Connection refused",
+      status: "closed",
+      first_seen_at: "2026-11-23T11:00:00.000Z",
+      last_seen_at: "2026-11-23T11:10:00.000Z",
+      delivered_at: null,
+      escalated_at: null,
+      acked_at: null,
+      closed_at: "2026-11-23T11:10:00.000Z",
+      occurrences: 1,
+      mirror_event_id: 91,
+      mirror_event_at: "2026-11-23T11:00:00.000Z",
+      mirror_event_kind: "opened",
+    };
+
+    expect(incidentMirrorEvent(row, "https://pm.example.test")).toMatchObject({
+      mirrorId: "alerts-incident-event:91",
+      objectRef: "incident:incident-42",
+      transition: "opened",
+      raisedAt: "2026-11-23T11:00:00.000Z",
+      payload: {
+        class: "incident",
+        url: "https://pm.example.test/alerts#incident-incident-42",
+        title: "Database unavailable",
+      },
     });
   });
 });
@@ -241,6 +282,54 @@ describe("the client's contact discipline", () => {
     expect(JSON.parse(await readFile(stateFile, "utf8")).pendingEvents).toEqual([]);
     for (const event of sourceEvents) await client.mirrorEvent(event);
     expect(calls.filter((call) => call.url.endsWith("/mirror/event"))).toHaveLength(eventCalls.length);
+  });
+
+  test("a quota wall recurrence after recovery gets a new stable episode id", async () => {
+    const mirrored = new Map<string, Record<string, unknown>>();
+    const { client, calls } = await makeClient((call) => {
+      if (call.url.endsWith("/mirror/event")) {
+        const event = call.body!;
+        mirrored.set(String(event.mirrorId), event);
+      }
+      return okHandler(call);
+    });
+    await client.start();
+    const candidate: NotificationCandidate = {
+      class: "quota-wall",
+      objectRef: "quota:pool-a",
+      stateFingerprint: JSON.stringify({ state: "walled", resetAt: "2026-11-25T00:00:00.000Z" }),
+      title: "Quota wall",
+      body: "Pool is walled",
+      url: "/quota",
+      observedAt: new Date().toISOString(),
+      breakthrough: true,
+    };
+
+    await client.mirrorCandidates([candidate]);
+    await client.beat();
+    await client.mirrorCandidates([candidate]); // retries in the same episode keep one id
+    await client.mirrorCandidates([]); // recovery closes the active episode
+    await client.mirrorCandidates([candidate]);
+    await client.beat();
+    await client.beat();
+
+    const ids = calls.filter((call) => call.url.endsWith("/mirror/event")).map((call) => call.body?.mirrorId);
+    expect(new Set(ids).size).toBe(2);
+    expect(mirrored.size).toBe(2);
+  });
+
+  test("a failed durable enqueue rejects before any mirror request can be sent", async () => {
+    const { client, calls } = await makeClient(okHandler, { blockStateFile: true });
+    await expect(
+      client.mirrorEvent({
+        mirrorId: "must-persist-first",
+        objectRef: "incident:9",
+        transition: "opened",
+        raisedAt: new Date().toISOString(),
+        payload: { class: "incident" },
+      }),
+    ).rejects.toThrow();
+    expect(calls.filter((call) => call.url.endsWith("/mirror/event"))).toHaveLength(0);
   });
 });
 
