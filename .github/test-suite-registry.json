@@ -1330,6 +1330,7 @@
         "pkgs/atlas-search/crates/atlas-search/tests/cli_parity.rs",
         "pkgs/atlas-search/crates/atlas-embed/tests/gate_a.rs",
         "pkgs/atlas-search/crates/atlas-core/tests/parity.rs",
+        "pkgs/atlas-search/crates/atlas-core/tests/repo_docs.rs",
         "pkgs/atlas-search/crates/**/src/**"
       ],
       "invocation": "cd pkgs/atlas-search && cargo test --workspace --all-targets",
