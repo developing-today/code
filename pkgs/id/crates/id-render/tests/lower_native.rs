@@ -156,7 +156,10 @@ fn lower_emits_os_standard_controls_from_decision_5852_s2() {
         find(&mac.root, "form").expect("form").control,
         "grouped form layout"
     );
-    assert!(mac_report.element_defaults.is_empty());
+    assert_eq!(
+        mac_report.element_defaults,
+        [] as [id_render::lower_native::NativeElementDefault; 0]
+    );
 
     let (windows, _) = lower_native(&doc, &composed("windows", vec![])).expect("windows lowers");
     assert_eq!(
@@ -266,7 +269,7 @@ fn mapped_assertions_record_platform_renderings_decision_5852_s3() {
     )
     .expect("lowering succeeds");
     assert_eq!(report.mapped.len(), 4);
-    assert!(report.defaulted.is_empty());
+    assert_eq!(report.defaulted, [] as [id_render::lower_native::DefaultedNativeAssertion; 0]);
     let rendering = |property: &str| {
         report
             .mapped
@@ -399,7 +402,7 @@ fn raw_css_winner_is_a_platform_default_on_native_decision_5852_a3() {
         theme_value: None,
     };
     let (_, report) = lower_native(&doc, &composed("mac", vec![raw])).expect("lowering succeeds");
-    assert!(report.mapped.is_empty());
+    assert_eq!(report.mapped, [] as [id_render::lower_native::MappedNativeAssertion; 0]);
     assert_eq!(report.defaulted.len(), 1);
     assert!(
         report.defaulted[0].warning.contains("rebeccapurple"),

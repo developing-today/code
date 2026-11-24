@@ -385,7 +385,10 @@ fn raw_css_is_ignored_off_web_with_a_warning_decision_5854_s2_3_s6d() {
     // appears in the resolved IR for a non-web target.
     assert_eq!(button.properties.len(), 1);
     assert_eq!(button.properties[0].layer, WinningLayer::Assertion);
-    assert!(composed.report.reported_overrides.is_empty());
+    assert_eq!(
+        composed.report.reported_overrides,
+        [] as [id_render::compose::ReportedOverride; 0]
+    );
     assert!(
         composed
             .report
@@ -470,10 +473,13 @@ fn target_locality_other_targets_declarations_do_not_leak_decision_5854_s2_4() {
     let composed =
         compose_document(&doc, &target("native"), &ComposeData::default()).expect("composes");
     let button = find(&composed.root, BUTTON_PATH).expect("button present");
-    assert!(button.properties.is_empty());
+    assert_eq!(button.properties, [] as [id_render::compose::ResolvedProperty; 0]);
     assert_eq!(button.presentation, None);
-    assert!(composed.report.warnings.is_empty());
-    assert!(composed.report.reported_overrides.is_empty());
+    assert_eq!(composed.report.warnings, [] as [id_render::compose::CompositionWarning; 0]);
+    assert_eq!(
+        composed.report.reported_overrides,
+        [] as [id_render::compose::ReportedOverride; 0]
+    );
 }
 
 #[test]
