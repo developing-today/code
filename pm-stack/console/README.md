@@ -67,7 +67,9 @@ Between runs it shows as failed whenever its last run failed, so one bad
 run that the next run mends says nothing; five minutes of failing run
 after run is reported once ("A unit keeps failing", with what the unit
 is for), and so is its mending. That is what tells the owner when the
-laptop's checkout has stopped following `main`.
+laptop's checkout has stopped following `main`, and, for the console's
+own copy of `main`, when `pm-console-redeploy` cannot put it into
+service.
 
 ### The plan: roadmaps, bugs, intake
 
@@ -321,13 +323,33 @@ dropped, sent, or tried again there.
 
 ### Merges deploy themselves
 
-`pm-console-redeploy.timer` runs `redeploy.sh` every minute. When the
-checkout holds console code that is not the code in service, the new
-code is started in a self-check that listens on nothing
-(`bun run src/server.ts --check`, with the service's own settings); only
-if that passes is it put into service. Code that does not start is left
-out, the old code keeps running, and the unit fails, which the Services
-screen and notifications show.
+On a machine the console runs from a copy of `main` that is its own,
+under `~/.local/share/pm-console`:
+
+| There                | What it is                                                                        |
+| -------------------- | --------------------------------------------------------------------------------- |
+| `repo/`              | a clone that fetches only `main` from GitHub, and only the console's part of it   |
+| `releases/<commit>/` | the console's files at one commit of `main`, with `.release` saying which         |
+| `current`            | a link to the release in service: what every one of the console's units runs from |
+
+Nothing else works there. (Until 2026-11-24 the console ran from the
+checkout the fleet's lanes work in, and was whatever that checkout held:
+`main`'s code from the day before, or another branch's. #13833.)
+
+`pm-console-redeploy.timer` runs `redeploy.sh` every minute. It asks
+GitHub for `main`. When the console's code there (or one of its units,
+or the dashboard's list of pages) is not what is in service, that
+commit's files are laid out as a new release and started in a
+self-check that listens on nothing (`bun run src/server.ts --check`,
+with the service's own settings). Only if that passes is the release
+made current and its own `install.sh` run, which installs the units,
+restarts the service and waits for it to answer its health check as
+that commit. A release that does not start, or does not come up, does
+not stay: the one before it is put back, and the unit fails, which the
+Services screen and notifications show. With GitHub out of reach
+nothing changes, and after half an hour of that the unit fails too.
+The newest releases are kept, always including the one in service and
+the one before it.
 
 ## Sign-in
 
@@ -371,7 +393,8 @@ app's link to this origin), and the two phone paths under
 ## Run
 
 ```bash
-bash pm-stack/console/install.sh          # user unit pm-console, port 4872, loopback only; and its three timers
+bash pm-stack/console/redeploy.sh         # from any checkout, once: makes the console's own copy of main and installs
+                                          # user unit pm-console (port 4872, loopback only) and its three timers from it
 python3 pm-stack/console/scripts/expose.py --owner you@example.com   # first time: Access, console env, tunnel route, DNS, the edge's route
 python3 pm-stack/console/scripts/expose.py --check   # what public exposure would change
 python3 pm-stack/console/scripts/expose.py           # later runs (the timer's): the owner is remembered

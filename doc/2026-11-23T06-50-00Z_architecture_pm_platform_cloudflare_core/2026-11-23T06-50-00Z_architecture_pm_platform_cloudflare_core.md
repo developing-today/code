@@ -1676,3 +1676,50 @@ what each must make an agent do differently, written out in the tests;
 something to do is compared with what was filed before, whole.
 Twenty-two faults planted one at a time, all caught. In the Worker's
 real runtime, 54 of 54.
+
+## 2026-11-24T10:14Z Update: a machine's console runs from its own copy of main
+
+**What was wrong.** On the laptop the console ran from the checkout the
+fleet's lanes work in. That checkout is not kept at main: lanes leave it
+on their own branches, with half-written files, and the unit that would
+pull main into it rightly refuses to. So the console in service was
+main's code from the day before, and from 08:39Z on 2026-11-24 another
+branch's code altogether (`9c2b4ad096e3`, a commit of a design branch),
+put into service by the console's own redeploy when the checkout was
+switched to that branch. Five passes over #13833 by five lanes each
+found it still so, and changed nothing.
+
+**The source of truth is GitHub's main, not a directory on the laptop.**
+A machine's console now runs from a copy that is its own, under
+`~/.local/share/pm-console`: a clone that fetches only main and only
+the console's part of the tree, a release laid out for each commit, and
+a link to the one in service. Every minute `redeploy.sh` asks GitHub
+for main; when the console's code there is not what is in service it
+lays the commit out as a release, starts it in a self-check, and only
+then moves the link and runs the release's own `install.sh`, which
+restarts the service and waits for it to answer its health check as
+that commit. A release that does not start or does not come up does not
+stay: the one before it is put back and the unit fails, where the
+Services screen and the notifications show it. GitHub out of reach
+changes nothing, and is a failure after half an hour.
+
+**What a machine is, after this.** Still one of the machines that
+report to Cloudflare, with what only a machine has: its units, the
+dashboard, the fleet's own commands. What code it runs is no longer a
+fact about a directory someone works in.
+
+**Checked.** Both scripts are run for real: against a bare repository
+standing in for GitHub (reached over git's own protocol, allowing the
+partial fetches GitHub allows), with stand-ins only for the program
+that runs the self-check, for `systemctl` and for the health check.
+What is in service is compared with the files of the commit pushed to
+main, read back from git. A checkout on another branch with
+half-written files, the script run from inside it: main is what goes
+into service, and the checkout is left as it was. Thirty-three faults
+planted one at a time, all caught after one test was tightened.
+
+**Not yet.** The edge still cannot tell by itself that a machine runs
+other console code than it does: each says a commit, and two commits
+can hold the same console. A release now records its console's tree
+beside its commit, which is what the two sides would compare (#13833's
+third point).
