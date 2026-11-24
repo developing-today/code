@@ -66,6 +66,7 @@ import { buildOutcomeView, drillOutcomeFacts, type OutcomeDrillSelector } from "
 import { OutcomeFactStore } from "./outcome-attribution.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
+import { enforceIdpWriteRole } from "./idp-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
 import { BreakGlassTokenStore, authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
 import {
@@ -2359,6 +2360,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   }
 
   if (req.method === "POST" && path === "/api/reports/resolve") {
+    const idp = await enforceIdpWriteRole(req);
+    if (!idp.ok) return json({ error: idp.error }, idp.status);
     const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
     if (!access.ok || !access.verified || access.author.kind !== "drew") {
       return json({ error: "verified Access owner required" }, 403);
@@ -2456,6 +2459,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   }
 
   if (req.method === "POST" && path === "/api/reports/late-update") {
+    const idp = await enforceIdpWriteRole(req);
+    if (!idp.ok) return json({ error: idp.error }, idp.status);
     const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
     if (!access.ok || !access.verified || access.author.kind !== "drew") {
       return json({ error: "verified Access owner required" }, 403);
@@ -2661,6 +2666,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
 
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/roadmap/annotations") {
+    const idp = await enforceIdpWriteRole(req);
+    if (!idp.ok) return json({ error: idp.error }, idp.status);
     try {
       const parsed = validateNewRoadmapAnnotation(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
@@ -2684,6 +2691,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     }
   }
   if (req.method === "POST" && path === "/api/roadmap/annotations/alias") {
+    const idp = await enforceIdpWriteRole(req);
+    if (!idp.ok) return json({ error: idp.error }, idp.status);
     try {
       const body = (await readJsonBody(req)) as { aliasRef?: unknown; stableRef?: unknown };
       if (typeof body.aliasRef !== "string" || typeof body.stableRef !== "string") {
@@ -2878,6 +2887,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
     return json({ prompt: updated });
   }
   if (req.method === "POST" && path === "/api/comments") {
+    const idp = await enforceIdpWriteRole(req);
+    if (!idp.ok) return json({ error: idp.error }, idp.status);
     try {
       const parsed = validateNewComment(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
@@ -2891,11 +2902,16 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       // outage); with no secret configured the write stays unverified.
       // Runs on the Access-derived author above, so the two gates
       // compose: identity first, privilege second.
-      const authorization = authorizeCommentAuthor(
-        parsed.value.author,
-        req.headers.get("authorization"),
-        await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
-      );
+      // A verified IdP owner/orchestrator token is the privileged proof
+      // when the IdP rollout is enabled. Keep the legacy operator token
+      // behavior for deployments that have not configured an IdP issuer.
+      const authorization = idp.configured
+        ? { ok: true as const, authorVerified: true }
+        : authorizeCommentAuthor(
+            parsed.value.author,
+            req.headers.get("authorization"),
+            await resolveBwsSecretLookup("pm-aggregator.comments-operator-token"),
+          );
       if (!authorization.ok) return json({ error: authorization.error }, authorization.status);
       // #1509: a persistence failure is a server error, not bad input -
       // only the validation/body-parse path above earns a 400.
@@ -2943,6 +2959,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   // report outcomes to /api/actions/result. The dashboard itself never
   // writes GitHub, the Project, or a session server.
   if (req.method === "POST" && path === "/api/actions") {
+    const idp = await enforceIdpWriteRole(req);
+    if (!idp.ok) return json({ error: idp.error }, idp.status);
     try {
       const parsed = validateNewAction(await readJsonBody(req));
       if (!parsed.ok) return json({ error: parsed.error }, 400);
@@ -2950,8 +2968,9 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
       // preference actions, on the configured Access identity.
       const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
       if (!actionAccess.ok) {
-        // #9608 (design #1253 section 6): during an Access/IdP outage
-        // an eligible write from the stack-local network queues as an
+      // #9608 (design #1253 section 6): during an Access outage, after
+      // the IdP role gate above has verified the caller, an eligible
+      // write from the stack-local network queues as an
         // unverified claim (provenance: outage-queued) instead of
         // failing — held out of the actions store until its claimant
         // confirms it with a fresh login. Anything else keeps the
@@ -3066,6 +3085,8 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   // its error and appends nothing, so a partial batch never silently
   // drops work — the failed items simply remain in Needs-you.
   if (req.method === "POST" && path === "/api/actions/batch") {
+    const idp = await enforceIdpWriteRole(req);
+    if (!idp.ok) return json({ error: idp.error }, idp.status);
     try {
       const body = (await readJsonBody(req)) as { actions?: unknown };
       if (!Array.isArray(body.actions) || body.actions.length === 0 || body.actions.length > 100) {
