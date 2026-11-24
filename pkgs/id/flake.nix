@@ -154,6 +154,10 @@
               # Runtime builds deliberately omit test artifacts; named checks
               # below continue to compile and run their own test targets.
               doCheck = false;
+              # buildDepsOnly must not run the CMake configure hook: the
+              # dependency derivation only compiles Cargo deps (cmake is a
+              # native tool for downstream crates, not a configure step here).
+              dontUseCmakeConfigure = true;
             };
             cargoArtifacts = craneLib.buildDepsOnly commonArgs;
           in
