@@ -85,6 +85,7 @@ import { contact, Push } from "../../src/push.ts";
 import { goesBy, platformSettings, settingsDifferences, settingsThatDiffer } from "../../src/settings.ts";
 import type { Store } from "../../src/store.ts";
 import { timed, unread } from "../../src/timed.ts";
+import { ACT_MS } from "./timings.ts";
 import appFiles from "../../public/files.json";
 
 /** A rank set twice ends at the last one: an older held rank never
@@ -235,6 +236,18 @@ interface Acted {
    * only when that asking was the only one. (A record from before this
    * was counted has none, and is taken to have set off already.) */
   relays?: number;
+}
+
+/** One host asking currently out for an action about a subject. The
+ * original deadline survives object passivation: once it passes, the
+ * action is kept as the host's rather than being retried here. */
+interface RelayMarker {
+  token: string;
+  id: string;
+  kind: string;
+  args: Record<string, unknown>;
+  who: string;
+  until: number;
 }
 const ICONS = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
 
@@ -393,6 +406,8 @@ export class Edge {
   /** For each thing a taken action is about, the doing of it: a newer
    * action about the same thing waits for it to end. */
   private busy = new Map<string, Promise<void>>();
+  /** Serialize the marker's read/modify/write cycle for each subject. */
+  private relayWrites = new Map<string, Promise<void>>();
   /** A pass over what is held is under way in this object. */
   private draining = false;
   /** No pass before this time: the last one could do nothing. */
@@ -2604,6 +2619,11 @@ export class Edge {
                 await doing;
                 continue;
               }
+              // An action already sent to the host is still being done
+              // there until its answer, lost-asking notice or deadline.
+              // It is not in `held` while that asking is outstanding.
+              const relaying = await this.outstandingRelays(about);
+              if (relaying.some((mark) => mark.id !== id)) return this.keep(newer);
               const older = held.filter((h) => h.id !== id && subjectOf(h.kind, h.args) === about);
               if (older.length === 0) {
                 clear = true;
@@ -2648,8 +2668,14 @@ export class Edge {
         // for a machine that is about the same thing. Sent straight to
         // a machine that has just come back, it would be done before
         // the older one, which would undo it when its turn came.
+        const about = subjectOf(kind, args as Record<string, unknown>);
+        if (about !== null) {
+          const relaying = await this.outstandingRelays(about);
+          if (relaying.some((mark) => mark.id !== id)) {
+            return this.keep({ id: id ?? crypto.randomUUID(), kind, args, who: by });
+          }
+        }
         if (HOLDABLE.has(kind)) {
-          const about = subjectOf(kind, args as Record<string, unknown>);
           // A retry under the same name is the same action, not a later
           // one: it goes back to the host, which sorts out whether it
           // already did it, instead of waiting behind itself.
@@ -2687,6 +2713,19 @@ export class Edge {
           await this.kv.put(`a:${id}`, { at: this.now(), kind, state: "given", relays } satisfies Acted);
           await this.actedIndex(id);
         }
+        const relayId = id ?? crypto.randomUUID();
+        const relayToken = crypto.randomUUID();
+        if (about !== null) {
+          const began = await this.beginRelay({
+            token: relayToken,
+            id: relayId,
+            kind,
+            args: args as Record<string, unknown>,
+            who: by,
+            until: this.now() + ACT_MS,
+          }, about);
+          if (!began) return this.keep({ id: relayId, kind, args, who: by }, "unknown");
+        }
         // The host's to do. The stateless part relays it, and if the
         // host cannot be reached comes back to have it held.
         // It goes under the device's name for it, or one given here,
@@ -2696,7 +2735,8 @@ export class Edge {
         // it a second time.
         return next("relay", {
           mode: "act",
-          id: id ?? crypto.randomUUID(),
+          id: relayId,
+          relayToken,
           // Whether the name is the device's (it may be offered again)
           // or one given here for this one asking.
           named: id !== null,
@@ -2791,6 +2831,87 @@ export class Edge {
     await this.kv.put("acted", keep);
   }
 
+  private relayKey(about: string): string {
+    return `relaying:${encodeURIComponent(about)}`;
+  }
+
+  private async withRelayWrite<T>(about: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.relayWrites.get(about) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.relayWrites.set(about, current);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.relayWrites.get(about) === current) this.relayWrites.delete(about);
+    }
+  }
+
+  /** The markers are in object storage, not memory, so another object's
+   * wake still sees an asking. An expired one is made a host-owned held
+   * action before the new action is allowed to choose a side. */
+  private async outstandingRelays(about: string): Promise<RelayMarker[]> {
+    return this.withRelayWrite(about, () => this.readOutstandingRelays(about));
+  }
+
+  private async readOutstandingRelays(about: string): Promise<RelayMarker[]> {
+    const key = this.relayKey(about);
+    const stored = ((await this.kv.get(key)) as RelayMarker[] | undefined) ?? [];
+    const active: RelayMarker[] = [];
+    let changed = false;
+    for (const mark of stored) {
+      if (mark.until > this.now()) {
+        active.push(mark);
+        continue;
+      }
+      changed = true;
+      const held = await this.keep(mark, "unknown");
+      // If the held queue was full, fail closed: retain the expired mark
+      // so this subject cannot pass it on a later request either.
+      if (!held.ok) active.push(mark);
+    }
+    if (changed) {
+      if (active.length > 0) await this.kv.put(key, active);
+      else await this.kv.delete(key);
+    }
+    return active;
+  }
+
+  private async beginRelay(mark: RelayMarker, about: string): Promise<boolean> {
+    return this.withRelayWrite(about, async () => {
+      const active = await this.readOutstandingRelays(about);
+      if (active.some((existing) => existing.id !== mark.id)) return false;
+      await this.kv.put(this.relayKey(about), [...active, mark]);
+      return true;
+    });
+  }
+
+  private async finishRelay(kind: unknown, args: unknown, token: unknown): Promise<void> {
+    if (
+      typeof token !== "string" ||
+      typeof kind !== "string" ||
+      args === null ||
+      typeof args !== "object" ||
+      Array.isArray(args)
+    ) {
+      return;
+    }
+    const about = subjectOf(kind, args as Record<string, unknown>);
+    if (about === null) return;
+    await this.withRelayWrite(about, async () => {
+      const key = this.relayKey(about);
+      const stored = ((await this.kv.get(key)) as RelayMarker[] | undefined) ?? [];
+      const active = stored.filter((mark) => mark.token !== token);
+      if (active.length === stored.length) return;
+      if (active.length > 0) await this.kv.put(key, active);
+      else await this.kv.delete(key);
+    });
+  }
+
   /** An action this side runs itself, recorded before and after. */
   private async own(
     kind: string,
@@ -2834,7 +2955,9 @@ export class Edge {
       who?: unknown;
       unreached?: unknown;
       named?: unknown;
+      relayToken?: unknown;
     } | null;
+    await this.finishRelay(body?.kind, body?.args, body?.relayToken);
     if (body?.unreached !== true) return this.keep(body, "unknown");
     // Word that this asking never arrived says the action reached no
     // machine only if it set off this once: another asking under the
@@ -2932,8 +3055,16 @@ export class Edge {
    * The relayed id is settled: a hold left behind by a lost answer for
    * the same name is dropped, since the host has now answered it. */
   private async relayed(req: Request): Promise<Response> {
-    const body = (await req.json().catch(() => null)) as { sections?: unknown; acts?: unknown; id?: unknown } | null;
+    const body = (await req.json().catch(() => null)) as {
+      sections?: unknown;
+      acts?: unknown;
+      id?: unknown;
+      kind?: unknown;
+      args?: unknown;
+      relayToken?: unknown;
+    } | null;
     await this.ready();
+    await this.finishRelay(body?.kind, body?.args, body?.relayToken);
     if (typeof body?.id === "string") {
       const held = await this.heldList();
       const at = held.findIndex((h) => h.id === body.id);

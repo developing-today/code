@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { DIRECT_ACTIONS, queueWrites } from "../edge/src/direct.ts";
 import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
-import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
+import { ACT_MS, forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
@@ -7189,6 +7189,134 @@ describe("the edge does the core itself", () => {
       1,
       asked,
     ]);
+  });
+
+  test("a newer action about the same thing waits while the older host asking is still out", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "older, slow" }, ID(235));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+    // The ask belongs to the host, not the object that sent it. A newly
+    // activated edge over the same storage must still hold the next act.
+    w.edge.now = w.makeEdge();
+
+    let secondDone = false;
+    const second = w
+      .act("issue.comment", { issue: 7, text: "newer" }, ID(236))
+      .finally(() => {
+        secondDone = true;
+      });
+    for (let turn = 0; turn < 200 && !secondDone; turn++) await new Promise((r) => setTimeout(r, 1));
+    const relaysWhileFirstOut = acts();
+
+    w.gate.wait = null;
+    open();
+    const [older, newer] = await Promise.all([first, second]);
+    expect(await older.json()).toMatchObject({ ok: true });
+    expect(await newer.json()).toMatchObject({ ok: true, held: true });
+    expect(relaysWhileFirstOut).toBe(before + 1);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
+    expect(heldIds(w)).toEqual([ID(236)]);
+  });
+
+  test("a host answer settles its subject marker so later actions are not held for the old asking", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "older, slow" }, ID(237));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+
+    const later = await w.act("issue.comment", { issue: 7, text: "later" }, ID(238));
+    expect(await later.json()).toMatchObject({ ok: true });
+    expect(acts()).toBe(before + 2);
+    expect(heldIds(w)).toEqual([]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(2);
+  });
+
+  test("a confirmed unreachable answer settles the subject marker and keeps the older action", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    w.net.hostUp = false;
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older, never arrived" }, ID(239))).json()).toMatchObject({
+      held: true,
+      waits: "either",
+    });
+
+    w.net.hostUp = true;
+    w.ghRefuses.length = 0;
+    await w.act("issue.comment", { issue: 7, text: "newer" }, ID(240));
+    expect([...w.stored.keys()].filter((key) => key.startsWith("relaying:"))).toEqual([]);
+    expect(heldIds(w)).toContain(ID(239));
+  });
+
+  test("no answer keeps the older action host-owned and holds a newer action behind it", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    w.net.giveUpEarly = true;
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    expect(await (await w.act("issue.comment", { issue: 7, text: "older, unknown" }, ID(243))).json()).toMatchObject({
+      held: true,
+      waits: "asked",
+    });
+    expect(acts()).toBe(before + 1);
+
+    w.net.giveUpEarly = false;
+    const newer = await w.act("issue.comment", { issue: 7, text: "newer" }, ID(244));
+    expect(await newer.json()).toMatchObject({ held: true });
+    expect(heldIds(w)).toEqual([ID(243), ID(244)]);
+    expect(acts()).toBe(before + 1);
+
+    w.gate.wait = null;
+    open();
+    await Promise.all(w.stillRunning);
+  });
+
+  test("an asking past its deadline becomes host-owned once, including across passivation", async () => {
+    const w = await primary();
+    w.ghRefuses.push(COMMENT);
+    let open = () => {};
+    w.gate.wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const acts = () => w.hostSaw.filter((seen) => seen === "POST /console/api/act").length;
+    const before = acts();
+    const first = w.act("issue.comment", { issue: 7, text: "older, slow" }, ID(241));
+    for (let turn = 0; turn < 200 && acts() === before; turn++) await new Promise((r) => setTimeout(r, 1));
+    expect(acts()).toBe(before + 1);
+
+    w.now.t += ACT_MS + 1;
+    w.edge.now = w.makeEdge();
+    const newer = await w.act("issue.comment", { issue: 7, text: "newer" }, ID(242));
+    expect(await newer.json()).toMatchObject({ ok: true, held: true });
+    expect(heldIds(w)).toEqual([ID(241), ID(242)]);
+    expect(acts()).toBe(before + 1);
+
+    w.gate.wait = null;
+    open();
+    expect(await (await first).json()).toMatchObject({ ok: true });
+    expect(heldIds(w)).toEqual([ID(242)]);
+    expect(w.ran.filter((r) => r.kind === "issue.comment")).toHaveLength(1);
   });
 
   test("a newer one about the same thing does not go ahead of one the laptop may have: it waits behind it, and one about something else does not", async () => {
