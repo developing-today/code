@@ -3984,6 +3984,13 @@ describe("the edge does the core itself", () => {
     // state, read the same way — state only, no hash, no value.
     const enrollTokens = (await (await w.browse("/console/api/enroll-tokens")).json()) as {
       agent: string;
+      kind: string;
+      groups: string[];
+      notes_identity: string | null;
+      created: string;
+      expires_at: string;
+      used_at: string | null;
+      revoked_at: string | null;
       state: string;
     }[];
     expect(enrollTokens).toEqual([
