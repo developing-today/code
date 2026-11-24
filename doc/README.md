@@ -242,6 +242,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [docs(pm-stack): complete needs-user design standard (#8830)](2026-11-24T05-55-00Z_design_pm-needs-user-actions-8830/2026-11-24T05-55-00Z_design_pm-needs-user-actions-8830.md) — design record, PR #14115 (2026-11-24).
 - [docs(13524): Notion importer slice 4 design — comments, degradation, export reader](2026-11-24T06-05-00Z_design_id13524_notion_importer_slice4.md) — design record, PR #14118 (2026-11-24).
 - [docs(id): design record for #12922 invite capability_pin term](2026-11-24T05-52-00Z_design_id12922_capability_pin/2026-11-24T05-52-00Z_design_id12922_capability_pin.md) — design record, PR #14120 (2026-11-24).
+- [docs(2036): ID messaging and relay protocol v1 design](2026-11-24T06-00-00Z_design_id_messaging_relay_protocol_v1/2026-11-24T06-00-00Z_design_id_messaging_relay_protocol_v1.md) — design record, PR #14094 (2026-11-24).
 
 ## Legacy places
 
