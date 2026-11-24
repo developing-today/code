@@ -141,11 +141,7 @@ export function matchesMetadataFilter(record: MetadataRecord, filter: MetadataFi
   if (filter.lane !== undefined && x.lane !== filter.lane) return false;
   if (filter.host !== undefined && x.host !== filter.host) return false;
   if (filter.queueId !== undefined && x.queueId !== filter.queueId) return false;
-  if (
-    filter.linkRelation !== undefined ||
-    filter.linkStatus !== undefined ||
-    filter.linkTarget !== undefined
-  ) {
+  if (filter.linkRelation !== undefined || filter.linkStatus !== undefined || filter.linkTarget !== undefined) {
     const hit = x.links.some(
       (link) =>
         (filter.linkRelation === undefined || link.relation === filter.linkRelation) &&

@@ -1,4 +1,4 @@
-//! The id command-line application layer: `cli` (argument parsing),
+//! The id command-line application layer and command dispatch: `cli` (argument parsing),
 //! `commands` (subcommand implementations), `repl`, and
 //! `server_config`, plus the support modules they share (`local`,
 //! `protocol`, `meta_client`, `helpers`, `chat_presence`,
@@ -40,6 +40,7 @@ pub mod local_events {
 }
 pub mod app_manifest;
 pub mod boundary_evidence;
+pub mod boundary_gate;
 pub mod chat_presence;
 pub mod cli;
 pub mod commands;

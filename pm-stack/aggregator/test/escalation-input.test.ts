@@ -1,12 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { routeEscalations } from "../src/escalation.ts";
 import { buildEscalationInput, SLO_FACET_MAP } from "../src/escalation-input.ts";
-import {
-  emptyState,
-  recordAttempt,
-  setInFlight,
-  type RemediationState,
-} from "../src/remediation.ts";
+import { emptyState, recordAttempt, setInFlight, type RemediationState } from "../src/remediation.ts";
 import type { SloFacetSummary } from "../src/slo.ts";
 
 const NOW = Date.parse("2026-11-22T12:00:00.000Z");
@@ -181,29 +176,20 @@ describe("escalation input adapter (#9991, design §4)", () => {
     state = recordAttempt(state, "projector", "restart-projector", "inc-1", NOW, {
       verified: false,
     });
-    const decisions = routed(
-      [summary({ id: "projector-up", budgetRemainingPercent: 20 })],
-      state,
-    );
+    const decisions = routed([summary({ id: "projector-up", budgetRemainingPercent: 20 })], state);
     expect(decisions[0]!.route).toBe("page");
     expect(decisions[0]!.reason).toContain("< 25%");
   });
 
   test("an exhausted budget pages on detection and caps remediation at one attempt", () => {
-    const decisions = routed(
-      [summary({ id: "feed-age", budgetRemainingPercent: 0 })],
-      emptyState(NOW),
-    );
+    const decisions = routed([summary({ id: "feed-age", budgetRemainingPercent: 0 })], emptyState(NOW));
     expect(decisions[0]!.route).toBe("page");
     expect(decisions[0]!.maxRemediationAttempts).toBe(1);
     expect(decisions[0]!.reason).toContain("budget exhausted");
   });
 
   test("two bad facets page together as a correlated failure", () => {
-    const decisions = routed(
-      [summary({ id: "feed-age" }), summary({ id: "quota-age" })],
-      emptyState(NOW),
-    );
+    const decisions = routed([summary({ id: "feed-age" }), summary({ id: "quota-age" })], emptyState(NOW));
     expect(decisions.map((d) => d.route)).toEqual(["page", "page"]);
     expect(decisions[0]!.reason).toContain("correlated failure");
   });

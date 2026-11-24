@@ -128,6 +128,48 @@ pub struct ReplicaClaim {
     pub lease_seconds: i64,
 }
 
+/// One task in a replica's coordination snapshot: the
+/// coordination-only fields discovery needs (slice 1's
+/// classification in #8583 — no payload, no issue content, nothing
+/// the cloud cannot re-derive). The snapshot is what
+/// [`CoordinationReplica::pick`] discovers claimable work from
+/// while the cloud database is unreachable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaTask {
+    pub task_id: i64,
+    /// Queue priority; `None` sorts last, matching the production
+    /// pick's `(priority IS NULL), priority ASC` ordering.
+    pub priority: Option<i64>,
+    /// Creation time (seconds since the epoch); the production
+    /// pick's second key, `created_at ASC`.
+    pub created_unix: i64,
+    /// Parked-until time (seconds since the epoch) for a task whose
+    /// park timer has not yet passed; `None` when the task is due
+    /// now. Mirrors the production pick's due gate: queued rows are
+    /// due, parked rows become due when their `not_before` passes.
+    pub not_before_unix: Option<i64>,
+}
+
+impl ReplicaTask {
+    /// The production pick order as a sort key: priority ascending
+    /// with NULL last, then creation time, then task id, so the
+    /// order is total and every replica implementation agrees on
+    /// it exactly.
+    fn pick_key(&self) -> (bool, i64, i64, i64) {
+        (
+            self.priority.is_none(),
+            self.priority.unwrap_or(0),
+            self.created_unix,
+            self.task_id,
+        )
+    }
+
+    /// Due at `now_unix`: no park timer, or the timer has passed.
+    fn due(&self, now_unix: i64) -> bool {
+        self.not_before_unix.map_or(true, |until| until <= now_unix)
+    }
+}
+
 /// One claim the replica honored locally while the cloud held the same
 /// task: surfaced by reconciliation, never silently merged.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,6 +250,27 @@ pub trait CoordinationReplica {
         lane: &str,
         progress: &str,
     ) -> Result<(), ReplicaError>;
+    /// Replace the local task snapshot with the cloud's current
+    /// coordination view: the initial seed before a partition and
+    /// the refresh on recovery are the same operation. A refresh
+    /// never drops a locally held claim — claims live outside the
+    /// snapshot and reconcile through
+    /// [`CoordinationReplica::sync_up`]; a task that leaves the
+    /// snapshot simply stops being discoverable by
+    /// [`CoordinationReplica::pick`].
+    fn refresh_snapshot(&mut self, tasks: &[ReplicaTask]) -> Result<(), ReplicaError>;
+    /// Discover the next claimable task in the local snapshot and
+    /// claim it for `worker` on `lane`, in the production pick
+    /// order (priority ascending, NULL last; then creation time).
+    /// Tasks whose park timer has not passed and tasks already
+    /// held locally under a live lease are skipped. `Ok(None)`
+    /// when the snapshot holds nothing claimable.
+    fn pick(
+        &mut self,
+        worker: &str,
+        lane: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<ReplicaClaim>, ReplicaError>;
     /// Push local state to the cloud and reconcile. A claim honored
     /// locally is honored globally; double-claims are reported in
     /// [`ReconcileReport::double_claims`], never silently merged.
@@ -228,6 +291,7 @@ pub struct MemoryReplica {
     expiries: HashMap<i64, i64>,
     checkpoints: HashMap<i64, String>,
     cloud_claims: HashMap<i64, (String, String)>,
+    snapshot: HashMap<i64, ReplicaTask>,
 }
 
 impl MemoryReplica {
@@ -325,6 +389,35 @@ impl CoordinationReplica for MemoryReplica {
         Ok(())
     }
 
+    fn refresh_snapshot(&mut self, tasks: &[ReplicaTask]) -> Result<(), ReplicaError> {
+        self.snapshot = tasks.iter().map(|t| (t.task_id, t.clone())).collect();
+        Ok(())
+    }
+
+    fn pick(
+        &mut self,
+        worker: &str,
+        lane: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<ReplicaClaim>, ReplicaError> {
+        // Only the single best candidate is claimed, so select it
+        // in one pass instead of collecting and sorting them all:
+        // `pick_key` is a total order (its last element is the
+        // unique task id), so the minimum is exactly the head of
+        // the sorted order.
+        let next = self
+            .snapshot
+            .values()
+            .filter(|t| t.due(self.now_unix))
+            .filter(|t| self.live_claim(t.task_id).is_none())
+            .min_by_key(|t| t.pick_key())
+            .map(|t| t.task_id);
+        match next {
+            Some(task_id) => Ok(Some(self.claim(task_id, worker, lane, lease_seconds)?)),
+            None => Ok(None),
+        }
+    }
+
     fn sync_up(&mut self) -> Result<ReconcileReport, ReplicaError> {
         let mut report = ReconcileReport::default();
         let mut task_ids: Vec<i64> = self.claims.keys().copied().collect();
@@ -357,7 +450,8 @@ mod tests {
 
     use super::{
         CoordinationReplica, DbRoute, DoubleClaim, LegAvailability, MemoryReplica, Mode,
-        ROUTE_ORDER, ReconcileReport, ReplicaClaim, ReplicaError, mode_line, route_for,
+        ROUTE_ORDER, ReconcileReport, ReplicaClaim, ReplicaError, ReplicaTask, mode_line,
+        route_for,
     };
     use proptest::{prop_assert, prop_assert_eq, proptest};
 
@@ -708,5 +802,124 @@ mod tests {
         assert_eq!(report.double_claims[0].local_lane, "code-h");
         assert_eq!(report.double_claims[0].cloud_worker, "repo-worker-code");
         assert_eq!(report.double_claims[0].cloud_lane, "code-i");
+    }
+
+    fn task(task_id: i64, priority: Option<i64>, created_unix: i64) -> ReplicaTask {
+        ReplicaTask {
+            task_id,
+            priority,
+            created_unix,
+            not_before_unix: None,
+        }
+    }
+
+    #[test]
+    fn memory_replica_pick_follows_production_order() {
+        // Production pick: (priority IS NULL), priority ASC,
+        // created_at ASC. Task 3 wins on priority; task 2 beats
+        // task 1 on creation time at equal priority; task 4's NULL
+        // priority sorts last despite being oldest.
+        let mut replica = MemoryReplica::new(1_000);
+        replica
+            .refresh_snapshot(&[
+                task(1, Some(5), 100),
+                task(2, Some(5), 50),
+                task(3, Some(1), 900),
+                task(4, None, 10),
+            ])
+            .unwrap();
+        let mut picked = Vec::new();
+        while let Some(claim) = replica.pick("worker-a", "lane-x", 300).unwrap() {
+            picked.push(claim.task_id);
+        }
+        assert_eq!(picked, vec![3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn memory_replica_pick_drains_a_large_snapshot_in_pick_key_order() {
+        // Regression guard for the single-pass selection in `pick`:
+        // draining a snapshot must yield exactly the `pick_key`
+        // sort order, including NULL priorities and tied
+        // (priority, created) pairs broken by task id.
+        let tasks: Vec<ReplicaTask> = (0..64)
+            .map(|i| {
+                let priority = match i % 5 {
+                    0 => None,
+                    r => Some((i * 7 + r) % 11),
+                };
+                task(i, priority, (i * 37) % 17)
+            })
+            .collect();
+        let mut sorted = tasks.clone();
+        sorted.sort_by_key(|t| t.pick_key());
+        let expected: Vec<i64> = sorted.iter().map(|t| t.task_id).collect();
+        let mut replica = MemoryReplica::new(1_000);
+        replica.refresh_snapshot(&tasks).unwrap();
+        let mut picked = Vec::new();
+        while let Some(claim) = replica.pick("worker-a", "lane-x", 300).unwrap() {
+            picked.push(claim.task_id);
+        }
+        assert_eq!(picked, expected);
+    }
+
+    #[test]
+    fn memory_replica_pick_skips_parked_until_the_timer_passes() {
+        let mut replica = MemoryReplica::new(1_000);
+        let mut parked = task(1, Some(1), 10);
+        parked.not_before_unix = Some(2_000);
+        replica
+            .refresh_snapshot(&[parked, task(2, Some(9), 20)])
+            .unwrap();
+        // The parked task outranks task 2 but is not due yet.
+        let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 2);
+        assert!(replica.pick("worker-a", "lane-x", 300).unwrap().is_none());
+        // Once the timer passes the parked task becomes pickable.
+        replica.set_now(2_000);
+        let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 1);
+    }
+
+    #[test]
+    fn memory_replica_pick_never_repeats_a_live_claim() {
+        let mut replica = MemoryReplica::new(1_000);
+        replica.refresh_snapshot(&[task(1, Some(1), 10)]).unwrap();
+        let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 1);
+        assert!(replica.pick("worker-b", "lane-y", 300).unwrap().is_none());
+        // After the lease expires the task is discoverable again.
+        replica.set_now(1_301);
+        let claim = replica.pick("worker-b", "lane-y", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 1);
+        assert_eq!(claim.worker, "worker-b");
+    }
+
+    #[test]
+    fn memory_replica_refresh_replaces_the_snapshot_but_keeps_claims() {
+        let mut replica = MemoryReplica::new(1_000);
+        replica
+            .refresh_snapshot(&[task(1, Some(1), 10), task(2, Some(2), 20)])
+            .unwrap();
+        let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 1);
+        // The cloud's newer view drops task 1 (claimed locally) and
+        // task 2, and adds task 3. Discovery follows the new view;
+        // the local claim on task 1 is untouched by the refresh.
+        replica.refresh_snapshot(&[task(3, Some(1), 30)]).unwrap();
+        let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 3);
+        assert!(replica.pick("worker-a", "lane-x", 300).unwrap().is_none());
+        replica.heartbeat(1, "worker-a", "lane-x", 300).unwrap();
+        let report = replica.sync_up().unwrap();
+        assert_eq!(report.synced_claims, vec![1, 3]);
+        assert!(report.zero_lost());
+    }
+
+    #[test]
+    fn memory_replica_pick_on_an_empty_snapshot_is_none() {
+        let mut replica = MemoryReplica::new(1_000);
+        assert!(replica.pick("worker-a", "lane-x", 300).unwrap().is_none());
+        replica.refresh_snapshot(&[]).unwrap();
+        assert!(replica.pick("worker-a", "lane-x", 300).unwrap().is_none());
     }
 }

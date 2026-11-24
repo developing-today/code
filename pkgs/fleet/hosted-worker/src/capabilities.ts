@@ -124,7 +124,8 @@ const NATIVE_DOMAINS: NativeDomain[] = [
   },
   {
     name: "proxy",
-    summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put).",
+    summary:
+      "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put).",
     aliases: ["laptop-agent-broker"],
     capabilities: ["proxy-serve", "proxy-connect", "proxy-raw-splice"],
     hosted: "native-only",
@@ -138,7 +139,8 @@ const NATIVE_DOMAINS: NativeDomain[] = [
   },
   {
     name: "dispatch-test",
-    summary: "Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.",
+    summary:
+      "Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.",
     aliases: [],
     capabilities: ["dispatch-test"],
     hosted: "native-only",
@@ -152,7 +154,8 @@ const NATIVE_DOMAINS: NativeDomain[] = [
   },
   {
     name: "gh",
-    summary: "The real `gh` CLI, passed through under a rotating fleet token (personal, then the developing.today App's installations); rate-limit and permission failures fail over to the next token.",
+    summary:
+      "The real `gh` CLI, passed through under a rotating fleet token (personal, then the developing.today App's installations); rate-limit and permission failures fail over to the next token.",
     aliases: [],
     capabilities: ["gh"],
     hosted: "hosted-transformed",
@@ -161,14 +164,16 @@ const NATIVE_DOMAINS: NativeDomain[] = [
   },
   {
     name: "bridge",
-    summary: "Fleet messaging through the message bridge: central sends messages or commands to an agent, a group or all; agents read their mailbox, answer and ack.",
+    summary:
+      "Fleet messaging through the message bridge: central sends messages or commands to an agent, a group or all; agents read their mailbox, answer and ack.",
     aliases: [],
     capabilities: ["bridge"],
     hosted: "already-hosted",
   },
   {
     name: "agent",
-    summary: "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
+    summary:
+      "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
     aliases: [],
     capabilities: ["agent"],
     hosted: "hosted",
@@ -197,9 +202,7 @@ const NATIVE_DOMAINS: NativeDomain[] = [
 ];
 
 export function buildCapabilitiesDocument(config: HostedConfig): Record<string, unknown> {
-  const availableCapabilities = NATIVE_DOMAINS.filter((d) => d.available).flatMap(
-    (d) => d.capabilities,
-  );
+  const availableCapabilities = NATIVE_DOMAINS.filter((d) => d.available).flatMap((d) => d.capabilities);
   return {
     build: {
       name: SERVICE_NAME,

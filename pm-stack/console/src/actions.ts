@@ -181,7 +181,7 @@ export function actions(
       audit: ids("issue", "rank"),
     },
     "issue.comment": { run: (a) => ops.comment(a.issue, a.text), touch: [], audit: ids("issue") },
-    "pr.merge": { run: (a) => ops.mergePr(a.pr), touch: ["prs"], audit: ids("pr") },
+    "pr.merge": { run: (a) => ops.mergePr(a.pr, a.head), touch: ["prs"], audit: ids("pr") },
     // Start the site's deploy or the app's build again. Never held to
     // be done late: a deploy that starts hours after it was asked for
     // is a surprise.
@@ -195,8 +195,8 @@ export function actions(
     // written to the record of what was done, and the action is never
     // held anywhere to be done late.
     "sso.google": { run: (a) => ops.googleSignin(a.clientId, a.clientSecret), touch: [], audit: () => ({}) },
-    // The owner's switch for the edge acting by itself while the laptop
-    // is away. Done on the laptop, where the tokens are, and never held.
+    // The owner's switch for the edge doing the core itself. Done on a
+    // machine, where the tokens are, and never held.
     "edge.direct": { run: (a) => ops.edgeDirect(a.on), touch: [], audit: (a) => ({ on: a.on === true }) },
     "message.send": {
       run: (a) => ops.send(a.to, a.text, a.command),
@@ -220,6 +220,6 @@ export async function perform(
   const result = await action.run(args as Args);
   // The census is the dashboard's and refreshes on its own clock; for the
   // rest, the caller's next read should already show the change.
-  await docs.touch(action.touch);
+  await docs.reread(action.touch);
   return result;
 }

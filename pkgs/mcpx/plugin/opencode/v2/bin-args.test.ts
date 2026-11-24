@@ -40,10 +40,7 @@ import { createToolRuntime, type DaemonClientLike } from "./tools.ts";
 const dir = mkdtempSync(join(tmpdir(), "mcpx-plugin-bin-args-"));
 
 const stubPath = join(dir, "mcpx-stub");
-writeFileSync(
-  stubPath,
-  `#!/bin/sh\necho "stub-argv:"\nfor a in "$@"; do echo "arg: $a"; done\n`,
-);
+writeFileSync(stubPath, `#!/bin/sh\necho "stub-argv:"\nfor a in "$@"; do echo "arg: $a"; done\n`);
 chmodSync(stubPath, 0o755);
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -115,12 +112,7 @@ describe("plugin.binArgs (MCPX_PLUGIN_BIN_ARGS)", () => {
       MCPX_PLUGIN_BIN: stubPath,
       MCPX_PLUGIN_BIN_ARGS: "--config /tmp/mcpx-stub-config --verbose",
     });
-    expect(argvOf(content)).toEqual([
-      "--config",
-      "/tmp/mcpx-stub-config",
-      "--verbose",
-      "ls",
-    ]);
+    expect(argvOf(content)).toEqual(["--config", "/tmp/mcpx-stub-config", "--verbose", "ls"]);
   });
 
   test("JSON form: an argument containing a space arrives as one argv element", async () => {

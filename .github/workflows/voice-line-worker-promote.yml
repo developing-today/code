@@ -68,14 +68,14 @@ jobs:
     env:
       CF_SEND_TELEMETRY: "false"
       WRANGLER_SEND_METRICS: "false"
-      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ''
-      WRANGLER_CI_OVERRIDE_NAME: ''
-      CF_WORKER_NAME: ''
-      CLOUDFLARE_WORKER_NAME: ''
-      WRANGLER_WORKER_NAME: ''
-      CF_MODE: ''
-      CLOUDFLARE_ENV: ''
-      WRANGLER_ENV: ''
+      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ""
+      WRANGLER_CI_OVERRIDE_NAME: ""
+      CF_WORKER_NAME: ""
+      CLOUDFLARE_WORKER_NAME: ""
+      WRANGLER_WORKER_NAME: ""
+      CF_MODE: ""
+      CLOUDFLARE_ENV: ""
+      WRANGLER_ENV: ""
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CANDIDATE_VERSION_ID: ${{ inputs.version_id }}
       CANDIDATE_SOURCE_SHA: ${{ inputs.source_sha }}
@@ -116,7 +116,7 @@ jobs:
           [[ "$CANDIDATE_UPLOAD_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,19}$ ]]
 
       - name: Read exact successful upload attempt receipt
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: voice-line-upload-${{ inputs.upload_run_id }}-${{ inputs.upload_run_attempt }}
           repository: developing-today/code

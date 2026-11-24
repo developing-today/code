@@ -91,6 +91,87 @@ $FLEET_BRIDGE_URL, then [bridge] url, then https://bridge.security.cab.
 Output is the bridge's JSON. Exit: 0 ok, 2 usage, 3 transport or
 credentials, 4 the bridge refused the request.";
 
+/// The trailing block of USAGE, shared by every per-verb help text.
+/// A test pins USAGE to end with this, so the two cannot drift.
+const USAGE_FOOTER: &str = "\
+The agent defaults to $FLEET_AGENT, then [bridge] agent; groups to
+$FLEET_AGENT_GROUPS, then [bridge] groups. The bridge URL is
+$FLEET_BRIDGE_URL, then [bridge] url, then https://bridge.security.cab.
+Output is the bridge's JSON. Exit: 0 ok, 2 usage, 3 transport or
+credentials, 4 the bridge refused the request.";
+
+/// Per-verb usage for `fleet bridge <verb> --help` (#13197). The
+/// domain's status line advertises per-verb help, so each verb answers
+/// with its own section of USAGE plus the shared footer. Unknown verbs
+/// return None and the caller falls back to USAGE, so a help request
+/// never prints nothing.
+pub fn verb_usage(verb: &str) -> Option<String> {
+    let section = match verb {
+        "send" => {
+            "\
+usage: fleet bridge send --to <targets> [--command] [--sender NAME] <text | ->
+
+central (owner token). targets: agent:<name> (or a bare name),
+group:<name>, all; repeat --to or separate with commas. --command
+marks it a command (default: a plain message). '-' reads the text
+from stdin."
+        }
+        "agents" => {
+            "\
+usage: fleet bridge agents
+
+central (owner token). Registered agents, groups, unread counts."
+        }
+        "log" => {
+            "\
+usage: fleet bridge log [--agent A] [--direction inbound|outbound] [--kind message|command]
+      [--since-id N] [--before-id N] [--limit N] [--order asc|desc]
+
+central (owner token). The central message log, filtered."
+        }
+        "hello" => {
+            "\
+usage: fleet bridge hello [--agent A] [--groups g1,g2]
+
+agent (fleet token). Register / refresh groups."
+        }
+        "inbox" => {
+            "\
+usage: fleet bridge inbox [--agent A] [--groups g1,g2] [--commands | --messages] [--all]
+        [--since-id N] [--limit N] [--take] [--wait SECS] [--interval SECS]
+
+agent (fleet token). Unread by default; --all includes read ones;
+--take marks what it returns as read; --wait polls until something
+arrives or SECS pass."
+        }
+        "post" => {
+            "\
+usage: fleet bridge post [--agent A] [--reply-to ID] [--to ADDR] [--instruction | --kind K] <text | ->
+
+agent (fleet token). Message to central by default; with --reply-to,
+answers that row (and marks it read). --to sends to any address
+instead: drew, claude, chatgpt, connectors, agent:<name> (or a bare
+name), group:<name>, agents, all; repeat or separate with commas.
+--instruction (or --kind instruction) makes it an instruction, which
+needs --to."
+        }
+        "ack" => {
+            "\
+usage: fleet bridge ack [--agent A] (--up-to ID | ID...)
+
+agent (fleet token). Mark messages read."
+        }
+        "health" => {
+            "\
+usage: fleet bridge health
+
+The bridge's /healthz (no token)."
+        }
+        _ => return None,
+    };
+    Some(format!("{section}\n\n{USAGE_FOOTER}"))
+}
+
 #[derive(Debug, PartialEq)]
 pub enum BridgeError {
     Usage(String),
@@ -768,12 +849,23 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
 
 /// The domain entry point: `fleet bridge <verb> ...`.
 pub fn run(config: &Config, args: &[String]) -> i32 {
-    if args.is_empty()
-        || matches!(args[0].as_str(), "-h" | "--help" | "help")
-        || args.iter().skip(1).any(|a| a == "--help" || a == "-h")
-    {
+    // Help wins over every other argument (the #10838 convention):
+    // `fleet bridge <verb> --help` prints the verb's own usage (#13197);
+    // bare or top-level help prints the whole-domain USAGE.
+    if args.is_empty() {
         println!("{USAGE}");
-        return if args.is_empty() { EXIT_USAGE } else { EXIT_OK };
+        return EXIT_USAGE;
+    }
+    if matches!(args[0].as_str(), "-h" | "--help" | "help") {
+        println!("{USAGE}");
+        return EXIT_OK;
+    }
+    if args.iter().skip(1).any(|a| a == "--help" || a == "-h") {
+        match verb_usage(&args[0]) {
+            Some(text) => println!("{text}"),
+            None => println!("{USAGE}"),
+        }
+        return EXIT_OK;
     }
     let env = |k: &str| std::env::var(k).ok();
     let settings = match Settings::resolve(config, &env) {

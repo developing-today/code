@@ -39,6 +39,19 @@ if [[ $manager_state == running || $manager_state == degraded ]]; then
     fi
   fi
 
+  # The socket is only ever started here: a new sockets.target wants link does
+  # not start it, and a socket started while the service holds the port fails
+  # to bind. Stop the service first, so the socket owns the port and the new
+  # service adopts fd 3.
+  if ! "$systemctl" --user is-active --quiet opencode.socket; then
+    if "$systemctl" --user is-enabled --quiet opencode.socket; then
+      "$systemctl" --user stop opencode.service || true
+      if ! "$systemctl" --user start opencode.socket; then
+        echo 'opencode-deploy: socket did not start; starting the service directly' >&2
+      fi
+    fi
+  fi
+
   if "$systemctl" --user is-active --quiet opencode.service; then
     "$systemctl" --user restart opencode.service
   else

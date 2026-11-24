@@ -41,12 +41,7 @@
 
 import type { AuthDeps } from "./auth.ts";
 import { FailClosed } from "./errors.ts";
-import type {
-  GitHubCommentSurface,
-  GitHubProjectState,
-  GitHubProjectSurface,
-  ProjectItemState,
-} from "./github.ts";
+import type { GitHubCommentSurface, GitHubProjectState, GitHubProjectSurface, ProjectItemState } from "./github.ts";
 
 /** The most ops one project-sync request carries. The script
  * applies one pass's proposals per run and bounds its own write
@@ -192,11 +187,7 @@ export interface ProjectSyncRequest {
 function parseIssueRef(raw: string): { repo: string; number: number } {
   const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/.exec(raw);
   if (!match) {
-    throw new FailClosed(
-      400,
-      "invalid_body",
-      `issue reference ${raw} is not in owner/name#number form`,
-    );
+    throw new FailClosed(400, "invalid_body", `issue reference ${raw} is not in owner/name#number form`);
   }
   return { repo: match[1], number: Number(match[2]) };
 }
@@ -218,11 +209,7 @@ function parseProjectOp(raw: unknown, index: number): ProjectSyncOp {
     const itemId = optionalString(body, "item_id");
     const issueRaw = optionalString(body, "issue");
     if (itemId === null && issueRaw === null) {
-      throw new FailClosed(
-        400,
-        "invalid_body",
-        `ops[${index}]: a set-status op names its item by item_id or by issue`,
-      );
+      throw new FailClosed(400, "invalid_body", `ops[${index}]: a set-status op names its item by item_id or by issue`);
     }
     return {
       op: "set-status",
@@ -354,9 +341,7 @@ export async function runProjectSync(
         repo: op.repo,
         number: op.number,
       };
-      const existing = state.items.find(
-        (i) => i.repo === op.repo && i.kind === op.kind && i.number === op.number,
-      );
+      const existing = state.items.find((i) => i.repo === op.repo && i.kind === op.kind && i.number === op.number);
       if (existing) {
         result.outcome = "already_present";
         result.item_id = existing.itemId;
@@ -367,8 +352,7 @@ export async function runProjectSync(
           if (result.outcome === "already_set") result.outcome = "already_present";
         }
       } else {
-        const contentId =
-          op.contentId ?? (await deps.projects.resolveContentId(op.repo, op.kind, op.number));
+        const contentId = op.contentId ?? (await deps.projects.resolveContentId(op.repo, op.kind, op.number));
         if (contentId === null) {
           result.error = "content_not_found";
           results.push(result);
@@ -401,9 +385,7 @@ export async function runProjectSync(
     const item =
       op.itemId !== null
         ? state.items.find((i) => i.itemId === op.itemId)
-        : state.items.find(
-            (i) => op.issue !== null && i.repo === op.issue.repo && i.number === op.issue.number,
-          );
+        : state.items.find((i) => op.issue !== null && i.repo === op.issue.repo && i.number === op.issue.number);
     if (!item) {
       result.error = "item_not_in_project";
       results.push(result);
@@ -454,11 +436,7 @@ export function parseFlowSyncRequest(raw: unknown): FlowSyncRequest {
   const body = bodyObject(raw);
   const flowRaw = body["flow"];
   if (typeof flowRaw !== "string" || !(SYNC_FLOWS as readonly string[]).includes(flowRaw)) {
-    throw new FailClosed(
-      400,
-      "invalid_body",
-      `flow must be one of ${SYNC_FLOWS.join(", ")}`,
-    );
+    throw new FailClosed(400, "invalid_body", `flow must be one of ${SYNC_FLOWS.join(", ")}`);
   }
   const marker = requiredString(body, "marker");
   if (!MARKER_PATTERN.test(marker)) {
@@ -478,11 +456,7 @@ export function parseFlowSyncRequest(raw: unknown): FlowSyncRequest {
       const value = (labelsRaw as Record<string, unknown>)[field];
       if (value === undefined || value === null) return [];
       if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || v.trim() === "")) {
-        throw new FailClosed(
-          400,
-          "invalid_body",
-          `labels.${field} must be a list of non-empty strings`,
-        );
+        throw new FailClosed(400, "invalid_body", `labels.${field} must be a list of non-empty strings`);
       }
       return value as string[];
     };
@@ -540,12 +514,7 @@ export async function runFlowSync(
   // posted the note but failed the label flip still finishes it.
   let labels: FlowSyncResponse["labels"] = null;
   if (request.labels !== null) {
-    await deps.comments.editIssueLabels(
-      request.repo,
-      request.number,
-      request.labels.add,
-      request.labels.remove,
-    );
+    await deps.comments.editIssueLabels(request.repo, request.number, request.labels.add, request.labels.remove);
     labels = { added: request.labels.add, removed: request.labels.remove };
   }
   return {

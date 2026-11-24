@@ -71,11 +71,7 @@ export function parseProjectSyncCliArgs(argv: string[]): ProjectSyncRequest {
         i++;
         const match = /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/.exec(ref);
         if (!match) {
-          throw new FailClosed(
-            400,
-            "invalid_sync",
-            `--add-issue takes <owner/repo#number>, got ${ref}`,
-          );
+          throw new FailClosed(400, "invalid_sync", `--add-issue takes <owner/repo#number>, got ${ref}`);
         }
         // Ops stay in argv order: execution is serial, and a set
         // naming an item an earlier add in the same request
@@ -89,11 +85,7 @@ export function parseProjectSyncCliArgs(argv: string[]): ProjectSyncRequest {
         i++;
         const eq = value.indexOf("=");
         if (eq <= 0) {
-          throw new FailClosed(
-            400,
-            "invalid_sync",
-            "--set-status takes <owner/repo#number>=<Status>",
-          );
+          throw new FailClosed(400, "invalid_sync", "--set-status takes <owner/repo#number>=<Status>");
         }
         ops.push({ op: "set-status", issue: value.slice(0, eq), to: value.slice(eq + 1) });
         break;

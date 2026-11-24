@@ -77,6 +77,7 @@ the caller's deadline, and is disabled by a pinned
 LAPTOP_AGENT_TRANSPORT (a pin is a deliberate path proof) or by
 LAPTOP_AGENT_NO_SSH_FALLBACK=1.
 """
+
 import json
 import os
 import signal
@@ -96,18 +97,18 @@ PROXY_PORT = 3130
 TOKEN_FILE = Path.home() / "tools/laptop-agent-token"
 OFFSET_DIR = Path.home() / ".cache/laptop-agent"
 TRIP_LOG = Path.home() / ".local/state/laptop-agent/trips.jsonl"
-TIMEOUT_EXIT = 124           # same code GNU timeout(1) uses
-TRANSPORT_GRACE_S = 15       # local deadline = remote timeout + this
+TIMEOUT_EXIT = 124  # same code GNU timeout(1) uses
+TRANSPORT_GRACE_S = 15  # local deadline = remote timeout + this
 EXTERNAL_DEADLINE_ENV = "LAPTOP_AGENT_DEADLINE_S"  # seconds from now;
 # wrappers (the shim) export this when THEY run under an outer deadline
 # so the deadline reaches the daemon too (it reaps the remote command
 # at the same instant even if every signal path fails).
-_CANCEL_BUDGET_S = 3.0       # time the signal handler may spend cancelling
+_CANCEL_BUDGET_S = 3.0  # time the signal handler may spend cancelling
 
 # --- deadline / cancellation state (single-threaded client) -------------
-_deadline = None             # monotonic deadline for the current call
-_cancel_hook = None          # callable() -> bool, set while in flight
-_interrupted = None          # first caught signal number, if any
+_deadline = None  # monotonic deadline for the current call
+_cancel_hook = None  # callable() -> bool, set while in flight
+_interrupted = None  # first caught signal number, if any
 
 
 class CallTimeout(Exception):
@@ -160,8 +161,7 @@ def _install_signal_handlers():
 
 def _arm_deadline_timer():
     if _deadline is not None:
-        signal.setitimer(signal.ITIMER_REAL,
-                         max(0.05, _deadline - time.monotonic()))
+        signal.setitimer(signal.ITIMER_REAL, max(0.05, _deadline - time.monotonic()))
 
 
 def _disarm_deadline_timer():
@@ -187,21 +187,24 @@ def _cancel_in_flight(trip):
         # a cancel matters most exactly when the primary path is sick.
         attempts = []
         if _transport_pref() != "ts" and _cf_access_available():
-            attempts.append((make_cf_http(), CF_HOST, 443,
-                             _cf_access_headers()))
+            attempts.append((make_cf_http(), CF_HOST, 443, _cf_access_headers()))
         if _transport_pref() != "cf":
-            attempts.append((make_tunnel_http(), TARGET_HOST,
-                             TARGET_PORT, {}))
+            attempts.append((make_tunnel_http(), TARGET_HOST, TARGET_PORT, {}))
         for make, host, port, extra in attempts:
             try:
                 conn = make(host, port, timeout=_CANCEL_BUDGET_S)
-                headers = {"X-Agent-Token": token,
-                           "X-Trip-Id": trip,
-                           "Content-Type": "application/json"}
+                headers = {
+                    "X-Agent-Token": token,
+                    "X-Trip-Id": trip,
+                    "Content-Type": "application/json",
+                }
                 headers.update(extra)
-                conn.request("POST", f"/exec/{trip}/cancel",
-                             body=json.dumps({"trip": trip}),
-                             headers=headers)
+                conn.request(
+                    "POST",
+                    f"/exec/{trip}/cancel",
+                    body=json.dumps({"trip": trip}),
+                    headers=headers,
+                )
                 resp = conn.getresponse()
                 resp.read()
                 conn.close()
@@ -217,8 +220,16 @@ def _cancel_in_flight(trip):
         _deadline = saved
 
 
-def _log_trip(trip, path, total_ms, status, t_sent_ms=None,
-              t_returned_ms=None, t_received_ms=None, transport=None):
+def _log_trip(
+    trip,
+    path,
+    total_ms,
+    status,
+    t_sent_ms=None,
+    t_returned_ms=None,
+    t_received_ms=None,
+    transport=None,
+):
     """Append one client-side trip record (single O_APPEND write).
     Logging must never break or visibly delay a call: errors swallowed.
 
@@ -228,10 +239,14 @@ def _log_trip(trip, path, total_ms, status, t_sent_ms=None,
     line splits the trip into outbound / daemon / return legs. v1
     fields (ts, total_ms, status) are kept verbatim for v1 readers."""
     try:
-        rec = {"v": 2,
-               "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-               "trip": trip, "path": path,
-               "total_ms": total_ms, "status": status}
+        rec = {
+            "v": 2,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "trip": trip,
+            "path": path,
+            "total_ms": total_ms,
+            "status": status,
+        }
         if transport is not None:
             rec["transport"] = transport
         if t_sent_ms is not None:
@@ -241,8 +256,7 @@ def _log_trip(trip, path, total_ms, status, t_sent_ms=None,
         if t_received_ms is not None:
             rec["t_received"] = t_received_ms
         TRIP_LOG.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(TRIP_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND,
-                     0o644)
+        fd = os.open(TRIP_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
             os.write(fd, (json.dumps(rec) + "\n").encode())
         finally:
@@ -277,7 +291,7 @@ def _agent_slug(agent):
     )
     slug = mapped.strip("-")[:55]
     if slug.startswith("muse-"):
-        slug = slug[len("muse-"):]
+        slug = slug[len("muse-") :]
     return slug or None
 
 
@@ -309,10 +323,10 @@ def _parse_tailnet_proxy_env(text):
     for line in text.splitlines():
         line = line.strip()
         if line.startswith("export "):
-            line = line[len("export "):].lstrip()
+            line = line[len("export ") :].lstrip()
         if not line.startswith("HTTPS_PROXY="):
             continue
-        v = line[len("HTTPS_PROXY="):].strip()
+        v = line[len("HTTPS_PROXY=") :].strip()
         if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
             v = v[1:-1]
         if v:
@@ -349,6 +363,7 @@ def tailnet_proxy_url():
 def tunnel_socket(port=None):
     import base64
     import urllib.parse
+
     port = port or TARGET_PORT
     raw = tailnet_proxy_url()
     if not raw:
@@ -359,13 +374,14 @@ def tunnel_socket(port=None):
     connect_timeout = 60
     if _deadline is not None:
         connect_timeout = max(1.0, min(60.0, _remaining()))
-    sock = socket.create_connection((u.hostname, PROXY_PORT),
-                                    timeout=connect_timeout)
+    sock = socket.create_connection((u.hostname, PROXY_PORT), timeout=connect_timeout)
     auth = base64.b64encode(f"{user}:{pw}".encode()).decode()
-    req = (f"CONNECT {TARGET_HOST}:{port} HTTP/1.1\r\n"
-           f"Host: {TARGET_HOST}:{port}\r\n"
-           f"Proxy-Authorization: Basic {auth}\r\n"
-           f"Proxy-Connection: Keep-Alive\r\n\r\n")
+    req = (
+        f"CONNECT {TARGET_HOST}:{port} HTTP/1.1\r\n"
+        f"Host: {TARGET_HOST}:{port}\r\n"
+        f"Proxy-Authorization: Basic {auth}\r\n"
+        f"Proxy-Connection: Keep-Alive\r\n\r\n"
+    )
     sock.sendall(req.encode())
     buf = b""
     while b"\r\n\r\n" not in buf:
@@ -386,6 +402,7 @@ def make_tunnel_http():
     class TunnelHTTP(http.client.HTTPConnection):
         def connect(self):
             self.sock = tunnel_socket()
+
     return TunnelHTTP
 
 
@@ -430,12 +447,19 @@ def _cf_access_data():
         return {}
     try:
         import subprocess
+
         out = subprocess.run(
             ["fleet", "secrets", "get", CF_ACCESS_SECRET],
-            capture_output=True, text=True, timeout=130)
+            capture_output=True,
+            text=True,
+            timeout=130,
+        )
         data = json.loads(out.stdout) if out.returncode == 0 else {}
-        if not (isinstance(data, dict) and data.get("client_id")
-                and data.get("client_secret")):
+        if not (
+            isinstance(data, dict)
+            and data.get("client_id")
+            and data.get("client_secret")
+        ):
             raise ValueError("incomplete Cloudflare Access credential")
         _cf_access_data_cache = data
     except Exception:
@@ -451,8 +475,10 @@ def _cf_access_available():
 def _cf_access_headers():
     try:
         data = _cf_access_data()
-        return {"CF-Access-Client-Id": data["client_id"],
-                "CF-Access-Client-Secret": data["client_secret"]}
+        return {
+            "CF-Access-Client-Id": data["client_id"],
+            "CF-Access-Client-Secret": data["client_secret"],
+        }
     except Exception:
         return {}
 
@@ -466,21 +492,23 @@ def cf_socket(timeout=60):
     import base64
     import ssl
     import urllib.parse
+
     raw = os.environ.get("HTTPS_PROXY")
     if not raw:
         raise OSError("HTTPS_PROXY must be set")
     u = urllib.parse.urlparse(raw)
     user = urllib.parse.unquote(u.username or "")
     pw = urllib.parse.unquote(u.password or "")
-    sock = socket.create_connection((u.hostname, u.port or 3128),
-                                    timeout=timeout)
+    sock = socket.create_connection((u.hostname, u.port or 3128), timeout=timeout)
     try:
         sock.settimeout(timeout)
         auth = base64.b64encode(f"{user}:{pw}".encode()).decode()
-        req = (f"CONNECT {CF_HOST}:443 HTTP/1.1\r\n"
-               f"Host: {CF_HOST}:443\r\n"
-               f"Proxy-Authorization: Basic {auth}\r\n"
-               f"Proxy-Connection: Keep-Alive\r\n\r\n")
+        req = (
+            f"CONNECT {CF_HOST}:443 HTTP/1.1\r\n"
+            f"Host: {CF_HOST}:443\r\n"
+            f"Proxy-Authorization: Basic {auth}\r\n"
+            f"Proxy-Connection: Keep-Alive\r\n\r\n"
+        )
         sock.sendall(req.encode())
         buf = b""
         while b"\r\n\r\n" not in buf:
@@ -513,6 +541,7 @@ def make_cf_http():
             self.sock = cf_socket(timeout=min(self.timeout or 60, 60))
             if self.timeout:
                 self.sock.settimeout(self.timeout)
+
     return CFHTTPS
 
 
@@ -557,6 +586,7 @@ def _broker_roundtrip(method, path, body, trip=None):
     the broker socket is bounded by the call deadline (if any)."""
     import struct
     import subprocess
+
     for attempt in (1, 2):
         s = None
         t_start = time.time()
@@ -565,10 +595,14 @@ def _broker_roundtrip(method, path, body, trip=None):
             wait = _remaining()
             s.settimeout(660 if wait is None else max(0.05, wait))
             s.connect(str(BROKER_SOCK))
-            msg = {"method": method, "path": path,
-                   "body": body, "trip": trip,
-                   "transport": _transport_pref(),
-                   "cf_ok": _cf_suitable(path, body)}
+            msg = {
+                "method": method,
+                "path": path,
+                "body": body,
+                "trip": trip,
+                "transport": _transport_pref(),
+                "cf_ok": _cf_suitable(path, body),
+            }
             rem = _remaining()
             if rem is not None:
                 msg["deadline_s"] = rem
@@ -603,8 +637,7 @@ def _broker_roundtrip(method, path, body, trip=None):
                 remote_ms = None
                 try:
                     results = obj["body"].get("results") or []
-                    remote_ms = sum(r.get("duration_ms") or 0
-                                    for r in results)
+                    remote_ms = sum(r.get("duration_ms") or 0 for r in results)
                 except Exception:
                     remote_ms = None
                 if remote_ms is None or waited * 1000 > remote_ms + 5000:
@@ -612,7 +645,8 @@ def _broker_roundtrip(method, path, body, trip=None):
                         f"laptop-agent: note: this call waited "
                         f"{waited:.0f}s for its reply, beyond the "
                         f"time the laptop spent executing — the wait "
-                        f"was in the broker/tunnel layer\n")
+                        f"was in the broker/tunnel layer\n"
+                    )
             return obj["status"], obj["body"], obj.get("transport")
         except CallTimeout:
             if s is not None:
@@ -642,9 +676,12 @@ def _broker_roundtrip(method, path, body, trip=None):
                 # Auto-start the broker (ControlMaster pattern), then retry.
                 OFFSET_DIR.mkdir(parents=True, exist_ok=True)
                 log = open(OFFSET_DIR / "broker.log", "ab")
-                subprocess.Popen([sys.executable, str(BROKER_PY)],
-                                 stdout=log, stderr=log,
-                                 start_new_session=True)
+                subprocess.Popen(
+                    [sys.executable, str(BROKER_PY)],
+                    stdout=log,
+                    stderr=log,
+                    start_new_session=True,
+                )
                 for _ in range(50):
                     if BROKER_SOCK.exists():
                         break
@@ -657,8 +694,7 @@ def _broker_roundtrip(method, path, body, trip=None):
 def _agent_request(method, path, body=None):
     global _cancel_hook
     trip = os.urandom(6).hex()  # 12 hex chars, one per request
-    if method == "POST" and isinstance(body, dict) \
-            and path in ("/exec", "/jobs"):
+    if method == "POST" and isinstance(body, dict) and path in ("/exec", "/jobs"):
         # The trip id also rides inside the body: the session proxy
         # forwards bodies verbatim but not arbitrary socket-protocol
         # fields, so this is the carrier that always reaches the daemon.
@@ -677,8 +713,11 @@ def _agent_request(method, path, body=None):
             got = _broker_roundtrip(method, path, body, trip)
             if got is not None:
                 status, obj, transport_used = got
-                if status == 502 and isinstance(obj, dict) \
-                        and str(obj.get("error", "")).startswith("broker:"):
+                if (
+                    status == 502
+                    and isinstance(obj, dict)
+                    and str(obj.get("error", "")).startswith("broker:")
+                ):
                     # The broker itself failed the request (tunnel
                     # establishment failure, wedged pool) — that is a
                     # transport failure, not a daemon answer. Fall
@@ -686,8 +725,7 @@ def _agent_request(method, path, body=None):
                     # request() escalates to the SSH fallback.
                     status, obj = None, None
                 elif status >= 400:
-                    sys.exit(f"laptop-agent: HTTP {status}: "
-                             f"{obj.get('error', obj)}")
+                    sys.exit(f"laptop-agent: HTTP {status}: {obj.get('error', obj)}")
                 if obj is not None:
                     if isinstance(obj, dict):
                         # Trip v2: strip the daemon's internal
@@ -703,14 +741,19 @@ def _agent_request(method, path, body=None):
         def _attempt(transport):
             if transport == "cf":
                 conn = make_cf_http()(CF_HOST, 443, timeout=timeout)
-                headers = {"X-Agent-Token": token, "X-Trip-Id": trip,
-                           "Content-Type": "application/json"}
+                headers = {
+                    "X-Agent-Token": token,
+                    "X-Trip-Id": trip,
+                    "Content-Type": "application/json",
+                }
                 headers.update(_cf_access_headers())
             else:
-                conn = make_tunnel_http()(TARGET_HOST, TARGET_PORT,
-                                          timeout=timeout)
-                headers = {"X-Agent-Token": token, "X-Trip-Id": trip,
-                           "Content-Type": "application/json"}
+                conn = make_tunnel_http()(TARGET_HOST, TARGET_PORT, timeout=timeout)
+                headers = {
+                    "X-Agent-Token": token,
+                    "X-Trip-Id": trip,
+                    "Content-Type": "application/json",
+                }
             conn.request(method, path, body=payload, headers=headers)
             resp = conn.getresponse()
             st = resp.status
@@ -720,8 +763,7 @@ def _agent_request(method, path, body=None):
 
         pref = _transport_pref()
         order = []
-        if pref != "ts" and _cf_suitable(path, body) \
-                and _cf_access_available():
+        if pref != "ts" and _cf_suitable(path, body) and _cf_access_available():
             order.append("cf")
         if pref != "cf":
             order.append("ts")
@@ -735,10 +777,12 @@ def _agent_request(method, path, body=None):
                 transport_used = transport
                 # The edge answering 502/503/530 means the tunnel
                 # origin is down: fall back to Tailscale for this call.
-                if transport == "cf" and status in (502, 503, 530) \
-                        and transport != order[-1]:
-                    last_err = OSError(
-                        f"cloudflare edge status {status}")
+                if (
+                    transport == "cf"
+                    and status in (502, 503, 530)
+                    and transport != order[-1]
+                ):
+                    last_err = OSError(f"cloudflare edge status {status}")
                     status, obj = None, None
                     continue
                 break
@@ -765,11 +809,9 @@ def _agent_request(method, path, body=None):
             # into the loud one-line error when the fallback is
             # disabled or also fails (code#5343 silence audit,
             # 2026-11-10; fallback added 2026-11-16, code#2879).
-            raise TransportDown(
-                f"{type(last_err).__name__}: {last_err}")
+            raise TransportDown(f"{type(last_err).__name__}: {last_err}")
         if status >= 400:
-            sys.exit(f"laptop-agent: HTTP {status}: "
-                     f"{obj.get('error', obj)}")
+            sys.exit(f"laptop-agent: HTTP {status}: {obj.get('error', obj)}")
         if isinstance(obj, dict):
             t_received_ms = obj.pop("_t_received", None)
         return obj
@@ -777,11 +819,16 @@ def _agent_request(method, path, body=None):
         _disarm_deadline_timer()
         if cancellable:
             _cancel_hook = None
-        _log_trip(trip, path, int((time.time() - t0) * 1000), status,
-                  t_sent_ms=t_sent_ms,
-                  t_returned_ms=int(time.time() * 1000),
-                  t_received_ms=t_received_ms,
-                  transport=transport_used)
+        _log_trip(
+            trip,
+            path,
+            int((time.time() - t0) * 1000),
+            status,
+            t_sent_ms=t_sent_ms,
+            t_returned_ms=int(time.time() * 1000),
+            t_received_ms=t_received_ms,
+            transport=transport_used,
+        )
 
 
 # --- SSH fallback transport (2026-11-16, code#2879) -------------------
@@ -797,7 +844,7 @@ SSH_REAL = Path.home() / "tools/laptop-ssh-real.sh"
 SSHFB_PREFIX = "sshfb-"
 SSHFB_REMOTE_DIR = ".local/state/laptop-agent/sshfb-jobs"
 _SSH_MAGIC = "__LAPTOP_AGENT_SSHFB_V1__"
-_EXEC_CAP = 1 << 20          # per-stream capture cap, as the daemon's
+_EXEC_CAP = 1 << 20  # per-stream capture cap, as the daemon's
 
 
 def _ssh_fallback_allowed():
@@ -826,12 +873,16 @@ def _ssh_run(remote, timeout_s):
     sshd down, auth failure) and CallTimeout when the caller's own
     deadline/signal fires mid-wait."""
     import subprocess
+
     argv = [str(SSH_REAL), f"echo {_SSH_MAGIC}; " + remote]
     try:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                start_new_session=True)
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
     except OSError as e:
         raise _SSHFallbackFailed(f"cannot launch ssh: {e}")
     try:
@@ -859,8 +910,9 @@ def _ssh_run(remote, timeout_s):
     if idx < 0:
         raise _SSHFallbackFailed(
             f"remote shell never started (rc={rc}): "
-            f"{err.decode('utf-8', 'replace').strip()[:200]}")
-    return rc, out[idx + len(marker):], err
+            f"{err.decode('utf-8', 'replace').strip()[:200]}"
+        )
+    return rc, out[idx + len(marker) :], err
 
 
 def _ssh_inner(spec):
@@ -868,12 +920,14 @@ def _ssh_inner(spec):
     mirroring the daemon's shell mode (bash -lc happens one level up,
     in the remote string the caller builds)."""
     import shlex
+
     inner = ""
     env = spec.get("env") or {}
     if env:
-        inner += "; ".join(
-            f"export {k}={shlex.quote(str(v))}"
-            for k, v in env.items()) + "; "
+        inner += (
+            "; ".join(f"export {k}={shlex.quote(str(v))}" for k, v in env.items())
+            + "; "
+        )
     if spec.get("cwd"):
         inner += f"cd {shlex.quote(str(spec['cwd']))} || exit 126; "
     if spec.get("shell"):
@@ -891,17 +945,20 @@ def _cap_tail(data):
 
 def _ssh_exec_one(spec, timeout_s):
     import shlex
+
     remote = f"exec bash -lc {shlex.quote(_ssh_inner(spec))}"
     t0 = time.time()
     rc, out, err = _ssh_run(remote, timeout_s + 15)
     duration_ms = int((time.time() - t0) * 1000)
     out, out_trunc = _cap_tail(out)
     err, err_trunc = _cap_tail(err)
-    result = {"stdout": out.decode("utf-8", "replace"),
-              "stderr": err.decode("utf-8", "replace"),
-              "exit": rc,
-              "duration_ms": duration_ms,
-              "truncated": out_trunc or err_trunc}
+    result = {
+        "stdout": out.decode("utf-8", "replace"),
+        "stderr": err.decode("utf-8", "replace"),
+        "exit": rc,
+        "duration_ms": duration_ms,
+        "truncated": out_trunc or err_trunc,
+    }
     if rc is None:
         result["timeout"] = True
     return result
@@ -913,14 +970,19 @@ def _ssh_job_dir(job_id):
 
 def _ssh_launch_job(spec):
     import shlex
+
     job_id = SSHFB_PREFIX + os.urandom(6).hex()
     d = _ssh_job_dir(job_id)
-    script = (f"echo $$ > {d}/pid; date +%s > {d}/start; "
-              f"bash -lc {shlex.quote(_ssh_inner(spec))} "
-              f"> {d}/out 2> {d}/err; echo $? > {d}/exit")
-    remote = (f"d={d}; mkdir -p \"$d\" && "
-              f"setsid bash -c {shlex.quote(script)} "
-              f"</dev/null >/dev/null 2>&1 & echo launched")
+    script = (
+        f"echo $$ > {d}/pid; date +%s > {d}/start; "
+        f"bash -lc {shlex.quote(_ssh_inner(spec))} "
+        f"> {d}/out 2> {d}/err; echo $? > {d}/exit"
+    )
+    remote = (
+        f'd={d}; mkdir -p "$d" && '
+        f"setsid bash -c {shlex.quote(script)} "
+        f"</dev/null >/dev/null 2>&1 & echo launched"
+    )
     _ssh_run(remote, 30)
     return {"job_id": job_id}
 
@@ -928,25 +990,27 @@ def _ssh_launch_job(spec):
 def _ssh_poll_job(job_id, query):
     import base64
     import urllib.parse
+
     qs = urllib.parse.parse_qs(query)
     out_off = int(qs.get("out_off", ["0"])[0] or 0)
     err_off = int(qs.get("err_off", ["0"])[0] or 0)
     d = _ssh_job_dir(job_id)
     remote = (
         f"d={d}; "
-        f"os=$(stat -c%s \"$d/out\" 2>/dev/null || echo 0); "
-        f"es=$(stat -c%s \"$d/err\" 2>/dev/null || echo 0); "
-        f"start=$(cat \"$d/start\" 2>/dev/null || date +%s); "
-        f"if [ -f \"$d/exit\" ]; then st=done; ex=$(cat \"$d/exit\"); "
-        f"fin=$(stat -c%Y \"$d/exit\"); else st=running; ex=; "
+        f'os=$(stat -c%s "$d/out" 2>/dev/null || echo 0); '
+        f'es=$(stat -c%s "$d/err" 2>/dev/null || echo 0); '
+        f'start=$(cat "$d/start" 2>/dev/null || date +%s); '
+        f'if [ -f "$d/exit" ]; then st=done; ex=$(cat "$d/exit"); '
+        f'fin=$(stat -c%Y "$d/exit"); else st=running; ex=; '
         f"fin=$(date +%s); fi; "
-        f"echo \"STATE $st\"; echo \"EXIT $ex\"; "
-        f"echo \"DUR $(( (fin - start) * 1000 ))\"; "
-        f"echo \"OUTNEXT $os\"; echo \"ERRNEXT $es\"; "
+        f'echo "STATE $st"; echo "EXIT $ex"; '
+        f'echo "DUR $(( (fin - start) * 1000 ))"; '
+        f'echo "OUTNEXT $os"; echo "ERRNEXT $es"; '
         f"printf 'OUTB64 '; tail -c +$(( {out_off} + 1 )) \"$d/out\" "
         f"2>/dev/null | base64 -w0; echo; "
         f"printf 'ERRB64 '; tail -c +$(( {err_off} + 1 )) \"$d/err\" "
-        f"2>/dev/null | base64 -w0; echo")
+        f"2>/dev/null | base64 -w0; echo"
+    )
     _, out, _ = _ssh_run(remote, 60)
     fields = {}
     for line in out.decode("utf-8", "replace").splitlines():
@@ -955,51 +1019,62 @@ def _ssh_poll_job(job_id, query):
     if "STATE" not in fields:
         raise _SSHFallbackFailed(f"unparsable poll reply for {job_id}")
     exit_v = fields.get("EXIT", "")
-    return {"job_id": job_id,
-            "state": fields["STATE"],
-            "exit": int(exit_v) if exit_v.lstrip("-").isdigit() else None,
-            "stdout": base64.b64decode(
-                fields.get("OUTB64", "")).decode("utf-8", "replace"),
-            "stderr": base64.b64decode(
-                fields.get("ERRB64", "")).decode("utf-8", "replace"),
-            "out_next": int(fields.get("OUTNEXT", out_off)),
-            "err_next": int(fields.get("ERRNEXT", err_off)),
-            "duration_ms": int(fields.get("DUR", 0))}
+    return {
+        "job_id": job_id,
+        "state": fields["STATE"],
+        "exit": int(exit_v) if exit_v.lstrip("-").isdigit() else None,
+        "stdout": base64.b64decode(fields.get("OUTB64", "")).decode("utf-8", "replace"),
+        "stderr": base64.b64decode(fields.get("ERRB64", "")).decode("utf-8", "replace"),
+        "out_next": int(fields.get("OUTNEXT", out_off)),
+        "err_next": int(fields.get("ERRNEXT", err_off)),
+        "duration_ms": int(fields.get("DUR", 0)),
+    }
 
 
 def _ssh_kill_job(job_id):
     d = _ssh_job_dir(job_id)
-    remote = (f"d={d}; pg=$(cat \"$d/pid\" 2>/dev/null); "
-              f"if [ -n \"$pg\" ]; then "
-              f"kill -TERM -$pg 2>/dev/null; sleep 2; "
-              f"kill -KILL -$pg 2>/dev/null; fi; "
-              f"( set -C; echo -15 > \"$d/exit\" ) 2>/dev/null; echo ok")
+    remote = (
+        f'd={d}; pg=$(cat "$d/pid" 2>/dev/null); '
+        f'if [ -n "$pg" ]; then '
+        f"kill -TERM -$pg 2>/dev/null; sleep 2; "
+        f"kill -KILL -$pg 2>/dev/null; fi; "
+        f'( set -C; echo -15 > "$d/exit" ) 2>/dev/null; echo ok'
+    )
     _ssh_run(remote, 30)
     return {"ok": True, "job_id": job_id}
 
 
 def _ssh_list_jobs():
-    remote = (f"for d in $HOME/{SSHFB_REMOTE_DIR}/*/; do "
-              f"[ -d \"$d\" ] || continue; id=$(basename \"$d\"); "
-              f"if [ -f \"$d/exit\" ]; then echo \"$id done "
-              f"$(cat \"$d/exit\")\"; else echo \"$id running\"; fi; "
-              f"done")
+    remote = (
+        f"for d in $HOME/{SSHFB_REMOTE_DIR}/*/; do "
+        f'[ -d "$d" ] || continue; id=$(basename "$d"); '
+        f'if [ -f "$d/exit" ]; then echo "$id done '
+        f'$(cat "$d/exit")"; else echo "$id running"; fi; '
+        f"done"
+    )
     _, out, _ = _ssh_run(remote, 30)
     jobs = []
     for line in out.decode("utf-8", "replace").splitlines():
         parts = line.split()
         if len(parts) >= 2:
-            jobs.append({"job_id": parts[0], "state": parts[1],
-                         "exit": int(parts[2])
-                         if len(parts) > 2
-                         and parts[2].lstrip("-").isdigit() else None})
+            jobs.append(
+                {
+                    "job_id": parts[0],
+                    "state": parts[1],
+                    "exit": int(parts[2])
+                    if len(parts) > 2 and parts[2].lstrip("-").isdigit()
+                    else None,
+                }
+            )
     return {"jobs": jobs}
 
 
 def _ssh_health():
-    remote = ("head -1 /proc/loadavg; head -1 /proc/uptime; "
-              f"ls $HOME/.local/state/laptop-agent/jobs "
-              f"$HOME/{SSHFB_REMOTE_DIR} 2>/dev/null | wc -l")
+    remote = (
+        "head -1 /proc/loadavg; head -1 /proc/uptime; "
+        f"ls $HOME/.local/state/laptop-agent/jobs "
+        f"$HOME/{SSHFB_REMOTE_DIR} 2>/dev/null | wc -l"
+    )
     _, out, _ = _ssh_run(remote, 30)
     lines = out.decode("utf-8", "replace").splitlines()
     try:
@@ -1008,8 +1083,13 @@ def _ssh_health():
         jobs = int(lines[2].split()[0])
     except (IndexError, ValueError) as e:
         raise _SSHFallbackFailed(f"unparsable health reply: {e}")
-    return {"ok": True, "uptime_s": uptime_s, "jobs": jobs,
-            "load1": load1, "transport": "ssh-fallback"}
+    return {
+        "ok": True,
+        "uptime_s": uptime_s,
+        "jobs": jobs,
+        "load1": load1,
+        "transport": "ssh-fallback",
+    }
 
 
 def _ssh_request(method, path, body=None):
@@ -1020,15 +1100,16 @@ def _ssh_request(method, path, body=None):
     if method == "POST" and path == "/exec":
         body = body or {}
         timeout_s = body.get("timeout_s", 120)
-        return {"results": [_ssh_exec_one(spec, timeout_s)
-                            for spec in body.get("cmds", [])]}
+        return {
+            "results": [_ssh_exec_one(spec, timeout_s) for spec in body.get("cmds", [])]
+        }
     if method == "POST" and path == "/jobs":
         _enforce_launch_guard(body or {})
         return _ssh_launch_job(body or {})
     if method == "GET" and path == "/jobs":
         return _ssh_list_jobs()
     if path.startswith("/jobs/"):
-        rest = path[len("/jobs/"):]
+        rest = path[len("/jobs/") :]
         job_id = rest.split("/")[0].partition("?")[0]
         _, _, query = rest.partition("?")
         if method == "GET":
@@ -1054,13 +1135,15 @@ def request(method, path, body=None):
             sys.exit(f"laptop-agent: transport error: {down}")
         sys.stderr.write(
             f"laptop-agent: note: agent transport down ({down}); "
-            f"retrying over ssh fallback\n")
+            f"retrying over ssh fallback\n"
+        )
         try:
             _arm_deadline_timer()
             return _ssh_request(method, path, body)
         except _SSHFallbackFailed as fb:
-            sys.exit(f"laptop-agent: transport error: {down}; "
-                     f"ssh fallback also failed: {fb}")
+            sys.exit(
+                f"laptop-agent: transport error: {down}; ssh fallback also failed: {fb}"
+            )
         finally:
             _disarm_deadline_timer()
 
@@ -1080,14 +1163,19 @@ def _direct_request(method, path, body=None, timeout_s=30):
     def _attempt(transport):
         if transport == "cf":
             conn = make_cf_http()(CF_HOST, 443, timeout=timeout_s)
-            headers = {"X-Agent-Token": token, "X-Trip-Id": trip,
-                       "Content-Type": "application/json"}
+            headers = {
+                "X-Agent-Token": token,
+                "X-Trip-Id": trip,
+                "Content-Type": "application/json",
+            }
             headers.update(_cf_access_headers())
         else:
-            conn = make_tunnel_http()(TARGET_HOST, TARGET_PORT,
-                                      timeout=timeout_s)
-            headers = {"X-Agent-Token": token, "X-Trip-Id": trip,
-                       "Content-Type": "application/json"}
+            conn = make_tunnel_http()(TARGET_HOST, TARGET_PORT, timeout=timeout_s)
+            headers = {
+                "X-Agent-Token": token,
+                "X-Trip-Id": trip,
+                "Content-Type": "application/json",
+            }
         conn.request(method, path, body=payload, headers=headers)
         resp = conn.getresponse()
         data = resp.read()
@@ -1107,8 +1195,11 @@ def _direct_request(method, path, body=None, timeout_s=30):
     for transport in order:
         try:
             status, obj = _attempt(transport)
-            if transport == "cf" and status in (502, 503, 530) \
-                    and transport != order[-1]:
+            if (
+                transport == "cf"
+                and status in (502, 503, 530)
+                and transport != order[-1]
+            ):
                 last_err = OSError(f"cloudflare edge status {status}")
                 status, obj = None, None
                 continue
@@ -1122,8 +1213,7 @@ def _direct_request(method, path, body=None, timeout_s=30):
             last_err = e
             status, obj = None, None
     if obj is None:
-        raise RuntimeError(f"transport error: "
-                           f"{type(last_err).__name__}: {last_err}")
+        raise RuntimeError(f"transport error: {type(last_err).__name__}: {last_err}")
     if status >= 400:
         raise RuntimeError(f"HTTP {status}: {obj.get('error', obj)}")
     if isinstance(obj, dict):
@@ -1138,6 +1228,7 @@ def _fetch_chunk(path, off, length, timeout_s=120):
     On total transport failure, falls back to one SSH chunk (dd +
     base64) when the SSH fallback is allowed, mirroring request()."""
     import urllib.parse
+
     qs = urllib.parse.urlencode({"path": path, "off": off, "len": length})
     route = f"/file?{qs}"
     token = TOKEN_FILE.read_text().strip()
@@ -1148,8 +1239,7 @@ def _fetch_chunk(path, off, length, timeout_s=120):
             headers = {"X-Agent-Token": token}
             headers.update(_cf_access_headers())
         else:
-            conn = make_tunnel_http()(TARGET_HOST, TARGET_PORT,
-                                      timeout=timeout_s)
+            conn = make_tunnel_http()(TARGET_HOST, TARGET_PORT, timeout=timeout_s)
             headers = {"X-Agent-Token": token}
         conn.request("GET", route, headers=headers)
         resp = conn.getresponse()
@@ -1170,13 +1260,17 @@ def _fetch_chunk(path, off, length, timeout_s=120):
     for transport in order:
         try:
             status, data, hdrs = _attempt(transport)
-            if transport == "cf" and status in (502, 503, 530) \
-                    and transport != order[-1]:
+            if (
+                transport == "cf"
+                and status in (502, 503, 530)
+                and transport != order[-1]
+            ):
                 last_err = OSError(f"cloudflare edge status {status}")
                 continue
             if status >= 400:
-                raise RuntimeError(f"HTTP {status}: "
-                                   f"{data[:200].decode('utf-8', 'replace')}")
+                raise RuntimeError(
+                    f"HTTP {status}: {data[:200].decode('utf-8', 'replace')}"
+                )
             return data, int(hdrs.get("x-file-size", off + len(data)))
         except SystemExit as e:
             last_err = OSError(str(e.code))
@@ -1185,25 +1279,27 @@ def _fetch_chunk(path, off, length, timeout_s=120):
     if _ssh_fallback_allowed():
         import base64
         import shlex
-        remote = (f"sz=$(stat -c%s {shlex.quote(path)} 2>/dev/null) || exit 1; "
-                  f"echo \"SIZE $sz\"; "
-                  f"dd if={shlex.quote(path)} bs=1 skip={off} "
-                  f"count={length} 2>/dev/null | base64 -w0; echo")
+
+        remote = (
+            f"sz=$(stat -c%s {shlex.quote(path)} 2>/dev/null) || exit 1; "
+            f'echo "SIZE $sz"; '
+            f"dd if={shlex.quote(path)} bs=1 skip={off} "
+            f"count={length} 2>/dev/null | base64 -w0; echo"
+        )
         rc, out, _err = _ssh_run(remote, timeout_s + 15)
         lines = out.decode("utf-8", "replace").splitlines()
         if rc == 0 and lines and lines[0].startswith("SIZE "):
             size = int(lines[0].split()[1])
             return base64.b64decode(lines[1] if len(lines) > 1 else ""), size
         raise RuntimeError(f"ssh fallback fetch failed (rc={rc})")
-    raise RuntimeError(f"transport error: "
-                       f"{type(last_err).__name__}: {last_err}")
+    raise RuntimeError(f"transport error: {type(last_err).__name__}: {last_err}")
 
 
 def split_cmd(args):
     """Everything after -- is the command."""
     if "--" in args:
         i = args.index("--")
-        return args[:i], args[i + 1:]
+        return args[:i], args[i + 1 :]
     return args, []
 
 
@@ -1243,7 +1339,7 @@ def _normalize_laptop_path(token):
         return "/home/user"
     for prefix in ("~/", "$HOME/"):
         if token.startswith(prefix):
-            return "/home/user/" + token[len(prefix):]
+            return "/home/user/" + token[len(prefix) :]
     return token
 
 
@@ -1261,7 +1357,8 @@ def _primary_guard_check(spec):
         _GIT_MUTATION_RE = re.compile(
             r"\bgit\s+(?:-C\s+\S+\s+)?"
             r"(checkout|switch|commit|clean|reset|stash|rebase|merge|"
-            r"cherry-pick|apply|restore|rm|mv)\b")
+            r"cherry-pick|apply|restore|rm|mv)\b"
+        )
     if os.environ.get("LAPTOP_AGENT_PRIMARY_OK") == "1":
         return None
     text = spec.get("shell") or " ".join(spec.get("argv") or [])
@@ -1281,7 +1378,8 @@ def _primary_guard_check(spec):
                 "Work in a worktree under ~/git/fleet/ instead (create "
                 "one with: git -C <primary> worktree add "
                 "~/git/fleet/<name> -b <branch>). For Drew-ordered work "
-                "in the primary itself, set LAPTOP_AGENT_PRIMARY_OK=1.")
+                "in the primary itself, set LAPTOP_AGENT_PRIMARY_OK=1."
+            )
     return None
 
 
@@ -1289,8 +1387,8 @@ def _enforce_primary_guard(spec):
     refusal = _primary_guard_check(spec)
     if refusal is not None:
         sys.stderr.write(
-            f"laptop-agent: REFUSED (primary-checkout guard, "
-            f"code#10095): {refusal}\n")
+            f"laptop-agent: REFUSED (primary-checkout guard, code#10095): {refusal}\n"
+        )
         sys.exit(3)
 
 
@@ -1307,8 +1405,7 @@ def _enforce_primary_guard(spec):
 # only, so read-only primary observers (sentinel checks, pm-git-sync)
 # keep working. Drew-ordered work in a primary sets
 # LAPTOP_AGENT_PRIMARY_OK=1 for that call, as with item 2.
-_LAUNCH_GUARD_LOG = os.path.expanduser(
-    "~/.cache/laptop-agent/primary-guard.log")
+_LAUNCH_GUARD_LOG = os.path.expanduser("~/.cache/laptop-agent/primary-guard.log")
 
 
 def _launch_guard_check(spec):
@@ -1338,7 +1435,8 @@ def _launch_guard_check(spec):
                 "git -C <primary> worktree add ~/git/fleet/<name> "
                 "-b <branch>) and pass that as --cwd. For "
                 "Drew-ordered work in the primary itself, set "
-                "LAPTOP_AGENT_PRIMARY_OK=1.")
+                "LAPTOP_AGENT_PRIMARY_OK=1."
+            )
     return None
 
 
@@ -1349,17 +1447,23 @@ def _enforce_launch_guard(spec):
     try:
         os.makedirs(os.path.dirname(_LAUNCH_GUARD_LOG), exist_ok=True)
         with open(_LAUNCH_GUARD_LOG, "a") as fh:
-            fh.write(json.dumps({
-                "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "verb": "run",
-                "cwd": spec.get("cwd"),
-                "refusal": refusal,
-            }) + "\n")
+            fh.write(
+                json.dumps(
+                    {
+                        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "verb": "run",
+                        "cwd": spec.get("cwd"),
+                        "refusal": refusal,
+                    }
+                )
+                + "\n"
+            )
     except Exception:
         pass
     sys.stderr.write(
         f"laptop-agent: REFUSED (primary-checkout launch guard, "
-        f"code#10095): {refusal}\n")
+        f"code#10095): {refusal}\n"
+    )
     sys.exit(3)
 
 
@@ -1430,7 +1534,8 @@ def main():
                     sys.stderr.write(
                         "laptop-agent: warning: a command's output was "
                         "truncated at the 1 MiB/stream capture cap "
-                        "(tail kept)\n")
+                        "(tail kept)\n"
+                    )
                 if r.get("error"):
                     worst = max(worst, 1)
                 elif r.get("timeout"):
@@ -1439,11 +1544,13 @@ def main():
                     worst = max(worst, r["exit"])
             if worst:
                 sys.exit(worst)
+
         _run_guarded(_batch)
         return
 
     if sub in ("exec", "run"):
         import argparse
+
         opt_args, cmd_args = split_cmd(rest)
         ap = argparse.ArgumentParser()
         ap.add_argument("--cwd", default=None)
@@ -1472,8 +1579,9 @@ def main():
             # by killing the job we just created.
             if _interrupted is not None:
                 try:
-                    _direct_request("POST", f"/jobs/{job_id}/kill", {},
-                                    timeout_s=_CANCEL_BUDGET_S)
+                    _direct_request(
+                        "POST", f"/jobs/{job_id}/kill", {}, timeout_s=_CANCEL_BUDGET_S
+                    )
                 except Exception:
                     pass
                 _exit_timeout()
@@ -1481,20 +1589,21 @@ def main():
         _set_deadline(opts.timeout)
 
         def _exec():
-            out = request("POST", "/exec",
-                          {"cmds": [spec], "timeout_s": opts.timeout})
+            out = request("POST", "/exec", {"cmds": [spec], "timeout_s": opts.timeout})
             r = out["results"][0]
             sys.stdout.write(r.get("stdout", ""))
             sys.stderr.write(r.get("stderr", ""))
             if r.get("truncated"):
                 sys.stderr.write(
                     "laptop-agent: warning: output truncated at the "
-                    "1 MiB/stream capture cap (tail kept)\n")
+                    "1 MiB/stream capture cap (tail kept)\n"
+                )
             if r.get("error"):
                 sys.stderr.write(f"laptop-agent: {r['error']}\n")
             if r.get("timeout"):
                 _exit_timeout()
             sys.exit(r["exit"] if r["exit"] is not None else 1)
+
         _run_guarded(_exec)
         return
 
@@ -1517,8 +1626,9 @@ def main():
             if state["done"]:
                 return True
             try:
-                _direct_request("POST", f"/jobs/{job_id}/kill", {},
-                                timeout_s=_CANCEL_BUDGET_S)
+                _direct_request(
+                    "POST", f"/jobs/{job_id}/kill", {}, timeout_s=_CANCEL_BUDGET_S
+                )
                 return True
             except Exception:
                 return False
@@ -1541,9 +1651,9 @@ def main():
         _threading.Thread(target=_watchdog, daemon=True).start()
         try:
             while True:
-                out = request("GET",
-                              f"/jobs/{job_id}?out_off={offs['out']}"
-                              f"&err_off={offs['err']}")
+                out = request(
+                    "GET", f"/jobs/{job_id}?out_off={offs['out']}&err_off={offs['err']}"
+                )
                 sys.stdout.write(out.get("stdout", ""))
                 sys.stdout.flush()
                 sys.stderr.write(out.get("stderr", ""))
@@ -1552,14 +1662,15 @@ def main():
                 off_file.write_text(json.dumps(offs))
                 if out["state"] == "done":
                     state["done"] = True
-                    print(f"[laptop-agent] job {job_id} done "
-                          f"exit={out['exit']} "
-                          f"duration_ms={out['duration_ms']}",
-                          file=sys.stderr)
+                    print(
+                        f"[laptop-agent] job {job_id} done "
+                        f"exit={out['exit']} "
+                        f"duration_ms={out['duration_ms']}",
+                        file=sys.stderr,
+                    )
                     sys.exit(out["exit"] if out["exit"] is not None else 1)
                 if time.time() >= deadline:
-                    print(f"[laptop-agent] job {job_id} still running",
-                          file=sys.stderr)
+                    print(f"[laptop-agent] job {job_id} still running", file=sys.stderr)
                     return
                 try:
                     time.sleep(min(3, max(0.0, deadline - time.time())))
@@ -1581,13 +1692,14 @@ def main():
         if "--chunk" in args:
             i = args.index("--chunk")
             chunk = int(args[i + 1])
-            del args[i:i + 2]
+            del args[i : i + 2]
             if chunk <= 0 or chunk > (1 << 20):
-                sys.exit("laptop-agent: --chunk must be 1..1048576 "
-                         "(the daemon caps one request at 1 MiB)")
+                sys.exit(
+                    "laptop-agent: --chunk must be 1..1048576 "
+                    "(the daemon caps one request at 1 MiB)"
+                )
         if len(args) != 2:
-            sys.exit("usage: laptop-agent.py fetch [--chunk BYTES] "
-                     "PATH OUT")
+            sys.exit("usage: laptop-agent.py fetch [--chunk BYTES] PATH OUT")
         remote_path, out_path = args
         off = os.path.getsize(out_path) if os.path.exists(out_path) else 0
         resumed_from = off
@@ -1599,22 +1711,24 @@ def main():
                 data, total = _fetch_chunk(remote_path, off, chunk)
                 trips += 1
                 if off > total:
-                    sys.exit(f"laptop-agent: local {out_path} is {off} "
-                             f"bytes but remote {remote_path} is only "
-                             f"{total}; refusing to append — remove or "
-                             f"rename the local file and retry")
+                    sys.exit(
+                        f"laptop-agent: local {out_path} is {off} "
+                        f"bytes but remote {remote_path} is only "
+                        f"{total}; refusing to append — remove or "
+                        f"rename the local file and retry"
+                    )
                 if not data and off < total:
-                    sys.exit("laptop-agent: empty chunk before EOF; "
-                             "fetch incomplete")
+                    sys.exit("laptop-agent: empty chunk before EOF; fetch incomplete")
                 fh.write(data)
                 off += len(data)
                 if len(data) < chunk and off < total:
                     continue
-        print(f"fetched {total} bytes from {remote_path} -> {out_path} "
-              f"in {trips} round trip(s)"
-              + (f" (resumed from offset {resumed_from})"
-                 if resumed_from else ""),
-              file=sys.stderr)
+        print(
+            f"fetched {total} bytes from {remote_path} -> {out_path} "
+            f"in {trips} round trip(s)"
+            + (f" (resumed from offset {resumed_from})" if resumed_from else ""),
+            file=sys.stderr,
+        )
         return
 
     sys.exit(f"laptop-agent: unknown subcommand {sub!r}")

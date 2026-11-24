@@ -76,9 +76,9 @@ describe("aggregator break-glass owner token (#9608)", () => {
         throw new Error("audit store unavailable");
       },
     };
-    await expect(
-      issueBreakGlassToken({ store, events: failingEvents, ttlMs: 60_000, now: T0 }),
-    ).rejects.toThrow(/audit store unavailable/);
+    await expect(issueBreakGlassToken({ store, events: failingEvents, ttlMs: 60_000, now: T0 })).rejects.toThrow(
+      /audit store unavailable/,
+    );
     const raw = await readFile(tokensFile, "utf8").catch(() => "");
     expect(raw).not.toContain("tokenHash");
     expect((await consumeBreakGlassToken({ store, token: "anything", now: T0 })).ok).toBe(false);
@@ -86,9 +86,9 @@ describe("aggregator break-glass owner token (#9608)", () => {
 
   test("ttl is capped at one hour: longer or non-positive requests are refused", async () => {
     const { events, store } = await setup();
-    await expect(
-      issueBreakGlassToken({ store, events, ttlMs: BREAK_GLASS_MAX_TTL_MS + 1, now: T0 }),
-    ).rejects.toThrow(/one hour/);
+    await expect(issueBreakGlassToken({ store, events, ttlMs: BREAK_GLASS_MAX_TTL_MS + 1, now: T0 })).rejects.toThrow(
+      /one hour/,
+    );
     await expect(issueBreakGlassToken({ store, events, ttlMs: 0, now: T0 })).rejects.toThrow();
     await expect(issueBreakGlassToken({ store, events, ttlMs: -1, now: T0 })).rejects.toThrow();
     const issued = await issueBreakGlassToken({ store, events, now: T0 });

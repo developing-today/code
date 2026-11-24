@@ -117,9 +117,7 @@ export function createEscalationTicker(deps: EscalationTickerDeps): {
       try {
         const now = deps.now?.() ?? Date.now();
         const summaries = await deps.summaries(now);
-        const decisions = routeEscalations(
-          buildEscalationInput(summaries, deps.remediationState(now), now),
-        );
+        const decisions = routeEscalations(buildEscalationInput(summaries, deps.remediationState(now), now));
         // Recovery clears the delivered mark: a facet absent from
         // this tick's decisions has recovered (or gone unsourced),
         // so its next bad episode is a new incident.

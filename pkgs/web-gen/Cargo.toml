@@ -1,6 +1,5 @@
 [workspace]
-members = [
-".", "crates/web-gen-core", "crates/web-gen-ui"]
+members = [".", "crates/web-gen-core", "crates/web-gen-ui"]
 resolver = "2"
 
 [workspace.dependencies]

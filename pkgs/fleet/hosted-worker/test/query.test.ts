@@ -19,11 +19,7 @@ import { parseMetadataBlock, renderBodyWithBlock } from "../src/metadata.ts";
 import { dispatch } from "../src/router.ts";
 import { FixtureSessionRegistry } from "../src/sessions.ts";
 import { importStampSigner, signStamp, type Provenance } from "../src/stamp-sig.ts";
-import {
-  extractKeys,
-  FixtureMetadataStore,
-  type MetadataRecord,
-} from "../src/stamping.ts";
+import { extractKeys, FixtureMetadataStore, type MetadataRecord } from "../src/stamping.ts";
 import { AUDIENCE, BINDING_A, BINDING_B, ISSUER, bearerReq, makeHarness } from "./helpers.ts";
 
 const h = await makeHarness();
@@ -56,8 +52,20 @@ const tenancyFixture = JSON.stringify({
     { issuer: ISSUER, subject: "user-sub-2", binding_id: BINDING_B, active: true },
   ],
   service_tokens: [
-    { sha256: await sha256Hex(QUERY_TOKEN), binding_id: BINDING_A, routes: ["query"], active: true, label: "collector-test" },
-    { sha256: await sha256Hex(STAMP_ONLY_TOKEN), binding_id: BINDING_A, routes: ["stamping"], active: true, label: "stamping-only" },
+    {
+      sha256: await sha256Hex(QUERY_TOKEN),
+      binding_id: BINDING_A,
+      routes: ["query"],
+      active: true,
+      label: "collector-test",
+    },
+    {
+      sha256: await sha256Hex(STAMP_ONLY_TOKEN),
+      binding_id: BINDING_A,
+      routes: ["stamping"],
+      active: true,
+      label: "stamping-only",
+    },
   ],
 });
 
@@ -164,13 +172,18 @@ async function hostedBlock(
 }
 
 // #101 — hosted issue, lane code-a on amd-6, session SES_A, queue q-1.
-await seed(101, "issue", BINDING_A, await hostedBlock(
-  { session_id: SES_A, lane: "code-a", host: "amd-6", queue_id: "q-1" },
-  {
-    direct_parent: { repo: REPO, number: 9081, kind: "design" },
-    links: [{ target: { repo: REPO, number: 12583 }, relation: "parent", status: "current" }],
-  },
-));
+await seed(
+  101,
+  "issue",
+  BINDING_A,
+  await hostedBlock(
+    { session_id: SES_A, lane: "code-a", host: "amd-6", queue_id: "q-1" },
+    {
+      direct_parent: { repo: REPO, number: 9081, kind: "design" },
+      links: [{ target: { repo: REPO, number: 12583 }, relation: "parent", status: "current" }],
+    },
+  ),
+);
 // #102 — native-edition PR: §12 provenance only (no auth_subject,
 // no stamp_sig), lane code-b, parent is #101, one historical link.
 await seed(102, "pr", BINDING_A, {
@@ -194,28 +207,40 @@ await seed(102, "pr", BINDING_A, {
 // #103 — hosted issue, same session/lane/host as #101, queue q-2,
 // with the link-pair trap: relation "parent" on one link (status
 // historical), status "current" on another (relation "blocks").
-await seed(103, "issue", BINDING_A, await hostedBlock(
-  { session_id: SES_A, lane: "code-a", host: "amd-6", queue_id: "q-2" },
-  {
-    links: [
-      { target: { repo: REPO, number: 500 }, relation: "parent", status: "historical" },
-      { target: { repo: REPO, number: 501 }, relation: "blocks", status: "current" },
-    ],
-  },
-));
+await seed(
+  103,
+  "issue",
+  BINDING_A,
+  await hostedBlock(
+    { session_id: SES_A, lane: "code-a", host: "amd-6", queue_id: "q-2" },
+    {
+      links: [
+        { target: { repo: REPO, number: 500 }, relation: "parent", status: "historical" },
+        { target: { repo: REPO, number: 501 }, relation: "blocks", status: "current" },
+      ],
+    },
+  ),
+);
 // #104 — another tenancy's item whose fields match A's favourite
 // filters (lane code-a, host amd-6): A must never see it.
-await seed(104, "issue", BINDING_B, await hostedBlock(
-  { session_id: SES_X, lane: "code-a", host: "amd-6", auth_subject: BINDING_B },
-));
+await seed(
+  104,
+  "issue",
+  BINDING_B,
+  await hostedBlock({ session_id: SES_X, lane: "code-a", host: "amd-6", auth_subject: BINDING_B }),
+);
 // #105 — hosted item GitHub-only (not yet ingested), A's tenancy.
-await seed(105, "issue", BINDING_A, await hostedBlock(
-  { session_id: SES_A, lane: "code-a", host: "amd-6" },
-), { db: false });
+await seed(105, "issue", BINDING_A, await hostedBlock({ session_id: SES_A, lane: "code-a", host: "amd-6" }), {
+  db: false,
+});
 // #106 — GitHub-only item stamped for B: A's fallback must skip it.
-await seed(106, "issue", BINDING_B, await hostedBlock(
-  { session_id: SES_X, lane: "code-a", host: "amd-6", auth_subject: BINDING_B },
-), { db: false });
+await seed(
+  106,
+  "issue",
+  BINDING_B,
+  await hostedBlock({ session_id: SES_X, lane: "code-a", host: "amd-6", auth_subject: BINDING_B }),
+  { db: false },
+);
 // #107 — divergence case (caller-owned edit): direct_parent changed
 // in the body after stamping.
 const block107 = await hostedBlock({ session_id: `ses_${"d".repeat(32)}`, lane: "code-d", host: "amd-6" });
@@ -234,10 +259,10 @@ function editWriterBody(number: number, body: string): void {
   item.body = body;
 }
 
-editWriterBody(107, bodyText(
-  { ...block107, direct_parent: { repo: REPO, number: 9999, kind: "issue" } },
-  "Sample item 107",
-));
+editWriterBody(
+  107,
+  bodyText({ ...block107, direct_parent: { repo: REPO, number: 9999, kind: "issue" } }, "Sample item 107"),
+);
 {
   const edited108 = JSON.parse(JSON.stringify(block108)) as Record<string, unknown>;
   (edited108["provenance"] as Record<string, unknown>)["lane"] = "code-z";
@@ -268,7 +293,11 @@ async function getQuery(token: string, params: string, d: AuthDeps = deps): Prom
   return { status: res.status, doc: (await res.json()) as QueryDoc };
 }
 
-async function postQuery(token: string, body: unknown, d: AuthDeps = deps): Promise<{ status: number; doc: QueryDoc & { error?: string } }> {
+async function postQuery(
+  token: string,
+  body: unknown,
+  d: AuthDeps = deps,
+): Promise<{ status: number; doc: QueryDoc & { error?: string } }> {
   const res = await dispatch(
     bearerReq("/v1/query", token, {
       method: "POST",
@@ -319,10 +348,7 @@ test("link relation/status match as a pair on the same link", async () => {
   // current (on a blocks link) — separately true, jointly false.
   assert.deepEqual(numbers((await getQuery(tokenA, "link_relation=parent&link_status=current")).doc), [101]);
   assert.deepEqual(numbers((await getQuery(tokenA, "link_relation=blocks&link_status=current")).doc), [103]);
-  assert.deepEqual(
-    numbers((await getQuery(tokenA, `link_target=${encodeURIComponent(`${REPO}#101`)}`)).doc),
-    [102],
-  );
+  assert.deepEqual(numbers((await getQuery(tokenA, `link_target=${encodeURIComponent(`${REPO}#101`)}`)).doc), [102]);
 });
 
 test("results span both editions, with stamp status per edition", async () => {

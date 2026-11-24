@@ -6,11 +6,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { migrate } from "../src/store";
 import { handleRequest, type ServerEnv } from "../src/server";
-import {
-  type FleetOperationSink,
-  type OperationEnvelope,
-  type OperationReceipt,
-} from "../src/operation-forwarder";
+import { type FleetOperationSink, type OperationEnvelope, type OperationReceipt } from "../src/operation-forwarder";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(__dirname, "..", "fixtures");
@@ -260,9 +256,7 @@ describe("DSP-01 webhook auth fan-out", () => {
     });
     // The idempotency key is semantic: it names the comment + verb,
     // not the delivery GUID.
-    expect(sink.envelopes[0].idempotencyKey).toBe(
-      "ghcmd:v1:developing-today/code#754:comment:92001:do-now",
-    );
+    expect(sink.envelopes[0].idempotencyKey).toBe("ghcmd:v1:developing-today/code#754:comment:92001:do-now");
 
     // Tampered signature: rejected before any Fleet effect.
     const tampered = await sendCommand(sink, {

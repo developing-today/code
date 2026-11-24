@@ -25,7 +25,8 @@
 //! [`MembershipFrontier`](crate::relay_gate::MembershipFrontier) from
 //! the signed graph's resolved membership state, so a production host
 //! wires the gate with the graph frontier over its shared event
-//! store; the local stand-ins remain for tests.
+//! store; the ingest acceptance tests below run against both
+//! backings.
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -192,12 +193,26 @@ mod tests {
     use crate::hex::hex_encode;
     use crate::relay_gate::AllowlistFrontier;
 
+    use id_core::membership::AuthId;
+    use id_core::waiting::{AuthorKey, WaitingLimits};
+    use id_events::event_store::EventStore;
+    use id_store::chain::{ChainExt, Event, sign};
+    use id_store::store_traits::SharedEventStore;
+    use p2panda_auth::Access;
+    use p2panda_auth::group::{GroupAction, GroupMember};
+    use p2panda_core::Hash;
+
+    use crate::graph_frontier::GraphFrontier;
+
     // Oracle: issue #3796's acceptance (two members with no direct
     // connection exchange chained messages via a bridging member;
     // forged/altered relayed messages are rejected; duplicates are
     // suppressed) exercised at the live ingest call site this module
     // adds, over real Iroh connections — the gate-level half of the
-    // same acceptance is covered in `relay_gate`'s tests.
+    // same acceptance is covered in `relay_gate`'s tests. The bridge,
+    // removed-member and duplicate scenarios run twice: once with the
+    // allowlist stand-in and once with the graph-backed frontier a
+    // production host wires in.
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
@@ -402,6 +417,289 @@ mod tests {
             .spawn();
 
         let msg = RelayedMessage::new(envelope(1, 0));
+        for attempt in 0..2 {
+            let outcome = forward_message(&origin, loopback_addr(&bridge), &msg).await;
+            assert!(
+                matches!(outcome, Outcome::Delivered),
+                "attempt {attempt} must report delivered, got {outcome:?}"
+            );
+        }
+        assert_eq!(bridge_sink.received().len(), 1);
+        assert_eq!(bridge_protocol.forwarded(), 1);
+    }
+
+    // --- Graph-backed frontier harness ---------------------------------
+    //
+    // The same acceptance with the production frontier: each relay's
+    // gate reads authorization from a real event store holding the
+    // group's signed membership operations, replicated to both relays
+    // the way gossip would carry them.
+
+    /// p2panda key: group operations (the chain signer). The same
+    /// seed gives the same author bytes as [`key`].
+    fn pkey(seed: u8) -> p2panda_core::SigningKey {
+        p2panda_core::SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn individual(key: &p2panda_core::SigningKey) -> GroupMember<AuthId> {
+        let author: AuthorKey = *key.verifying_key().as_bytes();
+        GroupMember::Individual(AuthId::Key(author))
+    }
+
+    /// A signed group operation and its encoded body, built the way
+    /// the event store's own tests build them (public constructors).
+    fn group_op(
+        key: &p2panda_core::SigningKey,
+        seq: p2panda_core::SeqNum,
+        backlink: Option<Hash>,
+        after: Vec<Hash>,
+        group: Option<Hash>,
+        action: &GroupAction<AuthId, ()>,
+    ) -> (Event, Vec<u8>) {
+        let body = id_core::membership::body::encode_body(action).unwrap();
+        let ext = ChainExt {
+            kind: "group.op".to_owned(),
+            group,
+            after,
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
+            anchor: None,
+        };
+        let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
+        (event, body)
+    }
+
+    /// A fresh event store with `ops` ingested in order, wrapped for
+    /// sharing with a frontier.
+    fn graph_store(ops: &[(Event, Vec<u8>)]) -> (tempfile::TempDir, SharedEventStore<EventStore>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        for (event, body) in ops {
+            store
+                .ingest_with_body(&event.bytes, Some(body.as_slice()), 0)
+                .unwrap();
+            assert!(store.event_applied(&event.id).unwrap());
+        }
+        (dir, SharedEventStore::new(store))
+    }
+
+    /// The group both relays serve: Alice (seed 1) creates it with
+    /// herself as manager and Bob (seed 2) as a reader. The group ID
+    /// is the create event's ID; envelopes name it by its hex text.
+    fn graph_group() -> ((Event, Vec<u8>), Hash) {
+        let (alice, bob) = (pkey(1), pkey(2));
+        let create = GroupAction::Create {
+            initial_members: vec![
+                (individual(&alice), Access::manage()),
+                (individual(&bob), Access::read()),
+            ],
+        };
+        let op = group_op(&alice, 0, None, vec![], None, &create);
+        let group = op.0.id;
+        (op, group)
+    }
+
+    fn graph_protocol(
+        relay_seed: u8,
+        store: SharedEventStore<EventStore>,
+        sink: CollectSink,
+    ) -> ChainedRelayProtocol<GraphFrontier, CollectSink> {
+        ChainedRelayProtocol::new(
+            RelayGate::new(&key(relay_seed), GraphFrontier::new(store)),
+            sink,
+        )
+    }
+
+    fn graph_envelope(origin_seed: u8, group: &Hash, sequence: u64) -> ChainedEnvelope {
+        ChainedEnvelope::signed(
+            &key(origin_seed),
+            &group.to_string(),
+            sequence,
+            Vec::new(),
+            "durable",
+            ChainedContent::Inline {
+                bytes: b"hello".to_vec(),
+            },
+            1_000,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn bridge_then_leaf_exchange_with_graph_frontier() {
+        // Acceptance, production backing: origin -> bridge -> leaf
+        // over real connections, with both relays' gates reading
+        // authorization from the signed graph's resolved roster
+        // instead of a hand-kept list. The leaf receives the origin's
+        // envelope byte-identical (same message ID) with both relays'
+        // hops appended in order.
+        let (create_op, group) = graph_group();
+        let (_bridge_dir, bridge_store) = graph_store(std::slice::from_ref(&create_op));
+        let (_leaf_dir, leaf_store) = graph_store(std::slice::from_ref(&create_op));
+
+        let origin = endpoint().await;
+        let bridge = endpoint().await;
+        let leaf = endpoint().await;
+
+        let bridge_sink = CollectSink::default();
+        let bridge_protocol = graph_protocol(7, bridge_store, bridge_sink.clone());
+        let leaf_sink = CollectSink::default();
+        let leaf_protocol = graph_protocol(8, leaf_store, leaf_sink.clone());
+        let _bridge_router = Router::builder(bridge.clone())
+            .accept(CHAINED_RELAY_ALPN, bridge_protocol.clone())
+            .spawn();
+        let _leaf_router = Router::builder(leaf.clone())
+            .accept(CHAINED_RELAY_ALPN, leaf_protocol.clone())
+            .spawn();
+
+        let msg = RelayedMessage::new(graph_envelope(1, &group, 0));
+        let id = msg.message_id().unwrap();
+
+        let outcome = forward_message(&origin, loopback_addr(&bridge), &msg).await;
+        assert!(
+            matches!(outcome, Outcome::Delivered),
+            "bridge must accept a roster member's message, got {outcome:?}"
+        );
+        let bridged = bridge_sink.received();
+        assert_eq!(bridged.len(), 1);
+        assert_eq!(bridged[0].message_id().unwrap(), id);
+        assert_eq!(bridged[0].envelope, msg.envelope);
+        assert_eq!(bridged[0].hops.len(), 1);
+        assert_eq!(bridged[0].hops[0].relay, key_id(7));
+        assert_eq!(bridge_protocol.forwarded(), 1);
+
+        let outcome = forward_message(&bridge, loopback_addr(&leaf), &bridged[0]).await;
+        assert!(
+            matches!(outcome, Outcome::Delivered),
+            "leaf must accept the bridged message, got {outcome:?}"
+        );
+        let delivered = leaf_sink.received();
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].message_id().unwrap(), id);
+        assert_eq!(delivered[0].envelope, msg.envelope);
+        assert_eq!(delivered[0].hops.len(), 2);
+        assert_eq!(delivered[0].hops[0].relay, key_id(7));
+        assert_eq!(delivered[0].hops[1].relay, key_id(8));
+        assert_eq!(
+            delivered[0].hops[1].previous_hop.as_deref(),
+            Some(key_id(7).as_str())
+        );
+        delivered[0].verify_envelope().unwrap();
+        delivered[0].check_hops().unwrap();
+    }
+
+    #[tokio::test]
+    async fn removed_member_origin_is_refused_at_ingest_with_graph_frontier() {
+        // Acceptance, production backing: a signed removal lands in
+        // the relay's store and the removed member's traffic is
+        // refused at ingest from then on, while a current member's
+        // message still forwards. The allowlist stand-in can only
+        // model the end state by hand; here the state is the fold of
+        // the signed operations themselves.
+        let (create_op, group) = graph_group();
+        let alice = pkey(1);
+        let remove_bob = GroupAction::Remove {
+            member: individual(&pkey(2)),
+        };
+        let remove_op = group_op(
+            &alice,
+            1,
+            Some(group),
+            vec![group],
+            Some(group),
+            &remove_bob,
+        );
+        let ops = [create_op, remove_op];
+        let (_dir, store) = graph_store(&ops);
+
+        let origin = endpoint().await;
+        let bridge = endpoint().await;
+        let bridge_sink = CollectSink::default();
+        let bridge_protocol = graph_protocol(7, store, bridge_sink.clone());
+        let _bridge_router = Router::builder(bridge.clone())
+            .accept(CHAINED_RELAY_ALPN, bridge_protocol.clone())
+            .spawn();
+
+        let removed = RelayedMessage::new(graph_envelope(2, &group, 0));
+        let outcome = forward_message(&origin, loopback_addr(&bridge), &removed).await;
+        match outcome {
+            Outcome::Refused(message) => {
+                assert!(
+                    message.contains("may not write"),
+                    "refusal must name the authorization failure, got: {message}"
+                );
+            }
+            other => panic!("removed member must be refused at ingest, got {other:?}"),
+        }
+        assert!(bridge_sink.received().is_empty());
+        assert_eq!(bridge_protocol.forwarded(), 0);
+
+        let member = RelayedMessage::new(graph_envelope(1, &group, 0));
+        let outcome = forward_message(&origin, loopback_addr(&bridge), &member).await;
+        assert!(
+            matches!(outcome, Outcome::Delivered),
+            "a current member must still forward, got {outcome:?}"
+        );
+        assert_eq!(bridge_sink.received().len(), 1);
+        assert_eq!(bridge_protocol.forwarded(), 1);
+    }
+
+    #[tokio::test]
+    async fn chained_relay_alpn_refuses_non_member_and_delivers_member_with_graph_frontier() {
+        // Serve acceptance: over the registered chained-relay ALPN,
+        // graph-backed authorization refuses a non-member at ingest
+        // while a current member's message reaches the sink.
+        let (create_op, group) = graph_group();
+        let (_dir, store) = graph_store(std::slice::from_ref(&create_op));
+        let origin = endpoint().await;
+        let relay = endpoint().await;
+        let relay_sink = CollectSink::default();
+        let relay_protocol = graph_protocol(7, store, relay_sink.clone());
+        let _router = Router::builder(relay.clone())
+            .accept(CHAINED_RELAY_ALPN, relay_protocol.clone())
+            .spawn();
+
+        let unauthorized = RelayedMessage::new(graph_envelope(3, &group, 0));
+        assert!(matches!(
+            forward_message(&origin, loopback_addr(&relay), &unauthorized).await,
+            Outcome::Refused(_)
+        ));
+        assert!(relay_sink.received().is_empty());
+        assert_eq!(relay_protocol.forwarded(), 0);
+
+        let member = RelayedMessage::new(graph_envelope(1, &group, 0));
+        assert!(matches!(
+            forward_message(&origin, loopback_addr(&relay), &member).await,
+            Outcome::Delivered
+        ));
+        assert_eq!(relay_sink.received().len(), 1);
+        assert_eq!(relay_protocol.forwarded(), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_arrival_is_suppressed_at_ingest_with_graph_frontier() {
+        // Acceptance, production backing: duplicates are suppressed
+        // with the graph frontier in the loop exactly as with the
+        // stand-in — the second arrival of the same message ID
+        // delivers nothing new.
+        let (create_op, group) = graph_group();
+        let (_dir, store) = graph_store(std::slice::from_ref(&create_op));
+
+        let origin = endpoint().await;
+        let bridge = endpoint().await;
+        let bridge_sink = CollectSink::default();
+        let bridge_protocol = graph_protocol(7, store, bridge_sink.clone());
+        let _bridge_router = Router::builder(bridge.clone())
+            .accept(CHAINED_RELAY_ALPN, bridge_protocol.clone())
+            .spawn();
+
+        let msg = RelayedMessage::new(graph_envelope(1, &group, 0));
         for attempt in 0..2 {
             let outcome = forward_message(&origin, loopback_addr(&bridge), &msg).await;
             assert!(

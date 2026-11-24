@@ -26,10 +26,15 @@ that straddle a chunk boundary are never retrievable as a whole.
 - Signal: BM25 (lexical). The #5741 eval harness scores saved
   rankings offline, so these same qrels can be re-scored under a
   dense signal later without re-running the corpus work.
-- Golden set: **provisional**, constructed by the script from the
-  corpus itself — the #6027 golden set has not landed, so per the
-  task packet this experiment defines its own and names the re-run
-  owed (below). 64 queries: per source type, 16 _interior_ queries
+- Query set: **provisional and self-derived**, constructed by the
+  script from the corpus itself — the #6027 golden set has not
+  landed, so per the task packet this experiment defines its own
+  and names the re-run owed (below). It is not a golden set in the
+  golden-311 sense and is unrelated to it: golden-311's qrels are
+  chunk-id judgements against the conversation corpus, while this
+  experiment needs span judgements against this repo slice, so
+  golden-311 cannot serve it (#13283).
+  64 queries: per source type, 16 _interior_ queries
   (whole sampled passages: prose paragraphs, log entries) and 16
   _boundary_ queries (50-word spans centred on 0%-overlap window
   boundaries — the case overlap exists for). A query is the source

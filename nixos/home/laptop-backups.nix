@@ -83,6 +83,11 @@
 #   last-trigger time ONLY: its script (~/tools/repo-archive-
 #   backup.sh) and its restic credentials live outside this repo, so
 #   no run record is required of it.
+#   With watchdog.meshEnable (code#13463), it also reads the backup
+#   mesh's restore-verification records: one per leg x store pair
+#   under ~/backups/mesh/restore-verification, each successful and no
+#   older than watchdog.meshMaxAgeHours (a quarter), so a stalled
+#   rotation is named by leg and store.
 #
 # Pruning discipline: each job prunes only the dated directories it
 # created itself. The sandbox's backup job writes into its own tree under
@@ -120,6 +125,7 @@ let
     ++ (lib.optional cfg.state.enable "state")
     ++ (lib.optional cfg.opencodeDb.enable "opencode-db")
     ++ (lib.optional cfg.coldStoreNightly.enable "cold-store")
+    ++ (lib.optional cfg.watchdog.meshEnable "mesh")
   );
   watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [
@@ -273,6 +279,16 @@ in
         default = "*-*-* 06,12,18:30:00";
         description = "Times of day the watchdog runs (systemd calendar).";
       };
+      meshEnable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Also report the backup mesh's restore-verification rotation records (code#13463): every leg x store pair under ~/backups/mesh/restore-verification must have a successful record no older than a quarter. Off until the rotation runners exist; enabling it before then fails naming every unverified pair, which is the intended reading.";
+      };
+      meshMaxAgeHours = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 2200;
+        description = "Maximum age (hours) of a leg x store restore-verification record before the watchdog names it (default 2200h, a little over a quarter).";
+      };
     };
   };
 
@@ -387,6 +403,7 @@ in
             Environment = [
               "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
               "LAPTOP_BACKUPS_OFFSITE_CHECK=1"
+              "LAPTOP_BACKUPS_MESH_MAX_AGE_HOURS=${toString cfg.watchdog.meshMaxAgeHours}"
             ];
           };
         };

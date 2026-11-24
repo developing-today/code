@@ -41,7 +41,7 @@ def export(source_url, d1_name, create):
         _require_env("CLOUDFLARE_API_TOKEN"), _require_env("CLOUDFLARE_ACCOUNT_ID")
     )
     exported_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    dump, counts = fq_common.build_dump(source, exported_at)
+    dump, counts, splits = fq_common.build_dump(source, exported_at)
     db = d1.find_database(d1_name)
     if db is None:
         if not create:
@@ -52,6 +52,16 @@ def export(source_url, d1_name, create):
         db = d1.create_database(d1_name)
     db_id = db["uuid"]
     d1.import_sql(db_id, dump)
+    for table, col, where, expected in splits:
+        rows = d1.query(
+            db_id,
+            f'SELECT length("{col}") AS n FROM "{table}" WHERE {where}',
+        )
+        if len(rows) != 1 or rows[0].get("n") != expected:
+            raise RuntimeError(
+                f"split-row verification failed for {table}.{col}: "
+                f"expected one row of length {expected}, got {rows}"
+            )
     meta = d1.read_meta(db_id)
     if meta is None:
         raise RuntimeError("D1 copy has no export meta after import; import is suspect")

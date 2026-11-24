@@ -810,7 +810,7 @@ usage: repo-queue fallback <scan|status|claim|heartbeat|release|complete|unblock
 GitHub-backed queue used when the primary broker is down; issue\n\
 comments carry the claims. Run `repo-queue fallback <sub> --help`\n\
 for flags:\n\
-  scan <repo> <issue-number>  (--repo/--limit/--lease-min live on scan)\n\
+  scan [--repo <repo>] [--limit <1..100>] [--lease-min <minutes>]\n\
   status <repo> <issue-number>\n\
   claim <repo> <issue-number> --worker <id>\n\
   heartbeat <repo> <issue-number> --worker <id>\n\
@@ -1383,7 +1383,12 @@ fn check_fallback_disposition(
         crate::disposition::DEFAULT_STALENESS_SECONDS,
     )?;
     let task_id = record.follow_up.as_ref().and_then(|f| f.task_id);
-    Ok((value, record.verdict.clone(), record.checked_at.clone(), task_id))
+    Ok((
+        value,
+        record.verdict.clone(),
+        record.checked_at.clone(),
+        task_id,
+    ))
 }
 
 /// The comment body a fallback `complete` posts: the release-done

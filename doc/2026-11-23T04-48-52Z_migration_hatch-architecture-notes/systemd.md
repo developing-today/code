@@ -5,6 +5,7 @@
 **Systemd is fully functional.** PID 1 is systemd, `systemctl` works, and services can be installed, started, stopped, and enabled.
 
 Verified:
+
 - Created a test service in `/etc/systemd/system/`
 - `systemctl daemon-reload`, `start`, `is-active` all work
 - Cleaned up after testing
@@ -24,6 +25,7 @@ To run a persistent service:
    - Runs `systemctl enable --now <service>`
 
 Example unit file:
+
 ```ini
 [Unit]
 Description=My persistent service
@@ -61,12 +63,12 @@ Verified: a `nohup`'d process (PID 33011) survived exec termination and was visi
 
 ### Trade-offs
 
-| | systemd | Detached process |
-|---|---|---|
-| Auto-restart on crash | Yes (`Restart=always`) | No (manual) |
-| Boot integration | Via init.sh | Via init.sh or cron |
-| Complexity | Higher (unit file) | Lower (shell) |
-| Logging | journald | Manual redirect |
+|                       | systemd                | Detached process    |
+| --------------------- | ---------------------- | ------------------- |
+| Auto-restart on crash | Yes (`Restart=always`) | No (manual)         |
+| Boot integration      | Via init.sh            | Via init.sh or cron |
+| Complexity            | Higher (unit file)     | Lower (shell)       |
+| Logging               | journald               | Manual redirect     |
 
 ## Limitations
 

@@ -59,9 +59,7 @@ function civilFromDays(z0: number): [number, number, number] {
   const z = z0 + 719468;
   const era = Math.floor((z >= 0 ? z : z - 146096) / 146097);
   const doe = z - era * 146097; // [0, 146096]
-  const yoe = Math.floor(
-    (doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365,
-  ); // [0, 399]
+  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365); // [0, 399]
   const y = yoe + era * 400;
   const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100)); // [0, 365]
   const mp = Math.floor((5 * doy + 2) / 153); // [0, 11]
@@ -98,8 +96,7 @@ export function parseRfc3339Epoch(input: string): number | null {
   const [date, rest] = dateTime;
   const dp = date.split("-");
   if (dp.length !== 3) return null;
-  const digits = (v: string, n: number): number | null =>
-    v.length === n && /^[0-9]+$/.test(v) ? Number(v) : null;
+  const digits = (v: string, n: number): number | null => (v.length === n && /^[0-9]+$/.test(v) ? Number(v) : null);
   const year = digits(dp[0], 4);
   const month = digits(dp[1], 2);
   const day = digits(dp[2], 2);
@@ -186,14 +183,7 @@ export function validateNotBeforeAt(value: Json, field: string, now: number): st
 export const PRIORITY_SCALE = [10, 20, 30, 40, 50, 70, 90];
 export const EXPEDITE_PRIORITY = 15;
 export const NEXT_UP_PRIORITY = 25;
-export const KINDS = [
-  "pr_shepherd",
-  "triage",
-  "small_fix",
-  "ci_investigation",
-  "second_pass",
-  "feature_slice",
-];
+export const KINDS = ["pr_shepherd", "triage", "small_fix", "ci_investigation", "second_pass", "feature_slice"];
 export const FLEET_REPOS = [
   "developing-today/code",
   "developing-today/opencode",
@@ -279,11 +269,7 @@ function manualSchemaErrors(p: Json): string[] {
         return (
           parts.length === 2 &&
           parts.every(
-            (part) =>
-              part !== "" &&
-              part !== "." &&
-              part !== ".." &&
-              [...part].every((c) => /[A-Za-z0-9._-]/.test(c)),
+            (part) => part !== "" && part !== "." && part !== ".." && [...part].every((c) => /[A-Za-z0-9._-]/.test(c)),
           )
         );
       })();
@@ -340,11 +326,7 @@ function manualSchemaErrors(p: Json): string[] {
   }
   const risk = get(obj, "risk");
   const riskLevel = isObj(risk) ? get(risk, "level") : undefined;
-  if (
-    isObj(risk) &&
-    typeof riskLevel === "string" &&
-    ["low", "medium", "high"].includes(riskLevel)
-  ) {
+  if (isObj(risk) && typeof riskLevel === "string" && ["low", "medium", "high"].includes(riskLevel)) {
     const rflags = get(risk, "flags");
     if (Array.isArray(rflags)) {
       if (rflags.some((e) => typeof e !== "string")) {
@@ -386,9 +368,7 @@ function manualSchemaErrors(p: Json): string[] {
   const hasIssue = isObj(issue) && isPositiveInt(get(issue, "number"));
   const prs = get(obj, "prs");
   const hasPrs =
-    Array.isArray(prs) &&
-    prs.length > 0 &&
-    prs.every((el) => isObj(el) && isPositiveInt(get(el, "number")));
+    Array.isArray(prs) && prs.length > 0 && prs.every((el) => isObj(el) && isPositiveInt(get(el, "number")));
   const set = get(obj, "set");
   const hasSet = isObj(set) && Object.keys(set).length > 0;
   const source = get(obj, "source");
@@ -418,21 +398,11 @@ function reviewErrors(p: JsonObject): string[] {
   }
   const url = get(review, "verdict_note_url");
   if (!(typeof url === "string" && url !== "")) {
-    errs.push(
-      "payload.review.verdict_note_url: required non-empty string for second_pass packets",
-    );
+    errs.push("payload.review.verdict_note_url: required non-empty string for second_pass packets");
   }
   const gapList = get(review, "gap_list");
-  if (
-    !(
-      Array.isArray(gapList) &&
-      gapList.length > 0 &&
-      gapList.every((g) => typeof g === "string" && g !== "")
-    )
-  ) {
-    errs.push(
-      "payload.review.gap_list: required non-empty list of checkable gap strings for second_pass packets",
-    );
+  if (!(Array.isArray(gapList) && gapList.length > 0 && gapList.every((g) => typeof g === "string" && g !== ""))) {
+    errs.push("payload.review.gap_list: required non-empty list of checkable gap strings for second_pass packets");
   }
   const pass = asI64(get(review, "pass") ?? null);
   const passCap = asI64(get(review, "pass_cap") ?? null);
@@ -462,10 +432,7 @@ function reviewErrors(p: JsonObject): string[] {
     errs.push("payload.review.producer: must be an object {task_id, session, pr}");
   }
   const refs = get(review, "goal_context_refs");
-  if (
-    refs !== undefined &&
-    !(Array.isArray(refs) && refs.every((r) => typeof r === "string"))
-  ) {
+  if (refs !== undefined && !(Array.isArray(refs) && refs.every((r) => typeof r === "string"))) {
     errs.push("payload.review.goal_context_refs: must be a list of strings");
   }
   const floor = get(review, "route_floor");
@@ -496,9 +463,7 @@ function sliceErrors(p: JsonObject): string[] {
   const issue = get(p, "issue");
   const ino = isObj(issue) ? asI64(get(issue, "number") ?? null) : null;
   if (parent !== null && ino !== null && parent !== ino) {
-    errs.push(
-      `payload.slice.parent_issue: ${parent} does not match payload.issue.number ${ino}`,
-    );
+    errs.push(`payload.slice.parent_issue: ${parent} does not match payload.issue.number ${ino}`);
   }
   for (const f of ["criterion", "done_check"]) {
     const v = get(slice, f);
@@ -507,16 +472,8 @@ function sliceErrors(p: JsonObject): string[] {
     }
   }
   const owned = get(slice, "owned_paths");
-  if (
-    !(
-      Array.isArray(owned) &&
-      owned.length > 0 &&
-      owned.every((s) => typeof s === "string" && s !== "")
-    )
-  ) {
-    errs.push(
-      "payload.slice.owned_paths: required non-empty list of non-empty path strings for feature_slice packets",
-    );
+  if (!(Array.isArray(owned) && owned.length > 0 && owned.every((s) => typeof s === "string" && s !== ""))) {
+    errs.push("payload.slice.owned_paths: required non-empty list of non-empty path strings for feature_slice packets");
   }
   return errs;
 }
@@ -636,10 +593,7 @@ export function matchDedupe(key: string): DedupeMatch | null {
         if (idx >= 0) {
           const slug = tail.slice(0, idx);
           const week = tail.slice(idx + 1);
-          const slugOk =
-            slug !== "" &&
-            /^[a-z0-9]$/.test(slug[0]) &&
-            [...slug].every((c) => /[a-z0-9_-]/.test(c));
+          const slugOk = slug !== "" && /^[a-z0-9]$/.test(slug[0]) && [...slug].every((c) => /[a-z0-9_-]/.test(c));
           const wb = [...week];
           const weekOk =
             week.length === 8 &&
@@ -691,9 +645,7 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
   }
   const payloadRepo = get(payload, "repo");
   if (payloadRepo !== undefined && payloadRepo !== m.repo) {
-    errors.push(
-      `packet.dedupe_key: repo '${m.repo}' in key does not match payload.repo ${pythonRepr(payloadRepo)}`,
-    );
+    errors.push(`packet.dedupe_key: repo '${m.repo}' in key does not match payload.repo ${pythonRepr(payloadRepo)}`);
   }
   const kind = typeof get(payload, "kind") === "string" ? (get(payload, "kind") as string) : "";
   const allowed = kindFamilies(kind);
@@ -706,9 +658,7 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
   const issueNo = isObj(issue) ? asI64(get(issue, "number") ?? null) : null;
   const prsRaw = get(payload, "prs");
   const prNumbers: number[] = Array.isArray(prsRaw)
-    ? prsRaw
-        .map((el) => (isObj(el) ? asI64(get(el, "number") ?? null) : null))
-        .filter((n): n is number => n !== null)
+    ? prsRaw.map((el) => (isObj(el) ? asI64(get(el, "number") ?? null) : null)).filter((n): n is number => n !== null)
     : [];
   const source = get(payload, "source");
   const sourcePr = isObj(source) ? asI64(get(source, "pr") ?? null) : null;
@@ -719,9 +669,7 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
   if (m.family === "fix" || m.family === "triage" || m.family === "second-pass" || m.family === "slice") {
     const n = m.num ?? 0;
     if (issueNo !== null && n !== issueNo) {
-      errors.push(
-        `packet.dedupe_key: issue ${n} in key does not match payload.issue.number ${issueNo}`,
-      );
+      errors.push(`packet.dedupe_key: issue ${n} in key does not match payload.issue.number ${issueNo}`);
     } else if (issueNo === null) {
       errors.push(
         `packet.dedupe_key: family '${m.family}' requires payload.issue.number ${n} matching the key issue, but the payload carries no issue.number (#6446)`,
@@ -732,9 +680,7 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
       const review = get(payload, "review");
       const reviewPass = isObj(review) ? asI64(get(review, "pass") ?? null) : null;
       if (reviewPass !== null && reviewPass !== keyPass) {
-        errors.push(
-          `packet.dedupe_key: pass ${keyPass} in key does not match payload.review.pass ${reviewPass}`,
-        );
+        errors.push(`packet.dedupe_key: pass ${keyPass} in key does not match payload.review.pass ${reviewPass}`);
       } else if (reviewPass === null) {
         errors.push(
           `packet.dedupe_key: family 'second-pass' requires payload.review.pass ${keyPass} matching the key pass, but the payload carries no review.pass`,
@@ -746,9 +692,7 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
       const slice = get(payload, "slice");
       const sliceNo = isObj(slice) ? asI64(get(slice, "number") ?? null) : null;
       if (sliceNo !== null && sliceNo !== keySlice) {
-        errors.push(
-          `packet.dedupe_key: slice ${keySlice} in key does not match payload.slice.number ${sliceNo}`,
-        );
+        errors.push(`packet.dedupe_key: slice ${keySlice} in key does not match payload.slice.number ${sliceNo}`);
       } else if (sliceNo === null) {
         errors.push(
           `packet.dedupe_key: family 'slice' requires payload.slice.number ${keySlice} matching the key slice, but the payload carries no slice.number`,
@@ -759,9 +703,7 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
     const n = m.num ?? 0;
     if (prNumbers.length > 0) {
       if (!prNumbers.includes(n)) {
-        errors.push(
-          `packet.dedupe_key: PR ${n} in key is not in payload.prs ${debugList(prNumbers)}`,
-        );
+        errors.push(`packet.dedupe_key: PR ${n} in key is not in payload.prs ${debugList(prNumbers)}`);
       }
     } else if (sourceOnly) {
       const spr = sourcePr ?? 0;
@@ -782,16 +724,12 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
     if (prNumbers.length > 0) {
       const sp = [...prNumbers].sort((a, b) => a - b);
       if (nums.length !== sp.length || nums.some((n, i) => n !== sp[i])) {
-        errors.push(
-          `packet.dedupe_key: pr-set ${debugList(nums)} does not match payload.prs ${debugList(sp)}`,
-        );
+        errors.push(`packet.dedupe_key: pr-set ${debugList(nums)} does not match payload.prs ${debugList(sp)}`);
       }
     } else if (sourceOnly) {
       const spr = sourcePr ?? 0;
       if (!nums.includes(spr)) {
-        errors.push(
-          `packet.dedupe_key: pr-set ${debugList(nums)} in key does not contain payload.source.pr ${spr}`,
-        );
+        errors.push(`packet.dedupe_key: pr-set ${debugList(nums)} in key does not contain payload.source.pr ${spr}`);
       }
     } else {
       errors.push(
@@ -802,9 +740,7 @@ function dedupeErrors(packet: JsonObject, payload: JsonObject): string[] {
     const origin = m.origin ?? 0;
     const setOrigin = isObj(set) ? asI64(get(set, "origin_issue") ?? null) : null;
     if (setOrigin !== null && setOrigin !== origin) {
-      errors.push(
-        `packet.dedupe_key: origin issue ${origin} does not match payload.set.origin_issue ${setOrigin}`,
-      );
+      errors.push(`packet.dedupe_key: origin issue ${origin} does not match payload.set.origin_issue ${setOrigin}`);
     } else if (setOrigin === null) {
       errors.push(
         `packet.dedupe_key: family 'set' requires payload.set.origin_issue ${origin} matching the key origin, but the payload carries no set.origin_issue (#6446)`,
@@ -831,9 +767,7 @@ export function validatePacket(packet: Json, now: number): [string[], string[]] 
 
   const packetMaxAttempts = get(packet, "max_attempts");
   if (packetMaxAttempts !== undefined && !validMaxAttempts(packetMaxAttempts)) {
-    errors.push(
-      `packet.max_attempts: must be an integer between 1 and ${MAX_ATTEMPTS_CEILING}`,
-    );
+    errors.push(`packet.max_attempts: must be an integer between 1 and ${MAX_ATTEMPTS_CEILING}`);
   }
   const packetRbm = get(packet, "required_budget_minutes");
   if (packetRbm !== undefined && packetRbm !== null && !isPositiveInt(packetRbm)) {
@@ -846,15 +780,11 @@ export function validatePacket(packet: Json, now: number): [string[], string[]] 
   }
   const priority = get(packet, "priority");
   if (priority === undefined) {
-    errors.push(
-      "packet.priority: required (numeric priority from the design scale: 10, 20, 30, 40, 50, 70, 90)",
-    );
+    errors.push("packet.priority: required (numeric priority from the design scale: 10, 20, 30, 40, 50, 70, 90)");
   } else if (asI64(priority) !== null) {
     const v = asI64(priority) as number;
     if (!PRIORITY_SCALE.includes(v)) {
-      errors.push(
-        `packet.priority: ${v} is not on the design scale ${debugList(PRIORITY_SCALE)}`,
-      );
+      errors.push(`packet.priority: ${v} is not on the design scale ${debugList(PRIORITY_SCALE)}`);
     }
   } else {
     errors.push("packet.priority: must be an integer");
@@ -868,9 +798,7 @@ export function validatePacket(packet: Json, now: number): [string[], string[]] 
   if (typeof body === "string" && body.trim() !== "") {
     const words = body.split(/\s+/).filter((w) => w !== "").length;
     if (words > BODY_WARN_WORDS) {
-      warnings.push(
-        `packet.body: ${words} words exceeds the ~${BODY_WARN_WORDS}-word design target`,
-      );
+      warnings.push(`packet.body: ${words} words exceeds the ~${BODY_WARN_WORDS}-word design target`);
     }
   } else if (body !== undefined && body !== null) {
     errors.push("packet.body: must be a non-empty string");
@@ -881,15 +809,11 @@ export function validatePacket(packet: Json, now: number): [string[], string[]] 
       `payload size: ${size} bytes exceeds the ${PAYLOAD_MAX_BYTES}-byte hard ceiling (evidence and pointers, not full diffs/logs)`,
     );
   } else if (size > PAYLOAD_WARN_BYTES) {
-    warnings.push(
-      `payload size: ${size} bytes is above the ${PAYLOAD_WARN_BYTES}-byte design target`,
-    );
+    warnings.push(`payload size: ${size} bytes is above the ${PAYLOAD_WARN_BYTES}-byte design target`);
   }
   const tb = asI64(get(payload, "timebox_minutes") ?? null);
   if (tb !== null && tb !== 20 && tb !== 45) {
-    warnings.push(
-      `payload.timebox_minutes: ${tb} is not a standard design timebox (20 triage / 45 standard)`,
-    );
+    warnings.push(`payload.timebox_minutes: ${tb} is not a standard design timebox (20 triage / 45 standard)`);
   }
   const ma = asI64(get(payload, "max_attempts") ?? null);
   if (ma !== null) {
