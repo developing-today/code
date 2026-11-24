@@ -5,7 +5,11 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  ASK_KINDS,
   ago,
+  askArgs,
+  askKind,
+  askSent,
   androidSource,
   answeredKeys,
   awayNotice,
@@ -58,6 +62,7 @@ import {
   workerSaid,
 } from "../public/app.js";
 import { DIRECT_ACTIONS, DIRECT_READ_SECTIONS } from "../edge/src/direct.ts";
+import { ASK_INTENTS } from "../src/work.ts";
 import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
 
@@ -1180,6 +1185,36 @@ test("a finished task says what came of it, where it goes, and who did it", () =
     links: [],
     meta: "task 7",
   });
+});
+
+// What he is sending is his to say: something to do, a question, or
+// how he wants work done from now on. The oracle is the three kinds
+// the platform takes (ASK_INTENTS in src/work.ts): each has words here,
+// and anything else is taken as something to do.
+test("each kind of prompt has its own words, and the platform takes every kind the app offers", () => {
+  expect(ASK_KINDS.map((k) => k.intent)).toEqual([...ASK_INTENTS]);
+  expect(ASK_KINDS.map((k) => [k.label, k.send, k.chip])).toEqual([
+    ["Do this", "Send", ""],
+    ["Answer this", "Ask", "Question"],
+    ["From now on", "Set", "Standing instruction"],
+  ]);
+  for (const kind of ASK_KINDS) expect(kind.placeholder.length).toBeGreaterThan(40);
+  expect(askKind("question")).toBe(ASK_KINDS[1]);
+  expect(askKind("directive")).toBe(ASK_KINDS[2]);
+  for (const other of ["task", undefined, null, "rant", 7]) expect(askKind(other)).toBe(ASK_KINDS[0]);
+  // What is sent with it: nothing more for something to do (as before), the kind for the others.
+  expect(askArgs("  Do the docs  ", "task")).toEqual({ text: "Do the docs" });
+  expect(askArgs("Why?", "question")).toEqual({ text: "Why?", intent: "question" });
+  expect(askArgs("No red merges", "directive")).toEqual({ text: "No red merges", intent: "directive" });
+  expect(askArgs("x", "rant")).toEqual({ text: "x" });
+  // And what he is told when it has gone.
+  expect(askSent("task", { issue: 7, queued: true })).toBe("Sent as #7; first in the queue");
+  expect(askSent("question", { issue: 7, queued: true })).toBe("Asked as #7; first in the queue");
+  expect(askSent("directive", { issue: 7, queued: true })).toBe("Set as #7; first in the queue");
+  expect(askSent("question", { issue: 7, queued: false, note: "filed, not queued: the queue is down" })).toBe(
+    "Filed as #7. filed, not queued: the queue is down",
+  );
+  expect(askSent("task", { issue: 7, queued: false })).toBe("Filed as #7.");
 });
 
 // What needs the owner is what only he can do. Seen live: "394 need

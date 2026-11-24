@@ -1248,6 +1248,128 @@ describe("what the owner asks for in his own words", () => {
     expect(r.calls.some((c) => c.argv[1] === "queue")).toBe(false);
   });
 
+  // He says what kind of thing he is sending: something to do, a
+  // question to answer, or how he wants work done from now on. The
+  // oracle is what each must make an agent do differently, written out
+  // here: a question changes nothing and is left for him to close; a
+  // standing instruction is recorded where every agent reads it.
+  test("a question and a standing instruction are filed as what they are, and queued to be handled as that", async () => {
+    const filed = async (args: Record<string, unknown>) => {
+      const w = world({
+        commands: (argv) =>
+          argv.includes(`repos/${REPO}/issues`) ? JSON.stringify({ number: 12501, html_url: "https://x/12501" }) : "{}",
+      });
+      const result = await new Work(w.ops, undefined, () => new Date("2026-11-22T06:00:00Z")).ask(args);
+      const issue = JSON.parse(w.calls[1].stdin ?? "") as { title: string; body: string; labels: string[] };
+      const packet = w.calls[2].packet as {
+        title: string;
+        priority: number;
+        dedupe_key: string;
+        payload: {
+          kind: string;
+          problem: string;
+          acceptance: string[];
+          scope: { include: string[]; exclude: string[] };
+          timebox_minutes: number;
+          issue: { title: string };
+        };
+      };
+      return { result, issue, packet };
+    };
+    const question = await filed({ text: "Why did the join slice stall?", intent: "question" });
+    expect(question.result).toEqual({ issue: 12501, url: "https://x/12501", queued: true });
+    expect(question.issue.title).toBe("Owner asks: Why did the join slice stall?");
+    expect(question.issue.labels).toEqual(["owner/prompt", "expedite"]);
+    expect(
+      question.issue.body.startsWith("Why did the join slice stall?\n\n---\nThis is a question from the owner"),
+    ).toBe(true);
+    expect(question.issue.body).toContain("Change nothing to answer it");
+    expect(question.issue.body).toContain("<!-- owner-prompt:v1 -->");
+    expect(question.packet.title).toBe(`Owner question ${REPO}#12501: Why did the join slice stall?`);
+    expect(question.packet.payload.issue.title).toBe("Owner asks: Why did the join slice stall?");
+    expect(question.packet.payload.problem).toContain("He wants an answer, not a change");
+    expect(question.packet.payload.acceptance).toEqual([
+      "The question is answered in a comment on the issue, in plain words, with what the answer rests on: links, numbers, the commit or run that was read",
+      "Nothing was changed to answer it: no code, no configuration, no other issue opened or closed",
+      "The issue is left open for the owner to read; he closes it",
+    ]);
+    expect(question.packet.payload.scope.exclude).toContain("Changing code, configuration or other issues");
+    expect(question.packet.payload.timebox_minutes).toBe(30);
+
+    const directive = await filed({ text: "From now on, no PR merges with a red check.", intent: "directive" });
+    expect(directive.issue.title).toBe("Owner directs: From now on, no PR merges with a red check.");
+    expect(directive.issue.body).toContain("This is a standing instruction from the owner");
+    expect(directive.packet.title).toBe(`Owner directive ${REPO}#12501: From now on, no PR merges with a red check.`);
+    expect(directive.packet.payload.problem).toContain("how he wants work done from now on");
+    expect(directive.packet.payload.acceptance).toEqual([
+      "The instruction is recorded where every agent reads it (AGENTS.md, or the document it points to for the area), by a pull request that is merged",
+      "Work already queued or in flight that it bears on is brought in line with it: re-ranked, commented on or parked, with links",
+      "A comment on the issue says where the instruction now stands and what was changed because of it; the issue is closed when that is done",
+    ]);
+    expect(directive.packet.payload.timebox_minutes).toBe(60);
+
+    // Whatever it is, it is one task for its issue, first in the queue, for someone to look at.
+    for (const sent of [question, directive]) {
+      expect(sent.packet).toMatchObject({
+        priority: 10,
+        dedupe_key: `repo-health:v1:triage:${REPO}:issue:12501`,
+        payload: { kind: "triage" },
+      });
+      expect(sent.packet.payload.scope.exclude).toContain("Secrets, credentials or purchases");
+    }
+    // Said to be a task, or not said: as it always was.
+    const task = await filed({ text: "Do the docs", intent: "task" });
+    const plain = await filed({ text: "Do the docs" });
+    expect(task.issue).toEqual(plain.issue);
+    expect(task.packet).toEqual(plain.packet);
+    expect(plain.issue.title).toBe("Owner: Do the docs");
+    expect(plain.packet).toEqual(
+      promptPacket(REPO, "repo-health-code-pilot", 12501, "Do the docs", "2026-11-22T06:00:00.000Z") as never,
+    );
+    expect(plain.packet.payload.timebox_minutes).toBe(45);
+    // Something that is none of the three is refused before anything is filed.
+    for (const intent of ["rant", "", 7, null, ["question"]]) {
+      const w = world({});
+      await expect(new Work(w.ops).ask({ text: "x", intent })).rejects.toThrow(
+        /intent: one of task, question, directive/,
+      );
+      expect(w.calls).toEqual([]);
+    }
+  });
+
+  test("a reply on a question is queued as a question, and whoever takes the task in the queue's place is told which it is", async () => {
+    const seen: (string | undefined)[] = [];
+    const packets: { title: string }[] = [];
+    const hook = async (packet: unknown, intent?: string) => {
+      packets.push(packet as { title: string });
+      seen.push(intent);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const issue = (title: string) => JSON.stringify({ title, state: "open", labels: [{ name: "owner/prompt" }] });
+    for (const [title, intent, packetTitle] of [
+      ["Owner asks: Why did it stall?", "question", `Owner question ${REPO}#7: and since when?`],
+      ["Owner directs: No red merges", "directive", `Owner directive ${REPO}#7: and since when?`],
+      ["Owner: Do the docs", "task", `Owner prompt ${REPO}#7: and since when?`],
+      // A prompt from before there were kinds, or retitled by hand: a task.
+      ["Something else entirely", "task", `Owner prompt ${REPO}#7: and since when?`],
+    ]) {
+      const w = world({ commands: (argv) => (argv[3] === `repos/${REPO}/issues/7` ? issue(title) : "{}") });
+      await new Work(w.ops, undefined, () => new Date("2026-11-22T06:00:00Z")).askReply(
+        { issue: 7, text: "and since when?" },
+        hook,
+      );
+      expect([title, seen.at(-1), packets.at(-1)?.title]).toEqual([title, intent, packetTitle]);
+    }
+    // A new one of each tells the hook too.
+    const w = world({
+      commands: (argv) =>
+        argv.includes(`repos/${REPO}/issues`) ? JSON.stringify({ number: 9, html_url: "https://x/9" }) : "{}",
+    });
+    await new Work(w.ops).ask({ text: "Why?", intent: "question" }, hook);
+    await new Work(w.ops).ask({ text: "Do it" }, hook);
+    expect(seen.slice(-2)).toEqual(["question", "task"]);
+  });
+
   test("each prompt shows where it stands", async () => {
     const found = (n: number, state: string, comments: number) => ({
       number: n,
@@ -1270,7 +1392,8 @@ describe("what the owner asks for in his own words", () => {
             found(3, "open", 0),
             { ...found(99, "open", 0), pull_request: {} }, // a labelled pull request is not a prompt
             found(4, "open", 2),
-            found(5, "open", 0),
+            { ...found(5, "open", 0), title: "Owner asks: t5" },
+            { ...found(6, "open", 0), title: "Owner directs: t6" },
           ]);
         commentReads++;
         const n = Number(/issues\/(\d+)\/comments/.exec(argv[3])?.[1]);
@@ -1297,7 +1420,10 @@ describe("what the owner asks for in his own words", () => {
       [3, "working", "w1", "words 3", []],
       [4, "queued", null, "words 4", [false, true]], // the last word is his: back in the queue
       [5, "waiting", null, "words 5", []],
+      [6, "waiting", null, "words 6", []],
     ]);
+    // And which kind each is: said by how it was filed.
+    expect(asks.map((a) => a.intent)).toEqual(["task", "task", "task", "task", "question", "directive"]);
     expect(asks[3].replies[1].text).toBe("and I say");
     // A long thread is read from its last page backwards until six replies
     // are in hand, and a bot that only links the issue somewhere else is

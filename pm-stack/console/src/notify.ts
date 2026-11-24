@@ -62,7 +62,7 @@ export interface Message {
 const CENSUS_REF = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#[1-9][0-9]*$/;
 
 interface State {
-  asks?: { issue: number; replies: { you: boolean; at: string; text: string }[] }[] | null;
+  asks?: { issue: number; intent?: string; replies: { you: boolean; at: string; text: string }[] }[] | null;
   census?: { hands: { ref: string; title: string; action?: string }[] } | null;
   sessions?: { waiting: { id: string; title: string }[] } | null;
   questionCount?: { total: number } | null;
@@ -100,7 +100,11 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
     next.asks[ask.issue] = last.at;
     messages.push({
       cls: "replies",
-      title: `The fleet replied on #${ask.issue}`,
+      // A question's reply is its answer.
+      title:
+        ask.intent === "question"
+          ? `The fleet answered your question (#${ask.issue})`
+          : `The fleet replied on #${ask.issue}`,
       // Enough of the reply to answer it from the notification.
       body: clip(last.text, 400),
       url: "/console/#ask",

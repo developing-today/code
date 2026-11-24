@@ -1411,6 +1411,62 @@ const STATUS = {
   done: ["Done", "good"],
 };
 let draft = "";
+/** What he says he is sending: kept while he moves about the app. */
+let askIntent = "task";
+
+/** The kinds of thing the owner can send, as the platform takes them
+ * (ASK_INTENTS in src/work.ts), each with its own words: the button
+ * that chooses it, what the box invites, the button that sends it, and
+ * the mark it carries in the list. */
+export const ASK_KINDS = [
+  {
+    intent: "task",
+    label: "Do this",
+    placeholder: "Say what you want done, in your own words. An agent picks it up, does it, and reports back here.",
+    send: "Send",
+    sent: "Sent",
+    chip: "",
+  },
+  {
+    intent: "question",
+    label: "Answer this",
+    placeholder: "Ask a question, in your own words. An agent answers it here, with what the answer rests on, and changes nothing.",
+    send: "Ask",
+    sent: "Asked",
+    chip: "Question",
+  },
+  {
+    intent: "directive",
+    label: "From now on",
+    placeholder: "Say how you want work done from now on. It is written where every agent reads it, and work under way is brought in line.",
+    send: "Set",
+    sent: "Set",
+    chip: "Standing instruction",
+  },
+];
+
+/** The kind for an intent; anything that is not one is something to do.
+ * @param {unknown} intent */
+export function askKind(intent) {
+  return ASK_KINDS.find((kind) => kind.intent === intent) || ASK_KINDS[0];
+}
+
+/** What is sent with a prompt: the words, and the kind where it is not
+ * simply something to do (so that one is sent as it always was).
+ * @param {string} text
+ * @param {unknown} intent */
+export function askArgs(text, intent) {
+  const kind = askKind(intent).intent;
+  return { text: text.trim(), ...(kind === "task" ? {} : { intent: kind }) };
+}
+
+/** What he is told when it has gone.
+ * @param {unknown} intent
+ * @param {{ issue: number, queued?: boolean, note?: string }} result */
+export function askSent(intent, result) {
+  if (result.queued) return `${askKind(intent).sent} as #${result.issue}; first in the queue`;
+  return `Filed as #${result.issue}.${result.note ? ` ${result.note}` : ""}`;
+}
 
 function viewAsk(sub) {
   // Words handed over by the Android app (shared or selected text, or
@@ -1423,10 +1479,11 @@ function viewAsk(sub) {
     }
     history.replaceState(null, "", "#ask");
   }
+  const kind = askKind(askIntent);
   const box = h("textarea", {
     rows: 3,
-    placeholder: "Say what you want, in your own words. An agent picks it up, does it, and reports back here.",
-    "aria-label": "Your instruction",
+    placeholder: kind.placeholder,
+    "aria-label": kind.intent === "question" ? "Your question" : "Your instruction",
     oninput: (e) => {
       draft = e.target.value;
     },
@@ -1469,25 +1526,54 @@ function viewAsk(sub) {
       onclick: async (e) => {
         const text = box.value.trim();
         if (!text) return toast("Write what you want first", true);
-        const r = await act("ask.send", { text }, (x) => (x.queued ? `Sent as #${x.issue}; first in the queue` : `Filed as #${x.issue}. ${x.note || ""}`), e.target);
+        const r = await act("ask.send", askArgs(text, kind.intent), (x) => askSent(kind.intent, x), e.target);
         if (r) {
           draft = "";
           draw();
         }
       },
     },
-    "Send",
+    kind.send,
+  );
+  // What he is sending: something to do, a question, or how he wants
+  // work done from now on. Choosing keeps what is typed.
+  const kinds = h(
+    "div",
+    { class: "seg", role: "group", "aria-label": "What you are sending" },
+    ...ASK_KINDS.map((k) =>
+      h(
+        "button",
+        {
+          "aria-pressed": String(k.intent === kind.intent),
+          onclick: () => {
+            draft = box.value;
+            askIntent = k.intent;
+            draw();
+          },
+        },
+        k.label,
+      ),
+    ),
   );
   const asks = docs.core.asks || [];
   return [
-    h("div", { class: "card composer" }, box, h("div", { class: "row end" }, mic, send)),
+    h("div", { class: "card composer" }, kinds, box, h("div", { class: "row end" }, mic, send)),
     ...notices(docs.core).slice(0, 1),
     h("h2", {}, "What you have asked"),
     ...(asks.length
       ? asks.map((a) => {
           const [label, tone] = STATUS[a.status] || [a.status, ""];
           return card(
-            h("div", { class: "row" }, chip(label, tone), ext(a.url, `#${a.issue}`), h("span", { class: "meta" }, `${ago(a.updated)}`), a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null),
+            h(
+              "div",
+              { class: "row" },
+              chip(label, tone),
+              // A question or a standing instruction is marked as one.
+              askKind(a.intent).chip ? chip(askKind(a.intent).chip) : null,
+              ext(a.url, `#${a.issue}`),
+              h("span", { class: "meta" }, `${ago(a.updated)}`),
+              a.worker ? h("span", { class: "meta" }, `· ${a.worker}`) : null,
+            ),
             h("div", { class: "bubble you" }, h("b", {}, "You"), a.text),
             ...a.replies.map((r) => h("div", { class: `bubble${r.you ? " you" : ""}` }, h("b", {}, `${r.you ? "You" : "Fleet"} · ${ago(r.at)}`), r.text)),
             h(

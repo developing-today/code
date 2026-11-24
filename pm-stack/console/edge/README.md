@@ -242,6 +242,17 @@ it (the laptop's, the sign-in issuer's).
   A push service takes a message of 4096 bytes and may refuse a longer
   one (RFC 8030), so a message that would be longer as it is sealed is
   cut to the longest start that fits, marked as cut, buttons kept.
+- **A prompt is sent as what it is.** On Ask the owner chooses "Do
+  this", "Answer this" or "From now on" (`ASK_INTENTS` in
+  `src/work.ts`: task, question, directive). The issue is titled for it
+  ("Owner: ", "Owner asks: ", "Owner directs: "), which is also how the
+  kind is told apart later, and its note and its task ask for what that
+  kind needs: a question is answered with what the answer rests on,
+  changes nothing and is left open for him to close; a standing
+  instruction is recorded where every agent reads it and work under way
+  is brought in line. Filed here with no machine, the kind is held with
+  the task for the machine that files it. A reply on a question is
+  queued as a question.
 - **What was finished lately is read here too.** The `done` document
   (`Work.done()`, the Done screen, and the fifth tile on Now) is tasks
   the queue says are done, pull requests merged and issues closed: one

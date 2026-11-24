@@ -82,8 +82,37 @@ const TASK_COLS = `id, title, priority, status, attempts,
 
 const OWNER_PROMPT_MARK = "<!-- owner-prompt:v1 -->";
 const OWNER_REPLY_MARK = "<!-- owner-reply:v1 -->";
-const ASK_NOTE =
-  "This is an instruction from the owner, in his own words, sent from the PM console. Work out what he wants and do it with the fleet's own verbs; if it is a question, answer it here. Say on this issue what you did, with links, and close it when nothing is left.";
+/** What the owner says he is sending: something to do, a question to
+ * answer, or how he wants work done from now on. */
+export const ASK_INTENTS = ["task", "question", "directive"] as const;
+export type AskIntent = (typeof ASK_INTENTS)[number];
+/** How each is titled on its issue, which is also how it is told apart later. */
+const ASK_TITLE: Record<AskIntent, string> = {
+  task: "Owner: ",
+  question: "Owner asks: ",
+  directive: "Owner directs: ",
+};
+/** What the issue tells whoever picks it up. */
+const ASK_NOTE: Record<AskIntent, string> = {
+  task: "This is an instruction from the owner, in his own words, sent from the PM console. Work out what he wants and do it with the fleet's own verbs; if it is a question, answer it here. Say on this issue what you did, with links, and close it when nothing is left.",
+  question:
+    "This is a question from the owner, in his own words, sent from the PM console. Answer it here, in plain words, with what the answer rests on: links, numbers, the commit or run you read. Change nothing to answer it: no code, no configuration, no other issue opened or closed. If answering shows something that should be done, say so in the answer and leave it to him to ask for it. Leave this issue open for him to read; he closes it.",
+  directive:
+    "This is a standing instruction from the owner, in his own words, sent from the PM console. It is not one piece of work: it is how he wants work done from now on. Record it where every agent reads it (AGENTS.md, or the document it points to for the area) by pull request, bring work already queued or in flight in line with it, and say on this issue where it now stands, with links. Close it when that is done.",
+};
+/** What kind a prompt is, by how its issue is titled. One from before
+ * there were kinds, or retitled by hand, is something to do. */
+export function askIntentOf(title: unknown): AskIntent {
+  const t = typeof title === "string" ? title : "";
+  if (t.startsWith(ASK_TITLE.question)) return "question";
+  if (t.startsWith(ASK_TITLE.directive)) return "directive";
+  return "task";
+}
+function askIntent(value: unknown): AskIntent {
+  if (value === undefined) return "task";
+  if (!ASK_INTENTS.includes(value as AskIntent)) throw new OpError(400, `intent: one of ${ASK_INTENTS.join(", ")}`);
+  return value as AskIntent;
+}
 const SET_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const REF = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)#([1-9][0-9]{0,8})$/;
 const LEANS = ["none", "skeptical", "approve"] as const;
@@ -145,16 +174,84 @@ export interface Submission {
   lean?: (typeof LEANS)[number];
 }
 
+/** How the task for each kind of prompt differs: what the problem is,
+ * what counts as finished, what is in and out of its bounds, and how
+ * long it gets. */
+const ASK_TASK: Record<
+  AskIntent,
+  {
+    named: string;
+    problem: string;
+    acceptance: string[];
+    tests: string[];
+    include: string;
+    exclude: string[];
+    minutes: number;
+  }
+> = {
+  task: {
+    named: "prompt",
+    problem:
+      "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+    acceptance: [
+      "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
+      "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
+      "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue",
+    ],
+    tests: ["The issue carries the report comment and is closed, or carries the reason it is still open"],
+    include: "Carry out the owner's instruction on",
+    exclude: ["Secrets, credentials or purchases"],
+    minutes: 45,
+  },
+  question: {
+    named: "question",
+    problem:
+      "The owner asked this question in his own words from the PM console. He wants an answer, not a change: nothing is to be done about it but to answer it.",
+    acceptance: [
+      "The question is answered in a comment on the issue, in plain words, with what the answer rests on: links, numbers, the commit or run that was read",
+      "Nothing was changed to answer it: no code, no configuration, no other issue opened or closed",
+      "The issue is left open for the owner to read; he closes it",
+    ],
+    tests: ["The issue carries the answer, with what it rests on, and is still open"],
+    include: "Answer the owner's question on",
+    exclude: ["Changing code, configuration or other issues", "Secrets, credentials or purchases"],
+    minutes: 30,
+  },
+  directive: {
+    named: "directive",
+    problem:
+      "The owner gave this standing instruction in his own words from the PM console. It is not one piece of work: it is how he wants work done from now on.",
+    acceptance: [
+      "The instruction is recorded where every agent reads it (AGENTS.md, or the document it points to for the area), by a pull request that is merged",
+      "Work already queued or in flight that it bears on is brought in line with it: re-ranked, commented on or parked, with links",
+      "A comment on the issue says where the instruction now stands and what was changed because of it; the issue is closed when that is done",
+    ],
+    tests: ["The instruction is in the document agents read, on main, and the issue links to where"],
+    include: "Record and apply the owner's standing instruction on",
+    exclude: ["Secrets, credentials or purchases"],
+    minutes: 60,
+  },
+};
+
 /** The task that carries out an owner prompt. Top band: the owner asked.
  * It takes the issue's triage key, the one key the queue has for "someone
  * must look at this issue", so an issue never has two tasks: a reply on a
  * prompt whose task is still live joins it, and one whose task has
- * finished gets a new one. */
-export function promptPacket(repo: string, queue: string, number: number, text: string, at: string) {
+ * finished gets a new one. What kind of prompt it is changes what the
+ * task asks for, not where it stands in the queue. */
+export function promptPacket(
+  repo: string,
+  queue: string,
+  number: number,
+  text: string,
+  at: string,
+  intent: AskIntent = "task",
+) {
   const url = `https://github.com/${repo}/issues/${number}`;
   const first = text.split("\n")[0].trim();
+  const as = ASK_TASK[intent];
   return {
-    title: `Owner prompt ${repo}#${number}: ${first}`.slice(0, 180),
+    title: `Owner ${as.named} ${repo}#${number}: ${first}`.slice(0, 180),
     body: `Instruction from the owner, sent from the PM console: ${url}`,
     priority: 10,
     dedupe_key: `repo-health:v1:triage:${repo}:issue:${number}`,
@@ -163,23 +260,18 @@ export function promptPacket(repo: string, queue: string, number: number, text: 
       kind: "triage",
       repo,
       queue,
-      issue: { number, url, title: `Owner: ${first}`.slice(0, 120), state_checked_at: at },
-      problem:
-        "The owner wrote this instruction in his own words from the PM console. It is not a report to classify: it is something he wants done, or a question he wants answered.",
+      issue: { number, url, title: `${ASK_TITLE[intent]}${first}`.slice(0, 120), state_checked_at: at },
+      problem: as.problem,
       evidence: [`Sent from the PM console at ${at}`, url],
-      acceptance: [
-        "What the owner asked for is done with the fleet's own verbs, or answered if it is a question",
-        "A comment on the issue says in plain words what was done, with links, or what could not be done and why",
-        "The issue is closed when nothing is left; work that outlasts this task is filed, enqueued and linked from the issue",
-      ],
-      tests: ["The issue carries the report comment and is closed, or carries the reason it is still open"],
+      acceptance: as.acceptance,
+      tests: as.tests,
       scope: {
-        include: [`Carry out the owner's instruction on ${repo}#${number}`],
-        exclude: ["Secrets, credentials or purchases"],
+        include: [`${as.include} ${repo}#${number}`],
+        exclude: as.exclude,
       },
       risk: { level: "low", flags: ["owner-prompt"] },
       priority_reason: "Owner prompt from the console: top band (10).",
-      timebox_minutes: 45,
+      timebox_minutes: as.minutes,
       max_attempts: 1000,
       context_refs: [url],
       dedupe: { checked_at: at, basis: "Created with its issue, or with the owner's reply, in the same pass." },
@@ -647,6 +739,7 @@ export class Work {
       out.push({
         issue: i.number,
         url: i.html_url,
+        intent: askIntentOf(i.title),
         text: clip((i.body ?? "").split("\n---\n")[0].trim() || i.title, 2000),
         created: i.created_at.slice(0, 19),
         updated: i.updated_at.slice(0, 19),
@@ -682,18 +775,20 @@ export class Work {
    * fleet binary, which is not there. */
   async ask(
     args: Record<string, unknown>,
-    enqueue: (packet: unknown) => Promise<RunResult> = (p) => this.ops.enqueue(p),
+    enqueue: (packet: unknown, intent: AskIntent) => Promise<RunResult> = (p) => this.ops.enqueue(p),
   ) {
     const text = words(args.text, "text", 8000);
+    const intent = askIntent(args.intent);
     await this.ensureLabel();
     const first = text.split("\n")[0].trim();
     const made = (await this.ops.gh(["-X", "POST", `repos/${this.repo}/issues`], {
-      title: `Owner: ${first}`.slice(0, 120),
-      body: `${text}\n\n---\n${ASK_NOTE}\n${OWNER_PROMPT_MARK}`,
+      title: `${ASK_TITLE[intent]}${first}`.slice(0, 120),
+      body: `${text}\n\n---\n${ASK_NOTE[intent]}\n${OWNER_PROMPT_MARK}`,
       labels: [this.ops.cfg.promptLabel, "expedite"],
     })) as { number: number; html_url: string };
     const queued = await enqueue(
-      promptPacket(this.repo, this.ops.cfg.queue, made.number, text, this.clock().toISOString()),
+      promptPacket(this.repo, this.ops.cfg.queue, made.number, text, this.clock().toISOString(), intent),
+      intent,
     );
     return {
       issue: made.number,
@@ -710,25 +805,31 @@ export class Work {
    * itself and holds the enqueue for the laptop's return. */
   async askReply(
     args: Record<string, unknown>,
-    enqueue: (packet: unknown) => Promise<RunResult> = (p) => this.ops.enqueue(p),
+    enqueue: (packet: unknown, intent: AskIntent) => Promise<RunResult> = (p) => this.ops.enqueue(p),
   ) {
     const issue = Number(args.issue);
     if (!Number.isSafeInteger(issue) || issue <= 0) throw new OpError(400, "issue: a positive whole number");
     const text = words(args.text, "text", 8000);
     const current = (await this.ops.gh([`repos/${this.repo}/issues/${issue}`])) as {
+      title?: string;
       state: string;
       labels: { name: string }[];
     };
     if (!current.labels.some((l) => l.name === this.ops.cfg.promptLabel)) {
       throw new OpError(400, "that issue is not one of the owner's prompts");
     }
+    // What he says next on a question is still about a question.
+    const intent = askIntentOf(current.title);
     await this.ops.gh(["-X", "POST", `repos/${this.repo}/issues/${issue}/comments`], {
       body: `${text}\n\n${OWNER_REPLY_MARK}`,
     });
     if (current.state === "closed") {
       await this.ops.gh(["-X", "PATCH", `repos/${this.repo}/issues/${issue}`], { state: "open" });
     }
-    const queued = await enqueue(promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString()));
+    const queued = await enqueue(
+      promptPacket(this.repo, this.ops.cfg.queue, issue, text, this.clock().toISOString(), intent),
+      intent,
+    );
     return { issue, queued: queued.code === 0 };
   }
 

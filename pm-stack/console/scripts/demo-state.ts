@@ -205,6 +205,7 @@ const state = {
     {
       issue: 12499,
       url: "https://github.com/developing-today/code/issues/12499",
+      intent: "question",
       text: "What is blocked and why? One paragraph.",
       created: iso(200),
       updated: iso(180),
@@ -217,6 +218,17 @@ const state = {
           text: "474 tasks are blocked. 212 wait on #9106, which is open although every PR for it is merged; closing it frees them.",
         },
       ],
+    },
+    {
+      issue: 12503,
+      url: "https://github.com/developing-today/code/issues/12503",
+      intent: "directive",
+      text: "From now on, nothing merges while its checks are red.",
+      created: iso(1),
+      updated: iso(1),
+      status: "queued",
+      worker: null,
+      replies: [],
     },
     {
       issue: 12502,
