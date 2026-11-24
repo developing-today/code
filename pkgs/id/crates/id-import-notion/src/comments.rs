@@ -312,6 +312,7 @@ fn chain_replies(mut parsed: Vec<ParsedComment>) -> Result<Vec<CommentClaim>> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::Inventory;
     use serde_json::json;
 
     fn raw_comment(id: &str, discussion: &str, created: &str) -> Value {
