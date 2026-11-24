@@ -126,6 +126,15 @@ impl AgentQuotaLedger {
         copy.spend
     }
 
+    /// Whether a charge of `charge` at `now` would be admitted,
+    /// read without touching the ledger: replenishment is applied
+    /// to a copy, so the answer is exactly the one [`Self::charge`]
+    /// would give, and asking never advances the ledger's clock.
+    #[must_use]
+    pub fn can_admit(&self, now: u64, charge: Quota) -> bool {
+        Quota::exceeded_axis(self.budget, self.spend_at(now), charge).is_none()
+    }
+
     /// Charge one admitted action at `now`. A charge that would exceed
     /// the budget is refused and charges nothing.
     ///
@@ -437,6 +446,24 @@ mod tests {
 
         assert_eq!(refusal.replenishes_at, Some(160));
         assert_eq!(ledger.spend(110), before);
+    }
+
+    #[test]
+    fn can_admit_mirrors_charge_without_touching_the_ledger() {
+        let mut ledger =
+            AgentQuotaLedger::open(AGENT, "w", "archivist", class(1, Some((60, 1))), 100);
+        ledger.charge(100, call()).unwrap();
+
+        assert!(!ledger.can_admit(110, call()));
+        assert!(ledger.can_admit(160, call()));
+        // Asking changed nothing: the pre-tick charge still refuses
+        // naming the same tick, and the tick is earned by the
+        // charge itself, not by the earlier read.
+        assert_eq!(
+            ledger.charge(119, call()).unwrap_err().replenishes_at,
+            Some(160)
+        );
+        ledger.charge(160, call()).unwrap();
     }
 
     #[test]

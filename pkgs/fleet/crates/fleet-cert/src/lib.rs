@@ -24,6 +24,8 @@
 //!   validation over rcgen + aws-lc-rs;
 //! - [`bundle`] — bundle directories: manifest load/save, artifact
 //!   index, checksum verification.
+//! - [`inventory`] — read-only cross-bundle inventory: `inventory
+//!   list|show|search|audit` over bundle directories (spec §6.1).
 //!
 //! Safety rails baked into the API, not just the CLI:
 //! - Root/issuer signing always requires an explicitly passed signer
@@ -41,6 +43,7 @@ pub mod cli;
 pub mod engine;
 pub mod error;
 pub mod graph;
+pub mod inventory;
 pub mod model;
 pub mod naming;
 pub mod ocsp;
