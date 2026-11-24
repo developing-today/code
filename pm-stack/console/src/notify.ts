@@ -179,7 +179,7 @@ export function changes(seen: Seen, now: State, at: number = Date.now()): { mess
 }
 
 /** Sections the notifier reads, whether or not anyone is looking. */
-const WATCHED = ["asks", "census", "sessions", "questionCount", "services"];
+export const WATCHED = ["asks", "census", "sessions", "questionCount", "services"];
 
 export class Notifier {
   private seen: Seen | null = null;

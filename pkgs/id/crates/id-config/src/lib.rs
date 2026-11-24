@@ -22,11 +22,22 @@
 //! executed by this crate. Resolution is deterministic: the same document
 //! always resolves to the same [`ResolvedConfig`], regardless of the order
 //! overrides or allowlist entries were written in.
+//! The historical `negotiation.rs` file is not declared as a crate module;
+//! it is included by path only from the facade's downgrade integration test.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+
+pub mod resolve;
+pub mod rollout;
+
+pub use resolve::{LayerOverride, ResolutionInput, ResolveError, ResolvedLayers, resolve};
+pub use rollout::{
+    AdapterCapabilities, AdapterSet, CapabilityFailure, CapabilityValidator, ExternalEffect,
+    RevisionRecord, RollbackOutcome, Rollout, RolloutError, resolved_digest,
+};
 
 /// The only `ConfigDocument` schema version this crate accepts. The schema
 /// file is `pkgs/id/config/id-config-v1.schema.json`; a document naming any

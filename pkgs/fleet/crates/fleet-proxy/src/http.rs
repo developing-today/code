@@ -13,6 +13,12 @@
 //! fresh connection regardless, because these requests are the
 //! idempotent-shaped local RPCs the Python broker already retries).
 //!
+//! The read contract is validated where it is read along all four
+//! dimensions — type, range, arithmetic, count (#6582): a
+//! peer-declared value must be well-typed, in range, accumulated
+//! with checked arithmetic, and repeated only a bounded number of
+//! times, or the exchange fails in this surface's own error shape.
+//!
 //! Peer-declared sizes are never trusted (#5579): a malformed or
 //! conflicting `Content-Length` is a [`HttpError::Malformed`] that
 //! marks the connection non-reusable (treating it as "no body"
@@ -22,6 +28,13 @@
 //! any allocation for them, and status/header/chunk-size lines are
 //! read with the [`MAX_LINE_BYTES`] bound instead of accumulating
 //! without limit.
+//!
+//! Declared-size arithmetic is checked, never wrapping (#6512's
+//! dimension): the cumulative chunked body total accumulates with
+//! `checked_add`, so a peer's declared chunk sizes cannot overflow
+//! the accumulator into an undersized allocation — an overflow is
+//! the same [`HttpError::Malformed`] failure shape as a size-cap
+//! violation.
 //!
 //! Repetition is bounded as well as size (#6509): a peer can send
 //! units that are each individually legal forever — interim 1xx

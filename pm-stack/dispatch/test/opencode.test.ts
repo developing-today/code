@@ -11,8 +11,9 @@ import { OpenCodeClient, OpenCodeError } from "../src/opencode.ts";
 // as OpenCodeError, never a raw Type/SyntaxError, and a non-string
 // password must never be coerced into the Basic credential.
 
-let mode: "ok" | "nonjson" = "ok";
+let mode: "ok" | "nonjson" | "integration" = "ok";
 let lastAuth = "";
+let lastPath = "";
 let server: ReturnType<typeof Bun.serve>;
 let baseUrl = "";
 let dir = "";
@@ -29,8 +30,22 @@ beforeAll(() => {
     port: 0,
     fetch(req) {
       lastAuth = req.headers.get("authorization") ?? "";
+      lastPath = new URL(req.url).pathname + new URL(req.url).search;
       if (mode === "nonjson") {
         return new Response("<html>not json</html>", { status: 200, headers: { "content-type": "text/html" } });
+      }
+      if (mode === "integration") {
+        return Response.json({
+          data: [
+            {
+              id: "opencode",
+              connections: [
+                { type: "credential", label: "popesdrew" },
+                { type: "credential", label: "drewrypope" },
+              ],
+            },
+          ],
+        });
       }
       return Response.json({ data: { id: "sess-control" } });
     },
@@ -152,18 +167,31 @@ describe("OpenCodeClient.getSession (#5555)", () => {
   });
 });
 
-describe("OpenCodeClient.listSessions completeness", () => {
+describe("OpenCodeClient.listSessions completeness (#13149)", () => {
   let stub: ReturnType<typeof Bun.serve>;
   let stubUrl = "";
   let requestedLimits: number[] = [];
-  let responseAtLimit = 0;
+  let totalSessions = 0;
   beforeAll(() => {
     stub = Bun.serve({
       port: 0,
       fetch(req) {
         const limit = Number(new URL(req.url).searchParams.get("limit"));
         requestedLimits.push(limit);
-        const count = responseAtLimit >= limit ? limit : Math.min(60, limit - 1);
+        // Mirror the real server: `limit` is capped at 200 and a larger
+        // probe is rejected outright — the pre-#13149 ladder's first probe
+        // (1000) therefore threw on every call.
+        if (limit > 200) {
+          return Response.json(
+            {
+              _tag: "InvalidRequestError",
+              message: 'Expected a value less than or equal to 200 at ["limit"]',
+              kind: "Query",
+            },
+            { status: 400 },
+          );
+        }
+        const count = Math.min(totalSessions, limit);
         return Response.json({ data: Array.from({ length: count }, (_, i) => ({ id: `ses-${i}` })) });
       },
     });
@@ -173,20 +201,31 @@ describe("OpenCodeClient.listSessions completeness", () => {
     stub.stop(true);
   });
 
-  test("escalates limits until a response proves the list is complete", async () => {
+  test("probes at the server's 200 cap and returns a below-cap list as complete", async () => {
     requestedLimits = [];
-    responseAtLimit = 1_000;
+    totalSessions = 60;
     const client = new OpenCodeClient(stubUrl, authFile("ls-complete.json", JSON.stringify({ password: "pw" })));
     const sessions = (await client.listSessions()) as unknown[];
-    expect(requestedLimits).toEqual([1_000, 10_000]);
+    expect(requestedLimits).toEqual([200]);
     expect(sessions).toHaveLength(60);
   });
 
-  test("fails closed when the maximum limit is still full", async () => {
+  test("fails closed when the response is at the cap (completeness unprovable)", async () => {
     requestedLimits = [];
-    responseAtLimit = 100_000;
+    totalSessions = 250;
     const client = new OpenCodeClient(stubUrl, authFile("ls-full.json", JSON.stringify({ password: "pw" })));
-    await expect(client.listSessions()).rejects.toThrow(/maximum completeness limit/);
-    expect(requestedLimits).toEqual([1_000, 10_000, 100_000]);
+    await expect(client.listSessions()).rejects.toThrow(/maximum completeness limit \(200\)/);
+    expect(requestedLimits).toEqual([200]);
+  });
+});
+
+describe("OpenCodeClient active integration account (#2732; oracle = active-first integration connection)", () => {
+  test("reads the active-first credential label for the requested session directory", async () => {
+    mode = "integration";
+    const client = new OpenCodeClient(baseUrl, authFile("integration.json", JSON.stringify({ password: "pw" })));
+    const label = await client.activeIntegrationCredentialLabel("opencode", "/home/user/git/code");
+    expect(label).toBe("popesdrew");
+    expect(lastPath).toBe("/api/integration?directory=%2Fhome%2Fuser%2Fgit%2Fcode");
+    expect(Buffer.from(lastAuth.replace("Basic ", ""), "base64").toString()).toBe("opencode:pw");
   });
 });

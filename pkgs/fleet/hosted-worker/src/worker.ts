@@ -59,9 +59,7 @@ function buildDeps(env: HostedEnv): AuthDeps {
   // configured, GitHub writes go through the App installation-token
   // rotation; without it, the fixture writer stands in (local/dev
   // semantics — this package is not deployed, see wrangler.toml).
-  const githubWriter = config.github
-    ? new AppRotationGitHubWriter(config.github)
-    : new FixtureGitHubWriter();
+  const githubWriter = config.github ? new AppRotationGitHubWriter(config.github) : new FixtureGitHubWriter();
   // The query door's read path (#12587), the queue door's
   // fallback-claim surface (#12589), the ingestion door's
   // write-back (#12590) and the sync door's project surface
@@ -104,13 +102,8 @@ export default {
     ctx.waitUntil(
       (async () => {
         try {
-          const doc = await runIngestionSweep(
-            ingestionDepsFrom(deps),
-            deps.config.ingestionRepos,
-          );
-          console.log(
-            `fleet-hosted: ingestion sweep ${JSON.stringify(doc.counts)} over ${doc.repos.join(", ")}`,
-          );
+          const doc = await runIngestionSweep(ingestionDepsFrom(deps), deps.config.ingestionRepos);
+          console.log(`fleet-hosted: ingestion sweep ${JSON.stringify(doc.counts)} over ${doc.repos.join(", ")}`);
         } catch (e) {
           console.error("fleet-hosted: ingestion sweep failed", e);
         }

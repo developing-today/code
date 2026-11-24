@@ -10,11 +10,7 @@ import { test } from "node:test";
 import type { AuthDeps } from "../src/auth.ts";
 import { configFromEnv } from "../src/config.ts";
 import { dispatch } from "../src/router.ts";
-import {
-  InMemorySessionStateStore,
-  SessionResolutionError,
-  resolveAndBindSession,
-} from "../src/session-resolution.ts";
+import { InMemorySessionStateStore, SessionResolutionError, resolveAndBindSession } from "../src/session-resolution.ts";
 import { FixtureSessionRegistry } from "../src/sessions.ts";
 import { AUDIENCE, BINDING_A, BINDING_B, ISSUER, SERVICE_TOKEN, bearerReq, makeHarness } from "./helpers.ts";
 
@@ -115,10 +111,7 @@ test("open validates its body", async () => {
   assert.equal(((await badIssues.json()) as SessionBody).error, "invalid_body");
   const badLane = await post("/v1/sessions", tokenA, { lane: 7 });
   assert.equal(badLane.status, 400);
-  const notJson = await dispatch(
-    bearerReq("/v1/sessions", tokenA, { method: "POST", body: "not json" }),
-    deps,
-  );
+  const notJson = await dispatch(bearerReq("/v1/sessions", tokenA, { method: "POST", body: "not json" }), deps);
   assert.equal(notJson.status, 400);
   assert.equal(((await notJson.json()) as SessionBody).error, "invalid_body");
 });
@@ -189,10 +182,7 @@ test("a service token not scoped to the sessions door is refused", async () => {
 });
 
 test("session routes refuse the unauthenticated and fail closed without a registry", async () => {
-  const anon = await dispatch(
-    new Request("https://fleet-hosted.test/v1/sessions", { method: "POST" }),
-    deps,
-  );
+  const anon = await dispatch(new Request("https://fleet-hosted.test/v1/sessions", { method: "POST" }), deps);
   assert.equal(anon.status, 401);
   const noRegistry = await post("/v1/sessions", tokenA, {}, h.deps);
   assert.equal(noRegistry.status, 503);
@@ -221,8 +211,7 @@ test("acceptance: a later bare invocation recovers the opened session; after clo
     () =>
       resolveAndBindSession({
         store,
-        isLive: (id) =>
-          closedRecord !== null && closedRecord.sessionId === id && closedRecord.closedAt === null,
+        isLive: (id) => closedRecord !== null && closedRecord.sessionId === id && closedRecord.closedAt === null,
       }),
     (e: unknown) => e instanceof SessionResolutionError && e.code === "stale_session_state",
   );

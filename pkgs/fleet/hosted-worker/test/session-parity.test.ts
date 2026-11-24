@@ -145,19 +145,14 @@ const CASES: ParityCase[] = [
 
 function envOf(c: ParityCase): (name: string) => string | null {
   return (name) =>
-    name === FLEET_SESSION_ENV
-      ? (c.fleetEnv ?? null)
-      : name === OPENCODE_SESSION_ENV
-        ? (c.opencodeEnv ?? null)
-        : null;
+    name === FLEET_SESSION_ENV ? (c.fleetEnv ?? null) : name === OPENCODE_SESSION_ENV ? (c.opencodeEnv ?? null) : null;
 }
 
 for (const c of CASES) {
   test(`parity [${c.native}] ${c.label}`, () => {
     const run = (): SessionResolution =>
-      resolveSessionId(
-        { explicit: c.explicit ?? null, env: envOf(c), stored: c.stored ?? null },
-        (id) => (c.live ?? []).includes(id),
+      resolveSessionId({ explicit: c.explicit ?? null, env: envOf(c), stored: c.stored ?? null }, (id) =>
+        (c.live ?? []).includes(id),
       );
     if ("session" in c.expect) {
       assert.deepEqual(run(), {
@@ -188,28 +183,32 @@ test("parity [supplied_identity_is_persisted_for_a_later_bare_invocation] suppli
 
   // An env-supplied identity resolves without any liveness check and
   // is persisted to the stored state.
-  assert.deepEqual(
-    resolveAndBindSession({ env: envWith(null, "ses_active"), store, isLive: () => false }),
-    { kind: "session", sessionId: "ses_active", source: "env" },
-  );
+  assert.deepEqual(resolveAndBindSession({ env: envWith(null, "ses_active"), store, isLive: () => false }), {
+    kind: "session",
+    sessionId: "ses_active",
+    source: "env",
+  });
   assert.equal(store.read(), "ses_active");
 
   // A later bare invocation recovers it from the stored state.
-  assert.deepEqual(
-    resolveAndBindSession({ env: none, store, isLive: (id) => id === "ses_active" }),
-    { kind: "session", sessionId: "ses_active", source: "stored" },
-  );
+  assert.deepEqual(resolveAndBindSession({ env: none, store, isLive: (id) => id === "ses_active" }), {
+    kind: "session",
+    sessionId: "ses_active",
+    source: "stored",
+  });
 
   // An explicit identity replaces the stored one.
-  assert.deepEqual(
-    resolveAndBindSession({ explicit: "ses_explicit", env: none, store, isLive: () => false }),
-    { kind: "session", sessionId: "ses_explicit", source: "explicit" },
-  );
+  assert.deepEqual(resolveAndBindSession({ explicit: "ses_explicit", env: none, store, isLive: () => false }), {
+    kind: "session",
+    sessionId: "ses_explicit",
+    source: "explicit",
+  });
   assert.equal(store.read(), "ses_explicit");
-  assert.deepEqual(
-    resolveAndBindSession({ env: none, store, isLive: (id) => id === "ses_explicit" }),
-    { kind: "session", sessionId: "ses_explicit", source: "stored" },
-  );
+  assert.deepEqual(resolveAndBindSession({ env: none, store, isLive: (id) => id === "ses_explicit" }), {
+    kind: "session",
+    sessionId: "ses_explicit",
+    source: "stored",
+  });
 });
 
 test("parity [explicit_and_environment_values_do_not_read_an_invalid_marker] supplied identities never read the stored state", () => {
@@ -222,10 +221,11 @@ test("parity [explicit_and_environment_values_do_not_read_an_invalid_marker] sup
     write: () => {},
   };
   const none = (): string | null => null;
-  assert.deepEqual(
-    resolveAndBindSession({ explicit: "ses_explicit", env: none, store, isLive: () => true }),
-    { kind: "session", sessionId: "ses_explicit", source: "explicit" },
-  );
+  assert.deepEqual(resolveAndBindSession({ explicit: "ses_explicit", env: none, store, isLive: () => true }), {
+    kind: "session",
+    sessionId: "ses_explicit",
+    source: "explicit",
+  });
   assert.deepEqual(
     resolveAndBindSession({
       env: (name) => (name === FLEET_SESSION_ENV ? "ses_env" : null),

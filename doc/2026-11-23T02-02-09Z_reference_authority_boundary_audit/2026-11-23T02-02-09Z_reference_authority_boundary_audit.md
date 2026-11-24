@@ -36,13 +36,13 @@ refused before any effect.
 (line 629), assembled into `CATALOG_ENTRIES`: **35 entries** — 34
 production host entries plus 1 client-side entry.
 
-| Kind | Count | Names |
-| --- | --- | --- |
-| Request (host) | 23 | `time.now`, `random.u64`, `players.list`, `chat.say`, `chat.history`, `records.read`, `kv.get`, `kv.set`, `kv.delete`, `blob.put`, `blob.get`, `blob.delete`, `http.fetch`, `notify`, `schedule.at`, `schedule.cancel`, `world.info`, `device.info`, `form.present`, `form.cancel`, `loc.position`, `speech.transcribe`, `speech.synthesize` |
-| Subscription | 4 | `time.tick`, `players`, `loc.watch`, `speech.capture` |
-| Event | 1 | `form.result` |
-| PlatformModule | 6 | `Key`, `Screen`, `RocJson`, `RocGrid`, `RocCap`, `RocText` |
-| Request (client) | 1 | `client.file.read` |
+| Kind             | Count | Names                                                                                                                                                                                                                                                                                                                                        |
+| ---------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Request (host)   | 23    | `time.now`, `random.u64`, `players.list`, `chat.say`, `chat.history`, `records.read`, `kv.get`, `kv.set`, `kv.delete`, `blob.put`, `blob.get`, `blob.delete`, `http.fetch`, `notify`, `schedule.at`, `schedule.cancel`, `world.info`, `device.info`, `form.present`, `form.cancel`, `loc.position`, `speech.transcribe`, `speech.synthesize` |
+| Subscription     | 4     | `time.tick`, `players`, `loc.watch`, `speech.capture`                                                                                                                                                                                                                                                                                        |
+| Event            | 1     | `form.result`                                                                                                                                                                                                                                                                                                                                |
+| PlatformModule   | 6     | `Key`, `Screen`, `RocJson`, `RocGrid`, `RocCap`, `RocText`                                                                                                                                                                                                                                                                                   |
+| Request (client) | 1     | `client.file.read`                                                                                                                                                                                                                                                                                                                           |
 
 Every entry carries a version, a kind, an argument schema, bounds, a
 required scope, and a default-ceiling membership. The outward-facing
@@ -89,34 +89,34 @@ unregistered module can never be granted.
 
 ### Guest execution tiers
 
-| Surface | Verdict |
-| --- | --- |
-| Wasm tier (`world/sandbox.rs`) | **Pass.** Import-free validation: `imports.is_empty()` is enforced at compile (sandbox.rs:166); "no WASI, filesystem, sockets, clocks". The host calls `plaza_*` exports only. |
+| Surface                         | Verdict                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wasm tier (`world/sandbox.rs`)  | **Pass.** Import-free validation: `imports.is_empty()` is enforced at compile (sandbox.rs:166); "no WASI, filesystem, sockets, clocks". The host calls `plaza_*` exports only.                                                                                                                                                                                                                                                                                                                            |
 | Native tier (`world_native.rs`) | **Pass on Linux; refused elsewhere.** ELF worker subprocess with `no_new_privs`, rlimits, and a seccomp allowlist (no `open*`, no sockets, no `clone`/`execve`/`ptrace`, no executable `mmap`); unknown syscall kills the process. `harden` bails "the native tier requires Linux" off Linux. Only channel is stdin/stdout frames. Native modules are admin-installed and server opt-in (`--world-native`); install requires the admin token (`world_session/service.rs:290`, `authorize_admin` at :488). |
 
 ### Host request executors (all 23 Request-kind host entries)
 
-| Provider | Verdict |
-| --- | --- |
-| `time.now`, `random.u64`, `players.list`, `world.info` | **Pass.** Pure host reads; no files, network, or processes. |
-| `kv.get/set/delete` | **Pass.** The world's own in-memory map plus its journal; keys validated (`validate_kv_key`); no guest-controlled path. |
-| `blob.put/get/delete` | **Pass.** Content-addressed: the host computes the hash from the bytes (`execute_blob_put`, execution.rs:1806); stored in the world's journal. No guest-controlled path. |
-| `http.fetch` | **Pass.** Admin allowlist, re-checked on every redirect hop (`world/http_fetch.rs:72`); `host_not_allowed` off-list. The only guest-reachable outbound network path, and it is the named provider. |
-| `notify` | **Pass.** Rate-limited, journaled as a `Notification` event; target fixed to the world's own users. |
-| `records.read` | **Pass.** Byte-bounded, prefix-scoped page of the world's own published records. |
-| `schedule.at/cancel` | **Pass.** Host timers only. |
-| `chat.say/history` | **Pass.** Host event log only. |
-| `form.present/cancel`, `form.result` (event) | **Pass.** Forms validated against the schema and size bounds; the result channel is authorized separately (`authorize_form_result`). |
-| `device.info` | **Pass.** Reads the adapter boundary's cached manifest; never enumerates the device; `unknown_cap` when the host cannot describe itself. |
-| `loc.position` | **Pass.** Consent-gated (`consent_required` without consent); with no fix, `no_fix` — a reading is never fabricated. |
-| `speech.transcribe`, `speech.synthesize` | **Fail closed, no executor — finding F-1.** |
+| Provider                                               | Verdict                                                                                                                                                                                            |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `time.now`, `random.u64`, `players.list`, `world.info` | **Pass.** Pure host reads; no files, network, or processes.                                                                                                                                        |
+| `kv.get/set/delete`                                    | **Pass.** The world's own in-memory map plus its journal; keys validated (`validate_kv_key`); no guest-controlled path.                                                                            |
+| `blob.put/get/delete`                                  | **Pass.** Content-addressed: the host computes the hash from the bytes (`execute_blob_put`, execution.rs:1806); stored in the world's journal. No guest-controlled path.                           |
+| `http.fetch`                                           | **Pass.** Admin allowlist, re-checked on every redirect hop (`world/http_fetch.rs:72`); `host_not_allowed` off-list. The only guest-reachable outbound network path, and it is the named provider. |
+| `notify`                                               | **Pass.** Rate-limited, journaled as a `Notification` event; target fixed to the world's own users.                                                                                                |
+| `records.read`                                         | **Pass.** Byte-bounded, prefix-scoped page of the world's own published records.                                                                                                                   |
+| `schedule.at/cancel`                                   | **Pass.** Host timers only.                                                                                                                                                                        |
+| `chat.say/history`                                     | **Pass.** Host event log only.                                                                                                                                                                     |
+| `form.present/cancel`, `form.result` (event)           | **Pass.** Forms validated against the schema and size bounds; the result channel is authorized separately (`authorize_form_result`).                                                               |
+| `device.info`                                          | **Pass.** Reads the adapter boundary's cached manifest; never enumerates the device; `unknown_cap` when the host cannot describe itself.                                                           |
+| `loc.position`                                         | **Pass.** Consent-gated (`consent_required` without consent); with no fix, `no_fix` — a reading is never fabricated.                                                                               |
+| `speech.transcribe`, `speech.synthesize`               | **Fail closed, no executor — finding F-1.**                                                                                                                                                        |
 
 ### Subscriptions (all 4)
 
-| Subscription | Verdict |
-| --- | --- |
-| `time.tick`, `players`, `loc.watch` | **Pass.** Armed only when granted and inside the ceiling; tick floor and loc-watch consent/interval floors enforced at arm and fire time; no host fix means no delivery. |
-| `speech.capture` | **Fail closed, no delivery — finding F-1.** Parses to `Subscription::Unknown`, is decided like any name, but `arm` has no branch for it: a granted subscription arms nothing and never delivers. |
+| Subscription                        | Verdict                                                                                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `time.tick`, `players`, `loc.watch` | **Pass.** Armed only when granted and inside the ceiling; tick floor and loc-watch consent/interval floors enforced at arm and fire time; no host fix means no delivery.                         |
+| `speech.capture`                    | **Fail closed, no delivery — finding F-1.** Parses to `Subscription::Unknown`, is decided like any name, but `arm` has no branch for it: a granted subscription arms nothing and never delivers. |
 
 ### Platform modules (all 6)
 
@@ -242,7 +242,7 @@ Run: `cargo test --manifest-path pkgs/id/Cargo.toml -p id-worlds --lib authority
   suites on the reference laptop.
 - The regression test in this slice was run locally in the sandbox:
   `cargo test --manifest-path pkgs/id/Cargo.toml -p id-worlds --lib
-  authority_boundary` — **4 passed, 0 failed** in 0.10s (lib compile
+authority_boundary` — **4 passed, 0 failed** in 0.10s (lib compile
   ~14m33s). A reference-laptop re-run was not available in this run
   (the fleet shell leg was down: tailnet seat logged out,
   control-plane 400 on re-register).

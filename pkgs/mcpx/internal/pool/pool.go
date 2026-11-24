@@ -1293,6 +1293,9 @@ func (p *Pool) refreshSchemasScoped(ctx context.Context, scoped *config.Resolved
 		// recording a guaranteed failure as the server's state.
 		return p.refreshFailed(staleGen, fmt.Errorf("server %q: schema refresh deferred: definition requires a caller scope", p.cfg.Name))
 	}
+	if err := ctx.Err(); err != nil {
+		return p.refreshFailed(staleGen, err)
+	}
 	lease, err := p.Acquire(ctx, acquireScope)
 	if err != nil {
 		return p.refreshFailed(staleGen, err)

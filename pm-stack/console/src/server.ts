@@ -12,9 +12,10 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { actions, perform } from "./actions.ts";
-import { HOLDABLE, type Held } from "./edge-proto.ts";
+import { HOLDABLE, type Held, type MachinesAnswer, machineName } from "./edge-proto.ts";
 import { AuthError, type Identity, identify } from "./auth.ts";
 import { type Config, readConfig } from "./config.ts";
 import { Devices, Limiter } from "./devices.ts";
@@ -37,13 +38,16 @@ import {
 import { Notifier } from "./notify.ts";
 import { OpError, Ops } from "./ops.ts";
 import { Plan } from "./plan.ts";
+import { platformRead } from "./reads.ts";
 import { contact, Push } from "./push.ts";
+import { Named } from "./named.ts";
 import { EdgeLink } from "./sync.ts";
 import { Work } from "./work.ts";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
 const STATIC = new Map([
   ["app.js", "text/javascript; charset=utf-8"],
+  ["outbox.js", "text/javascript; charset=utf-8"],
   ["app.css", "text/css; charset=utf-8"],
   ["icon.svg", "image/svg+xml"],
   ["sw.js", "text/javascript; charset=utf-8"],
@@ -51,6 +55,17 @@ const STATIC = new Map([
 
 const APK_NAME = "pm-console.apk";
 const ACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** An action's answer is kept with its name when it is no longer than
+ * this, so that the same name offered again is answered the same. */
+const RESULT_KEPT_CHARS = 2000;
+/** The answer to keep, if it is small enough to. */
+const keptSmall = (result: unknown): { result?: unknown } => {
+  try {
+    return result !== undefined && JSON.stringify(result).length <= RESULT_KEPT_CHARS ? { result } : {};
+  } catch {
+    return {};
+  }
+};
 /** The dashboard's files that are public, matched against the parsed
  * path in full. They say nothing about the fleet. */
 const PUBLIC_DASHBOARD = /^\/icons\/(icon-192|icon-512|icon-maskable-512|apple-touch-icon)\.png$/;
@@ -76,11 +91,11 @@ const IDLE_TIMEOUT_SECONDS = 120;
 
 // The page's four files, read once: nothing on the request path touches
 // the disk synchronously after the first hit.
-const fileCache = new Map<string, { bytes: Uint8Array; etag: string }>();
+const fileCache = new Map<string, { bytes: Uint8Array<ArrayBuffer>; etag: string }>();
 function file(req: Request, name: string, type: string): Response {
   let kept = fileCache.get(name);
   if (!kept) {
-    const bytes = readFileSync(join(PUBLIC_DIR, name));
+    const bytes = new Uint8Array(readFileSync(join(PUBLIC_DIR, name)));
     kept = { bytes, etag: `"${createHash("sha256").update(bytes).digest("base64url").slice(0, 22)}"` };
     fileCache.set(name, kept);
   }
@@ -126,7 +141,14 @@ export interface Deps {
    * exist only when their limits do. */
   phones?: Phones;
   /** This host's link to the edge, when the app is served from one. */
-  link?: Pick<EdgeLink, "publicKey"> & Partial<Pick<EdgeLink, "begin" | "end">>;
+  link?: Pick<EdgeLink, "publicKey"> & Partial<Pick<EdgeLink, "begin" | "end" | "seen" | "known" | "take" | "release">>;
+  /** What became of each action sent under a name, so that one is done
+   * once however often it arrives. The link keeps one; a host with no
+   * edge in front of it keeps its own. */
+  named?: Pick<Named, "begin" | "end" | "seen"> & Partial<Pick<Named, "known" | "take" | "release">>;
+  /** What this machine is called and the commit it runs, for where
+   * machines are listed. */
+  self?: { name: string; version?: string };
 }
 
 /** Text that shrinks well. The dashboard's fragments run to a megabyte
@@ -142,7 +164,7 @@ function gzipped(req: Request, bytes: Uint8Array, headers: Headers): Response | 
   if (!wantsGzip(req) || bytes.byteLength < COMPRESS_FROM_BYTES) return null;
   headers.set("content-encoding", "gzip");
   headers.append("vary", "accept-encoding");
-  return new Response(Bun.gzipSync(bytes), { headers });
+  return new Response(Bun.gzipSync(bytes as Uint8Array<ArrayBuffer>), { headers });
 }
 
 /** Pass one request to the dashboard and its answer back. `open` is for
@@ -284,45 +306,47 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
             });
           case "overview":
             return json(await ops.overview());
-          case "queue":
-            return json({
-              counts: await ops.queueCounts(),
-              tasks: await ops.queueList(query.get("status") ?? "queued", query.get("q"), query.get("limit")),
-            });
-          case "priorities":
-            return json(await ops.priorities());
           case "agents":
             return json(await ops.agents());
           case "messages":
             return json(await ops.messages(query.get("limit")));
           case "services":
             return json(await ops.services());
-          case "prs":
-            return json(await ops.prs());
-          case "releases":
-            return json(await ops.releases());
-          case "roadmaps":
-            return json(planOf(deps).capabilities());
-          // `fresh=1` is the reader pressing refresh: asked again now,
-          // not answered from the last minute's read.
-          case "roadmap":
-            return json(await planOf(deps).roadmap(query.get("area"), query.get("fresh") === "1"));
-          case "bugs":
-            return json(await planOf(deps).bugs(query.get("fresh") === "1"));
-          case "intake":
-            return json(await planOf(deps).intakeList(query.get("fresh") === "1"));
         }
       }
+      // What needs only GitHub and the queue store: the same code
+      // answers these at the edge without this machine.
+      const read = await platformRead(seg, query, ops, planOf(deps));
+      if (read !== undefined) return json(read);
       if (seg.length === 2 && seg[0] === "doc" && deps.docs && DOC_NAMES.includes(seg[1] as DocName)) {
         return docResponse(req, await deps.docs.doc(seg[1] as DocName), gzipped);
       }
       if (seg.length === 1 && seg[0] === "push" && deps.push) return json(await deps.push.status());
       if (seg.length === 1 && seg[0] === "devices" && deps.phones) return json(await deps.phones.devices.list());
+      if (seg.length === 1 && seg[0] === "machines") {
+        // Asked of this machine itself (the edge answers for itself when
+        // it is in front): one machine, this one, and nothing held.
+        const answer: MachinesAnswer = {
+          served: "machine",
+          platform: null,
+          machines: [
+            {
+              name: deps.self?.name ?? "this machine",
+              seen: Date.now(),
+              quiet: false,
+              version: deps.self?.version ?? null,
+              actions: Object.keys(deps.actions ?? {}).sort(),
+              sections: (deps.docs?.names() ?? []).sort(),
+            },
+          ],
+          held: [],
+        };
+        return json(answer);
+      }
       if (seg.length === 1 && seg[0] === "signin") return json(await ops.signin());
       if (seg.length === 1 && seg[0] === "question" && deps.work) {
         return json(await deps.work.question(query.get("set"), query.get("ledger"), query.get("qid")));
       }
-      if (seg.length === 2 && seg[0] === "prs") return json(await ops.pr(seg[1]));
       if (seg.length === 3 && seg[0] === "services" && seg[2] === "logs") {
         return json(await ops.serviceLogs(seg[1], query.get("lines")));
       }
@@ -388,8 +412,16 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
         Object.hasOwn(table, kind) && args !== null && typeof args === "object"
           ? table[kind].audit(args as Record<string, unknown>)
           : {};
+      // Sent under a name, by the edge that relayed it or by the device
+      // itself: the name is written down before the action starts and
+      // its outcome after. An action is done once under a name, however
+      // often it arrives: if the answer was lost and it is offered
+      // again, it is answered from what was written down.
+      const name = req.headers.get("x-pm-act") ?? (typeof body.id === "string" ? body.id : "");
       const entry = {
-        id: crypto.randomUUID(),
+        // On the record of what was done under the name it was sent
+        // with, so the device that sent it can find how it came out.
+        id: ACT_ID.test(name) ? name : crypto.randomUUID(),
         kind,
         at: new Date().toISOString(),
         by: who.email ?? who.certName ?? who.sub ?? who.via,
@@ -405,30 +437,63 @@ export async function handle(req: Request, deps: Deps, peer: string | null = nul
               acts: docs.recentActs(),
             })
           : undefined;
-      // Relayed by the edge under a name: the name is written down before
-      // the action starts and its outcome after, so that if this answer
-      // is lost and the edge offers the action again, it is not repeated.
-      const name = req.headers.get("x-pm-act") ?? "";
-      const link = ACT_ID.test(name) && deps.link?.begin && deps.link.end ? deps.link : null;
-      return await act(
-        kind || "unknown",
-        kept,
-        async () => {
-          await link?.begin?.(name);
-          docs.logAct({ ...entry, status: "running" });
-          try {
-            const result = await perform(table, docs, kind, args);
-            docs.logAct({ ...entry, status: "done" });
-            await link?.end?.(name, { ok: true });
-            return result;
-          } catch (error) {
-            docs.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
-            await link?.end?.(name, { ok: false, error: (error as Error).message.slice(0, 300) });
-            throw error;
-          }
-        },
-        forEdge,
-      );
+      const record = deps.named ?? deps.link;
+      const link = ACT_ID.test(name) && record?.begin && record.end ? record : null;
+      // The name is taken for doing here and now, before anything is
+      // waited for (what is known of it is read, and the audit written,
+      // after): of two arrivals under one name only one can take it,
+      // and the other is told it is being done.
+      const taken = link?.take && link.known ? link.take(name) : null;
+      if (taken === false) return json({ error: "This is still being done.", running: true }, 409);
+      try {
+        // What was written down for it before. (A record that cannot be
+        // taken is asked the older way, which also says "being done".)
+        const before = (await (taken ? link?.known?.(name) : link?.seen?.(name))) ?? null;
+        if (before?.state === "running") return json({ error: "This is still being done.", running: true }, 409);
+        if (before?.state === "lost") {
+          // Started, and this host stopped before it ended. Whether it
+          // happened is not known, and doing it again could do it twice.
+          const fate = {
+            ok: false,
+            status: 502,
+            error: "the host restarted while doing this; check whether it happened",
+          };
+          await link?.end?.(name, fate);
+          return json({ error: fate.error, again: true }, 502);
+        }
+        if (before?.state === "done") {
+          return before.fate.ok
+            ? json({ ok: true, result: before.fate.result ?? null, again: true, ...forEdge?.() })
+            : json({ error: before.fate.error ?? "it could not be done", again: true }, before.fate.status ?? 502);
+        }
+        return await act(
+          kind || "unknown",
+          kept,
+          async () => {
+            await link?.begin?.(name);
+            docs.logAct({ ...entry, status: "running" });
+            try {
+              const result = await perform(table, docs, kind, args);
+              docs.logAct({ ...entry, status: "done" });
+              await link?.end?.(name, { ok: true, ...keptSmall(result) });
+              return result;
+            } catch (error) {
+              docs.logAct({ ...entry, status: "failed", note: (error as Error).message.slice(0, 200) });
+              await link?.end?.(name, {
+                ok: false,
+                error: (error as Error).message.slice(0, 300),
+                status: error instanceof OpError ? error.status : 502,
+              });
+              throw error;
+            }
+          },
+          forEdge,
+        );
+      } finally {
+        // Given back, whatever became of it: answered from the record,
+        // refused before it began, or done (when it is given back already).
+        if (taken) link?.release?.(name);
+      }
     }
     if (seg.length === 3 && seg[0] === "queue") {
       return await act(`queue.${seg[2]}`, { task: seg[1], reason: body.reason }, () =>
@@ -639,14 +704,25 @@ if (import.meta.main) {
     identify: (req, peer) => identify(req, cfg, { peer }),
     audit: (entry) => appendFile(cfg.auditFile, `${JSON.stringify(entry)}\n`, { mode: 0o600 }),
   };
+  // What became of each action sent under a name. One record, whether
+  // the action came straight here, was relayed by the edge, or was held
+  // by it and offered late: a name is done once.
+  const named = new Named(fileStore(cfg.edgeDoneFile));
+  deps.named = named;
   // Behind an edge: report to it, and run what it held for this host.
+  const version = await runningCommit();
+  // What this machine is called: what it was told to be, or its own name.
+  const self = { name: cfg.machineName || machineName(hostname()) || "machine", version };
+  deps.self = self;
   const link = cfg.edgeUrl
     ? new EdgeLink({
         url: cfg.edgeUrl,
-        version: await runningCommit(),
+        version,
+        machine: () => ({ name: self.name, actions: Object.keys(deps.actions ?? {}).sort() }),
         apk: androidBuild(cfg.androidApk),
         keys: fileStore(cfg.edgeKeyFile),
         done: fileStore(cfg.edgeDoneFile),
+        named,
         docs,
         phones: devices,
         config: async () => ({

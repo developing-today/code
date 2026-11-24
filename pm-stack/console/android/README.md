@@ -141,5 +141,10 @@ The page says which it is. Later builds install over it.
 
 The native parts are checked by compiling the build and reading its
 merged manifest; the site's side of each (the Ask box taking handed-over
-words, linking a phone, the summary) is tested in `test/`. They have not
-been exercised by an automated run on a device.
+words, linking a phone, the summary) is tested in `test/`. The app
+with no connection is checked on a device in CI: the
+`pm-console-android-offline` workflow (nightly, and on demand) starts
+an emulator, installs the built APK, and drives it against the demo
+edge — open, aeroplane mode, open again from the icon, answer a
+question, swipe the app away, network back — and checks the demo edge
+saw that answer exactly once. See `offline-check.sh` for the steps.

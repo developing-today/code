@@ -11,7 +11,8 @@
 //! machine, so coordination state survives a process restart while
 //! the cloud database is unreachable.
 //!
-//! The store holds coordination only (claims, leases, checkpoints):
+//! The store holds coordination only (claims, leases, checkpoints,
+//! and the task snapshot):
 //! per slice 1's classification it passes the wipe test by
 //! construction — deleting the file loses nothing the cloud does not
 //! re-derive, because every claim it holds is pushed to the cloud by
@@ -26,13 +27,21 @@
 //! a local claim whose task the view holds for a different
 //! (worker, lane) is reported as a double-claim, and every other
 //! local claim is applied to the cloud store and reported synced.
+//!
+//! The task snapshot (`replica_tasks`) is the seed/refresh half
+//! of the interface: `refresh_snapshot` replaces it wholesale
+//! from the cloud's coordination view, and `pick` discovers
+//! claimable work in it — due tasks in the production pick
+//! order, skipping any task already held under a live local
+//! lease — so lanes keep claiming while the cloud is down, not
+//! just heartbeating claims they already hold.
 
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::routing::{
-    CoordinationReplica, DoubleClaim, ReconcileReport, ReplicaClaim, ReplicaError,
+    CoordinationReplica, DoubleClaim, ReconcileReport, ReplicaClaim, ReplicaError, ReplicaTask,
 };
 
 const LOCAL_SCHEMA: &str = "
@@ -46,6 +55,12 @@ CREATE TABLE IF NOT EXISTS replica_claims (
 CREATE TABLE IF NOT EXISTS replica_checkpoints (
     task_id INTEGER PRIMARY KEY,
     progress TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS replica_tasks (
+    task_id INTEGER PRIMARY KEY,
+    priority INTEGER,
+    created_unix INTEGER NOT NULL,
+    not_before_unix INTEGER
 );
 ";
 
@@ -266,6 +281,62 @@ impl CoordinationReplica for SqliteReplica {
         Ok(())
     }
 
+    fn refresh_snapshot(&mut self, tasks: &[ReplicaTask]) -> Result<(), ReplicaError> {
+        let tx = self
+            .conn
+            .transaction()
+            .map_err(|e| unavailable("begin snapshot refresh", e))?;
+        tx.execute("DELETE FROM replica_tasks", [])
+            .map_err(|e| unavailable("clear task snapshot", e))?;
+        for task in tasks {
+            tx.execute(
+                "INSERT OR REPLACE INTO replica_tasks
+                     (task_id, priority, created_unix, not_before_unix)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    task.task_id,
+                    task.priority,
+                    task.created_unix,
+                    task.not_before_unix
+                ],
+            )
+            .map_err(|e| unavailable("seed task snapshot", e))?;
+        }
+        tx.commit()
+            .map_err(|e| unavailable("commit snapshot refresh", e))?;
+        Ok(())
+    }
+
+    fn pick(
+        &mut self,
+        worker: &str,
+        lane: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<ReplicaClaim>, ReplicaError> {
+        // The production pick order, over the local snapshot: due
+        // tasks only (no park timer, or the timer has passed), and
+        // never a task already held under a live local lease.
+        let next: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT task_id FROM replica_tasks
+                 WHERE (not_before_unix IS NULL OR not_before_unix <= ?1)
+                   AND task_id NOT IN (
+                       SELECT task_id FROM replica_claims WHERE expiry_unix > ?1
+                   )
+                 ORDER BY (priority IS NULL), priority ASC, created_unix ASC, task_id ASC
+                 LIMIT 1",
+                params![self.now_unix],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| unavailable("pick from task snapshot", e))?;
+        match next {
+            Some(task_id) => Ok(Some(self.claim(task_id, worker, lane, lease_seconds)?)),
+            None => Ok(None),
+        }
+    }
+
     fn sync_up(&mut self) -> Result<ReconcileReport, ReplicaError> {
         let cloud = self
             .cloud
@@ -359,7 +430,8 @@ mod tests {
 
     use super::SqliteReplica;
     use crate::work::routing::{
-        CoordinationReplica, DoubleClaim, ReconcileReport, ReplicaClaim, ReplicaError,
+        CoordinationReplica, DoubleClaim, MemoryReplica, ReconcileReport, ReplicaClaim,
+        ReplicaError, ReplicaTask,
     };
     use proptest::{prop_assert, prop_assert_eq, proptest};
 
@@ -690,6 +762,147 @@ mod tests {
             let want = model.sync_up();
             prop_assert!(got.zero_lost());
             prop_assert_eq!(got, want);
+            cleanup(&[&local, &cloud]);
+        }
+    }
+
+    fn snap_task(task_id: i64, priority: Option<i64>, created_unix: i64) -> ReplicaTask {
+        ReplicaTask {
+            task_id,
+            priority,
+            created_unix,
+            not_before_unix: None,
+        }
+    }
+
+    #[test]
+    fn sqlite_replica_pick_follows_production_order_and_due_gate() {
+        // Same expectations as the MemoryReplica pick tests: the
+        // durable implementation must discover identical work.
+        let (mut replica, local, cloud) = open_replica("pick", 1_000);
+        let mut parked = snap_task(5, Some(0), 5);
+        parked.not_before_unix = Some(2_000);
+        replica
+            .refresh_snapshot(&[
+                snap_task(1, Some(5), 100),
+                snap_task(2, Some(5), 50),
+                snap_task(3, Some(1), 900),
+                snap_task(4, None, 10),
+                parked,
+            ])
+            .unwrap();
+        let mut picked = Vec::new();
+        while let Some(claim) = replica.pick("worker-a", "lane-x", 300).unwrap() {
+            picked.push(claim.task_id);
+        }
+        assert_eq!(picked, vec![3, 2, 1, 4]);
+        replica.set_now(2_000);
+        let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 5);
+        cleanup(&[&local, &cloud]);
+    }
+
+    #[test]
+    fn sqlite_replica_snapshot_and_claims_survive_reopen() {
+        // The drill shape: seed the snapshot and take a claim, the
+        // process restarts mid-partition, and the reopened replica
+        // still holds the claim and keeps discovering work.
+        let (local, cloud) = temp_stores("snapreopen");
+        {
+            let mut replica = SqliteReplica::open(&local, 1_000).unwrap();
+            replica
+                .refresh_snapshot(&[snap_task(1, Some(1), 10), snap_task(2, Some(2), 20)])
+                .unwrap();
+            let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+            assert_eq!(claim.task_id, 1);
+        }
+        let mut replica = SqliteReplica::open(&local, 1_100).unwrap();
+        replica.attach_cloud(&cloud).unwrap();
+        let claim = replica.pick("worker-b", "lane-y", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 2);
+        let report = replica.sync_up().unwrap();
+        assert_eq!(report.synced_claims, vec![1, 2]);
+        assert!(report.zero_lost());
+        cleanup(&[&local, &cloud]);
+    }
+
+    #[test]
+    fn sqlite_replica_refresh_keeps_local_claims() {
+        let (mut replica, local, cloud) = open_replica("refresh", 1_000);
+        replica
+            .refresh_snapshot(&[snap_task(1, Some(1), 10), snap_task(2, Some(2), 20)])
+            .unwrap();
+        let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 1);
+        // Refresh drops both snapshot rows and adds a new one; the
+        // claim on task 1 survives and still syncs.
+        replica
+            .refresh_snapshot(&[snap_task(3, Some(1), 30)])
+            .unwrap();
+        let claim = replica.pick("worker-a", "lane-x", 300).unwrap().unwrap();
+        assert_eq!(claim.task_id, 3);
+        let report = replica.sync_up().unwrap();
+        assert_eq!(report.synced_claims, vec![1, 3]);
+        assert!(report.zero_lost());
+        cleanup(&[&local, &cloud]);
+    }
+
+    proptest! {
+        #[test]
+        fn sqlite_replica_pick_matches_memory_replica_oracle(
+            first in proptest::collection::vec(
+                (proptest::option::of(-2..3i64), 0..100i64, proptest::option::of(0..250i64)),
+                0..10,
+            ),
+            second in proptest::collection::vec(
+                (proptest::option::of(-2..3i64), 0..100i64, proptest::option::of(0..250i64)),
+                0..10,
+            ),
+            advance in 0i64..400,
+        ) {
+            // Model oracle: MemoryReplica is the reference
+            // implementation. Drive both replicas through the same
+            // seed / pick-to-exhaustion / advance / refresh /
+            // pick-to-exhaustion script and require identical pick
+            // sequences and identical sync reports.
+            let to_tasks = |rows: &[(Option<i64>, i64, Option<i64>)]| -> Vec<ReplicaTask> {
+                rows.iter()
+                    .enumerate()
+                    .map(|(i, (priority, created_unix, not_before_unix))| ReplicaTask {
+                        task_id: i as i64 + 1,
+                        priority: *priority,
+                        created_unix: *created_unix,
+                        not_before_unix: *not_before_unix,
+                    })
+                    .collect()
+            };
+            let (local, cloud) = temp_stores("oracle");
+            let mut sqlite = SqliteReplica::open(&local, 100).unwrap();
+            sqlite.attach_cloud(&cloud).unwrap();
+            let mut memory = MemoryReplica::new(100);
+
+            let mut sqlite_picks = Vec::new();
+            let mut memory_picks = Vec::new();
+            for (rows, advance_by) in [(&first, 0i64), (&second, advance)] {
+                if advance_by != 0 {
+                    sqlite.set_now(100 + advance_by);
+                    memory.set_now(100 + advance_by);
+                }
+                let tasks = to_tasks(rows);
+                sqlite.refresh_snapshot(&tasks).unwrap();
+                memory.refresh_snapshot(&tasks).unwrap();
+                while let Some(claim) = sqlite.pick("worker-a", "lane-x", 300).unwrap() {
+                    sqlite_picks.push(claim.task_id);
+                }
+                while let Some(claim) = memory.pick("worker-a", "lane-x", 300).unwrap() {
+                    memory_picks.push(claim.task_id);
+                }
+            }
+            prop_assert_eq!(&sqlite_picks, &memory_picks);
+            let sqlite_report = sqlite.sync_up().unwrap();
+            let memory_report = memory.sync_up().unwrap();
+            prop_assert!(sqlite_report.zero_lost());
+            prop_assert_eq!(sqlite_report, memory_report);
             cleanup(&[&local, &cloud]);
         }
     }

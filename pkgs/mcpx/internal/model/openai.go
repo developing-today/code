@@ -120,6 +120,9 @@ func (p *OpenAIProvider) Generate(ctx context.Context, req Request) (Response, e
 		return Response{}, fmt.Errorf("model: provider %s request failed: %w", p.name, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return Response{}, &PaymentRequiredError{Provider: p.name}
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, defaults.HTTPErrorBodyLimit))
 		return Response{}, fmt.Errorf("model: provider %s returned HTTP %d: %s",

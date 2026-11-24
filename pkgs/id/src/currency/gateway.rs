@@ -654,14 +654,24 @@ pub fn authorize(
             read_check(registry, &history.currency, &history.account, account)
         }
         CurrencyOp::Freeze(freeze) => {
-            let record = active_currency(registry, &freeze.currency)?;
+            // Lifecycle ops are authorized on existence plus
+            // issuer only, not on the currency being active:
+            // freezing is how a currency leaves Active, and a
+            // repeat freeze must stay answerable. Transition
+            // legality (repeats, sunset terminal) is the
+            // registry's table (#13342); the value ops above
+            // keep requiring Active through `active_currency`.
+            let record = registered_currency(registry, &freeze.currency)?;
             if record.issuer_id != account {
                 return Err(GatewayError::NotIssuer);
             }
             Ok(())
         }
         CurrencyOp::Sunset(sunset) => {
-            let record = active_currency(registry, &sunset.currency)?;
+            // As freeze, and one step more: sunset must stay
+            // reachable from Frozen, so this arm cannot require
+            // Active either (#13342).
+            let record = registered_currency(registry, &sunset.currency)?;
             if record.issuer_id != account {
                 return Err(GatewayError::NotIssuer);
             }
@@ -1045,6 +1055,30 @@ mod tests {
         assert!(matches!(
             authorize(&reg, "holder-account", &transfer),
             Err(GatewayError::InactiveCurrency)
+        ));
+    }
+
+    #[test]
+    fn lifecycle_ops_stay_authorized_for_the_issuer_on_an_inactive_currency() {
+        // Oracle: issue #13342 — freeze/sunset are how a currency
+        // leaves Active, so their authorization is existence plus
+        // issuer-only; requiring Active would make sunset
+        // unreachable from frozen and a repeat freeze
+        // unanswerable. Transition legality is the registry's
+        // table, not this layer's.
+        let mut reg = registry("issuer-account", &[]);
+        reg.currencies.get_mut(&[9; 32]).unwrap().active = false;
+        let freeze = CurrencyOp::Freeze(Freeze { currency: [9; 32] });
+        let sunset = CurrencyOp::Sunset(Sunset { currency: [9; 32] });
+        assert!(authorize(&reg, "issuer-account", &freeze).is_ok());
+        assert!(authorize(&reg, "issuer-account", &sunset).is_ok());
+        assert!(matches!(
+            authorize(&reg, "stranger-account", &freeze),
+            Err(GatewayError::NotIssuer)
+        ));
+        assert!(matches!(
+            authorize(&reg, "stranger-account", &sunset),
+            Err(GatewayError::NotIssuer)
         ));
     }
 

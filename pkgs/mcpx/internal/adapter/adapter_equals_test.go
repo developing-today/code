@@ -17,7 +17,7 @@ func TestBuildArgsEqualsRendering(t *testing.T) {
 			{Name: "config", Flag: "--config"},
 		},
 	}
-	got, _, err := tool.buildArgs(map[string]any{
+	got, _, _, err := tool.buildArgs(map[string]any{
 		"exec_path": "/tmp/bin",
 		"config":    "a.yaml",
 	})
@@ -35,7 +35,7 @@ func TestBuildArgsEqualsRepeat(t *testing.T) {
 		Name:   "run",
 		Params: []Param{{Name: "define", Flag: "--define", Equals: true, Repeat: true, Type: "array"}},
 	}
-	got, _, err := tool.buildArgs(map[string]any{"define": []any{"a=1", "b=2"}})
+	got, _, _, err := tool.buildArgs(map[string]any{"define": []any{"a=1", "b=2"}})
 	if err != nil {
 		t.Fatal(err)
 	}

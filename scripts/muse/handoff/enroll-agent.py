@@ -174,9 +174,7 @@ def run(args):
             # A non-Muse seat must never restore the Muse home: skip the
             # restore, persist, and init phases (code#12858).
             bootstrap_args = ["--skip", "restore,persist,init"]
-        completed = subprocess.run(
-            ["bash", str(bootstrap), *bootstrap_args], env=env
-        )
+        completed = subprocess.run(["bash", str(bootstrap), *bootstrap_args], env=env)
     if completed.returncode:
         print(
             "Bootstrap failed with exit " + str(completed.returncode) + ".",
@@ -187,11 +185,7 @@ def run(args):
             file=sys.stderr,
         )
         print(
-            "python3 enroll-agent.py --name "
-            + name
-            + " --kind "
-            + kind
-            + " --resume",
+            "python3 enroll-agent.py --name " + name + " --kind " + kind + " --resume",
             file=sys.stderr,
         )
         raise SystemExit(completed.returncode)

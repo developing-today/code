@@ -38,6 +38,7 @@ actuation surface does not exist there).
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,6 +56,23 @@ def _load(name, filename):
 
 nudges = _load("nudges", "nudges.py")
 claimant = _load("claimant_for_nudges", "claimant.py")
+
+
+def _fake_git_run(argv, **kwargs):
+    """Fake git at the subprocess boundary for fire-log tests.
+
+    log_fire() records read_code_source()'s provenance read in every
+    entry; that read spawns git, which the hermetic suite forbids.
+    Fire-log tests whose subject is another entry field fake the read
+    here (the TestCodeSourceFireLog shape, #13254) so the entry still
+    carries a real-shaped code_source and no spawn is attempted.
+    """
+    stdout = (
+        "main\n"
+        if "--abbrev-ref" in argv
+        else "0123456789abcdef0123456789abcdef01234567\n"
+    )
+    return subprocess.CompletedProcess(argv, 0, stdout=stdout)
 
 
 def record(round_no=3, verdicts=None):
@@ -179,9 +197,7 @@ class TestPlan(unittest.TestCase):
 
 
 class TestNudgeStep(unittest.TestCase):
-    def _step(
-        self, fx, rec, state_dir, mode="live", bindings=None, recover_error=None
-    ):
+    def _step(self, fx, rec, state_dir, mode="live", bindings=None, recover_error=None):
         return nudges.nudge_step(
             mode,
             rec,
@@ -418,6 +434,7 @@ class TestFireWiring(unittest.TestCase):
                 patch.object(claimant, "_load_nudges_module", return_value=FakeNudges),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant.subprocess, "run", _fake_git_run),
             ):
                 rc = claimant.main()
             self.assertEqual(rc, 0)
@@ -478,13 +495,9 @@ class TestInterventionAccounting(unittest.TestCase):
         fx = FakeEffects(send_ok=False)
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
-            out = self._step(
-                fx, record(verdicts={"ses_stuck": stalled()}), state_dir
-            )
+            out = self._step(fx, record(verdicts={"ses_stuck": stalled()}), state_dir)
             self.assertEqual(out["interventions"]["queue"]["nudges"], 0)
-            self.assertEqual(
-                self._state(state_dir)["counts"]["queue"]["nudges"], 0
-            )
+            self.assertEqual(self._state(state_dir)["counts"]["queue"]["nudges"], 0)
 
     def test_counts_accumulate_across_rounds_and_episode_close(self):
         fx = FakeEffects()
@@ -526,7 +539,9 @@ class TestInterventionAccounting(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
             out = self._step(
-                fx, record(round_no=3, verdicts=verdicts), state_dir,
+                fx,
+                record(round_no=3, verdicts=verdicts),
+                state_dir,
                 bindings=bindings,
             )
             self.assertEqual(len(fx.sent), cap)
@@ -538,32 +553,26 @@ class TestInterventionAccounting(unittest.TestCase):
             # The deferred episode exists with its budget
             # untouched, so the intervention re-plans next round.
             state = self._state(state_dir)
-            self.assertEqual(
-                state["sessions"][overflowed]["nudges_sent"], 0
-            )
+            self.assertEqual(state["sessions"][overflowed]["nudges_sent"], 0)
             out2 = self._step(
-                fx, record(round_no=4, verdicts=verdicts), state_dir,
+                fx,
+                record(round_no=4, verdicts=verdicts),
+                state_dir,
                 bindings=bindings,
             )
             # Least-served first: the session deferred in round 3
             # is served in round 4, ahead of the sessions that
             # consumed budget ahead of it.
             self.assertIn(overflowed, [sid for sid, _ in fx.sent[cap:]])
-            self.assertNotIn(
-                overflowed, [a["session_id"] for a in out2["overflow"]]
-            )
+            self.assertNotIn(overflowed, [a["session_id"] for a in out2["overflow"]])
 
     def test_shadow_reports_overflow_and_counts_but_writes_nothing(self):
         fx = FakeEffects()
         cap = nudges.MAX_QUEUE_INTERVENTIONS_PER_ROUND
-        verdicts = {
-            f"ses_{i:02d}": stalled(task_id=100 + i) for i in range(cap + 1)
-        }
+        verdicts = {f"ses_{i:02d}": stalled(task_id=100 + i) for i in range(cap + 1)}
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp)
-            out = self._step(
-                fx, record(verdicts=verdicts), state_dir, mode="shadow"
-            )
+            out = self._step(fx, record(verdicts=verdicts), state_dir, mode="shadow")
             self.assertEqual(len(out["overflow"]), 1)
             self.assertEqual(out["interventions"]["queue"]["nudges"], cap)
             self.assertEqual(fx.sent, [])

@@ -24,9 +24,11 @@
   gh,
   git,
   makeWrapper,
+  buildGoModule,
 }:
 let
   manifest = lib.importJSON ../../pm-stack/dispatch/package.json;
+  placementRecord = import ../fleet/placement/package.nix { inherit lib buildGoModule; };
 
   src = lib.fileset.toSource {
     root = ../../pm-stack/dispatch;
@@ -60,8 +62,11 @@ stdenvNoCC.mkDerivation {
         lib.makeBinPath [
           gh
           git
+          placementRecord
         ]
-      }
+      } \
+      --set PM_DISPATCH_PLACEMENT_GUARD 1 \
+      --set PM_DISPATCH_PLACEMENT_POLICY ${placementRecord}/share/fleet-placement/placement-policy.yaml
     runHook postInstall
   '';
 
