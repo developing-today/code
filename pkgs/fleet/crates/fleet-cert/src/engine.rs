@@ -358,6 +358,7 @@ fn base_manifest(
         key_location: key_location.to_string(),
         cross_signing,
         certificates: Vec::new(),
+        revocations: Vec::new(),
         files: Vec::new(),
         warnings,
     })
@@ -951,17 +952,6 @@ pub fn issue_leaf(req: &LeafIssueRequest, out_dir: &Path) -> Result<BundleManife
     params.not_after = na.0;
     params.serial_number = Some(random_serial());
     params.use_authority_key_identifier_extension = true;
-    if profile.ocsp_no_check {
-        // RFC 6960 §3.2: a delegated OCSP signing certificate
-        // carries id-pkix-ocsp-nocheck (extnValue = DER NULL) so
-        // verifiers do not revocation-check the responder itself.
-        params
-            .custom_extensions
-            .push(rcgen::CustomExtension::from_oid_content(
-                &[1, 3, 6, 1, 5, 5, 7, 48, 1, 5],
-                vec![0x05, 0x00],
-            ));
-    }
     let cert = issuer.sign(&params, &key)?;
     let der = cert.der().to_vec();
 
@@ -1157,7 +1147,14 @@ pub fn validate_leaf(
         .ok_or_else(|| CertError::manifest("no CERTIFICATE block in leaf"))?;
     let leaf = parse_cert(&der)?;
     let pool = collect_pool(pool_bundles)?;
-    Ok(validate_chain(&leaf, &pool, trust, at))
+    let mut report = validate_chain(&leaf, &pool, trust, at);
+    let mut revocations = crate::revoke::collect_revocations(pool_bundles);
+    revocations.extend(leaf_bundle.manifest.revocations.iter().cloned());
+    if let Some(check) = crate::revoke::revoked_check(&report.path_fingerprints, &revocations, at) {
+        report.valid = false;
+        report.checks.push(check);
+    }
+    Ok(report)
 }
 
 /// Fingerprint helper kept public for reports.

@@ -16,9 +16,6 @@
 //! - [`graph`] — the cross-signing graph as data/policy (§§3.2, 24.2),
 //!   never a hardcoded loop;
 //! - [`profile`] — leaf profiles mirroring `pkgs/idp-pki`'s `idp-ca`;
-//! - [`ocsp`] — the RFC 6960 responder core: delegated responder
-//!   certificates, response signing, inspection and verification
-//!   against the chain code (§§4.3, 6.1);
 //! - [`model`] — typed requests and the bundle manifest schema (§7.1);
 //! - [`engine`] — key generation, issuance, chain building and
 //!   validation over rcgen + aws-lc-rs;
@@ -43,8 +40,8 @@ pub mod error;
 pub mod graph;
 pub mod model;
 pub mod naming;
-pub mod ocsp;
 pub mod profile;
+pub mod revoke;
 pub mod timeparse;
 
 pub use error::{CertError, Result};

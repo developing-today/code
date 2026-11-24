@@ -240,6 +240,77 @@ pub struct ParentRef {
     pub anchor_fingerprints: Vec<String>,
 }
 
+/// Which role a `fleet cert revoke` verb targets (§6.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RevokeTarget {
+    /// A leaf delivery: its `leaf` certificate is revoked.
+    Leaf,
+    /// An issuer set: every CA certificate in it is revoked.
+    Issuer,
+    /// A root set: every CA certificate in it (cross-certificates
+    /// included) is revoked.
+    Root,
+}
+
+impl RevokeTarget {
+    pub fn parse(input: &str) -> crate::Result<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "leaf" => Ok(RevokeTarget::Leaf),
+            "issuer" => Ok(RevokeTarget::Issuer),
+            "root" => Ok(RevokeTarget::Root),
+            other => Err(crate::CertError::usage(format!(
+                "unknown revoke target '{other}' (leaf | issuer | root)"
+            ))),
+        }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RevokeTarget::Leaf => "leaf",
+            RevokeTarget::Issuer => "issuer",
+            RevokeTarget::Root => "root",
+        }
+    }
+}
+
+/// One revocation record (§6.1/§8: `revocations/` in the bundle
+/// manifest). Records carry no secret: the subject certificate is
+/// identified by its SHA-256 fingerprint, and the time the
+/// revocation takes effect is explicit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RevocationRecord {
+    pub schema: String,
+    /// What was revoked (`leaf` | `issuer` | `root`).
+    pub target: String,
+    /// Ready for reason-code use with CRLs (§14 follow-up).
+    pub reason: String,
+    pub revoked_at: Rfc3339,
+    /// Label of the certificate in the bundle (`leaf`, `issuer`, ...).
+    pub cert_role: String,
+    pub subject_dn: String,
+    pub serial_hex: String,
+    pub fingerprint_sha256: String,
+    pub algorithm: AlgorithmId,
+    pub partition: String,
+    /// Bundle-relative path of the revocation record itself.
+    pub path: String,
+}
+
+/// The record-file schema id inside `revocations/`.
+pub const REVOCATION_SCHEMA: &str = "fleet-cert-revocation/v1";
+
+/// Reason codes accepted by `fleet cert revoke` (RFC 5280 §5.3.1
+/// subset; `unspecified` is the default).
+pub const REVOCATION_REASONS: &[&str] = &[
+    "unspecified",
+    "key-compromise",
+    "ca-compromise",
+    "affiliation-changed",
+    "superseded",
+    "cessation-of-operation",
+    "privilege-withdrawn",
+];
+
 /// The canonical bundle manifest (§7.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleManifest {
@@ -262,6 +333,8 @@ pub struct BundleManifest {
     pub key_location: String,
     pub cross_signing: Option<String>,
     pub certificates: Vec<CertRecord>,
+    #[serde(default)]
+    pub revocations: Vec<RevocationRecord>,
     pub files: Vec<FileRecord>,
     pub warnings: Vec<String>,
 }

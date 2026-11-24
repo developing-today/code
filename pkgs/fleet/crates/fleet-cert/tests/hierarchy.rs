@@ -531,3 +531,146 @@ fn tampered_bundle_is_rejected() {
     let err = load_bundle(&root_dir).err().expect("tamper must be caught");
     assert!(format!("{err}").contains("checksum"), "got: {err}");
 }
+
+#[test]
+fn revoked_leaf_is_reported_by_validation() {
+    // Oracle: §6.1/§8 revocation semantics — a leaf that validates
+    // before revocation must be reported invalid, with a `revoked`
+    // check, once its revocation is in effect; the revocation record
+    // must be checksummed in the manifest index.
+    let tmp = TempDir::new("revoke-leaf");
+    let (root_dir, issuer_dir) = build_hierarchy(&tmp, vec![AlgorithmId::Ed25519]);
+    let leaf_dir = tmp.path().join("leaf");
+    engine::issue_leaf(
+        &leaf_request(
+            &issuer_dir,
+            "server",
+            "revoked-leaf",
+            None,
+            None,
+            CalendarDuration::days(365),
+        ),
+        &leaf_dir,
+    )
+    .unwrap();
+
+    let before = engine::validate_leaf(
+        &load_bundle(&leaf_dir).unwrap(),
+        &[
+            &load_bundle(&issuer_dir).unwrap(),
+            &load_bundle(&root_dir).unwrap(),
+        ],
+        TrustSelection::All,
+        ts(AT),
+    )
+    .unwrap();
+    assert!(before.valid, "leaf must validate before revocation");
+
+    let records = fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: leaf_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Leaf,
+        reason: "key-compromise".into(),
+        revoked_at: ts(AT),
+    })
+    .unwrap();
+    assert_eq!(records.len(), 1, "one leaf certificate revoked");
+
+    let leaf_b = load_bundle(&leaf_dir).unwrap();
+    assert_eq!(leaf_b.manifest.revocations.len(), 1);
+    assert!(
+        leaf_b
+            .manifest
+            .files
+            .iter()
+            .any(|f| f.path == records[0].path),
+        "revocation record must be in the file index"
+    );
+
+    let after = engine::validate_leaf(
+        &leaf_b,
+        &[
+            &load_bundle(&issuer_dir).unwrap(),
+            &load_bundle(&root_dir).unwrap(),
+        ],
+        TrustSelection::All,
+        ts(AT),
+    )
+    .unwrap();
+    assert!(!after.valid, "revoked leaf must not validate");
+    assert!(
+        after.checks.iter().any(|c| c.name == "revoked" && !c.ok),
+        "validation must report the revocation: {:?}",
+        after.checks
+    );
+
+    // Idempotent: revoking again adds no record.
+    let again = fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: leaf_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Leaf,
+        reason: "key-compromise".into(),
+        revoked_at: ts(AT),
+    })
+    .unwrap();
+    assert_eq!(again.len(), 1);
+    assert_eq!(
+        load_bundle(&leaf_dir).unwrap().manifest.revocations.len(),
+        1
+    );
+}
+
+#[test]
+fn revoked_issuer_invalidates_its_leaves_and_wrong_target_is_refused() {
+    // Oracle: the same validator as above — a revoked issuer CA on
+    // the path fails every leaf under it; a leaf target against an
+    // issuer bundle is a policy refusal, not a silent no-op.
+    let tmp = TempDir::new("revoke-issuer");
+    let (root_dir, issuer_dir) = build_hierarchy(&tmp, vec![AlgorithmId::Ed25519]);
+    let leaf_dir = tmp.path().join("leaf");
+    engine::issue_leaf(
+        &leaf_request(
+            &issuer_dir,
+            "client",
+            "under-issuer",
+            None,
+            None,
+            CalendarDuration::days(365),
+        ),
+        &leaf_dir,
+    )
+    .unwrap();
+
+    let wrong = fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: issuer_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Leaf,
+        reason: "unspecified".into(),
+        revoked_at: ts(AT),
+    });
+    assert!(
+        wrong.is_err(),
+        "leaf revoke against an issuer set must be refused"
+    );
+
+    fleet_cert::revoke::revoke_bundle(&fleet_cert::revoke::RevokeRequest {
+        bundle: issuer_dir.clone(),
+        target: fleet_cert::model::RevokeTarget::Issuer,
+        reason: "ca-compromise".into(),
+        revoked_at: ts(AT),
+    })
+    .unwrap();
+
+    let report = engine::validate_leaf(
+        &load_bundle(&leaf_dir).unwrap(),
+        &[
+            &load_bundle(&issuer_dir).unwrap(),
+            &load_bundle(&root_dir).unwrap(),
+        ],
+        TrustSelection::All,
+        ts(AT),
+    )
+    .unwrap();
+    assert!(
+        !report.valid,
+        "leaf under a revoked issuer must not validate"
+    );
+    assert!(report.checks.iter().any(|c| c.name == "revoked" && !c.ok));
+}
