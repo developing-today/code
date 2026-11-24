@@ -340,6 +340,9 @@ impl WorldActor {
                     continue;
                 },
                 () = Self::sleep_until(deadline) => {
+                    // Give already-executed capability results first claim
+                    // on the fresh fuel window, before recurring timers.
+                    self.after_change().await;
                     self.fire_ticks().await;
                     self.fire_loc_watches().await;
                     self.fire_schedules().await;

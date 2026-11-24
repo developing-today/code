@@ -700,6 +700,7 @@ impl WorldActor {
     pub(super) fn republished(&mut self, records: Records, sequence: u64) {
         publish_records(&self.records_sender, sequence, records);
     }
+}
 
 /// What one host-event delivery did (#1067). A bare `bool` conflates the
 /// recoverable case with every other drop, which is exactly how a
