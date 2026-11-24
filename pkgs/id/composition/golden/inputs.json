@@ -1,0 +1,17 @@
+{
+  "_comment": "Worked-example inputs for composition-hash-spec.md. Fully fixed illustrative values: the lockfile field is NOT a real Cargo.lock hash (see hash spec). Any implementation feeding this structure through the spec's canonical encoding must reproduce canonical.hex and hash.hex byte-for-byte.",
+  "schema": 1,
+  "target": "x86_64-unknown-linux-musl",
+  "profile": "headless",
+  "catalogue": "1.0.0",
+  "toolchain": "1.99.1",
+  "lockfile": "0000000000000000000000000000000000000000000000000000000000000000",
+  "features": [
+    {"name": "dht", "crates": ["id-cli@0.1.0", "id-sync@0.1.0"]},
+    {"name": "directory", "crates": ["id-directory@0.1.0"]},
+    {"name": "sandbox-exec", "crates": ["id-caps@0.1.0", "id-cli@0.1.0", "id-core@0.1.0", "id-worlds@0.1.0"]},
+    {"name": "serve", "crates": []},
+    {"name": "store-turso", "crates": ["id-store@0.1.0"]},
+    {"name": "world-state", "crates": ["id-cli@0.1.0", "id-core@0.1.0"]}
+  ]
+}
