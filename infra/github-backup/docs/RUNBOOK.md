@@ -121,6 +121,42 @@ The deploy also (re)sets the Worker secrets `DRAIN_BEARER` and
 `GITHUB_WEBHOOK_SECRET` from Bitwarden by name; no secret is written
 to disk or printed.
 
+### Optional GitHub Actions release path
+
+The manual `github-backup Worker release` workflow is an additional
+release path; it does not replace the operator command above. It has
+two separate actions: `upload` creates a version and prints its UUID,
+while `promote` requires that full UUID, verifies the version has both
+secret bindings and the existing `GHB_EVENTS` KV namespace, then creates
+a deployment at 100%. Upload does not change traffic. Promotion verifies
+the latest deployment and `/health` afterward. It does not create,
+delete, or migrate storage, and it does not edit Worker routes.
+
+Before enabling the workflow, configure the GitHub environment
+`developing-today-backup-production` in repository settings with at
+least one required reviewer and restrict deployments to `main`. Add:
+
+- Environment variable `CLOUDFLARE_ACCOUNT_ID`.
+- Environment secret `CLOUDFLARE_API_TOKEN`, using the Workers `Editor`
+  role scoped to this existing Worker. The workflow does not need
+  Workers Routes write permission or direct KV access.
+- Environment secrets `BACKUP_WORKER_BEARER` and
+  `BACKUP_WEBHOOK_SECRET`, populated from the existing Bitwarden entries
+  `github-app.backup-worker-bearer` and
+  `github-app.backup-webhook-secret`.
+
+Then use Actions → `github-backup Worker release`, select `main`, and
+run `upload`. Copy the resulting version UUID into a second manual run
+with operation `promote`. The environment approval is required for both
+operations. The workflow runs only on manual dispatch from `main`; it
+does not receive credentials on pull requests.
+
+The workflow pins `cf@1.0.0-rc.1`, Wrangler `4.163.0`, and Node.js
+`24.22.0`. The TypeScript `cloudflare.config.ts` is the `cf` config for
+the same Worker; the existing `wrangler.toml` remains in place for the
+operator tool and local Wrangler workflows. Keep the worker name,
+compatibility date, and KV namespace ID in those two configs aligned.
+
 First time only — the KV namespace the Worker binds:
 
 ```sh
