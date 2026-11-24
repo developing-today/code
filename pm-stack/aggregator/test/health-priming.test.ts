@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,6 +19,8 @@ interface HealthBody {
 
 let proc: Subprocess | undefined;
 let firstHealth: HealthBody | undefined;
+let packageDirBefore: string[] = [];
+const packageDir = join(import.meta.dir, "..");
 
 // #10467: starting the aggregator subprocess can take longer than bun's
 // default 5 s hook budget on a loaded machine; give the hook room to
@@ -70,14 +72,19 @@ beforeAll(async () => {
   const feedFile = join(dir, "fleet-feed.json");
   await writeFile(feedFile, JSON.stringify(feed));
   const port = 5100 + Math.floor(Math.random() * 800);
+  packageDirBefore = (await readdir(packageDir)).sort();
   proc = spawn({
-    cmd: ["bun", "run", "src/server.ts"],
-    cwd: join(import.meta.dir, ".."),
+    cmd: ["bun", "run", join(packageDir, "src", "server.ts")],
+    cwd: dir,
     env: {
       ...Bun.env,
       PM_AGG_PORT: String(port),
+      PM_AGG_FRESHNESS_PORT: String(port + 1000),
       PM_AGG_SOURCE: "live",
       PM_AGG_FEED_FILE: feedFile,
+      PM_AGG_QUOTA_CURRENT_FILE: join(dir, "quota-current.json"),
+      QUOTA_CURRENT_PATH: join(dir, "quota-current.json"),
+      META_RENEWAL_STATE_PATH: join(dir, "meta-renewal.json"),
       PM_AGG_REGISTRY_FILE: join(dir, "registry.json"),
       PM_AGG_COMMENTS_FILE: join(dir, "comments.json"),
       PM_AGG_SNAPSHOTS_DIR: join(dir, "snapshots"),
@@ -122,5 +129,10 @@ describe("/api/health provenance priming (#1267)", () => {
     expect(firstHealth?.source.registry).not.toBe("fixtures");
     expect(firstHealth?.sections?.orchestration.state).toBe("live");
     expect(firstHealth?.sections?.orchestration.runId).toBe("orch-health-test");
+  });
+
+  test("the run leaves no files in the package directory", async () => {
+    await Bun.sleep(500);
+    expect((await readdir(packageDir)).sort()).toEqual(packageDirBefore);
   });
 });
