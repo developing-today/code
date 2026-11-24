@@ -173,6 +173,35 @@ test('unknown non-inverted window gates are rejected and excluded from coverage'
   assert.ok(result.issues.some((issue) => issue.includes('unknown model-route window "typo-window"')));
 });
 
+test('window class vocabulary and route window bindings (#9378 stage 2)', () => {
+  const config = configWith();
+  config.experimental.model_route_windows = {
+    peak: { daysOfWeek: ['mon'], start: '01:00', end: '04:00', timezone: 'UTC', class: 'peak' },
+    off: { daysOfWeek: ['mon'], start: '04:00', end: '06:00', timezone: 'UTC', class: 'off-peak' },
+    bad: { daysOfWeek: ['mon'], start: '00:00', end: '23:59', timezone: 'UTC', class: 'spicy' },
+  };
+  config.experimental.model_routes.bound = { targets: ['good/model#low'], windows: ['peak', 'off'] };
+  config.experimental.model_routes.badroute = { targets: ['good/model#low'], windows: ['nope'] };
+  config.experimental.model_routes.notalist = { targets: ['good/model#low'], windows: 'peak' };
+  const result = inspectRouteRules(config);
+  assert.ok(
+    result.issues.some((issue) => issue.includes('window "bad"') && issue.includes('unknown class')),
+    `bad class must flag: ${result.issues}`,
+  );
+  assert.ok(
+    result.issues.some((issue) => issue.includes('route "badroute"') && issue.includes('unknown model-route window "nope"')),
+    `unknown binding must flag: ${result.issues}`,
+  );
+  assert.ok(
+    result.issues.some((issue) => issue.includes('route "notalist"') && issue.includes('"windows" must be a list')),
+    `non-list binding must flag: ${result.issues}`,
+  );
+  assert.ok(
+    !result.issues.some((issue) => issue.includes('route "bound"')),
+    `valid binding must not flag: ${result.issues}`,
+  );
+});
+
 test('permanently closed window gates are rejected and excluded from coverage', () => {
   const config = configWith({ scout: [{ model: 'good/model#low', window: 'closed' }] });
   config.experimental.model_route_windows = {

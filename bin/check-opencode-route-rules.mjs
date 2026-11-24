@@ -174,6 +174,10 @@ export function inspectFallbackLayout(modelRoutes, fallbacks = CLASS_FALLBACKS, 
 
   return issues;
 }
+// Time-of-day window classes (#9378 stage 2): the closed vocabulary
+// for a model-route window's optional `class` (absent means peak).
+export const WINDOW_CLASSES = ['peak', 'off-peak', 'preburn'];
+
 // Keep aligned with bin/opencode-route-proxy.mjs BUILTIN_PROVIDERS. These
 // concrete provider ids take precedence over a same-named provider route.
 const BUILTIN_PROVIDER_IDS = new Set(['opencode-go', 'openai', 'deepseek', 'groq', 'openrouter', 'meta']);
@@ -708,6 +712,37 @@ export function inspectRouteRules(config) {
 
   // Class fallback layout + whole-graph composition cycle pass.
   // Cycles the tier resolver already reported are not repeated.
+  // Time-of-day window metadata (#9378 stage 2): a window's `class`
+  // must be in the closed vocabulary, and a route's `windows`
+  // binding must be a list of known window names (the proxy ignores
+  // unknown binding names at record time).
+  if (isObject(modelRouteWindows)) {
+    for (const [name, window] of Object.entries(modelRouteWindows)) {
+      if (!isObject(window)) {
+        addIssue(`window: model-route window "${name}" must be an object with start/end`);
+        continue;
+      }
+      if (window.class !== undefined && !WINDOW_CLASSES.includes(window.class)) {
+        addIssue(
+          `window: model-route window "${name}" has unknown class ${JSON.stringify(window.class)} (expected one of ${WINDOW_CLASSES.join(', ')})`,
+        );
+      }
+    }
+  }
+  if (isObject(modelRoutes)) {
+    for (const [routeName, route] of Object.entries(modelRoutes)) {
+      if (!isObject(route) || route.windows === undefined) continue;
+      if (!Array.isArray(route.windows) || !route.windows.every((w) => typeof w === 'string' && w)) {
+        addIssue(`route "${routeName}": "windows" must be a list of model-route window names`);
+        continue;
+      }
+      for (const w of route.windows) {
+        if (!isObject(modelRouteWindows) || !Object.hasOwn(modelRouteWindows, w)) {
+          addIssue(`route "${routeName}": "windows" names unknown model-route window "${w}"`);
+        }
+      }
+    }
+  }
   const reportedCycleKeys = new Set();
   for (const issue of issues) {
     const match = /model-route cycle (.+)$/.exec(issue);
