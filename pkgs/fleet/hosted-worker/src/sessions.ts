@@ -115,11 +115,7 @@ export function sessionRecordJson(record: SessionRecord): Record<string, unknown
  * malformed id fails closed before the registry is consulted. */
 export function checkedSessionId(raw: unknown): string {
   if (typeof raw !== "string" || !isValidSessionId(raw)) {
-    throw new FailClosed(
-      400,
-      "invalid_session_id",
-      "session ID must be ses_ followed by ASCII letters or digits",
-    );
+    throw new FailClosed(400, "invalid_session_id", "session ID must be ses_ followed by ASCII letters or digits");
   }
   return raw;
 }
@@ -135,11 +131,7 @@ export async function getOwnedSession(
 ): Promise<SessionRecord> {
   const record = await registry.get(sessionId);
   if (!record || record.bindingId !== bindingId) {
-    throw new FailClosed(
-      404,
-      "session_unknown",
-      "session id was not minted by this service for this account",
-    );
+    throw new FailClosed(404, "session_unknown", "session id was not minted by this service for this account");
   }
   return record;
 }
@@ -154,11 +146,7 @@ export async function requireOpenSession(
 ): Promise<SessionRecord> {
   const record = await getOwnedSession(registry, bindingId, sessionId);
   if (record.closedAt !== null) {
-    throw new FailClosed(
-      409,
-      "session_closed",
-      `session ${sessionId} is closed and cannot be cited by new work`,
-    );
+    throw new FailClosed(409, "session_closed", `session ${sessionId} is closed and cannot be cited by new work`);
   }
   return record;
 }

@@ -5,6 +5,7 @@ How every program is available in every exec with zero per-exec setup.
 ## The Challenge
 
 Each exec is a fresh, non-interactive, non-login bash (`/bin/bash` by absolute path):
+
 - No `~/.bashrc`, no `~/.profile` — nothing is sourced
 - No environment carries over between execs
 - Default PATH includes `/usr/local/bin` but nothing else custom
@@ -54,10 +55,10 @@ Verified 2026-09-30: `cowsay@3.8.4` (profile), `figlet` (index), stub from `bash
 
 ## Summary
 
-| What you type | How it resolves |
-|---|---|
-| `nix ...` | `/usr/local/bin/nix` wrapper → LD_PRELOAD → profile nix (self-healing) |
-| `cowsay` | `/usr/local/bin/cowsay` → symlink → nix profile |
-| `jq@1.7.1` | `command_not_found_handle` → dispatcher → pinned omnibin → runs |
-| `figlet` | `~/tools/bin/figlet` stub → dispatcher (cached) → runs |
-| `gh` | `/usr/local/bin/gh` → symlink → nix profile (gh 2.101.0) |
+| What you type | How it resolves                                                        |
+| ------------- | ---------------------------------------------------------------------- |
+| `nix ...`     | `/usr/local/bin/nix` wrapper → LD_PRELOAD → profile nix (self-healing) |
+| `cowsay`      | `/usr/local/bin/cowsay` → symlink → nix profile                        |
+| `jq@1.7.1`    | `command_not_found_handle` → dispatcher → pinned omnibin → runs        |
+| `figlet`      | `~/tools/bin/figlet` stub → dispatcher (cached) → runs                 |
+| `gh`          | `/usr/local/bin/gh` → symlink → nix profile (gh 2.101.0)               |

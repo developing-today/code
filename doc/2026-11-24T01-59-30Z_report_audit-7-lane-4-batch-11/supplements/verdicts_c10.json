@@ -1,0 +1,176 @@
+[
+ {
+  "evidence": "Final four settings gain effect probes, exemptions lost; #8474 full list completed by this + earlier work, matching acceptance.",
+  "gap": null,
+  "issue": 8474,
+  "pr": 12735,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "TZ passed through child env allowlist + regression test; stated fix matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12736,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Secrets-broker unit moved into deploy registry; stated intent matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12737,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Per-account ownership resolution + charging across guest-burn path with tests + design record; no spawning issue linked.",
+  "gap": null,
+  "issue": null,
+  "pr": 12739,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Guarded standalone smoke Worker bootstrap, workflow, tests; stated scope matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12742,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Lane guidance prefers fleet agent next + prompt regression test; no spawning issue linked.",
+  "gap": null,
+  "issue": null,
+  "pr": 12745,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Selectable sync/batched/async journal acknowledgement modes with durability contract preserved as default; stated decision matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12746,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "S6 threaded chat/session surface (reply, cross-reference, archive, unread count) in prompt store; stated design slice matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12747,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Shadow forecast ordering + logging without changing live ordering. Acceptance needs >=1 week of records + outcome summary; PR says future work, yet issue closed.",
+  "gap": {
+   "title": "Suspect closure: #12697 closed before shadow acceptance period",
+   "why": "Closed issue requires week of shadow diff records + realized outcomes; PR implements only logging. Lane 2 pointer."
+  },
+  "issue": 12697,
+  "pr": 12748,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Typed note-block storage, tombstoned-ID non-reuse, anchor resolution, move provenance; projections + read-authority enforcement explicitly follow-on.",
+  "gap": null,
+  "issue": null,
+  "pr": 12749,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Documented timed path script added, but #12595 also requires nightly run + sub-five-minute result; PR adds no nightly workflow/measured result despite closing issue.",
+  "gap": {
+   "title": "Suspect closure: #12595 closed without nightly run evidence",
+   "why": "Done criteria need nightly run reporting under five minutes; only script + arg test landed. Lane 2 pointer."
+  },
+  "issue": 12595,
+  "pr": 12750,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Sandbox quota-recorder deploy target + generic unit restorer, timer support, tests, schedule-registry updates; stated migration slice matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12753,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Three quota anomaly detectors, fail-soft gatherer wiring, replay tooling; no spawning issue linked.",
+  "gap": null,
+  "issue": null,
+  "pr": 12754,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Enqueue-time labels enriched from GitHub mirror so label-band priority applies without producer changes, with cross-path tests; addresses #12744 mirror-enrichment alternative + acceptance intent.",
+  "gap": null,
+  "issue": 12744,
+  "pr": 12755,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Deployment packaging builds only selected target + lazy-target tests; stated intent matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12757,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Per-machine watchdog health reporting + registry validation/tests for amd-6; stated section-1.5 slice matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12758,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Android build reporting non-blocking, half-written APK copy prevented, tests for both; stated fix matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12760,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Quota re-weighting proposal generator + evidence-packed PR-only write path with tests; stated S6 intent matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12762,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Laptop-hosted Socket Mode collector service, launcher, package, registry/design updates; stated S2 intent matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12763,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Caution threshold 85->80 as stated; no spawning issue linked.",
+  "gap": null,
+  "issue": null,
+  "pr": 12764,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Worker bootstrap + release tooling + workflow/tests deploying latest version; stated intent matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12765,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Isolated private smoke-version upload workflow, tooling, tests; large lockfile is dependency setup for that path.",
+  "gap": null,
+  "issue": null,
+  "pr": 12767,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "fleet-machine-watchdog cron registered in schedule registry; stated intent matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12769,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Automated Android build/release handling, release integrity checks, edge delivery, UI source reporting with focused tests; stated intent matched.",
+  "gap": null,
+  "issue": null,
+  "pr": 12770,
+  "verdict": "audit:no-issue"
+ }
+]

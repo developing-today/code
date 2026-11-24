@@ -64,11 +64,7 @@ async function projectSync(req: Request, ctx: CallerContext | null, deps: AuthDe
   return json(await runProjectSync(engine, me.bindingId, request));
 }
 
-async function queueGitHubSync(
-  req: Request,
-  ctx: CallerContext | null,
-  deps: AuthDeps,
-): Promise<Response> {
+async function queueGitHubSync(req: Request, ctx: CallerContext | null, deps: AuthDeps): Promise<Response> {
   const me = caller(ctx);
   const engine = flowSyncDepsFrom(deps);
   const request = parseFlowSyncRequest(await jsonBody(req));

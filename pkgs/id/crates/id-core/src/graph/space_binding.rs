@@ -23,9 +23,6 @@
 //! belong to slice A-GRAPH-9132; this module never changes the binding.
 //! Petnames stay local labels in [`crate::petname`] and play no part in
 //! any check here.
-//!
-//! Module wiring into `graph/mod.rs` belongs to slice 9110-09; until
-//! then the integration test includes this file by path.
 
 use std::fmt;
 

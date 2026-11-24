@@ -135,6 +135,7 @@ CREATE TABLE publish_record (
   publish_id      TEXT PRIMARY KEY,
   tenant_id       TEXT NOT NULL,
   content_hash    TEXT NOT NULL,             -- content address; the row is the only grant
+  kind            TEXT NOT NULL,             -- document | note | tag | artifact
   signed_artifact TEXT NOT NULL,             -- the signed bytes live in the public DB; this is the digest + envelope id
   published_at    TEXT NOT NULL,
   retracted_at    TEXT,

@@ -356,3 +356,155 @@ func TestPluginDaemonToolsAreOfferedFromTheEnvironment(t *testing.T) {
 		t.Fatalf("the plugin.daemonTools probe did not report a clean run:\n%s", out)
 	}
 }
+
+// TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment
+// is the effect probe for plugin.remember (#8472; the effect guard
+// is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host:
+// when a daemon choice is made in the picker and the call names no
+// scope of its own, the scope is the setting's value (session /
+// until-gone / indefinite, from MCPX_PLUGIN_REMEMBER) — session
+// keeps the choice in memory only, while until-gone and
+// indefinite write it to the host's per-plugin storage, where a
+// later session recalls it. No Go caller persists it, so the
+// probe drives the host the way the plugin suite does — bun, the
+// real tool runtime, the real picker and the real storage-backed
+// applyChoice, options resolved from the environment — and the
+// bun cases in plugin/opencode/v2/remember.test.ts assert the
+// observable differences: unset (the session default) writes
+// nothing to storage, until-gone and indefinite each persist the
+// picked target under the directory's key, and the scope shown
+// to the permission prompt is the setting's value. A run that
+// skipped the cases is a run that did not check what this probe
+// exists to check, so skips fail it, as in
+// TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/remember.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/remember.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.remember probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.remember probe did not report a clean run:\n%s", out)
+	}
+}
+
+// TestPluginHeadlessSuppressesToastsFromTheEnvironment is the effect
+// probe for plugin.headless (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: when
+// discovery cannot settle on one daemon, the session plugin warns
+// the user with a toast — unless headless is set (MCPX_PLUGIN_HEADLESS
+// or the plugin option), because showToast succeeds whether or not
+// anyone is watching and a toast nobody can see is a leak, not a
+// notification. No Go caller produces the toast, so the probe drives
+// the host the way the plugin suite does — bun, the real session
+// plugin, two fake daemons on real sockets so boot discovery is
+// ambiguous — and the bun cases in
+// plugin/opencode/mcpx/headless.test.ts assert the observable
+// with/without difference: the warning toast arrives when headless
+// is cleared and never when it is set. A run that skipped the cases
+// is a run that did not check what this probe exists to check, so
+// skips fail it, as in TestThePluginSuiteRunsAgainstARealDaemon.
+func TestPluginHeadlessSuppressesToastsFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/mcpx/headless.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/mcpx/headless.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.headless probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.headless probe did not report a clean run:\n%s", out)
+	}
+}
+
+// TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment
+// is the effect probe for plugin.instructions (#8472; the effect
+// guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: it
+// is the opt-in that adds mcpx's session-context paragraph to the
+// model's system prompt — the v2 setup's session "context" hook
+// calls appendContextOnce only when the resolved option is on
+// (plugin/opencode/v2/index.ts), and the paragraph is paid help, so
+// it stays off unless asked for. No Go caller produces the system
+// prompt, so the probe drives the host the way the plugin suite
+// does — bun, the real setupMcpxV2 with a stub context — and the
+// bun cases in plugin/opencode/v2/instructions.test.ts assert the
+// observable with/without difference: unset and explicit false
+// append nothing; true appends the paragraph, once per system
+// array; another truthy spelling appends it too; and the host
+// option beats the environment in both directions. The cases set
+// the setting the way a user would — MCPX_PLUGIN_INSTRUCTIONS
+// through resolveOptions, or the host option. A run that skipped
+// the cases is a run that did not check what this probe exists to
+// check, so skips fail it, as in
+// TestPluginHeadlessSuppressesToastsFromTheEnvironment.
+func TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/instructions.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/instructions.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.instructions probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.instructions probe did not report a clean run:\n%s", out)
+	}
+}
+
+// TestPluginDisabledToolsHidesToolsFromTheEnvironment is the effect
+// probe for plugin.disabledTools (#8472; the effect guard is #1971).
+//
+// The setting's whole effect lives in the opencode plugin host: it
+// names the model-facing mcpx tools hidden from every session —
+// setup records the resolved list as a session's tool-filter policy
+// in ctx.storage on the session's first sighting, and the session
+// "context" hook deletes the named tools from the per-request tools
+// record from the next turn on
+// (plugin/opencode/v2/tool-filter.ts). No Go caller builds that
+// record, so the probe drives the host the way the plugin suite
+// does — bun, the real setupMcpxV2 with a stub context — and the
+// bun cases in plugin/opencode/v2/disabled-tools.test.ts assert the
+// observable with/without difference: unset hides nothing and seeds
+// no policy; a named tool is hidden from the second turn while its
+// siblings and the host tools stay; a separated list hides each
+// named tool; a name outside the mcpx_ namespace can never hide a
+// host tool; and the host option beats the environment in both
+// directions. The cases set the setting the way a user would —
+// MCPX_PLUGIN_DISABLED_TOOLS through resolveOptions, or the host
+// option. A run that skipped the cases is a run that did not check
+// what this probe exists to check, so skips fail it, as in
+// TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment.
+func TestPluginDisabledToolsHidesToolsFromTheEnvironment(t *testing.T) {
+	bun := testsupport.RequireBinary(t, "bun")
+	recordSettingProbes(t)
+	cmd := exec.Command(bun, "test", "plugin/opencode/v2/disabled-tools.test.ts")
+	cmd.Dir = repoRoot(t)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bun test plugin/opencode/v2/disabled-tools.test.ts: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), " skip") && !strings.Contains(string(out), " 0 skip") {
+		t.Fatalf("the plugin.disabledTools probe cases were skipped:\n%s", out)
+	}
+	if !strings.Contains(string(out), " 0 fail") {
+		t.Fatalf("the plugin.disabledTools probe did not report a clean run:\n%s", out)
+	}
+}

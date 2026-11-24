@@ -57,12 +57,8 @@ async function main(): Promise<void> {
     args.tokensFile ??
     process.env.PM_AGG_BREAK_GLASS_FILE ??
     join(homedir(), ".local", "state", "pm-aggregator", "break-glass-tokens.json");
-  const eventsFile =
-    args.eventsFile ?? process.env.PM_AGG_EVENTS_FILE ?? join(process.cwd(), "events.json");
-  const ttlMs =
-    args.ttlMinutes === undefined
-      ? BREAK_GLASS_MAX_TTL_MS
-      : Math.round(args.ttlMinutes * 60 * 1000);
+  const eventsFile = args.eventsFile ?? process.env.PM_AGG_EVENTS_FILE ?? join(process.cwd(), "events.json");
+  const ttlMs = args.ttlMinutes === undefined ? BREAK_GLASS_MAX_TTL_MS : Math.round(args.ttlMinutes * 60 * 1000);
 
   const issued = await issueBreakGlassToken({
     store: new BreakGlassTokenStore(resolve(tokensFile)),

@@ -18,6 +18,43 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Version is a dotted policy version. The v1.0 policy file stated it as
+// a YAML int (e.g. 1); the v1.1 amendment (#2179) states it as a string
+// (e.g. "1.1"). Both decode; String renders the canonical dotted form.
+type Version struct {
+	Major int
+	Minor int
+}
+
+// UnmarshalYAML accepts a YAML int or a "MAJOR[.MINOR]" string.
+func (v *Version) UnmarshalYAML(node *yaml.Node) error {
+	var n int
+	if err := node.Decode(&n); err == nil {
+		v.Major, v.Minor = n, 0
+		return nil
+	}
+	var s string
+	if err := node.Decode(&s); err != nil {
+		return fmt.Errorf("policy version must be an int or dotted string: %w", err)
+	}
+	if _, err := fmt.Sscanf(s, "%d.%d", &v.Major, &v.Minor); err != nil {
+		var major int
+		if _, err2 := fmt.Sscanf(s, "%d", &major); err2 != nil {
+			return fmt.Errorf("policy version %q is not an int or dotted version", s)
+		}
+		v.Major, v.Minor = major, 0
+	}
+	return nil
+}
+
+// String renders the canonical dotted form ("1" or "1.1").
+func (v Version) String() string {
+	if v.Minor == 0 {
+		return fmt.Sprintf("%d", v.Major)
+	}
+	return fmt.Sprintf("%d.%d", v.Major, v.Minor)
+}
+
 // Option is one placement option from the policy's options list.
 type Option struct {
 	ID          string `yaml:"id"`
@@ -54,7 +91,7 @@ type Pool struct {
 
 // Policy is the subset of placement-policy.yaml the evaluator consumes.
 type Policy struct {
-	Version           int      `yaml:"version"`
+	Version           Version  `yaml:"version"`
 	SourceIssue       int      `yaml:"source_issue"`
 	ImplementingIssue int      `yaml:"implementing_issue"`
 	Options           []Option `yaml:"options"`
@@ -89,7 +126,7 @@ func Load(path string) (*Policy, error) {
 }
 
 func (p *Policy) index() error {
-	if p.Version == 0 {
+	if p.Version.Major == 0 {
 		return fmt.Errorf("policy: missing version")
 	}
 	p.optionByID = make(map[string]Option, len(p.Options))

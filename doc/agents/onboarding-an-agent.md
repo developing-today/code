@@ -29,12 +29,12 @@ fleet agent next                                   # each time you want work
 When starting on a bare seat that has no `fleet` binary yet, pick the
 bootstrap script for the seat kind (#12236):
 
-| Seat kind       | Script                                      | Defaults                       |
-| --------------- | ------------------------------------------- | ------------------------------ |
-| Muse sandbox    | `scripts/muse/bootstrap.sh`                 | `--kind muse`, restores home   |
+| Seat kind       | Script                                      | Defaults                          |
+| --------------- | ------------------------------------------- | --------------------------------- |
+| Muse sandbox    | `scripts/muse/bootstrap.sh`                 | `--kind muse`, restores home      |
 | Codespace       | `scripts/fleet/bootstrap-codespace.sh`      | `--kind generic --name codespace` |
-| Laptop service  | `scripts/fleet/bootstrap-laptop-service.sh` | `--kind laptop --name laptop`  |
-| Plain Linux box | `scripts/fleet/bootstrap-linux.sh`          | `--kind generic`               |
+| Laptop service  | `scripts/fleet/bootstrap-laptop-service.sh` | `--kind laptop --name laptop`     |
+| Plain Linux box | `scripts/fleet/bootstrap-linux.sh`          | `--kind generic`                  |
 
 All four also accept `scripts/fleet/bootstrap.sh --seat <kind>`. Each
 non-Muse script installs the sha256-verified `fleet` binary, runs

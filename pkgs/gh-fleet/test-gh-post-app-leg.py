@@ -14,6 +14,7 @@ reports the argv it received. No network, no GitHub, no laptop.
 
 Run: python3 ~/tools/test-gh-post-app-leg.py  (exit 0 = pass)
 """
+
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -70,8 +71,15 @@ def main() -> int:
     # Create leg: the multi-word title must arrive as ONE argument.
     title = "a multi word title with several spaces"
     ok, out = mod.laptop_paperwork(
-        ["create", "--repo", "developing-today/code", "--title", title,
-         "--body-file", str(body)],
+        [
+            "create",
+            "--repo",
+            "developing-today/code",
+            "--title",
+            title,
+            "--body-file",
+            str(body),
+        ],
         body,
     )
     if not ok:
@@ -79,8 +87,11 @@ def main() -> int:
     else:
         got = json.loads(out.strip().splitlines()[-1])
         argv = got["argv"]
-        if argv[:4] != ["create", "--repo", "developing-today/code", "--title"] \
-                or len(argv) < 5 or argv[4] != title:
+        if (
+            argv[:4] != ["create", "--repo", "developing-today/code", "--title"]
+            or len(argv) < 5
+            or argv[4] != title
+        ):
             failures.append(f"title not intact in argv: {argv}")
         if len(argv) < 7 or argv[5] != "--body-file" or argv[6] == str(body):
             failures.append(f"body-file not remapped to remote path: {argv}")
@@ -89,16 +100,29 @@ def main() -> int:
 
     # Comment leg: single-token arguments behave exactly as before.
     ok, out = mod.laptop_paperwork(
-        ["comment", "--repo", "developing-today/code", "--issue", "7935",
-         "--body-file", str(body)],
+        [
+            "comment",
+            "--repo",
+            "developing-today/code",
+            "--issue",
+            "7935",
+            "--body-file",
+            str(body),
+        ],
         body,
     )
     if not ok:
         failures.append(f"comment leg transport failed: {out}")
     else:
         got = json.loads(out.strip().splitlines()[-1])
-        if got["argv"][:6] != ["comment", "--repo", "developing-today/code",
-                               "--issue", "7935", "--body-file"]:
+        if got["argv"][:6] != [
+            "comment",
+            "--repo",
+            "developing-today/code",
+            "--issue",
+            "7935",
+            "--body-file",
+        ]:
             failures.append(f"comment argv changed: {got['argv']}")
         if got.get("body_sha256") != body_sha:
             failures.append("comment-leg body content mismatch")
@@ -107,8 +131,10 @@ def main() -> int:
         for f in failures:
             print(f"FAIL: {f}")
         return 1
-    print("PASS: gh-post App leg keeps a multi-word title intact; "
-          "comment leg unchanged; body transfer verified")
+    print(
+        "PASS: gh-post App leg keeps a multi-word title intact; "
+        "comment leg unchanged; body transfer verified"
+    )
     return 0
 
 

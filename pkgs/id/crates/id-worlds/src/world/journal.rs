@@ -704,6 +704,39 @@ pub struct JournalAdminHistory {
     pub(crate) complete: bool,
 }
 
+impl JournalAdminHistory {
+    /// Build an admin-history window for a checkpoint.
+    ///
+    /// This is the public construction path for code outside
+    /// `id-worlds` — benches, integration tests and downstream
+    /// tooling writing journal fixtures (#13421): the fields stay
+    /// crate-private so the window's contents are only ever set
+    /// whole, here or by the journal writer itself. `events` is the
+    /// ordered sequenced and host-originated window the checkpoint
+    /// carries; `complete` states whether that window reaches back
+    /// to the start of the world's history, the same claim the
+    /// writer records from its own admin-history state.
+    pub const fn new(events: Vec<WorldEvent>, complete: bool) -> Self {
+        Self { events, complete }
+    }
+
+    /// The ordered events this window carries.
+    pub fn events(&self) -> &[WorldEvent] {
+        &self.events
+    }
+
+    /// Whether this window reaches back to the start of the
+    /// world's history.
+    pub const fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    /// Consume the window, returning its events.
+    pub fn into_events(self) -> Vec<WorldEvent> {
+        self.events
+    }
+}
+
 /// Version written in a new journal's [`JournalEntry::Created`] header.
 ///
 /// Journal upgrade/rollback contract (issue #227): a journal is created at

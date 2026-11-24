@@ -946,7 +946,6 @@ pub enum WorldCommand {
     /// a named world, and the scratch world is discarded when the
     /// session ends. Prints one JSON report: the compiled module's
     /// provenance, the initial view, and the view after each `--input`.
-    #[cfg(feature = "sandbox")]
     Dev(WorldDevArgs),
     /// Show (and, with `--grant`/`--revoke`/`--ceiling`, change) a world's capabilities.
     ///
@@ -1015,7 +1014,6 @@ pub enum WorldCommand {
     /// Prints one JSON object with, per call kind, the calls made, total and
     /// worst fuel, and the worst call as a percent of the fuel limit. Exits
     /// nonzero only if the module fails to compile or a call traps.
-    #[cfg(feature = "sandbox")]
     Measure(WorldMeasureArgs),
     /// Tail a world's recent events (bounded by retention and a deadline).
     Logs(WorldLogsArgs),
@@ -1026,7 +1024,6 @@ pub enum WorldCommand {
     Record(WorldRecordArgs),
     /// Replay a recorded fixture offline through a module and compare records.
     /// Prints a verdict line first; exits nonzero when the records differ.
-    #[cfg(feature = "sandbox")]
     Replay(WorldReplayArgs),
     /// Verify a recorded fixture's determinism: replay it twice offline
     /// through a module and compare the records after every event. Prints a
@@ -1038,7 +1035,6 @@ pub enum WorldCommand {
     /// Verification covers the events captured by the admin-authorized fixture,
     /// including host-originated events in their recorded order. It proves
     /// determinism for that history, not correctness of host policy.
-    #[cfg(feature = "sandbox")]
     Verify(WorldVerifyArgs),
     /// List the worlds a host serves. Without `--admin-token` this reads
     /// the host's public directory (#812: names, loaded state, presence

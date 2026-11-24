@@ -1,0 +1,108 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+dns · live · 5m old
+DNS / domain register
+
+40 domains · $612.54/yr at list renewal prices · register parsed 2026-11-24 03:27:08Z (register.json (#902 pipeline) via fleet feed collector). The register is maintained by the #902 pipeline — this page renders it, never edits it. Machine-first: /api/dns.json.
+
+Next renewal
+
+2027-02-09 · $4.07
+
+See its row in the renewal-sorted register.
+Renewing in 45 days
+
+0 domains · $0.00 at list price
+Auto-renew
+
+39 ON · 1 OFF · 0 unknown
+Portfolio shape
+
+3 in use · 18 unused but earmarked · 19 completely unused
+Domain register (40)
+All (40)
+Active (3)
+Earmarked (18)
+Unused (19)
+Renewing soon (0)
+Domain register
+Domain	Next renewal	Price (list)	Auto-renew	Plan / status	Review?
+1110x.de	2027-02-09	$4.07	ON	Unused — `0x111` dev-identity family (earmark inferred)	REVIEW — auto-renews despite no found use
+0x111.dev	2027-02-23	$12.87	ON	Unused — `0x111` family (earmark inferred)	REVIEW
+0x1110.com	2027-02-23	$11.81	ON	Unused — `0x111` family (earmark inferred)	REVIEW
+0x1110.dev	2027-02-23	$12.87	ON	Unused — `0x111` family (earmark inferred)	REVIEW
+1110x.com	2027-02-23	$11.81	ON	Unused — `0x111` family (earmark inferred)	REVIEW
+1110x.dev	2027-02-23	$12.87	ON	Unused — `0x111` family (earmark inferred)	REVIEW
+grandnag.us	2027-02-23	$7.00	ON	Unused — purpose unknown	REVIEW
+l0x.dev	2027-02-23	$12.87	ON	Unused — `0x111` family (earmark inferred)	REVIEW
+default.computer	2027-02-24	$34.50	ON	Unused — purpose unknown	REVIEW
+default.properties	2027-02-24	$34.50	ON	Unused — purpose unknown	REVIEW
+rom.how	2027-02-24	$21.11	ON	Unused — `rom.*` family, purpose unknown	REVIEW
+rom.run	2027-02-24	$25.23	ON	Unused — `rom.*` family, purpose unknown	REVIEW
+security.cab	2027-02-24	$29.35	ON	Active — fleet infrastructure	Settled — in use
+developing.today	2027-03-13	$26.26	ON	Parked — namesake brand domain of DEVELOPING.TODAY LLC (earmark inferred)	REVIEW — brand call: point it somewhere or accept parking
+rom.rest	2027-03-16	$26.26	ON	Unused — `rom.*` family, purpose unknown	REVIEW
+3dtropic.com	2027-05-25	$11.81	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+carbonfreezeme.com	2027-05-25	$11.81	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+eau3d.com	2027-05-25	$11.81	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+o3d.dev	2027-05-25	$12.87	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+printmy.pictures	2027-05-25	$13.90	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+printmy3dmodel.com	2027-05-25	$11.81	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+15b.org	2027-06-23	$11.84	ON	Unused — `…b` family, purpose unknown	REVIEW
+32b.us	2027-06-23	$7.00	ON	Unused — `…b` family, purpose unknown	REVIEW
+64b.us	2027-06-23	$7.00	ON	Unused — `…b` family, purpose unknown	REVIEW
+69b.us	2027-06-23	$7.00	ON	Unused — `…b` family, purpose unknown	REVIEW
+79b.us	2027-06-23	$7.00	ON	Unused — `…b` family, purpose unknown	REVIEW
+3dtropics.com	2027-07-01	$11.81	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+eau3d.org	2027-07-01	$11.84	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+developing-today.com	2027-07-07	$11.81	ON	Active	Settled — in use
+eau3d.dev	2027-07-07	$12.87	ON	Unused — 3D-printing family (earmark inferred)	REVIEW
+64b.org	2027-07-10	$11.84	ON	Unused — `…b` family, purpose unknown	REVIEW
+79b.org	2027-07-10	$11.84	ON	Unused — `…b` family, purpose unknown	REVIEW
+lair.cloud	2027-07-10	$21.11	ON	Unused — purpose unknown	REVIEW
+s0s.pw	2027-07-10	$18.33	ON	Unused — purpose unknown	REVIEW
+01b.us	2027-08-08	$7.00	ON	Unused — `…b` family, purpose unknown	REVIEW
+15b.us	2027-08-08	$7.00	ON	Unused — `…b` family, purpose unknown	REVIEW
+hax.live	2027-08-22	$31.41	ON	Unused — purpose unknown	REVIEW
+developingto.day	2027-10-16	$10.81	ON	Unused — brand variant of developing.today (earmark inferred)	REVIEW
+yak.pub	2027-10-16	$36.56	ON	Unused — purpose unknown	REVIEW
+drewrypope.com	2028-06-14	$11.08	OFF	Active	Settled — in use; identify which account holds it
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870

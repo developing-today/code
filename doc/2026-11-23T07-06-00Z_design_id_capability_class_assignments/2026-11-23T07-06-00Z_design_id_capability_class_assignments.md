@@ -12,24 +12,24 @@
 
 ## Recommendation — the decision table
 
-| Name              | Proposed class              | New? | Client-side sentence (semantics; final copy is #5960's)      |
-| ----------------- | --------------------------- | ---- | ------------------------------------------------------------ |
-| `kv.get`          | `world.records`             | no   | "Read the records this world stores." (unchanged)            |
-| `blob.get`        | `world.records`             | no   | "Read the records this world stores." (unchanged)            |
-| `kv.set`          | `world.storage`             | yes  | "Store data in this world so it persists between visits."    |
-| `kv.delete`       | `world.storage`             | yes  | "Store data in this world so it persists between visits."    |
-| `blob.put`        | `world.storage`             | yes  | "Store data in this world so it persists between visits."    |
-| `blob.delete`     | `world.storage`             | yes  | "Store data in this world so it persists between visits."    |
-| `notify`          | `world.notify`              | yes  | "Send notifications to this world's users."                  |
-| `device.info`     | `cap.none`                  | no   | _(messageless)_ — under the boundary condition in §3         |
-| `form.present`    | `device.form`               | yes  | "Show you forms and collect what you enter in them."         |
-| `form.result`     | `device.form`               | yes  | "Show you forms and collect what you enter in them."         |
-| `form.cancel`     | `device.form`               | yes  | "Show you forms and collect what you enter in them."         |
-| `speech.transcribe` | `device.microphone`       | yes  | "Use this device's microphone to turn what you say into text for this world." |
-| `speech.capture`  | `device.microphone.capture` | yes  | "Send this device's microphone audio to this world."         |
-| `speech.synthesize` | `device.speaker`          | yes  | "Speak text aloud through this device."                      |
-| `client.file.read` | `fs.read.selected`         | yes  | "Read files you choose on this device."                      |
-| `client.notify`   | `device.notify`             | yes  | "Show notifications on this device."                         |
+| Name                | Proposed class              | New? | Client-side sentence (semantics; final copy is #5960's)                       |
+| ------------------- | --------------------------- | ---- | ----------------------------------------------------------------------------- |
+| `kv.get`            | `world.records`             | no   | "Read the records this world stores." (unchanged)                             |
+| `blob.get`          | `world.records`             | no   | "Read the records this world stores." (unchanged)                             |
+| `kv.set`            | `world.storage`             | yes  | "Store data in this world so it persists between visits."                     |
+| `kv.delete`         | `world.storage`             | yes  | "Store data in this world so it persists between visits."                     |
+| `blob.put`          | `world.storage`             | yes  | "Store data in this world so it persists between visits."                     |
+| `blob.delete`       | `world.storage`             | yes  | "Store data in this world so it persists between visits."                     |
+| `notify`            | `world.notify`              | yes  | "Send notifications to this world's users."                                   |
+| `device.info`       | `cap.none`                  | no   | _(messageless)_ — under the boundary condition in §3                          |
+| `form.present`      | `device.form`               | yes  | "Show you forms and collect what you enter in them."                          |
+| `form.result`       | `device.form`               | yes  | "Show you forms and collect what you enter in them."                          |
+| `form.cancel`       | `device.form`               | yes  | "Show you forms and collect what you enter in them."                          |
+| `speech.transcribe` | `device.microphone`         | yes  | "Use this device's microphone to turn what you say into text for this world." |
+| `speech.capture`    | `device.microphone.capture` | yes  | "Send this device's microphone audio to this world."                          |
+| `speech.synthesize` | `device.speaker`            | yes  | "Speak text aloud through this device."                                       |
+| `client.file.read`  | `fs.read.selected`          | yes  | "Read files you choose on this device."                                       |
+| `client.notify`     | `device.notify`             | yes  | "Show notifications on this device."                                          |
 
 Eight new classes; two existing classes gain members (`world.records` takes the two storage reads, `cap.none` takes `device.info`). The only subsumption edge added is `device.microphone ≼ device.microphone.capture`. Adding classes bumps `CAP_CLASS_TABLE_VERSION` from 1 to 2 in the implementation change (§8); no existing class's message or meaning changes, and no reserved class gains a member.
 

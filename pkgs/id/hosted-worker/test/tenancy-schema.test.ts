@@ -90,6 +90,7 @@ const EXPECTED_SCHEMA: Record<string, string[]> = {
     "publish_id",
     "tenant_id",
     "content_hash",
+    "kind",
     "signed_artifact",
     "published_at",
     "retracted_at",

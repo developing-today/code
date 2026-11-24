@@ -69,10 +69,14 @@ var implementedEffectProbes = map[string]string{
 	"plugin.bin":                         "TestPluginBinInvokesTheConfiguredExecutableFromTheEnvironment",
 	"plugin.binArgs":                     "TestPluginBinArgsPrependsTheConfiguredArgumentsFromTheEnvironment",
 	"plugin.daemonTools":                 "TestPluginDaemonToolsAreOfferedFromTheEnvironment",
+	"plugin.disabledTools":               "TestPluginDisabledToolsHidesToolsFromTheEnvironment",
 	"plugin.discoveryRetry":              "TestPluginDiscoveryRetryDelaysRediscoveryFromTheEnvironment",
 	"plugin.env":                         "TestPluginEnvLevelChangesShellEnvFromTheEnvironment",
 	"plugin.tools":                       "TestPluginToolsRegistersTheToolSetFromTheEnvironment",
 	"plugin.toolTiming":                  "TestPluginToolTimingRecordsToolCallsFromTheEnvironment",
+	"plugin.remember":                    "TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment",
+	"plugin.headless":                    "TestPluginHeadlessSuppressesToastsFromTheEnvironment",
+	"plugin.instructions":                "TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment",
 	"paths.state":                        "TestStateDirectoryIsReachableAsASetting",
 	"paths.configFile":                   "TestPathsConfigFileChangesWhichConfigLoads",
 	"paths.scripts":                      "TestPathsScriptsFindsRecipesThatLiveOnlyThere",
@@ -122,6 +126,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxTTL":                  "TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment",
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
+	"protoTasks.cancelGrace":             "TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
 	"events.reconnect":                   "TestEventsReconnectWaitsForTheConfiguredDelay",
 	"script.checkOnUnsupported":          "TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes",
@@ -218,6 +223,7 @@ var implementedEffectProbes = map[string]string{
 	"logging.trace":                      "TestLoggingTraceLogsEachCall",
 	"exec.where":                         "TestExecWhereRemoteRunsOnTheDaemon",
 	"paths.adapters":                     "TestPathsAdaptersFindsADeclarationFile",
+	"adapters.allowBare":                 "TestAdaptersAllowBareGatesABareDeclaration",
 	"paths.apis":                         "TestPathsAPIsFindsADeclarationFile",
 	"script.runtime":                     "TestScriptRuntimeSelectsTheRuntime",
 	"script.runtimeOrder":                "TestScriptRuntimeOrderRanksTheAutoPick",
@@ -303,6 +309,10 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestPluginEnvLevelChangesShellEnvFromTheEnvironment":                            TestPluginEnvLevelChangesShellEnvFromTheEnvironment,
 	"TestPluginToolsRegistersTheToolSetFromTheEnvironment":                           TestPluginToolsRegistersTheToolSetFromTheEnvironment,
 	"TestPluginToolTimingRecordsToolCallsFromTheEnvironment":                         TestPluginToolTimingRecordsToolCallsFromTheEnvironment,
+	"TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment":               TestPluginRememberScopePersistsTheDaemonChoiceFromTheEnvironment,
+	"TestPluginHeadlessSuppressesToastsFromTheEnvironment":                           TestPluginHeadlessSuppressesToastsFromTheEnvironment,
+	"TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment":             TestPluginInstructionsAppendsTheContextParagraphFromTheEnvironment,
+	"TestPluginDisabledToolsHidesToolsFromTheEnvironment":                            TestPluginDisabledToolsHidesToolsFromTheEnvironment,
 	"TestPoolDefaultsAreReachableFromTheEnvironment":                                 TestPoolDefaultsAreReachableFromTheEnvironment,
 	"TestRegistryLimitReachesTheCLI":                                                 TestRegistryLimitReachesTheCLI,
 	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":                                   TestRegistryPageSizeChangesWhatTheCLIAsksFor,
@@ -359,6 +369,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment":                    TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment,
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
+	"TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment":               TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
 	"TestEventsReconnectWaitsForTheConfiguredDelay":                                  TestEventsReconnectWaitsForTheConfiguredDelay,
 	"TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes":                       TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes,
@@ -454,6 +465,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestLoggingTraceLogsEachCall":                                                   TestLoggingTraceLogsEachCall,
 	"TestExecWhereRemoteRunsOnTheDaemon":                                             TestExecWhereRemoteRunsOnTheDaemon,
 	"TestPathsAdaptersFindsADeclarationFile":                                         TestPathsAdaptersFindsADeclarationFile,
+	"TestAdaptersAllowBareGatesABareDeclaration":                                     TestAdaptersAllowBareGatesABareDeclaration,
 	"TestPathsAPIsFindsADeclarationFile":                                             TestPathsAPIsFindsADeclarationFile,
 	"TestScriptRuntimeSelectsTheRuntime":                                             TestScriptRuntimeSelectsTheRuntime,
 	"TestScriptRuntimeOrderRanksTheAutoPick":                                         TestScriptRuntimeOrderRanksTheAutoPick,
@@ -1840,6 +1852,47 @@ func TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// protoTasks.cancelGrace is how long work on the modern tasks
+// extension path may still finish after a tasks/cancel before the
+// store records the cancellation anyway (cooperative Store.Cancel).
+// The task is a two-second script; cancelling it starts an unwind
+// that takes measurable time to record the script's own outcome, so
+// the window's edge is observable: a window no work can finish
+// inside loses the record to the cancellation, a wide one keeps it.
+// Oracle: with MCPX_PROTO_TASKS_CANCEL_GRACE=1us the store records
+// the task cancelled; with a 30s grace the work's own outcome
+// stands and the task reads completed.
+func TestProtoTasksCancelGraceExpiresACancelledTaskFromTheEnvironment(t *testing.T) {
+	statusAfterCancel := func(env ...string) string {
+		t.Helper()
+		rpc := tasksClient(t, env...)
+		res, _ := startSlowTask(t, rpc)["result"].(map[string]any)
+		id, _ := res["taskId"].(string)
+		if id == "" {
+			t.Fatalf("no task was started: %v", res)
+		}
+		rpc("tasks/cancel", map[string]any{"taskId": id})
+		// Read until the record turns terminal; either outcome
+		// lands within moments of the cancel.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			got, _ := rpc("tasks/get", map[string]any{"taskId": id})["result"].(map[string]any)
+			status, _ := got["status"].(string)
+			if status == "cancelled" || status == "completed" || status == "failed" || time.Now().After(deadline) {
+				return status
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+
+	if got := statusAfterCancel("MCPX_PROTO_TASKS_CANCEL_GRACE=1us"); got != "cancelled" {
+		t.Fatalf("protoTasks.cancelGrace=1us should record the task cancelled once the grace expires, got status %q", got)
+	}
+	if got := statusAfterCancel("MCPX_PROTO_TASKS_CANCEL_GRACE=30s"); got != "completed" {
+		t.Fatalf("with a 30s protoTasks.cancelGrace the cancelled task's own outcome should stand, got status %q", got)
+	}
+}
+
 // replayFromStart reads what /v1/events replays from sequence zero. The
 // stream stays open for live events, so it reads until the client's short
 // deadline and keeps whatever arrived.
@@ -2889,6 +2942,24 @@ func TestPathsAdaptersFindsADeclarationFile(t *testing.T) {
 	}
 }
 
+// TestAdaptersAllowBareGatesABareDeclaration is the effect probe for
+// adapters.allowBare (#11147): a bare declaration file fails to load
+// while the setting is off (its default), with an error naming the
+// setting, and lists once the environment turns the setting on.
+func TestAdaptersAllowBareGatesABareDeclaration(t *testing.T) {
+	e := newEnv(t, oneServer)
+	file := filepath.Join(t.TempDir(), "adapters.json")
+	mustWrite(t, file, `{"adapters":[{"name":"probebare","command":"echo","description":"echo, passed straight through","bare":true}]}`)
+	e.setenv("MCPX_PATHS_ADAPTERS=" + file)
+	if out, err := e.try("adapter", "list"); err == nil || !strings.Contains(out, "adapters.allowBare") {
+		t.Errorf("with adapters.allowBare off, a bare declaration should fail to load naming the setting: %v\n%s", err, out)
+	}
+	e.setenv("MCPX_ADAPTERS_ALLOW_BARE=true")
+	if out := e.run("adapter", "list"); !strings.Contains(out, "probebare") {
+		t.Errorf("adapters.allowBare on should load the bare declaration:\n%s", out)
+	}
+}
+
 // TestPathsAPIsFindsADeclarationFile is the effect probe for paths.apis:
 // `mcpx api list` declares nothing by default, and lists the API in the
 // file the environment points it at.
@@ -3404,15 +3475,18 @@ func TestAutostartConnectTimeoutBoundsTheWaitForADaemon(t *testing.T) {
 
 // TestAutostartPingTimeoutBoundsEachReadinessPing is the effect probe for
 // autostart.pingTimeout: the readiness ping answers at the default bound,
-// and none can at a one-nanosecond bound, so the start is given up on. Both
-// cases wait two seconds for the daemon, not the default, to stay quick;
-// two seconds is ample for it to start, as the first case shows.
+// and none can at a one-nanosecond bound, so the start is given up on. The
+// two cases use different connect waits on purpose. The default-ping case
+// waits generously: its assertion is that the daemon does start, and under
+// CPU contention startup can take far longer than a short wait allows.
+// The one-nanosecond case waits only two seconds: no ping can answer in a
+// nanosecond however fast the daemon starts, so the give-up is certain
+// and a short wait keeps the test quick.
 func TestAutostartPingTimeoutBoundsEachReadinessPing(t *testing.T) {
-	const wait = "MCPX_AUTOSTART_CONNECT_TIMEOUT=2s"
-	if failed, out := autostartFails(t, wait); failed {
+	if failed, out := autostartFails(t, "MCPX_AUTOSTART_CONNECT_TIMEOUT=60s"); failed {
 		t.Errorf("at the default autostart.pingTimeout the daemon should start:\n%s", out)
 	}
-	if failed, out := autostartFails(t, wait, "MCPX_AUTOSTART_PING_TIMEOUT=1ns"); !failed {
+	if failed, out := autostartFails(t, "MCPX_AUTOSTART_CONNECT_TIMEOUT=2s", "MCPX_AUTOSTART_PING_TIMEOUT=1ns"); !failed {
 		t.Errorf("autostart.pingTimeout=1ns should leave every ping unanswered:\n%s", out)
 	}
 }

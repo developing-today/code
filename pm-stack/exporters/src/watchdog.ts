@@ -219,9 +219,7 @@ export async function cdpPageResponsive(
       done({ ok: false, detail: `page unresponsive: Runtime.evaluate not answered within ${timeoutMs} ms` });
     }, timeoutMs);
     ws.onopen = () => {
-      ws.send(
-        JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "1", returnByValue: true } }),
-      );
+      ws.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "1", returnByValue: true } }));
     };
     ws.onmessage = (ev) => {
       try {
@@ -233,7 +231,8 @@ export async function cdpPageResponsive(
         } catch {
           /* already closed */
         }
-        if (msg.error) done({ ok: false, detail: `page evaluate errored: ${msg.error.message ?? "unknown CDP error"}` });
+        if (msg.error)
+          done({ ok: false, detail: `page evaluate errored: ${msg.error.message ?? "unknown CDP error"}` });
         else done({ ok: true, detail: "page renderer answered Runtime.evaluate" });
       } catch {
         /* not our reply frame — keep waiting for the reply or the timeout */
@@ -365,7 +364,9 @@ export function productionEffects(env: Record<string, string | undefined> = proc
           };
         return { outcome: "failed", detail: `browser still wedged after unit restart: ${v.detail}` };
       }
-      return v.ok ? { outcome: "succeeded" as const, detail: v.detail } : { outcome: "failed" as const, detail: v.detail };
+      return v.ok
+        ? { outcome: "succeeded" as const, detail: v.detail }
+        : { outcome: "failed" as const, detail: v.detail };
     },
     async rung3(adapter) {
       if (!adapter.cdpPort || !adapter.loginUrl)

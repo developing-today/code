@@ -55,6 +55,29 @@ pub mod gateway;
 #[cfg(feature = "world")]
 pub mod gateway_poc;
 
+/// F4 reconciliation and supply audit over the composed gateway:
+/// graph ↔ registry ↔ ledger drift, reported, never repaired
+/// (#2320, design section 7.3).
+#[cfg(feature = "world")]
+pub mod reconcile;
+
+/// The production currency gateway service (#5522, remainder of
+/// #10070 item 1): the single logical writer (design §4.5)
+/// running the §4.3 pipeline over the F1 registry, F2 factory,
+/// and F3 envelope, with durable write-ahead intents and the
+/// invariant-7 intent↔ledger join.
+#[cfg(feature = "world")]
+pub mod gateway_service;
+
+/// The gateway verification flow for conversion submissions
+/// (#3801, Phase 2 of #2290): chain decode + signature, LP-tier
+/// eligibility, the account-control chain, and live-state checks
+/// over the Phase 1 fold, consulted at submission time. Every
+/// failure is a typed pre-flight refusal (FAILED_PRE_SUBMIT)
+/// with zero TigerBeetle writes; settlement is #3802.
+#[cfg(feature = "world")]
+pub mod conversion;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 

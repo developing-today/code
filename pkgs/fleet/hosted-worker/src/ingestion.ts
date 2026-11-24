@@ -53,11 +53,7 @@ import type { AuthDeps } from "./auth.ts";
 import { SERVICE_NAME, type StampSigningMaterial } from "./config.ts";
 import { FailClosed } from "./errors.ts";
 import type { GitHubBodyEditor, GitHubItem, GitHubItemSource } from "./github.ts";
-import {
-  assembleStampedBlock,
-  parseMetadataBlock,
-  renderBodyWithBlock,
-} from "./metadata.ts";
+import { assembleStampedBlock, parseMetadataBlock, renderBodyWithBlock } from "./metadata.ts";
 import { executeQueueVerb, LIVE_STATUSES, nativeQueueEnv } from "./queue.ts";
 import type { QueueStore } from "./queue-store.ts";
 import type { JsonObject } from "./queue-validate.ts";
@@ -137,21 +133,13 @@ export function ingestionDepsFrom(deps: AuthDeps): IngestionDeps {
  * delivery's credential — GitHub holds no fleet token — so this
  * check IS the webhook route's authentication step, run before
  * any parsing of the unauthenticated body. */
-export async function verifyWebhookSignature(
-  secret: string,
-  rawBody: string,
-  header: string | null,
-): Promise<void> {
+export async function verifyWebhookSignature(secret: string, rawBody: string, header: string | null): Promise<void> {
   if (!header) {
     throw new FailClosed(401, "webhook_signature_missing", "no X-Hub-Signature-256 header");
   }
   const match = /^sha256=([0-9a-f]{64})$/.exec(header.trim());
   if (!match) {
-    throw new FailClosed(
-      401,
-      "webhook_signature_invalid",
-      "X-Hub-Signature-256 is not a sha256 HMAC hex digest",
-    );
+    throw new FailClosed(401, "webhook_signature_invalid", "X-Hub-Signature-256 is not a sha256 HMAC hex digest");
   }
   const key = await crypto.subtle.importKey(
     "raw",
@@ -189,19 +177,13 @@ export interface WebhookDelivery {
  * a delivery the check has no business with). */
 const INGESTED_ACTIONS = new Set(["opened", "edited", "closed", "reopened", "labeled"]);
 
-export type WebhookParse =
-  | { ignored: string }
-  | { delivery: WebhookDelivery };
+export type WebhookParse = { ignored: string } | { delivery: WebhookDelivery };
 
 /** Parse a signature-verified delivery body into the item it
  * names. Malformed shapes refuse 400 invalid_webhook_payload —
  * the delivery claims to be an issues/pull_request event but does
  * not name its item, which no retry will fix. */
-export function parseWebhookDelivery(
-  event: string | null,
-  deliveryId: string | null,
-  rawBody: string,
-): WebhookParse {
+export function parseWebhookDelivery(event: string | null, deliveryId: string | null, rawBody: string): WebhookParse {
   if (!event) {
     throw new FailClosed(400, "invalid_webhook_payload", "no X-GitHub-Event header");
   }
@@ -225,14 +207,10 @@ export function parseWebhookDelivery(
   }
   const repoObj = obj["repository"];
   const repo =
-    typeof repoObj === "object" && repoObj !== null
-      ? (repoObj as Record<string, unknown>)["full_name"]
-      : undefined;
+    typeof repoObj === "object" && repoObj !== null ? (repoObj as Record<string, unknown>)["full_name"] : undefined;
   const itemObj = obj[event === "issues" ? "issue" : "pull_request"];
   const number =
-    typeof itemObj === "object" && itemObj !== null
-      ? (itemObj as Record<string, unknown>)["number"]
-      : undefined;
+    typeof itemObj === "object" && itemObj !== null ? (itemObj as Record<string, unknown>)["number"] : undefined;
   if (typeof repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
     throw new FailClosed(
       400,
@@ -241,11 +219,7 @@ export function parseWebhookDelivery(
     );
   }
   if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) {
-    throw new FailClosed(
-      400,
-      "invalid_webhook_payload",
-      "delivery does not name its item number",
-    );
+    throw new FailClosed(400, "invalid_webhook_payload", "delivery does not name its item number");
   }
   return {
     delivery: {
@@ -427,11 +401,7 @@ async function ascertainBlock(
 /** The triage packet for an insufficient item: the repo-task/v1
  * triage shape the native filers use, built from service facts
  * only (the item's identity and URL, the check's findings). */
-function buildTriagePacket(
-  item: GitHubItem,
-  dedupeKey: string,
-  nowIso: string,
-): JsonObject {
+function buildTriagePacket(item: GitHubItem, dedupeKey: string, nowIso: string): JsonObject {
   const ref = `${item.repo}#${item.number}`;
   return {
     queue: TRIAGE_QUEUE,
@@ -490,9 +460,7 @@ function forwardToTriage(
 ): NonNullable<IngestionCheckResult["queue"]> {
   if (!deps.queueStore) return { action: "unavailable" };
   const dedupeKey = triageDedupeKey(item.repo, item.number);
-  const live = deps.queueStore
-    .tasksByDedupe(TRIAGE_QUEUE, dedupeKey)
-    .find((t) => LIVE_STATUSES.includes(t.status));
+  const live = deps.queueStore.tasksByDedupe(TRIAGE_QUEUE, dedupeKey).find((t) => LIVE_STATUSES.includes(t.status));
   if (live) return { action: "already_enqueued", task_id: live.id, dedupe_key: dedupeKey };
   const resp = executeQueueVerb(
     deps.queueStore,
@@ -541,12 +509,7 @@ export async function runIngestionCheck(
     stamp = generated.stamp;
     if (deps.editor) {
       try {
-        await deps.editor.updateItemBody(
-          item.repo,
-          item.kind,
-          item.number,
-          renderBodyWithBlock(parsed, block),
-        );
+        await deps.editor.updateItemBody(item.repo, item.kind, item.number, renderBodyWithBlock(parsed, block));
         writeback = "written";
       } catch {
         // No write access (or the item vanished): the DB row
@@ -583,19 +546,14 @@ export async function runIngestionCheck(
   if (!existing) {
     await deps.store.insert(record);
     outcome = "inserted";
-  } else if (
-    existing.bindingId === bindingId &&
-    stableStringify(existing.metadata) === stableStringify(block)
-  ) {
+  } else if (existing.bindingId === bindingId && stableStringify(existing.metadata) === stableStringify(block)) {
     outcome = "unchanged";
   } else {
     await deps.store.insert(record);
     outcome = "refreshed";
   }
 
-  const queue = sufficient
-    ? { action: "not_warranted" as const }
-    : forwardToTriage(deps, item, nowIso);
+  const queue = sufficient ? { action: "not_warranted" as const } : forwardToTriage(deps, item, nowIso);
 
   return {
     repo: item.repo,
@@ -638,10 +596,7 @@ export interface IngestionSweepResult {
  * recorded as error entries while the sweep continues — one bad
  * item never starves the rest of the repo. A failure to list a
  * repo at all is a transport failure and surfaces (502). */
-export async function runIngestionSweep(
-  deps: IngestionDeps,
-  repos: string[],
-): Promise<IngestionSweepResult> {
+export async function runIngestionSweep(deps: IngestionDeps, repos: string[]): Promise<IngestionSweepResult> {
   const results: IngestionCheckResult[] = [];
   for (const repo of repos) {
     const items = await deps.items.listItems(repo);
