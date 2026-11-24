@@ -45,7 +45,7 @@ export async function platformRead(
       case "intake":
         return plan.intakeList(fresh);
       case "trends":
-        return trends ? trends.read(query.get("days"), fresh) : undefined;
+        return trends ? trends.read(query.get("days"), fresh, query.get("end")) : undefined;
     }
   }
   if (seg.length === 2 && seg[0] === "prs") return ops.pr(seg[1]);

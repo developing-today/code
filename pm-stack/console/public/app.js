@@ -3701,7 +3701,20 @@ const VIEWS = {
 /** What a page that is a module of its own (public/pages) is handed:
  * the app's own parts, so that it reads, acts and moves about the same
  * way as every screen written here. */
-const app = { api, freshly, act, go, toast, empty, ago, sheet, newId, redraw: () => draw() };
+const app = {
+  api,
+  freshly,
+  act,
+  go,
+  toast,
+  empty,
+  ago,
+  sheet,
+  newId,
+  redraw: () => draw(),
+  /** The queue as it stands now, by state (or null before it has been read). */
+  counts: () => docs.core?.board?.counts ?? null,
+};
 for (const page of PAGES) VIEWS[page.route] = [page.title, (sub) => page.view(sub, app), page.doc];
 /** Every screen's address, for the tests. */
 export const routesKnown = () => Object.keys(VIEWS);

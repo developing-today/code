@@ -260,6 +260,8 @@ export interface TrendsDoc {
   window: number;
   days: string[];
   today: string;
+  /** The last day of `days`: today, unless an earlier one was asked for. */
+  end: string;
   /** `covered`: everything changed since then has been read, so the
    * days from then on are whole (null until the newest stretch has
    * been read to its end). */
@@ -479,8 +481,9 @@ export class Trends {
 
   /** The document the Trends screen draws: `window` days, set against
    * the same number before them. */
-  async read(asked: string | null, fresh = false): Promise<TrendsDoc> {
-    const window = (WINDOWS as readonly number[]).includes(Number(asked)) ? Number(asked) : 30;
+  async read(asked: string | null, fresh = false, ending: string | null = null): Promise<TrendsDoc> {
+    // The windows the screen offers, and a single day (a report of one).
+    const window = [1, ...WINDOWS].includes(Number(asked)) ? Number(asked) : 30;
     let why: string | undefined;
     // The screen waits for GitHub only when the wait is short or there
     // is nothing to show without it: the very first reading (until the
@@ -500,7 +503,16 @@ export class Trends {
     }
     const meta = await this.meta();
     const today = this.clock().toISOString().slice(0, 10);
-    const days = daysBack(today, Math.min(window * 2, HISTORY_DAYS)).filter((d) => d >= meta.from);
+    // The window ends today, or on an earlier day asked for (a report
+    // of a week gone by); a day that is not one, or not yet, is today.
+    const end =
+      ending !== null &&
+      /^\d{4}-\d{2}-\d{2}$/.test(ending) &&
+      ending <= today &&
+      !Number.isNaN(Date.parse(`${ending}T00:00:00Z`))
+        ? ending
+        : today;
+    const days = daysBack(end, Math.min(window * 2, HISTORY_DAYS)).filter((d) => d >= meta.from);
     const kept = await Promise.all(days.map((d) => this.day(d)));
     const zeros = () => days.map(() => 0);
     const kinds = Object.fromEntries(KINDS.map((k) => [k, zeros()])) as Record<Kind, number[]>;
@@ -571,6 +583,7 @@ export class Trends {
       window,
       days,
       today,
+      end,
       history: {
         from: meta.from,
         whole: meta.whole,
