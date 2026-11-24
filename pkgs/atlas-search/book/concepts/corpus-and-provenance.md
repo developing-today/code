@@ -124,6 +124,16 @@ first registration unchanged, re-pointing a root or registering a
 locator under an unknown root is refused, and registration never
 alters existing chunk or occurrence data — each property pinned by
 oracle tests.
+Three read-side slices followed on 2026-11-23/24 and closed the
+loop from occurrence rows back to roots: `lookup_by_hash` fans out
+over the shards the caller's ceiling admits (keyed by canonical
+hash, per-row sensitivity enforced, pre-registry shards skipped)
+and `get-chunk` attaches the rows as an `occurrences` array;
+`resolve_source` answers exact-match, read-only root lookups; and
+the lookup takes an optional registry connection so each
+occurrence carries its `root_id` when registered — unregistered
+locators stay unattributed, and the no-registry wire shape is
+unchanged. Serving-side wiring of the catalog path remains open.
 
 **Phase 2 — the extracts store and its backfill (landed 2026-11-23).** The
 extracts store lives on the laptop under `~/atlas/extracts/`. Objects are
@@ -218,13 +228,10 @@ of personal-client text were at that point held back from Turso by policy.
 That same day the hold-back was lifted: everything in canonical publishes,
 and privacy moved to query-time classification filters instead.
 
-Since then the store has grown without a recount. Later records (2026-11-12)
-describe the Turso monolith as about **7.3 GB** over the same 107,639 chunks
-plus the 29 topic shards, and state in terms that the canonical counts are
-frozen at the 2026-10-31 publish while the monolith grew _without a verified
-recount_. Read every number in the table above as "true on 2026-10-31", not
-as today's count; a fresh verified census is an open deliverable of the
-Atlas programme. For scale, the laptop's `~/atlas/` directory overall was
+The November 23 canonical count was 18,325 sessions, 122,115 messages and 107,439 chunks.
+The dated publish-source file still held the October table counts above.
+See [Backup, restore and the census](../operations/backup-and-census.md) for the
+store roles, read times and repeatable count procedure. For scale, the laptop's `~/atlas/` directory overall was
 12 GB at the census date, hash-verified to contain no consequential
 byte-identical duplicates — it is distinct versions and working sets, so no
 cleanup windfall exists there.

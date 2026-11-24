@@ -157,7 +157,10 @@ impl fmt::Display for LinkError {
             Self::Field { field, problem } => write!(f, "field {field}: {problem}"),
             Self::InvalidPathRef { problem } => write!(f, "invalid path reference: {problem}"),
             Self::ResourceLimit { limit, actual } => {
-                write!(f, "path reference is {actual} bytes, over the {limit}-byte cap")
+                write!(
+                    f,
+                    "path reference is {actual} bytes, over the {limit}-byte cap"
+                )
             }
             Self::UnsupportedTargetKind { kind } => {
                 write!(f, "unsupported link target kind {kind:?}")
@@ -213,7 +216,10 @@ fn map(mut entries: Vec<(&'static str, Value)>) -> Value {
 }
 
 /// The entries of a map value, or a field error naming `field`.
-fn map_entries<'a>(value: &'a Value, field: &'static str) -> Result<&'a [(Value, Value)], LinkError> {
+fn map_entries<'a>(
+    value: &'a Value,
+    field: &'static str,
+) -> Result<&'a [(Value, Value)], LinkError> {
     match value {
         Value::Map(entries) => Ok(entries),
         _ => Err(LinkError::Field {
@@ -276,12 +282,12 @@ fn content_id_from(value: &Value, field: &'static str) -> Result<ContentId, Link
     let profile = HashProfile::from_token(&token)
         .ok_or(IdShapeError::UnsupportedProfile { profile: token })?;
     let digest = match required(entries, "digest")? {
-        Value::Bytes(bytes) => <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_error| {
-            LinkError::Field {
+        Value::Bytes(bytes) => {
+            <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_error| LinkError::Field {
                 field,
                 problem: "has the wrong length",
-            }
-        })?,
+            })?
+        }
         _ => {
             return Err(LinkError::Field {
                 field,
@@ -417,10 +423,7 @@ impl LinkTarget {
                 ("id", content_id_value(id.content_id())),
                 ("kind", text("snapshot")),
             ]),
-            Self::PathRef(path) => map(vec![
-                ("kind", text("path")),
-                ("path", text(path.as_str())),
-            ]),
+            Self::PathRef(path) => map(vec![("kind", text("path")), ("path", text(path.as_str()))]),
             Self::LocationRef(reference) => map(vec![
                 ("kind", text("location")),
                 (
@@ -473,17 +476,21 @@ impl LinkTarget {
             }
             "path" => {
                 check_known(entries, &["kind", "path"])?;
-                Ok(Self::PathRef(PathRef::new(&required_text(entries, "path")?)?))
+                Ok(Self::PathRef(PathRef::new(&required_text(
+                    entries, "path",
+                )?)?))
             }
             "location" => {
                 check_known(entries, &["kind", "location"])?;
                 let location = map_entries(required(entries, "location")?, "location")?;
                 check_known(location, &["locator", "namespace", "tenant_scope"])?;
                 let locator = TypedLocator::parse_tagged(&required_text(location, "locator")?)?;
-                let namespace = NamespaceId::new(required_text(location, "namespace")?)
-                    .map_err(|_error| LinkError::Field {
-                        field: "namespace",
-                        problem: "is not a valid namespace id",
+                let namespace =
+                    NamespaceId::new(required_text(location, "namespace")?).map_err(|_error| {
+                        LinkError::Field {
+                            field: "namespace",
+                            problem: "is not a valid namespace id",
+                        }
                     })?;
                 Ok(Self::LocationRef(LocationRef::new(
                     locator,
@@ -666,10 +673,7 @@ impl LinkResolution {
 /// cannot vouch for resolves [`LinkResolution::Dangling`], never an
 /// error. Resolution is read-only: it never rewrites or prunes the
 /// link (design §5).
-pub fn resolve_link(
-    link: &RelatedLink,
-    exists: impl Fn(&LinkTarget) -> bool,
-) -> LinkResolution {
+pub fn resolve_link(link: &RelatedLink, exists: impl Fn(&LinkTarget) -> bool) -> LinkResolution {
     if exists(&link.target) {
         LinkResolution::Resolved {
             target: link.target.clone(),
@@ -686,5 +690,8 @@ pub fn resolve_links(
     links: &[RelatedLink],
     exists: impl Fn(&LinkTarget) -> bool,
 ) -> Vec<LinkResolution> {
-    links.iter().map(|link| resolve_link(link, &exists)).collect()
+    links
+        .iter()
+        .map(|link| resolve_link(link, &exists))
+        .collect()
 }

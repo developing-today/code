@@ -49,7 +49,7 @@ and should never be presented as such; the live story is WTP + Meadowcap
 scoping.
 
 **WTP is real but still settling.** Across weeks 44, 32, and 35–36 the
-diary shows the transfer protocol's spec published *without* a wire
+diary shows the transfer protocol's spec published _without_ a wire
 encoding, message types still being merged and symmetrised, support for
 both stateful and stateless operation, resumable transfers verified
 against the Bab test tooling — and, as of week 47, encodings described
@@ -58,7 +58,7 @@ adoptable via the authors' own stack, risky to implement independently
 from the spec today.
 
 **AreaSlices dissolve a storage objection (2026 week 45).** Work on
-Amparore/AreaSlices showed that arbitrary Willow *Area* queries can be
+Amparore/AreaSlices showed that arbitrary Willow _Area_ queries can be
 answered with denormalised 1D/2D indexes — which largely dissolves the
 "3D storage" objection to implementing a Willow store over SQL/libsql.
 This finding feeds directly into the estate's storage planning: a
@@ -67,7 +67,7 @@ Willow-shaped store does not require an exotic index structure.
 **Two honesty tests, passed in public (weeks 46, 37, and 26→28).**
 First, the diary names a real tension between **prefix-pruning** (an
 efficiency technique) and **Meadowcap scoping** (a confidentiality
-technique): mitigated by peer-discretionary disclosure, explicitly *not*
+technique): mitigated by peer-discretionary disclosure, explicitly _not_
 solved. Second, their **test-vector programme caught a serious missing
 check in the capability verification implementation** — found via an
 external implementer, disclosed in the diary. Third, the WILLIAM3 arc:
@@ -105,7 +105,7 @@ healthy spec/implementation loop looks like.
   the collective **changed their own rule to require real-world usage**,
   retroactively weakening their own labels. Cite their maturity claims
   with the new rule, not the old labels.
-- **Encryption is the thinnest layer.** Drop encryption was *removed*
+- **Encryption is the thinnest layer.** Drop encryption was _removed_
   from the Drop Format spec and left to applications; Willow'25 at-rest
   encryption has generic designs but, per week 36, no specific
   instantiation yet. Anyone assuming "Willow encrypts the data" is

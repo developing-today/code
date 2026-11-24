@@ -1,4 +1,5 @@
 laptop-agent: note: this call waited 12s for its reply, beyond the time the laptop spent executing — the wait was in the broker/tunnel layer
+
 # OpenCode Claimant/Executor - Slice 1 Implementation
 
 This directory contains the slice-1 implementation for the OpenCode execution lane claimant/executor as specified in #3026.

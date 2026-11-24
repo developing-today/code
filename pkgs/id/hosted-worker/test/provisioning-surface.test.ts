@@ -176,7 +176,10 @@ test("provisionAndValidate refuses when the bucket actually resides elsewhere, h
   // The bucket already exists in "us"; the eu create 409s, and the
   // read-back — not the create or the declared field — decides.
   fake.buckets.set("user-blobs-eu", "us");
-  assert.equal(await refusalCode(() => provisionAndValidate(fake, EU_CONFIG, EU_CANARY)), "bucket_jurisdiction_mismatch");
+  assert.equal(
+    await refusalCode(() => provisionAndValidate(fake, EU_CONFIG, EU_CANARY)),
+    "bucket_jurisdiction_mismatch",
+  );
 });
 
 test("provisionAndValidate refuses on the canary's unavailable jurisdiction (explicit US diagnostic)", async () => {

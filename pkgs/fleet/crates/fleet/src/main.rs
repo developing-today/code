@@ -70,6 +70,8 @@ mod gh_closure;
 mod gh_guard;
 #[cfg(feature = "gh")]
 mod gh_metadata;
+#[cfg(feature = "gh")]
+mod gh_sync;
 #[cfg(feature = "http")]
 mod http;
 mod invocation_ledger;
@@ -121,6 +123,9 @@ fn compiled_capabilities() -> CapabilitySet {
     }
     if cfg!(feature = "dispatch") {
         caps.insert(Capability::Dispatch);
+    }
+    if cfg!(feature = "orgs") {
+        caps.insert(Capability::Orgs);
     }
     if cfg!(feature = "dispatch-test") {
         caps.insert(Capability::DispatchTest);
@@ -1064,6 +1069,10 @@ fn run_domain_with_initializer(
             #[cfg(feature = "gh")]
             if d.name == "gh" {
                 return gh::run(&surface.config, args);
+            }
+            #[cfg(feature = "orgs")]
+            if d.name == "orgs" {
+                return fleet_orgs::run(&surface.config, args);
             }
             // The bridge domain runs for real: fleet mailboxes on the
             // message bridge (central send/agents/log; agent

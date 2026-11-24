@@ -74,15 +74,15 @@ commercially), which Drew named as **the reference design for
 making worlds work "as an app" on this tier**. Its review is §9
 of the #13630 research record.
 
-| Part | What it is |
-|---|---|
-| Application processor | ESP32-P4 (dual RISC-V at 400 MHz, 768 KB SRAM, 32 MB PSRAM, 16 MB flash) — runs the launcher and apps |
-| Radio coprocessor | ESP32-C6 module (WiFi 6, BLE 5.3, IEEE 802.15.4) over ESP-Hosted (SDIO) |
-| Management coprocessor | WCH CH32V203 (keyboard matrix and power management, I2C peripheral to the P4) |
-| Display | 3.97-inch 800×480 MIPI-DSI (ST7701S) |
-| Input | 69-key QWERTY keyboard (no touchscreen) |
-| Extras | LoRa module (Ai-Thinker Ra-01S/SH, 433 or 868/915 MHz) on the C6 side; microSD slot |
-| Licensing | Software MIT; hardware CERN-OHL-P-2.0 |
+| Part                   | What it is                                                                                            |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| Application processor  | ESP32-P4 (dual RISC-V at 400 MHz, 768 KB SRAM, 32 MB PSRAM, 16 MB flash) — runs the launcher and apps |
+| Radio coprocessor      | ESP32-C6 module (WiFi 6, BLE 5.3, IEEE 802.15.4) over ESP-Hosted (SDIO)                               |
+| Management coprocessor | WCH CH32V203 (keyboard matrix and power management, I2C peripheral to the P4)                         |
+| Display                | 3.97-inch 800×480 MIPI-DSI (ST7701S)                                                                  |
+| Input                  | 69-key QWERTY keyboard (no touchscreen)                                                               |
+| Extras                 | LoRa module (Ai-Thinker Ra-01S/SH, 433 or 868/915 MHz) on the C6 side; microSD slot                   |
+| Licensing              | Software MIT; hardware CERN-OHL-P-2.0                                                                 |
 
 The app system the tier adopts from it: the tanmatsu-launcher
 plus **AppFS** (badge.team) — an app is a standard, unmodified
@@ -124,7 +124,7 @@ Its decisions:
   on-device at first boot; enrolment binds it through the
   [#5884](https://github.com/developing-today/code/issues/5884)
   setup ceremony; factory reset **destroys** the key and
-  re-enrols as a *new* device; a stolen device yields only its
+  re-enrols as a _new_ device; a stolen device yields only its
   own key, expiry-bounded cached grants and its journal — never
   user keys.
 - **Lifecycle:** Nix-flake reproducible builds in CI,
@@ -162,8 +162,8 @@ follow-on slices, all **open**:
 
 - [#13632](https://github.com/developing-today/code/issues/13632)
   — presenter slice 1: round-panel hello-world presenter (GC9A01
-  + CST816S, bridge-fed glance card, touch back-channel) — the
-  Waveshare S3-Touch-LCD-1.28 target.
+  - CST816S, bridge-fed glance card, touch back-channel) — the
+    Waveshare S3-Touch-LCD-1.28 target.
 - [#13643](https://github.com/developing-today/code/issues/13643)
   — presenter slice (Tanmatsu class A): world presenter as an
   AppFS app on ESP32-P4.

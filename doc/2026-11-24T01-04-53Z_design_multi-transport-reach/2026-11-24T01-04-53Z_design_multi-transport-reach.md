@@ -10,7 +10,7 @@
 
 Long-term goal: the P2P / ID / fleet stack should be reachable over many alternate transports and proxied alternate systems, in the same spirit as Veilid's multi-transport design and the Spritely relay work (federated, stateless, end-to-end encrypted relays; the Noise XK netlayer, reviewed 2026-11-23).
 
-This extends the bootstrap-channels direction recorded on #13752 earlier the same day (one signed fleet-CA-bound ticket format, many carriers — email, QR/tickets, physical media carrying *introductions*). The step recorded here: **carriers graduate from bootstrap-only to full message transport.**
+This extends the bootstrap-channels direction recorded on #13752 earlier the same day (one signed fleet-CA-bound ticket format, many carriers — email, QR/tickets, physical media carrying _introductions_). The step recorded here: **carriers graduate from bootstrap-only to full message transport.**
 
 ## The inventory (as named by Drew)
 
@@ -38,7 +38,7 @@ Precise definitions, and the rest of the contract (adapter declarations, securit
 
 ## The asymmetry requirement
 
-**Asymmetric paths are first-class — a hard design requirement.** Send and receive transports are chosen independently. Drew's words: *"if someone wants to send a message over carrier pigeon and receive the response over fax, I'm down to support it."* A reply address is part of the message contract; no component may assume the return path equals the forward path.
+**Asymmetric paths are first-class — a hard design requirement.** Send and receive transports are chosen independently. Drew's words: _"if someone wants to send a message over carrier pigeon and receive the response over fax, I'm down to support it."_ A reply address is part of the message contract; no component may assume the return path equals the forward path.
 
 ## Programme structure
 

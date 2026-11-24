@@ -14,34 +14,34 @@ items under it are stale by definition), `design/fleet-brokers`, `design/quota-p
 
 Open issues per label (Search API, `is:issue is:open`):
 
-| label | open |
-|---|---|
-| app/fleet | 113 |
-| epic/fleet-orchestration | 67 |
-| epic/fleet-ca-secrets | 12 |
-| epic/fleet-tool | 11 |
-| design/quota-plane | 5 |
-| epic/fleet-apps | 3 |
-| design/fleet-brokers | 2 |
-| epic/fleet-expansion | 1 |
-| epic/fleet-maintenance | 1 |
-| app/dispatch | 0 |
+| label                    | open |
+| ------------------------ | ---- |
+| app/fleet                | 113  |
+| epic/fleet-orchestration | 67   |
+| epic/fleet-ca-secrets    | 12   |
+| epic/fleet-tool          | 11   |
+| design/quota-plane       | 5    |
+| epic/fleet-apps          | 3    |
+| design/fleet-brokers     | 2    |
+| epic/fleet-expansion     | 1    |
+| epic/fleet-maintenance   | 1    |
+| app/dispatch             | 0    |
 
 **Deduplicated union of the nine fleet labels above: 185 open issues, 406 all-state.**
 `app/fleet` alone: 113 open / 251 all-state.
 
 Status cross-section of the 113 open `app/fleet` issues (Search API):
 
-| cross-label | open |
-|---|---|
-| kind/design | 98 |
-| status/blocked | 63 |
-| queue/blocked | 62 |
-| queue/queued | 8 |
-| status/in-review | 0 |
-| user/owned | 1 |
-| user/escalated | 1 |
-| user/review | 0 |
+| cross-label      | open |
+| ---------------- | ---- |
+| kind/design      | 98   |
+| status/blocked   | 63   |
+| queue/blocked    | 62   |
+| queue/queued     | 8    |
+| status/in-review | 0    |
+| user/owned       | 1    |
+| user/escalated   | 1    |
+| user/review      | 0    |
 
 **Census nuance (spot-checked):** the 98 `kind/design` count is real but dominated by the
 pm-orchestration design DAG (the #9198–#9519 design series, e.g. #9514–#9519
@@ -103,7 +103,7 @@ These supersede any older status in briefs and memory; the ground moved today:
 
 ## Structural facts for the prompt's ground-truth section
 
-- The fleet *source* lives in the monorepo: `pkgs/fleet/` in developing-today/code.
+- The fleet _source_ lives in the monorepo: `pkgs/fleet/` in developing-today/code.
   dezren39/fleet is the umbrella/flake repo (submodules + sync origin), not the source home.
 - The fleet book's tracking issue #13165 is CLOSED; the book is live at
   https://developing-today.github.io/code/fleet/ (55 chapters at build time).
