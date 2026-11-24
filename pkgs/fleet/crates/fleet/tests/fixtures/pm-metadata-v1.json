@@ -12,60 +12,35 @@
       "historical_source": "PM hierarchy design section 12 canonical form, restated in the schema v1 design section 2.",
       "body": "Issue text.\n\n<!-- pm-metadata:start -->\n```json\n{\n  \"pm_meta\": 1,\n  \"direct_parent\": null,\n  \"links\": [],\n  \"lineage\": {\n    \"design\": null,\n    \"roadmap_item\": null,\n    \"priority\": null\n  },\n  \"provenance\": {},\n  \"extras\": {}\n}\n```\n<!-- pm-metadata:end -->\n",
       "reader_parse": "ok",
-      "preserved_keys": [
-        "pm_meta",
-        "direct_parent",
-        "links",
-        "lineage",
-        "provenance",
-        "extras"
-      ]
+      "preserved_keys": ["pm_meta", "direct_parent", "links", "lineage", "provenance", "extras"]
     },
     {
       "id": "pm-v1-legacy-links-only",
       "historical_source": "Aggregator genealogy practice (pm-stack/aggregator/test/genealogy.test.ts): a links-only block written before extras/lineage injection existed. Absent extras reads as {} (design section 2); the reader must not synthesize and write it back.",
       "body": "Issue text.\n\n<!-- pm-metadata:start -->\n```json\n{\"pm_meta\":1,\"links\":[{\"target\":{\"repo\":\"developing-today/code\",\"number\":99},\"relation\":\"parent\",\"status\":\"historical\",\"since\":\"2026-11-02\",\"until\":\"2026-11-12\",\"reason\":\"split\"},{\"target\":{\"repo\":\"developing-today/code\",\"number\":98},\"relation\":\"parent\",\"status\":\"removed\"}]}\n```\n<!-- pm-metadata:end -->\n",
       "reader_parse": "ok",
-      "preserved_keys": [
-        "pm_meta",
-        "links"
-      ]
+      "preserved_keys": ["pm_meta", "links"]
     },
     {
       "id": "pm-v1-minimal-link",
       "historical_source": "Aggregator epic-reparent practice (pm-stack/aggregator/test/epic-reparent.test.ts): a link carrying only relation and target; every other link field is optional.",
       "body": "Issue text\n\n<!-- pm-metadata:start -->\n```json\n{\"pm_meta\":1,\"links\":[{\"relation\":\"blockedBy\",\"target\":{\"repo\":\"x/y\",\"number\":7}}]}\n```\n<!-- pm-metadata:end -->\n",
       "reader_parse": "ok",
-      "preserved_keys": [
-        "pm_meta",
-        "links"
-      ]
+      "preserved_keys": ["pm_meta", "links"]
     },
     {
       "id": "pm-v1-float-version",
       "historical_source": "Version written as the JSON number 1.0 by non-Rust producers; both current readers accept it as version 1.",
       "body": "Issue text.\n\n<!-- pm-metadata:start -->\n```json\n{\n  \"pm_meta\": 1.0,\n  \"links\": []\n}\n```\n<!-- pm-metadata:end -->\n",
       "reader_parse": "ok",
-      "preserved_keys": [
-        "pm_meta",
-        "links"
-      ]
+      "preserved_keys": ["pm_meta", "links"]
     },
     {
       "id": "pm-v1-unknown-keys",
       "historical_source": "A v1 block carrying unlisted top-level keys written by a classifying agent. The current reader parses and preserves them verbatim.",
       "body": "Issue text.\n\n<!-- pm-metadata:start -->\n```json\n{\n  \"pm_meta\": 1,\n  \"direct_parent\": null,\n  \"links\": [],\n  \"lineage\": {\n    \"design\": null,\n    \"roadmap_item\": null,\n    \"priority\": null\n  },\n  \"provenance\": {},\n  \"extras\": {},\n  \"sprint\": \"2026-W47\",\n  \"review\": {\"round\": 2, \"verdict\": \"accept\"}\n}\n```\n<!-- pm-metadata:end -->\n",
       "reader_parse": "ok",
-      "preserved_keys": [
-        "pm_meta",
-        "direct_parent",
-        "links",
-        "lineage",
-        "provenance",
-        "extras",
-        "sprint",
-        "review"
-      ],
+      "preserved_keys": ["pm_meta", "direct_parent", "links", "lineage", "provenance", "extras", "sprint", "review"],
       "doctrine_projection": "The canonical PM form holds unknown keys in the extras object (design section 2). Relocation into extras is projection behavior (design section 7 slice 2), not a read error; until a projector lands, preservation in place is the conforming reader behavior."
     },
     {
@@ -73,21 +48,14 @@
       "historical_source": "A v1 block whose extras dictionary already carries relocated/unlisted data; extras content is preserved byte-for-byte semantically (same JSON value) through parse and re-stamp.",
       "body": "Issue text.\n\n<!-- pm-metadata:start -->\n```json\n{\n  \"pm_meta\": 1,\n  \"links\": [],\n  \"extras\": {\n    \"legacy_tool\": \"metadata-sweeper\",\n    \"confidence\": 0.75\n  }\n}\n```\n<!-- pm-metadata:end -->\n",
       "reader_parse": "ok",
-      "preserved_keys": [
-        "pm_meta",
-        "links",
-        "extras"
-      ]
+      "preserved_keys": ["pm_meta", "links", "extras"]
     },
     {
       "id": "pm-v1-type-mismatch",
       "historical_source": "Declared field links carrying an object instead of an array (a producer bug shape). The block parser gates on the version key only, so the block parses; the value is caller data, preserved as written by the stamp path.",
       "body": "Issue text.\n\n<!-- pm-metadata:start -->\n```json\n{\n  \"pm_meta\": 1,\n  \"links\": {\"relation\": \"parent\", \"target\": {\"repo\": \"developing-today/code\", \"number\": 9060}}\n}\n```\n<!-- pm-metadata:end -->\n",
       "reader_parse": "ok",
-      "preserved_keys": [
-        "pm_meta",
-        "links"
-      ],
+      "preserved_keys": ["pm_meta", "links"],
       "doctrine_projection": "Type-directed handling (design section 3.2): the mismatched value relocates to extras unchanged, the declared links view defaults to [], and the mismatch is reported - never an error, never a silent coercion. Projection behavior is design section 7 slice 2; no current reader projects, so this case's executable expectation is parse-and-preserve only."
     },
     {
