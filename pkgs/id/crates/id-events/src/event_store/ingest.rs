@@ -448,10 +448,12 @@ impl EventStore {
     }
 }
 
-/// The first bytes of every `group.event` body: a CBOR array of seven items, then the
-/// family's tag as a text string. A body that starts with these bytes claims to be a
-/// group-layer event in the wire family of [`crate::groups::event`].
-const GROUP_EVENT_CLAIM: &[u8] = b"\x87\x6bgroup.event";
+/// The first bytes of every `group.event` body: a CBOR array of seven (v1) or eight
+/// (v2, with the `at` timestamp) items, then the family's tag as a text string. A body
+/// that starts with these bytes claims to be a group-layer event in the wire family
+/// of [`crate::groups::event`].
+const GROUP_EVENT_CLAIM_V1: &[u8] = b"\x87\x6bgroup.event";
+const GROUP_EVENT_CLAIM_V2: &[u8] = b"\x88\x6bgroup.event";
 
 /// The device operation an event's body carries, with the group the body names (issue
 /// #5656). `Ok(None)` when the body is absent, is not a `group.event` body, or is a
@@ -472,7 +474,7 @@ fn body_device_op(
     let Some(body) = body else {
         return Ok(None);
     };
-    if !body.starts_with(GROUP_EVENT_CLAIM) {
+    if !body.starts_with(GROUP_EVENT_CLAIM_V1) && !body.starts_with(GROUP_EVENT_CLAIM_V2) {
         return Ok(None);
     }
     let wire =
@@ -1500,6 +1502,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(91).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -1637,6 +1640,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(95).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -1703,6 +1707,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(91).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,
@@ -2518,6 +2523,7 @@ mod tests {
             author: *signer.verifying_key().as_bytes(),
             after: vec![],
             group: Some(group),
+            at: None,
             body: GroupBody::Device(DeviceOp::Add {
                 device: *key(98).verifying_key().as_bytes(),
                 scope: GroupRole::Admin,

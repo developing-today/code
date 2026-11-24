@@ -69,9 +69,7 @@ describe("the gate (oracle: C4 design §5)", () => {
     const eight = measureDayTypeSufficiency(fridays.map((d) => rec("meta", "5h", morningOn(d))));
     expect(cell(eight, "meta", "5h", "weekday", "Fri").samples).toBe(8);
     expect(cell(eight, "meta", "5h", "weekday", "Fri").state).toBe("admitted");
-    const seven = measureDayTypeSufficiency(
-      fridays.slice(0, 7).map((d) => rec("meta", "5h", morningOn(d))),
-    );
+    const seven = measureDayTypeSufficiency(fridays.slice(0, 7).map((d) => rec("meta", "5h", morningOn(d))));
     expect(cell(seven, "meta", "5h", "weekday", "Fri").samples).toBe(7);
     expect(cell(seven, "meta", "5h", "weekday", "Fri").state).toBe("adjustment_unavailable");
   });
@@ -137,7 +135,8 @@ describe("the calendar (oracle: C4 design §4 — America/Chicago wall clock)", 
 
   test("dayparts are quarter-day blocks: night 00–06, morning 06–12, afternoon 12–18, evening 18–24 Chicago", () => {
     // Chicago is UTC-6 on 2026-11-22 (CST): local hour = UTC hour - 6.
-    const at = (utcHour: number) => dayTypeParts(Date.parse(`2026-11-22T${String(utcHour).padStart(2, "0")}:00:00.000Z`)).daypart;
+    const at = (utcHour: number) =>
+      dayTypeParts(Date.parse(`2026-11-22T${String(utcHour).padStart(2, "0")}:00:00.000Z`)).daypart;
     expect(at(6)).toBe("night"); // 00:00 local
     expect(at(11)).toBe("night"); // 05:00 local
     expect(at(12)).toBe("morning"); // 06:00 local
@@ -196,10 +195,7 @@ describe("the join (oracle: Stage-3 design §2 + the S2 harness's own rules)", (
   });
 
   test("as-of excludes later readings, so a run over a fixed store copy is reproducible", () => {
-    const records = [
-      rec("meta", "5h", morningOn("2026-11-06")),
-      rec("meta", "5h", morningOn("2026-11-13")),
-    ];
+    const records = [rec("meta", "5h", morningOn("2026-11-06")), rec("meta", "5h", morningOn("2026-11-13"))];
     const m = measureDayTypeSufficiency(records, { asOfMs: Date.parse("2026-11-10T00:00:00.000Z") });
     expect(cell(m, "meta", "5h", "weekday", "Fri").samples).toBe(1);
     expect(m.store.toIso).toBe("2026-11-06T15:00:00.000Z");

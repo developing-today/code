@@ -118,7 +118,6 @@ The short version:
 That runs `mcpx serve` on the remote host, so the daemon there is the one
 answering — again with no port and no credential beyond ssh.
 
-
 ## 5. `tsnet://` — a daemon with a tailnet identity
 
 A daemon can join a tailnet as a node in its own right (#1967):

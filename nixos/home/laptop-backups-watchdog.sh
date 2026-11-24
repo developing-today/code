@@ -49,18 +49,37 @@
 #   max-age-hours   (default 26, a little over one daily period; the
 #                   module option services.laptop-backups.watchdog
 #                   .maxAgeHours feeds this argument).
-#   jobs            comma-separated subset of dashboard,repo-archive,state,opencode-db,cold-store
+#   jobs            comma-separated subset of
+#                   dashboard,repo-archive,state,opencode-db,cold-store,mesh
 #                   (default dashboard,repo-archive). The module passes only the jobs
 #                   whose enable flag is on: a disabled job has no
 #                   record and no timer, so requiring them would fail
 #                   the watchdog forever in a supported configuration.
 # Test hooks: LAPTOP_BACKUPS_RECORD overrides the record path and
 # `systemctl` is resolved via PATH, so the suite can stub both.
+#
+# mesh (code#13463): restore verification, not just backup freshness.
+# The mesh rotation writes one JSON record per leg x store pair to
+# $HOME/backups/mesh/restore-verification/<leg>.<store>.json:
+#   {"leg":"class-a","store":"r2","verified_at":"2026-11-20T12:00:00Z",
+#    "result":"ok","detail":"restored 12 dbs to /var/tmp/scratch; row counts match manifest"}
+# Every declared leg x store pair must have a record whose result is
+# ok and whose verification is no older than a quarter (the rotation's
+# coverage promise, design §9: every combination at least quarterly),
+# so a stalled rotation or a failed restore is named by leg and store.
 MAX_AGE_HOURS="${1:-26}"
 JOBS="${2:-dashboard,repo-archive}"
 want_job() { case ",$JOBS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 RECORD="${LAPTOP_BACKUPS_RECORD:-$HOME/backups/dashboard/.last-run.json}"
 MANIFEST="${COLD_STORE_MANIFEST:-$HOME/.config/cold-store/manifest.sqlite}"
+# mesh restore-verification records (code#13463). Legs and stores are
+# the design's topology (§2); a new leg adds its name here and to the
+# rotation. A quarter is 91 days ~= 2184h; 2200h is a little over,
+# matching the daily threshold's slack.
+MESH_RECORDS="${LAPTOP_BACKUPS_MESH_RECORDS:-$HOME/backups/mesh/restore-verification}"
+MESH_MAX_AGE_HOURS="${LAPTOP_BACKUPS_MESH_MAX_AGE_HOURS:-2200}"
+MESH_LEGS="${LAPTOP_BACKUPS_MESH_LEGS:-class-a,class-b,replicate,class-d,class-e,embeds}"
+MESH_STORES="${LAPTOP_BACKUPS_MESH_STORES:-r2,laptop,drive}"
 NOW_EPOCH="$(date +%s)"
 MAX_AGE_SEC=$((MAX_AGE_HOURS * 3600))
 # A timestamp further in the future than this tolerance cannot be a
@@ -318,6 +337,64 @@ PYEOF
     unreadable | "") complain "cold-store-nightly: transfer ledger in $MANIFEST is unreadable" ;;
     *) complain "cold-store-nightly: transfer ledger $cs_verdict (threshold ${MAX_AGE_HOURS}h)" ;;
     esac
+  fi
+fi
+
+# --- (g) mesh restore-verification records (code#13463) ----------------------
+# Backup-verified is not restore-verified (design §9). The rotation
+# records each leg x store restore on its own schedule; this check
+# reads those records only. A record that is missing, unreadable,
+# failed, or older than a quarter names the leg and the store, so a
+# stalled rotation cannot pass as a healthy mesh.
+if want_job mesh; then
+  if [ ! -d "$MESH_RECORDS" ]; then
+    complain "mesh restore verification: no records directory at $MESH_RECORDS"
+  else
+    IFS=',' read -r -a mesh_legs <<<"$MESH_LEGS"
+    IFS=',' read -r -a mesh_stores <<<"$MESH_STORES"
+    for leg in "${mesh_legs[@]}"; do
+      [ -n "$leg" ] || continue
+      for store in "${mesh_stores[@]}"; do
+        [ -n "$store" ] || continue
+        mesh_record="$MESH_RECORDS/$leg.$store.json"
+        if [ ! -f "$mesh_record" ]; then
+          complain "mesh restore verification: leg=$leg store=$store: no record at $mesh_record (never verified)"
+          continue
+        fi
+        mesh_verdict="$(
+          RECORD="$mesh_record" LEG="$leg" STORE="$store" NOW_EPOCH="$NOW_EPOCH" \
+            MESH_MAX_AGE_SEC=$((MESH_MAX_AGE_HOURS * 3600)) SKEW_TOLERANCE_SEC="$SKEW_TOLERANCE_SEC" \
+            python3 - <<'PYEOF' 2>/dev/null
+import json, os
+from datetime import datetime, timezone
+try:
+    rec = json.load(open(os.environ["RECORD"]))
+    verified = datetime.strptime(rec["verified_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+except Exception:
+    print("unreadable")
+    raise SystemExit
+if rec.get("leg") != os.environ["LEG"] or rec.get("store") != os.environ["STORE"]:
+    print(f"record identifies leg={rec.get('leg')} store={rec.get('store')} but is filed as leg={os.environ['LEG']} store={os.environ['STORE']}")
+    raise SystemExit
+if rec.get("result") != "ok":
+    print(f"last verification failed result={rec.get('result')} verified_at={rec.get('verified_at')} detail={rec.get('detail')}")
+    raise SystemExit
+age = int(os.environ["NOW_EPOCH"]) - int(verified.timestamp())
+if age < -int(os.environ["SKEW_TOLERANCE_SEC"]):
+    print(f"future verified_at={rec.get('verified_at')} is {-age}s ahead of now (skew tolerance {os.environ['SKEW_TOLERANCE_SEC']}s)")
+elif age > int(os.environ["MESH_MAX_AGE_SEC"]):
+    print(f"stale verified_at={rec.get('verified_at')} age_days={age // 86400} (quarterly threshold {int(os.environ['MESH_MAX_AGE_SEC']) // 86400}d)")
+else:
+    print("ok")
+PYEOF
+        )"
+        case "$mesh_verdict" in
+        ok) ;;
+        unreadable | "") complain "mesh restore verification: leg=$leg store=$store: record at $mesh_record is unreadable" ;;
+        *) complain "mesh restore verification: leg=$leg store=$store: $mesh_verdict" ;;
+        esac
+      done
+    done
   fi
 fi
 

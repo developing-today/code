@@ -30,13 +30,13 @@ NO-GO half of the ruling); the only read surface is `GET /status`.
 
 ## Routes (closed list)
 
-| Route                      | Auth              | Lands in |
-| -------------------------- | ----------------- | -------- |
-| `POST /mirror/subscriptions` | shared secret   | step 1 (this package) |
-| `POST /heartbeat`          | shared secret     | step 1 (this package) |
-| `GET /status`              | none (minimal)    | step 1 (this package) |
-| `POST /mirror/event`       | shared secret     | step 2 |
-| `GET /answer/:ledgerId`, `POST /api/needs-drew/:ledgerId/answer` | per-question token | step 3 |
+| Route                                                            | Auth               | Lands in              |
+| ---------------------------------------------------------------- | ------------------ | --------------------- |
+| `POST /mirror/subscriptions`                                     | shared secret      | step 1 (this package) |
+| `POST /heartbeat`                                                | shared secret      | step 1 (this package) |
+| `GET /status`                                                    | none (minimal)     | step 1 (this package) |
+| `POST /mirror/event`                                             | shared secret      | step 2                |
+| `GET /answer/:ledgerId`, `POST /api/needs-drew/:ledgerId/answer` | per-question token | step 3                |
 
 Everything else 404s. The heartbeat response carries
 `pendingAnswers` — step 3's drain count, always 0 in step 1, so
@@ -60,11 +60,11 @@ stay distinguishable in the delivery record.
 
 No secret value lives in this repo. Custody (design §4):
 
-| Secret | Role | Where it lives |
-| ------ | ---- | -------------- |
-| Relay shared secret | Authenticates the laptop → edge POSTs | Bitwarden `pm-aggregator.notify-relay-shared-secret`; set on the Worker as `RELAY_SHARED_SECRET` |
-| VAPID private key | Signs the edge's Web Push sends | The existing aggregator keypair (custody moves, the keypair does not change): Bitwarden `pm-aggregator.vapid-private-key`; set on the Worker as `VAPID_PRIVATE_KEY` |
-| Cloudflare API token | Deploys (wrangler) | Bitwarden, the existing day-to-day CF token; deploy-time only |
+| Secret               | Role                                  | Where it lives                                                                                                                                                      |
+| -------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Relay shared secret  | Authenticates the laptop → edge POSTs | Bitwarden `pm-aggregator.notify-relay-shared-secret`; set on the Worker as `RELAY_SHARED_SECRET`                                                                    |
+| VAPID private key    | Signs the edge's Web Push sends       | The existing aggregator keypair (custody moves, the keypair does not change): Bitwarden `pm-aggregator.vapid-private-key`; set on the Worker as `VAPID_PRIVATE_KEY` |
+| Cloudflare API token | Deploys (wrangler)                    | Bitwarden, the existing day-to-day CF token; deploy-time only                                                                                                       |
 
 ## Deploy (the step-1 remainder, not done by the build PR)
 

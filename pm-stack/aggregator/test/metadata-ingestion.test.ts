@@ -47,16 +47,15 @@ describe("dual-ingestion block plumbing", () => {
   test("extracts the canonical JSON payload and ignores ordinary comments", () => {
     expect(extractMetadataPayload(null)).toEqual({ found: false, malformed: false });
     expect(extractMetadataPayload("no block <!-- agent-note -->")).toEqual({ found: false, malformed: false });
-    const payload = extractMetadataPayload(
-      `text\n${renderMetadataBlock({ pm_meta: 1, links: [] })}\ntail`,
-    );
+    const payload = extractMetadataPayload(`text\n${renderMetadataBlock({ pm_meta: 1, links: [] })}\ntail`);
     expect(payload).toEqual({ found: true, json: JSON.stringify({ pm_meta: 1, links: [] }, null, 2) });
   });
 
   test("markers without a JSON fence are malformed, not silently absent", () => {
-    expect(
-      extractMetadataPayload("<!-- pm-metadata:start -->oops<!-- pm-metadata:end -->"),
-    ).toEqual({ found: false, malformed: true });
+    expect(extractMetadataPayload("<!-- pm-metadata:start -->oops<!-- pm-metadata:end -->")).toEqual({
+      found: false,
+      malformed: true,
+    });
   });
 
   test("upsertMetadataBlock replaces in place and appends idempotently", () => {
@@ -128,10 +127,7 @@ describe("runMetadataCheck: the one check both watchers share", () => {
   });
 
   test("distinct slugs resolving to different epics are ambiguous triage", () => {
-    const outcome = runMetadataCheck(
-      item({ labels: ["primary-parent/pm-board", "epic/atlas"] }),
-      CONTEXT,
-    );
+    const outcome = runMetadataCheck(item({ labels: ["primary-parent/pm-board", "epic/atlas"] }), CONTEXT);
     expect(outcome.kind).toBe("needs-triage");
     if (outcome.kind !== "needs-triage") return;
     expect(outcome.evidence.reasons[0]).toMatch(/ambiguous program/);
@@ -151,10 +147,7 @@ describe("runMetadataCheck: the one check both watchers share", () => {
   });
 
   test("an epic cannot resolve itself as its direct parent", () => {
-    const outcome = runMetadataCheck(
-      item({ number: 9060, labels: ["kind/epic", "primary-parent/pm-board"] }),
-      CONTEXT,
-    );
+    const outcome = runMetadataCheck(item({ number: 9060, labels: ["kind/epic", "primary-parent/pm-board"] }), CONTEXT);
     expect(outcome.kind).toBe("needs-triage");
     if (outcome.kind !== "needs-triage") return;
     expect(outcome.evidence.reasons[0]).toMatch(/no resolvable parent/);

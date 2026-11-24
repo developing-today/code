@@ -76,6 +76,44 @@ func TestPutNonIndexDimensionNotPersistedAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestVectorIndexFlushAdvancesGenerationAndClearsPersistentRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "vectors.db")
+	idx, err := NewVectorIndex(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = idx.Close() }()
+	vec := make(Vector, VectorDim)
+	vec[0] = 1
+	if err := idx.Put("tool", vec); err != nil {
+		t.Fatal(err)
+	}
+	gen := idx.Generation()
+	if got, ok := idx.GetIfCurrent("tool", gen); !ok || got[0] != 1 {
+		t.Fatalf("current generation should read cached vector: %v, %v", got, ok)
+	}
+	if err := idx.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if idx.Generation() != gen+1 {
+		t.Fatalf("generation after flush = %d, want %d", idx.Generation(), gen+1)
+	}
+	if _, ok := idx.GetIfCurrent("tool", gen); ok {
+		t.Fatal("stale generation read a vector after flush")
+	}
+	if _, ok := idx.Get("tool"); ok {
+		t.Fatal("flushed vector remains in memory")
+	}
+	reloaded, err := NewVectorIndex(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reloaded.Close() }()
+	if _, ok := reloaded.Get("tool"); ok {
+		t.Fatal("flushed vector remains persisted")
+	}
+}
+
 func TestImportRejectsNonIndexDimension(t *testing.T) {
 	idx, err := NewVectorIndex("")
 	if err != nil {

@@ -63,14 +63,14 @@ here anymore). The bridge door's service token is unchanged.
 
 ## Secrets — by name only, never values
 
-| Where | Name |
-| --- | --- |
-| fleet secrets (Bitwarden) | `cloudflare.access.desktop-commander-link-client-id` / `-client-secret` — bridge-door token the Worker presents |
-| fleet secrets (Bitwarden) | `cloudflare.access.desktop-commander-client-id` / `-client-secret` — the retired public-door token (kept, unused here) |
-| fleet secrets (Bitwarden) | `cloudflare.api-token-desktop-commander-worker` — scoped deploy token |
-| fleet secrets (Bitwarden) | `desktop-commander.machine-bearer` — the /mcp machine bearer |
-| GitHub environment `desktop-commander-production` | `DESKTOP_COMMANDER_WORKER_CF_TOKEN` (same deploy token), `BRIDGE_ACCESS_CLIENT_ID`, `BRIDGE_ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` |
-| Worker version secrets | `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` — uploaded per version by the publish workflow from the environment secrets |
+| Where                                             | Name                                                                                                                                     |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| fleet secrets (Bitwarden)                         | `cloudflare.access.desktop-commander-link-client-id` / `-client-secret` — bridge-door token the Worker presents                          |
+| fleet secrets (Bitwarden)                         | `cloudflare.access.desktop-commander-client-id` / `-client-secret` — the retired public-door token (kept, unused here)                   |
+| fleet secrets (Bitwarden)                         | `cloudflare.api-token-desktop-commander-worker` — scoped deploy token                                                                    |
+| fleet secrets (Bitwarden)                         | `desktop-commander.machine-bearer` — the /mcp machine bearer                                                                             |
+| GitHub environment `desktop-commander-production` | `DESKTOP_COMMANDER_WORKER_CF_TOKEN` (same deploy token), `BRIDGE_ACCESS_CLIENT_ID`, `BRIDGE_ACCESS_CLIENT_SECRET`, `MACHINE_BEARER`      |
+| Worker version secrets                            | `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` — uploaded per version by the publish workflow from the environment secrets |
 
 ## Deploys — cf version deployments via GitHub Actions
 

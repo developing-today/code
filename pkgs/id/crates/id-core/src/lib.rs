@@ -37,6 +37,7 @@ pub mod content_id;
 pub mod discovery;
 pub mod durable_write;
 pub mod frames;
+pub mod freshness;
 pub mod graph;
 pub mod hash_profile;
 pub mod hex;

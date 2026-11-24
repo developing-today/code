@@ -322,7 +322,7 @@ const b64u = (bytes: ArrayBuffer | Uint8Array): string => {
   for (const b of new Uint8Array(bytes as ArrayBuffer)) bin += String.fromCharCode(b);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
-const unb64u = (text: string): Uint8Array => {
+const unb64u = (text: string): Uint8Array<ArrayBuffer> => {
   if (!/^[A-Za-z0-9_-]*$/.test(text)) throw new Error("not base64url");
   const bin = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -359,11 +359,11 @@ export async function newKeyPair(): Promise<{ publicJwk: PublicKey; privateJwk: 
 
 export async function sign(privateJwk: JsonWebKey, body: Uint8Array): Promise<string> {
   const key = await crypto.subtle.importKey("jwk", privateJwk, CURVE, false, ["sign"]);
-  return b64u(await crypto.subtle.sign(SIGN, key, body));
+  return b64u(await crypto.subtle.sign(SIGN, key, body as BufferSource));
 }
 
 export async function verify(key: PublicKey, body: Uint8Array, signature: string): Promise<boolean> {
-  let sig: Uint8Array;
+  let sig: Uint8Array<ArrayBuffer>;
   try {
     sig = unb64u(signature);
   } catch {
@@ -371,7 +371,7 @@ export async function verify(key: PublicKey, body: Uint8Array, signature: string
   }
   if (sig.length !== 64) return false;
   const imported = await crypto.subtle.importKey("jwk", key, CURVE, false, ["verify"]);
-  return crypto.subtle.verify(SIGN, imported, sig, body);
+  return crypto.subtle.verify(SIGN, imported, sig, body as BufferSource);
 }
 
 const strings = (value: unknown): value is string[] =>

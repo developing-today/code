@@ -47,10 +47,7 @@ const POOL_BY_PROVIDER: Readonly<Record<string, string>> = {
 };
 
 /** Resolve an explicit model to its quota serviceId and session provider. */
-export function placementForModel(
-  model: ModelRef | null,
-  activeGoAccountLabel?: string,
-): PlacementGuardResult | null {
+export function placementForModel(model: ModelRef | null, activeGoAccountLabel?: string): PlacementGuardResult | null {
   if (!model) return null;
   if (model.providerID === "opencode-go" || model.providerID === "opencode") {
     if (!activeGoAccountLabel || !GO_ACCOUNT_SUFFIXES.has(activeGoAccountLabel)) {

@@ -252,10 +252,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
     promptsFile,
-    promptAttachmentsDir: s(
-      env.PM_AGG_PROMPT_ATTACHMENTS_DIR,
-      join(dirname(promptsFile), "prompt-attachments"),
-    ),
+    promptAttachmentsDir: s(env.PM_AGG_PROMPT_ATTACHMENTS_DIR, join(dirname(promptsFile), "prompt-attachments")),
     promptSyncTimeoutMs: parseAggregatorCount(
       env.PM_AGG_PROMPT_SYNC_TIMEOUT_MS,
       "PM_AGG_PROMPT_SYNC_TIMEOUT_MS",

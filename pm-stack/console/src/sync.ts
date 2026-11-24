@@ -97,7 +97,7 @@ export class EdgeLink {
 
   constructor(private o: LinkOptions) {
     this.now = o.now ?? Date.now;
-    this.fetchImpl = plain(o.fetchImpl ?? fetch);
+    this.fetchImpl = plain(o.fetchImpl ?? fetch) as typeof fetch;
     this.log = o.log ?? ((line) => console.error(`pm-console: edge: ${line}`));
     this.named = o.named ?? new Named(o.done);
   }

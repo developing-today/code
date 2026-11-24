@@ -37,6 +37,7 @@
 //! never per-request.
 
 pub mod aggregate;
+pub mod attestation;
 pub mod backend;
 pub mod boundary;
 pub mod c8_fingerprint;
@@ -59,6 +60,7 @@ pub mod join;
 pub mod local;
 pub mod manifest;
 pub mod memory;
+pub mod occurrences;
 pub mod owner_inventory;
 pub mod search;
 pub mod shards;
@@ -132,6 +134,7 @@ pub use manifest::{
     LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
     parse_manifest_rows,
 };
+pub use occurrences::{ChunkOccurrence, lookup_by_hash};
 pub use owner_inventory::{
     INVENTORY_FORMAT, OwnerInventory, OwnerInventoryFinding, PatternClass, SECRET_REFERENCE_ENV,
 };
@@ -141,8 +144,9 @@ pub use search::{
     run_search_with_executor_traced,
 };
 pub use source_registry::{
-    LocatorRegistration, RootRegistration, SOURCE_REGISTRY_DDL, SourceRoot, ensure_source_registry,
-    locators_for_root, register_locator, register_source_root, source_root,
+    LocatorRegistration, RootRegistration, SOURCE_REGISTRY_DDL, SourceResolution, SourceRoot,
+    ensure_source_registry, locators_for_root, register_locator, register_source_root,
+    resolve_source, source_root,
 };
 pub use stage::{
     ChunkClassification, REGISTRY_V1_DDL, Registry, STAGE_SCHEMA_VERSION, STAGE_V1_DDL,

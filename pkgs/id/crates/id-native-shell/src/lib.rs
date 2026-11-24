@@ -41,8 +41,8 @@ mod session;
 pub mod widget;
 
 pub use providers::{
-    CLIENT_FILE_READ_PROVIDER, ClientProviderExecutor, FileReadExecutor, LocalAuditEntry,
-    LocalBounds, ProviderAdapter,
+    CLIENT_FILE_READ_PROVIDER, CLIENT_NOTIFY_PROVIDER, ClientProviderExecutor, FileReadExecutor,
+    LocalAuditEntry, LocalBounds, NotifyExecutor, ProviderAdapter, notify_needs_resync,
 };
 pub use session::{
     ServerUpdate, SessionState, SessionView, join_frame, run_session, run_session_with_providers,

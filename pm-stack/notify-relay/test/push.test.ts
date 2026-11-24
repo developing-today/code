@@ -8,7 +8,15 @@
 //  - Delivery accounting: 2xx = sent, 404/410 = gone, anything
 //    else (or a throw) = failed — and a failure never throws.
 import { describe, expect, test } from "bun:test";
-import { b64uDecode, b64uEncode, encryptPayload, sendPush, vapidAuthorization, VAPID_PUBLIC_KEY, type PushTarget } from "../src/push.ts";
+import {
+  b64uDecode,
+  b64uEncode,
+  encryptPayload,
+  sendPush,
+  vapidAuthorization,
+  VAPID_PUBLIC_KEY,
+  type PushTarget,
+} from "../src/push.ts";
 
 const enc = new TextEncoder();
 const concat = (...parts: Uint8Array[]) => {
@@ -49,9 +57,22 @@ async function decrypt(receiver: Awaited<ReturnType<typeof makeReceiver>>, body:
   const idLen = body[20];
   const senderPublic = body.subarray(21, 21 + idLen);
   const sealed = body.subarray(21 + idLen);
-  const senderKey = await crypto.subtle.importKey("raw", senderPublic, { name: "ECDH", namedCurve: "P-256" }, false, []);
-  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: senderKey }, receiver.pair.privateKey, 256));
-  const ikm = await hkdf(receiver.auth, shared, concat(enc.encode("WebPush: info\0"), receiver.publicRaw, senderPublic), 32);
+  const senderKey = await crypto.subtle.importKey(
+    "raw",
+    senderPublic,
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+  const shared = new Uint8Array(
+    await crypto.subtle.deriveBits({ name: "ECDH", public: senderKey }, receiver.pair.privateKey, 256),
+  );
+  const ikm = await hkdf(
+    receiver.auth,
+    shared,
+    concat(enc.encode("WebPush: info\0"), receiver.publicRaw, senderPublic),
+    32,
+  );
   const cek = await hkdf(salt, ikm, enc.encode("Content-Encoding: aes128gcm\0"), 16);
   const nonce = await hkdf(salt, ikm, enc.encode("Content-Encoding: nonce\0"), 12);
   const key = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["decrypt"]);
@@ -109,7 +130,9 @@ describe("delivery accounting", () => {
    * WebCrypto validates the JWK as a set, so the pair must be
    * consistent — private scalar + its own public point). */
   const testKeyPair = async (): Promise<{ vapidPrivateKey: string; vapidPublicKey: string }> => {
-    const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign"])) as CryptoKeyPair;
+    const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+      "sign",
+    ])) as CryptoKeyPair;
     const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
     const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
     return { vapidPrivateKey: jwk.d as string, vapidPublicKey: b64uEncode(raw) };
@@ -118,13 +141,17 @@ describe("delivery accounting", () => {
   test("2xx counts sent and the posted body is the sealed payload", async () => {
     const receiver = await makeReceiver();
     let posted: { url: string; body: Uint8Array; headers: Record<string, string> } | null = null;
-    const summary = await sendPush([receiver.target], { title: "down" }, {
-      ...(await testKeyPair()),
-      poster: async (url, init) => {
-        posted = { url, body: init.body, headers: init.headers };
-        return { status: 201 };
+    const summary = await sendPush(
+      [receiver.target],
+      { title: "down" },
+      {
+        ...(await testKeyPair()),
+        poster: async (url, init) => {
+          posted = { url, body: init.body, headers: init.headers };
+          return { status: 201 };
+        },
       },
-    });
+    );
     expect(summary).toMatchObject({ sent: 1, gone: 0, failed: 0 });
     expect(posted!.headers["Content-Encoding"]).toBe("aes128gcm");
     expect(posted!.headers.Authorization.startsWith("vapid t=")).toBe(true);
@@ -137,14 +164,18 @@ describe("delivery accounting", () => {
     const b = (await makeReceiver()).target;
     const c = (await makeReceiver()).target;
     const statuses = [410, 500];
-    const summary = await sendPush([a, b, c], { title: "x" }, {
-      ...(await testKeyPair()),
-      poster: async () => {
-        const status = statuses.shift();
-        if (status === undefined) throw new Error("network down");
-        return { status };
+    const summary = await sendPush(
+      [a, b, c],
+      { title: "x" },
+      {
+        ...(await testKeyPair()),
+        poster: async () => {
+          const status = statuses.shift();
+          if (status === undefined) throw new Error("network down");
+          return { status };
+        },
       },
-    });
+    );
     expect(summary.sent).toBe(0);
     expect(summary.gone).toBe(1);
     expect(summary.failed).toBe(2);

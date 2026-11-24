@@ -1,1 +1,0 @@
-./lib/auth-rebuild-simple-script.sh

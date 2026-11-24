@@ -30,8 +30,8 @@ func ConfigurationTable(all []Setting) string {
 	var b strings.Builder
 	for _, n := range names {
 		fmt.Fprintf(&b, "### %s\n\n", n)
-		b.WriteString("| setting | kind | default | scope | hot | flag | variable | governs |\n" +
-			"| --- | --- | --- | --- | --- | --- | --- | --- |\n")
+		headers := []string{"setting", "kind", "default", "scope", "hot", "flag", "variable", "governs", "effect probe or exemption"}
+		var rows [][]string
 		for _, set := range groups[n] {
 			def := "`" + set.Default + "`"
 			if set.Default == "" {
@@ -62,14 +62,16 @@ func ConfigurationTable(all []Setting) string {
 			if set.Plumbing {
 				governs = "*(plumbing)* " + governs
 			}
-			// A Short is prose: a bare <placeholder> in it would be
-			// eaten as an HTML tag by the book renderer (#13422).
-			governs = refdoc.EscapeAngles(governs)
-			fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s | %s | %s |\n",
-				set.Path, set.Kind, def, set.Scope, yesNo(set.Hot),
-				strings.Join(flags, ", "), strings.Join(envs, ", "),
-				strings.ReplaceAll(governs, "|", "\\|"))
+			effect := "Exempt — " + EffectExemptions[set.Path]
+			if probe, ok := EffectProbes[set.Path]; ok {
+				effect = "`" + probe + "`"
+			}
+			rows = append(rows, []string{
+				"`" + set.Path + "`", set.Kind.String(), def, set.Scope.String(), yesNo(set.Hot),
+				strings.Join(flags, ", "), strings.Join(envs, ", "), governs, effect,
+			})
 		}
+		b.WriteString(refdoc.Table(headers, rows))
 		b.WriteString("\n")
 	}
 	return b.String()

@@ -92,7 +92,7 @@ impl CommentKind {
     }
 
     /// Parse the record spelling, if it is one.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "issue_comment" => Some(CommentKind::IssueComment),
             "review_comment" => Some(CommentKind::ReviewComment),
@@ -238,7 +238,7 @@ pub fn document_from_record(record: &Json) -> Option<CommentDocument> {
         thread_number: record.get("thread_number")?.as_u64()?,
         is_pr: record.get("thread_kind")?.as_str()? == "pull_request",
         comment_id: record.get("comment_id")?.as_u64()?,
-        kind: CommentKind::from_str(record.get("kind")?.as_str()?)?,
+        kind: CommentKind::parse(record.get("kind")?.as_str()?)?,
         author: record.get("author")?.as_str()?.to_string(),
         created_at: record.get("created_at")?.as_str()?.to_string(),
         updated_at: record.get("updated_at")?.as_str()?.to_string(),
@@ -254,6 +254,7 @@ pub fn document_from_record(record: &Json) -> Option<CommentDocument> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommentWatermarks {
     repos: BTreeMap<String, String>,
+    reviews: BTreeMap<String, String>,
 }
 
 impl CommentWatermarks {
@@ -297,10 +298,26 @@ impl CommentWatermarks {
         }
     }
 
+    /// Cutoff for submitted reviews, whose walk can be skipped independently.
+    pub fn reviews_since_for(&self, repo: &str) -> Option<&str> {
+        self.reviews.get(repo).map(String::as_str)
+    }
+
+    /// Record a submitted review in a completed review walk.
+    pub fn observe_review(&mut self, repo: &str, submitted_at: &str) {
+        if self
+            .reviews_since_for(repo)
+            .is_none_or(|old| submitted_at > old)
+        {
+            self.reviews
+                .insert(repo.to_owned(), submitted_at.to_owned());
+        }
+    }
+
     /// Serialise the state as the JSON the extraction CLI
     /// persists between runs.
     pub fn to_json(&self) -> Json {
-        json!({ "repos": self.repos })
+        json!({ "repos": self.repos, "reviews": self.reviews })
     }
 
     /// Load state persisted by [`CommentWatermarks::to_json`];
@@ -309,13 +326,22 @@ impl CommentWatermarks {
     /// silently skipping comments.
     pub fn from_json(value: &Json) -> Self {
         let mut state = CommentWatermarks::new();
-        if let Some(repos) = value.get("repos").and_then(Json::as_object) {
-            for (repo, wm) in repos {
-                if let Some(wm) = wm.as_str() {
-                    state.repos.insert(repo.clone(), wm.to_string());
-                }
-            }
+        fn read_map(value: Option<&Json>) -> BTreeMap<String, String> {
+            value
+                .and_then(Json::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(repo, wm)| Some((repo.clone(), wm.as_str()?.to_string())))
+                .collect()
         }
+        state.repos = read_map(value.get("repos"));
+        // V1 persisted a single cutoff for every stream. Preserve its resume
+        // position on upgrade. An explicit empty reviews map means no review
+        // pass has completed yet, e.g. after running with --skip-reviews.
+        state.reviews = match value.get("reviews") {
+            Some(reviews) => read_map(Some(reviews)),
+            None => state.repos.clone(),
+        };
         state
     }
 }

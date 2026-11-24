@@ -122,7 +122,7 @@ jobs:
         with:
           deno-version: v2.x
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
       - name: Unit tests (everything except internal/e2e)
@@ -212,7 +212,7 @@ jobs:
         with:
           deno-version: v2.x
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
       - name: E2E shard ${{ matrix.shard }} (${{ matrix.count }} tests)
@@ -294,7 +294,7 @@ jobs:
         with:
           deno-version: v2.x
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
       - uses: actions/setup-python@v7
@@ -338,7 +338,7 @@ jobs:
         with:
           deno-version: v2.x
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
       - uses: actions/setup-python@v7
@@ -384,7 +384,7 @@ jobs:
           cache: true
           cache-dependency-path: pkgs/mcpx/go.sum
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
       - uses: actions/setup-python@v7
@@ -516,10 +516,77 @@ jobs:
           docker logs mcpx-remote-daemon >&2
           exit 1
 
+  remote-e2e:
+    name: "environment: mcpx remote daemon e2e subset"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: pkgs/mcpx/go.mod
+          cache: true
+          cache-dependency-path: pkgs/mcpx/go.sum
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+      - name: Build the shipped image
+        run: nix build .#packages.x86_64-linux.mcpx-container --print-build-logs --out-link mcpx-image
+      - name: Run the remote-safe e2e subset against the image daemon
+        working-directory: pkgs/mcpx
+        env:
+          MCPX_DAEMON_ENDPOINT: http://127.0.0.1:18765
+        run: |
+          set -euo pipefail
+          image=$(docker load --input ../../mcpx-image | sed -n 's/^Loaded image: //p')
+          test -n "$image"
+          trap 'docker rm -f mcpx-remote-e2e-daemon >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name mcpx-remote-e2e-daemon \
+            --publish 127.0.0.1:18765:18765 \
+            --env MCPX_DAEMON_ADDRESS=0.0.0.0 \
+            --env MCPX_DAEMON_PORT=18765 \
+            "$image" daemon
+          ready=""
+          for attempt in $(seq 1 30); do
+            if docker run --rm --network host \
+              --env MCPX_DAEMON_ENDPOINT="$MCPX_DAEMON_ENDPOINT" \
+              "$image" status 2>/dev/null | grep -q 'daemon:   running'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            echo "daemon container did not answer status after $attempt attempts" >&2
+            docker logs mcpx-remote-e2e-daemon >&2
+            exit 1
+          fi
+          # The subset is exactly the registry: one test name per line in
+          # remote_safe_tests.txt, comments and blanks ignored. A test
+          # that is not listed is never started (fail closed, #13386).
+          pattern=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' internal/e2e/remote_safe_tests.txt | paste -sd'|' -)
+          test -n "$pattern"
+          MCPX_E2E_REMOTE=1 go test ./internal/e2e/ -run "^(${pattern})$" -count=1 -v
+
   ci-ok:
     name: "mcpx-test ci-ok"
     needs:
-      [init, unit, lint, plugin-ts, e2e, nix-e2e, e2e-host-linux-arm64, e2e-no-deno, container-e2e, remote-smoke]
+      [
+        init,
+        unit,
+        lint,
+        plugin-ts,
+        e2e,
+        nix-e2e,
+        e2e-host-linux-arm64,
+        e2e-no-deno,
+        container-e2e,
+        remote-smoke,
+        remote-e2e,
+      ]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10

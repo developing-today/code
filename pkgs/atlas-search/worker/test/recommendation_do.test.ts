@@ -27,7 +27,7 @@ class MemoryStorage {
 
   async get<T>(key: string): Promise<T | undefined> {
     const value = this.values.get(key);
-    return value === undefined ? undefined : structuredClone(value) as T;
+    return value === undefined ? undefined : (structuredClone(value) as T);
   }
 
   async put<T>(key: string, value: T): Promise<void> {
@@ -48,10 +48,7 @@ function signer(counter: { calls: number }) {
     async fetch(_input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
       counter.calls++;
       const request = JSON.parse(String(init?.body)) as { message_hex: string };
-      const bytes = Uint8Array.from(
-        request.message_hex.match(/.{2}/g) ?? [],
-        (part) => Number.parseInt(part, 16),
-      );
+      const bytes = Uint8Array.from(request.message_hex.match(/.{2}/g) ?? [], (part) => Number.parseInt(part, 16));
       const digest = await crypto.subtle.digest("SHA-256", bytes);
       return Response.json({ signature_hex: hex(new Uint8Array(digest)) });
     },
@@ -84,32 +81,34 @@ function instance(storage: MemoryStorage, counter = { calls: 0 }) {
 }
 
 async function start(accumulator: RecommendationAccumulator, value: ParentEnvelope) {
-  const response = await accumulator.fetch(new Request("https://do/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ parent: value }),
-  }));
+  const response = await accumulator.fetch(
+    new Request("https://do/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parent: value }),
+    }),
+  );
   if (!response.ok) throw new Error(JSON.stringify(await response.json()));
   return response.json() as Promise<{ parent_snapshot_id: string; cursor: { position: number } }>;
 }
 
-async function next(
-  accumulator: RecommendationAccumulator,
-  tenant: string,
-  subject: string,
-  cursor?: unknown,
-) {
-  const response = await accumulator.fetch(new Request("https://do/next", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tenant, subject, ...(cursor === undefined ? {} : { cursor }) }),
-  }));
-  return { response, body: await response.json() as {
-    envelope?: { body: PageEnvelope["body"]; signature_hex: string };
-    envelope_id?: string;
-    next_cursor?: { parent_snapshot_id: string; position: number };
-    error?: { code: string };
-  } };
+async function next(accumulator: RecommendationAccumulator, tenant: string, subject: string, cursor?: unknown) {
+  const response = await accumulator.fetch(
+    new Request("https://do/next", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenant, subject, ...(cursor === undefined ? {} : { cursor }) }),
+    }),
+  );
+  return {
+    response,
+    body: (await response.json()) as {
+      envelope?: { body: PageEnvelope["body"]; signature_hex: string };
+      envelope_id?: string;
+      next_cursor?: { parent_snapshot_id: string; position: number };
+      error?: { code: string };
+    },
+  };
 }
 
 function envelopeFromWire(page: Awaited<ReturnType<typeof next>>["body"]) {
@@ -178,9 +177,7 @@ describe("durable recommendation accumulator (oracle: C9139-01 finite model + wr
     const replay = await next(restarted.accumulator, "tenant-a", "subject-1");
     expect(replay.response.status).toBe(200);
     expect(replay.body.envelope_id).toBe(await pageEnvelopeId(envelopeFromWire(replay.body)));
-    expect(replay.body.envelope_id).toBe(
-      (await next(restarted.accumulator, "tenant-a", "subject-1")).body.envelope_id,
-    );
+    expect(replay.body.envelope_id).toBe((await next(restarted.accumulator, "tenant-a", "subject-1")).body.envelope_id);
     expect(counter.calls).toBe(2); // before-commit retry signs again; committed replay does not.
   });
 
@@ -217,10 +214,7 @@ describe("durable recommendation accumulator (oracle: C9139-01 finite model + wr
     const b = instance(bStorage);
     const aParent = parent("tenant-a", "subject-1");
     const bParent = parent("tenant-b", "subject-1");
-    const [aStarted, bStarted] = await Promise.all([
-      start(a.accumulator, aParent),
-      start(b.accumulator, bParent),
-    ]);
+    const [aStarted, bStarted] = await Promise.all([start(a.accumulator, aParent), start(b.accumulator, bParent)]);
     expect(aStarted.parent_snapshot_id).not.toBe(bStarted.parent_snapshot_id);
     const [aPage, bPage] = await Promise.all([
       next(a.accumulator, "tenant-a", "subject-1"),

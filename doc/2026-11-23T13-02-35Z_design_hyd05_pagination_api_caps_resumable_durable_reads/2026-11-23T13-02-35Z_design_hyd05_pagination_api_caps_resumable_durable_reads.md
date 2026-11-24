@@ -36,11 +36,11 @@ Governing decisions consumed, not re-opened:
   `last_checked_at` not trusted; no new scheduler). This record
   specifies those, it does not replace them.
 - **REL-06** ([#9516](https://github.com/developing-today/code/issues/9516),
-  design record merged 2026-11-23): owns the *write* side of the
+  design record merged 2026-11-23): owns the _write_ side of the
   GitHub surface — effect-specific preconditions and read-back
   verdicts for single operations. A REL-06 read-back is a
   single-effect verification GET; it is not page ingestion and owns
-  no cursor. HYD-05 owns the *read* side: bulk list ingestion for
+  no cursor. HYD-05 owns the _read_ side: bulk list ingestion for
   hydration/activity. Neither slice re-decides the other; both ride
   the existing `fleet gh` adapter surface — no new GitHub client.
 - **HYD-06** ([#9508](https://github.com/developing-today/code/issues/9508))
@@ -195,7 +195,7 @@ scheduler and no polling loop.
   last committed page as a positive control; overlap items are
   deduped like any other repeat. Overlap never substitutes for
   following the continuation.
-- What a landed item *means* — revision vs. creation, tombstones,
+- What a landed item _means_ — revision vs. creation, tombstones,
   minimized observations — is HYD-06's layer over these raw landings.
   This slice guarantees the raw item and its page provenance (cursor
   key, page sequence, observed-at) are durable; it assigns no
@@ -291,17 +291,17 @@ terminates `complete` with the full item set landed exactly once.
 
 Negative fixtures, one per named case:
 
-| Case | Expected behavior |
-| --- | --- |
-| Absent `Link` header | Terminal page; walk ends `complete` |
-| Malformed `Link` header | Hard error; cursor unmoved; walk reports `incomplete`, never `complete` |
-| Duplicate entries within/across pages | Deduped on source-native ID; walk still `complete` at the terminal page |
-| Reordered entries/pages | Same landed set; order is not load-bearing |
-| 250-commit / 3,000-file source cap | Walk ends `truncated`, naming the cap; not `complete` |
-| Object-store success + DB failure | Cursor unmoved; staged orphans GC-eligible; re-walk dedupes, nothing skipped |
-| Cursor without events | Cursor invalid → `unknown` → full snapshot for that resource/endpoint |
-| Fingerprint change on resume | Cursor invalid → `unknown` → full snapshot (§2.3) |
-| Repeated page (idempotency) | Second landing is a no-op beyond the ingest record |
+| Case                                  | Expected behavior                                                            |
+| ------------------------------------- | ---------------------------------------------------------------------------- |
+| Absent `Link` header                  | Terminal page; walk ends `complete`                                          |
+| Malformed `Link` header               | Hard error; cursor unmoved; walk reports `incomplete`, never `complete`      |
+| Duplicate entries within/across pages | Deduped on source-native ID; walk still `complete` at the terminal page      |
+| Reordered entries/pages               | Same landed set; order is not load-bearing                                   |
+| 250-commit / 3,000-file source cap    | Walk ends `truncated`, naming the cap; not `complete`                        |
+| Object-store success + DB failure     | Cursor unmoved; staged orphans GC-eligible; re-walk dedupes, nothing skipped |
+| Cursor without events                 | Cursor invalid → `unknown` → full snapshot for that resource/endpoint        |
+| Fingerprint change on resume          | Cursor invalid → `unknown` → full snapshot (§2.3)                            |
+| Repeated page (idempotency)           | Second landing is a no-op beyond the ingest record                           |
 
 No mock-only claim of deployed or live behavior: the oracle runs
 against the fake API and the real store transaction path, and live
@@ -374,16 +374,16 @@ Full per-occurrence text for every allocated ID is in
 this table records only which part of this design speaks to each
 group — it claims design coverage, not implementation.
 
-| IDs | Where addressed |
-| --- | --- |
-| C-R119, C-R120 | §2, §4, §5 — per-source retrieval cursors; overlap plus deduplication; cursors advance only after durable processing |
-| C-R111, C-R112, C-R118 | §3, §8 — the activity/changes read surface this ingestion feeds; command allocation consumed as-is |
-| C-R121, C-R122 | §4 — item identity and provenance this slice lands durably; session attribution itself is HYD-07's, over these records |
-| C-R005, C-R009, C-R107 | §3, §6 — pagination behavior of the existing list surfaces, bounded by explicit caps |
-| C-R150, C-R151 | §2, §5, §8 — durable cursor/provenance metadata and its legacy treatment |
-| H-R014, H-R016, H-R017, H-R024, H-R031 | §7, §8, §9 — oracle, compatibility, and gate coverage carried into the implementation issue's acceptance |
-| O-R022, O-R023, O-R028, O-R030, O-R049, O-R050 | §3–§6 — candidate/example occurrences behind the walk, dedupe, and cap rules and their negative cases |
-| P-R009, P-R012, P-R015, P-R016, P-R018, P-R027, P-R039, P-R050, P-R051, P-R065, P-R066 | §2, §5 — proposal occurrences behind the cursor model and the atomic page+cursor commit |
+| IDs                                                                                    | Where addressed                                                                                                        |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| C-R119, C-R120                                                                         | §2, §4, §5 — per-source retrieval cursors; overlap plus deduplication; cursors advance only after durable processing   |
+| C-R111, C-R112, C-R118                                                                 | §3, §8 — the activity/changes read surface this ingestion feeds; command allocation consumed as-is                     |
+| C-R121, C-R122                                                                         | §4 — item identity and provenance this slice lands durably; session attribution itself is HYD-07's, over these records |
+| C-R005, C-R009, C-R107                                                                 | §3, §6 — pagination behavior of the existing list surfaces, bounded by explicit caps                                   |
+| C-R150, C-R151                                                                         | §2, §5, §8 — durable cursor/provenance metadata and its legacy treatment                                               |
+| H-R014, H-R016, H-R017, H-R024, H-R031                                                 | §7, §8, §9 — oracle, compatibility, and gate coverage carried into the implementation issue's acceptance               |
+| O-R022, O-R023, O-R028, O-R030, O-R049, O-R050                                         | §3–§6 — candidate/example occurrences behind the walk, dedupe, and cap rules and their negative cases                  |
+| P-R009, P-R012, P-R015, P-R016, P-R018, P-R027, P-R039, P-R050, P-R051, P-R065, P-R066 | §2, §5 — proposal occurrences behind the cursor model and the atomic page+cursor commit                                |
 
 ## 11. Non-goals
 

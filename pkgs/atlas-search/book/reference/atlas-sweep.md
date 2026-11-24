@@ -20,14 +20,14 @@ atlas-sweep --state-dir DIR report [--run RUN_ID]
 
 Those are all seven command forms. `--state-dir` is global and required; it is extracted from anywhere in the argument list before the action is read.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--state-dir` | directory path | required, no default | The sweep state directory (lock, pause state, dead-letter store, report rows). Missing: `atlas-sweep: missing --state-dir DIR`, exit 2. |
-| `--class` | source class name | required for `pause-class`/`resume-class` | One of `boot-records`, `session-logs`, `chat-logs`, `statistics`, `reports`, `code-repo`. Unknown: `unknown source class "…"`, exit 2. |
-| `--host` | host name | required for `pause-class`/`resume-class` | The host half of the class/host pair being paused or resumed. |
-| `--run` | run id | — (whole cycle report) | For `report` only: print that one run's row instead of the whole cycle report. |
-| `REQUEST.json` (positional) | path | required for `run-once` | An `atlas_core::sweep::RunRequest` JSON file (shape below). |
-| `REF` (positional) | dead-letter reference | required for `dead-letter retry`/`drop` | The dead-letter entry to retry or drop. |
+| Flag                        | Argument              | Default                                   | Meaning                                                                                                                                 |
+| --------------------------- | --------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `--state-dir`               | directory path        | required, no default                      | The sweep state directory (lock, pause state, dead-letter store, report rows). Missing: `atlas-sweep: missing --state-dir DIR`, exit 2. |
+| `--class`                   | source class name     | required for `pause-class`/`resume-class` | One of `boot-records`, `session-logs`, `chat-logs`, `statistics`, `reports`, `code-repo`. Unknown: `unknown source class "…"`, exit 2.  |
+| `--host`                    | host name             | required for `pause-class`/`resume-class` | The host half of the class/host pair being paused or resumed.                                                                           |
+| `--run`                     | run id                | — (whole cycle report)                    | For `report` only: print that one run's row instead of the whole cycle report.                                                          |
+| `REQUEST.json` (positional) | path                  | required for `run-once`                   | An `atlas_core::sweep::RunRequest` JSON file (shape below).                                                                             |
+| `REF` (positional)          | dead-letter reference | required for `dead-letter retry`/`drop`   | The dead-letter entry to retry or drop.                                                                                                 |
 
 ## Behaviour
 
@@ -83,7 +83,7 @@ Every failure in this binary goes through one path: `atlas-sweep: &lt;message&gt
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Success — including an empty dead-letter list, an empty (`[]`) cycle report, and a `run-once` that printed `overlap-skip`. |
-| 2 | Everything else: every usage error and every runtime failure. |
+| Code | Meaning                                                                                                                    |
+| ---- | -------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Success — including an empty dead-letter list, an empty (`[]`) cycle report, and a `run-once` that printed `overlap-skip`. |
+| 2    | Everything else: every usage error and every runtime failure.                                                              |

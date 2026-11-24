@@ -2,14 +2,14 @@
 
 The conformance fixture set for the Metadata schema v1 + evolution
 doctrine specified in [`../note.md`](../note.md). Acceptance item 4 of
-#9095: *metadata at every historical version parses and is usable by
-the current reader*, in the fixture-family practice of #8525–#8528 —
+#9095: _metadata at every historical version parses and is usable by
+the current reader_, in the fixture-family practice of #8525–#8528 —
 hand-authored cases with recorded expectations, consumed by tests in
 the crates that own the readers.
 
 Only one version of each surface has ever been published (PM
 `pm_meta: 1`; Atlas `schema_version: 1`), so "every historical
-version" is v1 in all of its historical *shapes*: the canonical form,
+version" is v1 in all of its historical _shapes_: the canonical form,
 the pre-doctrine producer shapes still carried by live data, and the
 doctrine edge cases those shapes must survive.
 
@@ -46,7 +46,7 @@ doctrine edge cases those shapes must survive.
 
 Some cases carry a `doctrine_projection` (Atlas cases with
 `executable: false`, PM cases with the field present). These record
-the expected *projection* under the doctrine — extras relocation,
+the expected _projection_ under the doctrine — extras relocation,
 lossless-only coercion, fail-closed sensitivity fallback,
 unknown-closed-enum preservation (§3.1–3.2 of the design). No current
 reader projects; projection is design §7 slice 2/6 work. These cases
