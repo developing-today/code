@@ -240,6 +240,7 @@ Two names break the pattern. They stay as they are because other documents link 
 - [docs(13096): board view builder tree-projection design](2026-11-24T06-00-00Z_design_id13096_board_view_builder.md) — design record, PR #14108 (2026-11-24).
 - [Design record (Part of #12921): consolidated 9-point capability-change-notices record](2026-11-24T06-15-00Z_design_12921_capability_notices/2026-11-24T06-15-00Z_design_12921_capability_notices.md) — design record, PR #14114 (2026-11-24).
 - [docs(pm-stack): complete needs-user design standard (#8830)](2026-11-24T05-55-00Z_design_pm-needs-user-actions-8830/2026-11-24T05-55-00Z_design_pm-needs-user-actions-8830.md) — design record, PR #14115 (2026-11-24).
+- [docs(13524): Notion importer slice 4 design — comments, degradation, export reader](2026-11-24T06-05-00Z_design_id13524_notion_importer_slice4.md) — design record, PR #14118 (2026-11-24).
 
 ## Legacy places
 
