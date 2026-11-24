@@ -14,11 +14,13 @@
 //! the per-world memory budget: a validated policy type
 //! ([`AccountQuotas`]) plus a deterministic accounting ledger
 //! ([`FuelRateBudget`]) with typed, recoverable refusals. Enforcement
-//! wiring — charging the ledger at the invocation boundary and
-//! aggregating a world's charges under its owning account at the hub —
-//! is the next slice; nothing here performs I/O or reads a clock, so
-//! the accounting is fully determined by the charges and timestamps
-//! its caller supplies.
+//! wiring charges the ledger at the invocation boundary: since slice
+//! 2 the sandbox's `WorldInstance` (in `id-worlds`) admits each update
+//! against an installed budget, priced at the invocation's fuel
+//! allowance. Aggregating one budget across all of an account's
+//! worlds at the hub is the remaining slice. Nothing here performs
+//! I/O or reads a clock, so the accounting is fully determined by the
+//! charges and timestamps its caller supplies.
 
 use std::time::{Duration, Instant};
 
