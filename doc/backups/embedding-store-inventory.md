@@ -3,10 +3,10 @@
 - Record for: #13824 (inventory leg) · Parent: #13461 · Program: #8983 ·
   Design: `doc/2026-11-23T16-34-18Z_design_backup_mesh/note.md` §§2, 6.
 - Verified against `origin/main` `fc438864a` (2026-11-23) by code + doc
-  evidence, not by a live `turso db list` run: the sandbox holds no Turso
-  credentials, so live existence checks are owned by #14032 (see
-  "Runtime checks still open"). Every store below is named with the file
-  that proves it exists.
+  evidence; the live existence checks below were owned by #14032 and are
+  now resolved: verified live on the laptop host on 2026-11-24 (lane
+  oc-code-06, task 21637 — see "Runtime checks — resolved"). Every store
+  below is named with the file that proves it exists.
 - Kept honest by `pkgs/cold-store-reaper/tests/test_embedding_store_inventory.py`:
   every `vec_<model>_<dims>_f32` table the code uses and every store class
   below must stay named here, every row must carry a coverage disposition,
@@ -18,10 +18,10 @@
 | --- | --- | --- | --- | --- |
 | Canonical Turso DB `atlas` — `vec_snowflake_m_v2_768_f32` | Production vectors, 107,639 chunks at the 2026-10-31 census; Snowflake `snowflake-arctic-embed-m-v2.0` rev `95c27414`, 768d | Turso DB `atlas` (`atlas-dezren39.aws-us-east-1.turso.io`) | Class A rotation leg #13455 (weekly staggered restic → R2 `restic-turso-mesh`; slice 1 PR #13476 in review). Today: cold-store-nightly full export → Drive + PITR 30d + Delete Protection; the local source `~/atlas/turso-atlas/data/atlas.db` is covered daily by atlas-backup (local + R2 + Drive) | Covered by existing legs; mesh leg pending #13455 |
 | Canonical DB — `vec_bge_small_384_f32` | Dormant legacy fallback, `BAAI/bge-small-en-v1.5`, 384d; in the publish and in local side-store files; no Rust code names it | Same DB / file as the canonical row above | Rides the canonical row's legs (rotation + existing leg) | Covered (dormant) |
-| Scan shards `atlas-core-<tier>-<topic>-<nn>` — `vec_snowflake_m_v2_768_f32` per shard | Per-shard vectors; 29 topic shards, 107,639 chunks at the 2026-10-31 census (28 internal / 1 secret / 0 public) | Turso DB per shard (if `ATLAS_SHARDS=turso[:org]`) or local `.db` file (if `ATLAS_SHARDS=dir:<path>`) | Turso-homed: class B rotation #13456 (14-day, enumerated by `turso db list`) + today cold-store-nightly + PITR. Local-file: no leg — uncovered, follow-on #14032 | Partially covered — local-file home uncovered, follow-on #14032 |
+| Scan shards `atlas-core-<tier>-<topic>-<nn>` — `vec_snowflake_m_v2_768_f32` per shard | Per-shard vectors; 29 topic shards, 107,639 chunks at the 2026-10-31 census (28 internal / 1 secret / 0 public) | Turso DB per shard live (`turso db list` 2026-11-24 shows 31 `atlas-core-*` DBs); no local `.db` home live (see below) | Turso-homed: class B rotation #13456 (14-day, enumerated by `turso db list`) + today cold-store-nightly + PITR | Covered by rotation #13456 (Turso-homed); Exclusion — local-file home absent live: the live service runs monolith (`~/.local/state/atlas-search/service.json` carries no `shards` key, service `Environment=` is empty, so `ATLAS_SHARDS` is unset and there is no `dir:<path>`; only PID-suffixed promotion-test dirs under `~/tmp/atlas-shards-*` exist). Verified 2026-11-24 (#14032) |
 | Content stores `atlas-core-<tier>-content` | No vectors (messages/sessions for hydrating shard-served hits only) | Turso DB per tier | Out of scope — no vectors; the DBs themselves ride the class B rotation as Turso DBs | Out of scope (no vectors) |
-| Local side-store vector files (`ATLAS_VEC_DB`) | Vectors joined to the local publish by `content_hash` | Local files (path via env; not set in any shipped config) | No leg today — uncovered, follow-on #14032 (restic file leg, or recorded exclusion if unset live) | Uncovered — follow-on #14032 |
-| Query-embedding cache DB (`ATLAS_EMBED_CACHE_TURSO_URL`, table `query_embedding_cache`) | Cached query vectors (pure function of query text + model; no TTL needed) | Turso DB, only when the env var is set; not set in any shipped config — existence unverified | If present: class B rotation #13456 via enumeration — covered by design. Verify with `turso db list` (#14032) | Covered-by-design if present; existence unverified |
+| Local side-store vector files (`ATLAS_VEC_DB`) | Vectors joined to the local publish by `content_hash` | Local files (path via env; not set in any shipped config, and unset live) | Exclusion — no live home, so no restic file leg warranted: `ATLAS_VEC_DB` is unset in the live service environment (empty `Environment=`), in `nixos/`, and in the shell. The files that do exist are unserved promotion working state, not a served store: `~/atlas/v3/vec-snowflake.db` (416 MB, 101,471 rows, 2026-10-27) and `~/atlas/v3/vec-snowflake-modal.db` (2026-11-11) sit beside `~/atlas/v3/corpus.db` (1.3 GB, 2026-11-22), which holds no vec table; the live monolith serves vectors from Turso-hosted `atlas` (`vec_snowflake_m_v2_768_f32`, 107,639 rows live — the canonical, covered copy). Embeddings are a pure function of covered chunks + model rev, recomputable by re-running promotion. Verified 2026-11-24 (#14032) | Excluded with reason (no live home; #14032) |
+| Query-embedding cache DB (`ATLAS_EMBED_CACHE_TURSO_URL`, table `query_embedding_cache`) | Cached query vectors (pure function of query text + model; no TTL needed) | No live DB: `ATLAS_EMBED_CACHE_TURSO_URL` unset live (service env, shell, `nixos/`), and `turso db list` 2026-11-24 shows no cache/embed DB — the shared tier is disabled, the cache is memory-only | Exclusion — absent live, nothing to snapshot; covered-by-design if ever created (class B rotation #13456 enumerates it from `turso db list`). Verified 2026-11-24 (#14032) | Excluded with reason (absent live; #14032) |
 | In-memory query-embedding cache (~10,000 entries) | Cached query vectors, ephemeral | Process memory | Exclusion — not durable, regenerable on miss; no backup applies | Excluded with reason |
 | Worker Durable Object `QueryCache` entries (`entry.embedding_json`) | Per-key query embedding + result, retained indefinitely, no TTL | Cloudflare Durable Object SQLite (hosted) | Exclusion — regenerable cache, re-embed on miss; no export path named in the design | Excluded with reason |
 | D1 hot cache `atlas-hot-cache` | No vectors (opaque cached payloads; storage layer only, not wired into the request path) | Cloudflare D1 | Out of scope — no vectors; D1 itself is class D (#13458) if in scope | Out of scope (no vectors) |
@@ -31,17 +31,36 @@
 
 ## Uncovered stores and their follow-ons
 
-- Local scan-shard files and local side-store vector files: **#14032**
-  (mesh file leg — verify the live homes, then land a restic file leg or
-  record the exclusion). Queued as `repo-health-code-pilot` task 21637.
+None remain. Follow-on **#14032** (queued as `repo-health-code-pilot`
+task 21637) verified the live homes on 2026-11-24 and closed the loop
+with recorded exclusions instead of a file leg: no local-file embedding
+store exists live (no local shard dir; `ATLAS_VEC_DB` unset; no
+query-cache DB), so there is nothing for a restic file leg to snapshot.
+No new schedule was created, so no `doc/fleet-schedule-registry.md`
+row was needed. If a local-file home ever appears live (e.g. the
+service switches to `ATLAS_SHARDS=dir:<path>` or sets `ATLAS_VEC_DB`),
+file a new follow-on from #13461 for its leg.
 
-## Runtime checks still open (owned by #14032)
+## Runtime checks — resolved 2026-11-24 (owned by #14032, lane oc-code-06)
 
-- Which shard mode the live service runs (`ATLAS_SHARDS` — `turso[:org]`
-  or `dir:<path>` — and the dir if local).
-- Whether `ATLAS_VEC_DB` is set anywhere live.
-- Whether the query-embedding cache Turso DB exists (`turso db list` —
-  if it exists it is a class-B rotation member by enumeration).
+All three ran live on the laptop host (seat `amd`):
+
+- Shard mode: the live `atlas-search.service` runs `fleet serve search`
+  with an empty systemd `Environment=` and no `shards` key in
+  `~/.local/state/atlas-search/service.json` — monolith mode, no shard
+  fan-out (`ATLAS_SHARDS` unset). No live `dir:<path>` home exists; the
+  only `atlas-core-*.db` files on disk are PID-suffixed promotion-test
+  artifacts under `~/tmp/atlas-shards-*/` (2026-11-08/11/14).
+- `ATLAS_VEC_DB`: unset in the service environment, the shell, and
+  `nixos/` (no shipped config sets it). Present-but-unserved files:
+  `~/atlas/v3/vec-snowflake.db`, `~/atlas/v3/vec-snowflake-modal.db`
+  (see side-store row).
+- Query-embedding cache Turso DB: `turso db list` (2026-11-24, 42 DBs,
+  31 of them `atlas-core-*`) contains no cache/embed DB, and
+  `ATLAS_EMBED_CACHE_TURSO_URL` is unset everywhere live — the shared
+  cache tier is disabled. If one is ever created it joins the class B
+  rotation #13456 by enumeration, no inventory change needed beyond
+  naming it.
 
 ## Checked and found to hold no vector store
 
