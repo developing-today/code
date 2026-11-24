@@ -4,6 +4,7 @@
 // at boot naming the variable.
 import { readFileSync } from "node:fs";
 import { machineName } from "./edge-proto.ts";
+import { platformSettings } from "./settings.ts";
 
 /** A token issuer whose signed tokens identify a caller. */
 export interface Issuer {
@@ -231,16 +232,19 @@ export function readConfig(
     edgeUrl = parsed.origin;
   }
 
+  // What the repository decides (src/settings.ts) is what is used
+  // where the environment says nothing else.
+  const platform = platformSettings();
   return {
     port: port(env, "PM_CONSOLE_PORT", 4872),
     bind,
     owners: list(env, "PM_CONSOLE_OWNER_EMAILS").map((e) => e.toLowerCase()),
     certNames: list(env, "PM_CONSOLE_CERT_NAMES"),
     issuers,
-    repo: env.PM_CONSOLE_REPO ?? "developing-today/code",
-    queue: env.PM_CONSOLE_QUEUE ?? "repo-health-code-pilot",
-    queueDbUrl: env.PM_CONSOLE_QUEUE_DB_URL ?? "https://fleet-queue-dezren39.aws-us-east-1.turso.io",
-    queueTokenName: env.PM_CONSOLE_QUEUE_TOKEN_NAME ?? "turso.fleet-queue-rw-token",
+    repo: env.PM_CONSOLE_REPO ?? platform.repo,
+    queue: env.PM_CONSOLE_QUEUE ?? platform.queue,
+    queueDbUrl: env.PM_CONSOLE_QUEUE_DB_URL ?? platform.queueDbUrl,
+    queueTokenName: env.PM_CONSOLE_QUEUE_TOKEN_NAME ?? platform.queueTokenName,
     fleetBin: env.PM_CONSOLE_FLEET_BIN ?? "fleet",
     unitPatterns: list(env, "PM_CONSOLE_UNITS", [
       "pm-*",
@@ -253,7 +257,7 @@ export function readConfig(
     protectedUnits: list(env, "PM_CONSOLE_PROTECTED_UNITS", ["pm-tunnel.service", "pm-console.service"]),
     auditFile: env.PM_CONSOLE_AUDIT_FILE ?? `${home}/.local/state/pm-console/audit.jsonl`,
     dashboardUrl,
-    androidPackage: env.PM_CONSOLE_ANDROID_PACKAGE ?? "today.developing.pmconsole",
+    androidPackage: env.PM_CONSOLE_ANDROID_PACKAGE ?? platform.androidPackage,
     androidFingerprints: fingerprints,
     androidApk: env.PM_CONSOLE_ANDROID_APK ?? `${home}/.local/state/pm-console/android/pm-console.apk`,
     devicesFile: env.PM_CONSOLE_DEVICES_FILE ?? `${home}/.local/state/pm-console/devices.json`,
@@ -262,19 +266,7 @@ export function readConfig(
     edgeDoneFile: env.PM_CONSOLE_EDGE_DONE_FILE ?? `${home}/.local/state/pm-console/edge-done.json`,
     machineName: machineName(env.PM_CONSOLE_MACHINE),
     decisionsFile: env.PM_CONSOLE_DECISIONS_FILE ?? `${home}/.local/state/pm-aggregator/decisions.json`,
-    promptLabel: env.PM_CONSOLE_PROMPT_LABEL ?? "owner/prompt",
-    // The repositories the dashboard's census covers (REPOS in
-    // pm-stack/aggregator/src/model.ts; a test holds the two lists to
-    // each other). By their present names: the two forks moved to
-    // another organisation and the third was renamed. GitHub still
-    // answers the old names with the present repositories, but an item
-    // named by an old name is not the item the dashboard names, and a
-    // reply is taken only for an item in a repository on this list.
-    needsRepos: list(env, "PM_CONSOLE_NEEDS_REPOS", [
-      "developing-today/code",
-      "developing-today-forks/opencode",
-      "developing-today-forks/openchamber",
-      "dezren39/darwin-nix",
-    ]),
+    promptLabel: env.PM_CONSOLE_PROMPT_LABEL ?? platform.promptLabel,
+    needsRepos: list(env, "PM_CONSOLE_NEEDS_REPOS", platform.needsRepos),
   };
 }

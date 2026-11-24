@@ -20,6 +20,7 @@ import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
+import { platformSettings } from "../src/settings.ts";
 import { Devices, Limiter } from "../src/devices.ts";
 import { Docs } from "../src/docs.ts";
 import { NEEDS_LABELS } from "../src/needs.ts";
@@ -1150,6 +1151,7 @@ describe("before the host's first report", () => {
       github: { answers: 0, unchanged: 0, since: w.now.t, kept: 0, quiet: { core: null, search: null } },
       hostSeen: null,
       hostVersion: null,
+      machineSettingsDiffer: null,
       androidBuild: null,
       androidRelease: null,
       androidReleaseTrouble: null,
@@ -1209,6 +1211,43 @@ describe("before the host's first report", () => {
     );
     expect(res.status).toBe(200);
     expect((await health()).hostVersion).toBeNull();
+  });
+
+  // The platform's own settings are the repository's (src/settings.ts),
+  // and the Worker carries them. A machine tells the ones it runs with
+  // in every report; one on other code, or with another environment,
+  // tells others. Which those are is said to anyone who asks, by name
+  // only: no value of any setting is public.
+  test("the edge says in which of the platform's settings the machine runs with others, by name only", async () => {
+    const w = await setup();
+    const differ = async () =>
+      ((await (await w.browse("/console/health", { token: null })).json()) as Record<string, unknown>)
+        .machineSettingsDiffer;
+    // No machine has said anything yet: nothing to compare.
+    expect(await differ()).toBeNull();
+    await w.hostReads();
+    await w.link.now.once();
+    // The machine runs main's console with nothing set otherwise.
+    expect(await differ()).toEqual([]);
+    // A machine on older code: its list of repositories is the one main had then.
+    const mains = [...w.edgeConfig.needsRepos];
+    w.edgeConfig.needsRepos = ["developing-today/code", "developing-today/opencode"];
+    w.edgeConfig.queue = "a-queue-of-its-own";
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect(await differ()).toEqual(["queue", "needsRepos"]);
+    const page = await (await w.browse("/console/health", { token: null })).text();
+    expect(page).not.toContain("a-queue-of-its-own");
+    expect(page).not.toContain("developing-today/opencode");
+    // It is kept with the settings, across the edge's own restarts.
+    w.edge.now = w.makeEdge();
+    expect(await differ()).toEqual(["queue", "needsRepos"]);
+    // The machine follows main again.
+    w.edgeConfig.needsRepos = mains;
+    w.edgeConfig.queue = platformSettings().queue;
+    w.now.t += 5_000;
+    await w.link.now.once();
+    expect(await differ()).toEqual([]);
   });
 
   test("the first report teaches the edge the host's key and who the owner is", async () => {

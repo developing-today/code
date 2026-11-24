@@ -349,6 +349,16 @@ try {
     after.configured === true && typeof after.hostSeen === "number",
     JSON.stringify(after),
   );
+  // The Worker carries the repository's settings in its own bundle, and
+  // the host here runs the same code with nothing set otherwise: the two
+  // must agree, in the bundle as it is deployed.
+  check(
+    "the Worker says the host runs with the platform's own settings: none differs",
+    before.machineSettingsDiffer === null &&
+      Array.isArray(after.machineSettingsDiffer) &&
+      after.machineSettingsDiffer.length === 0,
+    JSON.stringify({ before: before.machineSettingsDiffer, after: after.machineSettingsDiffer }),
+  );
   const second = await link.once();
   check(
     "a second report is accepted and nothing is asked for again",
