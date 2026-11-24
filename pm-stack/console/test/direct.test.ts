@@ -279,6 +279,199 @@ describe("the edge's run: the bridge through its binding", () => {
     expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/messages?limit=5&order=desc");
   });
 
+  test("the unified views are reads of the same binding; a revoke is a machine's", async () => {
+    const h = bridgeHarness();
+    h.answer.status = 200;
+    h.answer.body = { messages: [{ id: 1, surface: "fleet", sender_addr: "agent:felix-1" }] };
+    const feed = await h.run([
+      "fleet",
+      "bridge",
+      "pipeline",
+      "--kind",
+      "command",
+      "--sender",
+      "felix-1",
+      "--unread",
+      "--limit",
+      "25",
+      "--order",
+      "desc",
+    ]);
+    expect(h.calls[0].url).toBe(
+      "https://bridge.internal/fleet/pm-cred-test/pipeline?kind=command&sender=felix-1&unread_only=true&limit=25&order=desc",
+    );
+    expect(JSON.parse(feed.stdout)).toEqual({ messages: [{ id: 1, surface: "fleet", sender_addr: "agent:felix-1" }] });
+    await h.run(["fleet", "bridge", "directory"]);
+    expect(h.calls[1].url).toBe("https://bridge.internal/fleet/pm-cred-test/directory");
+    await h.run(["fleet", "bridge", "credentials"]);
+    expect(h.calls[2].url).toBe("https://bridge.internal/fleet/pm-cred-test/credentials");
+    expect(h.seen).toEqual([
+      { to: "bridge", write: false, status: 200 },
+      { to: "bridge", write: false, status: 200 },
+      { to: "bridge", write: false, status: 200 },
+    ]);
+    // Revoking is the owner's act through the owner token: the edge's
+    // read-scope credential never carries it, so the verb is refused
+    // here and the action is held for a machine instead.
+    await expect(h.run(["fleet", "bridge", "revoke", "--agent", "felix-1"])).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "revoke", "--identity", "muse/felix-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(3);
+    // The provisioning state list is a read of the same binding
+    // (#14376); the mints and the enroll revoke are machines' verbs,
+    // refused here like the revoke above.
+    h.answer.body = { enroll_tokens: [{ agent: "new-1", state: "pending" }] };
+    const listed = await h.run(["fleet", "bridge", "enroll-tokens"]);
+    expect(h.calls[3].url).toBe("https://bridge.internal/fleet/pm-cred-test/enroll-tokens");
+    expect(JSON.parse(listed.stdout)).toEqual({ enroll_tokens: [{ agent: "new-1", state: "pending" }] });
+    await expect(h.run(["fleet", "bridge", "mint-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
+    await expect(h.run(["fleet", "bridge", "mint-credential", "--agent", "felix-1"])).rejects.toThrow(
+      /needs a machine/,
+    );
+    await expect(h.run(["fleet", "bridge", "revoke-enroll", "--agent", "new-1"])).rejects.toThrow(/needs a machine/);
+    expect(h.calls).toHaveLength(4);
+  });
+
+  test("the classes read the pipeline and the merged directory through the bridge, and cannot revoke there", async () => {
+    // A bridge that answers each of the unified views with its own rows.
+    const byPath = (url: string) => {
+      if (url.includes("/pipeline")) {
+        return {
+          messages: [
+            {
+              surface: "connector",
+              id: 1,
+              kind: "instruction",
+              sender_addr: "user:drew",
+              receiver: "claude",
+              body: "owner instruction",
+            },
+            {
+              surface: "fleet",
+              id: 2,
+              kind: "command",
+              sender_addr: "agent:felix-1",
+              receiver: "agent:archer-1",
+              body: "agent command",
+            },
+            {
+              surface: "notes",
+              id: 3,
+              kind: "note",
+              sender_addr: "user:drew",
+              receiver: "muse/felix-1",
+              body: "a note",
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/directory")) {
+        return {
+          agents: [
+            {
+              surface: "fleet",
+              name: "felix-1",
+              groups: ["muse"],
+              presence: "last_seen",
+              last_seen: "2026-11-24T01:00:00Z",
+              unread: 2,
+            },
+            {
+              surface: "notes",
+              name: "muse/scout-1",
+              identity: "muse/scout-1",
+              scopes: { can_send: false, can_inbox: false },
+              presence: "none",
+              last_seen: null,
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/credentials")) {
+        return {
+          credentials: [
+            {
+              agent: "felix-1",
+              state: "active",
+              scopes: ["inbox", "send"],
+              addr: null,
+              credentials: 1,
+              live: 1,
+              created: "2026-11-24T00:00:00Z",
+              revoked_at: null,
+            },
+          ],
+        };
+      }
+      if (url.endsWith("/enroll-tokens")) {
+        return {
+          enroll_tokens: [
+            {
+              agent: "new-1",
+              kind: "muse",
+              groups: ["muse"],
+              notes_identity: null,
+              created: "2026-11-24T00:00:00Z",
+              expires_at: "2026-11-25T00:00:00Z",
+              used_at: null,
+              revoked_at: null,
+              state: "pending",
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected bridge fetch ${url}`);
+    };
+    const bridgeFetch = (async (url: string) => ({
+      ok: true,
+      status: 200,
+      json: async () => byPath(String(url)),
+    })) as unknown as Fetch;
+    const { ops } = directClasses(edgeConfig, {
+      githubToken: "gh-test",
+      queueToken: "queue-test",
+      bridgeToken: "pm-cred-test",
+      bridgeFetch,
+    } as never);
+    // The pipeline: rows from all three surfaces, real senders kept.
+    const feed = (await ops.pipelineFeed(new URLSearchParams({ kind: "command" }))) as { sender_addr: string }[];
+    expect(feed.map((m) => m.sender_addr)).toEqual(["user:drew", "agent:felix-1", "user:drew"]);
+    // The directory: the fleet row carries its credential state; the
+    // notes-only identity is present, presence none, and its revoked
+    // tokens read as a revoked credential.
+    const directory = (await ops.directory()) as {
+      name: string;
+      presence: string;
+      last_seen: string | null;
+      credential: { state: string } | null;
+    }[];
+    const felix = directory.find((a) => a.name === "felix-1");
+    expect(felix?.credential?.state).toBe("active");
+    const scout = directory.find((a) => a.name === "muse/scout-1");
+    expect(scout?.presence).toBe("none");
+    expect(scout?.last_seen).toBeNull();
+    expect(scout?.credential?.state).toBe("revoked");
+    // And a revoke asked of the edge's classes is a machine's.
+    await expect(ops.revokeCredential("fleet", "felix-1")).rejects.toThrow(/needs a machine/);
+    // The enroll tokens' state is read through the bridge the same
+    // way (#14376), and taking tokens back is a machine's too.
+    const enrollTokens = (await ops.enrollTokens()) as { agent: string; state: string }[];
+    expect(enrollTokens).toEqual([
+      {
+        agent: "new-1",
+        kind: "muse",
+        groups: ["muse"],
+        notes_identity: null,
+        created: "2026-11-24T00:00:00Z",
+        expires_at: "2026-11-25T00:00:00Z",
+        used_at: null,
+        revoked_at: null,
+        state: "pending",
+      },
+    ]);
+    await expect(ops.revokeEnrollTokens("new-1")).rejects.toThrow(/needs a machine/);
+    await expect(ops.mintEnrollToken({ agent: "new-2" })).rejects.toThrow(/needs a machine/);
+  });
+
   test("the agents section is read by the class that reads it on the laptop", async () => {
     const ops = { agents: async () => [{ name: "felix-1" }] };
     expect(await directRead("agents", ops as never, {} as never)).toEqual([{ name: "felix-1" }]);

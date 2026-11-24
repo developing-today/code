@@ -233,10 +233,10 @@ def publish_repo(repo, root, bucket):
 
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--repo", required=True, help="planned repository as OWNER/REPO")
     parser.add_argument(
-        "--bucket", default=DEFAULT_BUCKET, help="existing R2 bucket"
+        "--repo", required=True, help="planned repository as OWNER/REPO"
     )
+    parser.add_argument("--bucket", default=DEFAULT_BUCKET, help="existing R2 bucket")
     parser.add_argument(
         "--root", help="backup tree root (defaults to configured backup_root)"
     )

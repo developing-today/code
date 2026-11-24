@@ -558,10 +558,11 @@ async fn google_door_full_loop_links_and_reaches_same_account() {
 #[tokio::test]
 async fn pending_identity_is_acknowledged_without_issuing_a_code() {
     let h = harness().await;
-    assert!(h
-        .identities
-        .register_pending("google", GOOGLE_SUB, "drew", "email-match")
-        .unwrap());
+    assert!(
+        h.identities
+            .register_pending("google", GOOGLE_SUB, "drew", "email-match")
+            .unwrap()
+    );
 
     let resp = drive_door(&h, "google").await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -583,29 +584,38 @@ async fn pending_identity_is_acknowledged_without_issuing_a_code() {
             .as_deref(),
         Some("pending")
     );
-    assert!(h
-        .identities
-        .events()
-        .unwrap()
-        .iter()
-        .any(|e| e.event == "register"));
+    assert!(
+        h.identities
+            .events()
+            .unwrap()
+            .iter()
+            .any(|e| e.event == "register")
+    );
 }
 
 #[test]
 fn identity_history_records_pending_disposition_and_provisioning_events() {
     let store = IdentityStore::open(None).unwrap();
-    assert!(store
-        .register_pending("google", "approved-sub", "drew", "session-add")
-        .unwrap());
-    assert!(store
-        .approve_pending("google", "approved-sub", "established-session")
-        .unwrap());
-    assert!(store
-        .register_pending("microsoft", "rejected-sub", "drew", "email-match")
-        .unwrap());
-    assert!(store
-        .reject_pending("microsoft", "rejected-sub", "established-session")
-        .unwrap());
+    assert!(
+        store
+            .register_pending("google", "approved-sub", "drew", "session-add")
+            .unwrap()
+    );
+    assert!(
+        store
+            .approve_pending("google", "approved-sub", "established-session")
+            .unwrap()
+    );
+    assert!(
+        store
+            .register_pending("microsoft", "rejected-sub", "drew", "email-match")
+            .unwrap()
+    );
+    assert!(
+        store
+            .reject_pending("microsoft", "rejected-sub", "established-session")
+            .unwrap()
+    );
     store
         .record_provision("github", "new-sub", "new-account", "provisioner")
         .unwrap();

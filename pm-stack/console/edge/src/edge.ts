@@ -2502,12 +2502,16 @@ export class Edge {
         }
         // What needs only GitHub, the queue store and the bridge is
         // read here, by the code a machine would read it with. The
-        // bridge's own read (the message log) is attempted only while
-        // this side holds the bridge credential: without it the log
-        // is a machine's to read, and the request goes to the host
+        // bridge's own reads (the message log, and the unified
+        // pipeline and directory, #14374) are attempted only while
+        // this side holds the bridge credential: without it they are
+        // a machine's to read, and the request goes to the host
         // below as it did before.
         const mine = this.mine(cfg);
-        if (mine && !(seg.length === 1 && seg[0] === "messages" && !this.bridgeReady())) {
+        const bridgeRead =
+          seg.length === 1 &&
+          (seg[0] === "messages" || seg[0] === "pipeline" || seg[0] === "directory" || seg[0] === "enroll-tokens");
+        if (mine && !(bridgeRead && !this.bridgeReady())) {
           const from = this.outwardN;
           let read: unknown;
           try {

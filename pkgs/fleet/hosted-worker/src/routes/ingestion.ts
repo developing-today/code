@@ -21,12 +21,26 @@
 //     configured scope (INGESTION_REPOS) is swept; neither → 503.
 //     The Worker's scheduled handler (src/worker.ts) runs the
 //     same sweep over the configured scope on the cron trigger.
+//   POST /v1/ingestion/backfill — the recorded backfill (#14312):
+//     the same sweep over the same scope body, with the run
+//     (counts in/out, failures named by item) stored in the
+//     backfill run store and returned (201). Re-running over an
+//     unchanged store records 0 inserted / 0 refreshed — the
+//     check's idempotency, read back from the record.
+//   GET /v1/ingestion/backfill/runs — the recorded runs, oldest
+//     first.
+//   POST /v1/ingestion/divergence — the body-vs-DB divergence
+//     report (#14312) over the same scope body: every item in
+//     scope compared against the DB, divergences named by class
+//     (missing_row / stale_field / orphan_row) with counts. A
+//     read: it heals nothing — the backfill is the heal.
 //
 // This door is also the create path's heal: an item whose DB
 // insert failed at create time (metadata_inserted: false, #12585)
 // is stored by the first check that sees it.
 
 import type { AuthDeps, CallerContext } from "../auth.ts";
+import { backfillDepsFrom, backfillRunStoreFrom, runDivergenceReport, runMetadataBackfill } from "../backfill.ts";
 import { FailClosed } from "../errors.ts";
 import {
   ingestionDepsFrom,
@@ -90,9 +104,13 @@ async function githubWebhook(req: Request, _ctx: CallerContext | null, deps: Aut
   return json(result);
 }
 
-async function sweep(req: Request, ctx: CallerContext | null, deps: AuthDeps): Promise<Response> {
-  caller(ctx);
-  // The body is optional (an empty POST sweeps the configured
+/** The repo scope the operator surfaces (sweep, backfill,
+ * divergence) walk: the body's optional { "repos": [...] }, or
+ * the deployment's configured scope (INGESTION_REPOS); neither
+ * → 503. One parsing path for all three surfaces, so a scope
+ * means the same thing to each. */
+async function scopeFromBody(req: Request, deps: AuthDeps): Promise<string[]> {
+  // The body is optional (an empty POST walks the configured
   // scope); when present it must be a JSON object naming repos.
   const text = await req.text();
   let repos: string[] | undefined;
@@ -124,11 +142,34 @@ async function sweep(req: Request, ctx: CallerContext | null, deps: AuthDeps): P
     throw new FailClosed(
       503,
       "ingestion_not_configured",
-      "no sweep scope: the request names no repos and this deployment configures none (INGESTION_REPOS); failing closed",
+      "no repo scope: the request names no repos and this deployment configures none (INGESTION_REPOS); failing closed",
     );
   }
+  return scope;
+}
+
+async function sweep(req: Request, ctx: CallerContext | null, deps: AuthDeps): Promise<Response> {
+  caller(ctx);
+  const scope = await scopeFromBody(req, deps);
   const engine = ingestionDepsFrom(deps);
   return json(await runIngestionSweep(engine, scope));
+}
+
+async function backfill(req: Request, ctx: CallerContext | null, deps: AuthDeps): Promise<Response> {
+  caller(ctx);
+  const scope = await scopeFromBody(req, deps);
+  return json(await runMetadataBackfill(backfillDepsFrom(deps), scope), 201);
+}
+
+async function backfillRuns(_req: Request, ctx: CallerContext | null, deps: AuthDeps): Promise<Response> {
+  caller(ctx);
+  return json({ runs: await backfillRunStoreFrom(deps).list() });
+}
+
+async function divergence(req: Request, ctx: CallerContext | null, deps: AuthDeps): Promise<Response> {
+  caller(ctx);
+  const scope = await scopeFromBody(req, deps);
+  return json(await runDivergenceReport(ingestionDepsFrom(deps), scope));
 }
 
 export const routes: RouteDef[] = [
@@ -140,4 +181,7 @@ export const routes: RouteDef[] = [
     handler: githubWebhook,
   },
   { method: "POST", path: "/v1/ingestion/sweep", door: "ingestion", handler: sweep },
+  { method: "POST", path: "/v1/ingestion/backfill", door: "ingestion", handler: backfill },
+  { method: "GET", path: "/v1/ingestion/backfill/runs", door: "ingestion", handler: backfillRuns },
+  { method: "POST", path: "/v1/ingestion/divergence", door: "ingestion", handler: divergence },
 ];

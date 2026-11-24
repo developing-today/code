@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use p2panda_core::{Hash, SeqNum};
-use redb::ReadableDatabase;
+use redb::{ReadableDatabase, ReadableTable};
 
 use id_core::waiting::AuthorKey;
 use id_store::chain::Event;

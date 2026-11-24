@@ -1665,6 +1665,7 @@ function viewMore() {
       tile("more/prs", "Pull requests", ops.prs ? `${ops.prs.filter((p) => !p.draft).length} ready of ${ops.prs.length}` : "open and ready to merge"),
       tile("more/issues", "Ranked issues", ops.priorities ? `${ops.priorities.issues.length} ranked` : "change what matters most"),
       tile("more/agents", "Agents", ops.agents ? `${ops.agents.length} registered` : "message one or all"),
+      tile("more/messages", "Messages", "every surface, who really sent what"),
       tile("more/services", "Services", ops.services ? `${ops.services.filter((u) => u.active === "failed").length} failed of ${ops.services.length}` : "start, stop, logs"),
       tile("more/notify", "Notifications", "choose what reaches this device"),
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
@@ -3569,6 +3570,110 @@ function viewIssues() {
   ];
 }
 
+/** The Messages screen's filters, kept across draws (#14374). */
+let messageFilters = { kind: "", surface: "", sender: "", receiver: "", batch: "", work: "", unread: false };
+
+/**
+ * Every message on every surface, with the sender it really came from
+ * (#14374, design §4.9). This is the owner's console: provenance here
+ * is complete — an instruction shows its true sender. (Anonymity is
+ * what agents see of an instruction, never this view.) Read-only: the
+ * composer is the Agents screen's, as before.
+ */
+async function viewMessages() {
+  const f = messageFilters;
+  const qs = new URLSearchParams({ limit: "100" });
+  if (f.kind) qs.set("kind", f.kind);
+  if (f.surface) qs.set("surface", f.surface);
+  if (f.sender) qs.set("sender", f.sender);
+  if (f.receiver) qs.set("receiver", f.receiver);
+  if (f.batch) qs.set("batch", f.batch);
+  if (f.work) qs.set("work_state", f.work);
+  if (f.unread) qs.set("unread", "1");
+  let rows = [];
+  let failed = "";
+  try {
+    const got = await api(`pipeline?${qs}`);
+    if (Array.isArray(got)) rows = got;
+  } catch (error) {
+    failed = error.message;
+  }
+  const pick = (label, key, options) =>
+    h(
+      "select",
+      {
+        class: "narrow",
+        "aria-label": label,
+        onchange: (e) => {
+          messageFilters[key] = e.target.value;
+          draw();
+        },
+      },
+      h("option", { value: "" }, label),
+      options.map((o) => h("option", { value: o, selected: f[key] === o }, o)),
+    );
+  const find = (label, key, placeholder) =>
+    h("input", {
+      type: "search",
+      placeholder,
+      "aria-label": label,
+      value: f[key],
+      onchange: (e) => {
+        messageFilters[key] = e.target.value.trim();
+        draw();
+      },
+    });
+  const filters = card(
+    h(
+      "div",
+      { class: "row" },
+      pick("Kind", "kind", ["message", "instruction", "command", "note"]),
+      pick("Surface", "surface", ["connector", "fleet", "notes"]),
+      find("Sender", "sender", "Sender"),
+      find("Receiver", "receiver", "Receiver"),
+      find("Batch", "batch", "Batch"),
+      find("Work state", "work", "Work state"),
+      h(
+        "label",
+        { class: "row check meta" },
+        h("input", {
+          type: "checkbox",
+          checked: f.unread || undefined,
+          onchange: (e) => {
+            messageFilters.unread = e.target.checked;
+            draw();
+          },
+        }),
+        "Unread only",
+      ),
+    ),
+  );
+  const row = (m) => {
+    const who = m.sender_label && m.sender_addr && m.sender_label !== m.sender_addr ? `${m.sender_label} (${m.sender_addr})` : (m.sender_addr ?? "—");
+    const meta = [
+      `${ago(m.ts)} · ${m.surface} · ${m.kind}`,
+      `${who} → ${m.receiver}`,
+      m.direction,
+      m.read_at ? `read ${ago(m.read_at)}` : "unread",
+      m.batch ? `batch ${m.batch}` : "",
+      m.reply_to != null ? `reply to #${m.reply_to}` : "",
+      m.work_state ? `work: ${m.work_state}${m.work_task_id ? ` (task ${m.work_task_id})` : ""}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return card(h("p", { class: "meta" }, meta), h("p", {}, String(m.body ?? "").slice(0, 1200)));
+  };
+  return [
+    filters,
+    h("h2", {}, `Messages (${rows.length})`),
+    ...(failed
+      ? [empty(`The messages could not be read just now: ${failed}`)]
+      : rows.length
+        ? rows.map(row)
+        : [empty("No messages match. Loosen a filter to see more.")]),
+  ];
+}
+
 async function viewAgents() {
   const agents = docs.ops?.agents || [];
   const to = h("select", { "aria-label": "To" }, h("option", { value: "all" }, "Everyone"), agents.map((a) => h("option", { value: `agent:${a.name}` }, a.name)));
@@ -3603,13 +3708,283 @@ async function viewAgents() {
   } catch (error) {
     unread = error.message;
   }
+  // The roster is the bridge's unified directory (#14374): fleet
+  // registry rows and notes identities, each with its credential
+  // state. Where that read cannot be made (an older bridge, no
+  // credential), the fleet roster from the ops document still stands,
+  // and the screen says the credential state is not shown.
+  let directory = null;
+  try {
+    const got = await api("directory");
+    if (Array.isArray(got)) directory = got;
+  } catch {
+    directory = null;
+  }
+  const roster =
+    directory ??
+    agents.map((a) => ({
+      surface: "fleet",
+      name: a.name,
+      groups: a.groups ?? [],
+      presence: "last_seen",
+      last_seen: a.last_seen ?? null,
+      unread: a.unread ?? (a.unread_commands ?? 0) + (a.unread_messages ?? 0),
+      unread_commands: a.unread_commands ?? 0,
+      unread_messages: a.unread_messages ?? 0,
+      credential: null,
+    }));
+  const agentCard = (a) => {
+    const cred = a.credential;
+    const credSaid = !cred
+      ? "credential state not shown"
+      : cred.state === "active"
+        ? `credentials active${cred.scopes?.length ? ` (${cred.scopes.join(", ")})` : ""}`
+        : "credentials revoked";
+    const meta =
+      a.surface === "notes"
+        ? `notes only · no presence on this surface · ${credSaid}`
+        : `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread · ${credSaid}`;
+    return card(
+      h("div", { class: "row" }, h("h3", {}, a.name), chip(a.surface, a.surface === "notes" ? "warn" : "good")),
+      h("p", { class: "meta" }, meta),
+      cred?.state === "active"
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: async (e) => {
+                  const yes = await ask({
+                    title: `Revoke ${a.name}'s ${a.surface === "notes" ? "notes tokens" : "bridge credentials"}?`,
+                    text: "It is cut off from the bridge until it is given a new credential. This is the per-agent kill switch.",
+                    okLabel: "Revoke",
+                    danger: true,
+                  });
+                  if (yes !== null) act("agent.revoke", { surface: a.surface, name: a.name }, `Revoked ${a.name}`, e.target);
+                },
+              },
+              "Revoke",
+            ),
+          )
+        : null,
+    );
+  };
+  // ---- provisioning (#14376, design §4.9) -------------------------------
+  // Minted enroll tokens, by state. Where the read cannot be made the
+  // screen says so, as it does for the directory.
+  let enroll = null;
+  try {
+    const got = await api("enroll-tokens");
+    if (Array.isArray(got)) enroll = got;
+  } catch {
+    enroll = null;
+  }
+  // A minted value, shown once: the card is built from the mint's
+  // answer and put straight into the page — never into this screen's
+  // state, the documents, or the outbox — so the next draw (leaving
+  // the screen, a refresh) takes it with it, and neither the bridge
+  // nor this console can show it again. That is the property, not a
+  // courtesy: the bridge keeps only the value's hash.
+  const showOnce = (title, note, value, command) => {
+    const copy = (what, label) =>
+      h(
+        "button",
+        {
+          class: "small",
+          onclick: () =>
+            navigator.clipboard
+              .writeText(what)
+              .then(() => toast("Copied"))
+              .catch(() => toast("Copying failed — select the text and copy it by hand", true)),
+        },
+        label,
+      );
+    const node = card(
+      h("h3", {}, title),
+      h("p", { class: "why" }, note),
+      h("pre", {}, value),
+      command ? h("pre", {}, command) : null,
+      h(
+        "div",
+        { class: "row end" },
+        copy(value, "Copy the value"),
+        command ? copy(command, "Copy the command") : null,
+        h("button", { class: "small ghost", onclick: () => node.remove() }, "Hide it"),
+      ),
+    );
+    view.prepend(node);
+    node.scrollIntoView();
+  };
+  const pName = h("input", { type: "text", "aria-label": "New agent name", placeholder: "new agent's name" });
+  const pKind = h("input", { type: "text", "aria-label": "Kind", list: "agent-kinds", placeholder: "kind — muse, codex, …" });
+  const pGroups = h("input", { type: "text", "aria-label": "Groups", placeholder: "groups, comma-separated" });
+  const pNotes = h("input", { type: "text", "aria-label": "Notes identity", placeholder: "notes identity (class/name) — blank for none" });
+  const pTtl = h(
+    "select",
+    { "aria-label": "Token lifetime" },
+    h("option", { value: "3600" }, "For an hour"),
+    h("option", { value: "86400" }, "For a day"),
+    h("option", { value: "604800" }, "For a week"),
+  );
+  pTtl.value = "86400";
+  const newAgent = card(
+    h("h3", {}, "New agent"),
+    h(
+      "p",
+      { class: "meta" },
+      "Mint a bootstrap enroll token, bound to the name, kind, groups and notes identity below. The token and the enroll command are shown once, when it is minted.",
+    ),
+    pName,
+    pKind,
+    h("datalist", { id: "agent-kinds" }, ["muse", "claude-code", "codex", "opencode", "openchamber", "openclaw", "gemini", "antigravity", "grok", "chatgpt", "generic"].map((k) => h("option", { value: k }))),
+    pGroups,
+    pNotes,
+    pTtl,
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "button",
+        {
+          onclick: async (e) => {
+            const agent = pName.value.trim();
+            if (!agent) return toast("Name the new agent first", true);
+            const result = await act(
+              "agent.mint-enroll",
+              {
+                agent,
+                kind: pKind.value.trim() || undefined,
+                groups: pGroups.value.split(",").map((g) => g.trim()).filter(Boolean),
+                notesIdentity: pNotes.value.trim() || undefined,
+                ttlSeconds: Number(pTtl.value) || undefined,
+              },
+              `Enroll token minted for ${agent}`,
+              e.target,
+            );
+            if (result && typeof result.bootstrap_token === "string") {
+              const groups = Array.isArray(result.groups) && result.groups.length ? ` --groups ${result.groups.join(",")}` : "";
+              showOnce(
+                `Enroll token for ${result.agent}`,
+                `Shown once: the bridge keeps only its hash, and it can never be shown again. It works until ${result.expires_at}. Run this on the new seat:`,
+                result.bootstrap_token,
+                `fleet agent enroll --name ${result.agent} --kind ${result.kind}${groups} --bootstrap ${result.bootstrap_token}`,
+              );
+            }
+          },
+        },
+        "Mint enroll token",
+      ),
+    ),
+  );
+  const cName = h("input", { type: "text", "aria-label": "Agent for the credential", list: "agent-names", placeholder: "agent's name" });
+  const cScope = (value, label, on) => {
+    const box = h("input", { type: "checkbox", value });
+    box.checked = on;
+    return { box, label: h("label", { class: "row check meta" }, box, label) };
+  };
+  const cInbox = cScope("inbox", "inbox", true);
+  const cSend = cScope("send", "send", true);
+  const cRead = cScope("read", "read", false);
+  const cService = h("input", { type: "checkbox" });
+  const newCredential = card(
+    h("h3", {}, "New credential"),
+    h(
+      "p",
+      { class: "meta" },
+      "Mint a credential directly, for an agent that is already enrolled or for a service. The value is shown once, when it is minted; keep it in the vault under the agent's token name.",
+    ),
+    cName,
+    h("datalist", { id: "agent-names" }, roster.filter((a) => a.surface === "fleet").map((a) => h("option", { value: a.name }))),
+    h("div", { class: "row" }, cInbox.label, cSend.label, cRead.label, h("label", { class: "row check meta" }, cService, "Service (service:<name>)")),
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "button",
+        {
+          onclick: async (e) => {
+            const agent = cName.value.trim();
+            if (!agent) return toast("Name the agent first", true);
+            const scopes = [cInbox, cSend, cRead].filter((s) => s.box.checked).map((s) => s.box.value);
+            if (!scopes.length) return toast("Pick at least one scope", true);
+            const result = await act(
+              "agent.mint-credential",
+              { agent, scopes, addr: cService.checked ? `service:${agent}` : undefined },
+              `Credential minted for ${agent}`,
+              e.target,
+            );
+            if (result && typeof result.credential === "string") {
+              showOnce(
+                `Credential for ${result.agent}`,
+                "Shown once: the bridge keeps only its hash, and it can never be shown again. Store it in the vault now, under the agent's token name.",
+                result.credential,
+                null,
+              );
+            }
+          },
+        },
+        "Mint credential",
+      ),
+    ),
+  );
+  const tokenRow = (t) => {
+    const closed =
+      t.state === "used"
+        ? `used ${ago(t.used_at)} — the exchange burned it`
+        : t.state === "revoked"
+          ? `revoked ${ago(t.revoked_at)} — taken back by the owner`
+          : t.state === "expired"
+            ? `expired ${ago(t.expires_at)} — its time ran out`
+            : `minted ${ago(t.created)} · works until ${t.expires_at}`;
+    return card(
+      h(
+        "div",
+        { class: "row" },
+        h("h3", {}, t.agent),
+        chip(t.state, t.state === "pending" ? "warn" : t.state === "used" ? "good" : ""),
+      ),
+      h(
+        "p",
+        { class: "meta" },
+        `${t.kind}${t.groups?.length ? ` · groups ${t.groups.join(", ")}` : ""}${t.notes_identity ? ` · notes ${t.notes_identity}` : ""} · ${closed}`,
+      ),
+      t.state === "pending"
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: async (e) => {
+                  const yes = await ask({
+                    title: `Take back ${t.agent}'s unused enroll tokens?`,
+                    text: "Every still-pending token minted for this agent is revoked. One already used is not touched — its credentials are revoked from the roster above.",
+                    okLabel: "Take back",
+                    danger: true,
+                  });
+                  if (yes !== null) act("agent.revoke-enroll", { agent: t.agent }, `Took back ${t.agent}'s enroll tokens`, e.target);
+                },
+              },
+              "Take back",
+            ),
+          )
+        : null,
+    );
+  };
   return [
     ...notices(docs.ops, ["agents"]),
     compose,
-    h("h2", {}, `Agents (${agents.length})`),
-    ...agents.map((a) =>
-      card(h("h3", {}, a.name), h("p", { class: "meta" }, `${(a.groups || []).join(", ")} · seen ${ago(a.last_seen) || "never"} · ${a.unread_commands ?? 0} commands and ${a.unread_messages ?? 0} messages unread`)),
-    ),
+    h("h2", {}, `Agents (${roster.length})`),
+    directory === null ? empty("The unified directory could not be read just now; the fleet roster is shown, without credential state.") : null,
+    ...roster.map(agentCard),
+    h("h2", {}, "Provisioning"),
+    newAgent,
+    newCredential,
+    enroll === null ? empty("The enroll tokens could not be read just now.") : null,
+    ...(enroll ?? []).map(tokenRow),
     h("h2", {}, "Recent messages"),
     ...(recent.length
       ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
@@ -3696,6 +4071,7 @@ const VIEWS = {
   "more/prs": ["Pull requests", viewPrs, "ops"],
   "more/issues": ["Ranked issues", viewIssues, "ops"],
   "more/agents": ["Agents", viewAgents, "ops"],
+  "more/messages": ["Messages", viewMessages],
   "more/services": ["Services", viewServices, "ops"],
   "more/notify": ["Notifications", viewNotify],
   "more/phone": ["Phones", viewPhone],
