@@ -32,14 +32,17 @@ const PLOT = { x: 34, y: 10, w: 320, h: 128 };
 const GAP = 2;
 const BAR_MAX = 24;
 
-/** The smallest clean number (1, 2, 2.5 or 5 times a power of ten) that
- * is at least `value`: the top of a scale. Nothing to show is a scale
- * to 1 (a chart of zeros still has an axis). */
+/** The smallest clean number (1, 1.5, 2, 2.5, 3, 4, 5, 6 or 8 times a
+ * power of ten) that is at least `value`: the top of a scale, close
+ * enough above the tallest mark that the plot is used. Nothing to show
+ * is a scale to 1 (a chart of zeros still has an axis). */
 export function niceMax(value) {
   if (!(value > 0)) return 1;
   const power = 10 ** Math.floor(Math.log10(value));
-  for (const step of [1, 2, 2.5, 5, 10]) {
-    if (step * power >= value) return step * power;
+  for (const step of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
+    // (To a few places: 0.4 is not quite 4 times 0.1 as a computer counts.)
+    const top = Math.round(step * power * 1e6) / 1e6;
+    if (top >= value) return top;
   }
   return 10 * power;
 }
@@ -93,6 +96,10 @@ export function windowTotals(values, days) {
 export function deltaSaid(now, before) {
   if (before === null || before === undefined) return { text: "", tone: "" };
   if (before === 0) return now === 0 ? { text: "level", tone: "" } : { text: `▲ from none`, tone: "up" };
+  // Three times as much or more is said as so many times: "▲ 4.2×"
+  // reads, "▲ 320%" has to be worked out.
+  const times = now / before;
+  if (times >= 3) return { text: `▲ ${times < 10 ? Math.round(times * 10) / 10 : Math.round(times)}×`, tone: "up" };
   const change = Math.round(((now - before) / before) * 100);
   if (change === 0) return { text: "level", tone: "" };
   return change > 0 ? { text: `▲ ${change}%`, tone: "up" } : { text: `▼ ${-change}%`, tone: "down" };
@@ -399,7 +406,8 @@ export function statTiles(tiles) {
     tiles.map((tile) => {
       const values = tile.spark ?? [];
       const max = niceMax(Math.max(0, ...values));
-      const plot = { x: 1, y: 2, w: 98, h: 20 };
+      // In from the edges by the dot at its end, so that is not cut off.
+      const plot = { x: 3, y: 3, w: 94, h: 18 };
       const run = lineRuns(values, max, plot)[0] ?? [];
       const d = run.map((p, i) => `${i ? "L" : "M"}${Math.round(p.x * 10) / 10},${Math.round(p.y * 10) / 10}`).join("");
       const end = run[run.length - 1];

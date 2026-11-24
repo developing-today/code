@@ -201,6 +201,32 @@ test("a week by the day: the window's own days are drawn, the week before is onl
   expect(sh.tasksSince).toBe("2026-11-11");
 });
 
+test("a total is set against the days before only when those are whole; a window still being read says so", () => {
+  const d = doc(7, 14);
+  d.merged.all = [10, 10, 10, 10, 10, 10, 10, 12, 12, 12, 12, 12, 12, 5];
+  const first = (x: typeof d) => {
+    const k = shape(x).kpis[0];
+    return [k.value, k.delta.text, k.against];
+  };
+  // Whole: 77 against 70.
+  expect(first(d)).toEqual(["77", "▲ 10%", "on the 7 days before"]);
+  // Everything since noon on the 17th is read: the window (the 18th on) is whole, the week before is not.
+  d.history.whole = false;
+  d.history.covered = "2026-11-17T12:00:00Z";
+  expect(first(d)).toEqual(["77", "", "in 7 days"]);
+  // Read back to the start of the 11th: the week before (the 11th to the 17th) is whole too.
+  d.history.covered = "2026-11-11T00:00:00Z";
+  expect(first(d)).toEqual(["77", "▲ 10%", "on the 7 days before"]);
+  // A second later than that, the 11th is not whole.
+  d.history.covered = "2026-11-11T00:00:01Z";
+  expect(first(d)).toEqual(["77", "", "in 7 days"]);
+  // Only back to the 20th, or nothing whole yet: the number is what has been read so far.
+  d.history.covered = "2026-11-20T00:00:00Z";
+  expect(first(d)).toEqual(["77", "", "of what is read so far"]);
+  d.history.covered = null;
+  expect(first(d)).toEqual(["77", "", "of what is read so far"]);
+});
+
 test("ninety days go by the week, the newest week whole; and with no days before them a total stands alone", () => {
   const d = doc(90, 90);
   d.merged.all = d.days.map(() => 1);

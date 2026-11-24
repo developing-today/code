@@ -6,7 +6,7 @@
 // are the ones written at the top of public/charts.js. That a browser
 // draws it as meant was looked at in Chromium on the laptop, in a dark
 // theme and a light one (see the design record).
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   compact,
@@ -25,26 +25,35 @@ import {
   statTiles,
   windowTotals,
 } from "../public/charts.js";
-import { type El, page } from "./dom.ts";
+import { away, type El, page } from "./dom.ts";
 
-test("the top of a scale is the next clean number", () => {
+// The stand-in page is this file's own: the tests after it have none.
+afterAll(away);
+
+test("the top of a scale is the next clean number, not far above the tallest mark", () => {
   for (const [value, top] of [
     [0, 1],
     [-3, 1],
     [1, 1],
-    [3, 5],
-    [7, 10],
-    [12, 20],
+    [3, 3],
+    [7, 8],
+    [12, 15],
     [23, 25],
-    [26, 50],
+    [26, 30],
     [99, 100],
     [100, 100],
-    [101, 200],
+    [101, 150],
     [250, 250],
-    [0.4, 0.5],
-    [1288, 2000],
+    [526, 600],
+    [0.4, 0.4],
+    [1288, 1500],
   ]) {
     expect([value, niceMax(value)]).toEqual([value, top]);
+  }
+  // Never below what it has to hold, never more than half as much again above it.
+  for (let value = 1; value < 5000; value += 7) {
+    const top = niceMax(value);
+    expect([value, top >= value && top <= value * 1.5]).toEqual([value, true]);
   }
 });
 
@@ -117,6 +126,11 @@ test("a total and the one before it, and how one stands against the other", () =
   expect(deltaSaid(100, 100)).toEqual({ text: "level", tone: "" });
   // Under half a percent either way is level.
   expect(deltaSaid(1004, 1000)).toEqual({ text: "level", tone: "" });
+  // Three times as much or more is said as so many times.
+  expect(deltaSaid(299, 100)).toEqual({ text: "▲ 199%", tone: "up" });
+  expect(deltaSaid(300, 100)).toEqual({ text: "▲ 3×", tone: "up" });
+  expect(deltaSaid(425, 100)).toEqual({ text: "▲ 4.3×", tone: "up" });
+  expect(deltaSaid(4628, 33)).toEqual({ text: "▲ 140×", tone: "up" });
   expect(deltaSaid(5, 0)).toEqual({ text: "▲ from none", tone: "up" });
   expect(deltaSaid(0, 0)).toEqual({ text: "level", tone: "" });
   expect(deltaSaid(5, null)).toEqual({ text: "", tone: "" });
@@ -321,12 +335,12 @@ test("lines: a legend for two, a wash and no legend for one, a dot that follows 
   const readout = two.find(".readout")[0];
   expect(text(readout)).toBe("3 days 12 opened 9 closed");
   const svg = two.find("svg")[0];
-  // Each line ends on a dot ringed in the card's colour, on its last number: the scale tops out at 10,
-  // so 6 is 60% up a plot 128 tall from 138: y 61.2; 3 is at 99.6. Both at the right edge, 354.
+  // Each line ends on a dot ringed in the card's colour, on its last number: the scale tops out at 6,
+  // so 6 is at the top of the plot (10) and 3 half way down its 128 (74). Both at the right edge, 354.
   const dots = two.find(".ring");
   expect(dots.map((d) => [d.attrs.cx, d.attrs.cy])).toEqual([
-    ["354", "61.2"],
-    ["354", "99.6"],
+    ["354", "10"],
+    ["354", "74"],
   ]);
   svg.fire("keydown", { key: "Home" });
   expect(text(readout)).toBe("Sun 22 Nov 4 opened 1 closed");
@@ -358,7 +372,7 @@ test("lines: a legend for two, a wash and no legend for one, a dot that follows 
   expect(text(one.find(".readout")[0])).toBe("B – typically");
   expect(Number(one.find(".ring")[0].attrs.cx)).toBeLessThan(0);
   // The scale is written the way the numbers are.
-  expect(one.find(".tick").map(text).slice(0, 3)).toEqual(["0 min", "1.7 h", "3.3 h"]);
+  expect(one.find(".tick").map(text).slice(0, 3)).toEqual(["0 min", "75 min", "2.5 h"]);
   // The table too.
   expect(one.find("tbody")[0].find("td").map(text)).toEqual(["30 min", "–", "1.5 h", "2 h"]);
 });
@@ -390,6 +404,11 @@ test("the leading numbers: what each is, the number, how it stands, and the shap
   ]);
   // Up and down are said by the arrow and the figure; the class only adds the colour.
   expect(each.map((t) => t.find(".kpi-delta")[0].className)).toEqual(["kpi-delta up", "kpi-delta down", "kpi-delta"]);
+  // The dot at the end of a shape is whole: its edge is inside the drawing (100 by 24), on every side.
+  for (const dot of tiles.find("circle")) {
+    const [cx, cy, r] = [Number(dot.attrs.cx), Number(dot.attrs.cy), Number(dot.attrs.r)];
+    expect([cx - r >= 0, cx + r <= 100, cy - r >= 0, cy + r <= 24]).toEqual([true, true, true, true]);
+  }
   // A shape needs two days.
   expect(each.map((t) => t.find("svg").length)).toEqual([1, 1, 0]);
 });

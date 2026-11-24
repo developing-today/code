@@ -46,10 +46,17 @@ export function shape(doc) {
   const columns = (values) => rollUp(cut(values), groups);
   const labels = groups.map(([, to]) => dayShort(days[to - 1]));
   const long = groups.map(([from, to]) => (weekly ? `${dayShort(days[from])} to ${dayShort(days[to - 1])}` : dayLong(days[from])));
-  const against = `on the ${n} days before`;
+  // A total is set against the days before only when those days are
+  // whole too; while the window itself is still being read, it is said
+  // to be what has been read so far.
+  const firstWhole = doc.history.whole ? doc.history.from : doc.history.covered ? wholeFrom(doc.history.covered) : null;
+  const windowWhole = firstWhole !== null && firstWhole <= days[0];
+  const beforeWhole = windowWhole && doc.days.length >= n * 2 && firstWhole <= doc.days[doc.days.length - n * 2];
   const kpi = (label, values) => {
     const totals = windowTotals(values, n);
-    return { label, value: compact(totals.now), delta: deltaSaid(totals.now, totals.before), against: totals.before === null ? `in ${n} days` : against, spark: cut(values) };
+    const before = beforeWhole ? totals.before : null;
+    const against = !windowWhole ? "of what is read so far" : before === null ? `in ${n} days` : `on the ${n} days before`;
+    return { label, value: compact(totals.now), delta: deltaSaid(totals.now, before), against, spark: cut(values) };
   };
   const featuresAll = doc.days.map((_, i) => doc.projects.reduce((sum, p) => sum + (doc.features.projects[p.id]?.[i] ?? 0), 0));
   const typical = middle(cut(doc.merged.minutes));

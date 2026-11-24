@@ -450,8 +450,9 @@ export class Trends {
         } else on(meta, got.last);
         await save();
       }
-      // Then the older stretches, the newest of them first.
-      while (left > 0 && meta.live && meta.back) {
+      // Then the older stretches, the newest of them first (there is
+      // one to read only once the newest has been read to its end).
+      while (left > 0 && meta.back) {
         left--;
         const back = meta.back;
         const got = await this.page(back, back.until, meta, open, touched);

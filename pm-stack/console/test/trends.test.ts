@@ -243,6 +243,13 @@ describe("what a pull request's title says it is", () => {
     expect(titleParts("docs(fleet): how a lane is claimed").kind).toBe("docs");
     expect(titleParts("chore(deps): bump a thing").kind).toBe("other");
     expect(titleParts("refactor(mcpx): one reader")).toEqual({ kind: "other", scope: "mcpx", words: "one reader" });
+    // A single word before the colon that is not a kind is a scope.
+    expect(titleParts("mcpx: one reader")).toEqual({ kind: "other", scope: "mcpx", words: "one reader" });
+    expect(titleParts("Refine(queue): the scan")).toEqual({
+      kind: "other",
+      scope: "",
+      words: "Refine(queue): the scan",
+    });
     // A word before a colon that is not a kind and has a space is no scope.
     expect(titleParts("Decision record: use the queue")).toEqual({
       kind: "other",
@@ -403,7 +410,17 @@ describe("the history is read from GitHub newest first, a page at a time, and ke
     // Read on: one look at what is new (nothing), then the stretch from a week back takes three pages
     // (100, 100, and the rest up to where the next stretch began), and the four older stretches a page each,
     // each ending at once: its first page already reaches past where it stops.
+    const written: string[] = [];
+    const put = w.shelf.put;
+    w.shelf.put = async (key, text) => {
+      if (key.startsWith("day:")) written.push(key);
+      return put(key, text);
+    };
     const second = await w.trends.advance(20);
+    // A stretch counts only what changed before the one after it began: the rest was counted by that
+    // one. So the week-back stretch writes the 20th, then the 20th and 21st, then the 21st, and the
+    // four older stretches (whose first page is all from after they stop) write no day at all.
+    expect(written).toEqual(["day:2026-11-20", "day:2026-11-20", "day:2026-11-21", "day:2026-11-21"]);
     expect(since(w.asked).slice(2)).toEqual([
       "2026-11-23T12:00:00Z",
       "2026-11-17T12:00:00Z",

@@ -65,13 +65,21 @@ export class El {
   }
 }
 
-/** Put a page in place for the builders to draw on. */
+/** Put a page in place for the builders to draw on. It has nothing on
+ * it to be found: whatever looks for the app's own frame finds none,
+ * as when there is no page at all. `away()` takes it out again. */
 export function page() {
   const made = {
     createElement: (tag: string) => new El(tag),
     createElementNS: (_: string, tag: string) => new El(tag),
     createTextNode: (text: string) => text,
+    getElementById: () => null,
+    querySelector: () => null,
   };
   (globalThis as unknown as { document: unknown }).document = made;
   return made;
+}
+
+export function away() {
+  delete (globalThis as unknown as { document?: unknown }).document;
 }
