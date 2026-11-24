@@ -210,6 +210,91 @@ describe("the direct classes", () => {
     expect(h.calls[0].url).toBe(`${cfg.queueDbUrl}/v2/pipeline`);
     expect(h.calls[0].init.headers.Authorization).toBe("Bearer queue-test");
   });
+
+  test("the queue store has twenty seconds to answer, body and all: stopped then, the read fails saying so, and however it ends no timer is left running", async () => {
+    // The timers a call starts, held here instead of run: the test fires the deadline itself.
+    const real = { set: globalThis.setTimeout, clear: globalThis.clearTimeout };
+    const set: { fire: () => void; ms: number; cleared: boolean }[] = [];
+    globalThis.setTimeout = ((fire: () => void, ms: number) => set.push({ fire, ms, cleared: false })) as never;
+    globalThis.clearTimeout = ((id: number) => {
+      if (set[id - 1]) set[id - 1].cleared = true;
+    }) as never;
+    const started = async (count: number) => {
+      for (let turn = 0; turn < 100 && set.length < count; turn++) await Promise.resolve();
+      expect(set.length).toBe(count);
+    };
+    type Init = { signal: AbortSignal; headers: Record<string, string> };
+    const stopped = (signal: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason)));
+    const good = { results: [{ type: "ok", response: { result: { cols: [{ name: "n" }], rows: [[{ value: 3 }]] } } }] };
+    const classes = (fetchImpl: unknown) =>
+      directClasses(edgeConfig, { githubToken: "gh-test", queueToken: "queue-test", fetchImpl: fetchImpl as Fetch })
+        .ops;
+    const SQL = "SELECT count(*) AS n FROM tasks";
+    try {
+      // Answered: under a deadline that had not run out, and its timer cleared.
+      const fine = classes(
+        asThePlatformFetch(async (_url: string, init: Init) => ({
+          ok: !init.signal.aborted,
+          status: 200,
+          json: async () => good,
+        })),
+      );
+      expect(await fine.sql(SQL, [])).toEqual([{ n: 3 }]);
+      expect(set.map((timer) => [timer.ms, timer.cleared])).toEqual([[20_000, true]]);
+      // Never answered: stopped at the deadline, and the read says what happened.
+      const hung = classes(asThePlatformFetch((_url: string, init: Init) => stopped(init.signal)));
+      const waiting = hung.sql(SQL, []).catch((error: Error) => error.message);
+      await started(2);
+      set[1].fire();
+      expect(await waiting).toBe("the queue store did not answer within 20 seconds");
+      // Answered, with a body that never ends: the same.
+      const endless = classes(
+        asThePlatformFetch(async (_url: string, init: Init) => ({
+          ok: true,
+          status: 200,
+          json: () => stopped(init.signal),
+        })),
+      );
+      const reading = endless.sql(SQL, []).catch((error: Error) => error.message);
+      await started(3);
+      set[2].fire();
+      expect(await reading).toBe("the queue store did not answer within 20 seconds");
+      // Refused: its answer's body is let go of, unread; and a failure that is not the
+      // deadline's is said as itself.
+      let letGo = 0;
+      const refused = classes(
+        asThePlatformFetch(async () => ({
+          ok: false,
+          status: 500,
+          json: async () => ({}),
+          body: {
+            cancel: async () => {
+              letGo++;
+            },
+          },
+        })),
+      );
+      expect(await refused.sql(SQL, []).catch((error: Error) => error.message)).toBe("queue store answered http 500");
+      expect(letGo).toBe(1);
+      const down = classes(
+        asThePlatformFetch(async () => {
+          throw new Error("connection refused");
+        }),
+      );
+      expect(await down.sql(SQL, []).catch((error: Error) => error.message)).toBe("connection refused");
+      expect(set.map((timer) => [timer.ms, timer.cleared])).toEqual([
+        [20_000, true],
+        [20_000, true],
+        [20_000, true],
+        [20_000, true],
+        [20_000, true],
+      ]);
+    } finally {
+      globalThis.setTimeout = real.set;
+      globalThis.clearTimeout = real.clear;
+    }
+  });
 });
 
 describe("a local run's stand-ins", () => {
@@ -1214,15 +1299,30 @@ describe("what the edge remembers of GitHub", () => {
     expect([first.u, first.e, first.t]).toEqual(["u", kept.etag, kept.text]);
     first.t = first.t.slice(0, -1);
     expect(await githubMemory(cut).get("u")).toBeUndefined();
-    // A wait read back is kept to for no longer than one could have been set for.
+    // A wait read back that is further off than one can be set for is not GitHub's, and is not
+    // kept to: not by this object, and not by any after it. (One cut down to the longest wait
+    // would be cut down afresh by every object that started, and never end.) One that could
+    // have been set is kept to, to the minute.
     const far = mapStore(
       new Map<string, unknown>([
-        ["gh:quiet", { core: { until: clock.t + 400 * 24 * 60 * 60_000, why: "a time that cannot be right" } }],
+        [
+          "gh:quiet",
+          {
+            core: { until: clock.t + 400 * 24 * 60 * 60_000, why: "a time that cannot be right" },
+            search: { until: clock.t + 65 * 60_000, why: "the longest there is" },
+          },
+        ],
       ]),
     );
-    expect(await githubMemory(far, { now: () => clock.t }).quiet()).toEqual({
-      core: { until: clock.t + 65 * 60_000, why: "a time that cannot be right" },
-    });
+    const started = clock.t;
+    for (let object = 0; object < 4; object++) {
+      expect([object, await githubMemory(far, { now: () => clock.t }).quiet()]).toEqual([
+        object,
+        { search: { until: started + 65 * 60_000, why: "the longest there is" } },
+      ]);
+      clock.t += 20 * 60_000;
+    }
+    clock.t = started;
     // The most an entry may say it has is what an answer of the longest kept would have.
     const most = mapStore();
     const full = { etag: 'W/"full"', text: "f".repeat(41) };

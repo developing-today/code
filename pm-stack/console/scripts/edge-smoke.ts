@@ -567,6 +567,17 @@ try {
       )
     ).json()) as { result?: { devices?: number } };
     check("a device takes notifications", subscribed.result?.devices === 1, JSON.stringify(subscribed));
+    // With someone to tell, the object wakes itself, and health says so
+    // to anyone: that the clock is wanted, and when it has next asked
+    // to be woken (a time this runtime holds, not the object).
+    const clockSaid = (
+      (await (await get("/console/health")).json()) as { clock?: { wanted: boolean; next: number | null } }
+    ).clock;
+    check(
+      "and health says the object's own clock is wanted, and when it next wakes",
+      clockSaid?.wanted === true && typeof clockSaid.next === "number" && clockSaid.next > Date.now() - 60_000,
+      JSON.stringify(clockSaid),
+    );
     // The clock starts itself when a document is read. Its interval
     // is the run's shortened one, and the board goes stale half a
     // minute in: an alarm that fires and does its work reads the

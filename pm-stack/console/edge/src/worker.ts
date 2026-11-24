@@ -86,6 +86,7 @@ export class PmEdge extends DurableObject<Env> {
         fetchImpl: fetch,
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
+      getAlarm: () => ctx.storage.getAlarm(),
       ownClockMs: ownClockMs(env.OWN_CLOCK_MS),
       // A read started behind an answer is given the time to finish.
       later: (work) => ctx.waitUntil(work),

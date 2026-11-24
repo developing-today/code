@@ -888,3 +888,51 @@ the ten-minute gate on asking for the released Android build is in
 memory, so every object that starts asks again; the queue store is
 asked with no deadline at all. #14001 has the list, to be gone through
 one by one.
+
+## 2026-11-24T02:30Z Update: in service, and the first of what else was only in memory
+
+**In service.** #14000 was in service by 02:13Z as `fbbba7f607e9`. Over the
+three minutes after, health read every twenty seconds had a different
+`woke` on eight of nine reads: the object is put away in service as
+quickly as supposed, and nothing in its memory lasts from one read of
+a list to the next. In those minutes it asked GitHub nothing
+(`answers: 0`): nobody had the app open, and its hourly check of its
+own reads was not yet due. What GitHub answers the deployed Worker's
+tagged reads is appended below when it has been seen.
+
+**The first of #14001.**
+
+- _The released Android build._ What GitHub last said of it, and when
+  it was asked, were in memory, so the ten minutes between askings
+  meant nothing: every object that started asked again. Stored now
+  under `released`, read back once by each object, and removed when a
+  description is found out of step with its file.
+- _The queue store had no deadline._ Every other request the edge
+  makes has one. It has twenty seconds for its answer and the body,
+  and a read that runs out says so ("the queue store did not answer
+  within 20 seconds"). The token is fetched before the time starts.
+- _Health says what the object's own clock is doing_ (`clock.wanted`,
+  `clock.next`). After the deploy nothing was asked of GitHub for
+  three minutes, and from outside it could not be told whether no
+  device takes notifications or the clock had stopped. The time it has
+  asked to be woken at is the platform's to hold, so an object that
+  has just started can say it.
+
+**A fault in #14000's own hardening, found writing the first of
+these.** A time read back from storage that was further off than could
+have been set was cut down to the longest allowed, counted from now.
+Every object that starts counts from its own now, so such a time would
+have been cut down afresh each time and never come: for the released
+build the gate would never have opened, and for GitHub's wait the edge
+would never have asked again. Nothing the code writes is that far off,
+so it would have taken a damaged record. A time yet to come on the
+release's record is now asked for again at once, and a wait further
+off than GitHub can set is not kept to at all. Both are tested across
+several objects, which is what the first test of the wait's bound did
+not do.
+
+**Checked.** The release's test is run again with a new object for
+every request; 18 more single faults planted (the gate, the queue
+store's deadline, the clock in health, the wait's bound), all failing
+a test; the real-runtime check passes with the clock said by health
+(42 checks).
