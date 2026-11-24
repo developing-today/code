@@ -2,10 +2,18 @@
 // system of record for "waits on Drew", and this module reconciles them
 // into the aggregator's attention view as a read-only source. It censuses
 // OPEN issues and PRs carrying user/review or user/escalated across the
-// four repos via the GitHub search API (paginated), deduplicates items
+// four repos, from each repository's own list of open issues by label
+// (paginated; that list carries pull requests too), deduplicates items
 // carrying both labels, and reports per-source failures and freshness
 // honestly — a failed repo/label query is named in `sources`, never
 // silently rendered as "nothing waiting".
+//
+// It asked the search API until #14103. GitHub answers a search of
+// issues that names neither `is:issue` nor `is:pull-request` with a
+// 422, so every query of the census failed and none of what waited
+// was shown. The list has no such rule, is on the core allowance (the
+// search has its own, thirty a minute), does not lag behind an index,
+// and is what the PM console's edge reads for the same lists (#14112).
 //
 // Reconciliation direction (#1226): labels are the INPUT to the page.
 // The aggregator never writes labels back; the orchestrator remains the
@@ -76,10 +84,11 @@ export interface NeedsDrewSourceStatus {
   /** True when the page cap stopped the census early — the count is a
    *  floor, and the census says so instead of looking complete. */
   truncated?: boolean;
-  /** True when any page of this query came back with GitHub's
-   *  `incomplete_results: true` (search timed out / partially indexed).
-   *  The count is then a floor even when it equals `total_count`, so the
-   *  census must never present it as authoritative (Codex P2 on #3970). */
+  /** True when a page of this query said its results were incomplete.
+   *  That was the search API's `incomplete_results` (Codex P2 on #3970);
+   *  the repository list this census asks now (#14103) has no such
+   *  flag, so nothing sets this today. Kept because a census that
+   *  carries it must still never be presented as authoritative. */
   incomplete?: boolean;
 }
 
@@ -98,12 +107,14 @@ export type NeedsDrewFetchPage = (url: string) => Promise<{ ok: boolean; json: u
 const PER_PAGE = 100;
 const MAX_PAGES = 10;
 
-export function needsDrewSearchUrl(repo: string, label: NeedsDrewLabel, page: number): string {
-  const q = `repo:${repo} state:open label:"${label}"`;
-  return `https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=${PER_PAGE}&page=${page}`;
+/** One page of a repository's open issues and pull requests carrying a
+ *  label, as the REST API lists them. Not the search: see the note at
+ *  the top of this file (#14103). */
+export function needsDrewListUrl(repo: string, label: NeedsDrewLabel, page: number): string {
+  return `https://api.github.com/repos/${repo}/issues?state=open&labels=${encodeURIComponent(label)}&per_page=${PER_PAGE}&page=${page}`;
 }
 
-interface RawSearchItem {
+interface RawListItem {
   number?: unknown;
   title?: unknown;
   html_url?: unknown;
@@ -182,6 +193,19 @@ export function needsDrewWaitCounts(census: NeedsDrewCensus): Record<NeedsDrewWa
   return counts;
 }
 
+/** How long a completed sweep stays fresh. A sweep is one request for
+ *  each repository and label (eight), on GitHub's core allowance. With
+ *  a token that is nothing against five thousand an hour, and five
+ *  minutes is as fresh as the page needs. Without one GitHub allows an
+ *  address sixty requests an hour, which a sweep every five minutes
+ *  (ninety-six) would use up by itself: it is then made every ten
+ *  minutes (forty-eight), which still leaves little for anything else.
+ *  (The search this census asked until #14103 was counted apart, by the
+ *  minute, so a missing token did not show there.) */
+export function needsDrewSweepTtlMs(hasToken: boolean): number {
+  return hasToken ? 300_000 : 600_000;
+}
+
 export interface NeedsDrewSweeperOptions {
   /** How long a completed sweep stays fresh. */
   ttlMs?: number;
@@ -251,21 +275,18 @@ export async function buildNeedsDrewCensus(
       const status: NeedsDrewSourceStatus = { repo, label, ok: true, count: 0, fetchedAt };
       try {
         let page = 1;
-        let total = Number.POSITIVE_INFINITY;
         while (page <= MAX_PAGES) {
-          const res = await fetchPage(needsDrewSearchUrl(repo, label, page));
+          const res = await fetchPage(needsDrewListUrl(repo, label, page));
           if (!res.ok) {
             const j = res.json as { status?: unknown; error?: unknown } | null;
             throw new Error(typeof j?.status === "number" ? `HTTP ${j.status}` : String(j?.error ?? "fetch failed"));
           }
-          const payload = res.json as { total_count?: unknown; items?: unknown; incomplete_results?: unknown };
-          if (typeof payload?.total_count === "number") total = payload.total_count;
-          // GitHub returns 200 + incomplete_results for a search that
-          // timed out or is only partially indexed. Ignoring the flag
-          // would let a truncated sweep look complete — worst case an
-          // authoritative empty queue (Codex P2 on #3970).
-          if (payload?.incomplete_results === true) status.incomplete = true;
-          const rawItems = Array.isArray(payload?.items) ? (payload.items as RawSearchItem[]) : [];
+          // The list answers an array. Anything else under a 200 (an
+          // error object, a payload of another shape) is a failed
+          // query: read as "no items" it would be an authoritative
+          // empty queue.
+          if (!Array.isArray(res.json)) throw new Error("the answer was not a list");
+          const rawItems = res.json as RawListItem[];
           for (const raw of rawItems) {
             // Defensive: the query asks for state:open, but a stale or
             // hand-built payload must never leak a closed item in.
@@ -295,10 +316,13 @@ export async function buildNeedsDrewCensus(
               hands: extractNeedsDrewHands(raw.body),
             });
           }
-          if (rawItems.length < PER_PAGE || status.count >= total) break;
+          // A page that is not full is the last. A full one is followed
+          // by another; if the cap on pages is reached with the last
+          // page still full, there may be more, and the count is a floor.
+          if (rawItems.length < PER_PAGE) break;
+          if (page === MAX_PAGES) status.truncated = true;
           page++;
         }
-        if (status.count < total) status.truncated = true;
       } catch (err) {
         status.ok = false;
         status.error = err instanceof Error ? err.message : String(err);
@@ -346,6 +370,12 @@ export interface NeedsDrewAnswer {
   via: string;
 }
 
+export interface NeedsDrewBrokerMapping {
+  source: "fleet-actions-exec";
+  key: string;
+  handle: string;
+}
+
 export interface NeedsDrewQuestion {
   ledgerId: string;
   question: string;
@@ -356,6 +386,8 @@ export interface NeedsDrewQuestion {
   token: string;
   raisedAt: string;
   source: string;
+  /** Present only when a broker-raised Actions-exec question has a valid key. */
+  brokerMapping?: NeedsDrewBrokerMapping;
   answer?: NeedsDrewAnswer;
 }
 
@@ -469,11 +501,13 @@ export async function raiseNeedsDrew(
   file: string,
   input: NeedsDrewInput,
   source = "fleet-queue",
+  key?: string,
 ): Promise<NeedsDrewQuestion> {
   return serializeNeedsDrew(file, async () => {
     const items = await readNeedsDrewItems(file);
     const existing = items.find((i) => i.ledgerId === input.ledgerId);
     if (existing) return existing;
+    const brokerMapping = actionsExecMapping(source, key);
     const item: NeedsDrewQuestion = {
       ledgerId: input.ledgerId,
       question: input.question,
@@ -483,11 +517,30 @@ export async function raiseNeedsDrew(
       token: randomUUID(),
       raisedAt: new Date().toISOString(),
       source,
+      ...(brokerMapping ? { brokerMapping } : {}),
     };
     items.push(item);
     await writeNeedsDrewItems(file, items);
     return item;
   });
+}
+
+function actionsExecMapping(source: string, key: string | undefined): NeedsDrewBrokerMapping | null {
+  const normalizedKey = key?.trim() ?? "";
+  const prefix = "actions-exec-ext:";
+  if (source !== "fleet-actions-exec" || !normalizedKey.startsWith(prefix)) return null;
+  const handle = normalizedKey.slice(prefix.length).trim();
+  if (!handle) return null;
+  return { source: "fleet-actions-exec", key: normalizedKey, handle };
+}
+
+/** Resolve only answered questions with a verified broker mapping. */
+export function needsDrewAnswerHandle(question: NeedsDrewQuestion): string | null {
+  const mapping = question.brokerMapping;
+  if (!question.answer || question.source !== "fleet-actions-exec" || !mapping) return null;
+  const parsed = actionsExecMapping(mapping.source, mapping.key);
+  if (!parsed || parsed.handle !== mapping.handle) return null;
+  return mapping.handle;
 }
 
 export async function getNeedsDrew(file: string, ledgerId: string): Promise<NeedsDrewQuestion | null> {

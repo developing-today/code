@@ -719,6 +719,7 @@ dependencies = [
  "fleet-dispatch",
  "fleet-dispatch-test",
  "fleet-laptop-agent",
+ "fleet-orgs",
  "fleet-proxy",
  "fleet-proxy-proto",
  "fleet-queue",
@@ -818,6 +819,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "fleet-orgs"
+version = "0.1.0"
+dependencies = [
+ "fleet-config",
+ "fleet-secrets",
+ "libc",
+ "proptest",
+ "rusqlite",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

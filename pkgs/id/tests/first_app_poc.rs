@@ -31,16 +31,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{NaiveDate, TimeZone};
 use chrono_tz::Tz;
 use id::{
-    chain::{sign, ChainExt, Event},
+    chain::{ChainExt, Event, sign},
     didit::{
-        decode_record_body, encode_entity_body, encode_expectation_body, encode_record_body,
-        evaluate, ActiveWindow, Entity, Expectation, HoursSpan, Period, Record, VerdictState,
-        Window as DiditWindow, ENTITY_KIND, EXPECTATION_KIND, RECORD_KIND,
+        ActiveWindow, ENTITY_KIND, EXPECTATION_KIND, Entity, Expectation, HoursSpan, Period,
+        RECORD_KIND, Record, VerdictState, Window as DiditWindow, decode_record_body,
+        encode_entity_body, encode_expectation_body, encode_record_body, evaluate,
     },
-    documents::{DocumentRef, DOCUMENT_KIND},
+    documents::{DOCUMENT_KIND, DocumentRef},
     event_store::{EventStore, Ingest},
-    idset::{view::expand_set, Entry, Excludes, WriterSet},
-    tag_claims::{TagOp, SET_KIND},
+    idset::{Entry, Excludes, WriterSet, view::expand_set},
+    tag_claims::{SET_KIND, TagOp},
     waiting::WaitingLimits,
 };
 use p2panda_core::{Hash, SeqNum, SigningKey};
@@ -292,8 +292,8 @@ fn walk_record(id_byte: u8, at: i64) -> Record {
 }
 
 #[test]
-fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excluded_but_retrievable(
-) {
+fn test_first_app_poc_two_identities_exchange_and_a_third_partys_claims_are_excluded_but_retrievable()
+ {
     let mut a = Writer::new(1);
     let mut b = Writer::new(2);
     let mut c = Writer::new(3);

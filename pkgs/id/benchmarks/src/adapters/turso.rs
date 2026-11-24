@@ -57,8 +57,8 @@
 //! - `sync_state`: the single-row sync state capture above.
 
 use crate::{content_id, physical_key};
-use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::{json, Value};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -322,6 +322,68 @@ describe("questions waiting on the owner", () => {
   });
 });
 
+describe("what needs the owner, read with no dashboard", () => {
+  const listed = (argv: string[]) => /^repos\/([^/]+\/[^/]+)\/issues\?state=open&labels=([^&]+)&/.exec(argv[3] ?? "");
+  const raw = (n: number, labels: string[], body: string | null = null) => ({
+    number: n,
+    title: `t${n}`,
+    body,
+    state: "open",
+    html_url: `https://github.com/x/y/issues/${n}`,
+    updated_at: "2026-11-20T01:02:03Z",
+    labels: labels.map((name) => ({ name })),
+  });
+
+  test("each repository's own list of each label is asked for through the fleet's gh, and makes the same three lists", async () => {
+    const w = world({
+      commands: (argv) => {
+        const m = listed(argv);
+        if (!m) return "[]";
+        // The first repository has something of each kind; the others have nothing.
+        if (m[1] !== CFG.needsRepos[0]) return "[]";
+        const label = decodeURIComponent(m[2]);
+        return JSON.stringify(
+          [
+            raw(1, ["user/escalated"], '<!-- hands:v1 kind=physical action="Power on the host." -->'),
+            raw(2, ["user/review"]),
+            raw(3, ["user/escalated"], "Reason: an agent could not choose"),
+          ].filter((i) => i.labels.some((l) => l.name === label)),
+        );
+      },
+    });
+    const c = await new Work(w.ops).censusDirect();
+    expect(c.hands.map((i) => [i.ref, i.kind, i.action])).toEqual([
+      [`${CFG.needsRepos[0]}#1`, "physical", "Power on the host."],
+    ]);
+    expect(c.reviews.map((i) => [i.ref, i.updated])).toEqual([[`${CFG.needsRepos[0]}#2`, "2026-11-20T01:02:03"]]);
+    expect(c.other.map((i) => [i.ref, i.why])).toEqual([[`${CFG.needsRepos[0]}#3`, "an agent could not choose"]]);
+    expect([c.at, c.complete, c.unread]).toEqual([null, true, []]);
+    // Asked of GitHub's REST lists, one page of each label for each repository, and never of the search.
+    const asked = w.calls.map((call) => call.argv.join(" "));
+    expect(asked).toHaveLength(CFG.needsRepos.length * 2);
+    expect(
+      asked.every((line) =>
+        /^fleet gh api repos\/\S+\/issues\?state=open&labels=user%2F(review|escalated)&per_page=100&page=1$/.test(line),
+      ),
+    ).toBe(true);
+    expect(asked.some((line) => line.includes("search/"))).toBe(false);
+  });
+
+  test("a repository the token cannot see is named, in the binary's own words for it; a failure that is not one repository's ends the read", async () => {
+    const unseen = CFG.needsRepos[1];
+    const w = world({
+      commands: (argv) => (listed(argv)?.[1] === unseen ? { code: 1, stderr: "gh: Not Found (HTTP 404)" } : "[]"),
+    });
+    const c = await new Work(w.ops).censusDirect();
+    expect([c.complete, c.unread]).toEqual([false, [unseen]]);
+    const limited = world({
+      commands: () => ({ code: 1, stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)" }),
+    });
+    await expect(new Work(limited.ops).censusDirect()).rejects.toThrow(/rate limit exceeded/);
+    expect(limited.calls).toHaveLength(1);
+  });
+});
+
 describe("what needs the owner's hands", () => {
   test("the census is split into what only he can do, reviews, and the rest", async () => {
     const item = (n: number, labels: string[], hands?: unknown) => ({
@@ -371,6 +433,19 @@ describe("what needs the owner's hands", () => {
     ]);
     expect(c.reviews.map((i) => i.ref)).toEqual([`${REPO}#2`]);
     expect(c.other.map((i) => [i.ref, i.why])).toEqual([[`${REPO}#3`, "why"]]);
+    // When each was last touched is a time the app can read (it was once shortened like a
+    // title, with a mark at the cut, and every card then said "updated" and nothing after).
+    expect(c.reviews[0].updated).toBe("2026-11-20T01:02:03");
+    expect(Date.parse(`${c.reviews[0].updated}Z`)).toBe(Date.parse("2026-11-20T01:02:03Z"));
+    expect([c.at, c.complete, "unread" in c]).toEqual(["x", true, false]);
+    // A census the dashboard could not finish is not passed on as whole; one that does not say is.
+    const partly = (complete?: boolean) =>
+      new Work(
+        world({ dash: () => ({ fetchedAt: "x", items: [], ...(complete === undefined ? {} : { complete }) }) }).ops,
+      )
+        .census()
+        .then((census) => census.complete);
+    expect([await partly(false), await partly(true), await partly()]).toEqual([false, true, true]);
     const s = await work.sessions();
     expect(s.moving).toEqual([
       {
@@ -387,15 +462,16 @@ describe("what needs the owner's hands", () => {
     expect(s.waiting).toEqual([{ id: "p", title: "log in", ref: "gh:x/y#1", why: "" }]);
   });
 
-  test("done means a comment and the label gone, only for a repository on the list", async () => {
+  test("done means the label gone and a comment, only for a repository on the list", async () => {
     const w = world({});
     const work = new Work(w.ops);
-    await work.handsDone({ ref: "dezren39/nix#12", note: " the BMC is on " });
+    await work.handsDone({ ref: "dezren39/darwin-nix#12", note: " the BMC is on " });
+    // The label first: see the next test for why.
     expect(w.gh()).toEqual([
-      ["-X", "POST", "repos/dezren39/nix/issues/12/comments", "--input", "-"],
-      ["-X", "DELETE", "repos/dezren39/nix/issues/12/labels/user%2Fescalated"],
+      ["-X", "DELETE", "repos/dezren39/darwin-nix/issues/12/labels/user%2Fescalated"],
+      ["-X", "POST", "repos/dezren39/darwin-nix/issues/12/comments", "--input", "-"],
     ]);
-    expect(JSON.parse(w.calls[0].stdin ?? "").body).toContain("the BMC is on");
+    expect(JSON.parse(w.calls[1].stdin ?? "").body).toContain("the BMC is on");
     await work.needComment({ ref: `${REPO}#5`, text: "go on" });
     expect(w.gh()[2]).toEqual(["-X", "POST", `repos/${REPO}/issues/5/comments`, "--input", "-"]);
     const before = w.calls.length;
@@ -404,6 +480,75 @@ describe("what needs the owner's hands", () => {
     }
     await expect(work.needComment({ ref: `${REPO}#5`, text: " " })).rejects.toThrow(OpError);
     expect(w.calls.length).toBe(before);
+  });
+
+  // "Done" is two things asked of GitHub, and either may fail. Taking a
+  // label off twice is the same as once: GitHub says it is not there,
+  // which is what was wanted. Saying "done" twice is two comments. So
+  // the label goes first, and a failure part-way is tried again from
+  // the start without anything being said twice. The oracle for "not
+  // there" is GitHub's own answer to removing a label an issue does not
+  // carry: 404, "Label does not exist".
+  test("done: the label is taken off first, so that trying again after a failure says it once", async () => {
+    const comments: string[] = [];
+    let labelled = true;
+    let commentsFail = 1;
+    const w = world({
+      commands: (argv, stdin) => {
+        if (argv.includes("DELETE")) {
+          if (!labelled) return { code: 1, stderr: "gh: Label does not exist (HTTP 404)" };
+          labelled = false;
+          return "[]";
+        }
+        if (argv.includes("POST")) {
+          if (commentsFail-- > 0) return { code: 1, stderr: "gh: Server Error (HTTP 500)" };
+          comments.push(JSON.parse(stdin ?? "{}").body);
+          return '{"html_url":"https://github.com/x"}';
+        }
+        return "{}";
+      },
+    });
+    const work = new Work(w.ops);
+    // The comment fails: the label is off, and nothing was said.
+    await expect(work.handsDone({ ref: `${REPO}#7`, note: "plugged in" })).rejects.toThrow(/Server Error/);
+    expect([labelled, comments]).toEqual([false, []]);
+    // Tried again: the label is not there to take off, which is fine, and it is said once.
+    expect(await work.handsDone({ ref: `${REPO}#7`, note: "plugged in" })).toEqual({ ref: `${REPO}#7`, done: true });
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toContain("plugged in");
+  });
+
+  test("done: a label an agent had already taken off does not stop the fleet being told", async () => {
+    const said: string[] = [];
+    const w = world({
+      commands: (argv, stdin) => {
+        if (argv.includes("DELETE")) return { code: 1, stderr: '{"message":"Label does not exist","status":"404"}' };
+        if (argv.includes("POST")) said.push(JSON.parse(stdin ?? "{}").body);
+        return "{}";
+      },
+    });
+    expect(await new Work(w.ops).handsDone({ ref: `${REPO}#7` })).toEqual({ ref: `${REPO}#7`, done: true });
+    expect(said).toHaveLength(1);
+  });
+
+  test("done: any other failure to take the label off stops it there, with nothing said", async () => {
+    for (const stderr of [
+      "gh: Not Found (HTTP 404)",
+      "gh: Resource not accessible by personal access token (HTTP 403)",
+      "gh: API rate limit exceeded (HTTP 403)",
+      "gh: Server Error (HTTP 500)",
+    ]) {
+      const said: string[] = [];
+      const w = world({
+        commands: (argv, stdin) => {
+          if (argv.includes("DELETE")) return { code: 1, stderr };
+          if (argv.includes("POST")) said.push(JSON.parse(stdin ?? "{}").body);
+          return "{}";
+        },
+      });
+      await expect(new Work(w.ops).handsDone({ ref: `${REPO}#7` })).rejects.toThrow(OpError);
+      expect([stderr, said]).toEqual([stderr, []]);
+    }
   });
 });
 

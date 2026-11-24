@@ -36,8 +36,13 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const HEX = /^[0-9a-fA-F]$/;
 
 const isUnreserved = (b: number): boolean =>
-  (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a) ||
-  b === 0x2d || b === 0x2e || b === 0x5f || b === 0x7e;
+  (b >= 0x30 && b <= 0x39) ||
+  (b >= 0x41 && b <= 0x5a) ||
+  (b >= 0x61 && b <= 0x7a) ||
+  b === 0x2d ||
+  b === 0x2e ||
+  b === 0x5f ||
+  b === 0x7e;
 
 function checkAlias(alias: string): void {
   if (!ALIAS.test(alias)) throw new UriError("invalid_resolver_alias");
@@ -375,7 +380,12 @@ test("malformed corpus and negative content cases reject with the reference clas
     [`id://local/main/v1/content/raw-blake3-256.${z63}A`, "invalid_digest_text"],
     ["id://[local/main/v1/array", "uri_parse_error"],
   ];
-  for (const [uri, expected] of bad) assert.equal(errorClass(() => parse(uri)), expected, uri);
+  for (const [uri, expected] of bad)
+    assert.equal(
+      errorClass(() => parse(uri)),
+      expected,
+      uri,
+    );
 
   const base = { kind: "content" as const, resolverHint: "local", namespace: "main" };
   assert.equal(
@@ -386,6 +396,9 @@ test("malformed corpus and negative content cases reject with the reference clas
     errorClass(() => formatContent({ ...base, profile: "unknown-profile", digest: new Uint8Array(32) })),
     "unsupported_hash_profile",
   );
-  assert.equal(errorClass(() => resolveContext("local", "other")), "resolver_context_mismatch");
+  assert.equal(
+    errorClass(() => resolveContext("local", "other")),
+    "resolver_context_mismatch",
+  );
   assert.equal(resolveContext("local", "local"), "local");
 });

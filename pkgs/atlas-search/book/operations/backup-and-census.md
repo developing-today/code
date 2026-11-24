@@ -2,7 +2,7 @@
 
 Source: `nixos/home/laptop-backups.nix` and `nixos/home/atlas-backup.sh`, the schedule registry row in `doc/fleet-schedule-registry.md`, and the census statement in the Atlas program investigation record `doc/2026-11-23T12-06-51Z_design_atlas_program_investigation/` under https://github.com/developing-today/code/blob/main/nixos/home/laptop-backups.nix — provenance only; this chapter is complete without following it.
 
-Two different questions get confused under the word "backup": is the corpus recoverable if the laptop store is lost, and how big is the corpus right now? The first has a landed, scheduled answer. The second has a frozen answer from 2026-10-31 and an honest caveat. This chapter keeps them separate.
+Atlas tracks backup completion, corpus row counts and publication freshness separately. Each observation below identifies the store or service and the date.
 
 ## The backup: `atlas-backup`
 
@@ -51,7 +51,7 @@ Issue **#3125** is the provenance and occurrence-registry issue. Its census does
 
 > Last verified census (2026-10-31, on #3125): **18,325 sessions / 122,124 messages / 107,639 chunks.**
 
-The store that census describes is the canonical store on the laptop — the `atlas.db` above **plus 29 topic shards**. Its sensitivity split, from the same record, cross-checks the total exactly:
+The October record also describes 29 topic shards of that corpus. Shard copies must be reconciled separately from the canonical count. Its sensitivity split, from the same record, cross-checks the total exactly:
 
 | Tier      | Shards | Chunks      |
 | --------- | ------ | ----------- |
@@ -60,23 +60,29 @@ The store that census describes is the canonical store on the laptop — the `at
 | Public    | 0      | 0           |
 | **Total** | **29** | **107,639** |
 
-Zero public-tier shards is a stated fact of the v1 record, not a gap in the table. Any chapter, dashboard, or answer that quotes 18,325 / 122,124 / 107,639 must date it **2026-10-31** — see [FAQ](faq.md).
+The split above belongs to the October snapshot.
 
-### The unrecounted monolith
+### November 23 AMD observation
 
-Later records describe a **~7.3 GB monolith without a verified recount**. Both halves of that sentence matter. The store has grown since October — ingest, however manual, did not stop — and no fresh verified census has been taken. The 7.3 GB is a size observation, not a count: it cannot be turned into sessions, messages, or chunks by arithmetic, and this book does not try.
+Separate SQLite read transactions on November 23, 2026 counted physical table rows in these local stores. A repeat read of the canonical database at 17:57:15 UTC reproduced the 17:56:17 UTC result. Sizes are observed database-file bytes.
 
-### How a fresh census would be taken
+| Local store                                                                      | Sessions | Messages |  Chunks |    File bytes | SQLite schema version |
+| -------------------------------------------------------------------------------- | -------: | -------: | ------: | ------------: | --------------------: |
+| Canonical `~/atlas/turso-atlas/data/atlas.db`                                    |   18,325 |  122,115 | 107,439 | 1,492,127,744 |                    14 |
+| Dated publish-source file `atlas-publish-v2-2026-10-31.db` in the same directory |   18,325 |  122,124 | 107,639 | 1,704,194,048 |                    12 |
 
-A fresh census is an early deliverable of the Atlas programme (#13241), and its shape is fixed by what made the October one trustworthy:
+The canonical table counts differ from the October record by 0 sessions, −9 messages and −200 chunks. The census cannot determine which changes produced those differences. At 17:58:34 UTC, the canonical CAS registry contained 24,184 rows and 12,092 distinct hashes. The named Snowflake vector table was absent from both files. The dated file contained 107,639 rows in its legacy BGE table. These observations describe only the two selected files. The 7.3 GB database in PR #12028 was rebuilt from a Turso export.
 
-1. Count the canonical store directly: sessions, messages, and chunks in `~/atlas/turso-atlas/data/atlas.db`.
-2. Count every shard: each shard carries an `atlas_manifest` with an `expected_chunks` value, checked against an actual `COUNT(*)` of its chunks — a manifest that disagrees with its own store is a finding, not a number.
-3. Split the result by tier (public / internal / secret) so the split cross-checks the total, as the October split does.
-4. Date it, name the store it was taken from, and publish it in the same place the October census is quoted from — a design or programme record — so the next reader finds one canonical statement, not a scatter of counts.
+At 18:08:56–18:08:58 UTC, one read-only statement against the configured Turso logical database `atlas` counted **18,325 sessions, 71,551 messages and 107,639 chunks**. The three scalar subqueries used `COUNT(*)` on `sessions`, `messages` and `chunks`. This hosted database had 50,564 fewer message rows and 200 more chunk rows than the canonical file. The identical chunk counts in the hosted database and dated file do not establish that every row or revision matches.
 
-Until that runs, there is no newer number to quote, from any source.
+On the same day the laptop service returned healthy with its embedder ready. Its health response supplied no publication generation or source watermark. Proving Fleet or Worker freshness requires tracing an authorized source revision through promotion and a scoped publication to the consumer.
 
-### Why consumers still see the October counts
+The backup timer was active and waiting. Its November 23 backup service run timed out after 90 minutes (04:58:04–06:28:04 Central). The local dated gzip (491,721,304 bytes) and its manifest were present. The manifest recorded 18,325 sessions, 122,115 messages and 107,439 chunks, matching the live count. The November 15 local manifest recorded 18,325, 122,118 and 107,505 respectively. The ledger contained no November 23 completion and offsite copies were not independently verified. Verify a matching digest and destination receipt before relying on a particular copy. No backup or restore was triggered by the census. See #10304 for the existing backup investigation.
 
-Because nothing downstream recounts. Consumers — the service, the Worker, the CLIs — search the **published** store, and the publish consumers see is the October publish: ingestion today is manual and script-driven (the recurring sweep runner, #7969, is unbuilt; the ingest scripts still live outside the repo, with migration #5670 open), and no recount-and-republish pass has landed since. The counts are therefore not stale by accident or by caching — they are the counts of the corpus as published, frozen at the last verified census, while the underlying store has grown past them uncounted. The Worker cache's indefinite retention (#6805) is a separate staleness story, covered in [Troubleshooting](troubleshooting.md); even a perfectly fresh cache would still be answering over the October-published corpus.
+### Repeat the measurement
+
+From the repository root, run `python3 pkgs/atlas-search/tools/atlas_census.py` on the laptop. Pass `--canonical PATH` to select a different canonical-shaped database. For each approved scan shard, add `--shard PATH`; for each per-tier hydration store, add `--content-store PATH`. Use `--seconds-per-store N` to bound each read (default 20 seconds).
+
+The JSON report identifies inputs by role and ordinal. It measures each store in its own read-only transaction with WAL visibility, counts recognized tables, and distinguishes an empty table from a missing required table or an inapplicable one. A scan shard needs the expected manifest markers and a matching expected chunk count. Exit 1 means at least one requested store could not be counted and validated. Keep the path-to-ordinal mapping on the laptop. When reconciling shards against a generation, use its authorized inventory and count every required store before reporting coverage.
+
+The runtime may need a compatible native read-only libSQL reader for schemas the local SQLite implementation cannot open. A failed read supplies no row count. Keep revisions, policy and the consumer's published generation with each freshness receipt.

@@ -70,12 +70,12 @@ This chapter is about the door itself, not that client.
 
 ## Auth at each hop
 
-| Hop | Who is checked | How |
-| --- | --- | --- |
-| Client → public door, `/mcp` | The calling client | A Bearer token the Worker accepts: an OAuth 2.1 access token it issued, or the machine bearer (see below). Anything else gets a 401 (see Failure shapes). |
-| Client → public door, `/authorize` | The owner | The one path still behind Cloudflare Access: the `desktop-commander` Access app is scoped to `commander.security.cab/authorize` with an owner-Google-identity policy only. The Worker also verifies the Access JWT itself — RS256 against the team JWKS, the app audience, the owner email — before rendering the approval page. |
-| Worker → bridge door | The Worker | The Access service token for `commander-link.security.cab`, presented as `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers, swapped in by the Worker in place of the caller's credentials. |
-| Tunnel → laptop | Nobody new | The tunnel and the gateway add no auth of their own; the gateway binds `127.0.0.1` only, so the tunnel is the only way in. Every earlier hop has already authenticated the request. |
+| Hop                                | Who is checked     | How                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client → public door, `/mcp`       | The calling client | A Bearer token the Worker accepts: an OAuth 2.1 access token it issued, or the machine bearer (see below). Anything else gets a 401 (see Failure shapes).                                                                                                                                                                        |
+| Client → public door, `/authorize` | The owner          | The one path still behind Cloudflare Access: the `desktop-commander` Access app is scoped to `commander.security.cab/authorize` with an owner-Google-identity policy only. The Worker also verifies the Access JWT itself — RS256 against the team JWKS, the app audience, the owner email — before rendering the approval page. |
+| Worker → bridge door               | The Worker         | The Access service token for `commander-link.security.cab`, presented as `CF-Access-Client-Id` / `CF-Access-Client-Secret` headers, swapped in by the Worker in place of the caller's credentials.                                                                                                                               |
+| Tunnel → laptop                    | Nobody new         | The tunnel and the gateway add no auth of their own; the gateway binds `127.0.0.1` only, so the tunnel is the only way in. Every earlier hop has already authenticated the request.                                                                                                                                              |
 
 ### The OAuth 2.1 front door
 
@@ -127,27 +127,27 @@ half.
 
 ### Worker configuration (`pkgs/desktop-commander/worker/wrangler.toml`)
 
-| Setting | Value | Meaning |
-| --- | --- | --- |
-| Worker name | `desktop-commander` | The Worker that holds the public door. |
-| `workers_dev` | `false` | No `workers.dev` door; the custom domain is the only door. |
-| Route | `commander.security.cab` | From `worker/config.json`: the Worker's custom domain. |
-| `BRIDGE_BASE` (var) | `https://commander-link.security.cab` | The bridge door the Worker proxies to. |
-| `ACCESS_TEAM_DOMAIN` (var) | `snowy-sun-58a9.cloudflareaccess.com` | The Access team domain hosting the JWKS the Worker verifies `/authorize` JWTs against. |
-| `ACCESS_AUD` (var) | `c6ddf0a5c0ba8742c0a3c74d12495bf5c4fe9bf6f01f604d62583cb2ed353879` | Audience of the Access app scoped to `/authorize`. |
-| `OAUTH_KV` (KV binding) | namespace id `ea675d3c7d5b4f3b9f1cecae82e57d1b` | OAuth clients, codes and tokens, keyed by SHA-256 as described above. |
-| `ACCESS_CLIENT_ID` (secret) | — | Bridge-door service token id, uploaded per version at publish time. |
-| `ACCESS_CLIENT_SECRET` (secret) | — | Bridge-door service token secret, uploaded per version at publish time. |
-| `MACHINE_BEARER` (secret) | — | The machine bearer for `/mcp`, uploaded per version at publish time. |
+| Setting                         | Value                                                              | Meaning                                                                                |
+| ------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| Worker name                     | `desktop-commander`                                                | The Worker that holds the public door.                                                 |
+| `workers_dev`                   | `false`                                                            | No `workers.dev` door; the custom domain is the only door.                             |
+| Route                           | `commander.security.cab`                                           | From `worker/config.json`: the Worker's custom domain.                                 |
+| `BRIDGE_BASE` (var)             | `https://commander-link.security.cab`                              | The bridge door the Worker proxies to.                                                 |
+| `ACCESS_TEAM_DOMAIN` (var)      | `snowy-sun-58a9.cloudflareaccess.com`                              | The Access team domain hosting the JWKS the Worker verifies `/authorize` JWTs against. |
+| `ACCESS_AUD` (var)              | `c6ddf0a5c0ba8742c0a3c74d12495bf5c4fe9bf6f01f604d62583cb2ed353879` | Audience of the Access app scoped to `/authorize`.                                     |
+| `OAUTH_KV` (KV binding)         | namespace id `ea675d3c7d5b4f3b9f1cecae82e57d1b`                    | OAuth clients, codes and tokens, keyed by SHA-256 as described above.                  |
+| `ACCESS_CLIENT_ID` (secret)     | —                                                                  | Bridge-door service token id, uploaded per version at publish time.                    |
+| `ACCESS_CLIENT_SECRET` (secret) | —                                                                  | Bridge-door service token secret, uploaded per version at publish time.                |
+| `MACHINE_BEARER` (secret)       | —                                                                  | The machine bearer for `/mcp`, uploaded per version at publish time.                   |
 
 ### Secrets, by name only
 
-| Name | Store | Used by |
-| --- | --- | --- |
-| `cloudflare.access.desktop-commander-link-client-id` / `cloudflare.access.desktop-commander-link-client-secret` | fleet secrets | The bridge-door service token the Worker presents. |
-| `desktop-commander.machine-bearer` | fleet secrets | The `/mcp` machine bearer; `fleet commander` resolves it by this name. |
-| `cloudflare.api-token-desktop-commander-worker` | fleet secrets | The scoped Cloudflare deploy token for the publish workflow. |
-| `cloudflare.access.desktop-commander-client-id` / `cloudflare.access.desktop-commander-client-secret` | fleet secrets | The retired public-door service token pair. Kept in the vault; nothing accepts it at the public door any more. |
+| Name                                                                                                            | Store                                             | Used by                                                                                                                                           |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cloudflare.access.desktop-commander-link-client-id` / `cloudflare.access.desktop-commander-link-client-secret` | fleet secrets                                     | The bridge-door service token the Worker presents.                                                                                                |
+| `desktop-commander.machine-bearer`                                                                              | fleet secrets                                     | The `/mcp` machine bearer; `fleet commander` resolves it by this name.                                                                            |
+| `cloudflare.api-token-desktop-commander-worker`                                                                 | fleet secrets                                     | The scoped Cloudflare deploy token for the publish workflow.                                                                                      |
+| `cloudflare.access.desktop-commander-client-id` / `cloudflare.access.desktop-commander-client-secret`           | fleet secrets                                     | The retired public-door service token pair. Kept in the vault; nothing accepts it at the public door any more.                                    |
 | `DESKTOP_COMMANDER_WORKER_CF_TOKEN`, `BRIDGE_ACCESS_CLIENT_ID`, `BRIDGE_ACCESS_CLIENT_SECRET`, `MACHINE_BEARER` | GitHub environment `desktop-commander-production` | The publish workflow's copies of the deploy token, the bridge-door token, and the machine bearer, uploaded to each Worker version as its secrets. |
 
 ### Laptop configuration (`home/common/default.nix`)
@@ -155,7 +155,7 @@ half.
 - `desktop-commander-bridge.service` (systemd user unit): supergateway
   wrapping the packaged Desktop Commander —
   `--outputTransport streamableHttp --streamableHttpPath /mcp --port
-  8931 --host 127.0.0.1 --stateful --healthEndpoint /healthz`, restart
+8931 --host 127.0.0.1 --stateful --healthEndpoint /healthz`, restart
   on failure. Its start script exports the real user PATH first,
   because the wrapped server exists to run the user's commands.
 - `desktop-commander-remote.service` (systemd user unit): the vendor
@@ -165,17 +165,17 @@ half.
 
 ## Failure shapes
 
-| Symptom | Where it stops | What it means |
-| --- | --- | --- |
-| `401 {"error":"unauthorized"}` from `/mcp`, with a `WWW-Authenticate: Bearer resource_metadata="https://commander.security.cab/.well-known/oauth-protected-resource"` header | Public door | No bearer, an expired OAuth access token (1 hour), a revoked token, or a wrong machine bearer. The header is the signal that sends hosted clients into the OAuth flow; header-capable clients should check the machine bearer's fleet-secret name resolves. |
-| A redirect to a Cloudflare Access login at `/authorize` | Public door, approval path only | Expected for anyone who is not the owner: only the owner's Google identity passes, and the Worker re-verifies the Access JWT (signature, audience, owner email) before rendering the page. A login wall at `/mcp` itself is **not** this shape — `/mcp` is not behind Access any more; if a client reports one, it is holding a pre-OAuth configuration. |
-| `500 {"error":"bridge credentials are not configured"}` from `/mcp` | Public door | The live Worker version was uploaded without its `ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET` version secrets. Re-run the publish/promote pipeline so the version carries them. |
-| `404 {"error":"not found"}` | Public door | A path other than `/mcp`, `/healthz` and the OAuth surface. A wrong hostname (for example the `workers.dev` address) lands here or nowhere — `workers_dev` is off. |
-| `405 {"error":"method not allowed"}` | Public door | A non-POST to `/register` or `/token`, or a method other than GET/POST to `/authorize`. |
-| An Access refusal or 403 between the Worker and the bridge door | Bridge door | The bridge-door service token is wrong, rotated without re-publishing the Worker version, or the Access app's service-token policy changed. The token's fleet-secret names are the `desktop-commander-link` pair above. |
-| The Worker answers, the bridge door passes, but calls time out or 502 | Tunnel or laptop | The sandbox-link tunnel is down, or the laptop half is stopped: check `systemctl --user status desktop-commander-bridge` and the gateway's own `http://127.0.0.1:8931/healthz` on the laptop. |
-| MCP session errors mid-stream (lost `Mcp-Session-Id`, cut SSE) | Laptop gateway | The gateway runs stateful sessions; a unit restart drops every live session. Clients reconnect and re-initialize. |
-| Markdown-to-PDF tool calls fail on the laptop | Packaged server | A packaging limit, not a door failure: the package is built with `--ignore-scripts`, so the Chromium its PDF path downloads never arrives. Recorded in `pkgs/desktop-commander/default.nix`. |
+| Symptom                                                                                                                                                                      | Where it stops                  | What it means                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `401 {"error":"unauthorized"}` from `/mcp`, with a `WWW-Authenticate: Bearer resource_metadata="https://commander.security.cab/.well-known/oauth-protected-resource"` header | Public door                     | No bearer, an expired OAuth access token (1 hour), a revoked token, or a wrong machine bearer. The header is the signal that sends hosted clients into the OAuth flow; header-capable clients should check the machine bearer's fleet-secret name resolves.                                                                                              |
+| A redirect to a Cloudflare Access login at `/authorize`                                                                                                                      | Public door, approval path only | Expected for anyone who is not the owner: only the owner's Google identity passes, and the Worker re-verifies the Access JWT (signature, audience, owner email) before rendering the page. A login wall at `/mcp` itself is **not** this shape — `/mcp` is not behind Access any more; if a client reports one, it is holding a pre-OAuth configuration. |
+| `500 {"error":"bridge credentials are not configured"}` from `/mcp`                                                                                                          | Public door                     | The live Worker version was uploaded without its `ACCESS_CLIENT_ID` / `ACCESS_CLIENT_SECRET` version secrets. Re-run the publish/promote pipeline so the version carries them.                                                                                                                                                                           |
+| `404 {"error":"not found"}`                                                                                                                                                  | Public door                     | A path other than `/mcp`, `/healthz` and the OAuth surface. A wrong hostname (for example the `workers.dev` address) lands here or nowhere — `workers_dev` is off.                                                                                                                                                                                       |
+| `405 {"error":"method not allowed"}`                                                                                                                                         | Public door                     | A non-POST to `/register` or `/token`, or a method other than GET/POST to `/authorize`.                                                                                                                                                                                                                                                                  |
+| An Access refusal or 403 between the Worker and the bridge door                                                                                                              | Bridge door                     | The bridge-door service token is wrong, rotated without re-publishing the Worker version, or the Access app's service-token policy changed. The token's fleet-secret names are the `desktop-commander-link` pair above.                                                                                                                                  |
+| The Worker answers, the bridge door passes, but calls time out or 502                                                                                                        | Tunnel or laptop                | The sandbox-link tunnel is down, or the laptop half is stopped: check `systemctl --user status desktop-commander-bridge` and the gateway's own `http://127.0.0.1:8931/healthz` on the laptop.                                                                                                                                                            |
+| MCP session errors mid-stream (lost `Mcp-Session-Id`, cut SSE)                                                                                                               | Laptop gateway                  | The gateway runs stateful sessions; a unit restart drops every live session. Clients reconnect and re-initialize.                                                                                                                                                                                                                                        |
+| Markdown-to-PDF tool calls fail on the laptop                                                                                                                                | Packaged server                 | A packaging limit, not a door failure: the package is built with `--ignore-scripts`, so the Chromium its PDF path downloads never arrives. Recorded in `pkgs/desktop-commander/default.nix`.                                                                                                                                                             |
 
 ## Operations
 
@@ -199,8 +199,8 @@ half.
      verifies the run was a successful manual publish on `main`, checks
      the live deployment still matches the manifest baseline, then
      creates a deployment with exactly that version at 100%.
-  Tests (`desktop-commander-worker-tests.yml`) also run on pushes and
-  PRs touching the Worker directory.
+     Tests (`desktop-commander-worker-tests.yml`) also run on pushes and
+     PRs touching the Worker directory.
 - **Token rotation:** rotate the bridge-door service token or the
   machine bearer in fleet secrets / the `desktop-commander-production`
   environment, then publish and promote a new Worker version — version
@@ -221,14 +221,14 @@ Prioritised as of 2026-11-23, from the issue record. The door itself is
 built and live; what remains open is bookkeeping and one deliberate
 operational step.
 
-| Priority | Item | State and dependency |
-| --- | --- | --- |
-| P1 | #13404 — the tracking issue for this door | Open. Its body still describes the original all-Access design; the OAuth landing (next row) superseded the public-door half of it. The vendor-agent stand-down is recorded here as the remaining step. |
-| P1 | #13488 — OAuth 2.1 front door (PR) | Merged 2026-11-23, merge commit `4421467c3776`. The dependency everything hosted hangs on: without it, Claude and ChatGPT cannot connect at all. |
-| P2 | #13427 — the original endpoint build (PR) | Merged. Worker, bridge package and the publish/promote pipeline; the foundation #13488 extended. |
-| P2 | #13654 — `fleet commander` subcommand (proposal) | Open, but the subcommand exists: `fleet commander health` / `exec` ship as tier T1 of the route forms (#13717) and are documented in [fleet laptop route forms](../reference/laptop-route-forms.md). The issue reads as implemented-but-not-closed. |
-| P3 | #13699 — restore string delimiters on `desktop-commander-bridge-start` | Open, but the defect as described is not present at current `main`: the block in `home/common/default.nix` carries both delimiters, and the sibling fix #13716 is closed. Reads as a stale duplicate. |
-| P3 | The publish/promote fix chain: #13429, #13441, #13443, #13447, #13453, #13473, #13478, #13479 | All closed. The versions-flow sharp edges (dev-server declaration, first-publish baseline, version resolution by tag, no-op promotes) are already paid down; the pipeline has run green end to end (#13404, 2026-11-23). |
+| Priority | Item                                                                                          | State and dependency                                                                                                                                                                                                                                |
+| -------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P1       | #13404 — the tracking issue for this door                                                     | Open. Its body still describes the original all-Access design; the OAuth landing (next row) superseded the public-door half of it. The vendor-agent stand-down is recorded here as the remaining step.                                              |
+| P1       | #13488 — OAuth 2.1 front door (PR)                                                            | Merged 2026-11-23, merge commit `4421467c3776`. The dependency everything hosted hangs on: without it, Claude and ChatGPT cannot connect at all.                                                                                                    |
+| P2       | #13427 — the original endpoint build (PR)                                                     | Merged. Worker, bridge package and the publish/promote pipeline; the foundation #13488 extended.                                                                                                                                                    |
+| P2       | #13654 — `fleet commander` subcommand (proposal)                                              | Open, but the subcommand exists: `fleet commander health` / `exec` ship as tier T1 of the route forms (#13717) and are documented in [fleet laptop route forms](../reference/laptop-route-forms.md). The issue reads as implemented-but-not-closed. |
+| P3       | #13699 — restore string delimiters on `desktop-commander-bridge-start`                        | Open, but the defect as described is not present at current `main`: the block in `home/common/default.nix` carries both delimiters, and the sibling fix #13716 is closed. Reads as a stale duplicate.                                               |
+| P3       | The publish/promote fix chain: #13429, #13441, #13443, #13447, #13453, #13473, #13478, #13479 | All closed. The versions-flow sharp edges (dev-server declaration, first-publish baseline, version resolution by tag, no-op promotes) are already paid down; the pipeline has run green end to end (#13404, 2026-11-23).                            |
 
 Dependency shape, in one line: the packaged server and the laptop unit
 (#13427) → the Worker door and its pipeline (#13427) → the OAuth front

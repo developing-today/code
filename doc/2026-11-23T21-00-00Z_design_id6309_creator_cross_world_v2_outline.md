@@ -11,7 +11,7 @@
 
 V2 adds **author-scoped organization across the worlds and programs one author owns**: find, group and sort them, mark each as draft or published, and schedule announcements. All of it is computed from the author's own local worlds and the signed program bundles those worlds already hold. Nothing requires a central index, a hosted directory or a server we run. The same code path works for a self-hosted operator and for our hosted instance, and a peer with no network sees the same answers as one with a server.
 
-Cross-world means *the author's own worlds on the machine or peer in question*. It does not mean a global catalogue. Discovery of other people's worlds stays with #6277 (discovery, registry and federation) and publishing stays with #6278 (program ecosystem). V2 consumes their outputs; it does not redefine them.
+Cross-world means _the author's own worlds on the machine or peer in question_. It does not mean a global catalogue. Discovery of other people's worlds stays with #6277 (discovery, registry and federation) and publishing stays with #6278 (program ecosystem). V2 consumes their outputs; it does not redefine them.
 
 ## 1. Scope and non-goals
 
@@ -33,16 +33,16 @@ Cross-world means *the author's own worlds on the machine or peer in question*. 
 ## 2. Answers to the scope questions the issue raises
 
 - **Search and organization across worlds and programs.** Answered: a local index built from each world journal the author holds, rebuilt from the journal rather than stored as a second source of truth. A missing or stale index degrades to a directory walk with a labelled status, never to a guess.
-- **Draft / published states.** Answered: two states per program version, written as journal facts. A third "scheduled" state is not a program state; it is a property of an announcement. Keeping it out of the program state stops a schedule from changing what a program *is*.
+- **Draft / published states.** Answered: two states per program version, written as journal facts. A third "scheduled" state is not a program state; it is a property of an announcement. Keeping it out of the program state stops a schedule from changing what a program _is_.
 - **Scheduled announcements via F12.5 notify.** Answered in direction: the announcement record is local and durable; F12.5 provides the delivery channel. Open: whether F12.5's delivery is push-capable on a self-hosted node. Recorded as an open question, not assumed.
 
 ## 3. Principles check
 
-| Principle (#1240) | How V2 satisfies it |
-|---|---|
-| Local-first always | All state is journal facts or a rebuildable local index. |
-| Hostable by anyone, any scale | Same code runs on a laptop and on a hosted node; only index size differs. |
-| P2P identical to hosted | A peer with no hosted instance gets the same listing and states. |
+| Principle (#1240)                    | How V2 satisfies it                                                                                             |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| Local-first always                   | All state is journal facts or a rebuildable local index.                                                        |
+| Hostable by anyone, any scale        | Same code runs on a laptop and on a hosted node; only index size differs.                                       |
+| P2P identical to hosted              | A peer with no hosted instance gets the same listing and states.                                                |
 | Hosted is a backstop, never required | No feature reads from our instance. Publishing reaches galleries only through #6278 paths the operator chooses. |
 
 ## 4. Open questions and recommendations

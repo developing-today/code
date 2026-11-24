@@ -16,16 +16,16 @@ schema and the standing practice — the durable part.
 
 ## Schema — one row per observation
 
-| Field | What goes in it |
-|---|---|
-| Date/time | CST (America/Chicago). If the record gives only a window, say so in the cell — never invent a precise time. |
-| Actor | The lane / session / seat that ran the operation (e.g. "Lane OA2 (Muse lane)", "laptop OpenCode session oc-code-03"). |
+| Field               | What goes in it                                                                                                                                                                                     |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Date/time           | CST (America/Chicago). If the record gives only a window, say so in the cell — never invent a precise time.                                                                                         |
+| Actor               | The lane / session / seat that ran the operation (e.g. "Lane OA2 (Muse lane)", "laptop OpenCode session oc-code-03").                                                                               |
 | Repo + content kind | The repo, and what the checkout or content actually was, in plain words (e.g. "opencode fork — legacy share-service fix slice"). "A checkout of code" is not a content kind; say what the work was. |
-| Operation | One of: clone / worktree-add / fetch / read / edit / build / copy / install / exec — or the honest words when the record doesn't name it. |
-| Route | commander / laptop-agent http / ssh / laptop-ssh wrapper / laptop-local session / sandbox-local / not recorded. |
-| Invocation form | fleet subcommand / raw command / wrapper — per the route-form matrix in code#13717. |
-| Result | clean / flagged / transport-failed. A transport failure (the route itself broke, e.g. Cloudflare 1010) is **not** a flag and never gets recorded as one. |
-| Source | A link to the issue comment or lane record the row rests on. **No row without a source.** |
+| Operation           | One of: clone / worktree-add / fetch / read / edit / build / copy / install / exec — or the honest words when the record doesn't name it.                                                           |
+| Route               | commander / laptop-agent http / ssh / laptop-ssh wrapper / laptop-local session / sandbox-local / not recorded.                                                                                     |
+| Invocation form     | fleet subcommand / raw command / wrapper — per the route-form matrix in code#13717.                                                                                                                 |
+| Result              | clean / flagged / transport-failed. A transport failure (the route itself broke, e.g. Cloudflare 1010) is **not** a flag and never gets recorded as one.                                            |
+| Source              | A link to the issue comment or lane record the row rests on. **No row without a source.**                                                                                                           |
 
 ### Marking conventions
 

@@ -1,0 +1,88 @@
+{
+  "corpus": {
+    "blob_bytes": 1035507,
+    "instances": 403,
+    "distinct_items": 340
+  },
+  "within_blob_dedup": {
+    "chunks_total": 1012,
+    "bab_distinct_chunk_labels": 1012,
+    "bab_duplicate_chunks": 0,
+    "bao_duplicate_chunks": 0
+  },
+  "tree_storage_bytes": {
+    "bao_vanilla_outboard": 64712,
+    "bao_tree_16k_groups_outboard": 4040,
+    "bab_label_store_all_nodes": 64736
+  },
+  "scenario_A_fetch_one_item": {
+    "bao_whole": 3784,
+    "bao_tree_groups": 16776,
+    "bab_whole": 3784,
+    "per_item": 3100,
+    "cdc_whole": 45729,
+    "item_bytes": 1812
+  },
+  "aligned_repeat_dedup": {
+    "padded_blob_bytes": 1239040,
+    "chunks_total": 1210,
+    "bab_duplicate_chunks_when_aligned": 344,
+    "duplicate_item_instances": 100,
+    "per_item_duplicate_bytes": 298953
+  },
+  "scenario_B_edit_republish": {
+    "v2_bytes": 1042776,
+    "bao_whole": 1042776,
+    "bab_whole": 930136,
+    "per_item": 13400,
+    "cdc_whole": 170031
+  },
+  "scenario_B2_inplace_edit": {
+    "v_bytes": 1035507,
+    "bao_whole": 1035507,
+    "bab_whole": 3072,
+    "cdc_whole": 65536
+  },
+  "scenario_C_transclusion_fetch": {
+    "items": 12,
+    "item_bytes_total": 28194,
+    "bao_whole": 51232,
+    "bao_tree_groups": 236192,
+    "bab_whole": 51232,
+    "per_item": 45698
+  },
+  "scenario_D_length_proof_bytes": {
+    "bao": 1672,
+    "bab": 72,
+    "note": "bao length is only validated once the final chunk is validated (Bao spec, final chunk requirement); bab root labels commit to total length via hash_inner length input"
+  },
+  "analytic_table": {
+    "1048576": {
+      "bao_outboard_bytes": 65480,
+      "bao_tree_outboard_bytes": 4040,
+      "bao_slice_proof_1chunk_bytes": 648,
+      "bao_tree_min_transfer_bytes": 16384,
+      "bab_slice_proof_1chunk_bytes": 648,
+      "bab_length_proof_bytes": 72,
+      "bao_length_proof_bytes": 1672
+    },
+    "104857600": {
+      "bao_outboard_bytes": 6553544,
+      "bao_tree_outboard_bytes": 409544,
+      "bao_slice_proof_1chunk_bytes": 1096,
+      "bao_tree_min_transfer_bytes": 16384,
+      "bab_slice_proof_1chunk_bytes": 1096,
+      "bab_length_proof_bytes": 72,
+      "bao_length_proof_bytes": 2120
+    },
+    "1073741824": {
+      "bao_outboard_bytes": 67108808,
+      "bao_tree_outboard_bytes": 4194248,
+      "bao_slice_proof_1chunk_bytes": 1288,
+      "bao_tree_min_transfer_bytes": 16384,
+      "bab_slice_proof_1chunk_bytes": 1288,
+      "bab_length_proof_bytes": 72,
+      "bao_length_proof_bytes": 2312
+    }
+  }
+}

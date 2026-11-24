@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use atlas_core::source_registry::{
-    ensure_source_registry, locators_for_root, register_locator, register_source_root,
-    resolve_source, source_root,
+    ensure_source_registry, locators_for_root, open_source_registry, register_locator,
+    register_source_root, resolve_source, source_root,
 };
 use rusqlite::{Connection, params};
 
@@ -288,4 +288,37 @@ fn empty_fields_are_refused() {
     assert!(register_locator(&conn, "root", "", T1).is_err());
     assert_eq!(count(&conn, "source_roots"), 1);
     assert_eq!(count(&conn, "source_locators"), 0);
+}
+
+#[test]
+fn open_source_registry_creates_then_reopens_with_rows_intact() {
+    // #3125 slice 7 oracle: the serving-side opener turns a path
+    // into a registry connection. A fresh path starts empty
+    // (resolution answers None, never an error), and rows
+    // registered through one open are still resolved after the
+    // database is closed and reopened by path -- the property the
+    // CLI/service wiring relies on when it attaches the catalog
+    // named in config to the shard fan-out.
+    let dir =
+        std::env::temp_dir().join(format!("atlas-open-registry-{}-reopen", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let path = dir.join("catalog.db");
+    {
+        let conn = open_source_registry(&path).expect("open fresh registry");
+        assert!(
+            resolve_source(&conn, "repo@abc:infra/dns/a.yaml")
+                .unwrap()
+                .is_none(),
+            "fresh registry resolves nothing"
+        );
+        register_source_root(&conn, "repo", "repo@abc:", T1).unwrap();
+        register_locator(&conn, "repo", "repo@abc:infra/dns/a.yaml", T1).unwrap();
+    }
+    let conn = open_source_registry(&path).expect("reopen registry");
+    let resolved = resolve_source(&conn, "repo@abc:infra/dns/a.yaml")
+        .unwrap()
+        .expect("locator resolves after reopen");
+    assert_eq!(resolved.root_id, "repo");
+    assert_eq!(resolved.base_locator, "repo@abc:");
 }

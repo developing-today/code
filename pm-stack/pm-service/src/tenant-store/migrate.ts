@@ -55,10 +55,9 @@ export function applyMigrations(
 
   db.exec(BOOKKEEPING_DDL);
   const recorded = new Map(
-    db.all<AppliedRow>("SELECT version, name FROM pm_schema_migrations ORDER BY version").map((row) => [
-      row.version,
-      row.name,
-    ]),
+    db
+      .all<AppliedRow>("SELECT version, name FROM pm_schema_migrations ORDER BY version")
+      .map((row) => [row.version, row.name]),
   );
 
   const applied: number[] = [];

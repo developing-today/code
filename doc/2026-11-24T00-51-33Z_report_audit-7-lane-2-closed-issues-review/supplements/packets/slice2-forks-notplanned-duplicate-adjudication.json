@@ -1,72 +1,64 @@
 {
- "title": "AUDIT-7 Lane 2 slice 2: adjudicate not_planned + duplicate closes in the fork repos",
- "body": "AUDIT-7 Lane 2 triage (tracking #13878) found 15 not_planned closes in developing-today-forks/openchamber (#331,#682,#919,#1244,#1560,#1569,#1630,#1679,#2289) and developing-today-forks/opencode (#1193,#1405,#1411,#1651,#2339,#2500), plus duplicate close opencode#2394. Each needs a full comment read and adjudication. Special case: opencode#2500's title (session.messages cursor type filter) does not match its body (unrelated Playwright aggregator failure) \u2014 determine whether the real cursor bug has any live tracker and file it if not.",
- "priority": 40,
- "dedupe_key": "repo-health:v1:slice:developing-today/code:issue:13878:slice-2",
- "payload": {
-  "schema": "repo-task/v1",
-  "kind": "feature_slice",
-  "repo": "developing-today/code",
-  "queue": "repo-health-code-pilot",
-  "slice": {
-   "name": "slice2-forks-notplanned-duplicate-adjudication",
-   "kind": "closed-issues-review",
-   "tracking_issue": 13878,
-   "umbrella_issue": 13871,
-   "scope_summary": "AUDIT-7 Lane 2 triage (tracking #13878) found 15 not_planned closes in developing-today-forks/openchamber (#331,#682,#919,#1244,#1560,#1569,#1630,#1679,#2289) and developing-today-forks/opencode (#1193,#1405,#1411,#1651,#2339,#2500), plus duplicate close opencode#2394. Each needs a full comment read and adjudication. Special case: opencode#2500's title (session.messages cursor type filter) does no",
-   "parent_issue": 13878,
-   "number": 2,
-   "criterion": "Every in-scope closed issue has a recorded verdict on tracking issue #13878 (clean / reopened+why / follow-up filed+link / labels added), from a fresh full read (body + comments per_page=100, count-confirmed) via fleet gh.",
-   "done_check": "Comment on #13878 lists every in-scope issue number with its verdict and links to any reopened/filed items; no in-scope issue is unaccounted for.",
-   "owned_paths": [
-    "doc/"
-   ]
-  },
-  "issue": {
-   "number": 13878,
-   "url": "https://github.com/developing-today/code/issues/13878",
-   "title": "AUDIT-7 Lane 2 \u2014 Closed-Issues Review (past month, since 2026-10-23)",
-   "state_checked_at": "2026-11-23T23:58:00Z"
-  },
-  "problem": "AUDIT-7 Lane 2 triage (tracking #13878) found 15 not_planned closes in developing-today-forks/openchamber (#331,#682,#919,#1244,#1560,#1569,#1630,#1679,#2289) and developing-today-forks/opencode (#1193,#1405,#1411,#1651,#2339,#2500), plus duplicate close opencode#2394. Each needs a full comment read and adjudication. Special case: opencode#2500's title (session.messages cursor type filter) does not match its body (unrelated Playwright aggregator failure) \u2014 determine whether the real cursor bug has any live tracker and file it if not.",
-  "evidence": [
-   "https://github.com/developing-today/code/issues/13878",
-   "Census: opencode 1,187 and openchamber 1,153 closed issues in window (fleet gh search, count-confirmed)."
-  ],
-  "acceptance": [
-   "Every listed issue has a verdict on #13878: clean / reopened+why / follow-up filed+link.",
-   "opencode#2500's real subject (session.messages cursor) is either traced to a live issue or filed as a new issue, linked from #13878."
-  ],
-  "tests": [
-   "Re-read each in-scope issue fresh via fleet gh api (comments per_page=100, count-confirmed) before acting; record the verdict per issue on #13878."
-  ],
-  "scope": {
-   "include": [
-    "Full comment reads + adjudication for the 16 listed fork issues",
-    "File the opencode#2500 cursor issue if untracked"
-   ],
-   "exclude": [
-    "Code-repo issues (slice 1)",
-    "PR-side work (Lane 4)"
-   ]
-  },
-  "risk": {
-   "level": "low",
-   "flags": [
-    "audit",
-    "read-mostly"
-   ]
-  },
-  "priority_reason": "AUDIT-7 lane 2 remainder: exhaustive closed-issue review ordered 2026-11-23; slices exceed one session.",
-  "timebox_minutes": 240,
-  "max_attempts": 6,
-  "context_refs": [
-   "https://github.com/developing-today/code/issues/13871",
-   "https://github.com/developing-today/code/issues/13878"
-  ],
-  "dedupe": {
-   "checked_at": "2026-11-23T23:58:00Z",
-   "basis": "Singular ownership: AUDIT-7 Lane 2 owns closed-issue review; umbrella #13871 checked, no other lane claimed these slices (Lane 4 owns the PR side only, Lane 7 owns stray-work labelling outside this scope). Dedupe key per slice pattern for parent tracking issue #13878."
+  "title": "AUDIT-7 Lane 2 slice 2: adjudicate not_planned + duplicate closes in the fork repos",
+  "body": "AUDIT-7 Lane 2 triage (tracking #13878) found 15 not_planned closes in developing-today-forks/openchamber (#331,#682,#919,#1244,#1560,#1569,#1630,#1679,#2289) and developing-today-forks/opencode (#1193,#1405,#1411,#1651,#2339,#2500), plus duplicate close opencode#2394. Each needs a full comment read and adjudication. Special case: opencode#2500's title (session.messages cursor type filter) does not match its body (unrelated Playwright aggregator failure) \u2014 determine whether the real cursor bug has any live tracker and file it if not.",
+  "priority": 40,
+  "dedupe_key": "repo-health:v1:slice:developing-today/code:issue:13878:slice-2",
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "feature_slice",
+    "repo": "developing-today/code",
+    "queue": "repo-health-code-pilot",
+    "slice": {
+      "name": "slice2-forks-notplanned-duplicate-adjudication",
+      "kind": "closed-issues-review",
+      "tracking_issue": 13878,
+      "umbrella_issue": 13871,
+      "scope_summary": "AUDIT-7 Lane 2 triage (tracking #13878) found 15 not_planned closes in developing-today-forks/openchamber (#331,#682,#919,#1244,#1560,#1569,#1630,#1679,#2289) and developing-today-forks/opencode (#1193,#1405,#1411,#1651,#2339,#2500), plus duplicate close opencode#2394. Each needs a full comment read and adjudication. Special case: opencode#2500's title (session.messages cursor type filter) does no",
+      "parent_issue": 13878,
+      "number": 2,
+      "criterion": "Every in-scope closed issue has a recorded verdict on tracking issue #13878 (clean / reopened+why / follow-up filed+link / labels added), from a fresh full read (body + comments per_page=100, count-confirmed) via fleet gh.",
+      "done_check": "Comment on #13878 lists every in-scope issue number with its verdict and links to any reopened/filed items; no in-scope issue is unaccounted for.",
+      "owned_paths": ["doc/"]
+    },
+    "issue": {
+      "number": 13878,
+      "url": "https://github.com/developing-today/code/issues/13878",
+      "title": "AUDIT-7 Lane 2 \u2014 Closed-Issues Review (past month, since 2026-10-23)",
+      "state_checked_at": "2026-11-23T23:58:00Z"
+    },
+    "problem": "AUDIT-7 Lane 2 triage (tracking #13878) found 15 not_planned closes in developing-today-forks/openchamber (#331,#682,#919,#1244,#1560,#1569,#1630,#1679,#2289) and developing-today-forks/opencode (#1193,#1405,#1411,#1651,#2339,#2500), plus duplicate close opencode#2394. Each needs a full comment read and adjudication. Special case: opencode#2500's title (session.messages cursor type filter) does not match its body (unrelated Playwright aggregator failure) \u2014 determine whether the real cursor bug has any live tracker and file it if not.",
+    "evidence": [
+      "https://github.com/developing-today/code/issues/13878",
+      "Census: opencode 1,187 and openchamber 1,153 closed issues in window (fleet gh search, count-confirmed)."
+    ],
+    "acceptance": [
+      "Every listed issue has a verdict on #13878: clean / reopened+why / follow-up filed+link.",
+      "opencode#2500's real subject (session.messages cursor) is either traced to a live issue or filed as a new issue, linked from #13878."
+    ],
+    "tests": [
+      "Re-read each in-scope issue fresh via fleet gh api (comments per_page=100, count-confirmed) before acting; record the verdict per issue on #13878."
+    ],
+    "scope": {
+      "include": [
+        "Full comment reads + adjudication for the 16 listed fork issues",
+        "File the opencode#2500 cursor issue if untracked"
+      ],
+      "exclude": ["Code-repo issues (slice 1)", "PR-side work (Lane 4)"]
+    },
+    "risk": {
+      "level": "low",
+      "flags": ["audit", "read-mostly"]
+    },
+    "priority_reason": "AUDIT-7 lane 2 remainder: exhaustive closed-issue review ordered 2026-11-23; slices exceed one session.",
+    "timebox_minutes": 240,
+    "max_attempts": 6,
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/13871",
+      "https://github.com/developing-today/code/issues/13878"
+    ],
+    "dedupe": {
+      "checked_at": "2026-11-23T23:58:00Z",
+      "basis": "Singular ownership: AUDIT-7 Lane 2 owns closed-issue review; umbrella #13871 checked, no other lane claimed these slices (Lane 4 owns the PR side only, Lane 7 owns stray-work labelling outside this scope). Dedupe key per slice pattern for parent tracking issue #13878."
+    }
   }
- }
 }

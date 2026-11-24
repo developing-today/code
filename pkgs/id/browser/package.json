@@ -1,1 +1,13 @@
-{"description":"Opt-in IndexedDB request-batch adapter for the ID record-store port, checked against the shared conformance fixtures in Chromium (#9082).","devDependencies":{"typescript":"^5.6.0"},"name":"id-browser","private":true,"scripts":{"test":"node --experimental-transform-types --test test/indexeddb_conformance.test.ts","typecheck":"tsc --noEmit"},"type":"module"}
+{
+  "description": "Opt-in IndexedDB request-batch adapter for the ID record-store port, checked against the shared conformance fixtures in Chromium (#9082).",
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "name": "id-browser",
+  "private": true,
+  "scripts": {
+    "test": "node --experimental-transform-types --test test/indexeddb_conformance.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module"
+}

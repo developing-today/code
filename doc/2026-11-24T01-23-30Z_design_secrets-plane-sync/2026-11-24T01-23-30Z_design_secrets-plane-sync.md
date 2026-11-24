@@ -30,4 +30,4 @@ S1 client bound + one-call refresh (closes #13893) · S2 delta refresh + waterma
 
 No new trust root: peer sync rides the existing fleet enrollment and broker tokens. Values move only on the existing tailnet broker channel (WireGuard-encrypted) and broker↔store TLS. Logs carry names, counts, timings, truncated hashes — never values. Put requires enrollment-grade auth and is audit-logged by name + actor + timestamp.
 
-*Secrets are referenced by name only throughout this record; no values appear here or on the linked issues.*
+_Secrets are referenced by name only throughout this record; no values appear here or on the linked issues._

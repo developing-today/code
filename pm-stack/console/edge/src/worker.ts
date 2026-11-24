@@ -10,6 +10,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
+import { unread } from "../../src/timed.ts";
 
 interface Env {
   PM: DurableObjectNamespace;
@@ -86,6 +87,7 @@ export class PmEdge extends DurableObject<Env> {
         fetchImpl: fetch,
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
+      getAlarm: () => ctx.storage.getAlarm(),
       ownClockMs: ownClockMs(env.OWN_CLOCK_MS),
       // A read started behind an answer is given the time to finish.
       later: (work) => ctx.waitUntil(work),
@@ -107,9 +109,23 @@ function fromHost(res: Response): boolean {
   return res.headers.get("x-pm-console") === "1" || res.status < 500;
 }
 
+/** What answered in the host's place says that the host was never
+ * reached. Cloudflare answers 530 (with one of its 1xxx errors in the
+ * body: 1033 for a tunnel) when it has no way to the origin at all: for
+ * a tunnel, no connection of the machine's to send the request down.
+ * Nothing was handed to the machine, so nothing asked of it was done.
+ * Any other answer in the host's place does not say as much: a gateway
+ * that lost the connection part-way answers for a host that may have
+ * had the request. */
+function neverReached(res: Response): boolean {
+  return res.status === 530 && res.headers.get("x-pm-console") !== "1";
+}
+
 /** Ask the host. `ms` is how long it has to start answering; a stream it
- * then keeps open (the dashboard's live pages) is left to run. */
-async function host(request: Request, ms: number, origin?: string): Promise<Response | null> {
+ * then keeps open (the dashboard's live pages) is left to run. Null when
+ * it did not answer, and "unreached" when what answered in its place
+ * says it was never reached (see neverReached). */
+async function ask(request: Request, ms: number, origin?: string): Promise<Response | "unreached" | null> {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), ms);
   try {
@@ -117,12 +133,21 @@ async function host(request: Request, ms: number, origin?: string): Promise<Resp
     const url = new URL(request.url);
     const target = origin ? new Request(`${origin}${url.pathname}${url.search}`, request) : request;
     const res = await fetch(new Request(target, { redirect: "manual", signal: abort.signal }));
-    return fromHost(res) ? res : null;
+    if (fromHost(res)) return res;
+    const never = neverReached(res);
+    // Not the host's, and not read: let go of, so nothing is left open.
+    unread(res);
+    return never ? "unreached" : null;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function host(request: Request, ms: number, origin?: string): Promise<Response | null> {
+  const answer = await ask(request, ms, origin);
+  return answer === "unreached" ? null : answer;
 }
 
 export default {
@@ -133,6 +158,7 @@ export default {
       state: (r) => stub.fetch(r),
       asset: (path) => env.ASSETS.fetch(new Request(`https://assets.internal${path}`)),
       host: (r, ms) => host(r, ms, env.HOST_ORIGIN),
+      act: (r, ms) => ask(r, ms, env.HOST_ORIGIN),
       publicHost: env.PUBLIC_HOST,
       version: env.VERSION ?? null,
       later: (work) => ctx.waitUntil(work),
