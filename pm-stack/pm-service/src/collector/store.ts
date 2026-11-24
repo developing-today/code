@@ -14,7 +14,12 @@
  * with no lease row the hosted writer records epoch 0.
  */
 import type { SqlDb } from "../tenant-store/migrate.ts";
-import { validateBoardDef, validateMetadataBlock, type BoardDef, type PmMetadataBlock } from "../tenant-store/schema.ts";
+import {
+  validateBoardDef,
+  validateMetadataBlock,
+  type BoardDef,
+  type PmMetadataBlock,
+} from "../tenant-store/schema.ts";
 import { metadataBlockFromBody, type ProjectAudit, type ProjectPoolItem } from "./pool.ts";
 
 interface BoardRow {

@@ -78,12 +78,17 @@ function world(answer: (c: Call) => unknown) {
 /** The repository as the path meets it: the fleet roadmap on main,
  * and a pull request that opens as #777. */
 const repoAnswer = (c: Call): unknown => {
-  if (c.method === "GET" && c.path === `repos/${REPO}/contents/${FILE}`) return { content: b64(SAMPLE), sha: "sha-file" };
+  if (c.method === "GET" && c.path === `repos/${REPO}/contents/${FILE}`)
+    return { content: b64(SAMPLE), sha: "sha-file" };
   if (c.method === "GET" && c.path === `repos/${REPO}/git/ref/heads/main`) return { object: { sha: "sha-main" } };
   if (c.method === "POST" && c.path === `repos/${REPO}/pulls`)
     return { number: 777, html_url: `https://github.com/${REPO}/pull/777` };
   if (c.method === "POST" && c.path === `repos/${REPO}/issues`)
-    return { number: 4242, html_url: `https://github.com/${REPO}/issues/4242`, title: (c.body as { title: string }).title };
+    return {
+      number: 4242,
+      html_url: `https://github.com/${REPO}/issues/4242`,
+      title: (c.body as { title: string }).title,
+    };
   return {};
 };
 
@@ -120,7 +125,10 @@ describe("applyRoadmapChange", () => {
 
   test("built marks the row shipped where it sits", () => {
     const out = applyRoadmapChange(SAMPLE, { action: "built", row: "Alpha item" });
-    expect(parseRoadmap(out).find((r) => r.title === "Alpha item")).toMatchObject({ status: "shipped", phase: "built" });
+    expect(parseRoadmap(out).find((r) => r.title === "Alpha item")).toMatchObject({
+      status: "shipped",
+      phase: "built",
+    });
   });
 
   test("drop removes the row and no other", () => {
@@ -136,10 +144,14 @@ describe("applyRoadmapChange", () => {
   });
 
   test("what cannot be made mechanically is refused, with the reason", () => {
-    expect(roadmapChangeRefusal({ action: "add-under", row: "Alpha item", title: "Sub" })).toContain("no row of its own");
+    expect(roadmapChangeRefusal({ action: "add-under", row: "Alpha item", title: "Sub" })).toContain(
+      "no row of its own",
+    );
     expect(roadmapChangeRefusal({ action: "rewrite", row: "Alpha item" })).toContain("retitle");
     expect(roadmapChangeRefusal({ action: "add", title: "Epsilon item" })).toBeNull();
-    expect(() => applyRoadmapChange(SAMPLE, { action: "drop", row: "No such row" })).toThrow(/no roadmap row is titled/);
+    expect(() => applyRoadmapChange(SAMPLE, { action: "drop", row: "No such row" })).toThrow(
+      /no roadmap row is titled/,
+    );
     expect(() => applyRoadmapChange(SAMPLE, { action: "add", title: "X", to: "built" })).toThrow(/no Done section/);
   });
 });

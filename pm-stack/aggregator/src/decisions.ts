@@ -1410,7 +1410,10 @@ export async function sweepDecisionSets(
     }
     const stamp = new Date(now).toISOString();
     let applied = 0;
-    const skipped: Array<{ qid: string; reason: "already-resolved" | "unknown-question" | "bad-option" | "empty-answer" }> = [];
+    const skipped: Array<{
+      qid: string;
+      reason: "already-resolved" | "unknown-question" | "bad-option" | "empty-answer";
+    }> = [];
     const seen = new Set<string>();
     for (const set of sets) {
       for (const item of set.items) {

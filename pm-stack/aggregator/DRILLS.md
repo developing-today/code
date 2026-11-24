@@ -13,11 +13,11 @@ component services, and the aggregator are laptop user units since
 
 ## The drill set
 
-| Drill | Script | Fault injected | Named signals verified | Result file |
-| --- | --- | --- | --- | --- |
-| kill-collector | `scripts/kill-collector-drill.sh` | `fleet-feed-collector.timer` stopped | feed age crosses `FEED_STALE_MS` (5 min, #1148) in `/api/health`; restoration = feed fresh again | `kill-collector-result.json` |
-| age-feed | `scripts/age-feed-drill.sh` | feed `generatedAt` aged while the collector runs | feed reported stale in `/api/health` despite a live collector; restoration = fresh feed | `age-feed-result.json` |
-| drop-service | `scripts/drop-service-drill.sh` | one component user unit stopped (default `pm-projector.service`) | the unit's `/api/health` services entry reports `ok=false` **and** the top-level `degraded` flag is true; restoration = entry `ok=true` again | `drop-service-result.json` |
+| Drill          | Script                            | Fault injected                                                   | Named signals verified                                                                                                                        | Result file                  |
+| -------------- | --------------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| kill-collector | `scripts/kill-collector-drill.sh` | `fleet-feed-collector.timer` stopped                             | feed age crosses `FEED_STALE_MS` (5 min, #1148) in `/api/health`; restoration = feed fresh again                                              | `kill-collector-result.json` |
+| age-feed       | `scripts/age-feed-drill.sh`       | feed `generatedAt` aged while the collector runs                 | feed reported stale in `/api/health` despite a live collector; restoration = fresh feed                                                       | `age-feed-result.json`       |
+| drop-service   | `scripts/drop-service-drill.sh`   | one component user unit stopped (default `pm-projector.service`) | the unit's `/api/health` services entry reports `ok=false` **and** the top-level `degraded` flag is true; restoration = entry `ok=true` again | `drop-service-result.json`   |
 
 Result files live in the drill state dir
 (`~/.local/state/pm-drills/` on the laptop). A passed drill posts its
@@ -31,11 +31,11 @@ error.
 Weekly rotation, one drill per week, each in its own quiet window so
 two drills never contend for the stack in the same window:
 
-| Drill | Window (laptop local) | Unit |
-| --- | --- | --- |
-| kill-collector | Sunday 04:17 | (slot reserved; laptop-hosted timer not yet installed) |
-| age-feed | Wednesday 03:43 ± 15 min | `systemd/age-feed-drill.timer` |
-| drop-service | Friday 04:07 ± 15 min | `systemd/drop-service-drill.timer` |
+| Drill          | Window (laptop local)    | Unit                                                   |
+| -------------- | ------------------------ | ------------------------------------------------------ |
+| kill-collector | Sunday 04:17             | (slot reserved; laptop-hosted timer not yet installed) |
+| age-feed       | Wednesday 03:43 ± 15 min | `systemd/age-feed-drill.timer`                         |
+| drop-service   | Friday 04:07 ± 15 min    | `systemd/drop-service-drill.timer`                     |
 
 The systemd units in `systemd/` are the schedule of record; they are
 installed deliberately on the laptop, never by a drill itself. Any

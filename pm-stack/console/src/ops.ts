@@ -563,9 +563,7 @@ export class Ops {
     if (query.get("unread") === "1" || query.get("unread_only") === "true") argv.push("--unread");
     const limit = query.get("limit");
     argv.push("--limit", String(limit === null || limit === "" ? 100 : Math.min(id(limit, "limit"), 200)));
-    const rows = (
-      JSON.parse(await this.must(argv)) as { messages?: unknown } | null
-    )?.messages;
+    const rows = (JSON.parse(await this.must(argv)) as { messages?: unknown } | null)?.messages;
     return Array.isArray(rows) ? rows : [];
   }
 
@@ -622,10 +620,7 @@ export class Ops {
         ...row,
         credential: {
           state: live ? "active" : "revoked",
-          scopes: [
-            ...(scopes.can_send === true ? ["send"] : []),
-            ...(scopes.can_inbox === true ? ["inbox"] : []),
-          ],
+          scopes: [...(scopes.can_send === true ? ["send"] : []), ...(scopes.can_inbox === true ? ["inbox"] : [])],
           credentials: null,
           created: row.first_seen ?? null,
           revoked_at: null,
@@ -757,9 +752,9 @@ export class Ops {
     if (!/^[A-Za-z0-9][A-Za-z0-9@._/-]{0,127}$/.test(n)) {
       throw new OpError(400, `agent: not an agent name: ${JSON.stringify(n).slice(0, 80)}`);
     }
-    const out = JSON.parse(
-      await this.must([this.cfg.fleetBin, "bridge", "revoke-enroll", "--agent", n]),
-    ) as { revoked?: unknown };
+    const out = JSON.parse(await this.must([this.cfg.fleetBin, "bridge", "revoke-enroll", "--agent", n])) as {
+      revoked?: unknown;
+    };
     return { agent: n, revoked: typeof out.revoked === "number" ? out.revoked : 0 };
   }
 

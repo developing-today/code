@@ -32,6 +32,15 @@
 //! label). Tokens travel in the URL path, so every error string is
 //! scrubbed of them before it is printed.
 //!
+//! A seat provisioned by bootstrap enrolment (#14370) instead holds a
+//! per-agent credential under `bridge.<agent>-fleet-token` — the name
+//! the agent profile records, which Settings prefers over the shared
+//! default — and a class/name notes token under `bridge.<agent>-token`
+//! for the `notes` family (a Bearer header, not a path token).
+//! `exchange` is how those credentials get there: it trades the
+//! owner's single-use bootstrap token for them and stores the values
+//! through fleet-secrets' write path, printing only their names.
+//!
 //! Exit codes, the workspace convention: 0 ok · 2 usage · 3 transport
 //! down / credentials unresolved · 4 the bridge answered with an HTTP
 //! error (its JSON error goes to stderr).
@@ -109,6 +118,23 @@ agent (fleet token):
         --instruction (or --kind instruction) makes it an instruction,
         which needs --to.
   ack [--agent A] (--up-to ID | ID...)        mark messages read
+
+provisioning (single-use bootstrap token, minted by the owner):
+  exchange --agent A --bootstrap TOKEN
+        trade the bootstrap token for this agent's own credentials
+        and store them in the vault by name (bridge.<agent>-fleet-token
+        and, when the mint carried a notes identity,
+        bridge.<agent>-token). The values are never printed.
+
+notes (the calling identity's notes token, as a Bearer header):
+  notes send --to CLASS/NAME [--kind note|instruction] [--reply-to ID] <text | ->
+        a note to a class/name identity (a * segment wildcards);
+        --kind instruction makes it a work item, which lands in the
+        recipient's inbox without a sender. --reply-to ID answers a
+        note in your inbox — routed to its real sender, whom an
+        instruction never shows you — and may replace --to.
+  notes inbox                  this identity's pending notes
+  notes ack (--up-to ID | ID...)   acknowledge notes
 
   health                       the bridge's /healthz (no token)
 
@@ -272,6 +298,32 @@ usage: fleet bridge ack [--agent A] (--up-to ID | ID...)
 
 agent (fleet token). Mark messages read."
         }
+        "exchange" => {
+            "\
+usage: fleet bridge exchange --agent A --bootstrap TOKEN
+
+provisioning (single-use bootstrap token, minted by the owner and
+bound to this agent's name, kind and groups). Trades the token for
+the agent's own fleet credential (and notes token, when the mint
+carried a notes identity) and stores them in the vault by name:
+bridge.<agent>-fleet-token, bridge.<agent>-token. The credential
+values are never printed. A refused exchange stores nothing."
+        }
+        "notes" => {
+            "\
+usage: fleet bridge notes <send | inbox | ack> [options]
+
+The class/name notes surface, authenticated by this identity's own
+notes token (Bearer header, resolved by vault name).
+
+  notes send --to CLASS/NAME [--kind note|instruction] [--reply-to ID] <text | ->
+        a * segment in --to wildcards. --kind instruction makes the
+        note a work item; it lands in the recipient's inbox without
+        a sender. --reply-to ID answers a note in your inbox and is
+        routed to its real sender; it may replace --to.
+  notes inbox                  this identity's pending notes
+  notes ack (--up-to ID | ID...)   acknowledge notes"
+        }
         "health" => {
             "\
 usage: fleet bridge health
@@ -323,6 +375,12 @@ fn usage(msg: impl Into<String>) -> BridgeError {
 /// Resolves a secret by name; the real one is the fleet-secrets chain.
 pub trait Secrets {
     fn resolve(&self, name: &str) -> Result<String, String>;
+    /// Stores a value under a name (the write side `exchange` needs
+    /// for a freshly minted credential). The default refuses: only
+    /// the real chain can write, through fleet-secrets' bws store.
+    fn store(&self, _name: &str, _value: &str) -> Result<(), String> {
+        Err("storing secrets is not supported by this source".to_string())
+    }
 }
 
 struct ChainSecrets<'a>(&'a Config);
@@ -333,6 +391,16 @@ impl Secrets for ChainSecrets<'_> {
             .resolve(name)
             .map(|v| v.expose().to_string())
             .map_err(|e| e.to_string())
+    }
+
+    fn store(&self, name: &str, value: &str) -> Result<(), String> {
+        let store = fleet_secrets::BwsStore::from_config(self.0).ok_or_else(|| {
+            format!(
+                "no bws project is configured for secret writes: set ${} or [secrets] bws_project_id in fleet.toml",
+                fleet_secrets::BwsStore::PROJECT_ID_ENV
+            )
+        })?;
+        store.store(name, value).map_err(|e| e.to_string())
     }
 }
 
@@ -395,6 +463,11 @@ pub struct Settings {
     pub groups: Option<Vec<String>>,
     pub owner_token_name: String,
     pub fleet_token_name: String,
+    /// The class/name notes token's vault name, when one can be
+    /// named: [bridge] config, the agent profile, or the
+    /// `bridge.<agent>-token` convention. None when no agent is
+    /// known and nothing names one — the notes verbs say so.
+    pub notes_token_name: Option<String>,
 }
 
 fn non_blank(v: Option<String>) -> Option<String> {
@@ -408,6 +481,58 @@ fn split_list(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// What the agent profile contributes to settings: the agent's name
+/// and the credential vault names `fleet agent enroll --bootstrap`
+/// recorded there (#14370; enroll.rs owns the format). Read
+/// leniently — a missing or malformed profile contributes nothing,
+/// exactly like a seat that never enrolled.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ProfileNames {
+    agent: Option<String>,
+    fleet_token_name: Option<String>,
+    notes_token_name: Option<String>,
+}
+
+fn profile_path(env: &dyn Fn(&str) -> Option<String>) -> Option<std::path::PathBuf> {
+    if let Some(p) = non_blank(env("FLEET_AGENT_PROFILE")) {
+        return Some(std::path::PathBuf::from(p));
+    }
+    if let Some(config) = non_blank(env("XDG_CONFIG_HOME")) {
+        return Some(
+            std::path::PathBuf::from(config)
+                .join("fleet")
+                .join("agent.json"),
+        );
+    }
+    non_blank(env("HOME")).map(|h| {
+        std::path::PathBuf::from(h)
+            .join(".config/fleet/agent.json")
+    })
+}
+
+fn read_profile_names(env: &dyn Fn(&str) -> Option<String>) -> ProfileNames {
+    let Some(path) = profile_path(env) else {
+        return ProfileNames::default();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return ProfileNames::default();
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return ProfileNames::default();
+    };
+    let get = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    ProfileNames {
+        agent: get("name"),
+        fleet_token_name: get("fleet_token_name"),
+        notes_token_name: get("notes_token_name"),
+    }
+}
+
 impl Settings {
     pub fn resolve(config: &Config, env: &dyn Fn(&str) -> Option<String>) -> R<Settings> {
         let b = &config.bridge;
@@ -415,9 +540,12 @@ impl Settings {
             .or_else(|| b.url.clone())
             .unwrap_or_else(|| DEFAULT_BRIDGE_URL.to_string());
         let url = check_url(&url)?;
+        let profile = read_profile_names(env);
+        let agent = non_blank(env("FLEET_AGENT"))
+            .or_else(|| b.agent.clone())
+            .or_else(|| profile.agent.clone());
         Ok(Settings {
             url,
-            agent: non_blank(env("FLEET_AGENT")).or_else(|| b.agent.clone()),
             groups: non_blank(env("FLEET_AGENT_GROUPS"))
                 .map(|s| split_list(&s))
                 .or_else(|| b.groups.clone()),
@@ -428,7 +556,14 @@ impl Settings {
             fleet_token_name: b
                 .fleet_token_name
                 .clone()
+                .or_else(|| profile.fleet_token_name.clone())
                 .unwrap_or_else(|| DEFAULT_BRIDGE_FLEET_TOKEN_NAME.to_string()),
+            notes_token_name: b
+                .notes_token_name
+                .clone()
+                .or_else(|| profile.notes_token_name.clone())
+                .or_else(|| agent.as_ref().map(|a| format!("bridge.{a}-token"))),
+            agent,
         })
     }
 }
@@ -489,6 +624,20 @@ fn query(pairs: &[(&str, Option<String>)]) -> String {
     }
 }
 
+/// The headers every bridge request carries, plus the Bearer token
+/// when a route authenticates by header (the notes routes). Generic
+/// over the builder's typestate: `get` starts WithoutBody, `post`
+/// starts WithBody, and headers are settable in either.
+fn with_auth<State>(req: ureq::RequestBuilder<State>, bearer: Option<&str>) -> ureq::RequestBuilder<State> {
+    let req = req
+        .header("Accept", "application/json")
+        .header("User-Agent", "fleet-bridge");
+    match bearer {
+        Some(t) => req.header("Authorization", format!("Bearer {t}")),
+        None => req,
+    }
+}
+
 pub struct Client {
     agent: ureq::Agent,
     base: String,
@@ -527,20 +676,25 @@ impl Client {
 
     /// One request; `path` already carries the token. Returns the JSON body.
     fn call(&self, method: &str, path: &str, body: Option<&Value>) -> R<Value> {
+        self.call_req(method, path, body, None)
+    }
+
+    /// One request authenticated by an `Authorization: Bearer` header
+    /// instead of a path token (the notes routes work that way). The
+    /// token joins the scrub list, like a path token.
+    fn call_bearer(&mut self, method: &str, path: &str, body: Option<&Value>, token: &str) -> R<Value> {
+        if !self.secrets_to_scrub.iter().any(|t| t == token) {
+            self.secrets_to_scrub.push(token.to_string());
+        }
+        self.call_req(method, path, body, Some(token))
+    }
+
+    fn call_req(&self, method: &str, path: &str, body: Option<&Value>, bearer: Option<&str>) -> R<Value> {
         let url = format!("{}{}", self.base, path);
         let result = match body {
-            None => self
-                .agent
-                .get(&url)
-                .header("Accept", "application/json")
-                .header("User-Agent", "fleet-bridge")
-                .call(),
-            Some(b) => self
-                .agent
-                .post(&url)
-                .header("Accept", "application/json")
+            None => with_auth(self.agent.get(&url), bearer).call(),
+            Some(b) => with_auth(self.agent.post(&url), bearer)
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "fleet-bridge")
                 .send(b.to_string().as_bytes()),
         };
         let mut resp = result.map_err(|e| {
@@ -599,6 +753,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--interval",
     "--reply-to",
     "--up-to",
+    "--bootstrap",
     "--scopes",
     "--ttl",
     "--notes-identity",
@@ -758,6 +913,173 @@ fn client_with(ctx: &Ctx, token: &str) -> Client {
     c
 }
 
+/// The calling identity's notes token, by vault name (the notes
+/// verbs authenticate with it as a Bearer header).
+fn notes_token(ctx: &Ctx) -> R<String> {
+    let name = ctx.settings.notes_token_name.as_deref().ok_or_else(|| {
+        usage(
+            "no notes token can be named: set [bridge] notes_token_name or agent in fleet.toml, or enrol this seat (fleet agent enroll --bootstrap)",
+        )
+    })?;
+    ctx.secrets.resolve(name).map_err(|e| {
+        BridgeError::Transport(format!(
+            "notes token '{name}' unresolved: {e} (the notes verbs need it)"
+        ))
+    })
+}
+
+/// `fleet bridge exchange` (#14370, design §4.5/§4.7): trade a
+/// single-use bootstrap token — minted by the owner, bound to this
+/// agent's name, kind and groups — for the agent's own credentials.
+/// The exchange answer carries the credential values exactly once;
+/// they go straight into the vault under their names
+/// (`bridge.<agent>-fleet-token`, `bridge.<agent>-token`) and are
+/// never printed, so this verb's output is names and metadata only.
+/// A refused exchange (wrong, used, expired or revoked token, or a
+/// name that is not the minted name) stores nothing.
+fn verb_exchange(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
+    let a = parse(rest, &[], &["--agent", "--bootstrap"])?;
+    a.no_positional("exchange")?;
+    let agent = agent_of(&a, &ctx.settings)?;
+    let bootstrap = a.last("--bootstrap").ok_or_else(|| {
+        usage("exchange needs --bootstrap <the single-use token the console minted for this agent>")
+    })?;
+    let mut client = Client::new(&ctx.settings.url);
+    client.secrets_to_scrub.push(bootstrap.clone());
+    let out = client
+        .call(
+            "POST",
+            "/enroll/exchange",
+            Some(&json!({ "bootstrap_token": bootstrap, "agent": agent })),
+        )
+        .map_err(|e| match e {
+            BridgeError::Http { status: 404, .. } => BridgeError::Http {
+                status: 404,
+                message: "the bridge refused the exchange: the bootstrap token is wrong, \
+                          already used, expired or revoked, or was minted for a different agent name"
+                    .to_string(),
+            },
+            other => other,
+        })?;
+    let agent = out
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or_else(|| BridgeError::Transport("the bridge's exchange answer named no agent".to_string()))?
+        .to_string();
+    let fleet_value = out
+        .get("fleet_token")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            BridgeError::Transport("the bridge's exchange answer carried no fleet credential".to_string())
+        })?;
+    let fleet_name = format!("bridge.{agent}-fleet-token");
+    ctx.secrets.store(&fleet_name, fleet_value).map_err(|e| {
+        BridgeError::Transport(format!(
+            "the exchange minted {agent}'s credentials but storing the fleet credential as '{fleet_name}' failed: {e}. \
+             The bootstrap token is burned; mint a fresh one and re-run the exchange."
+        ))
+    })?;
+    let mut notes_name = None;
+    if let Some(notes_value) = out.get("notes_token").and_then(Value::as_str) {
+        let name = format!("bridge.{agent}-token");
+        ctx.secrets.store(&name, notes_value).map_err(|e| {
+            BridgeError::Transport(format!(
+                "the exchange minted {agent}'s credentials and stored '{fleet_name}', but storing the notes token as '{name}' failed: {e}. \
+                 The bootstrap token is burned; mint a fresh one and re-run the exchange."
+            ))
+        })?;
+        notes_name = Some(name);
+    }
+    Ok(json!({
+        "agent": agent,
+        "kind": out.get("kind").cloned().unwrap_or(Value::Null),
+        "groups": out.get("groups").cloned().unwrap_or(json!([])),
+        "notes_identity": out.get("notes_identity").cloned().unwrap_or(Value::Null),
+        "fleet_token_name": fleet_name,
+        "notes_token_name": notes_name,
+        "url": ctx.settings.url,
+        "stored": true,
+    }))
+}
+
+/// `fleet bridge notes <send|inbox|ack>` — the class/name notes
+/// family (#13907's surface, with #14370's kind/reply_to): the
+/// calling identity's own token authenticates as a Bearer header,
+/// resolved by vault name like every other bridge token.
+fn verb_notes(ctx: &mut Ctx, rest: &[String]) -> R<Value> {
+    let Some((sub, nrest)) = rest.split_first() else {
+        return Err(usage(
+            "notes needs a verb: send, inbox or ack (try: fleet bridge notes --help)",
+        ));
+    };
+    match sub.as_str() {
+        "send" => {
+            let a = parse(nrest, &[], &["--to", "--kind", "--reply-to"])?;
+            let kind = a.last("--kind").unwrap_or_else(|| "note".to_string());
+            if !matches!(kind.as_str(), "note" | "instruction") {
+                return Err(usage(format!(
+                    "--kind is note or instruction, not '{kind}'"
+                )));
+            }
+            let reply_to = a.uint("--reply-to")?;
+            let to = a.last("--to");
+            if to.is_none() && reply_to.is_none() {
+                return Err(usage(
+                    "notes send needs --to CLASS/NAME (a * segment wildcards), or --reply-to ID naming a note in your inbox",
+                ));
+            }
+            let body = text_of(&a, ctx.stdin)?;
+            let mut payload = json!({ "note": body, "kind": kind });
+            if let Some(to) = to {
+                payload["to"] = json!(to);
+            }
+            if let Some(id) = reply_to {
+                payload["reply_to"] = json!(id);
+            }
+            let token = notes_token(ctx)?;
+            let mut client = Client::new(&ctx.settings.url);
+            client.call_bearer("POST", "/notes/send", Some(&payload), &token)
+        }
+        "inbox" => {
+            let a = parse(nrest, &[], &[])?;
+            a.no_positional("notes inbox")?;
+            let token = notes_token(ctx)?;
+            let mut client = Client::new(&ctx.settings.url);
+            client.call_bearer("GET", "/notes/inbox", None, &token)
+        }
+        "ack" => {
+            let a = parse(nrest, &[], &["--up-to"])?;
+            let ids: Vec<u64> = a
+                .positional
+                .iter()
+                .map(|p| {
+                    p.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                        usage(format!("note id '{p}' is not a positive number"))
+                    })
+                })
+                .collect::<R<_>>()?;
+            let up_to = a.uint("--up-to")?;
+            if up_to.is_none() && ids.is_empty() {
+                return Err(usage("notes ack needs --up-to ID or one or more IDs"));
+            }
+            let mut payload = json!({});
+            if let Some(u) = up_to {
+                payload["up_to_id"] = json!(u);
+            }
+            if !ids.is_empty() {
+                payload["ids"] = json!(ids);
+            }
+            let token = notes_token(ctx)?;
+            let mut client = Client::new(&ctx.settings.url);
+            client.call_bearer("POST", "/notes/ack", Some(&payload), &token)
+        }
+        other => Err(usage(format!(
+            "unknown notes verb '{other}' (send, inbox or ack)"
+        ))),
+    }
+}
+
 /// Runs one verb; Ok is the JSON to print.
 pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
     let Some((verb, rest)) = args.split_first() else {
@@ -846,10 +1168,7 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                 ("receiver", a.last("--receiver")),
                 ("surface", a.last("--surface")),
                 ("batch", a.last("--batch")),
-                (
-                    "unread_only",
-                    a.has("--unread").then(|| "true".to_string()),
-                ),
+                ("unread_only", a.has("--unread").then(|| "true".to_string())),
                 ("work_state", a.last("--work-state")),
                 ("since_id", a.uint("--since-id")?.map(|n| n.to_string())),
                 ("before_id", a.uint("--before-id")?.map(|n| n.to_string())),
@@ -880,9 +1199,7 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
                 (Some(agent), None) => ("fleet", agent),
                 (None, Some(identity)) => ("notes", identity),
                 _ => {
-                    return Err(usage(
-                        "revoke needs exactly one of --agent or --identity",
-                    ));
+                    return Err(usage("revoke needs exactly one of --agent or --identity"));
                 }
             };
             let token = owner_token(ctx)?;
@@ -1115,6 +1432,8 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             let token = fleet_token(ctx)?;
             client_with(ctx, &token).call("POST", &format!("/fleet/{token}/ack"), Some(&payload))
         }
+        "exchange" => verb_exchange(ctx, rest),
+        "notes" => verb_notes(ctx, rest),
         "health" => {
             let a = parse(rest, &[], &[])?;
             a.no_positional("health")?;

@@ -9,6 +9,7 @@
 **Action:** For these singleton dialogs, put the reason next to the input with `role="alert"` + `aria-describedby`, and reset it on open, on input and on close (`goto-line.ts`).
 
 ## 2026-11-24 - Static dashboards ship unlabeled inputs and silent async output
+
 **Learning:** This repo's real UI surfaces are small static dashboards under
 `pkgs/*/public/` (not a component framework). Their recurring pattern is
 fetch-and-dump into a `<pre>`: inputs ship without `<label>` (placeholder-only

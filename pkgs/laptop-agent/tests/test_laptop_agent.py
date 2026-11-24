@@ -1402,9 +1402,11 @@ class PersistedJobTimestampTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as state_dir:
             err = io.StringIO()
-            with patch.object(la, "STATE_DIR", Path(state_dir)), patch.object(
-                la.os, "replace", side_effect=OSError("disk full")
-            ), contextlib.redirect_stderr(err):
+            with (
+                patch.object(la, "STATE_DIR", Path(state_dir)),
+                patch.object(la.os, "replace", side_effect=OSError("disk full")),
+                contextlib.redirect_stderr(err),
+            ):
                 la._write_meta(job)
             self.assertIn("cannot write meta for job unwritable-job", err.getvalue())
             self.assertIn("disk full", err.getvalue())

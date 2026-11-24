@@ -361,10 +361,7 @@ describe("downtime_window scoring (oracle: C4 design §3 over fixture prediction
 
   test("realized join: no common overlap, or any provider never down, yields no windows", () => {
     expect(
-      deriveRealizedDowntimeWindows([
-        [{ start: T0, end: T0 + 2 * H }],
-        [{ start: T0 + 4 * H, end: T0 + 6 * H }],
-      ]),
+      deriveRealizedDowntimeWindows([[{ start: T0, end: T0 + 2 * H }], [{ start: T0 + 4 * H, end: T0 + 6 * H }]]),
     ).toEqual([]);
     expect(deriveRealizedDowntimeWindows([[{ start: T0, end: T0 + 2 * H }], []])).toEqual([]);
     expect(deriveRealizedDowntimeWindows([])).toEqual([]);
