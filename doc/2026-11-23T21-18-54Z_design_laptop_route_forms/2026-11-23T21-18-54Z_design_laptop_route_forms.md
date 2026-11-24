@@ -17,20 +17,20 @@ command, still reports exactly which tier served the call.
 
 ## The codified matrix
 
-| Tier | Method | Shape | Literal command |
-|---|---|---|---|
-| T0 | tiered | fleet subcommand | `fleet laptop exec [--timeout S] -- cmd...` — walks T1 → T2 → T3 internally, reports the serving tier |
-| T1 | commander | fleet subcommand | `fleet commander exec [--cwd D] --timeout S -- cmd...` |
-| T2 | http-direct | fleet subcommand | `fleet http exec [--cwd D] --timeout S -- cmd...` |
-| T3 | ssh | fleet subcommand | `fleet ssh exec [--cwd D] --timeout S -- cmd...` |
-| T4 | commander | raw command | the documented curl recipe against `https://commander.security.cab/mcp` |
-| T5 | http-direct | raw command | literal curl to the daemon API through the session proxy |
-| T6 | ssh | raw command | the literal `ssh` invocation written out in `TOOLS.d/laptop.md` |
-| T7 | wrapper | simplified tier | `laptop-ssh 'cmd...'` — final fallback, and the one-command form for an agent without the full matrix |
+| Tier | Method      | Shape            | Literal command                                                                                       |
+| ---- | ----------- | ---------------- | ----------------------------------------------------------------------------------------------------- |
+| T0   | tiered      | fleet subcommand | `fleet laptop exec [--timeout S] -- cmd...` — walks T1 → T2 → T3 internally, reports the serving tier |
+| T1   | commander   | fleet subcommand | `fleet commander exec [--cwd D] --timeout S -- cmd...`                                                |
+| T2   | http-direct | fleet subcommand | `fleet http exec [--cwd D] --timeout S -- cmd...`                                                     |
+| T3   | ssh         | fleet subcommand | `fleet ssh exec [--cwd D] --timeout S -- cmd...`                                                      |
+| T4   | commander   | raw command      | the documented curl recipe against `https://commander.security.cab/mcp`                               |
+| T5   | http-direct | raw command      | literal curl to the daemon API through the session proxy                                              |
+| T6   | ssh         | raw command      | the literal `ssh` invocation written out in `TOOLS.d/laptop.md`                                       |
+| T7   | wrapper     | simplified tier  | `laptop-ssh 'cmd...'` — final fallback, and the one-command form for an agent without the full matrix |
 
 **Composition.** Tier 0 is the first option. It attempts T1 → T2 →
 T3 in order, each attempt a literal invocation of that tier's own
-implementation, advancing only when a tier fails to *serve*
+implementation, advancing only when a tier fails to _serve_
 (transport / auth / connect failure or a tier-level timeout) —
 never on a served result, whatever its exit code — and it names
 the serving tier. Tier 0 does **not** fall through to the wrapper:
@@ -59,7 +59,7 @@ untouched; only the walker applies the convention.
   fleet-laptop-agent client. The daemon is the endpoint; this is
   its contract surface: token auth from the token file, the
   primary-checkout guard applied before anything is sent (a guard
-  refusal is a *served* result — tier 0 must not route around it),
+  refusal is a _served_ result — tier 0 must not route around it),
   daemon `timeout_s` plus the transport grace as the local
   deadline, exit codes from the daemon reply. The ladder is built
   HTTP-only (`legs::http_ladder`: broker socket → Cloudflare

@@ -14,20 +14,14 @@ const manifest = {
 
 describe("promotion drift classification", () => {
   it("treats the verified upload already serving 100% as already-promoted", () => {
-    expect(
-      deploymentStatus(
-        { versions: [{ version_id: manifest.versionId, percentage: 100 }] },
-        manifest,
-      ),
-    ).toBe("already-promoted");
+    expect(deploymentStatus({ versions: [{ version_id: manifest.versionId, percentage: 100 }] }, manifest)).toBe(
+      "already-promoted",
+    );
   });
 
   it("allows promotion when the live deployment still matches the baseline", () => {
     expect(
-      deploymentStatus(
-        { versions: [{ version_id: manifest.baselineVersionId, percentage: 100 }] },
-        manifest,
-      ),
+      deploymentStatus({ versions: [{ version_id: manifest.baselineVersionId, percentage: 100 }] }, manifest),
     ).toBe("at-baseline");
   });
 
@@ -43,7 +37,12 @@ describe("promotion drift classification", () => {
   it("refuses a partial rollout of the verified upload instead of guessing", () => {
     expect(
       deploymentStatus(
-        { versions: [{ version_id: manifest.versionId, percentage: 50 }, { version_id: manifest.baselineVersionId, percentage: 50 }] },
+        {
+          versions: [
+            { version_id: manifest.versionId, percentage: 50 },
+            { version_id: manifest.baselineVersionId, percentage: 50 },
+          ],
+        },
         manifest,
       ),
     ).toBe("drifted");

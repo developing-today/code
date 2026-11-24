@@ -14263,7 +14263,7 @@ mod audit_tests {
             let records = Arc::new(Mutex::new(Vec::new()));
             let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
             let _guard = tracing::subscriber::set_default(subscriber);
-        crate::test_tracing::rebuild_interest_cache();
+            crate::test_tracing::rebuild_interest_cache();
 
             let core = WorldCore::new(
                 "audit-test",

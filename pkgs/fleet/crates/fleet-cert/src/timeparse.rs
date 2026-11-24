@@ -121,14 +121,12 @@ impl CalendarDuration {
             if rest.is_empty() {
                 break;
             }
-            let num_end = rest
-                .find(|c: char| !c.is_ascii_digit())
-                .ok_or_else(|| {
-                    CertError::usage(format!(
-                        "duration '{input}': bare number without a unit is ambiguous; \
+            let num_end = rest.find(|c: char| !c.is_ascii_digit()).ok_or_else(|| {
+                CertError::usage(format!(
+                    "duration '{input}': bare number without a unit is ambiguous; \
                          add a unit (y, mo, w, d, h, m, s)"
-                    ))
-                })?;
+                ))
+            })?;
             if num_end == 0 {
                 return Err(CertError::usage(format!(
                     "duration '{input}': expected a number at '{rest}'"
@@ -160,7 +158,7 @@ impl CalendarDuration {
                     return Err(CertError::usage(format!(
                         "duration '{input}': unknown unit '{other}' \
                          (known: y, mo, w, d, h, m, s — spelled-out forms accepted)"
-                    )))
+                    )));
                 }
             }
             terms += 1;
@@ -203,8 +201,8 @@ impl CalendarDuration {
         let month_num = (month_idx + 1) as u8;
         let month = Month::try_from(month_num)
             .map_err(|_| CertError::engine("month arithmetic overflow"))?;
-        let year_i32 = i32::try_from(year)
-            .map_err(|_| CertError::engine("year arithmetic overflow"))?;
+        let year_i32 =
+            i32::try_from(year).map_err(|_| CertError::engine("year arithmetic overflow"))?;
         let max_day = days_in_month(year_i32, month);
         let day = date.day().min(max_day);
         let new_date = Date::from_calendar_date(year_i32, month, day)
@@ -293,7 +291,10 @@ mod tests {
         assert_eq!((d.years, d.days), (15, 7));
         let d = CalendarDuration::parse("1y 6mo").unwrap();
         assert_eq!((d.years, d.months), (1, 6));
-        assert!(CalendarDuration::parse("20").is_err(), "bare number rejected");
+        assert!(
+            CalendarDuration::parse("20").is_err(),
+            "bare number rejected"
+        );
         assert!(CalendarDuration::parse("3 fortnights").is_err());
         assert!(CalendarDuration::parse("").is_err());
         assert!(CalendarDuration::parse("0d").is_err());
@@ -347,16 +348,18 @@ mod tests {
         assert_eq!(b, nb);
         // Exact not-after wins; both flags together are an error.
         let exact = ts("2032-07-07T12:00:00Z");
-        let (_, a) = resolve_validity(Some(nb), None, Some(exact), CalendarDuration::years(5))
-            .unwrap();
+        let (_, a) =
+            resolve_validity(Some(nb), None, Some(exact), CalendarDuration::years(5)).unwrap();
         assert_eq!(a, exact);
-        assert!(resolve_validity(
-            Some(nb),
-            Some(CalendarDuration::days(90)),
-            Some(exact),
-            CalendarDuration::years(5)
-        )
-        .is_err());
+        assert!(
+            resolve_validity(
+                Some(nb),
+                Some(CalendarDuration::days(90)),
+                Some(exact),
+                CalendarDuration::years(5)
+            )
+            .is_err()
+        );
         // not-after <= not-before is an error.
         assert!(resolve_validity(Some(nb), None, Some(nb), CalendarDuration::years(5)).is_err());
     }

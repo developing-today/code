@@ -112,7 +112,7 @@ not selected from.
 
 The cross-corpus sets for the Atlas memory integration (design
 record `../docs/memory-integration-design-8567.md` §6, slice 5)
-must be able to fail a run for breaking *policy*, not just for
+must be able to fail a run for breaking _policy_, not just for
 ranking badly. Three optional `atlas-eval/v1` fields express that,
 all backward compatible — a set that omits them scores and
 serializes exactly as before:
@@ -131,7 +131,7 @@ A ranking that surfaces a forbidden doc, a doc from outside the
 query's corpus scope, or a doc with no attribution at all records
 a **violation** in that signal's report (query, doc, rank, kind,
 corpus). The metrics are computed unchanged — the doc still scores
-grade 0 — but the signal has *failed*: `select_best_signal`
+grade 0 — but the signal has _failed_: `select_best_signal`
 refuses a report containing violations, and the runner exits
 non-zero. A policy regression therefore fails the eval itself,
 not just a code review.
@@ -177,10 +177,10 @@ Golden-311 carries two recorded rows that were both long labelled
 measurement error, and neither should be cited without its
 configuration:
 
-| Row | Configuration | Recorded in |
-| --- | --- | --- |
-| 189 hits@10, MRR 0.3894 | production shape: one-stage hybrid, RRF k=10, pool 100 per branch, full 768 dimensions | `../atlas_search.py` header (2026-10-31 bake-off decision); configuration pinned by `crates/atlas-proto/query-parameters-v1.json` |
-| recall@10 183/311, MRR 0.3640 | eval lineage: branch depth 30, RRF k=60, vectors truncated to 384 dimensions | `gate-5733-results.md` (sanity gate, reproduced exactly) |
+| Row                           | Configuration                                                                          | Recorded in                                                                                                                       |
+| ----------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| 189 hits@10, MRR 0.3894       | production shape: one-stage hybrid, RRF k=10, pool 100 per branch, full 768 dimensions | `../atlas_search.py` header (2026-10-31 bake-off decision); configuration pinned by `crates/atlas-proto/query-parameters-v1.json` |
+| recall@10 183/311, MRR 0.3640 | eval lineage: branch depth 30, RRF k=60, vectors truncated to 384 dimensions           | `gate-5733-results.md` (sanity gate, reproduced exactly)                                                                          |
 
 Three different artefacts in this directory are all called
 "golden"; they are not interchangeable:

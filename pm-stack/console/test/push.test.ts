@@ -94,7 +94,14 @@ describe("the message a phone receives", () => {
       // It still holds both devices, each known by its mark and not by its address.
       const marks = [await endpointMark(a.subscription.endpoint), await endpointMark(m.subscription.endpoint)];
       // And what came of the send above, which a restart does not lose.
-      const last = { at: new Date(NOW).toISOString(), class: "replies" as const, sent: 2, gone: 0, failed: 0, refused: [] };
+      const last = {
+        at: new Date(NOW).toISOString(),
+        class: "replies" as const,
+        sent: 2,
+        gone: 0,
+        failed: 0,
+        refused: [],
+      };
       expect(await again.status()).toEqual({ ...status, devices: 2, known: marks, last });
       expect(status.known).toEqual([]);
       expect(marks[0]).toMatch(/^[A-Za-z0-9_-]{16}$/);
@@ -114,14 +121,27 @@ describe("the message a phone receives", () => {
       const b = await browser("web.push.apple.com");
       let answer: (url: string) => number = (url: string) => (url === a.subscription.endpoint ? 410 : 201);
       let posts = 0;
-      const push = new Push(
-        fileStore(join(dir, "push.json")),
-        "mailto:o@example.com",
-        async (url) => (posts++, { status: answer(url) }),
-      );
+      // What a push service answers has a body nobody reads, and each send has a deadline.
+      let letGo = 0;
+      const deadlines: (AbortSignal | undefined)[] = [];
+      const push = new Push(fileStore(join(dir, "push.json")), "mailto:o@example.com", async (url, init) => {
+        posts++;
+        deadlines.push(init.signal);
+        const answered = {
+          status: answer(url),
+          body: {
+            cancel: async () => {
+              letGo++;
+            },
+          },
+        };
+        return answered;
+      });
       await push.subscribe(a.subscription, "");
       await push.subscribe(b.subscription, "");
       expect(await push.send("needs", { title: "t", body: "b", url: "/" })).toEqual({ sent: 1, gone: 1, failed: 0 });
+      // Each was sent under a deadline that had not run out, and its answer's body let go of.
+      expect([deadlines.map((signal) => signal?.aborted), letGo]).toEqual([[false, false], 2]);
       expect((await push.status()).devices).toBe(1);
       expect(await push.setClass("needs", false)).toEqual({
         replies: true,

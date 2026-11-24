@@ -117,9 +117,8 @@ fn leaf_request(
 fn build_hierarchy(tmp: &TempDir, algorithms: Vec<AlgorithmId>) -> (PathBuf, PathBuf) {
     let root_dir = tmp.path().join("roots");
     let manifest = engine::create_root_set(&root_request(algorithms.clone()), &root_dir).unwrap();
-    let expected_roots =
-        fleet_cert::graph::GraphPolicy::spec_default()
-            .expected_root_certificates(&algorithms, CrossSigningMode::Both);
+    let expected_roots = fleet_cert::graph::GraphPolicy::spec_default()
+        .expected_root_certificates(&algorithms, CrossSigningMode::Both);
     assert_eq!(
         manifest.certificates.len(),
         expected_roots,
@@ -203,13 +202,9 @@ fn full_synthetic_hierarchy_validates() {
         );
         engine::issue_leaf(&req, &leaf_dir).unwrap();
         let leaf_b = load_bundle(&leaf_dir).unwrap();
-        let report = engine::validate_leaf(
-            &leaf_b,
-            &[&issuer_b, &root_b],
-            TrustSelection::All,
-            ts(AT),
-        )
-        .unwrap();
+        let report =
+            engine::validate_leaf(&leaf_b, &[&issuer_b, &root_b], TrustSelection::All, ts(AT))
+                .unwrap();
         assert!(
             report.valid,
             "{profile_name} chain invalid: {:?}",
@@ -228,7 +223,11 @@ fn pq_policy_negative_and_positive() {
     let tmp = TempDir::new("pq");
     let (root_dir, issuer_dir) = build_hierarchy(
         &tmp,
-        vec![AlgorithmId::Ed25519, AlgorithmId::P256, AlgorithmId::MlDsa44],
+        vec![
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::MlDsa44,
+        ],
     );
     let root_b = load_bundle(&root_dir).unwrap();
     let issuer_b = load_bundle(&issuer_dir).unwrap();
@@ -236,7 +235,14 @@ fn pq_policy_negative_and_positive() {
     // Classical leaf (profile default P-256 key + issuer).
     let leaf_dir = tmp.path().join("leaf-classical");
     engine::issue_leaf(
-        &leaf_request(&issuer_dir, "server", "classical", None, None, CalendarDuration::days(90)),
+        &leaf_request(
+            &issuer_dir,
+            "server",
+            "classical",
+            None,
+            None,
+            CalendarDuration::days(90),
+        ),
         &leaf_dir,
     )
     .unwrap();
@@ -288,10 +294,12 @@ fn pq_policy_negative_and_positive() {
         "all-ML-DSA path must validate under PQ trust: {:?}",
         report.checks.iter().filter(|c| !c.ok).collect::<Vec<_>>()
     );
-    assert!(report
-        .checks
-        .iter()
-        .any(|c| c.name == "pq-only-path" && c.ok));
+    assert!(
+        report
+            .checks
+            .iter()
+            .any(|c| c.name == "pq-only-path" && c.ok)
+    );
     // And the same leaf is fine under the all-roots selection.
     let report = engine::validate_leaf(
         &pq_b,
@@ -311,11 +319,22 @@ fn cross_signed_path_survives_primary_root_removal() {
     let tmp = TempDir::new("cross");
     let (root_dir, issuer_dir) = build_hierarchy(
         &tmp,
-        vec![AlgorithmId::Ed25519, AlgorithmId::P256, AlgorithmId::MlDsa44],
+        vec![
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::MlDsa44,
+        ],
     );
     let leaf_dir = tmp.path().join("leaf");
     engine::issue_leaf(
-        &leaf_request(&issuer_dir, "server", "x", None, None, CalendarDuration::days(90)),
+        &leaf_request(
+            &issuer_dir,
+            "server",
+            "x",
+            None,
+            None,
+            CalendarDuration::days(90),
+        ),
         &leaf_dir,
     )
     .unwrap();
@@ -366,7 +385,11 @@ fn openssl_independent_validation() {
     let tmp = TempDir::new("openssl");
     let (root_dir, issuer_dir) = build_hierarchy(
         &tmp,
-        vec![AlgorithmId::Ed25519, AlgorithmId::P256, AlgorithmId::MlDsa44],
+        vec![
+            AlgorithmId::Ed25519,
+            AlgorithmId::P256,
+            AlgorithmId::MlDsa44,
+        ],
     );
     let verify = |cafile: &Path, untrusted: &Path, leaf: &Path| -> bool {
         std::process::Command::new("openssl")
@@ -385,7 +408,14 @@ fn openssl_independent_validation() {
     // Classical leaf against roots-all via its primary issuer.
     let leaf_dir = tmp.path().join("leaf");
     engine::issue_leaf(
-        &leaf_request(&issuer_dir, "server", "ossl", None, None, CalendarDuration::years(3)),
+        &leaf_request(
+            &issuer_dir,
+            "server",
+            "ossl",
+            None,
+            None,
+            CalendarDuration::years(3),
+        ),
         &leaf_dir,
     )
     .unwrap();
@@ -446,7 +476,9 @@ fn signer_source_and_legacy_gates() {
     // RSA-2048 root without the opt-in is refused; with it, created.
     let mut req = root_request(vec![AlgorithmId::Rsa2048]);
     let out = tmp.path().join("legacy-denied");
-    let err = engine::create_root_set(&req, &out).err().expect("must refuse");
+    let err = engine::create_root_set(&req, &out)
+        .err()
+        .expect("must refuse");
     assert!(format!("{err}").contains("--allow-legacy-root-strength"));
     req.allow_legacy_root_strength = true;
     let out2 = tmp.path().join("legacy-allowed");

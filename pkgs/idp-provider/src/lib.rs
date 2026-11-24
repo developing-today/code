@@ -33,16 +33,17 @@ pub mod identities;
 pub mod registry;
 pub mod signing;
 pub mod upstream;
+pub mod verify;
 
 use audit::AuditLog;
-use axum::{routing::get, Json, Router};
-use base64::{engine::general_purpose::STANDARD as B64_STD, Engine as _};
+use axum::{Json, Router, routing::get};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64_STD};
 use der::Decode;
 use flow::FlowState;
 use identities::IdentityStore;
 use pkcs1::DecodeRsaPublicKey;
-use rsa::{traits::PublicKeyParts, RsaPublicKey};
-use serde::Serialize;
+use rsa::{RsaPublicKey, traits::PublicKeyParts};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -164,7 +165,7 @@ pub fn cert_thumbprint_sha256(der_bytes: &[u8]) -> String {
     b64url(&Sha256::digest(der_bytes))
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Jwk {
     pub kty: String,
     #[serde(rename = "use")]
@@ -177,7 +178,7 @@ pub struct Jwk {
     pub e: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Jwks {
     pub keys: Vec<Jwk>,
 }
@@ -335,14 +336,14 @@ pub fn app_from_config(config: Config) -> Result<Router, String> {
             let registry = registry::ProviderConfig::load(cfg_path)?;
             // The key list is parallel to the certificate list;
             // with no list configured it is the single key path.
-            let key_paths: Vec<PathBuf> = if !config.signing_key_paths.is_empty() {
-                config.signing_key_paths.clone()
-            } else {
-                vec![config
-                    .signing_key_path
-                    .clone()
-                    .ok_or("IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set")?]
-            };
+            let key_paths: Vec<PathBuf> =
+                if !config.signing_key_paths.is_empty() {
+                    config.signing_key_paths.clone()
+                } else {
+                    vec![config.signing_key_path.clone().ok_or(
+                        "IDP_PROVIDER_OIDC_KEY is required when IDP_PROVIDER_CONFIG is set",
+                    )?]
+                };
             if key_paths.len() != cert_paths.len() {
                 return Err(format!(
                     "signing key count ({}) does not match certificate count ({})",

@@ -18,7 +18,7 @@
 //! reason string, not a transcript.
 
 use crate::registry::UpstreamDoor;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64URL, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64URL};
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::signature::Verifier as _;
 use rsa::{BigUint, RsaPublicKey};

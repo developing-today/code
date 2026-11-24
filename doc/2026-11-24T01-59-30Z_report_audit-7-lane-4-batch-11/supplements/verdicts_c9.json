@@ -1,0 +1,177 @@
+[
+ {
+  "evidence": "Browser + host preserve/restore resume state + viewport; regression tests cover JSON + MessagePack paths.",
+  "gap": null,
+  "issue": 12648,
+  "pr": 12704,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Off-box watch + registry entry landed, but #8427 requires detection or controlled drill; proof outstanding per body.",
+  "gap": null,
+  "issue": 8427,
+  "pr": 12705,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Client mode lines for selected verbs, but required per-leg drills + runbook updates remain; #8583 local replica not wired in.",
+  "gap": null,
+  "issue": 8581,
+  "pr": 12706,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Integration PoC covers A/B exchange, C's excluded-but-retrievable claim, README PoC/review-round gate.",
+  "gap": null,
+  "issue": 3790,
+  "pr": 12707,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Host persists/restores note events + policies, but #3819 also requires replica-sync recovery, concurrent/offline heads, merge behavior.",
+  "gap": null,
+  "issue": 3819,
+  "pr": 12708,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Outcome projector + rollups added, but #10910 broader attribution slice not fully delivered by this component alone.",
+  "gap": null,
+  "issue": 10910,
+  "pr": 12709,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Contract nullability now matches host Option field; compatibility evidence documented.",
+  "gap": null,
+  "issue": 12703,
+  "pr": 12710,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Collector PoC + tests in-repo; deployment, wake integration, three-day parallel fidelity run remain.",
+  "gap": null,
+  "issue": 2137,
+  "pr": 12711,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "App switch for edge direct mode landed; laptop-stopped end-to-end acceptance not demonstrated; real-account upload unchecked.",
+  "gap": null,
+  "issue": 12518,
+  "pr": 12712,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Registry corrected, but permanent-retirement decision open on #2138; missing triage-step registry row identified.",
+  "gap": null,
+  "issue": 2138,
+  "pr": 12713,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Restores compact seed records, excludes from formatting; no spawning issue referenced.",
+  "gap": null,
+  "issue": null,
+  "pr": 12714,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Report limiter landed; #12521 Android-build edge copy + cf deployment-flow items outside this PR.",
+  "gap": null,
+  "issue": 12521,
+  "pr": 12715,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Registry artifact + validator landed; first additional machine, watchdog coverage, live placement rule remain per body.",
+  "gap": null,
+  "issue": 2179,
+  "pr": 12717,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Persistent-failure notification landed, but #12520 rebuild flake.lock divergence fix outstanding.",
+  "gap": null,
+  "issue": 12520,
+  "pr": 12719,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Unit path configured, but PR says deployed aggregator predates writer: rebuild + live verification required; #12718 closed. Refs-only scope done (path pinned, registry row updated); #12718 closed, deployment presumed followed.",
+  "gap": null,
+  "issue": 12718,
+  "pr": 12720,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Fixes canonical issue-scoped dispatch idempotency keys; references related issues but no spawning issue.",
+  "gap": null,
+  "issue": null,
+  "pr": 12721,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Daily sync-health probe implements step 4 visibility; upstream convergence (steps 1-2) + three days of scheduled runs remain.",
+  "gap": null,
+  "issue": 12235,
+  "pr": 12722,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Android build cached at edge with freshness handling; #12521 cf deployment-flow change remains.",
+  "gap": null,
+  "issue": 12521,
+  "pr": 12723,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Forecast product + tests landed, but one-week live-run + five-pool quality acceptance outstanding; linked issue closed. S1 forecast product landed with tests; one-week live-run acceptance accrued post-deploy. #12695 closed with 8 comments; pointer filed to confirm acceptance recorded.",
+  "gap": null,
+  "issue": null,
+  "pr": 12724,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "embeddings.wasmPath made permanent exemption while #8471 requires real integration exercise + removal of every exemption; #8471 closed. Permanent reasoned exemption; #8471 acceptance (exercise + remove every exemption) tension remains. Umbrella pointer filed; no reopen.",
+  "gap": null,
+  "issue": 8471,
+  "pr": 12725,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Registry records Stage B, but live job bodies still run Stage A until charter applied via cron.update.",
+  "gap": null,
+  "issue": 2313,
+  "pr": 12727,
+  "verdict": "audit:partial"
+ },
+ {
+  "evidence": "Package header documents vendored mirror + verified hash path; functional source fix present; clean-store proof recorded.",
+  "gap": null,
+  "issue": 12716,
+  "pr": 12728,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Sink-zone log-day selection fix + regression coverage; no spawning issue referenced.",
+  "gap": null,
+  "issue": null,
+  "pr": 12729,
+  "verdict": "audit:no-issue"
+ },
+ {
+  "evidence": "Pool selection ordered with requested account first; parsed configuration verified.",
+  "gap": null,
+  "issue": 12730,
+  "pr": 12731,
+  "verdict": "audit:complete"
+ },
+ {
+  "evidence": "Harness, explicit rename mapping, ledger landed; issue comments include full-store backtest report + per-pool findings.",
+  "gap": null,
+  "issue": 12696,
+  "pr": 12733,
+  "verdict": "audit:complete"
+ }
+]

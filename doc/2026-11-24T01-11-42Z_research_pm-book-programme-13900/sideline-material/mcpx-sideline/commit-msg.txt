@@ -1,0 +1,23 @@
+docs(mcpx): book chapter for the door Worker at mcpx.security.cab
+
+New chapter docs/worker.md covering the mcpx door Worker (#13657):
+the door chain (Worker gate -> Access bridge door -> sandbox-link
+tunnel -> bridge proxy on 127.0.0.1:8932 -> daemon), the OAuth 2.1 /
+machine-bearer auth model, the ?ns= selector semantics enforced at
+the JSON-RPC layer (conservative / selected / full), the config and
+secret-name reference, failure shapes, publish/promote operations,
+and the prioritised order list + dependency map for the door's
+related issues (#13770, #13754, #13657, #13659, #13697, #13404).
+
+Registered in both navigation systems: docs/SUMMARY.md and
+docs/compendium.manifest.json. The manifest also gains the missing
+entry for worker/README.md (not-compendium, book chapter is
+docs/worker.md), which TestEveryDocumentHasAChapter requires.
+
+Verified: go test ./internal/settings (full package, incl.
+TestEveryDocumentHasAChapter), go test ./internal/refdoc -run
+TestCommittedRegionsAreCurrent, and a local mdbook build with the
+docs-history preprocessor (only the pre-existing search-index-size
+warning; worker.html renders with the chapter title).
+
+Part of programme #13900 (MCPX-SIDELINE).

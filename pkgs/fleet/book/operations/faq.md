@@ -10,6 +10,10 @@ One multicall binary means one artefact to build, pin, publish, and roll out to 
 
 The domain is not usable in that invocation: not compiled into the build, narrowed out by the invocation name, or disabled by config on that host. The stub's first line says which; `fleet capabilities` says it in JSON. Exit 69 is `EX_UNAVAILABLE` — the binary working as designed. See the stub entry in [Troubleshooting](troubleshooting.md).
 
+**How recent are the GitHub issues in a Fleet flow report?**
+
+The report header identifies the source file, when its paginated issue collection began, and the reference time used for age calculations. In JSON, read `inputs.issues_fetch_started_at` and `issues.as_of`. With a legacy file or rows from several collections, collection time is `unknown` (JSON `null`). Running the report again or passing `--now` updates the calculation clock only. Re-run the flow reporter's `fetch` command for a new observation.
+
 **The broker is down — what do I do?**
 
 First, find out _which_ broker and _which layer_: `fleet agent doctor` for the seat, `fleet queue health` for the queue, `GET /health` for the secrets-broker. On a sandbox seat, the heal chain rebuilds the stack in order (tailscaled → relay → session broker → secrets broker → gh) on a roughly five-minute cycle. On the laptop, systemd owns the brokers — check the unit, and redeploy through the profile if the generation is bad. If the _queue_-broker is unreachable for a work verb, the client switches to the GitHub fallback with exit 6 rather than failing outright. See [Health checks and the heal stack](health-and-healing.md).

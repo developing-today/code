@@ -21,7 +21,7 @@ no single blessed invocation.
 [--form T1|T2|T3] [--timeout SECS] [--cwd DIR] -- CMD...` walks
 T1 → T2 → T3 in order (or attempts one pinned tier), each attempt
 a literal invocation of that tier's own implementation. It
-advances only when a tier fails to *serve* — transport, auth or
+advances only when a tier fails to _serve_ — transport, auth or
 connect failure, or a tier-level timeout — never on a served
 result, whatever its exit code, and it reports the serving tier
 on stderr (`fleet: served by form T1 commander/fleet`). The

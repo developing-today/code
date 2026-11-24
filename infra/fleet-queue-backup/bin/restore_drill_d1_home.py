@@ -84,9 +84,7 @@ def restore(home_url, out_path, d1_name):
                     )
                     batch = []
             if batch:
-                conn.executemany(
-                    f'INSERT INTO "{name}" VALUES ({placeholders})', batch
-                )
+                conn.executemany(f'INSERT INTO "{name}" VALUES ({placeholders})', batch)
         for kind, _name, _t, sql in schema:
             if kind in ("index", "view", "trigger"):
                 conn.execute(sql.rstrip().rstrip(";"))

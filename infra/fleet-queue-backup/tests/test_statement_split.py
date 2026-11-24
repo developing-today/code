@@ -55,9 +55,7 @@ class TestStatementSplit(unittest.TestCase):
         big_text = "data 'quoted' and \"dq\" ✓ line\n" * 5000  # ~165K chars
         big_blob = bytes(range(256)) * 700  # 179,200 bytes
         conn = sqlite3.connect(":memory:")
-        conn.execute(
-            "CREATE TABLE wide (id INTEGER PRIMARY KEY, note TEXT, data BLOB)"
-        )
+        conn.execute("CREATE TABLE wide (id INTEGER PRIMARY KEY, note TEXT, data BLOB)")
         conn.executemany(
             "INSERT INTO wide VALUES (?,?,?)",
             [(1, big_text, big_blob), (2, "small", b"\x00\xff")],

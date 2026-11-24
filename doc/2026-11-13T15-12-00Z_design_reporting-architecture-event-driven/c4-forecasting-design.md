@@ -35,7 +35,7 @@ harness for the quota plane's own purposes:
   forecast, not C4 predictions themselves.
 
 Against #9572's scope, that covers exactly one prediction kind —
-per-pool exhaustion as a *point* projection — with scoring. It does
+per-pool exhaustion as a _point_ projection — with scoring. It does
 not cover, and this design specifies:
 
 1. **A prediction record of record.** S1's forecast rows carry no
@@ -51,7 +51,7 @@ not cover, and this design specifies:
    33 days of history each weekday cell held ~4–5 samples per window.
    This design defines the models and the sufficiency gate that
    admits them; it does not waive the gate.
-5. **New model/plan arrival** (S2.3, second half) — S5 *detects* plan
+5. **New model/plan arrival** (S2.3, second half) — S5 _detects_ plan
    changes after the fact; nothing predicts arrivals.
 6. **Forecast push alerts** (S2.12, C4 half) and the
    **methodology-change log** (S2.5's "methodology updates are
@@ -67,7 +67,7 @@ hook pipeline. Work gated on #12226 stays gated; none of it is C4's.
 
 One record per prediction, append-only, written per gatherer tick
 (or on the event that prompts it, for arrivals). A record is never
-edited; a newer prediction for the same subject *supersedes* by id
+edited; a newer prediction for the same subject _supersedes_ by id
 link, so the accuracy loop can score what was actually believed at
 each moment.
 
@@ -153,7 +153,7 @@ pool/window whose S1 row is a live projection also gets a C4 record:
   that pool/window at that lead time (the backtest's signed-error
   quantiles; until a cell has ≥20 scored forecasts, the range is the
   pool's all-window error band; below that, `insufficient_history`).
-  The range is therefore *calibrated by the accuracy record itself* —
+  The range is therefore _calibrated by the accuracy record itself_ —
   that is the loop S2.5 names.
 - Scoring is S2's, unchanged: wall error, precision/recall,
   first-call lead. C4 adds range coverage (§3) on top.
@@ -241,13 +241,13 @@ implements it:
 
 ```jsonc
 {
-  "version": "c4-meth:<n>",            // referenced by every record
+  "version": "c4-meth:<n>", // referenced by every record
   "ts": "<ISO-8601 UTC>",
   "change": "<what changed, in one paragraph>",
   "reason": "<the accuracy evidence that warranted it>",
   "evidence": ["<ledger report / backtest refs>"],
   "expected_effect": "<what should improve, measurably>",
-  "review_after": "<ISO date the effect is re-scored>"
+  "review_after": "<ISO date the effect is re-scored>",
 }
 ```
 
@@ -264,7 +264,7 @@ four consecutive weeks in the ledger.
 ## 7. Kinds: downtime, reset duration, arrivals
 
 - **downtime_window (C4.1, #13257).** From the per-pool exhaustion
-  records + reset times: the interval where *every* routing pool's
+  records + reset times: the interval where _every_ routing pool's
   predicted wall has passed and the earliest reopening (any pool's
   reset) has not yet arrived. `earliest`/`latest` bound the
   all-walled interval from the member ranges. Sets are the routing
@@ -274,7 +274,7 @@ four consecutive weeks in the ledger.
   pool's observed reset intervals in the snapshot store (resetsAt
   deltas across periods), giving the reopening range for a wall
   whose reset instant is not yet published by the provider; when
-  resetsAt *is* known, the prediction is the wait until it, ranged
+  resetsAt _is_ known, the prediction is the wait until it, ranged
   by the cadence's observed jitter.
 - **model_plan_arrival (C4.4, #13260).** Watch-based: bases are
   `detector_history` (S5's plan-change findings as the arrival

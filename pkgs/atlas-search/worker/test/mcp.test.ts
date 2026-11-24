@@ -58,9 +58,13 @@ beforeAll(() => {
     })
     .reply(searchReply)
     .persist();
-  origin.intercept({
-    path: "/v1/search", method: "POST", body: b => b.includes("schema error fixture"),
-  }).reply(() => ({ statusCode: 503, data: "fixture unavailable" }));
+  origin
+    .intercept({
+      path: "/v1/search",
+      method: "POST",
+      body: (b) => b.includes("schema error fixture"),
+    })
+    .reply(() => ({ statusCode: 503, data: "fixture unavailable" }));
   origin.intercept({ path: "/v1/search", method: "POST" }).reply(searchReply).persist();
 });
 
@@ -138,19 +142,26 @@ describe("atlas-search MCP endpoint", () => {
     const list = { jsonrpc: "2.0", id: 1, method: "tools/list" };
     const latest = { ...GATE, "MCP-Protocol-Version": "2025-06-18" };
     for (const headers of [GATE, { ...GATE, "MCP-Protocol-Version": "2025-03-26" }]) {
-      const legacy = await (await rpc(list, headers)).json() as RpcResponse;
+      const legacy = (await (await rpc(list, headers)).json()) as RpcResponse;
       expect(legacy.result?.tools[0]).not.toHaveProperty("outputSchema");
     }
-    const current = await (await rpc(list, latest)).json() as RpcResponse;
+    const current = (await (await rpc(list, latest)).json()) as RpcResponse;
     const schema = current.result?.tools[0].outputSchema;
     // Oracle: both real Worker cache paths obey the discovered envelope
     // contract. The service payload and the metadata may grow independently.
     expect(schema.type).toBe("object");
     expect(schema.required).toEqual(["cache", "key", "query", "result", "meta"]);
     for (const cache of ["miss", "hit"]) {
-      const call = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/call",
-        params: { name: "search", arguments: { query: "schema success fixture" } } }, latest);
-      const body = await call.json() as RpcResponse;
+      const call = await rpc(
+        {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "search", arguments: { query: "schema success fixture" } },
+        },
+        latest,
+      );
+      const body = (await call.json()) as RpcResponse;
       const result = body.result?.structuredContent;
       expect(body.result?.isError).toBe(false);
       expect(result.cache).toBe(cache);
@@ -162,9 +173,16 @@ describe("atlas-search MCP endpoint", () => {
       }
       expect(JSON.parse(body.result?.content[0].text)).toEqual(result);
     }
-    const error = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call",
-      params: { name: "search", arguments: { query: "schema error fixture" } } }, latest);
-    const failed = await error.json() as RpcResponse;
+    const error = await rpc(
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "search", arguments: { query: "schema error fixture" } },
+      },
+      latest,
+    );
+    const failed = (await error.json()) as RpcResponse;
     expect(failed.result?.isError).toBe(true);
     expect(failed.result).not.toHaveProperty("structuredContent");
   });

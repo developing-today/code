@@ -5024,7 +5024,8 @@ mod tests {
         // The initial PTY resize may still be queued after the first view and
         // correctly forces one more full repaint. Consume that recovery frame
         // before checking a stable, consecutive update.
-        let _resize_recovery = read_until_screen_bytes(&mut channel, &mut terminal, "count=1").await;
+        let _resize_recovery =
+            read_until_screen_bytes(&mut channel, &mut terminal, "count=1").await;
         channel.data(&b"inc"[..]).await.unwrap();
         let update = read_until_screen_bytes(&mut channel, &mut terminal, "count=2").await;
         assert!(

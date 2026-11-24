@@ -191,7 +191,9 @@ fn parse_exec_args(args: &[String], with_timeout: bool) -> Result<ExecArgs, Stri
             if !with_timeout {
                 return Err("--timeout is not taken here".into());
             }
-            timeout_s = v.parse().map_err(|_| "--timeout must be seconds".to_string())?;
+            timeout_s = v
+                .parse()
+                .map_err(|_| "--timeout must be seconds".to_string())?;
         } else if a == "--shell" {
             shell = true;
         } else {
@@ -283,10 +285,7 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
             while i < args.len() {
                 if args[i] == "--wait" {
                     i += 1;
-                    wait = args
-                        .get(i)
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(wait);
+                    wait = args.get(i).and_then(|v| v.parse().ok()).unwrap_or(wait);
                 } else if let Some(v) = args[i].strip_prefix("--wait=") {
                     wait = v.parse().unwrap_or(wait);
                 }

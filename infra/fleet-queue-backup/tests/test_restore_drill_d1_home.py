@@ -141,17 +141,13 @@ class TestDrill(unittest.TestCase):
         rebuilt = sqlite3.connect(self.out)
         for table in ("tasks", "seq", "_fleet_queue_backup_meta"):
             self.assertEqual(
-                rebuilt.execute(
-                    f'SELECT * FROM "{table}" ORDER BY rowid'
-                ).fetchall(),
+                rebuilt.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall(),
                 self.d1_conn.execute(
                     f'SELECT * FROM "{table}" ORDER BY rowid'
                 ).fetchall(),
             )
         self.assertEqual(
-            rebuilt.execute(
-                "SELECT max FROM seq WHERE name = 'tasks'"
-            ).fetchone()[0],
+            rebuilt.execute("SELECT max FROM seq WHERE name = 'tasks'").fetchone()[0],
             9223372036854775807,
         )
         rebuilt.close()

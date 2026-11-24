@@ -26,16 +26,16 @@
 //!   audited; a failed audit write fails the attempt closed.
 
 use crate::flow::{
-    denied, err_json, issue_code, validate_authorize_request, AuthorizeParams, FlowState,
+    AuthorizeParams, FlowState, denied, err_json, issue_code, validate_authorize_request,
 };
 use crate::registry::{now_unix, random_b64url, url_encode};
 use crate::upstream::{
-    exchange_upstream_code, fetch_github_user, fetch_upstream_jwks, subject_from_claims,
-    verify_upstream_id_token, DoorRuntime,
+    DoorRuntime, exchange_upstream_code, fetch_github_user, fetch_upstream_jwks,
+    subject_from_claims, verify_upstream_id_token,
 };
 use axum::{
     extract::{Path, Query, State},
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
@@ -86,7 +86,7 @@ pub async fn door_start(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "server_error",
                 "authorization flow is not configured on this provider instance",
-            )
+            );
         }
     };
     let client_id = p.client_id.clone().unwrap_or_default();
@@ -102,7 +102,7 @@ pub async fn door_start(
                 StatusCode::NOT_FOUND,
                 "invalid_request",
                 "unknown door",
-            )
+            );
         }
     };
     // The relying party's request must be valid before the user is
@@ -159,7 +159,7 @@ pub async fn door_start(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
                 "door state store unavailable",
-            )
+            );
         }
     }
     let _ = flow.audit.record(
@@ -221,7 +221,7 @@ pub async fn door_callback(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "server_error",
                 "authorization flow is not configured on this provider instance",
-            )
+            );
         }
     };
     let door = match find_door(flow, &name) {
@@ -236,7 +236,7 @@ pub async fn door_callback(
                 StatusCode::NOT_FOUND,
                 "invalid_request",
                 "unknown door",
-            )
+            );
         }
     };
     if cb.error.is_some() {
@@ -262,7 +262,7 @@ pub async fn door_callback(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "server_error",
                     "door state store unavailable",
-                )
+                );
             }
         };
         map.remove(&handle)
@@ -279,7 +279,7 @@ pub async fn door_callback(
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 "door state is unknown, expired, or already used",
-            )
+            );
         }
     };
     let client_id = pending.client_id.clone();
@@ -317,7 +317,7 @@ pub async fn door_callback(
                 StatusCode::BAD_GATEWAY,
                 "server_error",
                 "the upstream token exchange failed",
-            )
+            );
         }
     };
 
@@ -348,7 +348,7 @@ pub async fn door_callback(
                     StatusCode::BAD_GATEWAY,
                     "server_error",
                     "the upstream user fetch failed",
-                )
+                );
             }
         }
     } else {
@@ -378,7 +378,7 @@ pub async fn door_callback(
                     StatusCode::BAD_GATEWAY,
                     "server_error",
                     "the upstream JWKS fetch failed",
-                )
+                );
             }
         };
         match verify_upstream_id_token(
@@ -399,7 +399,7 @@ pub async fn door_callback(
                     StatusCode::FORBIDDEN,
                     "access_denied",
                     "the upstream ID token did not verify",
-                )
+                );
             }
         }
     };
@@ -415,7 +415,7 @@ pub async fn door_callback(
                 StatusCode::FORBIDDEN,
                 "access_denied",
                 "the upstream identity has no subject",
-            )
+            );
         }
     };
     let identity_key = format!("{}:{}", door.identity_provider(), subject);
@@ -451,7 +451,7 @@ pub async fn door_callback(
                 StatusCode::FORBIDDEN,
                 "access_denied",
                 "identity is not linked to an account",
-            )
+            );
         }
         Ok(None) => {
             let account_id = flow.registry.account.account_id.clone();
@@ -478,7 +478,7 @@ pub async fn door_callback(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "server_error",
                         "identity link failed",
-                    )
+                    );
                 }
             }
         }
@@ -487,7 +487,7 @@ pub async fn door_callback(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "server_error",
                 "identity store unavailable",
-            )
+            );
         }
     }
 

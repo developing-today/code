@@ -15,11 +15,7 @@
  */
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import {
-  createPmCoreScheduler,
-  type PmCoreScheduler,
-  type SchedulerAudit,
-} from "./pm-core-scheduler.ts";
+import { createPmCoreScheduler, type PmCoreScheduler, type SchedulerAudit } from "./pm-core-scheduler.ts";
 
 export interface PmCoreJobs {
   runQuota: () => Promise<void>;
@@ -37,8 +33,7 @@ export interface PmCoreJobDeps {
 
 export function createPmCoreJobs(options: { feedFile: string } & PmCoreJobDeps): PmCoreJobs {
   const env = options.env ?? process.env;
-  const loadQuotaMain =
-    options.loadQuotaMain ?? (async () => (await import("../scripts/gather-quota.ts")).main);
+  const loadQuotaMain = options.loadQuotaMain ?? (async () => (await import("../scripts/gather-quota.ts")).main);
   const loadFleetFeedMain =
     options.loadFleetFeedMain ?? (async () => (await import("../scripts/collect-fleet-feed.ts")).main);
 
@@ -93,8 +88,7 @@ export function startPmCoreSchedulers(options: {
   resignal?: (signal: "SIGTERM" | "SIGINT") => void;
 }): PmCoreRuntime {
   const jobs = createPmCoreJobs({ feedFile: options.feedFile, ...options.jobDeps });
-  const auditFile =
-    options.auditFile ?? join(dirname(options.feedFile), "pm-core-scheduler-audit.jsonl");
+  const auditFile = options.auditFile ?? join(dirname(options.feedFile), "pm-core-scheduler-audit.jsonl");
   // The seam guards audit-sink failures itself (writeAuditSafely), so
   // this writer may throw freely: a failed append loses one record,
   // never the tick.

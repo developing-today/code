@@ -26,15 +26,15 @@
 
 ## Decision summary
 
-| Question | Decision |
-| --- | --- |
-| Which HTTP interface is canonical for Postgres? | **A PostgREST-compatible REST surface** over one exposed schema. It is the only interface the adapter speaks. It is open source, runs against any Postgres, and is already the in-repo portable-core choice. |
-| Is arbitrary SQL over HTTP supported? | **No.** Neither a `/query` SQL endpoint nor a PostgREST `/rpc/*` function call is a v1 shape. Both break the typed-shape rule in #5803 §2.2 and the data-shaped query object of #5816. |
+| Question                                                                                            | Decision                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Which HTTP interface is canonical for Postgres?                                                     | **A PostgREST-compatible REST surface** over one exposed schema. It is the only interface the adapter speaks. It is open source, runs against any Postgres, and is already the in-repo portable-core choice.                                                                                                                                 |
+| Is arbitrary SQL over HTTP supported?                                                               | **No.** Neither a `/query` SQL endpoint nor a PostgREST `/rpc/*` function call is a v1 shape. Both break the typed-shape rule in #5803 §2.2 and the data-shaped query object of #5816.                                                                                                                                                       |
 | Where no PostgREST-compatible endpoint exists (bare Postgres on a host with only the wire protocol) | The adapter is **unavailable for that endpoint**. It reports `adapter_unavailable` with the reason `no_rest_surface`. It does not fall back to SQL-over-HTTP, and it does not speak the native wire protocol (out of scope for a browser- or sandbox-reachable adapter). The owner can deploy PostgREST in front of the database to qualify. |
-| Query translation scope | A **single collection** (one table or view, per #5803 §2.1), **conjunctive** filters over a closed operator set, a **declared projection**, **ordering on declared keys only**, **keyset** pagination only, and **no joins, writes, RPC, counts, or embeds**. Everything else is refused by name (§3). |
-| Read modes | **Live** and **materialized** are both advertised; the owner must choose per collection with no default (#5803 §4). Materialized is **not atomic** over PostgREST pages and is reported with `consistency: per_request` (§5). |
-| Where grants are enforced | At **two** layers: the adapter validates the query against the collection's allowlist before sending it (§3), and the **database role** the adapter uses can `SELECT` only from the exposed views (§4). The adapter is not trusted alone. |
-| How refusal is surfaced | As `query_shape_refused` with a stable feature name. It is surfaced identically for unknown columns and withheld columns, so a refusal reveals nothing about the data (§6). |
+| Query translation scope                                                                             | A **single collection** (one table or view, per #5803 §2.1), **conjunctive** filters over a closed operator set, a **declared projection**, **ordering on declared keys only**, **keyset** pagination only, and **no joins, writes, RPC, counts, or embeds**. Everything else is refused by name (§3).                                       |
+| Read modes                                                                                          | **Live** and **materialized** are both advertised; the owner must choose per collection with no default (#5803 §4). Materialized is **not atomic** over PostgREST pages and is reported with `consistency: per_request` (§5).                                                                                                                |
+| Where grants are enforced                                                                           | At **two** layers: the adapter validates the query against the collection's allowlist before sending it (§3), and the **database role** the adapter uses can `SELECT` only from the exposed views (§4). The adapter is not trusted alone.                                                                                                    |
+| How refusal is surfaced                                                                             | As `query_shape_refused` with a stable feature name. It is surfaced identically for unknown columns and withheld columns, so a refusal reveals nothing about the data (§6).                                                                                                                                                                  |
 
 ## 1. Parent and contract decisions applied, not re-decided
 
@@ -88,31 +88,31 @@ refused before any network call.
 
 ### 3.1 Supported
 
-| Query element | Translation | Notes |
-| --- | --- | --- |
-| Collection | Exactly one relation, from the owner's allowlist | Unknown or unlisted relation → `not_available` (§6) |
-| Projection | `select=` with the declared column names only | `*` is not expanded from the source. The adapter sends the declared column list, so a column added to the view later is not exposed by accident. |
-| Filters | Conjunction (AND) of `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in`, `is.null` on declared filterable columns | Each becomes a PostgREST `col=op.value` term. Values are typed by the mapping (§5) before serialization. |
-| Ordering | `order=` on declared orderable columns, with the declared unique key appended as the final tiebreak | Without the appended key, ordering is not total and pagination would drift. The adapter adds the key itself. |
-| Pagination | **Keyset** only: the cursor is the last row's ordering key tuple, sent as a filter on the same ordering | Offset pagination is refused (`offset_unsupported`). Keyset gives stable pages under concurrent writes, matching #5821. |
-| Limit | `limit=` capped at a declared per-collection maximum, default 500 rows | A client `limit` above the cap is refused, not clamped. A silent clamp would hide truncation. |
-| Freshness | Live or pinned-materialized (§5) | Freshness hints may narrow, never widen. |
+| Query element | Translation                                                                                                | Notes                                                                                                                                            |
+| ------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Collection    | Exactly one relation, from the owner's allowlist                                                           | Unknown or unlisted relation → `not_available` (§6)                                                                                              |
+| Projection    | `select=` with the declared column names only                                                              | `*` is not expanded from the source. The adapter sends the declared column list, so a column added to the view later is not exposed by accident. |
+| Filters       | Conjunction (AND) of `eq`, `neq`, `lt`, `lte`, `gt`, `gte`, `in`, `is.null` on declared filterable columns | Each becomes a PostgREST `col=op.value` term. Values are typed by the mapping (§5) before serialization.                                         |
+| Ordering      | `order=` on declared orderable columns, with the declared unique key appended as the final tiebreak        | Without the appended key, ordering is not total and pagination would drift. The adapter adds the key itself.                                     |
+| Pagination    | **Keyset** only: the cursor is the last row's ordering key tuple, sent as a filter on the same ordering    | Offset pagination is refused (`offset_unsupported`). Keyset gives stable pages under concurrent writes, matching #5821.                          |
+| Limit         | `limit=` capped at a declared per-collection maximum, default 500 rows                                     | A client `limit` above the cap is refused, not clamped. A silent clamp would hide truncation.                                                    |
+| Freshness     | Live or pinned-materialized (§5)                                                                           | Freshness hints may narrow, never widen.                                                                                                         |
 
 ### 3.2 Refused by name
 
-| Refused shape | Feature name in the error | Why |
-| --- | --- | --- |
-| Joins and PostgREST embeds (`select=*,other(*)`) | `join_unsupported` | Embeds read a second relation under one grant. #5909 keeps v1 single-table. |
-| OR, NOT, or nested boolean trees | `boolean_unsupported` | Keeps predicate pushdown and the grant check exact. |
-| `like`, `ilike`, `match`, full-text (`fts`, `plfts`, `wfts`) | `text_pattern_unsupported` | Unindexed patterns are scans, and a scan is a cost-limit issue (#5821). |
-| Offset or page-number pagination | `offset_unsupported` | Drifts under concurrent writes. |
-| Exact or planned counts (`Prefer: count=exact`) | `count_unsupported` | A count discloses the size of a withheld set (§6, invariant 3). |
-| RPC (`/rpc/*`) | `rpc_unsupported` | A function can read any relation its role can reach. It bypasses the allowlist. |
-| Writes (`POST`, `PATCH`, `PUT`, `DELETE`, upsert) | `write_unsupported` | Read-only in v1 (#5803 §5). |
-| Schema or OpenAPI discovery (`GET /`) | `discovery_unsupported` | A grantee must not see the schema beyond the collection's own declared shape. |
-| Ordering or filtering on an undeclared column | `field_unsupported` | Same wording as for a withheld column (§6). |
-| Raw SQL, or any `/query` endpoint | `sql_unsupported` | Rejected by #5803 §8.5 and #5909. |
-| A limit above the declared cap | `limit_exceeded` | Refused, not clamped. |
+| Refused shape                                                | Feature name in the error  | Why                                                                             |
+| ------------------------------------------------------------ | -------------------------- | ------------------------------------------------------------------------------- |
+| Joins and PostgREST embeds (`select=*,other(*)`)             | `join_unsupported`         | Embeds read a second relation under one grant. #5909 keeps v1 single-table.     |
+| OR, NOT, or nested boolean trees                             | `boolean_unsupported`      | Keeps predicate pushdown and the grant check exact.                             |
+| `like`, `ilike`, `match`, full-text (`fts`, `plfts`, `wfts`) | `text_pattern_unsupported` | Unindexed patterns are scans, and a scan is a cost-limit issue (#5821).         |
+| Offset or page-number pagination                             | `offset_unsupported`       | Drifts under concurrent writes.                                                 |
+| Exact or planned counts (`Prefer: count=exact`)              | `count_unsupported`        | A count discloses the size of a withheld set (§6, invariant 3).                 |
+| RPC (`/rpc/*`)                                               | `rpc_unsupported`          | A function can read any relation its role can reach. It bypasses the allowlist. |
+| Writes (`POST`, `PATCH`, `PUT`, `DELETE`, upsert)            | `write_unsupported`        | Read-only in v1 (#5803 §5).                                                     |
+| Schema or OpenAPI discovery (`GET /`)                        | `discovery_unsupported`    | A grantee must not see the schema beyond the collection's own declared shape.   |
+| Ordering or filtering on an undeclared column                | `field_unsupported`        | Same wording as for a withheld column (§6).                                     |
+| Raw SQL, or any `/query` endpoint                            | `sql_unsupported`          | Rejected by #5803 §8.5 and #5909.                                               |
+| A limit above the declared cap                               | `limit_exceeded`           | Refused, not clamped.                                                           |
 
 ## 4. Enforcement layers
 
@@ -144,20 +144,20 @@ PostgREST returns JSON, and JSON loses type information. The mapping
 therefore uses the column types the owner declares, not whatever JSON
 happens to say:
 
-| Postgres type | ID value | Rule |
-| --- | --- | --- |
-| `boolean` | `boolean` | Direct. |
-| `int2`, `int4`, `int8` | `integer` | Parsed from the JSON number text, never through `f64`. Postgres `int8` is already within signed 64-bit range, so no tagging is needed. |
-| `float4`, `float8` | `float64` | `NaN` and infinities are rejected (`type_mapping_failed`). |
-| `numeric` | `tagged` (`type_id: pg.numeric`, decimal text payload) | A decimal string is not a `float64`. The tag keeps precision and marks that native ordering is lost (#5803 §3.3). |
-| `text`, `varchar`, `char`, enums | `string` | Must be valid UTF-8. Enums arrive as text and are validated against the declared label set. |
-| `bytea` | `bytes` | PostgREST encodes bytea as `\x` hex. The adapter decodes it. It is never read as text. |
-| `timestamptz` | `timestamp` | ISO-8601 with offset, converted to epoch microseconds. Postgres stores microseconds, so no precision is lost. |
-| `date`, `time`, `timetz`, `interval` | `tagged` | Kept as their own type IDs. Date arithmetic is not promised. |
-| `json`, `jsonb` | `record` or `list` **only** when the owner declares the shape; otherwise `tagged` (`pg.jsonb`, opaque) | Undeclared JSON is never flattened into records. |
-| `uuid` | `string` | Canonical lowercase text. |
-| Arrays | `list` of the element mapping | Element type must itself be mapped. |
-| `NULL` | `null` | Distinct from absent, per #5803 §3. |
+| Postgres type                        | ID value                                                                                               | Rule                                                                                                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `boolean`                            | `boolean`                                                                                              | Direct.                                                                                                                                |
+| `int2`, `int4`, `int8`               | `integer`                                                                                              | Parsed from the JSON number text, never through `f64`. Postgres `int8` is already within signed 64-bit range, so no tagging is needed. |
+| `float4`, `float8`                   | `float64`                                                                                              | `NaN` and infinities are rejected (`type_mapping_failed`).                                                                             |
+| `numeric`                            | `tagged` (`type_id: pg.numeric`, decimal text payload)                                                 | A decimal string is not a `float64`. The tag keeps precision and marks that native ordering is lost (#5803 §3.3).                      |
+| `text`, `varchar`, `char`, enums     | `string`                                                                                               | Must be valid UTF-8. Enums arrive as text and are validated against the declared label set.                                            |
+| `bytea`                              | `bytes`                                                                                                | PostgREST encodes bytea as `\x` hex. The adapter decodes it. It is never read as text.                                                 |
+| `timestamptz`                        | `timestamp`                                                                                            | ISO-8601 with offset, converted to epoch microseconds. Postgres stores microseconds, so no precision is lost.                          |
+| `date`, `time`, `timetz`, `interval` | `tagged`                                                                                               | Kept as their own type IDs. Date arithmetic is not promised.                                                                           |
+| `json`, `jsonb`                      | `record` or `list` **only** when the owner declares the shape; otherwise `tagged` (`pg.jsonb`, opaque) | Undeclared JSON is never flattened into records.                                                                                       |
+| `uuid`                               | `string`                                                                                               | Canonical lowercase text.                                                                                                              |
+| Arrays                               | `list` of the element mapping                                                                          | Element type must itself be mapped.                                                                                                    |
+| `NULL`                               | `null`                                                                                                 | Distinct from absent, per #5803 §3.                                                                                                    |
 
 Any value that does not match its declared type is `type_mapping_failed`,
 with the column name and the failing type, but **not** the value. The
@@ -209,16 +209,16 @@ gap of materialization is larger than for the libsql case.
 
 Every error uses a stable code from #5803 §6. Postgres-specific mappings:
 
-| Source condition | Code | Grantee-visible |
-| --- | --- | --- |
-| Shape not in §3.1 | `query_shape_refused` (with a feature name from §3.2) | Yes. The shape is known from the query text alone, so it reveals nothing about the data. |
-| Unknown column, unlisted relation, or withheld column | `query_shape_refused` with `field_unsupported`, or `not_available` for a relation | Same wording for “unknown” and “withheld”. |
-| 401 or 403 from PostgREST | `credential_unavailable` to the owner; `not_available` to a grantee | Owner diagnostics may name the cause. |
-| 404 for the relation or path | `not_available` | Collapsed. |
-| 429 or a configured capacity limit | `rate_limited` | Yes; a rate limit depends on load, not on data. |
-| Deadline exceeded | `timeout` | Yes. Never an empty result. |
-| Connection failure, 5xx, or a non-JSON body | `adapter_unavailable` | Yes. A non-JSON 200 is an error, not a success. |
-| Value outside mapping | `type_mapping_failed` | Column and type named; value not included. |
+| Source condition                                      | Code                                                                              | Grantee-visible                                                                          |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Shape not in §3.1                                     | `query_shape_refused` (with a feature name from §3.2)                             | Yes. The shape is known from the query text alone, so it reveals nothing about the data. |
+| Unknown column, unlisted relation, or withheld column | `query_shape_refused` with `field_unsupported`, or `not_available` for a relation | Same wording for “unknown” and “withheld”.                                               |
+| 401 or 403 from PostgREST                             | `credential_unavailable` to the owner; `not_available` to a grantee               | Owner diagnostics may name the cause.                                                    |
+| 404 for the relation or path                          | `not_available`                                                                   | Collapsed.                                                                               |
+| 429 or a configured capacity limit                    | `rate_limited`                                                                    | Yes; a rate limit depends on load, not on data.                                          |
+| Deadline exceeded                                     | `timeout`                                                                         | Yes. Never an empty result.                                                              |
+| Connection failure, 5xx, or a non-JSON body           | `adapter_unavailable`                                                             | Yes. A non-JSON 200 is an error, not a success.                                          |
+| Value outside mapping                                 | `type_mapping_failed`                                                             | Column and type named; value not included.                                               |
 
 ### 6.2 Collapse rule
 
@@ -254,11 +254,11 @@ and a withheld column produce the same `field_unsupported` text.
 
 ## 8. Open questions from the parent, answered here
 
-| Parent open question | Answer in this record |
-| --- | --- |
+| Parent open question                                                                 | Answer in this record                                                                                                                     |
+| ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | Which HTTP interface is canonical for Postgres, and what do we do where none exists? | PostgREST-compatible surface. Where none exists, the endpoint is `adapter_unavailable` with `no_rest_surface`. No SQL-over-HTTP fallback. |
-| Existence privacy vs. useful errors | Shape refusals are named. Data- and grant-dependent outcomes collapse to `not_available` (§6.2). |
-| Are adapters live, materialized, or both, and who decides? | Both are advertised; the owner decides per collection with no default (§5.4). |
+| Existence privacy vs. useful errors                                                  | Shape refusals are named. Data- and grant-dependent outcomes collapse to `not_available` (§6.2).                                          |
+| Are adapters live, materialized, or both, and who decides?                           | Both are advertised; the owner decides per collection with no default (§5.4).                                                             |
 
 ## 9. Invariants implementation must hold
 

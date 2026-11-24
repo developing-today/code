@@ -2494,13 +2494,15 @@ mod tests {
                     assert!(parsed.is_err(), "{id}: expected fail-closed rejection");
                 }
                 "ok" => {
-                    let parsed = parsed
-                        .unwrap_or_else(|e| panic!("{id}: expected parse success, got: {e}"));
+                    let parsed =
+                        parsed.unwrap_or_else(|e| panic!("{id}: expected parse success, got: {e}"));
                     if case["block"].as_str() == Some("absent") {
                         assert!(parsed.block.is_none(), "{id}: expected no block");
                         continue;
                     }
-                    let block = parsed.block.unwrap_or_else(|| panic!("{id}: expected a block"));
+                    let block = parsed
+                        .block
+                        .unwrap_or_else(|| panic!("{id}: expected a block"));
                     let keys = case["preserved_keys"]
                         .as_array()
                         .expect("preserved_keys")
@@ -2508,10 +2510,7 @@ mod tests {
                         .map(|k| k.as_str().expect("key"))
                         .collect::<Vec<_>>();
                     for key in &keys {
-                        assert!(
-                            block.get(key).is_some(),
-                            "{id}: key {key} lost at parse"
-                        );
+                        assert!(block.get(key).is_some(), "{id}: key {key} lost at parse");
                     }
                     // Stamp round-trip: re-stamping with the block's own
                     // provenance must preserve every preserved key's

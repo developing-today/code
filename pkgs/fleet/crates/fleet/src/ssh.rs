@@ -63,10 +63,7 @@ fn ssh_base(home: &PathBuf, connect_timeout_s: u64) -> Command {
         .arg("-i")
         .arg(home.join(".ssh/id_ed25519"))
         .arg("-o")
-        .arg(format!(
-            "ConnectTimeout={}",
-            connect_timeout_s.clamp(1, 60)
-        ))
+        .arg(format!("ConnectTimeout={}", connect_timeout_s.clamp(1, 60)))
         .arg("-o")
         .arg("ServerAliveInterval=15")
         .arg("-o")
@@ -168,11 +165,7 @@ fn parse_exec_args(args: &[String]) -> Result<ExecArgs, String> {
             });
         } else if a == "--cwd" {
             i += 1;
-            cwd = Some(
-                args.get(i)
-                    .ok_or("exec: --cwd needs a value")?
-                    .to_string(),
-            );
+            cwd = Some(args.get(i).ok_or("exec: --cwd needs a value")?.to_string());
         } else if let Some(v) = a.strip_prefix("--cwd=") {
             cwd = Some(v.to_string());
         } else if a == "--timeout" {
@@ -187,7 +180,9 @@ fn parse_exec_args(args: &[String]) -> Result<ExecArgs, String> {
                 .parse()
                 .map_err(|_| "exec: --timeout must be seconds".to_string())?;
         } else {
-            return Err(format!("exec: unexpected argument {a} (command goes after --)"));
+            return Err(format!(
+                "exec: unexpected argument {a} (command goes after --)"
+            ));
         }
         i += 1;
     }
