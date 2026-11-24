@@ -58,6 +58,7 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 ## Dated records
 
 - [Free models & free tokens census](2026-11-24T01-21-58Z_research_free-census/2026-11-24T01-21-58Z_research_free-census.md) — dated record of the 2026-11-23 free-provider and free-token census; the evidence base for the free-first route order (tracking #13877).
+- [Semantic cell/tag presentation model](2026-11-24T05-55-23Z_design_semantic-cell-tags/2026-11-24T05-55-23Z_design_semantic-cell-tags.md) — design record for #6010 (slice 1 under #13873): one tagged state with kind/identity/flags/tags, vocabulary v1 + extension rule, per-tier rendering obligations, inventory→spec→tests→pilot slices; no implementation authorized.
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference`, `research` and `report`. A `report` record is the usual home for lane work product — a report or one-off with all of its gathered material in the folder; [`DOCUMENTATION_PROTOCOL.md`](DOCUMENTATION_PROTOCOL.md) gives the landing rules. Run `ls doc/` to list them all. Some starting points:
 
