@@ -126,6 +126,15 @@ impl AgentQuotaLedger {
         copy.spend
     }
 
+    /// Whether a charge of `charge` at `now` would be admitted,
+    /// read without touching the ledger: replenishment is applied
+    /// to a copy, so the answer is exactly the one [`Self::charge`]
+    /// would give, and asking never advances the ledger's clock.
+    #[must_use]
+    pub fn can_admit(&self, now: u64, charge: Quota) -> bool {
+        Quota::exceeded_axis(self.budget, self.spend_at(now), charge).is_none()
+    }
+
     /// Charge one admitted action at `now`. A charge that would exceed
     /// the budget is refused and charges nothing.
     ///
@@ -211,6 +220,16 @@ pub fn spend_by_role(ledgers: &mut [AgentQuotaLedger], now: u64) -> BTreeMap<Str
 /// at most one live handle at a time, and a second open while one
 /// is outstanding is refused rather than handing out a divergent
 /// copy of the same budget.
+///
+/// A handle dropped without [`Self::close`] -- a panic unwind, an
+/// early return, a driver that forgets -- cannot hand its ledger
+/// back, so its checkout stays taken (#14580). The store is not
+/// wedged, though: [`Self::release`] clears a stale checkout and
+/// returns the ledger as the store last held it. A pair's ledger
+/// enters the store at open, so spend banked by earlier sessions
+/// survives a dropped handle; charges made on the dropped handle
+/// itself do not -- the handle owns them until close, which is
+/// why close remains the only way to bank a session's spend.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuotaLedgerStore {
     ledgers: BTreeMap<([u8; 32], String), AgentQuotaLedger>,
@@ -246,6 +265,10 @@ impl QuotaLedgerStore {
     /// each other's spend on close, so the second open is refused
     /// instead. The refusal changes nothing; retry after the
     /// outstanding handle closes.
+    ///
+    /// If a handle is dropped without [`Self::close`], its
+    /// checkout stays taken; recover the pair with
+    /// [`Self::release`] instead of restarting the host (#14580).
     pub fn open(
         &mut self,
         agent_key: [u8; 32],
@@ -266,6 +289,11 @@ impl QuotaLedgerStore {
             }
             None => AgentQuotaLedger::open(agent_key, world, role, class, now),
         };
+        // The ledger lives in the store from the open on (#14580):
+        // if the handle is dropped without close, the pair's
+        // ledger -- with every earlier session's banked spend --
+        // is still here for `release` to hand back.
+        self.ledgers.insert(key.clone(), ledger.clone());
         self.checked_out.insert(key);
         Ok(ledger)
     }
@@ -280,6 +308,24 @@ impl QuotaLedgerStore {
         let key = (*ledger.agent_key(), ledger.world().to_owned());
         self.checked_out.remove(&key);
         self.ledgers.insert(key, ledger);
+    }
+
+    /// Recover a pair whose handle was dropped without
+    /// [`Self::close`] (#14580): clear its stale checkout so the
+    /// pair can open again, and return the ledger as the store
+    /// holds it -- the state as of the dropped handle's open,
+    /// carrying every earlier session's banked spend. Charges the
+    /// dropped handle made after it opened are not in it: the
+    /// handle owned them, and only a close banks a session's
+    /// spend. Returns `None`, changing nothing, when the pair is
+    /// not checked out.
+    pub fn release(&mut self, agent_key: &[u8; 32], world: &str) -> Option<AgentQuotaLedger> {
+        let key = (*agent_key, world.to_owned());
+        if self.checked_out.remove(&key) {
+            self.ledgers.get(&key).cloned()
+        } else {
+            None
+        }
     }
 
     /// Every ledger the store holds, for snapshots. The host
@@ -400,6 +446,24 @@ mod tests {
 
         assert_eq!(refusal.replenishes_at, Some(160));
         assert_eq!(ledger.spend(110), before);
+    }
+
+    #[test]
+    fn can_admit_mirrors_charge_without_touching_the_ledger() {
+        let mut ledger =
+            AgentQuotaLedger::open(AGENT, "w", "archivist", class(1, Some((60, 1))), 100);
+        ledger.charge(100, call()).unwrap();
+
+        assert!(!ledger.can_admit(110, call()));
+        assert!(ledger.can_admit(160, call()));
+        // Asking changed nothing: the pre-tick charge still refuses
+        // naming the same tick, and the tick is earned by the
+        // charge itself, not by the earlier read.
+        assert_eq!(
+            ledger.charge(119, call()).unwrap_err().replenishes_at,
+            Some(160)
+        );
+        ledger.charge(160, call()).unwrap();
     }
 
     #[test]
@@ -648,5 +712,90 @@ mod tests {
             .open(AGENT, "w", "archivist", class(2, None), 2)
             .unwrap();
         assert_eq!(rejoined.spend_at(2).tool_calls, 1);
+    }
+
+    #[test]
+    fn store_dropped_handle_leaves_a_recoverable_checkout() {
+        // The #14580 repro: a handle dropped without close (panic
+        // unwind, early return, a driver that forgets) used to
+        // wedge the pair until a host restart and lose the ledger
+        // entirely. The checkout still stays taken -- the store
+        // cannot know the handle is gone -- but `release` recovers
+        // the pair, and the spend banked by earlier sessions is
+        // still there on the next open.
+        let mut store = QuotaLedgerStore::new();
+        let mut first = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
+        first.charge(0, call()).unwrap();
+        store.close(first);
+
+        {
+            let _dropped = store
+                .open(AGENT, "w", "archivist", class(2, None), 1)
+                .unwrap();
+            // No close: the handle drops here.
+        }
+        assert!(store.is_checked_out(&AGENT, "w"));
+        assert!(store
+            .open(AGENT, "w", "archivist", class(2, None), 2)
+            .is_err());
+
+        let released = store.release(&AGENT, "w").unwrap();
+        assert_eq!(released.spend_at(2).tool_calls, 1);
+        assert!(!store.is_checked_out(&AGENT, "w"));
+
+        let mut rejoined = store
+            .open(AGENT, "w", "archivist", class(2, None), 2)
+            .unwrap();
+        assert_eq!(rejoined.spend_at(2).tool_calls, 1);
+        rejoined.charge(2, call()).unwrap();
+        assert!(rejoined.charge(3, call()).is_err());
+    }
+
+    #[test]
+    fn store_dropped_first_handle_still_reopens_after_release() {
+        // A first-ever handle dropped before any close: the pair
+        // used to have no ledger in the store at all, so its spend
+        // read as absent on top of the wedge. The ledger now
+        // enters the store at open, so release hands it back and
+        // the pair reopens.
+        let mut store = QuotaLedgerStore::new();
+        {
+            let mut dropped = store
+                .open(AGENT, "w", "archivist", class(2, None), 0)
+                .unwrap();
+            dropped.charge(0, call()).unwrap();
+            // No close: the handle, and the charge it owns, drops.
+        }
+        assert!(store.is_checked_out(&AGENT, "w"));
+        assert!(store.release(&AGENT, "w").is_some());
+        let mut rejoined = store
+            .open(AGENT, "w", "archivist", class(2, None), 1)
+            .unwrap();
+        // The dropped handle's own charge is gone with it -- only
+        // close banks spend -- but the pair itself is recovered.
+        assert_eq!(rejoined.spend_at(1).tool_calls, 0);
+        rejoined.charge(1, call()).unwrap();
+    }
+
+    #[test]
+    fn store_release_without_a_checkout_changes_nothing() {
+        let mut store = QuotaLedgerStore::new();
+        assert_eq!(store.release(&AGENT, "w"), None);
+
+        let mut ledger = store
+            .open(AGENT, "w", "archivist", class(2, None), 0)
+            .unwrap();
+        ledger.charge(0, call()).unwrap();
+        store.close(ledger);
+
+        // A properly closed pair has no checkout to release, and
+        // release must not disturb the banked ledger.
+        assert_eq!(store.release(&AGENT, "w"), None);
+        assert_eq!(
+            store.spend_for_agent(&AGENT, "w", 0).unwrap().tool_calls,
+            1
+        );
     }
 }
