@@ -10,17 +10,17 @@ Source: [pkgs/atlas-search/crates/atlas-core/src/bin/atlas-eval.rs](https://gith
 atlas-eval <eval.json> <dev|test>
 ```
 
-There are no flags. `--help`, `-h`, and `help` are not recognised: each falls into the wrong-arity path, prints the one-line usage text to stderr, and exits 2.
+There are no option flags. `--help` / `-h` prints the one-line usage text to stdout and exits 0; `--version` / `-V` prints `atlas-eval 0.1.0`, exit 0. The literal word `help` is not recognised: it falls into the wrong-arity path, prints the usage text to stderr, and exits 2.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| (none) | — | — | This binary takes no `--flag` options at all. |
-| `&lt;eval.json&gt;` (positional 1) | path to an `atlas-eval/v1` document | required | The evaluation input: queries, qrels, and saved rankings (see below). |
-| `&lt;dev\|test&gt;` (positional 2) | `dev` or `test` | required | Which split of the input document to score. Any other value is an error: `atlas-eval: unknown split "…" (want dev\|test)`. |
+| Flag                               | Argument                            | Default  | Meaning                                                                                                                    |
+| ---------------------------------- | ----------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| (none)                             | —                                   | —        | This binary takes no `--flag` options beyond `--help` / `--version`.                                                       |
+| `&lt;eval.json&gt;` (positional 1) | path to an `atlas-eval/v1` document | required | The evaluation input: queries, qrels, and saved rankings (see below).                                                      |
+| `&lt;dev\|test&gt;` (positional 2) | `dev` or `test`                     | required | Which split of the input document to score. Any other value is an error: `atlas-eval: unknown split "…" (want dev\|test)`. |
 
 ## Inputs: the golden set, the qrels, and the saved rankings
 
-The input is one JSON document of format `atlas-eval/v1`. A *golden set* is the judged query set for a corpus: a fixed list of queries, each with human judgements — *qrels* (query relevance judgements) — naming which corpus documents are relevant to it, and how strongly. The document carries three arrays:
+The input is one JSON document of format `atlas-eval/v1`. A _golden set_ is the judged query set for a corpus: a fixed list of queries, each with human judgements — _qrels_ (query relevance judgements) — naming which corpus documents are relevant to it, and how strongly. The document carries three arrays:
 
 - `queries`: each has an `id`, a `class` (the query class, for example `code`, `documentation`, `error`, or `concept`), a `split` (`dev` or `test`), and the query `text`.
 - `qrels`: each names a `query`, a `doc` (a document id, such as a chunk id from the corpus the rankings were produced against), and a `grade`. Grades are unsigned integers up to a maximum of 30 (`MAX_GRADE`); a document counts as relevant when its grade is at least 1, and unjudged documents score grade 0.
@@ -32,12 +32,12 @@ Validation rejects, before any scoring: a wrong format version, duplicate query 
 
 For the requested split, the runner scores every run in the document and prints one `atlas-eval-report/v1` JSON report to stdout. Four metrics are computed per query, then averaged over the queries that have at least one relevant document (`queries_scored`), both overall and per query class:
 
-| Metric | Meaning |
-|---|---|
-| nDCG@10 | Normalised discounted cumulative gain over the top 10 ranks, with graded gains `2^grade − 1` and a log2 discount (the gain at 0-based rank `i` is divided by `log2(i + 2)`). |
-| Recall@100 | The fraction of the query's relevant documents that appear in the top 100 ranks. |
-| Recall@1000 | The same fraction over the top 1000 ranks. |
-| MRR@10 | Mean reciprocal rank: `1 / rank` of the first relevant document, counting only the top 10 ranks (0 when none appears there). |
+| Metric      | Meaning                                                                                                                                                                      |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| nDCG@10     | Normalised discounted cumulative gain over the top 10 ranks, with graded gains `2^grade − 1` and a log2 discount (the gain at 0-based rank `i` is divided by `log2(i + 2)`). |
+| Recall@100  | The fraction of the query's relevant documents that appear in the top 100 ranks.                                                                                             |
+| Recall@1000 | The same fraction over the top 1000 ranks.                                                                                                                                   |
+| MRR@10      | Mean reciprocal rank: `1 / rank` of the first relevant document, counting only the top 10 ranks (0 when none appears there).                                                 |
 
 Each per-query record in the report preserves the run's top-1000 document ids (field `top1000`) and the query's judged grades, so any number in the report can be recomputed from the report alone. Reports are deterministic: signals, queries, and classes are sorted, and floats are rounded to 6 decimal places.
 
@@ -45,7 +45,7 @@ Each per-query record in the report preserves the run's top-1000 document ids (f
 
 The two splits exist to keep measurement honest:
 
-- The **dev** split is for iteration and parameter selection. Compare signals on dev, and pick the winner on dev — the library function `select_best_signal` does exactly this.
+- The **dev** split is for iteration and parameter selection. Compare signals on dev, and pick the winner on dev — the library function `select_best_signal` does exactly this. Selection requires at least one scored development query for each signal. A split with no positive relevance judgments still produces a report for inspection. When judgments exist and every run misses, the zero scores are valid and the usual tie-break applies.
 - The **test** split is the held-out set: score it once, at decision time, for the single final scoring pass the protocol allows. Parameter selection on the test split is refused inside the library: `select_best_signal` rejects a test-split report outright. The binary will print a test report — that final pass is legitimate — but nothing in the harness will help you tune against it.
 
 See [Evaluation: golden sets and gates](../concepts/evaluation.md) for how golden sets and gates fit the wider programme.
@@ -84,7 +84,7 @@ The report's per-signal means carry the four metrics above — `ndcg10`, `recall
 
 ## Failure shapes
 
-- Wrong number of arguments, or an unrecognised split: the usage line (or the `unknown split` message) on stderr, exit 2. This includes every spelling of a help request.
+- Wrong number of arguments, or an unrecognised split: the usage line (or the `unknown split` message) on stderr, exit 2.
 - The input file cannot be read: `atlas-eval: cannot read &lt;path&gt;: &lt;error&gt;`, exit 1.
 - The input parses but is invalid `atlas-eval/v1` data (any validation rule above), or evaluation itself fails: `atlas-eval: &lt;error&gt;`, exit 1. No partial report is printed.
 
@@ -95,3 +95,17 @@ The report's per-signal means carry the four metrics above — `ndcg10`, `recall
 | 0 | Success: the report for the requested split was printed to stdout. |
 | 1 | Runtime failure: unreadable input file, invalid evaluation data, or an evaluation failure. |
 | 2 | Usage failure: wrong arity (including `--help`/`-h`/`help`) or an unknown split value. |
+
+## Offline single-user recommendation candidates
+
+The Python experiment in `eval/session_cooccurrence.py` evaluates the session co-occurrence signal from [#9140](https://github.com/developing-today/code/issues/9140). From the repository root, run the synthetic fixture with:
+
+```sh
+python3 pkgs/atlas-search/eval/session_cooccurrence.py pkgs/atlas-search/eval/fixtures/session-cooccurrence.json -k 2
+```
+
+The fixture uses `atlas-recommendation-eval/v1`. One subject has an explicit list of eligible session and item references, a chronological cutoff, and sessions with inclusive integer start/end positions and ordered item opens. References must have a common stable namespace and opens must follow event order. Eligibility comes from the evaluation fixture or a trusted upstream projection that resolves current access and tombstones. The evaluator admits matching subjects and sessions and removes ineligible items before any split or pair count. It discards sessions spanning the cutoff. The CLI reports aggregate counts and metrics.
+
+Training uses sessions ending at or before the cutoff. Each distinct seed/candidate pair contributes once per training session. Candidates accumulate votes across distinct seeds, omit seeds, and break ties by item reference ascending. Each later session with at least two eligible, distinct opens provides a test case. The first half (rounded down) supplies seeds and the remainder supplies binary relevance. Repeated opens use their first position. Precision and recall use pooled counts, while reciprocal rank and normalized discounted gain use session means. An unseen seed counts as a miss. With no scorable sessions the metrics are null. The fixture hand-counts one hit across two scorable sessions at depth two.
+
+A live experiment needs a trusted session-to-query join, stable item resolution and an eligibility projection current at evaluation time. The current trace writer in `crates/atlas-core/src/trace.rs` emits a requester and query ID and leaves file/content identity fields null. Feedback in `crates/atlas-core/src/feedback.rs` attaches the opened signal to a query and chunk. The synthetic fixture tests the algorithm only. The package has no production recommendation route from this experiment.

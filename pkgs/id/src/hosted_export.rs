@@ -325,6 +325,15 @@ pub enum ExportError {
     UnreferencedBlob,
     /// An object cites a blob the export does not carry (§6.2 step 3).
     MissingBlob,
+    /// An object's declared blob references do not match the
+    /// content citations of its own verified envelope (§6.2
+    /// step 3): a reference naming a carried blob whose bytes do
+    /// not hash (BLAKE3) to one of the envelope's citations, or a
+    /// citation whose resolved blob the references omit.
+    /// `blob_refs` is covered by neither the envelope signature
+    /// nor the manifest digest, so verification derives the
+    /// citations from the envelope itself (#13289).
+    BlobCitationMismatch,
 }
 
 impl std::fmt::Display for ExportError {
@@ -390,6 +399,12 @@ impl std::fmt::Display for ExportError {
                 write!(f, "blob is not referenced by any verified object")
             }
             Self::MissingBlob => write!(f, "object cites a blob the export does not carry"),
+            Self::BlobCitationMismatch => {
+                write!(
+                    f,
+                    "object's blob references do not match its envelope's content citations"
+                )
+            }
         }
     }
 }
@@ -581,8 +596,9 @@ pub fn verify_import(
     }
 
     // Step 3: integrity — counts and digest over the received set,
-    // every object's hash and signature, and every blob's hash
-    // against the references of verified objects, all before ingest.
+    // every object's hash and signature, every blob's hash, and
+    // every object's references bound to the content citations of
+    // its own verified envelope, all before ingest.
     if manifest.object_count != export.objects.len() as u64
         || manifest.blob_count != export.blobs.len() as u64
     {
@@ -593,6 +609,23 @@ pub fn verify_import(
     }
     let mut chain_keys: Vec<&str> = vec![binding.iroh_id.as_str()];
     chain_keys.extend(binding.history.iter().map(|e| e.iroh_id.as_str()));
+    // Blob bytes are verified and indexed by citation identity
+    // (BLAKE3 of the bytes, the name an envelope cites) before any
+    // object is checked: an object's references are only
+    // meaningful resolved against the content its envelope
+    // actually cites (#13289).
+    let mut blob_names_by_citation = std::collections::HashMap::new();
+    let mut carried_blobs = std::collections::HashSet::new();
+    for blob in &export.blobs {
+        if sha256_hex(&blob.bytes) != blob.hash {
+            return Err(ExportError::BlobHashMismatch);
+        }
+        carried_blobs.insert(blob.hash.clone());
+        blob_names_by_citation.insert(
+            p2panda_core::Hash::digest(&blob.bytes).to_hex(),
+            blob.hash.clone(),
+        );
+    }
     let mut seen_objects = std::collections::HashSet::new();
     let mut referenced_blobs = std::collections::HashSet::new();
     for object in &export.objects {
@@ -616,16 +649,41 @@ pub fn verify_import(
         {
             return Err(ExportError::ObjectSignatureInvalid);
         }
+        // Bind the object's references to its envelope's own
+        // citations, read from the decoded header above (the same
+        // source `cited_content_hashes` reads): the references
+        // must name exactly the carried blobs whose bytes hash to
+        // the cited contents — no decoy, no extra, none omitted.
+        let declared_refs: std::collections::HashSet<String> =
+            object.blob_refs.iter().cloned().collect();
+        // A reference naming a blob the export does not carry at
+        // all is the plain missing-blob refusal, checked before
+        // citation binding so a dangling reference is not masked
+        // as a citation mismatch (#13444).
+        if declared_refs.iter().any(|r| !carried_blobs.contains(r)) {
+            return Err(ExportError::MissingBlob);
+        }
+        let cited: Vec<String> = match &event.header.extensions.document {
+            Some(document) => vec![document.content.to_hex()],
+            None => Vec::new(),
+        };
+        let mut resolved_refs = std::collections::HashSet::new();
+        let mut resolved_count = 0usize;
+        for citation in &cited {
+            if let Some(name) = blob_names_by_citation.get(citation) {
+                resolved_refs.insert(name.clone());
+                resolved_count += 1;
+            }
+        }
+        if declared_refs != resolved_refs {
+            return Err(ExportError::BlobCitationMismatch);
+        }
+        if resolved_count != cited.len() {
+            return Err(ExportError::MissingBlob);
+        }
         for blob_ref in &object.blob_refs {
             referenced_blobs.insert(blob_ref.clone());
         }
-    }
-    let mut carried_blobs = std::collections::HashSet::new();
-    for blob in &export.blobs {
-        if sha256_hex(&blob.bytes) != blob.hash {
-            return Err(ExportError::BlobHashMismatch);
-        }
-        carried_blobs.insert(blob.hash.clone());
     }
     for blob in &export.blobs {
         if !referenced_blobs.contains(&blob.hash) {
@@ -653,6 +711,10 @@ pub fn verify_import(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::hosted_binding::{
+        Challenge, REBIND_VIA_DELAYED, REBIND_VIA_OLD_KEY, parse_rfc3339,
+        rebind_authorization_bytes,
+    };
 
     const SUB: &str = "google-subject-1";
     const CREATED: &str = "2026-11-13T00:00:00Z";
@@ -1017,6 +1079,81 @@ mod tests {
     }
 
     #[test]
+    fn decoy_blob_is_refused() {
+        // #13289: the envelope cites the real content; the export
+        // carries unrelated decoy bytes and names them in
+        // `blob_refs`. `blob_refs` is covered by neither the
+        // envelope signature nor the manifest digest, so trusting
+        // it lets a signed object pass verification while its cited
+        // content is absent. Verification must resolve the citation
+        // against blob bytes itself.
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        let decoy = ExportBlob::new(b"decoy bytes".to_vec());
+        let object = document_object(&root_key(21), &decoy, b"the real content");
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object],
+            vec![decoy],
+            Some(&root_key(21)),
+            "export-decoy",
+            CREATED,
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::BlobCitationMismatch)
+        );
+    }
+
+    #[test]
+    fn cited_blob_missing_is_refused() {
+        // The object cites content the export does not carry at
+        // all: no blob bytes hash to the envelope's citation.
+        let (_svc, mut export) = sample_export(None);
+        export.blobs.clear();
+        export.objects[0].blob_refs.clear();
+        export.manifest.blob_count = 0;
+        // Re-sign so only the blob rule can fail.
+        export.manifest.signature = hex_encode(
+            &root_key(21)
+                .sign(&export.manifest.canonical_bytes())
+                .to_bytes(),
+        );
+        assert_eq!(verify_import(&export, false), Err(ExportError::MissingBlob));
+    }
+
+    #[test]
+    fn extra_blob_reference_is_refused() {
+        // One object's `blob_refs` also name a second object's
+        // blob: a reference its own envelope never makes. The
+        // manifest digest covers object hashes, not references, so
+        // only citation binding catches the inconsistency.
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        let blob_a = ExportBlob::new(b"content a".to_vec());
+        let blob_b = ExportBlob::new(b"content b".to_vec());
+        let mut object_a = document_object(&root_key(21), &blob_a, b"content a");
+        object_a.blob_refs.push(blob_b.hash.clone());
+        let object_b = document_object(&root_key(21), &blob_b, b"content b");
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object_a, object_b],
+            vec![blob_a, blob_b],
+            Some(&root_key(21)),
+            "export-extra-ref",
+            CREATED,
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::BlobCitationMismatch)
+        );
+    }
+
+    #[test]
     fn rebind_history_export_verifies() {
         // A store with a rebind history: objects authored by the
         // old root key and by the current one both verify, backed
@@ -1065,5 +1202,391 @@ mod tests {
         assert_eq!(verified.object_count, 2);
         assert_eq!(verified.blob_count, 0);
         assert_eq!(verified.iroh_id, updated.iroh_id);
+    }
+    // -- binding-record history (§6.2 step 2) -------------------------------
+
+    const OTHER_SUB: &str = "other-subject-9";
+
+    /// A fresh §3 challenge for `key` on `sub`, with the proof signature.
+    fn challenged(
+        service: &mut HostedBindingService,
+        sub: &str,
+        key: &SigningKey,
+    ) -> (Challenge, [u8; 64]) {
+        let iroh_id = key.verifying_key().to_bytes();
+        let challenge = service.request_challenge(sub, &iroh_id).unwrap();
+        let proof = key
+            .sign(&HostedBindingService::canonical_transcript(&challenge))
+            .to_bytes();
+        (challenge, proof)
+    }
+
+    /// Drive a delayed rebind to effect: request, wait out the 30-day
+    /// period, countersign, effect. Returns the updated binding (whose
+    /// history names the old key) and the published rebind record.
+    fn rebind_delayed(
+        service: &mut HostedBindingService,
+        sub: &str,
+        new_key: &SigningKey,
+    ) -> (BindingRecord, RebindRecord) {
+        let (challenge, proof) = challenged(service, sub, new_key);
+        let (request, _) = service
+            .request_delayed_rebind(sub, &challenge.challenge_id, &proof)
+            .unwrap();
+        let effective = parse_rfc3339(&request.effective_at).unwrap();
+        service.set_now_override(Some(effective + 1));
+        let probe = RebindRecord {
+            rebind_id: String::new(),
+            binding_id: request.binding_id.clone(),
+            old_iroh_id: request.old_iroh_id.clone(),
+            new_iroh_id: request.new_iroh_id.clone(),
+            effective_at: String::new(),
+            via: REBIND_VIA_DELAYED.to_owned(),
+            service_signature: String::new(),
+            new_key_countersignature: String::new(),
+        };
+        let countersignature = new_key.sign(&probe.countersign_bytes()).to_bytes();
+        service
+            .effect_due_rebind(&request.rebind_id, &countersignature)
+            .unwrap()
+    }
+
+    /// Drive the §4.1 fast path: the old key authorizes the transfer from
+    /// a fresh challenge and the new key countersigns. Effect is
+    /// immediate; the history step needs no backing record in the export.
+    fn rebind_fast(
+        service: &mut HostedBindingService,
+        sub: &str,
+        old_key: &SigningKey,
+        new_key: &SigningKey,
+    ) -> (BindingRecord, RebindRecord) {
+        let binding = service.binding_for_sub(sub).unwrap().clone();
+        let (challenge, proof) = challenged(service, sub, new_key);
+        let auth = old_key
+            .sign(&rebind_authorization_bytes(
+                &binding.binding_id,
+                &challenge.iroh_id,
+                &challenge.challenge_id,
+            ))
+            .to_bytes();
+        let probe = RebindRecord {
+            rebind_id: String::new(),
+            binding_id: binding.binding_id.clone(),
+            old_iroh_id: binding.iroh_id.clone(),
+            new_iroh_id: hex_encode(&new_key.verifying_key().to_bytes()),
+            effective_at: String::new(),
+            via: REBIND_VIA_OLD_KEY.to_owned(),
+            service_signature: String::new(),
+            new_key_countersignature: String::new(),
+        };
+        let countersignature = new_key.sign(&probe.countersign_bytes()).to_bytes();
+        service
+            .rebind_with_old_key_authorization(
+                sub,
+                None,
+                &challenge.challenge_id,
+                &proof,
+                &auth,
+                &countersignature,
+            )
+            .unwrap()
+    }
+
+    /// Flip the last hex digit of `hex` to a different valid hex digit,
+    /// so the value stays well-formed but no longer matches.
+    fn flip_last_hex(hex: &str) -> String {
+        let mut out = hex.to_owned();
+        let last = out.pop().unwrap();
+        out.push(if last == '0' { '1' } else { '0' });
+        out
+    }
+
+    /// An export object over a freshly signed envelope by `key`
+    /// (§6.3: the envelope is the object; the document content
+    /// keeps objects from the same key distinct, and `blob_refs`
+    /// is the export-layer citation set the verifier checks
+    /// against the carried blobs).
+    fn signed_object(key: &SigningKey, content: &[u8], blob_refs: Vec<String>) -> ExportObject {
+        let document = crate::documents::DocumentRef::for_bytes("text/plain", content).unwrap();
+        let event = envelope(key, 0, None, ext("document.put", Some(document)));
+        ExportObject::from_envelope(event.bytes, blob_refs).unwrap()
+    }
+
+    #[test]
+    fn delayed_rebind_history_round_trip() {
+        let mut svc = service();
+        let old_key = root_key(21);
+        let new_key = root_key(22);
+        bind(&mut svc, 21, None);
+        let (binding, record) = rebind_delayed(&mut svc, SUB, &new_key);
+        assert_eq!(binding.history.len(), 1);
+        assert_eq!(binding.history[0].via, "delayed-rebind");
+
+        // Objects from both sides of the rotation stay verifiable: the
+        // binding chain in step 2 admits every key in the history.
+        let blob = ExportBlob::new(b"written before the rebind".to_vec());
+        let old_object = document_object(&old_key, &blob, b"written before the rebind");
+        let new_object = message_object(&new_key);
+        let export = build_export(
+            &svc,
+            &binding,
+            vec![record],
+            vec![old_object, new_object],
+            vec![blob],
+            Some(&new_key),
+            "export-rebound",
+            CREATED,
+        );
+        let verified = verify_import(&export, false).unwrap();
+        assert_eq!(verified.object_count, 2);
+        assert_eq!(verified.blob_count, 1);
+        assert_eq!(verified.iroh_id, binding.iroh_id);
+    }
+
+    #[test]
+    fn fast_path_history_verifies_without_backing_records() {
+        let mut svc = service();
+        let old_key = root_key(21);
+        let new_key = root_key(22);
+        bind(&mut svc, 21, None);
+        let (binding, _record) = rebind_fast(&mut svc, SUB, &old_key, &new_key);
+        assert_eq!(binding.history[0].via, "old-key-signature");
+        // The fast path is the old key's signature over the transfer,
+        // checked at publication: the export carries no backing record.
+        let object = message_object(&old_key);
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object],
+            Vec::new(),
+            Some(&new_key),
+            "export-fast",
+            CREATED,
+        );
+        verify_import(&export, false).unwrap();
+    }
+
+    #[test]
+    fn delayed_history_without_backing_record_is_refused() {
+        let mut svc = service();
+        bind(&mut svc, 21, None);
+        let (binding, _record) = rebind_delayed(&mut svc, SUB, &root_key(22));
+        let object = signed_object(&root_key(22), b"post-rotation", Vec::new());
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object],
+            Vec::new(),
+            Some(&root_key(22)),
+            "export-unbacked",
+            CREATED,
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::HistoryUnbacked {
+                iroh_id: binding.history[0].iroh_id.clone(),
+            })
+        );
+    }
+
+    #[test]
+    fn rebind_record_for_another_binding_is_refused() {
+        let mut svc = service();
+        bind(&mut svc, 21, None);
+        let (binding, mut record) = rebind_delayed(&mut svc, SUB, &root_key(22));
+        // A well-formed, service-signed record that belongs to a
+        // different binding: only the binding-ID check can catch it.
+        record.binding_id = "binding-from-elsewhere".to_owned();
+        let export = build_export(
+            &svc,
+            &binding,
+            vec![record],
+            Vec::new(),
+            Vec::new(),
+            Some(&root_key(22)),
+            "export-foreign-record",
+            CREATED,
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::RebindRecordMismatch)
+        );
+    }
+
+    #[test]
+    fn tampered_rebind_record_is_refused() {
+        let mut svc = service();
+        bind(&mut svc, 21, None);
+        let (binding, mut record) = rebind_delayed(&mut svc, SUB, &root_key(22));
+        record.service_signature = flip_last_hex(&record.service_signature);
+        let export = build_export(
+            &svc,
+            &binding,
+            vec![record],
+            Vec::new(),
+            Vec::new(),
+            Some(&root_key(22)),
+            "export-tampered-record",
+            CREATED,
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::HistoryUnbacked {
+                iroh_id: binding.history[0].iroh_id.clone(),
+            })
+        );
+    }
+
+    // -- remaining step 1–3 refusals ----------------------------------------
+
+    #[test]
+    fn manifest_for_another_binding_is_refused() {
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        svc.signup_account(OTHER_SUB, None, "free").unwrap();
+        let other = svc
+            .complete_browser_ceremony(OTHER_SUB, &root_key(23), None)
+            .unwrap();
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Some(&root_key(21)),
+            "export-mismatch",
+            CREATED,
+        );
+        let mut swapped = export;
+        swapped.binding = other;
+        assert_eq!(
+            verify_import(&swapped, false),
+            Err(ExportError::ManifestBindingMismatch)
+        );
+    }
+
+    #[test]
+    fn tampered_binding_key_signature_is_refused() {
+        let (_svc, mut export) = sample_export(None);
+        export.binding.key_signature = flip_last_hex(&export.binding.key_signature);
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::BindingKeySignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn tampered_service_attestation_is_refused() {
+        let (_svc, mut export) = sample_export(None);
+        export.binding.service_attestation = flip_last_hex(&export.binding.service_attestation);
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::BindingAttestationInvalid)
+        );
+    }
+
+    #[test]
+    fn count_mismatch_is_refused() {
+        let (_svc, mut export) = sample_export(None);
+        // One more object than the manifest counts: the manifest
+        // signature still verifies, so only the count rule can fail.
+        export
+            .objects
+            .push(signed_object(&root_key(21), b"smuggled", Vec::new()));
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::CountMismatch)
+        );
+    }
+
+    #[test]
+    fn stale_objects_digest_is_refused() {
+        let (_svc, mut export) = sample_export(None);
+        // Swap in a different well-formed object from the same key:
+        // counts still match, but the manifest digest is stale.
+        export.objects[0] = signed_object(&root_key(21), b"replacement", Vec::new());
+        export.blobs.clear();
+        export.manifest.blob_count = 0;
+        // Re-sign over the unchanged (now stale) counts and digest.
+        export.manifest.signature = hex_encode(
+            &root_key(21)
+                .sign(&export.manifest.canonical_bytes())
+                .to_bytes(),
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::ObjectsDigestMismatch)
+        );
+    }
+
+    #[test]
+    fn duplicate_object_is_refused() {
+        let (_svc, mut export) = sample_export(None);
+        export.objects.push(export.objects[0].clone());
+        export.manifest.object_count = 2;
+        export.manifest.objects_digest = objects_digest(&export.objects);
+        export.manifest.signature = hex_encode(
+            &root_key(21)
+                .sign(&export.manifest.canonical_bytes())
+                .to_bytes(),
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::DuplicateObject)
+        );
+    }
+
+    #[test]
+    fn missing_blob_is_refused() {
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        // The object cites a blob the export does not carry.
+        let object = signed_object(&root_key(21), b"cites the void", vec!["ab".repeat(32)]);
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![object],
+            Vec::new(),
+            Some(&root_key(21)),
+            "export-missing-blob",
+            CREATED,
+        );
+        assert_eq!(verify_import(&export, false), Err(ExportError::MissingBlob));
+    }
+
+    // -- canonical form and the wire ----------------------------------------
+
+    #[test]
+    fn export_is_canonical_and_survives_the_wire() {
+        let mut svc = service();
+        let binding = bind(&mut svc, 21, None);
+        let blob_b = ExportBlob::new(b"bbb".to_vec());
+        let blob_a = ExportBlob::new(b"a".to_vec());
+        let obj_b = signed_object(&root_key(21), b"bbb", vec![blob_b.hash.clone()]);
+        let obj_a = signed_object(&root_key(21), b"a", vec![blob_a.hash.clone()]);
+        // Deliberately scrambled input order.
+        let export = build_export(
+            &svc,
+            &binding,
+            Vec::new(),
+            vec![obj_b, obj_a],
+            vec![blob_b, blob_a],
+            Some(&root_key(21)),
+            "export-canonical",
+            CREATED,
+        );
+        // Stored in canonical (hash) order regardless of input order.
+        assert!(export.objects.windows(2).all(|w| w[0].hash <= w[1].hash));
+        assert!(export.blobs.windows(2).all(|w| w[0].hash <= w[1].hash));
+        // Identical by canonical object/hash set after a JSON round trip.
+        let wire = serde_json::to_string(&export).unwrap();
+        let received: HostedExport = serde_json::from_str(&wire).unwrap();
+        assert_eq!(received, export);
+        let verified = verify_import(&received, false).unwrap();
+        assert_eq!(verified.object_count, 2);
+        assert_eq!(verified.blob_count, 2);
     }
 }

@@ -3086,7 +3086,7 @@ of the code.*
 
 ---
 
-# Summary
+## Summary
 
 mcpx puts every MCP server behind one command so their schemas stay out of the
 model's context until something asks for them, and leases a separate server
@@ -3097,7 +3097,7 @@ The walk above is the whole interface: `ls` to see what exists, `search` to
 find a tool, `types` to load one namespace, `run` to do the work. Everything
 else in this document is detail underneath those four verbs.
 
-# Notes and links
+## Notes and links
 
 - [`AGENTS.md`](../AGENTS.md) — the instruction file abridged above. This is
   the text to inject into an agent's session; it is deliberately short, and
@@ -3128,7 +3128,7 @@ else in this document is detail underneath those four verbs.
   documents this pattern as "programmatic tool calling".
 - [Cloudflare, *Code Mode*](https://blog.cloudflare.com/code-mode/) — where the
   idea was first argued publicly.
-- [The mcpx programme prompt](../../../doc/2026-11-23T12-40-29Z_design_mcpx_program_investigation_prompt/2026-11-23T12-40-29Z_design_mcpx_program_investigation_prompt.md) —
+- [The mcpx programme prompt](https://github.com/developing-today/code/blob/main/doc/2026-11-23T12-40-29Z_design_mcpx_program_investigation_prompt/2026-11-23T12-40-29Z_design_mcpx_program_investigation_prompt.md) —
   the full-investigation prompt for the mcpx programme (tracking issue
   #13264): design completion and build-out for the gateway, its config
   system, and its fleet, Atlas and ID integration surface.

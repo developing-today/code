@@ -11,6 +11,7 @@ const view = $("view");
 const tabsEl = $("tabs");
 const toastEl = $("toast");
 const freshEl = $("fresh");
+const keptEl = $("kept");
 
 // ---- small helpers -----------------------------------------------------
 
@@ -134,6 +135,48 @@ const etags = {};
 const asOf = {};
 let me = {};
 let signedOut = false;
+/** The last answer came from the copy this device keeps, not from the
+ * network: there is no connection (or no sign-in), and what is shown is
+ * what the device last saw. */
+let offline = false;
+
+/** What the owner did, kept on this device until the platform has it
+ * (outbox.js). Without a page there is none. */
+const Outbox = typeof self !== "undefined" ? self.PMOutbox : undefined;
+let outbox = null;
+/** The entries, as last read: for the line that says what is kept. */
+let kept = [];
+
+/** Why a request got no answer: no sign-in, or no connection. Asked
+ * past the service worker, which would otherwise answer from its copy,
+ * and without following the way to the sign-in page, which is how the
+ * two are told apart. */
+async function probe() {
+  try {
+    const res = await fetch(`${API}me`, { redirect: "manual", cache: "no-store", headers: { "X-PM-Probe": "1" } });
+    signedOut = res.type === "opaqueredirect" || res.status === 401 || res.status === 403;
+    return true;
+  } catch {
+    signedOut = false;
+    return false;
+  }
+}
+
+/** Note whether an answer was the network's or this device's copy. */
+function noteAnswer(res) {
+  const was = offline;
+  offline = res.headers.get("x-pm-offline") === "1";
+  // Gone: find out which it is, a sign-in that ran out or no connection.
+  if (offline && !was) probe().then(drawKept);
+  // Back: send what was kept meanwhile.
+  if (!offline && was) {
+    signedOut = false;
+    flushOutbox();
+  }
+}
+
+const NO_ANSWER = "There is no connection, and this device has no copy of this yet.";
+const NO_SIGNIN = "Your sign-in has run out. Reload to sign in again.";
 
 async function api(path, body) {
   const init =
@@ -148,11 +191,12 @@ async function api(path, body) {
   try {
     res = await fetch(API + path, init);
   } catch {
-    // A sign-in that has run out answers with a redirect to another site,
-    // which a fetch may not follow.
-    signedOut = navigator.onLine !== false;
-    throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
+    // No answer and no copy. A sign-in that has run out answers with a
+    // redirect to another site, which a fetch may not follow.
+    await probe();
+    throw new Error(signedOut ? NO_SIGNIN : NO_ANSWER);
   }
+  if (body === undefined) noteAnswer(res);
   let data = null;
   let read = true;
   try {
@@ -175,9 +219,10 @@ async function loadDoc(name) {
   try {
     res = await fetch(`${API}doc/${name}`, { headers: etags[name] ? { "If-None-Match": etags[name] } : {} });
   } catch {
-    signedOut = navigator.onLine !== false;
-    throw new Error(signedOut ? "Your sign-in may have run out. Reload to sign in again." : "You are offline.");
+    await probe();
+    throw new Error(signedOut ? NO_SIGNIN : NO_ANSWER);
   }
+  noteAnswer(res);
   if (res.headers.get("x-as-of")) asOf[name] = Number(res.headers.get("x-as-of"));
   // Served from the edge: when the laptop behind it last reported.
   if (res.headers.get("x-host-seen")) hostSeen = Number(res.headers.get("x-host-seen")) || null;
@@ -192,19 +237,32 @@ async function loadDoc(name) {
   return true;
 }
 
-/** Questions answered on this device that the list may still show for a
- * while: the answer is on its way, or held until the laptop is back. */
-const answeredHere = new Set();
+/** Answers being sent this moment, by their question. */
+const sendingAnswers = new Set();
 const questionKey = (q) => `${q.set}|${q.ledger}|${q.qid}`;
+
+/** Questions answered on this device whose answer has not been
+ * recorded yet: it is on its way, waits here for a connection, or is
+ * held for a machine. The list may still show them for a while, and
+ * they are left out of it. It is worked out from what is kept, so one
+ * whose answer the owner took back, or that turned out not to count,
+ * is shown again, and one still waiting stays out after a reload. */
+export function answeredKeys(entries, sending = []) {
+  const keys = new Set(sending);
+  for (const e of entries || []) {
+    if ((e.kind === "question.answer" || e.kind === "question.defer") && (e.state === "waiting" || e.state === "held")) {
+      keys.add(questionKey(e.args || {}));
+    }
+  }
+  return keys;
+}
 
 function withoutAnswered(doc) {
   const q = doc?.questions;
   if (!q?.open) return;
-  const present = new Set(q.open.map(questionKey));
-  // Gone from the list: the answer arrived, and there is nothing to hide.
-  for (const key of answeredHere) if (!present.has(key)) answeredHere.delete(key);
-  if (answeredHere.size === 0) return;
-  q.open = q.open.filter((x) => !answeredHere.has(questionKey(x)));
+  const hidden = answeredKeys(kept, sendingAnswers);
+  if (hidden.size === 0) return;
+  q.open = q.open.filter((x) => !hidden.has(questionKey(x)));
   q.total = q.open.length;
 }
 
@@ -215,21 +273,203 @@ let hostSeen = null;
 const HOST_QUIET_MS = 3 * 60_000;
 const HELD_NOTE = "Held: the laptop cannot be reached. It will be sent when it is back.";
 
-/** Run one action, say how it went, and draw what changed. */
+const KEPT_NOTE = "Kept on this device. It is sent when you are connected.";
+
+/** Read what is kept, for the line that says so and the screen that lists it. */
+async function readKept() {
+  if (!outbox) return [];
+  const before = answeredKeys(kept);
+  try {
+    kept = (await outbox.all()).sort((a, b) => b.at - a.at);
+  } catch {
+    // The list as it was is better than none.
+  }
+  const now = answeredKeys(kept);
+  if (docs.questions) {
+    if ([...before].some((key) => !now.has(key))) {
+      // An answer that was waiting and no longer is (recorded, taken
+      // back, or refused): the questions are read again whole, so that
+      // one still open is shown again. (The copy here had it taken out.)
+      etags.questions = null;
+      loadDoc("questions").then(
+        () => draw(),
+        () => {},
+      );
+    } else if ([...now].some((key) => !before.has(key))) {
+      // One found waiting that the list was read without (the list
+      // came first, at start-up): taken out of it now.
+      withoutAnswered(docs.questions);
+      draw();
+    }
+  }
+  drawKept();
+  return kept;
+}
+
+/** Ask for what is kept to be sent when there is a connection, also if
+ * the app is closed by then (where the browser can do that). */
+function sendWhenConnected() {
+  navigator.serviceWorker?.ready.then((reg) => reg.sync?.register("pm-outbox")).catch(() => {});
+}
+
+/** What a flush did, in a line. */
+export function flushSaid(changed) {
+  const n = (state) => changed.filter((e) => e.state === state).length;
+  const sent = n("done") + n("held");
+  const parts = [
+    sent ? `${sent} sent` : "",
+    n("failed") ? `${n("failed")} could not be done` : "",
+    n("stale") ? `${n("stale")} kept back for you to look at` : "",
+  ].filter(Boolean);
+  return parts.length ? `What you did offline: ${parts.join(", ")}.` : "";
+}
+
+let flushing = null;
+/** Send what is waiting, if anything is. One at a time, here and in
+ * the service worker: whichever holds the lock sends. */
+function flushOutbox() {
+  if (!outbox || !Outbox) return Promise.resolve();
+  flushing ??= (async () => {
+    const run = async () => {
+      const out = await Outbox.flush(outbox, (entry) => Outbox.httpSend(entry));
+      if (out.signin) signedOut = true;
+      const said = flushSaid(out.changed);
+      if (said) {
+        toast(said, out.changed.some((e) => e.state === "failed"));
+        // Not from under someone in the middle of typing: this was not
+        // their doing, and can wait for them.
+        refresh("idle");
+      }
+    };
+    try {
+      if (navigator.locks?.request) await navigator.locks.request("pm-outbox", { ifAvailable: true }, (lock) => (lock ? run() : undefined));
+      else await run();
+    } catch {
+      // Nothing was lost: what is waiting is still written down.
+    } finally {
+      flushing = null;
+      await readKept();
+      // Still something waiting (the connection went again, or was
+      // never there): the browser is asked to wake the worker for it,
+      // in case the app is closed by the time there is one.
+      if (kept.some((e) => e.state === "waiting")) sendWhenConnected();
+    }
+  })();
+  return flushing;
+}
+
+/** Give an action its name, write it down, and try to send it. Says
+ * what became of it: "done" (with its result), "held" (the platform
+ * has it, for a machine), "kept" (it waits on this device), or
+ * "failed"/"refused" (with why; nothing is kept). */
+async function submit(kind, args) {
+  if (!Outbox) return { state: "refused", note: "This page cannot send that." };
+  const entry = Outbox.make(kind, args, Date.now());
+  // What needs a connection by its nature is sent by itself. It is not
+  // written down, so nothing else can take it for something waiting.
+  if (Outbox.rule(entry.kind) === "now" || outbox === null) return sendAlone(entry);
+  // Written down before anything is waited for, its turn to be sent
+  // included: another tab or the service worker may be in the middle of
+  // a slow send, and a page closed while this waited its turn would
+  // take what the owner did with it.
+  try {
+    await outbox.put(entry);
+  } catch {
+    // A browser that will not let this page keep anything.
+    return sendAlone(entry);
+  }
+  // Sent under the lock a send of what is waiting takes, here or in the
+  // service worker: one sender at a time, in the order things were done.
+  // (If another sender takes this one first, the platform still does it
+  // once, and this finds it done.)
+  const work = () => sendKept(entry);
+  return navigator.locks?.request ? navigator.locks.request("pm-outbox", work) : work();
+}
+
+/** Sent by itself, behind nothing, and kept nowhere. */
+async function sendAlone(entry) {
+  const answer = await Outbox.httpSend(entry);
+  const out = Outbox.classify(answer);
+  if (out.state === "done") return { state: "done", result: out.result };
+  if (out.state === "held") return { state: "held" };
+  if (out.state === "failed") return { state: "failed", note: out.note };
+  if (out.signin) signedOut = true;
+  return { state: "refused", note: answer.network ? "This needs a connection." : out.signin ? NO_SIGNIN : out.note };
+}
+
+/** Sent in its turn: behind whatever is already waiting, in the order
+ * things were done (outbox.js says why). */
+async function sendKept(entry) {
+  let did;
+  try {
+    did = await Outbox.sendInOrder(outbox, entry.id, (e) => Outbox.httpSend(e));
+  } catch {
+    // It is written down, and what became of it could not be read back:
+    // it is treated as waiting, which it is at worst, and sent again
+    // under its name.
+    did = { entry: { state: "waiting", note: "" }, others: [], signin: false, offline: false };
+  }
+  if (did.signin) signedOut = true;
+  const out = sentSaid(did, entry.id);
+  // Not taken: no connection, no sign-in, or nothing to take it just now.
+  if (out.state === "kept") sendWhenConnected();
+  return out;
+}
+
+/** What to tell whoever did something, from what became of it when it
+ * was sent in its turn. `did.entry` is the entry as it now stands. */
+export function sentSaid(did, id) {
+  const now = did.entry;
+  if (!now) return { state: "refused", note: "It was taken back before it was sent." };
+  if (now.state === "done") return { state: "done", result: now.result ?? null, others: did.others };
+  if (now.state === "held") return { state: "held", others: did.others };
+  if (now.state === "failed") return { state: "failed", note: now.note };
+  return {
+    state: "kept",
+    id,
+    note: did.signin ? "Kept on this device. Sign in again to send it." : now.note ? `Kept on this device: ${now.note}` : KEPT_NOTE,
+  };
+}
+
+/** Take back something kept that has not been sent. */
+async function unkeep(id) {
+  await outbox?.remove(id).catch(() => {});
+  toastEl.hidden = true;
+  await readKept();
+  draw();
+}
+
+/** Run one action, say how it went, and draw what changed. With no
+ * connection it is kept on this device and sent when there is one.
+ * Answers with the action's result when it was done; with something
+ * that is not nothing when the platform or this device has it to do
+ * later (so a form may be cleared: it will not be lost); and with null
+ * when it was not done and nothing was kept. */
 async function act(kind, args, done, button) {
   if (button) button.disabled = true;
-  try {
-    const { result, held } = await api("act", { kind, args });
-    // Held is not done: the caller is told nothing happened yet, and the
-    // owner is told where it is waiting.
-    toast(held ? HELD_NOTE : typeof done === "function" ? done(result) : done);
+  const out = await submit(kind, args);
+  await readKept();
+  // Older things that went in the same pass are said with it.
+  const older = out.others?.length ? flushSaid(out.others) : "";
+  const also = older ? ` ${older}` : "";
+  if (out.state === "done") {
+    toast((typeof done === "function" ? done(out.result) : done) + also);
     await refresh(true);
-    return held ? null : result;
-  } catch (error) {
-    toast(error.message, true);
-    if (button) button.disabled = false;
-    return null;
+    return out.result ?? { done: true };
   }
+  if (out.state === "held") {
+    toast(HELD_NOTE + also);
+    await refresh(true);
+    return { held: true };
+  }
+  if (out.state === "kept") {
+    toast(out.note, false, () => unkeep(out.id));
+    draw();
+    return { kept: true };
+  }
+  toast(out.note, true);
+  if (button) button.disabled = false;
+  return null;
 }
 
 // ---- now ---------------------------------------------------------------
@@ -269,7 +509,11 @@ export function awayNotice(primary, lastReport) {
       };
 }
 
-function notices(doc) {
+/** What is said above a screen about what it shows: that a machine is
+ * away, that something is waiting for one, and each list that could
+ * not be read just now, with why. A screen that shows only some of a
+ * document's lists names them (`only`), and is told of those alone. */
+function notices(doc, only = null) {
   const out = [];
   // Served from the edge with the laptop out of reach: say what is
   // current and what is as old as its last report.
@@ -283,14 +527,57 @@ function notices(doc) {
       h("div", { class: "card flag" }, h("p", { class: "meta" }, `${n} ${n === 1 ? "thing" : "things"} you did ${n === 1 ? "is" : "are"} waiting for the laptop. See “What you did” below.`)),
     );
   }
+  for (const said of unreadSaid(doc, only)) out.push(h("div", { class: "card flag" }, h("p", { class: "meta" }, said)));
+  return out;
+}
+
+/** What is said of each list a screen shows that could not be read
+ * just now: why, and how old the copy shown in its place is (by when
+ * that copy was read, `good`, not by when reading was last tried).
+ * `only` names the lists a screen shows, where it does not show all of
+ * the document's: it is told of those alone.
+ * @param {{ health?: Record<string, { ok: boolean, error: string | null }>, read?: Record<string, string | null>, good?: Record<string, string | null> } | null | undefined} doc
+ * @param {string[] | null} [only]
+ * @param {number} [now] */
+export function unreadSaid(doc, only = null, now = Date.now()) {
+  const out = [];
   for (const [name, s] of Object.entries(doc?.health || {})) {
-    if (!s.ok && s.error) {
-      out.push(
-        h("div", { class: "card flag" }, h("p", { class: "meta" }, `Could not read ${name} just now: ${s.error}. Showing the last good copy.`)),
-      );
-    }
+    if (only && !only.includes(name)) continue;
+    if (s.ok || !s.error) continue;
+    const what = name === "services" ? "the machine's units" : SECTION_SAID[name] || name;
+    const read = doc?.good?.[name] ? `, read ${ago(doc.good[name], now)}` : "";
+    out.push(`Could not read ${what} just now: ${whySaid(s.error, now)}. Showing the last good copy${read}.`);
   }
   return out;
+}
+
+/** Why something could not be read, in the owner's words where the
+ * reason is one that is known. GitHub's "rate limit exceeded" arrives
+ * as a line of JSON with a request number in it; what it means is that
+ * the account's allowance for the hour is used up, and the agents
+ * share that allowance with this app. */
+export function whySaid(error, now = Date.now()) {
+  const text = String(error || "").trim();
+  // Where Cloudflare was the one turned away, it puts the time GitHub
+  // gave for asking again at the front of why (askAgainSaid in
+  // edge/src/direct.ts), and asks nothing of GitHub until then.
+  const until = Date.parse((/GitHub says to ask again at (\d{4}-\d{2}-\d{2}T[\d:.]+Z)/.exec(text) || [])[1] || "");
+  const timed = Number.isFinite(until);
+  if (!timed && !/rate limit/i.test(text)) return text || "no reason given";
+  // The hour's allowance, or only going too fast for a moment? GitHub
+  // says the first in these words; but it says them of searches too,
+  // which it counts by the minute, so a wait of a minute or two is the
+  // second whatever the words.
+  const soon = timed && until > now && until - now <= 2 * 60_000;
+  const hourly = /API rate limit exceeded/i.test(text) && !soon;
+  const when = !timed
+    ? `it is asked again every few minutes${hourly ? " and answers when the hour turns" : ""}`
+    : until > now
+      ? `GitHub says it answers again at ${new Date(until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}, and it is not asked before then`
+      : "the time GitHub gave for asking again has come, and it is being asked";
+  return hourly
+    ? `GitHub's allowance for the hour is used up on this account, which the agents share; ${when}`
+    : `GitHub turned this account away for asking too often just now; ${when}`;
 }
 
 function viewNow() {
@@ -479,25 +766,35 @@ function flushPending() {
 }
 
 async function sendAnswer(kind, args, key, said) {
+  // Out of the list while it is on its way, whatever is read meanwhile.
+  sendingAnswers.add(key);
+  let out;
   try {
-    const { result, held } = await api("act", { kind, args });
-    if (result?.refused?.length) toast(`Not recorded: ${result.refused[0].why}`, true);
-    else {
-      answeredHere.add(key);
-      // A choice was already acknowledged when it was made (with its
-      // Undo); anything else says so now, or the question would simply
-      // vanish.
-      if (held) toast(HELD_NOTE);
-      else if (said) toast(said);
-    }
+    out = await submit(kind, args);
+    await readKept();
+  } finally {
+    sendingAnswers.delete(key);
+  }
+  if (out.state === "failed" || out.state === "refused") {
+    toast(out.note, true);
+    // The question is still open. If the list was read while the answer
+    // was on its way, the question was taken out of that copy: the list
+    // is read again whole, so that it is there to answer again.
+    etags.questions = null;
+    await loadDoc("questions").catch(() => {});
+  } else {
+    // A choice was already acknowledged when it was made (with its
+    // Undo); anything else says so now, or the question would simply
+    // vanish.
+    if (out.state === "held") toast(HELD_NOTE);
+    else if (out.state === "kept") toast(out.note);
+    else if (said) toast(said);
     picks.delete(key);
     if (docs.questions?.questions) {
       const open = docs.questions.questions.open.filter((q) => `${q.set}|${q.ledger}|${q.qid}` !== key);
       docs.questions.questions.total = open.length;
       docs.questions.questions.open = open;
     }
-  } catch (error) {
-    toast(error.message, true);
   }
   // The list above is already right; only the counts need reading again.
   await loadDoc("core").catch(() => {});
@@ -878,6 +1175,9 @@ function viewMore() {
       tile("more/phone", "Phones", "the Android app and its home-screen widget"),
       tile("more/signin", "Sign-in", "Google first, the emailed code as the fallback"),
       tile("more/away", "Cloudflare", "what it does by itself, and what waits for a machine"),
+      tile("more/machines", "Machines", "each machine, what only it can do, and what waits for one"),
+      tile("more/platform", "Platform", "every Worker: what it does, whether it is in service, how it is deployed"),
+      tile("more/device", "On this device", "what is kept here to send, and what it shows with no connection"),
       tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
   ];
@@ -888,7 +1188,18 @@ function viewMore() {
     h("h2", {}, "This app"),
     h("p", { class: "meta" }, `Signed in as ${me.email || me.certName || me.via || "…"}`),
     me.androidApp ? h("a", { class: "link", href: "/console/pm-console.apk" }, "Android app", h("span", {}, "Download the signed build for this phone")) : null,
-    h("a", { class: "link", href: "/cdn-cgi/access/logout" }, "Sign out"),
+    h(
+      "a",
+      {
+        class: "link",
+        href: "/cdn-cgi/access/logout",
+        // Signing out: the device forgets what the app last saw. What
+        // was done here and not yet sent is kept, and goes when the
+        // owner signs in again.
+        onclick: () => navigator.serviceWorker?.controller?.postMessage({ type: "forget" }),
+      },
+      "Sign out",
+    ),
   );
   return out;
 }
@@ -1385,10 +1696,31 @@ async function viewRoadmap(sub) {
   return out;
 }
 
+/** What is being typed in a form, by the form. A screen is drawn again
+ * whenever something it shows changes, and when what was kept gets
+ * sent: what was typed and not yet sent is put back, and let go when
+ * it is sent. */
+const typing = new Map();
+function typed(key, attrs) {
+  const box = h("textarea", { ...attrs, oninput: (e) => typing.set(key, e.target.value) });
+  box.value = typing.get(key) ?? "";
+  return box;
+}
+/** Send what was typed in a form: let go of before it is sent (the
+ * screen is drawn again when it goes), and put back if it did not go. */
+async function sendTyped(key, box, send) {
+  const words = box.value;
+  typing.delete(key);
+  const sent = await send(words);
+  if (sent) box.value = "";
+  else typing.set(key, words);
+  return sent;
+}
+
 /** Bugs: report one in a sentence; what is open, soonest first; what was fixed lately. */
 async function viewBugs() {
   const [caps, bugs] = await Promise.all([capabilityList(), api(freshly("bugs"))]);
-  const words = h("textarea", { rows: 4, maxlength: 8000, "aria-label": "What went wrong", placeholder: "What went wrong, and what you expected" });
+  const words = typed("bug", { rows: 4, maxlength: 8000, "aria-label": "What went wrong", placeholder: "What went wrong, and what you expected" });
   const where = h(
     "select",
     { "aria-label": "Where" },
@@ -1408,8 +1740,7 @@ async function viewBugs() {
   const report = async (e) => {
     if (!words.value.trim()) return toast("Say what went wrong first", true);
     const form = { text: words.value, area: where.value, rank: soon.value, session: session.checked };
-    const sent = await act("intake.send", { id: newId(), ...intakeArgs({ kind: "bug" }, form) }, intakeSaid, e.target);
-    if (sent) words.value = "";
+    await sendTyped("bug", words, () => act("intake.send", { id: newId(), ...intakeArgs({ kind: "bug" }, form) }, intakeSaid, e.target));
   };
   return [
     card(
@@ -1434,7 +1765,7 @@ const KIND_SAID = { bug: "Bug", note: "Note", session: "Session", change: "Chang
 /** Intake: everything that was said through the app, where it went, and how it stands. */
 async function viewIntake() {
   const [caps, list] = await Promise.all([capabilityList(), api(freshly("intake"))]);
-  const words = h("textarea", { rows: 3, maxlength: 8000, "aria-label": "A note", placeholder: "A note, an idea, a change of mind" });
+  const words = typed("note", { rows: 3, maxlength: 8000, "aria-label": "A note", placeholder: "A note, an idea, a change of mind" });
   const where = h(
     "select",
     { "aria-label": "About" },
@@ -1445,8 +1776,7 @@ async function viewIntake() {
   const send = async (e) => {
     if (!words.value.trim()) return toast("Write the note first", true);
     const form = { text: words.value, area: where.value, session: session.checked };
-    const sent = await act("intake.send", { id: newId(), ...intakeArgs({ kind: "note" }, form) }, intakeSaid, e.target);
-    if (sent) words.value = "";
+    await sendTyped("note", words, () => act("intake.send", { id: newId(), ...intakeArgs({ kind: "note" }, form) }, intakeSaid, e.target));
   };
   const titleOf = (id) => caps.find((c) => c.id === id)?.title || id;
   return [
@@ -1676,7 +2006,7 @@ async function viewAway() {
       ? h(
           "ul",
           { class: "plain" },
-          s.checks.map((c) => h("li", {}, `${c.what}: ${c.ok ? "read from Cloudflare" : `could not be read (${c.error || "no reason given"})`}`)),
+          s.checks.map((c) => h("li", {}, `${c.what}: ${c.ok ? "read from Cloudflare" : `could not be read (${whySaid(c.error)})`}`)),
         )
       : h("p", { class: "meta" }, "Not tried yet. It tries one read of each kind within a minute of being turned on.")
     : null;
@@ -1732,6 +2062,447 @@ async function viewAway() {
         "On is how this is set up: the laptop gives the Worker two tokens from your secret store, the repository automation token and the queue store token, and keeps them there. They are the Worker's secrets in your Cloudflare account. Turning it off takes them away again and is remembered; Cloudflare then only serves what the laptop reports and holds what you send. The laptop has to be reachable to change it.",
       ),
       h("div", { class: "row end" }, h("button", { class: s.on ? "ghost" : "", onclick: flip }, s.on ? "Turn off" : "Turn on")),
+    ),
+  ];
+}
+
+/** What each kind of action is, in a few words: for saying what the
+ * platform does itself and what only a machine can. */
+const CAN_SAID = {
+  "ask.send": "send a prompt",
+  "ask.reply": "reply on a prompt",
+  "ask.close": "close a prompt",
+  "issue.comment": "comment on an issue",
+  "need.comment": "reply on something that needs you",
+  "issue.rank": "rank an issue",
+  "task.move": "move a task",
+  "task.cancel": "cancel a task",
+  "task.unblock": "unblock a task",
+  "pr.merge": "merge",
+  "deploy.start": "start a deploy",
+  "intake.send": "file a note, a bug or a change",
+  "question.answer": "record an answer",
+  "question.defer": "hand a question back",
+  "questions.accept": "accept the recommended answers",
+  "hands.done": "mark something for your hands done",
+  "message.send": "message an agent",
+  "unit.act": "start, stop or restart a unit",
+  "sso.google": "set up Google sign-in",
+  "edge.direct": "turn Cloudflare's own doing on or off",
+  "prompt.enqueue": "file a prompt's task in the queue",
+  "triage.enqueue": "file a triage task in the queue",
+  "push.on": "turn notifications on for a device",
+  "push.off": "turn notifications off for a device",
+  "push.class": "choose which notifications a device gets",
+  "push.test": "send a test notification",
+  "device.approve": "link a phone",
+  "device.remove": "remove a phone",
+};
+/** What each section of the state is, in a few words. One with no
+ * words of its own is part of another (the count of questions). */
+const SECTION_SAID = {
+  board: "the board",
+  sessions: "sessions",
+  census: "what needs you",
+  asks: "your prompts",
+  questionCount: "",
+  questions: "questions",
+  prs: "pull requests",
+  priorities: "ranked issues",
+  agents: "agents",
+  services: "its units",
+  more: "the dashboard's pages",
+};
+
+/** A list in words: "a, b and c". */
+export const listed = (items) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
+
+/** One machine as the Machines screen says it: whether it is
+ * reporting, what it runs, and what only it reports and does. What the
+ * platform does itself (`platform`, null when nothing is in front of
+ * the machine) is not counted as the machine's. */
+export function machineSaid(machine, platform, now = Date.now()) {
+  const theirs = new Set(platform?.sections || []);
+  const done = new Set(platform?.actions || []);
+  const words = (names, said) => [...new Set(names.map((name) => (name in said ? said[name] : name)).filter(Boolean))];
+  const when = machine.seen === null ? "" : ago(new Date(machine.seen).toISOString(), now);
+  return {
+    name: machine.name,
+    reporting: machine.seen !== null && !machine.quiet,
+    state: machine.seen === null ? "It has never reported." : machine.quiet ? `Not reporting. Last heard from ${when}.` : `Reporting. Last heard from ${when}.`,
+    version: machine.version ? String(machine.version).slice(0, 7) : "",
+    reports: words((machine.sections || []).filter((name) => !theirs.has(name)), SECTION_SAID),
+    does: words((machine.actions || []).filter((kind) => !done.has(kind)), CAN_SAID),
+    // A console older than this screen does not say what it can do.
+    said: (machine.actions || []).length + (machine.sections || []).length > 0,
+  };
+}
+
+/** What the Machines screen shows that can change with nothing else
+ * changing: who is reporting, what the platform does itself, what
+ * waits. When a machine was last heard from changes with every report
+ * and is left out, except by the minute once it has gone quiet (the
+ * screen says for how long). The screen is drawn again when this is
+ * no longer what it was drawn from. */
+export function machinesMark(m, now = Date.now()) {
+  return JSON.stringify({
+    platform: m?.platform ? [m.platform.primary, m.platform.refused, m.platform.actions.length, m.platform.sections.length] : null,
+    machines: (m?.machines || []).map((x) => [
+      x.name,
+      x.quiet,
+      x.version,
+      (x.actions || []).length,
+      (x.sections || []).length,
+      x.quiet && x.seen ? Math.floor((now - x.seen) / 60_000) : 0,
+    ]),
+    held: (m?.held || []).map((item) => item.id),
+  });
+}
+let machinesDrawn = "";
+
+/** Machines: the platform's own part, each machine that reports and
+ * what only it can do, and what waits for one. */
+async function viewMachines() {
+  const m = await api("machines");
+  machinesDrawn = machinesMark(m);
+  const platform = m.platform;
+  const held = Array.isArray(m.held) ? m.held : [];
+  const takeBack = async (item, e) => {
+    const queueOnly = item.kind === "prompt.enqueue" || item.kind === "triage.enqueue";
+    const sure = await ask({
+      title: "Take this back?",
+      text: queueOnly
+        ? `${Outbox.sayOf(item.kind, item.args)}. The issue stays; without its task the fleet will not pick it up by itself.`
+        : `${Outbox.sayOf(item.kind, item.args)}. It will not be done. If a machine has already been handed it, it may still be.`,
+      okLabel: "Take back",
+      danger: true,
+    });
+    if (sure === null) return;
+    if (await act("held.drop", { id: item.id }, "Taken back", e.target)) draw();
+  };
+  const out = [
+    card(
+      h("h3", {}, "Cloudflare"),
+      h(
+        "p",
+        { class: "meta" },
+        platform === null
+          ? "Not in front right now: the app is coming straight from the machine below, which does everything."
+          : platform.primary
+            ? "Does the core itself, with a machine connected or not. A machine reports what only it has and does what only it can."
+            : "Serves the app and keeps what you send. A machine does the rest.",
+      ),
+      platform?.refused?.length ? h("p", { class: "why" }, `Turned away lately for ${listed(platform.refused.map((kind) => REFUSED_SAID[kind] || String(kind)))}: a machine does that for now.`) : null,
+      platform === null ? null : h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: () => go("more/away") }, "What it does")),
+    ),
+    h("h2", {}, `Machines (${m.machines.length})`),
+  ];
+  if (m.machines.length === 0) out.push(card(h("p", { class: "meta" }, "No machine has reported yet.")));
+  for (const machine of m.machines) {
+    const s = machineSaid(machine, platform);
+    out.push(
+      card(
+        h("div", { class: "row" }, chip(s.reporting ? "reporting" : "away", s.reporting ? "good" : "warn")),
+        h("h3", {}, s.name),
+        h("p", { class: "meta" }, [s.state, s.version ? `Running ${s.version}.` : ""].filter(Boolean).join(" ")),
+        !s.said
+          ? h("p", { class: "meta" }, "It has not said what it can do: its console is older than this screen.")
+          : platform === null
+            ? h("p", {}, "It reports everything and does everything: nothing is in front of it.")
+            : [
+                s.reports.length ? h("p", {}, h("b", {}, "Only it reports: "), `${listed(s.reports)}.`) : null,
+                s.does.length
+                  ? h("details", {}, h("summary", {}, `Only it can do ${s.does.length} thing${s.does.length === 1 ? "" : "s"}`), h("ul", { class: "plain" }, s.does.map((what) => h("li", {}, what))))
+                  : h("p", { class: "meta" }, "Nothing is left that only it can do."),
+              ],
+      ),
+    );
+  }
+  out.push(h("h2", {}, `Waiting for a machine (${held.length})`));
+  if (held.length === 0) out.push(card(h("p", { class: "meta" }, "Nothing is waiting.")));
+  for (const item of held) {
+    out.push(
+      card(
+        h("h3", {}, Outbox.sayOf(item.kind, item.args)),
+        h("p", { class: "meta" }, `${item.who} · ${ago(item.at)}`),
+        h("div", { class: "row end" }, h("button", { class: "small ghost", onclick: (e) => takeBack(item, e) }, "Take back")),
+      ),
+    );
+  }
+  out.push(
+    h("h2", {}, "More than one"),
+    card(
+      h(
+        "p",
+        { class: "meta" },
+        "One machine can be connected today: the one the tunnel leads to, whose key is the only one Cloudflare takes reports under. Connecting others, each under its own key and with what it can do, is not built yet.",
+      ),
+    ),
+  );
+  return out;
+}
+
+const GROUP_SAID = { platform: "The platform", fleet: "Fleet", data: "Data", id: "id", lab: "Lab" };
+
+/** One Worker's line on how it gets into service and how its last
+ * deploy went, and whether that needs looking at. */
+export function workerSaid(w, now = Date.now()) {
+  if (w.state !== "in service") return { text: "Not deployed.", tone: "" };
+  if (w.deploy !== "actions") return { text: "In service. Deployed by hand, from a machine.", tone: "warn" };
+  const run = w.run;
+  if (!run) return { text: "In service. Deployed from Actions; it has not run on main yet.", tone: "" };
+  if (run.error) return { text: `In service. Deployed from Actions; its last run could not be read (${run.error}).`, tone: "warn" };
+  const when = ago(run.at, now);
+  const commit = run.commit.slice(0, 7);
+  // Where a deploy goes in steps, a run that succeeded may have uploaded
+  // a version and left what is serving as it was: it is said as a run,
+  // and nothing is claimed about what is in service.
+  if (!w.runDeploys) {
+    const how = run.state === "success" ? "succeeded" : run.state === "failure" || run.state === "cancelled" || run.state === "timed_out" ? `did not finish (${run.state.replace("_", " ")})` : `is ${run.state.replace("_", " ")}`;
+    return {
+      text: `In service. The last run of its deploy workflow, ${when}, ${how} (${commit}). It deploys in steps, so that run may not be what is serving.`,
+      tone: run.state === "success" || how.startsWith("is ") ? "" : "warn",
+    };
+  }
+  if (run.state === "success") return { text: `In service. Last deploy ${when}, of ${commit}.`, tone: "good" };
+  if (run.state === "failure" || run.state === "cancelled" || run.state === "timed_out") {
+    return { text: `In service. Its last deploy, ${when}, did not finish (${run.state.replace("_", " ")}).`, tone: "warn" };
+  }
+  return { text: `In service. A deploy of ${commit} is ${run.state.replace("_", " ")}, started ${when}.`, tone: "" };
+}
+
+/** The counts the Platform screen opens with. */
+export function platformCounts(workers) {
+  const live = workers.filter((w) => w.state === "in service");
+  return {
+    all: workers.length,
+    live: live.length,
+    actions: live.filter((w) => w.deploy === "actions").length,
+    byHand: live.filter((w) => w.deploy !== "actions").length,
+    idle: workers.length - live.length,
+  };
+}
+
+/** Platform: every Worker the repository holds, as one list. Where each
+ * lives, what it does, whether it is in service, how it gets there and
+ * how its last deploy went; and what joining the one platform means
+ * for each that has not yet. */
+async function viewPlatform() {
+  const p = await api(freshly("platform"));
+  const workers = Array.isArray(p.workers) ? p.workers : [];
+  const n = platformCounts(workers);
+  const repo = `https://github.com/${me.repo || "developing-today/code"}`;
+  const out = [
+    card(
+      h("h3", {}, `${n.live} Worker${n.live === 1 ? "" : "s"} in service`),
+      h(
+        "p",
+        { class: "meta" },
+        `${n.actions} deployed from Actions, ${n.byHand} by hand from a machine. ${n.idle} more ${n.idle === 1 ? "is" : "are"} in the repository and not deployed.`,
+      ),
+      h(
+        "p",
+        { class: "meta" },
+        "One platform means each of these is deployed from Actions with a check and a way back, and is seen and managed from here. This list is the repository's own, and changes with a merge.",
+      ),
+      p.checked ? h("p", { class: "meta" }, `Which are in service was last checked from outside on ${p.checked}.`) : null,
+      p.malformed ? h("p", { class: "why" }, `${p.malformed} entr${p.malformed === 1 ? "y" : "ies"} in the list could not be read and ${p.malformed === 1 ? "is" : "are"} not shown.`) : null,
+    ),
+  ];
+  for (const group of Object.keys(GROUP_SAID)) {
+    const rows = workers.filter((w) => w.group === group);
+    if (rows.length === 0) continue;
+    out.push(h("h2", {}, `${GROUP_SAID[group]} (${rows.length})`));
+    for (const w of rows) {
+      const s = workerSaid(w);
+      out.push(
+        card(
+          h("div", { class: "row" }, chip(w.state, w.state === "in service" ? "good" : ""), w.state === "in service" ? chip(w.deploy === "actions" ? "from Actions" : "by hand", w.deploy === "actions" ? "" : "warn") : null),
+          h("h3", {}, w.title),
+          h("p", {}, w.does),
+          h("p", { class: s.tone === "warn" ? "why" : "meta" }, s.text),
+          h("p", { class: "meta" }, h("b", {}, "Next: "), w.next),
+          h(
+            "div",
+            { class: "row end" },
+            ext(`${repo}/tree/main/${w.path}`, "Its code"),
+            w.workflow ? ext(`${repo}/actions/workflows/${w.workflow}`, "Its deploys") : null,
+            w.run?.url ? ext(w.run.url, "Last run") : null,
+            w.name === "pm-console-edge" ? h("button", { class: "small ghost", onclick: () => go("more/releases") }, "Releases") : null,
+          ),
+        ),
+      );
+    }
+  }
+  return out;
+}
+
+/** What is kept on this device, in the groups the screen shows it in,
+ * newest first: `title`, the entries, and what can be done with each. */
+export function keptGroups(entries) {
+  const of = (state) => entries.filter((e) => e.state === state).sort((a, b) => b.at - a.at);
+  return [
+    { state: "waiting", title: "Waiting to send", can: ["drop"], entries: of("waiting") },
+    { state: "stale", title: "Kept back for you to look at", can: ["send", "drop"], entries: of("stale") },
+    { state: "failed", title: "Could not be done", can: ["again", "drop"], entries: of("failed") },
+    { state: "held", title: "With the platform, waiting for a machine", can: [], entries: of("held") },
+    { state: "done", title: "Sent", can: [], entries: of("done") },
+  ].filter((g) => g.entries.length > 0);
+}
+
+/** Everything the app's screens read, by the address each asks for it
+ * under: what "keep a copy of every screen" fetches. What is read only
+ * for one item when it is opened (a question's background, a pull
+ * request's checks, a service's log) is not in it. */
+export function everyRead(caps, edge) {
+  return [
+    "doc/core",
+    "doc/questions",
+    "doc/ops",
+    "me",
+    "roadmaps",
+    ...(caps || []).map((c) => `roadmap?area=${encodeURIComponent(c.id)}`),
+    "bugs",
+    "intake",
+    ...["blocked", "queued", "claimed", "parked"].map((status) => `queue?status=${status}&q=`),
+    "releases",
+    "platform",
+    "messages?limit=15",
+    "push",
+    "devices",
+    "machines",
+    "signin",
+    ...(edge ? ["android"] : []),
+  ];
+}
+
+/** On this device: what is kept here to send, what became of what was
+ * sent, and what the device keeps to show with no connection. */
+async function viewDevice() {
+  const entries = await readKept();
+  const n = Outbox ? Outbox.summary(entries) : { waiting: 0 };
+  const after = async (work) => {
+    await work();
+    await readKept();
+    draw();
+  };
+  const row = (group) => (e) =>
+    card(
+      h("h3", {}, e.said),
+      h(
+        "p",
+        { class: group.state === "failed" || group.state === "stale" ? "why" : "meta" },
+        [group.state === "done" ? `sent ${ago(new Date(e.endedAt ?? e.at).toISOString())}` : `${ago(new Date(e.at).toISOString())}`, e.note].filter(Boolean).join(" · "),
+      ),
+      group.can.length
+        ? h(
+            "div",
+            { class: "row end" },
+            group.can.includes("drop")
+              ? h("button", { class: "small ghost", onclick: () => after(() => outbox.remove(e.id)) }, group.state === "waiting" ? "Do not send" : "Discard")
+              : null,
+            group.can.includes("send")
+              ? h(
+                  "button",
+                  {
+                    class: "small",
+                    // Looked at again, and still wanted: it goes as it is.
+                    onclick: () => after(async () => {
+                      await outbox.put({ ...e, state: "waiting", sure: true, note: "" });
+                      await flushOutbox();
+                    }),
+                  },
+                  "Send it now",
+                )
+              : null,
+            group.can.includes("again")
+              ? h(
+                  "button",
+                  {
+                    class: "small",
+                    // Under a new name: the platform answers the old one as it did.
+                    onclick: () => after(async () => {
+                      await outbox.remove(e.id);
+                      await outbox.put({ ...Outbox.make(e.kind, e.args, Date.now(), e.said), sure: true });
+                      await flushOutbox();
+                    }),
+                  },
+                  "Try again",
+                )
+              : null,
+          )
+        : null,
+    );
+  const groups = keptGroups(entries);
+  const forget = async (e) => {
+    e.target.disabled = true;
+    const worker = (await navigator.serviceWorker?.ready.catch(() => null))?.active;
+    e.target.disabled = false;
+    if (!worker) return toast("Nothing is kept: this browser has not set the app up to work offline.", true);
+    worker.postMessage({ type: "forget" });
+    toast("Forgotten. It keeps again from the next thing you look at.");
+  };
+  // Before a flight: read every screen once, so the device has a copy
+  // of each. One at a time, and unhurried: some of it is searched for.
+  const keepAll = async (e) => {
+    const button = e.target;
+    button.disabled = true;
+    const caps = await api("roadmaps").catch(() => []);
+    const reads = everyRead(caps, me.edge);
+    let failed = 0;
+    for (const [i, path] of reads.entries()) {
+      button.textContent = `${i + 1} of ${reads.length}…`;
+      await api(path).catch(() => failed++);
+      if (offline) break;
+      await new Promise((resolve) => setTimeout(resolve, path.startsWith("roadmap?") ? 1200 : 150));
+    }
+    await fetch("/console/health", { cache: "no-store" }).catch(() => failed++);
+    button.textContent = "Keep a copy of every screen now";
+    button.disabled = false;
+    toast(
+      offline
+        ? "There is no connection: nothing new could be read."
+        : failed
+          ? `Kept what could be read; ${failed} screen${failed === 1 ? "" : "s"} could not.`
+          : `This device has a copy of every screen, as of now.`,
+      offline || failed > 0,
+    );
+  };
+  return [
+    card(
+      h("h3", {}, signedOut ? "Signed out" : offline ? "No connection" : "Connected"),
+      h(
+        "p",
+        { class: "meta" },
+        signedOut
+          ? "The sign-in has run out. What you see is what this device last saw; what you do is kept here until you sign in again."
+          : offline
+            ? "What you see is what this device last saw. What you do is kept here and sent by itself when the connection is back, whether or not the app is open."
+            : "What you do is sent at once. With no connection it is kept here, and sent by itself when the connection is back.",
+      ),
+      !outbox ? h("p", { class: "why" }, "This browser will not let the app keep anything: with no connection, what you do here cannot be kept.") : null,
+      signedOut
+        ? h("div", { class: "row end" }, h("button", { onclick: () => location.reload() }, "Sign in again"))
+        : n.waiting > 0 && !offline
+          ? h("div", { class: "row end" }, h("button", { onclick: (e) => ((e.target.disabled = true), after(flushOutbox)) }, "Send now"))
+          : null,
+    ),
+    ...groups.flatMap((g) => [h("h2", {}, `${g.title} (${g.entries.length})`), ...g.entries.map(row(g))]),
+    groups.length === 0 ? empty("Nothing is kept here to send.") : null,
+    h("h2", {}, "What this device keeps"),
+    card(
+      h(
+        "p",
+        { class: "meta" },
+        "The app's own files and the last answer to everything it showed, so that it opens and reads with no connection; and what you did that has not been sent. A merge, a deploy, a cancel, an unblock or a service action is sent by itself only within ten minutes of when you did it: after that it waits here for you to look again.",
+      ),
+      h("p", { class: "meta" }, "What sets the connection up or carries a secret (notifications, phones, sign-in, the Cloudflare switch) is never kept: it needs a connection."),
+      h(
+        "div",
+        { class: "row end" },
+        h("button", { class: "ghost", onclick: forget }, "Forget what it last saw"),
+        offline || signedOut ? null : h("button", { onclick: keepAll }, "Keep a copy of every screen now"),
+      ),
     ),
   ];
 }
@@ -2035,7 +2806,8 @@ function viewPrs() {
                 class: "small",
                 onclick: async (e) => {
                   const yes = await ask({ title: `Merge #${p.number}?`, text: p.title, okLabel: "Merge" });
-                  if (yes !== null) act("pr.merge", { pr: p.number }, `#${p.number} merged`, e.target);
+                  // As it stood when this list was read: not what was pushed since.
+                  if (yes !== null) act("pr.merge", { pr: p.number, head: p.head }, `#${p.number} merged`, e.target);
                 },
               },
               "Merge",
@@ -2046,6 +2818,7 @@ function viewPrs() {
   const ready = prs.filter((p) => !p.draft);
   const drafts = prs.filter((p) => p.draft);
   return [
+    ...notices(docs.ops, ["prs"]),
     h("h2", {}, `Ready (${ready.length})`),
     ...(ready.length ? ready.map(row) : [empty("No pull request is ready.")]),
     drafts.length ? h("h2", {}, `Drafts (${drafts.length})`) : null,
@@ -2057,6 +2830,7 @@ function viewIssues() {
   const list = docs.ops?.priorities;
   if (!list) return [empty("Loading…")];
   return [
+    ...notices(docs.ops, ["priorities"]),
     list.truncated ? empty("There are more ranked issues than this list reads. The most urgent may not all be here.") : null,
     ...(list.issues.length ? list.issues.map(issueCard) : [empty("No ranked issues.")]),
   ];
@@ -2065,7 +2839,7 @@ function viewIssues() {
 async function viewAgents() {
   const agents = docs.ops?.agents || [];
   const to = h("select", { "aria-label": "To" }, h("option", { value: "all" }, "Everyone"), agents.map((a) => h("option", { value: `agent:${a.name}` }, a.name)));
-  const text = h("textarea", { rows: 3, placeholder: "A message, or a command to act on", "aria-label": "Message" });
+  const text = typed("message", { rows: 3, placeholder: "A message, or a command to act on", "aria-label": "Message" });
   const command = h("input", { type: "checkbox", id: "cmd" });
   const compose = card(
     to,
@@ -2078,7 +2852,9 @@ async function viewAgents() {
         "button",
         {
           onclick: (e) =>
-            text.value.trim() ? act("message.send", { to: [to.value], text: text.value, command: command.checked }, "Sent", e.target) : toast("Write a message first", true),
+            text.value.trim()
+              ? sendTyped("message", text, (words) => act("message.send", { to: [to.value], text: words, command: command.checked }, "Sent", e.target))
+              : toast("Write a message first", true),
         },
         "Send",
       ),
@@ -2095,6 +2871,7 @@ async function viewAgents() {
     unread = error.message;
   }
   return [
+    ...notices(docs.ops, ["agents"]),
     compose,
     h("h2", {}, `Agents (${agents.length})`),
     ...agents.map((a) =>
@@ -2157,7 +2934,13 @@ function viewServices() {
   };
   const failed = units.filter((u) => u.active === "failed");
   const rest = units.filter((u) => u.active !== "failed");
-  return [failed.length ? h("h2", {}, `Failed (${failed.length})`) : null, ...failed.map(row), h("h2", {}, `All units (${units.length})`), ...rest.map(row)];
+  return [
+    ...notices(docs.ops, ["services"]),
+    failed.length ? h("h2", {}, `Failed (${failed.length})`) : null,
+    ...failed.map(row),
+    h("h2", {}, `All units (${units.length})`),
+    ...rest.map(row),
+  ];
 }
 
 // ---- shell -------------------------------------------------------------
@@ -2184,6 +2967,9 @@ const VIEWS = {
   "more/phone": ["Phones", viewPhone],
   "more/signin": ["Sign-in", viewSignin],
   "more/away": ["Cloudflare", viewAway],
+  "more/machines": ["Machines", viewMachines],
+  "more/platform": ["Platform", viewPlatform],
+  "more/device": ["On this device", viewDevice],
   "more/releases": ["Releases", viewReleases],
   "more/roadmap": ["Roadmap", viewRoadmap],
   "more/bugs": ["Bugs", viewBugs],
@@ -2243,15 +3029,59 @@ function drawTabs() {
   );
 }
 
+/** What the corner of the header says: live, how old, offline, or signed out. */
+export function freshSaid(state, now = Date.now()) {
+  const age = state.asOf ? (now - state.asOf) / 1000 : null;
+  const since = age === null ? "" : ago(new Date(state.asOf).toISOString(), now);
+  if (state.signedOut) return { text: "signed out", tone: "down" };
+  if (state.offline) return { text: since ? `offline · ${since}` : "offline", tone: "stale" };
+  if (age === null) return { text: "", tone: "" };
+  return age < 45 ? { text: "live", tone: "" } : { text: `as of ${since}`, tone: age > 180 ? "stale" : "" };
+}
+
 function drawFresh() {
-  const t = asOf.core;
-  const age = t ? (Date.now() - t) / 1000 : null;
-  freshEl.className = `fresh${signedOut ? " down" : age !== null && age > 180 ? " stale" : ""}`;
-  freshEl.textContent = signedOut ? "signed out" : age === null ? "" : age < 45 ? "live" : `as of ${ago(new Date(t).toISOString())}`;
+  const said = freshSaid({ asOf: asOf.core, offline, signedOut });
+  freshEl.className = `fresh${said.tone ? ` ${said.tone}` : ""}`;
+  freshEl.textContent = said.text;
+}
+
+/** The line under the header: that there is no connection or no
+ * sign-in, and what is kept on this device to send. Nothing to say,
+ * nothing shown. `to` is where a tap goes. */
+export function keptSaid(state) {
+  const n = state.summary || {};
+  const things = (count) => `${count} thing${count === 1 ? "" : "s"}`;
+  const parts = [];
+  if (state.signedOut) parts.push("Signed out: tap to sign in again");
+  else if (state.offline) parts.push("No connection: this is what the device last saw");
+  if (n.waiting) parts.push(`${things(n.waiting)} kept to send`);
+  if (n.stale) parts.push(`${things(n.stale)} kept back for you to look at`);
+  if (n.failed) parts.push(`${things(n.failed)} could not be done`);
+  if (parts.length === 0) return null;
+  const urgent = Boolean(state.signedOut || n.stale || n.failed);
+  return { text: `${parts.join(" · ")}.`, tone: urgent ? "warn" : "", to: state.signedOut && !n.stale && !n.failed ? "reload" : "more/device" };
+}
+
+function drawKept() {
+  if (!keptEl) return;
+  const said = keptSaid({ offline, signedOut, summary: Outbox ? Outbox.summary(kept) : {} });
+  keptEl.hidden = said === null;
+  if (!said) return;
+  keptEl.className = `kept${said.tone ? ` ${said.tone}` : ""}`;
+  keptEl.textContent = said.text;
+  keptEl.onclick = () => (said.to === "reload" ? location.reload() : go(said.to));
 }
 
 /** How many quick looks have been taken since the state was last fresh. */
 let catchUp = 0;
+/** Why the state could not be read, while there is none to show. */
+let loadError = "";
+const couldNotLoad = (why) =>
+  card(
+    h("h3", {}, "Could not load"),
+    h("p", { class: "why" }, why),
+    h("div", { class: "row end" }, h("button", { onclick: () => (signedOut ? location.reload() : refresh(true)) }, signedOut ? "Sign in again" : "Try again")),
+  );
 
 /** Draw the current section from what is already loaded. Only the latest
  * call may draw, so a slow section never lands on top of a newer one. */
@@ -2264,7 +3094,8 @@ async function draw() {
   $("back").hidden = !name.includes("/");
   drawTabs();
   drawFresh();
-  if (!docs.core) return view.replaceChildren(empty("Loading…"));
+  // Nothing to draw from yet: say so, or say why there will not be.
+  if (!docs.core) return view.replaceChildren(loadError ? couldNotLoad(loadError) : empty("Loading…"));
   if (extra && !docs[extra]) loadDoc(extra).then(() => seq === drawSeq && draw()).catch(() => {});
   // Moving to another screen: what the last one showed must not sit
   // under this one's name while this one is fetched. A screen that has
@@ -2305,10 +3136,25 @@ async function refresh(force) {
   let changed = false;
   try {
     changed = await loadDoc("core");
+    loadError = "";
     if (extra) changed = (await loadDoc(extra)) || changed;
+    // The Machines screen is drawn from an answer of its own, which can
+    // change with nothing else changing (a machine goes quiet, or comes
+    // back as it was). While that screen is open it is asked again, and
+    // the screen is drawn again when it says something else.
+    if (name === "more/machines") {
+      const now = await api("machines").catch(() => null);
+      if (now && machinesMark(now) !== machinesDrawn) changed = true;
+    }
     // An old copy means the laptop has just been told someone is
     // looking: look again shortly, a few times, instead of waiting out
     // the full interval.
+    // What the platform took for a machine: how it came out is on its
+    // record. And with an answer from the network, what waits is sent.
+    if (Outbox && outbox && kept.some((e) => e.state === "held")) {
+      Outbox.settle(outbox, docs.core?.acts).then((done) => done.length && readKept());
+    }
+    if (!offline && kept.some((e) => e.state === "waiting")) flushOutbox();
     const old = asOf.core && Date.now() - asOf.core > 60_000;
     if (!old) catchUp = 0;
     else if (catchUp < 4) {
@@ -2316,11 +3162,17 @@ async function refresh(force) {
       setTimeout(() => document.visibilityState === "visible" && refresh(false), 4_000);
     }
   } catch (error) {
-    if (!docs.core) view.replaceChildren(card(h("h3", {}, "Could not load"), h("p", { class: "why" }, error.message), h("div", { class: "row end" }, h("button", { onclick: () => location.reload() }, "Reload"))));
+    // With nothing to show, this is what the screen says until a read
+    // works (drawing again must not put "Loading" back over it).
+    if (!docs.core) loadError = error.message;
   }
-  // An open dialog or a half-typed answer is not redrawn from under the reader.
+  drawKept();
+  // An open dialog or a half-typed answer is not redrawn from under the
+  // reader, unless it is the reader who asked (`force` is true).
+  // "idle" asks for the screen to be drawn again whether or not what
+  // it shows changed, but only when nobody is in the middle of something.
   const busy = $("ask").open || pending.size > 0 || (document.activeElement && ["TEXTAREA", "INPUT", "SELECT"].includes(document.activeElement.tagName));
-  if (force || (changed && !busy)) draw();
+  if (force === true || ((changed || force === "idle") && !busy)) draw();
   else {
     drawTabs();
     drawFresh();
@@ -2353,8 +3205,43 @@ if (typeof document !== "undefined" && view) {
       me = m;
     })
     .catch(() => {});
-  // The worker shows notifications and opens the right screen when one is tapped.
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/console/sw.js", { scope: "/console/" }).catch(() => {});
+  // The worker shows notifications, keeps the app and what it last saw
+  // for when there is no connection, and sends what was kept meanwhile.
+  if ("serviceWorker" in navigator) {
+    // The worker and the file it loads are always asked of the network,
+    // so a fix to either is not held back by a copy the browser kept.
+    navigator.serviceWorker.register("/console/sw.js", { scope: "/console/", updateViaCache: "none" }).catch(() => {});
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      // The worker sent what was waiting (it was woken for it, and got
+      // there before this page did): say what became of it, as this
+      // page would have.
+      if (event.data?.type !== "outbox") return;
+      const changed = Array.isArray(event.data.changed) ? event.data.changed : [];
+      const said = flushSaid(changed);
+      if (said) toast(said, changed.some((e) => e.state === "failed"));
+      readKept().then(() => changed.length && refresh("idle"));
+    });
+    // The worker has just taken this page over. What the page read
+    // before then went past it and was not kept: read it again, whole,
+    // so that the device has a copy from the first visit on.
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      for (const name of Object.keys(etags)) delete etags[name];
+      refresh("idle");
+      for (const name of ["questions", "ops"]) loadDoc(name).catch(() => {});
+    });
+  }
+  // What the owner did is kept in the browser's own database; where
+  // there is none, for as long as the page lives.
+  if (Outbox) {
+    try {
+      outbox = typeof indexedDB === "undefined" ? null : Outbox.idbStore();
+    } catch {
+      outbox = null;
+    }
+    readKept().then(flushOutbox);
+    addEventListener("online", () => refresh(false).then(flushOutbox));
+    addEventListener("offline", () => refresh(false));
+  }
   // And a device that has notifications on keeps getting them when the
   // sender changed or lost track of it.
   keepSubscribed().catch(() => {});

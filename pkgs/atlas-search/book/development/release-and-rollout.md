@@ -35,6 +35,7 @@ day is [Running the service and the Worker](../operations/services.md).
    crates, not the dependency tree; the build's check phase runs the
    test suite and its install check runs the smoke script, so a green
    build is already a tested artefact.
+
 2. **Deploy through home configuration.** The service package is
    `pkgs.callPackage ../../pkgs/atlas-search { … }` in
    `home/common/default.nix`, with the toolchain read from
@@ -64,7 +65,7 @@ day is [Running the service and the Worker](../operations/services.md).
    serve path is debugging the rollback, not the live service.
 5. **Verify in place, by surface.** `GET /health` on the loopback port
    answers without auth — `{status: "ok", embedder_state,
-   queue_depth, …}` — and the embedder state must reach ready; then one
+queue_depth, …}` — and the embedder state must reach ready; then one
    real search through the surface the change touched (the CLI, the
    service, or `fleet search`), checked against what the change was
    supposed to do. A version string alone is not verification.
@@ -133,9 +134,9 @@ them on. The standing examples:
   the `Install` section arrived at the step-6 cutover. A new service
   role follows the same shape — declared, inert, enabled by a separate
   deliberate change.
-- **Experimental search paths are off by default and hidden**: the
-  shard fan-out behind the hidden `--shards` flag is the CLI-side
-  example. Hidden and off is the correct posture for a path whose
+- **Experimental search paths are off by default**: the shard
+  fan-out behind the EXPERIMENTAL `--shards` flag is the CLI-side
+  example. Off by default is the correct posture for a path whose
   evidence is still being gathered.
 
 The rule for a new flag: name it, state its default as a literal value

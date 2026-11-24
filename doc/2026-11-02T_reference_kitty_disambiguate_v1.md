@@ -1,16 +1,24 @@
 # kitty-disambiguate-v1 profile reference
 
-- Status: **implemented (Slice A)** in `pkgs/id/examples/roc-world/Key.roc`
-  (`Key.parse_events`, `Key.to_legacy`); no activation.
+- Status: **implemented, slices A–F**. The decoder is
+  `pkgs/id/examples/roc-world/Key.roc` (`Key.parse_events`, `Key.to_legacy`);
+  the bounded stream assembler is `pkgs/id/crates/id-worlds/src/input_framing.rs`;
+  the browser encoder is `richTerminalBytesForKey` in
+  `pkgs/id/web/src/world-keyboard.ts`, selected per connection by
+  `?keyboard=kitty` in `world.ts`; SSH negotiation (push/verify/pop plus
+  assembler framing on the raw path) is `world_ssh::kitty`, behind the
+  server opt-in `SshServeOptions::kitty_keyboard` (serve command:
+  `ID_WORLD_SSH_KITTY_KEYBOARD=1`). Defaults are legacy everywhere.
 - Upstream specification:
   [Comprehensive keyboard handling in terminals](https://sw.kovidgoyal.net/kitty/keyboard-protocol/),
   verified by direct fetch on **2026-11-02** (sections Quickstart, Key codes,
   Modifiers, Event types, Progressive enhancement, Disambiguate escape codes,
   Legacy key event encoding, Functional key definitions).
-- Design record: `doc/2026-11-01_design_id787.md` §§4.1–4.2, 5–6 (Slice A).
-  Activation (negotiation, assembler, browser encoder) is slices B–F and is
-  **gated on F13.4 detection (#786, still open)**. This profile must only be
-  selected after an explicit opt-in; the push/pop owner is slice E.
+- Design record: `doc/2026-11-01_design_id787.md` §§4.1–4.2, 5–6.
+  Activation waited for F13.4 detection: the SSH adapter's startup probe
+  (`world_terminal.rs`) records kitty keyboard support in the connection
+  profile, and negotiation starts only from that evidence, only after an
+  explicit opt-in; the push/pop owner is the SSH session (slice E).
 
 ## Wire summary (verified against the upstream spec)
 

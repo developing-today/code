@@ -4,7 +4,7 @@ Source: `pkgs/atlas-search/crates/atlas-search/src/main.rs`, `pkgs/atlas-search/
 
 `atlas-search` is the Atlas access layer: hybrid search over the corpus. This chapter covers its two query verbs, `search` and `get-chunk`. The remaining verbs are in [atlas-search: serve, init, fetch-model, traces and feedback](atlas-search-admin.md).
 
-Standalone is the default and is complete: the query is embedded in-process and the tool talks to Turso (the hosted corpus database) or a local file directly. `--via-service` *prefers* a running service and falls back to standalone **loudly** on any service failure — a warning on stderr plus a note spliced into the result envelope's `notes`. Routing details, including the requests that disqualify the service route without any help text saying so, are under "Via-service vs standalone" below.
+Standalone is the default and is complete: the query is embedded in-process and the tool talks to Turso (the hosted corpus database) or a local file directly. `--via-service` _prefers_ a running service and falls back to standalone **loudly** on any service failure — a warning on stderr plus a note spliced into the result envelope's `notes`. Routing details, including the requests that disqualify the service route (the `--via-service` help states them too), are under "Via-service vs standalone" below.
 
 ## Invocation
 
@@ -23,11 +23,11 @@ There are no global flags before the subcommand on these verbs; backend and mode
 
 `--mode` selects which retrieval branches run:
 
-| Mode | Meaning |
-|---|---|
+| Mode               | Meaning                                                                                                          |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------- |
 | `hybrid` (default) | Full-text (FTS) and vector branches both run; their candidate lists are fused with reciprocal-rank fusion (RRF). |
-| `fts` | Full-text branch only. Never loads the embedding model. |
-| `vector` | Vector branch only. |
+| `fts`              | Full-text branch only. Never loads the embedding model.                                                          |
+| `vector`           | Vector branch only.                                                                                              |
 
 ### Filters
 
@@ -35,7 +35,7 @@ There are no global flags before the subcommand on these verbs; backend and mode
 
 ### The sensitivity request: ceiling and context
 
-Sensitivity is a caller ceiling, not a property you search *for*. The ladder is, in order:
+Sensitivity is a caller ceiling, not a property you search _for_. The ladder is, in order:
 
 ```
 shareable < personal < local-only < secret-bearing
@@ -45,12 +45,12 @@ shareable < personal < local-only < secret-bearing
 
 `--context` names the disclosure context of the destination surface (the surface the results will be shown on). Each context has its own ceiling:
 
-| Context | Context ceiling | Default for |
-|---|---|---|
-| `fleet-internal` | `local-only` | `search` |
-| `hosted-per-user` | `personal` | — |
-| `public-surface` | `shareable` | — |
-| `local-owner` | `secret-bearing` | `get-chunk` |
+| Context           | Context ceiling  | Default for |
+| ----------------- | ---------------- | ----------- |
+| `fleet-internal`  | `local-only`     | `search`    |
+| `hosted-per-user` | `personal`       | —           |
+| `public-surface`  | `shareable`      | —           |
+| `local-owner`     | `secret-bearing` | `get-chunk` |
 
 The effective ceiling is the **minimum** of the `--max-sensitivity` grant and the context ceiling; neither widens the other. Content marked `excluded_personal_life` is ineligible in every context. An unknown `--context` value is a usage error, exit 2:
 
@@ -66,77 +66,77 @@ All 44 flags of `search` are listed below, in three groups: the verb's own flags
 
 ### Search flags
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--k` | integer | `10` | Final results. Validated: at least 1, no CLI upper bound. |
-| `--pool` | integer | `100` | Per-branch candidates. Validated: 1..=400. |
-| `--mode` | `hybrid\|fts\|vector` | `hybrid` | Which retrieval branches run (see Modes). |
-| `--kind` | CSV string | — (none) | Classification kind filter. |
-| `--topic` | CSV string | — (none) | Topic filter. |
-| `--project` | CSV string | — (none) | Project filter. |
-| `--client` | CSV string | — (none) | Client filter. |
-| `--since` | `YYYY-MM-DD` | — (none) | Lower bound on `sessions.created_at`, inclusive. |
-| `--until` | `YYYY-MM-DD` | — (none) | Upper bound on `sessions.created_at`, inclusive. |
-| `--max-sensitivity` | ladder name | `personal` | Sensitivity ceiling: `shareable<personal<local-only<secret-bearing`; `secret-bearing` must be spelled out. |
-| `--context` | context name | `fleet-internal` | Disclosure context of the destination surface; its ceiling intersects `--max-sensitivity`. |
-| `--group-by-session` | switch | off | Roll chunk hits up to sessions (score = best chunk, plus hit count). |
-| `--expand` | integer | `0` | Include N neighbouring chunks (same message) around each hit. Validated: 0..=100. |
-| `--parameters_version` | integer | `1` | Version of the shared query-parameter contract (currently 1). Validated: 1..=1. Note the underscore spelling. |
-| `--shard_top_k` | integer | `100` | Candidates scanned per shard. Validated: 1..=400. Underscore spelling. |
-| `--global_top_k` | integer | `100` | Candidates retained after shard fan-in. Validated: 1..=400. Underscore spelling. |
-| `--fts_weight` | float | `1` | Reciprocal-rank-fusion multiplier for FTS. Must be finite and ≥ 0; the two weights must not both be zero. Underscore spelling. |
-| `--vector_weight` | float | `1` | Reciprocal-rank-fusion multiplier for vectors. Same validation as `--fts_weight`. Underscore spelling. |
-| `--jaccard_depth` | integer | `0` | Candidate depth for Jaccard rescoring over the fused union (0 = off). Validated: 0..=4000. Underscore spelling. |
-| `--jaccard_threshold` | float | `0` | Near-exact Jaccard threshold in (0, 1]; 0 means the design default 0.60 when rescoring is on. Validated: finite, in [0, 1]. Underscore spelling. |
-| `--rrf_k` | integer | `10` | Reciprocal-rank-fusion constant. Validated: 1..=10000. Underscore spelling. |
-| `--planner_enabled` | switch | off | Enable the query planner/rewriter. **Not implemented**: setting it is a validation error. Underscore spelling. |
-| `--spell_enabled` | switch | off | Enable spell correction. **Not implemented**: setting it is a validation error. Underscore spelling. |
-| `--query_class_hint` | string | — (none) | Query-class hint. **Not implemented**: setting any value is a validation error. Underscore spelling. |
-| `--variant` | `raw\|rewritten\|both` | `raw` | Query variant: `raw` is supported; `rewritten` or `both` is a validation error. |
-| `--raw` | switch | off | Use the verbatim query with planner/spell and expansion disabled. Cannot be combined with a non-zero `--expand`. |
-| `--with-message` | switch | off | Include the parent message text (truncated at 50000 chars). |
-| `--no-cache` | switch | off | Bypass service cache reads; the fresh result still lands in the cache (a refresh). Service mode only: the local path has no result cache. |
-| `--wait` | switch | off (the CLI implies wait) | Block for the full fused result; the one-shot CLI implies `--wait`, this spells it out. Conflicts with `--no-wait`. |
-| `--no-wait` | switch | off | Do not block: print the service job handle plus an empty first page and return. |
-| `--hydrate` | integer | `0` | Hydrate the top N results to full chunk + message content from the content store. This is **not** `--expand`, which keeps its neighbour-chunks meaning. Validated: at most 1000. |
-| `--raw-rows` | optional value: `ungrouped\|branches` | — (off) | Ungrouped output rows: bare `--raw-rows` means `ungrouped` (flat fused rows); `--raw-rows=branches` means pre-fusion branch rows. Distinct from `--raw` (verbatim query), which is not repurposed. |
-| `--text` | switch | off | Human-readable output instead of JSON. |
-| `--shards` | string | — (off) | **Hidden in help** (`hide = true`; it does not appear in `--help` output). Environment variable: `ATLAS_SHARDS`. EXPERIMENTAL, off by default: serve the vector branch from the Atlas core shard fan-out — `dir:&lt;path&gt;` for local shard files, or `turso` / `turso:&lt;org&gt;` for hosted shards. FTS, details and `--expand` stay on the backend. Skips `--via-service` entirely. |
+| Flag                   | Argument                              | Default                    | Meaning                                                                                                                                                                                                                                                                                                                                  |
+| ---------------------- | ------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--k`                  | integer                               | `10`                       | Final results. Validated: at least 1, no CLI upper bound.                                                                                                                                                                                                                                                                                |
+| `--pool`               | integer                               | `100`                      | Per-branch candidates. Validated: 1..=400.                                                                                                                                                                                                                                                                                               |
+| `--mode`               | `hybrid\|fts\|vector`                 | `hybrid`                   | Which retrieval branches run (see Modes).                                                                                                                                                                                                                                                                                                |
+| `--kind`               | CSV string                            | — (none)                   | Classification kind filter.                                                                                                                                                                                                                                                                                                              |
+| `--topic`              | CSV string                            | — (none)                   | Topic filter.                                                                                                                                                                                                                                                                                                                            |
+| `--project`            | CSV string                            | — (none)                   | Project filter.                                                                                                                                                                                                                                                                                                                          |
+| `--client`             | CSV string                            | — (none)                   | Client filter.                                                                                                                                                                                                                                                                                                                           |
+| `--since`              | `YYYY-MM-DD`                          | — (none)                   | Lower bound on `sessions.created_at`, inclusive.                                                                                                                                                                                                                                                                                         |
+| `--until`              | `YYYY-MM-DD`                          | — (none)                   | Upper bound on `sessions.created_at`, inclusive.                                                                                                                                                                                                                                                                                         |
+| `--max-sensitivity`    | ladder name                           | `personal`                 | Sensitivity ceiling: `shareable<personal<local-only<secret-bearing`; `secret-bearing` must be spelled out.                                                                                                                                                                                                                               |
+| `--context`            | context name                          | `fleet-internal`           | Disclosure context of the destination surface; its ceiling intersects `--max-sensitivity`.                                                                                                                                                                                                                                               |
+| `--group-by-session`   | switch                                | off                        | Roll chunk hits up to sessions (score = best chunk, plus hit count).                                                                                                                                                                                                                                                                     |
+| `--expand`             | integer                               | `0`                        | Include N neighbouring chunks (same message) around each hit. Validated: 0..=100.                                                                                                                                                                                                                                                        |
+| `--parameters_version` | integer                               | `1`                        | Version of the shared query-parameter contract (currently 1). Validated: 1..=1. Note the underscore spelling.                                                                                                                                                                                                                            |
+| `--shard_top_k`        | integer                               | `100`                      | Candidates scanned per shard. Validated: 1..=400. Underscore spelling.                                                                                                                                                                                                                                                                   |
+| `--global_top_k`       | integer                               | `100`                      | Candidates retained after shard fan-in. Validated: 1..=400. Underscore spelling.                                                                                                                                                                                                                                                         |
+| `--fts_weight`         | float                                 | `1`                        | Reciprocal-rank-fusion multiplier for FTS. Must be finite and ≥ 0; the two weights must not both be zero. Underscore spelling.                                                                                                                                                                                                           |
+| `--vector_weight`      | float                                 | `1`                        | Reciprocal-rank-fusion multiplier for vectors. Same validation as `--fts_weight`. Underscore spelling.                                                                                                                                                                                                                                   |
+| `--jaccard_depth`      | integer                               | `0`                        | Candidate depth for Jaccard rescoring over the fused union (0 = off). Validated: 0..=4000. Underscore spelling.                                                                                                                                                                                                                          |
+| `--jaccard_threshold`  | float                                 | `0`                        | Near-exact Jaccard threshold in (0, 1]; 0 means the design default 0.60 when rescoring is on. Validated: finite, in [0, 1]. Underscore spelling.                                                                                                                                                                                         |
+| `--rrf_k`              | integer                               | `10`                       | Reciprocal-rank-fusion constant. Validated: 1..=10000. Underscore spelling.                                                                                                                                                                                                                                                              |
+| `--planner_enabled`    | switch                                | off                        | Enable the query planner/rewriter. **Not implemented**: setting it is a validation error. Underscore spelling.                                                                                                                                                                                                                           |
+| `--spell_enabled`      | switch                                | off                        | Enable spell correction. **Not implemented**: setting it is a validation error. Underscore spelling.                                                                                                                                                                                                                                     |
+| `--query_class_hint`   | string                                | — (none)                   | Query-class hint. **Not implemented**: setting any value is a validation error. Underscore spelling.                                                                                                                                                                                                                                     |
+| `--variant`            | `raw\|rewritten\|both`                | `raw`                      | Query variant: `raw` is supported; `rewritten` or `both` is a validation error.                                                                                                                                                                                                                                                          |
+| `--raw`                | switch                                | off                        | Use the verbatim query with planner/spell and expansion disabled. Cannot be combined with a non-zero `--expand`.                                                                                                                                                                                                                         |
+| `--with-message`       | switch                                | off                        | Include the parent message text (truncated at 50000 chars).                                                                                                                                                                                                                                                                              |
+| `--no-cache`           | switch                                | off                        | Bypass service cache reads; the fresh result still lands in the cache (a refresh). Service mode only: the local path has no result cache.                                                                                                                                                                                                |
+| `--wait`               | switch                                | off (the CLI implies wait) | Block for the full fused result; the one-shot CLI implies `--wait`, this spells it out. Conflicts with `--no-wait`.                                                                                                                                                                                                                      |
+| `--no-wait`            | switch                                | off                        | Do not block: print the service job handle plus an empty first page and return.                                                                                                                                                                                                                                                          |
+| `--hydrate`            | integer                               | `0`                        | Hydrate the top N results to full chunk + message content from the content store. This is **not** `--expand`, which keeps its neighbour-chunks meaning. Validated: at most 1000.                                                                                                                                                         |
+| `--raw-rows`           | optional value: `ungrouped\|branches` | — (off)                    | Ungrouped output rows: bare `--raw-rows` means `ungrouped` (flat fused rows); `--raw-rows=branches` means pre-fusion branch rows. Distinct from `--raw` (verbatim query), which is not repurposed.                                                                                                                                       |
+| `--text`               | switch                                | off                        | Human-readable output instead of JSON.                                                                                                                                                                                                                                                                                                   |
+| `--shards`             | string                                | — (off)                    | Shown in `--help` output. Environment variable: `ATLAS_SHARDS`. EXPERIMENTAL, off by default: serve the vector branch from the Atlas core shard fan-out — `dir:&lt;path&gt;` for local shard files, or `turso` / `turso:&lt;org&gt;` for hosted shards. FTS, details and `--expand` stay on the backend. Skips `--via-service` entirely. |
 
 ### Backend flags (flattened, shared with `get-chunk`)
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--backend` | `auto\|turso\|local` | `auto` | Data backend. `auto`: Turso when a token resolves, else local. |
-| `--db` | path | canonical `atlas.db` | Local backend: SQLite DB path. Resolution is covered in [Configuration and environment](configuration.md) (the `ATLAS_DB` variable is the first step). |
-| `--vecdb` | comma-separated paths | — (none) | Local backend: vector DB path(s), if the corpus DB has no vector table. |
-| `--via-service` | switch | off | Prefer a running Atlas service; fall back to standalone, loudly. |
-| `--service-url` | URL | `http://127.0.0.1:18760` | Service base URL for `--via-service`. Environment variable: `ATLAS_SEARCH_URL`. |
+| Flag            | Argument              | Default                  | Meaning                                                                                                                                                    |
+| --------------- | --------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--backend`     | `auto\|turso\|local`  | `auto`                   | Data backend. `auto`: Turso when a token resolves, else local.                                                                                             |
+| `--db`          | path                  | canonical `atlas.db`     | Local backend: SQLite DB path. Resolution is covered in [Configuration and environment](configuration.md) (the `ATLAS_DB` variable is the first step).     |
+| `--vecdb`       | comma-separated paths | — (none)                 | Local backend: vector DB path(s), if the corpus DB has no vector table.                                                                                    |
+| `--via-service` | switch                | off                      | Prefer a running Atlas service; fall back to standalone, loudly. The help states the eligibility restrictions, detailed under "Via-service vs standalone". |
+| `--service-url` | URL                   | `http://127.0.0.1:18760` | Service base URL for `--via-service`. Environment variable: `ATLAS_SEARCH_URL`.                                                                            |
 
 ### Vector flags (flattened, `search` only)
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--model` | string | `Snowflake/snowflake-arctic-embed-m-v2.0` | Embedding model. Environment variable: `ATLAS_SEARCH_MODEL`. |
-| `--vec-table` | string | `vec_snowflake_m_v2_768_f32` | Vector table name. Environment variable: `ATLAS_VEC_TABLE`. |
-| `--embedder` | `auto\|fastembed\|st` | `auto` | Query embedder: `fastembed` (bge) or `st` = sentence-transformers with `prompt_name='query'` (Snowflake); `auto` picks by model name. See the embedder limits under Behaviour. |
-| `--trunc` | integer | `0` | Truncate query+doc vectors to N dims (Matryoshka; 0 = full). Validated: ≥ 0. |
-| `--vector-backend` | `scan\|index-fill\|index-fixed` | `scan` | Turso vector branch: `scan` = exact `vector_distance_cos` over the filtered set; `index-fixed` = one `vector_top_k` lookup at pool depth, filtered afterwards; `index-fill` = `vector_top_k` with escalating depth until the pool fills after filtering (cap 3200). |
+| Flag               | Argument                        | Default                                   | Meaning                                                                                                                                                                                                                                                             |
+| ------------------ | ------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--model`          | string                          | `Snowflake/snowflake-arctic-embed-m-v2.0` | Embedding model. Environment variable: `ATLAS_SEARCH_MODEL`.                                                                                                                                                                                                        |
+| `--vec-table`      | string                          | `vec_snowflake_m_v2_768_f32`              | Vector table name. Environment variable: `ATLAS_VEC_TABLE`.                                                                                                                                                                                                         |
+| `--embedder`       | `auto\|fastembed\|st`           | `auto`                                    | Query embedder: `fastembed` (bge) or `st` = sentence-transformers with `prompt_name='query'` (Snowflake); `auto` picks by model name. See the embedder limits under Behaviour.                                                                                      |
+| `--trunc`          | integer                         | `0`                                       | Truncate query+doc vectors to N dims (Matryoshka; 0 = full). Validated: ≥ 0.                                                                                                                                                                                        |
+| `--vector-backend` | `scan\|index-fill\|index-fixed` | `scan`                                    | Turso vector branch: `scan` = exact `vector_distance_cos` over the filtered set; `index-fixed` = one `vector_top_k` lookup at pool depth, filtered afterwards; `index-fill` = `vector_top_k` with escalating depth until the pool fills after filtering (cap 3200). |
 
 ## `get-chunk`: flag table
 
 `get-chunk` fetches one chunk with its provenance (the session, client and sensitivity it came from). It has **no vector flags** and **no `--max-sensitivity`** — the sensitivity ceiling arrives through `--context`, whose default here is `local-owner` (context ceiling `secret-bearing`), because this is the owner's explicit-id tool.
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `--neighbors` | integer | `0` | Include N chunks either side in the same message. Validated: 0..=100. |
-| `--context` | context name | `local-owner` | Disclosure context of the destination surface: `local-owner` (default), `fleet-internal`, `hosted-per-user`, or `public-surface`. |
-| `--text` | switch | off | Human-readable output instead of JSON. |
-| `--backend` | `auto\|turso\|local` | `auto` | Backend group, as in the `search` backend table above. |
-| `--db` | path | canonical `atlas.db` | Backend group, as above. |
-| `--vecdb` | comma-separated paths | — (none) | Backend group, as above. |
-| `--via-service` | switch | off | Backend group, as above — but see the get-chunk routing note below. |
-| `--service-url` | URL | `http://127.0.0.1:18760` | Backend group, as above. Environment variable: `ATLAS_SEARCH_URL`. |
+| Flag            | Argument              | Default                  | Meaning                                                                                                                           |
+| --------------- | --------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `--neighbors`   | integer               | `0`                      | Include N chunks either side in the same message. Validated: 0..=100.                                                             |
+| `--context`     | context name          | `local-owner`            | Disclosure context of the destination surface: `local-owner` (default), `fleet-internal`, `hosted-per-user`, or `public-surface`. |
+| `--text`        | switch                | off                      | Human-readable output instead of JSON.                                                                                            |
+| `--backend`     | `auto\|turso\|local`  | `auto`                   | Backend group, as in the `search` backend table above.                                                                            |
+| `--db`          | path                  | canonical `atlas.db`     | Backend group, as above.                                                                                                          |
+| `--vecdb`       | comma-separated paths | — (none)                 | Backend group, as above.                                                                                                          |
+| `--via-service` | switch                | off                      | Backend group, as above — but see the get-chunk routing note below.                                                               |
+| `--service-url` | URL                   | `http://127.0.0.1:18760` | Backend group, as above. Environment variable: `ATLAS_SEARCH_URL`.                                                                |
 
 There is no via-service path for `get-chunk` in the job protocol: chunk reads are scoped to an existing job. Requesting `--via-service` therefore produces the loud fallback note (of the shape `service at &lt;base&gt; unreachable; get-chunk served standalone`) and the chunk is served standalone.
 
@@ -154,10 +154,10 @@ Standalone is the default route and needs no service. With `--via-service`, the 
 
 Three requests disqualify the service route. **None of them appears in any help text**; this is source behaviour:
 
-| Request | Effect on the service route |
-|---|---|
-| `--backend local` | Cannot be served by the service; forces the loud standalone fallback with an explanatory note. |
-| A non-default `--vec-table` | Cannot be served by the service; forces the loud standalone fallback with an explanatory note. |
+| Request                                      | Effect on the service route                                                                                           |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `--backend local`                            | Cannot be served by the service; forces the loud standalone fallback with an explanatory note.                        |
+| A non-default `--vec-table`                  | Cannot be served by the service; forces the loud standalone fallback with an explanatory note.                        |
 | Any `--shards` spec (flag or `ATLAS_SHARDS`) | Skips the via-service attempt entirely — no attempt, no fallback note; the search runs standalone with shard fan-out. |
 
 An unknown `--max-sensitivity` also skips the via-service attempt, for a different reason: so that the standalone path produces its exact validation fatal rather than a service-side clamp.
@@ -166,7 +166,7 @@ An unknown `--max-sensitivity` also skips the via-service attempt, for a differe
 
 The default output is JSON on stdout: a result envelope carrying the hits and, for an executed search, the `query_id` of the trace record it wrote, plus a `notes` array (where a loud fallback note lands when one happened). With `--no-wait` on the service route, the output is instead the service job handle plus an empty first page. `--raw-rows` changes the row shape (flat fused rows, or pre-fusion branch rows with `=branches`) without changing the envelope. `--group-by-session` rolls chunk hits up to one row per session.
 
-`--text` renders the same results human-readably instead of JSON. No partial JSON is printed on failure paths: failures are a single stderr line (the via-service fallback is the exception by design — it *succeeds* standalone and records the fallback in `notes` and on stderr).
+`--text` renders the same results human-readably instead of JSON. No partial JSON is printed on failure paths: failures are a single stderr line (the via-service fallback is the exception by design — it _succeeds_ standalone and records the fallback in `notes` and on stderr).
 
 ## Worked examples
 
@@ -212,8 +212,8 @@ $ atlas-search search "toy example query" --via-service
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Success (including a loud standalone fallback after a service failure). |
-| 1 | Backend/transport/embed failures; `get-chunk` not-found. |
-| 2 | Usage and validation failures: clap errors, count/parameter/context validation. |
+| Code | Meaning                                                                         |
+| ---- | ------------------------------------------------------------------------------- |
+| 0    | Success (including a loud standalone fallback after a service failure).         |
+| 1    | Backend/transport/embed failures; `get-chunk` not-found.                        |
+| 2    | Usage and validation failures: clap errors, count/parameter/context validation. |

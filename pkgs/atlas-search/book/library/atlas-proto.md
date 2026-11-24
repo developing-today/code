@@ -4,7 +4,7 @@ Source: [`crates/atlas-proto/src/lib.rs`](https://github.com/developing-today/co
 
 `atlas-proto` is the shared wire contract between the Atlas search service and every client that talks to it over HTTP — the `atlas-search` CLI in its via-service mode, the `fleet search` client, and anything else that speaks the job protocol. It is serde types only (serde is Rust's serialization framework): no HTTP, no storage, no search policy. The server and the CLI's via-service client both depend on this one crate so their wire definitions cannot drift apart — a field renamed here is renamed on both sides in the same build. The engine behind the server is [atlas-core: the engine as a library](atlas-core.md); the endpoints that carry these types are [The service HTTP API](../reference/service-api.md).
 
-One boundary to hold throughout: sensitivity clamping lives in the server, not here. This crate merely carries the ceiling a client *requests* and the effective ceiling the server *reports back*. A client that treats its request as the guarantee has misunderstood the contract.
+One boundary to hold throughout: sensitivity clamping lives in the server, not here. This crate merely carries the ceiling a client _requests_ and the effective ceiling the server _reports back_. A client that treats its request as the guarantee has misunderstood the contract.
 
 ## The defaults contract: `query-parameters-v1.json`
 
@@ -35,21 +35,21 @@ Every default in the query-parameter contract lives in one file, `crates/atlas-p
 }
 ```
 
-Its role is to be the single source the defaults are derived from — the CLI's own defaults come from this file, not from a second table in the CLI's source. A missing or invalid default in the file panics at first use rather than falling back to a guessed value: a contract whose defaults are silently invented is worse than a crash. Field meanings, in brief: `k` is the final result count; `pool` is the per-branch candidate count; `expand` is neighbouring chunks included around a hit; `shard_top_k` / `global_top_k` bound the shard fan-out; `fts_weight` / `vector_weight` and `rrf_k` parameterize reciprocal rank fusion (the score-combining method for the full-text and vector branches); `jaccard_depth` / `jaccard_threshold` control an optional token-overlap rescore (off at depth 0); `hydrate` is top-N hydration to full content from the content store, distinct from `expand`; `raw_mode` selects pre-fusion output shapes. `wait: false` is the *wire* default — the one-shot CLI implies waiting and sets it unless told otherwise.
+Its role is to be the single source the defaults are derived from — the CLI's own defaults come from this file, not from a second table in the CLI's source. A missing or invalid default in the file panics at first use rather than falling back to a guessed value: a contract whose defaults are silently invented is worse than a crash. Field meanings, in brief: `k` is the final result count; `pool` is the per-branch candidate count; `expand` is neighbouring chunks included around a hit; `shard_top_k` / `global_top_k` bound the shard fan-out; `fts_weight` / `vector_weight` and `rrf_k` parameterize reciprocal rank fusion (the score-combining method for the full-text and vector branches); `jaccard_depth` / `jaccard_threshold` control an optional token-overlap rescore (off at depth 0); `hydrate` is top-N hydration to full content from the content store, distinct from `expand`; `raw_mode` selects pre-fusion output shapes. `wait: false` is the _wire_ default — the one-shot CLI implies waiting and sets it unless told otherwise.
 
 ## The shared value types
 
-| Type | Values (wire spelling) | Notes |
-|---|---|---|
-| `Sensitivity` | `shareable` &lt; `personal` &lt; `local-only` &lt; `secret-bearing` | kebab-case; the ordering *is* the security ordering; default `personal`; `clamped_to(cap)` is `min(self, cap)` |
-| `SearchMode` | `fts`, `vector`, `hybrid` | lowercase; default `hybrid`; `branch_demand()` is 2 for hybrid, 1 otherwise — deliberately conservative, since a hybrid query whose full-text expression is empty may still use only the vector branch |
-| `VectorBackend` | `scan`, `index-fixed`, `index-fill` | kebab-case; default `scan` (exact scan) |
-| `RawMode` | `off`, `ungrouped`, `branches` | lowercase; default `off` |
-| `QueryVariant` | `raw`, `rewritten`, `both` | lowercase; default `raw`; the other two are not implemented and are refused at validation |
+| Type            | Values (wire spelling)                                              | Notes                                                                                                                                                                                                  |
+| --------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Sensitivity`   | `shareable` &lt; `personal` &lt; `local-only` &lt; `secret-bearing` | kebab-case; the ordering _is_ the security ordering; default `personal`; `clamped_to(cap)` is `min(self, cap)`                                                                                         |
+| `SearchMode`    | `fts`, `vector`, `hybrid`                                           | lowercase; default `hybrid`; `branch_demand()` is 2 for hybrid, 1 otherwise — deliberately conservative, since a hybrid query whose full-text expression is empty may still use only the vector branch |
+| `VectorBackend` | `scan`, `index-fixed`, `index-fill`                                 | kebab-case; default `scan` (exact scan)                                                                                                                                                                |
+| `RawMode`       | `off`, `ungrouped`, `branches`                                      | lowercase; default `off`                                                                                                                                                                               |
+| `QueryVariant`  | `raw`, `rewritten`, `both`                                          | lowercase; default `raw`; the other two are not implemented and are refused at validation                                                                                                              |
 
 These types are wire duplicates of atlas-core's own `Sensitivity`, `SearchMode`, and `VectorBackend` — same names, same spellings, same orderings, defined independently in both crates. The duplication is intentional: the wire crate must not force every client to depend on the engine.
 
-`FilterSpec` carries the classification filters — `kind`, `topic`, `project`, `client` (each a list of strings), and `since` / `until` (optional date strings) — each field omitted from the JSON when empty or absent. The sensitivity ceiling is deliberately *not* a member of `FilterSpec`; it is a sibling field on `SearchRequest`, because it is clamped by a different rule than the filters are applied by.
+`FilterSpec` carries the classification filters — `kind`, `topic`, `project`, `client` (each a list of strings), and `since` / `until` (optional date strings) — each field omitted from the JSON when empty or absent. The sensitivity ceiling is deliberately _not_ a member of `FilterSpec`; it is a sibling field on `SearchRequest`, because it is clamped by a different rule than the filters are applied by.
 
 ## `SearchParametersV1` and `SearchRequest`
 
@@ -59,40 +59,40 @@ These types are wire duplicates of atlas-core's own `Sensitivity`, `SearchMode`,
 
 `SearchRequest` is the request envelope for a search:
 
-| Field | Default | Meaning |
-|---|---|---|
-| `query` | — (required) | the query text |
-| `mode` | `hybrid` | a `SearchMode` |
-| `filters` | empty | a `FilterSpec` |
-| `ceiling` | `personal` | the *requested* `Sensitivity`; the server clamps it to the authenticated client's cap |
-| `k` | `10` | final results (default read from the contract file) |
-| `pool` | `100` | per-branch candidates; the server enforces the design maximum of 400 |
-| `group_by_session` | `false` | roll chunk hits up to sessions |
-| `expand` | `0` | neighbouring chunks per hit (contract-file default) |
-| `parameters` | contract defaults | a `SearchParametersV1`, flattened |
-| `with_message` | `false` | include parent message text |
-| `model` | `Snowflake/snowflake-arctic-embed-m-v2.0` | the embedding model identity (see [atlas-embed: embeddings as a library](atlas-embed.md)) |
-| `embedder` | `auto` | embedder selection spelling |
-| `trunc` | `0` | truncate vectors to N dimensions (0 = full width) |
-| `vector_backend` | `scan` | a `VectorBackend` |
-| `page_limit` | none | one-shot endpoint only |
-| `context` | none | the disclosure-context spelling — `fleet-internal`, `hosted-per-user`, `public-surface`, or `local-owner`; absent or unknown fails closed under the receiving surface's rule |
+| Field              | Default                                   | Meaning                                                                                                                                                                      |
+| ------------------ | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `query`            | — (required)                              | the query text                                                                                                                                                               |
+| `mode`             | `hybrid`                                  | a `SearchMode`                                                                                                                                                               |
+| `filters`          | empty                                     | a `FilterSpec`                                                                                                                                                               |
+| `ceiling`          | `personal`                                | the _requested_ `Sensitivity`; the server clamps it to the authenticated client's cap                                                                                        |
+| `k`                | `10`                                      | final results (default read from the contract file)                                                                                                                          |
+| `pool`             | `100`                                     | per-branch candidates; the server enforces the design maximum of 400                                                                                                         |
+| `group_by_session` | `false`                                   | roll chunk hits up to sessions                                                                                                                                               |
+| `expand`           | `0`                                       | neighbouring chunks per hit (contract-file default)                                                                                                                          |
+| `parameters`       | contract defaults                         | a `SearchParametersV1`, flattened                                                                                                                                            |
+| `with_message`     | `false`                                   | include parent message text                                                                                                                                                  |
+| `model`            | `Snowflake/snowflake-arctic-embed-m-v2.0` | the embedding model identity (see [atlas-embed: embeddings as a library](atlas-embed.md))                                                                                    |
+| `embedder`         | `auto`                                    | embedder selection spelling                                                                                                                                                  |
+| `trunc`            | `0`                                       | truncate vectors to N dimensions (0 = full width)                                                                                                                            |
+| `vector_backend`   | `scan`                                    | a `VectorBackend`                                                                                                                                                            |
+| `page_limit`       | none                                      | one-shot endpoint only                                                                                                                                                       |
+| `context`          | none                                      | the disclosure-context spelling — `fleet-internal`, `hosted-per-user`, `public-surface`, or `local-owner`; absent or unknown fails closed under the receiving surface's rule |
 
-The crate also defines how a result is cache-keyed: `canonical_key_material(expand, group_by_session, with_message)` is a fixed-order labelled string covering every parameter plus those three request-level shaping controls, and `result_cache_key(query, snapshot_id, ceiling, expand, group_by_session, with_message)` is the hex SHA-256 of `atlas-result-cache/v1|query={query}|snapshot={snapshot_id}|ceiling={ceiling}|{canonical material}`. Note which ceiling goes into the key: the *effective* (clamped) one. Two clients requesting different ceilings above the same cap share a cache entry only at the ceiling both were actually served at.
+The crate also defines how a result is cache-keyed: `canonical_key_material(expand, group_by_session, with_message)` is a fixed-order labelled string covering every parameter plus those three request-level shaping controls, and `result_cache_key(query, snapshot_id, ceiling, expand, group_by_session, with_message)` is the hex SHA-256 of `atlas-result-cache/v1|query={query}|snapshot={snapshot_id}|ceiling={ceiling}|{canonical material}`. Note which ceiling goes into the key: the _effective_ (clamped) one. Two clients requesting different ceilings above the same cap share a cache entry only at the ceiling both were actually served at.
 
 ## The job protocol types
 
 Search over the service is a job protocol: submit, poll, page, delete. The types:
 
-| Type | Carries |
-|---|---|
-| `JobCreated` | the 202 response to a job submission: `job_id`, `job_token`, `status`, `effective_ceiling`, `queue_depth`, `queue_position`, `submitted_at_ms`, `expires_at_ms` |
-| `JobStatus` | `queued` (default), `running`, `done`, `failed`, `expired` — lowercase |
-| `BranchState` / `BranchStates` | per-branch state for `fts` and `vector`: `pending` (default), `running`, `done`, `failed`, `skipped` |
-| `JobStatusResponse` | `job_id`, `status`, `branch_states`, `effective_ceiling`, `pool`, `queue_depth`, `queue_position`, `notes`, `error`, `result_count`, `submitted_at_ms`, `started_at_ms`, `completed_at_ms`, `expires_at_ms` |
-| `SearchPage` | one page of results: `job_id`, `status`, `effective_ceiling`, `envelope` (the search envelope with its `results` replaced by this page's slice), `results`, `next_cursor`, `total_results` |
-| `JobSummary` / `JobListResponse` | the job-list rows, oldest first: metadata only — `job_id`, `status`, `query`, `mode`, `pool`, `effective_ceiling`, timestamps, `queue_position`. Never result content, never the capability token |
-| `JobDeleted` | `job_id`, `status` |
+| Type                             | Carries                                                                                                                                                                                                     |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `JobCreated`                     | the 202 response to a job submission: `job_id`, `job_token`, `status`, `effective_ceiling`, `queue_depth`, `queue_position`, `submitted_at_ms`, `expires_at_ms`                                             |
+| `JobStatus`                      | `queued` (default), `running`, `done`, `failed`, `expired` — lowercase                                                                                                                                      |
+| `BranchState` / `BranchStates`   | per-branch state for `fts` and `vector`: `pending` (default), `running`, `done`, `failed`, `skipped`                                                                                                        |
+| `JobStatusResponse`              | `job_id`, `status`, `branch_states`, `effective_ceiling`, `pool`, `queue_depth`, `queue_position`, `notes`, `error`, `result_count`, `submitted_at_ms`, `started_at_ms`, `completed_at_ms`, `expires_at_ms` |
+| `SearchPage`                     | one page of results: `job_id`, `status`, `effective_ceiling`, `envelope` (the search envelope with its `results` replaced by this page's slice), `results`, `next_cursor`, `total_results`                  |
+| `JobSummary` / `JobListResponse` | the job-list rows, oldest first: metadata only — `job_id`, `status`, `query`, `mode`, `pool`, `effective_ceiling`, timestamps, `queue_position`. Never result content, never the capability token           |
+| `JobDeleted`                     | `job_id`, `status`                                                                                                                                                                                          |
 
 The `job_token` in `JobCreated` is a per-job capability token: it authorizes only that job's status, results, chunk, and delete endpoints. It is not a client credential and must never appear in a job list — the `JobSummary` type makes that structural, by having no field for it.
 
@@ -104,15 +104,11 @@ Two smaller envelopes complete the surface:
 A toy submission and its created response, in shape only:
 
 ```json
-{ "query": "toy sailboat ballast", "mode": "hybrid", "ceiling": "personal",
-  "k": 10, "pool": 100, "parameters_version": 1, "rrf_k": 10 }
+{ "query": "toy sailboat ballast", "mode": "hybrid", "ceiling": "personal", "k": 10, "pool": 100, "parameters_version": 1, "rrf_k": 10 }
 ```
 
 ```json
-{ "job_id": "toy-job-0001", "job_token": "&lt;per-job token&gt;",
-  "status": "queued", "effective_ceiling": "personal",
-  "queue_depth": 0, "queue_position": 0,
-  "submitted_at_ms": 0, "expires_at_ms": 0 }
+{ "job_id": "toy-job-0001", "job_token": "&lt;per-job token&gt;", "status": "queued", "effective_ceiling": "personal", "queue_depth": 0, "queue_position": 0, "submitted_at_ms": 0, "expires_at_ms": 0 }
 ```
 
 ## Versioning posture

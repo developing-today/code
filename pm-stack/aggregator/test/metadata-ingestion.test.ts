@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   artifactIdFor,
   buildTriagePacket,
   extractMetadataPayload,
+  openMetadataStore,
   renderMetadataBlock,
   runMetadataCheck,
   sourceUrlFor,
@@ -42,16 +47,15 @@ describe("dual-ingestion block plumbing", () => {
   test("extracts the canonical JSON payload and ignores ordinary comments", () => {
     expect(extractMetadataPayload(null)).toEqual({ found: false, malformed: false });
     expect(extractMetadataPayload("no block <!-- agent-note -->")).toEqual({ found: false, malformed: false });
-    const payload = extractMetadataPayload(
-      `text\n${renderMetadataBlock({ pm_meta: 1, links: [] })}\ntail`,
-    );
+    const payload = extractMetadataPayload(`text\n${renderMetadataBlock({ pm_meta: 1, links: [] })}\ntail`);
     expect(payload).toEqual({ found: true, json: JSON.stringify({ pm_meta: 1, links: [] }, null, 2) });
   });
 
   test("markers without a JSON fence are malformed, not silently absent", () => {
-    expect(
-      extractMetadataPayload("<!-- pm-metadata:start -->oops<!-- pm-metadata:end -->"),
-    ).toEqual({ found: false, malformed: true });
+    expect(extractMetadataPayload("<!-- pm-metadata:start -->oops<!-- pm-metadata:end -->")).toEqual({
+      found: false,
+      malformed: true,
+    });
   });
 
   test("upsertMetadataBlock replaces in place and appends idempotently", () => {
@@ -123,10 +127,7 @@ describe("runMetadataCheck: the one check both watchers share", () => {
   });
 
   test("distinct slugs resolving to different epics are ambiguous triage", () => {
-    const outcome = runMetadataCheck(
-      item({ labels: ["primary-parent/pm-board", "epic/atlas"] }),
-      CONTEXT,
-    );
+    const outcome = runMetadataCheck(item({ labels: ["primary-parent/pm-board", "epic/atlas"] }), CONTEXT);
     expect(outcome.kind).toBe("needs-triage");
     if (outcome.kind !== "needs-triage") return;
     expect(outcome.evidence.reasons[0]).toMatch(/ambiguous program/);
@@ -146,10 +147,7 @@ describe("runMetadataCheck: the one check both watchers share", () => {
   });
 
   test("an epic cannot resolve itself as its direct parent", () => {
-    const outcome = runMetadataCheck(
-      item({ number: 9060, labels: ["kind/epic", "primary-parent/pm-board"] }),
-      CONTEXT,
-    );
+    const outcome = runMetadataCheck(item({ number: 9060, labels: ["kind/epic", "primary-parent/pm-board"] }), CONTEXT);
     expect(outcome.kind).toBe("needs-triage");
     if (outcome.kind !== "needs-triage") return;
     expect(outcome.evidence.reasons[0]).toMatch(/no resolvable parent/);
@@ -229,6 +227,34 @@ describe("buildTriagePacket: the broker's required fields, pinned", () => {
     for (const field of ["timebox_minutes", "max_attempts"]) {
       expect(Number.isInteger(payload[field])).toBe(true);
       expect(payload[field] as number).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("openMetadataStore: clean-environment boot (#13293)", () => {
+  test("creates a missing parent directory before opening", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pm-metadata-store-"));
+    try {
+      const path = join(root, "state", "pm-aggregator", "pm-metadata.sqlite");
+      const db = openMetadataStore(path, (p) => new Database(p));
+      expect(
+        db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pm_metadata_items'").get(),
+      ).toEqual({ name: "pm_metadata_items" });
+      db.close();
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an unhealable parent still fails closed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pm-metadata-store-"));
+    try {
+      const blocker = join(root, "blocker");
+      await writeFile(blocker, "not a directory");
+      expect(() => openMetadataStore(join(blocker, "pm-metadata.sqlite"), (p) => new Database(p))).toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

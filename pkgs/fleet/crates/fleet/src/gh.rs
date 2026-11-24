@@ -12,11 +12,7 @@
 //! to the next token in the rotation instead of failing the caller.
 //!
 //! The rotation, in order:
-//!   1. the personal token: Drew's `gh` OAuth token, parsed out of
-//!      the broker secret named `github-cli.hosts-yml` (the hosts
-//!      file itself, stored by name — the value never leaves the
-//!      resolver);
-//!   2. installation tokens of the fleet's THREE GitHub Apps, in
+//!   1. installation tokens of the fleet's THREE GitHub Apps, in
 //!      App order, minted in-process per owner: the fleet App
 //!      ("developing.today fleet", App ID 5612056), the
 //!      developing.today App, and the developing-today-backup App
@@ -32,6 +28,11 @@
 //!      When the call names a repo or org, that owner's installation
 //!      moves to the front of each App leg — an installation token
 //!      only sees its own installation's scope.
+//!   2. the personal token, LAST (Drew, 2026-11-23, code#13310):
+//!      Drew's `gh` OAuth token, parsed out of the broker secret
+//!      named `github-cli.hosts-yml` (the hosts file itself, stored
+//!      by name — the value never leaves the resolver). It is the
+//!      final fallback, not the first identity tried.
 //!
 //! The App leg's own HTTPS validates against the PLATFORM root
 //! store (ureq's platform-verifier), not webpki-roots alone: hosts
@@ -173,8 +174,9 @@ Usage: fleet gh <gh args...>
        fleet gh --raw <gh args...>
 
 Run the real `gh` CLI with every argument passed through unchanged,
-under a token selected from the fleet rotation (personal token, then
-the fleet's three GitHub Apps' installation tokens). A rate-limit or
+under a token selected from the fleet rotation (the fleet's three
+GitHub Apps' installation tokens, then the personal token last).
+A rate-limit or
 permission failure fails over to the next token; the caller sees only
 the final attempt's output and exit code. `fleet gh tiers` lists each
 rotation source with its rate-limit headroom. `fleet gh --raw` (or
@@ -742,12 +744,13 @@ impl Owners {
     }
 }
 
-/// The rotation for one invocation: personal first, then each
-/// App's owners with the hinted owner (if any) leading each App leg.
-/// `FLEET_GH_ORDER` replaces the whole order when set.
+/// The rotation for one invocation: each App's owners with the
+/// hinted owner (if any) leading each App leg, then the personal
+/// token LAST. `FLEET_GH_ORDER` replaces the whole order when set.
 /// Oracle: code#8887's rotation definition as extended by Drew
 /// 2026-11-12 (personal + all three fleet Apps' installations),
-/// hint-first per the installation-scope fact.
+/// hint-first per the installation-scope fact; personal moved last
+/// by Drew 2026-11-23 (code#13310).
 fn rotation(args: &[String]) -> Vec<TokenSource> {
     let order_env = std::env::var("FLEET_GH_ORDER").ok();
     rotation_with(args, order_env.as_deref(), &Owners::from_env())
@@ -779,7 +782,7 @@ fn rotation_with(
         }
     }
     let hint = owner_hint(args);
-    let mut out = vec![TokenSource::Personal];
+    let mut out = Vec::new();
     for app in GhApp::ALL {
         let mut owners = owners_env.for_app(app);
         if let Some(hint) = &hint {
@@ -790,6 +793,9 @@ fn rotation_with(
         }
         out.extend(owners.into_iter().map(|o| TokenSource::app(app, &o)));
     }
+    // Drew 2026-11-23 (code#13310): the personal token is the final
+    // fallback, never the first identity tried.
+    out.push(TokenSource::Personal);
     out
 }
 
@@ -1359,9 +1365,9 @@ fn emit(attempt: &Attempt) {
 const TIERS_USAGE: &str = "\
 Usage: fleet gh tiers
 
-Probe every token-rotation source (the personal token, then the
-fleet's three GitHub Apps' installation tokens) and print each
-one's rate-limit headroom. Takes no arguments.";
+Probe every token-rotation source (the fleet's three GitHub Apps'
+installation tokens, then the personal token) and print each one's
+rate-limit headroom. Takes no arguments.";
 
 const CLOSURES_USAGE: &str = "\
 Usage: fleet gh closures [<item>]
@@ -2262,10 +2268,11 @@ mod tests {
     }
 
     // oracle: code#8887's rotation definition as extended by Drew
-    // 2026-11-12 — personal first, then the installations of all
-    // three fleet Apps (fleet: 3 owners, developing.today: 2,
-    // backup: 1); a call naming an owner leads each App leg with
-    // that owner's installation where the App has one.
+    // 2026-11-12 — the installations of all three fleet Apps
+    // (fleet: 3 owners, developing.today: 2, backup: 1), with the
+    // personal token LAST (Drew 2026-11-23, code#13310); a call
+    // naming an owner leads each App leg with that owner's
+    // installation where the App has one.
     #[test]
     fn rotation_order_and_owner_hint() {
         let args: Vec<String> = ["api", "repos/developing-today/code"]
@@ -2274,8 +2281,18 @@ mod tests {
             .collect();
         assert_eq!(owner_hint(&args).as_deref(), Some("developing-today"));
         let order = rotation_with(&args, None, &Owners::default());
-        assert_eq!(order[0], TokenSource::Personal);
-        assert_eq!(order[1], TokenSource::app(GhApp::Fleet, "developing-today"));
+        assert_eq!(
+            order,
+            vec![
+                TokenSource::app(GhApp::Fleet, "developing-today"),
+                TokenSource::app(GhApp::Fleet, "developing-today-forks"),
+                TokenSource::app(GhApp::Fleet, "dezren39"),
+                TokenSource::app(GhApp::DevToday, "developing-today"),
+                TokenSource::app(GhApp::DevToday, "dezren39"),
+                TokenSource::app(GhApp::Backup, "developing-today"),
+                TokenSource::Personal,
+            ]
+        );
         assert_eq!(order.len(), 7);
         assert!(order.contains(&TokenSource::app(GhApp::DevToday, "dezren39")));
         assert!(order.contains(&TokenSource::app(GhApp::Backup, "developing-today")));
@@ -2287,9 +2304,10 @@ mod tests {
             .collect();
         let order = rotation_with(&fork_args, None, &Owners::default());
         assert_eq!(
-            order[1],
+            order[0],
             TokenSource::app(GhApp::Fleet, "developing-today-forks")
         );
+        assert_eq!(order[6], TokenSource::Personal);
 
         let fixed = rotation_with(
             &fork_args,
@@ -2314,6 +2332,21 @@ mod tests {
             vec![
                 TokenSource::app(GhApp::DevToday, "developing-today"),
                 TokenSource::app(GhApp::Backup, "developing-today")
+            ]
+        );
+        // Drew 2026-11-23 (code#13310): an operator-specified
+        // order wins over the default exactly as given — personal
+        // first included.
+        let fixed3 = rotation_with(
+            &fork_args,
+            Some("personal,app:dezren39"),
+            &Owners::default(),
+        );
+        assert_eq!(
+            fixed3,
+            vec![
+                TokenSource::Personal,
+                TokenSource::app(GhApp::Fleet, "dezren39")
             ]
         );
         assert_eq!(

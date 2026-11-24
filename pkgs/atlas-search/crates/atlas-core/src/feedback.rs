@@ -262,14 +262,14 @@ impl JsonlFeedbackSink {
         &self.dir
     }
 
-    /// `~/.local/state/atlas-search/feedback` — the same state
-    /// root as the trace sink and the service config.
+    /// `~/.local/state/atlas-search/feedback` - the same state
+    /// root as the trace sink and the service config. Resolved
+    /// through the crate's home-resolution contract (issues
+    /// #5640 / #5762): a missing or empty HOME fails loudly
+    /// naming HOME, never a CWD-relative substitute
+    /// (issue #13279).
     pub fn default_dir() -> PathBuf {
-        let home = std::env::var_os("HOME")
-            .filter(|h| !h.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        home.join(".local/state/atlas-search/feedback")
+        crate::require_home().join(".local/state/atlas-search/feedback")
     }
 }
 

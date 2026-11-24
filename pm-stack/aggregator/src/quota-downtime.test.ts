@@ -262,6 +262,57 @@ describe("renderPredictionRange", () => {
   test("a same-day future range renders in duration form, half-hour rounded", () => {
     expect(renderPredictionRange(at(2.25), at(5.75), AS_OF)).toBe("between 2.5 and 6 hours from now");
   });
+
+  test("a 48h-or-wider future range renders in day form, not calendar form (design §4; #13357)", () => {
+    // Wed 18:00 CST -> Sat 06:00 CST: 60h wide, crosses day boundaries.
+    // The day-form branch was unreachable: the calendar check ran first.
+    expect(renderPredictionRange(at(60), at(120), AS_OF)).toBe("2.5 to 5 days");
+  });
+
+  test("a 48h-wide range on the boundary renders in day form (design §4; #13357)", () => {
+    // Wed 06:00 CST -> Fri 06:00 CST: exactly 48h wide, both bounds exact tenths of a day.
+    expect(renderPredictionRange(at(48), at(96), AS_OF)).toBe("2 to 4 days");
+  });
+
+  test("a 48h-or-wider range with non-tenth-day bounds renders compound (design §4; #13357)", () => {
+    // 52h = 2 days 4 hours, 124h = 5 days 4 hours; neither is an exact tenth of a day.
+    expect(renderPredictionRange(at(52), at(124), AS_OF)).toBe("2 days 4 hours to up to 5 days 4 hours");
+  });
+
+  test("a 48h-or-wider range already in progress still renders calendar form (#13357)", () => {
+    // The day form has no "from now" anchor, so a past start stays calendar.
+    const rendered = renderPredictionRange(at(-2), at(60), AS_OF);
+    expect(rendered.startsWith("between ")).toBe(true);
+  });
+
+  test("a far-out same-weekday range names both calendar dates (#13536)", () => {
+    // The issue's example: a vendor-cadence arrival Sep 22 → Oct 6,
+    // both Tuesdays, issued Sep 1 — "between Tuesday afternoon and
+    // Tuesday afternoon" names no week. Under the merged ordering
+    // (#13357: day form first for ≥48h future ranges) a far-out
+    // calendar range must be in progress — a past start has no
+    // "days from now" reading — so the earliest bound precedes
+    // issuance and only the far-out latest bound carries a date.
+    expect(
+      renderPredictionRange("2026-08-30T19:00:00.000Z", "2026-10-06T19:00:00.000Z", "2026-09-01T17:00:00.000Z"),
+    ).toBe("between Sunday afternoon and Tuesday afternoon, Oct 6");
+  });
+
+  test("a near-horizon same-weekday pair keeps its short form", () => {
+    // T0+2.5d → T0+5.7d crosses Chicago day boundaries but stays
+    // inside one week: no date suffix.
+    expect(renderPredictionRange(at(2.5 * 24), at(5.7 * 24), AS_OF)).not.toContain(",");
+  });
+
+  test("a bound exactly seven days out is dated, a bound just inside is not", () => {
+    const issued = "2026-10-01T00:00:00.000Z";
+    const weekOut = "2026-10-08T19:00:00.000Z"; // Thursday afternoon, 7.8d out
+    const justInside = "2026-10-07T19:00:00.000Z"; // Wednesday afternoon, 6.8d out
+    expect(renderPredictionRange(justInside, weekOut, issued)).toBe(
+      "between Wednesday afternoon and Thursday afternoon, Oct 8",
+    );
+    expect(renderPredictionRange(at(30), at(46), AS_OF)).not.toContain(",");
+  });
 });
 
 describe("buildDowntimeLedgerRows", () => {

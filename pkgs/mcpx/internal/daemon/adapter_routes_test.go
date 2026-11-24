@@ -162,3 +162,36 @@ func TestAdapterAddRefusesResolvedNamespaceCollision(t *testing.T) {
 		t.Fatalf("the colliding declaration was persisted: %s", got)
 	}
 }
+
+// A bare declaration submitted while adapters.allowBare is off must be
+// refused BEFORE anything is persisted: the load gate would reject it
+// at the reload, after the write, leaving a declaration that breaks
+// every later reload and daemon start (Codex review, PR #13118).
+func TestAdapterAddRefusesBareWhileAllowBareOff(t *testing.T) {
+	s, first, _ := setupAdapterRoutes(t)
+	rec := postAdapter(t, s, `{"name":"git","command":"git","bare":true,"description":"git, passed straight through"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "adapters.allowBare") {
+		t.Fatalf("the refusal should name the setting that permits bare declarations: %s", rec.Body)
+	}
+	if got := readFile(t, first); strings.Contains(got, "git") {
+		t.Fatalf("the refused bare declaration was persisted: %s", got)
+	}
+}
+
+// With the gate on, the same submission is accepted and persisted.
+func TestAdapterAddAcceptsBareWhenAllowBareOn(t *testing.T) {
+	s, first, _ := setupAdapterRoutes(t)
+	if err := s.set.SetRuntime("adapters.allowBare", "true"); err != nil {
+		t.Fatal(err)
+	}
+	rec := postAdapter(t, s, `{"name":"git","command":"git","bare":true,"description":"git, passed straight through"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if got := readFile(t, first); !strings.Contains(got, `"git"`) {
+		t.Fatalf("the accepted bare declaration was not persisted: %s", got)
+	}
+}

@@ -76,7 +76,7 @@ answers with a stub message and exit code 69. The full mechanics are in
 | `dispatch`      | Thin client over pm-stack dispatch: status, launch, and enqueue verbs.                                                                                                           |
 | `dispatch-test` | Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.                                                                    |
 | `secrets`       | Resolve secrets by name: the secrets broker first, Bitwarden as fallback.                                                                                                        |
-| `gh`            | The real `gh` CLI, passed through under a rotating fleet token (personal, then the fleet's GitHub Apps); rate-limit and permission failures fail over to the next token.         |
+| `gh`            | The real `gh` CLI, passed through under a rotating fleet token (the fleet's GitHub Apps, then personal last); rate-limit and permission failures fail over to the next token.    |
 | `bridge`        | Fleet messaging through the message bridge: central sends messages or commands to an agent, a group, or all; agents read their mailbox, answer, and ack.                         |
 | `agent`         | The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder.                                        |
 | `shell`         | Run a command, or open a shell, where builds belong: the laptop, a codespace, or here.                                                                                           |

@@ -11,9 +11,16 @@
 // S3 (#10033) adds the sync modes on the same store: sync-block waits in-band
 // for the answer via waitForAnswer (design §3.5/§3.7), and sync-ws streams the
 // record over /ws/prompt/:id (see prompt-ws.ts).
+//
+// S7 (#10036) adds attachments: a record carries the storage refs of the
+// files uploaded with the submission (see prompt-attachments.ts). The
+// blobs themselves live in the attachments directory, never in this file.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import { normalizeAttachments, type PromptAttachment } from "./prompt-attachments.ts";
+
+export type { PromptAttachment } from "./prompt-attachments.ts";
 
 export const PROMPT_SCOPES = ["section", "page", "stack", "agent"] as const;
 export const PROMPT_TARGETS = ["claude", "muse", "pool:auto"] as const;
@@ -35,6 +42,9 @@ export interface NewPrompt {
   replyTo?: string | null;
   refs?: string[];
   notify?: boolean;
+  /** S7: storage refs of files already persisted by the upload path
+   *  (prompt-attachments.ts); the store only carries the refs. */
+  attachments?: PromptAttachment[];
 }
 
 export interface PromptRecord extends NewPrompt {
@@ -49,6 +59,7 @@ export interface PromptRecord extends NewPrompt {
   replyTo: string | null;
   refs: string[];
   notify: boolean;
+  attachments: PromptAttachment[];
 }
 
 export interface PromptsFile {
@@ -72,6 +83,7 @@ function normalizeRecord(raw: Partial<PromptRecord> & Record<string, unknown>): 
     replyTo,
     refs,
     notify: raw.notify === true,
+    attachments: normalizeAttachments(raw.attachments),
     id: typeof raw.id === "string" ? raw.id : `prompt:${randomUUID()}`,
     threadId:
       typeof raw.threadId === "string" ? raw.threadId : typeof raw.id === "string" ? raw.id : `thread:${randomUUID()}`,
@@ -189,6 +201,7 @@ export class PromptsStore {
       replyTo,
       refs: input.refs ?? [],
       notify: input.notify ?? false,
+      attachments: normalizeAttachments(input.attachments),
       id: `prompt:${randomUUID()}`,
       threadId,
       status: "queued",
@@ -367,14 +380,15 @@ export type PromptWaitResult =
   | { outcome: "not-found" };
 
 /** Design §3.7: the sync-block response body for an answered prompt.
- *  Attachments are S7's slice; the field is present and empty until then. */
+ *  The attachments are the submission's S7 storage refs, echoed so a
+ *  sync caller sees the full record shape (§3.2) in the answer body. */
 export function promptAnswerBody(record: PromptRecord): {
   id: string;
   status: PromptStatus;
   answer: string;
-  attachments: string[];
+  attachments: PromptAttachment[];
 } {
-  return { id: record.id, status: record.status, answer: record.answer ?? "", attachments: [] };
+  return { id: record.id, status: record.status, answer: record.answer ?? "", attachments: record.attachments };
 }
 
 /**

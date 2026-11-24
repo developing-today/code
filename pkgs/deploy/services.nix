@@ -52,6 +52,11 @@
     ports = [ 4801 ];
     restart = "on-failure";
     healthCheck = "http://100.99.113.103:4801/healthz";
+    # Release attestation (release-workflow design §3 part 2,
+    # #13306): the fleet app's own test workflow sits outside the
+    # main-gate watched set, so the release verb requires it as
+    # per-app evidence.
+    evidenceWorkflow = "fleet-rust-tests";
     targets = [ "laptop" ];
     class = "systemd";
   };
@@ -71,6 +76,11 @@
     ports = [ 4800 ];
     restart = "on-failure";
     healthCheck = "http://100.99.113.103:4800/health";
+    # Release attestation (release-workflow design §3 part 2,
+    # #13306): the fleet app's own test workflow sits outside the
+    # main-gate watched set, so the release verb requires it as
+    # per-app evidence.
+    evidenceWorkflow = "fleet-rust-tests";
     targets = [ "laptop" ];
     class = "systemd";
   };

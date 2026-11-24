@@ -15,28 +15,30 @@ it lives, and gives its schema as the code defines or uses it. Where no
 the main case — the schema below is the shape the code issues SQL against and
 the fixture corpus mirrors, and the chapter says so.
 
-Two vocabularies recur and must not be confused. The sensitivity *ladder* —
-`shareable`, `personal`, `local-only`, `secret-bearing` — is the value set of
-the publish store's sensitivity columns. The physical *tier* vocabulary —
+Two vocabularies recur and must not be confused. The sensitivity _ladder_ —
+canonically `public`, `internal`, `private`, `sensitive`, and spelled in
+the stored values today `shareable`, `personal`, `local-only`,
+`secret-bearing` — is the value set of
+the publish store's sensitivity columns. The physical _tier_ vocabulary —
 `public`, `internal`, `secret` — is the value set of the staging, gate and
 shard stores. The aggregator translates tier to ladder at promotion; no schema
 encodes that mapping.
 
 ## The stores at a glance
 
-| Name | Where it lives | What it holds |
-|---|---|---|
-| Canonical Turso DB (`atlas`) | Hosted libSQL database `atlas` on the Atlas Turso host, read over the HTTPS pipeline API with a read-only token; a local publish file (`atlas.db`) has the same shape for the local backend | Sessions, messages, chunks, session labels, the FTS5 index, the classification manifest, generic labels, and the production vector table |
-| Vector tables | Inside the canonical DB, inside each scan shard, and in local side-store files | One row per chunk: the chunk id and its embedding vector in one named model space |
-| Scan shards (`atlas-core-&lt;tier&gt;-&lt;topic&gt;-&lt;nn&gt;`) | One Turso database (or one local `.db` file) per shard | That shard's chunks, its vector table, and its `atlas_manifest` self-description; no sessions, messages or labels |
-| Content stores (`atlas-core-&lt;tier&gt;-content`) | One Turso database per tier | The messages and sessions half of the corpus for that tier, reused from the publish tables, for hydrating shard-served hits |
-| Staging DB (v1) | One local SQLite/libSQL file per staging unit | Raw, un-embedded staged items and chunks for one unit of work; never any vectors |
-| Registry DB (v1) | One local SQLite/libSQL file, owned by the staging registry | Which staging units exist, where their DBs are, their state, and the audit record of each promotion |
-| Gate records (v1) | A table inside the registry DB | One audit row per ingest batch: stage verdicts, strikes and state — counts, codes and hashes only, never content |
-| Query-embedding cache DB | A separate Turso database, configured only by environment variables | Raw query vectors keyed by a hash of model identity and normalised query text |
-| Feedback store | JSONL files under `~/.local/state/atlas-search/feedback/` | Append-only feedback records, one file per day, plus derived normalised files |
-| D1 hot cache (`atlas-hot-cache`) | A Cloudflare D1 database bound to the Atlas Worker | Opaque cached payloads keyed by tenant and cache key; storage layer only, not wired into the request path |
-| Worker Durable Object entry | SQLite storage inside one `QueryCache` Durable Object instance per cache key | One row: the normalised query, its embedding, its search result and hit bookkeeping |
+| Name                                                             | Where it lives                                                                                                                                                                              | What it holds                                                                                                                            |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Canonical Turso DB (`atlas`)                                     | Hosted libSQL database `atlas` on the Atlas Turso host, read over the HTTPS pipeline API with a read-only token; a local publish file (`atlas.db`) has the same shape for the local backend | Sessions, messages, chunks, session labels, the FTS5 index, the classification manifest, generic labels, and the production vector table |
+| Vector tables                                                    | Inside the canonical DB, inside each scan shard, and in local side-store files                                                                                                              | One row per chunk: the chunk id and its embedding vector in one named model space                                                        |
+| Scan shards (`atlas-core-&lt;tier&gt;-&lt;topic&gt;-&lt;nn&gt;`) | One Turso database (or one local `.db` file) per shard                                                                                                                                      | That shard's chunks, its vector table, and its `atlas_manifest` self-description; no sessions, messages or labels                        |
+| Content stores (`atlas-core-&lt;tier&gt;-content`)               | One Turso database per tier                                                                                                                                                                 | The messages and sessions half of the corpus for that tier, reused from the publish tables, for hydrating shard-served hits              |
+| Staging DB (v1)                                                  | One local SQLite/libSQL file per staging unit                                                                                                                                               | Raw, un-embedded staged items and chunks for one unit of work; never any vectors                                                         |
+| Registry DB (v1)                                                 | One local SQLite/libSQL file, owned by the staging registry                                                                                                                                 | Which staging units exist, where their DBs are, their state, and the audit record of each promotion                                      |
+| Gate records (v1)                                                | A table inside the registry DB                                                                                                                                                              | One audit row per ingest batch: stage verdicts, strikes and state — counts, codes and hashes only, never content                         |
+| Query-embedding cache DB                                         | A separate Turso database, configured only by environment variables                                                                                                                         | Raw query vectors keyed by a hash of model identity and normalised query text                                                            |
+| Feedback store                                                   | JSONL files under `~/.local/state/atlas-search/feedback/`                                                                                                                                   | Append-only feedback records, one file per day, plus derived normalised files                                                            |
+| D1 hot cache (`atlas-hot-cache`)                                 | A Cloudflare D1 database bound to the Atlas Worker                                                                                                                                          | Opaque cached payloads keyed by tenant and cache key; storage layer only, not wired into the request path                                |
+| Worker Durable Object entry                                      | SQLite storage inside one `QueryCache` Durable Object instance per cache key                                                                                                                | One row: the normalised query, its embedding, its search result and hit bookkeeping                                                      |
 
 ## The canonical Turso DB
 
@@ -45,15 +47,15 @@ tables below are the publish shape as the branch, detail and neighbour SQL in
 `atlas-core` uses them, and as `fixtures/fixture_corpus.sql` — a miniature
 publish-shaped database — defines them.
 
-| Table | Columns and shape | What it holds |
-|---|---|---|
-| `sessions` | `id TEXT PRIMARY KEY`, `title TEXT`, `client TEXT`, `created_at TEXT` | One row per conversation session; `client` and `created_at` are filter dimensions |
-| `messages` | `id TEXT PRIMARY KEY`, `session_id TEXT`, `role TEXT`, `text TEXT` | One row per message in a session |
-| `chunks` | `id INTEGER PRIMARY KEY`, `message_id TEXT NOT NULL`, `chunk_idx INTEGER`, `text TEXT NOT NULL`, `content_hash TEXT UNIQUE NOT NULL`, `sensitivity TEXT` | One row per searchable chunk. `content_hash` is the chunk identity every other store joins on. Sensitivity is denormalised onto the chunk; the effective sensitivity is the chunk's own value, falling back to its session label's |
-| `session_labels` | `session_id TEXT PRIMARY KEY`, `client TEXT`, `kind TEXT`, `topics TEXT`, `projects TEXT`, `sensitivity TEXT`, `confidence TEXT`, `scheme TEXT` | The classification of one session. `topics` and `projects` hold JSON list text. The production classification scheme recorded by the Python header is scheme-1.0 |
-| `chunks_fts` | Virtual table: `CREATE VIRTUAL TABLE chunks_fts USING fts5(text)`, with `rowid` equal to `chunks.id` | The FTS5 (BM25) branch's index over chunk text |
-| `classification_manifest` | Rows read as `manifest_version`, `content_hash`, `name`, `shape`, `semantics`, `label_column` | The manifest declaring the filterable dimensions: each dimension's name, storage shape, match semantics and label column. Loaded when a backend opens; an absent or invalid manifest falls back to the built-in manifest, loudly. The manifest schema carries no sensitivity keys, by a safety invariant enforced at load |
-| `generic_labels` | `session_id TEXT`, `dimension TEXT`, `values_json TEXT`, primary key `(session_id, dimension)` | Values for manifest dimensions declared with the `generic_list` shape. Not part of the base publish fixture; created from `atlas_core::manifest::GENERIC_LABELS_DDL` when that shape is in use |
+| Table                     | Columns and shape                                                                                                                                        | What it holds                                                                                                                                                                                                                                                                                                             |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sessions`                | `id TEXT PRIMARY KEY`, `title TEXT`, `client TEXT`, `created_at TEXT`                                                                                    | One row per conversation session; `client` and `created_at` are filter dimensions                                                                                                                                                                                                                                         |
+| `messages`                | `id TEXT PRIMARY KEY`, `session_id TEXT`, `role TEXT`, `text TEXT`                                                                                       | One row per message in a session                                                                                                                                                                                                                                                                                          |
+| `chunks`                  | `id INTEGER PRIMARY KEY`, `message_id TEXT NOT NULL`, `chunk_idx INTEGER`, `text TEXT NOT NULL`, `content_hash TEXT UNIQUE NOT NULL`, `sensitivity TEXT` | One row per searchable chunk. `content_hash` is the chunk identity every other store joins on. Sensitivity is denormalised onto the chunk; the effective sensitivity is the chunk's own value, falling back to its session label's                                                                                        |
+| `session_labels`          | `session_id TEXT PRIMARY KEY`, `client TEXT`, `kind TEXT`, `topics TEXT`, `projects TEXT`, `sensitivity TEXT`, `confidence TEXT`, `scheme TEXT`          | The classification of one session. `topics` and `projects` hold JSON list text. The production classification scheme recorded by the Python header is scheme-1.0                                                                                                                                                          |
+| `chunks_fts`              | Virtual table: `CREATE VIRTUAL TABLE chunks_fts USING fts5(text)`, with `rowid` equal to `chunks.id`                                                     | The FTS5 (BM25) branch's index over chunk text                                                                                                                                                                                                                                                                            |
+| `classification_manifest` | Rows read as `manifest_version`, `content_hash`, `name`, `shape`, `semantics`, `label_column`                                                            | The manifest declaring the filterable dimensions: each dimension's name, storage shape, match semantics and label column. Loaded when a backend opens; an absent or invalid manifest falls back to the built-in manifest, loudly. The manifest schema carries no sensitivity keys, by a safety invariant enforced at load |
+| `generic_labels`          | `session_id TEXT`, `dimension TEXT`, `values_json TEXT`, primary key `(session_id, dimension)`                                                           | Values for manifest dimensions declared with the `generic_list` shape. Not part of the base publish fixture; created from `atlas_core::manifest::GENERIC_LABELS_DDL` when that shape is in use                                                                                                                            |
 
 Behaviour notes:
 
@@ -77,10 +79,10 @@ little-endian `f32` values. In the live Turso publish the vector column is
 typed `F32_BLOB(768)` and carries a `libsql_vector_idx` index named after the
 table (the table name plus `_idx`).
 
-| Table | Model space | Dimensions | Status |
-|---|---|---|---|
-| `vec_snowflake_m_v2_768_f32` | Snowflake `snowflake-arctic-embed-m-v2.0`, pinned revision `95c2741480856aa9666782eb4afe11959938017f` | 768 | The production table and the default everywhere. A query may be truncated to fewer dimensions at query time and renormalised; the stored table stays at 768 |
-| `vec_bge_small_384_f32` | `BAAI/bge-small-en-v1.5`, via the fastembed embedder in the Python implementation only | 384 | Dormant legacy fallback. It remains in the publish and in local side-store files; no Rust code names it, and the Worker refuses this space as not comparable with the corpus |
+| Table                        | Model space                                                                                           | Dimensions | Status                                                                                                                                                                       |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vec_snowflake_m_v2_768_f32` | Snowflake `snowflake-arctic-embed-m-v2.0`, pinned revision `95c2741480856aa9666782eb4afe11959938017f` | 768        | The production table and the default everywhere. A query may be truncated to fewer dimensions at query time and renormalised; the stored table stays at 768                  |
+| `vec_bge_small_384_f32`      | `BAAI/bge-small-en-v1.5`, via the fastembed embedder in the Python implementation only                | 384        | Dormant legacy fallback. It remains in the publish and in local side-store files; no Rust code names it, and the Worker refuses this space as not comparable with the corpus |
 
 No other vector tables are named anywhere in the tree. The two spaces are
 never comparable with each other: a vector from one must never be scored
@@ -128,8 +130,10 @@ CREATE TABLE atlas_manifest ("key" TEXT PRIMARY KEY, value TEXT);
 
 Tier assignment: a shard's tier is the staging unit's recorded sensitivity
 at promotion, and its topic is the unit's topic string. The sensitivity
-ladder maps onto tiers as `shareable` to public, `personal` and `local-only`
-to internal, and `secret-bearing` to secret — so a caller at the default
+ladder maps onto tiers as, in canonical names, public to public, internal
+and private to internal, and sensitive to secret (in the stored spellings:
+`shareable` to public, `personal` and `local-only` to internal, and
+`secret-bearing` to secret) — so a caller at the default
 `personal` ceiling can never fan out to a secret-tier shard, and a tier above
 the caller's ceiling is never connected, probed or scanned.
 
@@ -154,13 +158,13 @@ re-provisioning over an existing set is an error. A staging DB is promoted by
 being read, never by being migrated; a schema change means a new versioned
 DDL artifact, never an edit to v1.
 
-| Table | Columns and shape | What it holds |
-|---|---|---|
-| `_schema_version` | `version INTEGER NOT NULL`, seeded with the single row `1` | The schema version of this staging DB |
-| `items` | `id INTEGER PRIMARY KEY`, `unit_id TEXT NOT NULL`, `kind TEXT NOT NULL`, `source TEXT`, `text TEXT NOT NULL`, `sensitivity TEXT NOT NULL DEFAULT 'internal'`, `created_at TEXT NOT NULL`, `meta TEXT`; index on `(unit_id, kind)` | One row per staged item (a message, note or document fragment). `meta` is an open JSON bag. Writes are unmediated: sensitivity is recorded, not enforced, at write time. The default value `internal` is a tier word |
-| `chunks_raw` | `id INTEGER PRIMARY KEY`, `item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE`, `idx INTEGER NOT NULL`, `text TEXT NOT NULL`, `content_hash TEXT NOT NULL`, `created_at TEXT NOT NULL`; indexes on `(item_id, idx)` and on `(content_hash)` | The item's raw, un-embedded chunks. A staging DB never stores vectors, which is what makes it cheap to write and cheap to branch |
-| `notes` | `id INTEGER PRIMARY KEY`, `unit_id TEXT NOT NULL`, `body TEXT NOT NULL`, `created_at TEXT NOT NULL`, `meta TEXT`; index on `(unit_id)` | Free working notes against the unit |
-| `kv` | `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`, `updated_at TEXT NOT NULL` | Cursor and checkpoint scratch space for producers; last write wins |
+| Table             | Columns and shape                                                                                                                                                                                                                                        | What it holds                                                                                                                                                                                                        |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `_schema_version` | `version INTEGER NOT NULL`, seeded with the single row `1`                                                                                                                                                                                               | The schema version of this staging DB                                                                                                                                                                                |
+| `items`           | `id INTEGER PRIMARY KEY`, `unit_id TEXT NOT NULL`, `kind TEXT NOT NULL`, `source TEXT`, `text TEXT NOT NULL`, `sensitivity TEXT NOT NULL DEFAULT 'internal'`, `created_at TEXT NOT NULL`, `meta TEXT`; index on `(unit_id, kind)`                        | One row per staged item (a message, note or document fragment). `meta` is an open JSON bag. Writes are unmediated: sensitivity is recorded, not enforced, at write time. The default value `internal` is a tier word |
+| `chunks_raw`      | `id INTEGER PRIMARY KEY`, `item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE`, `idx INTEGER NOT NULL`, `text TEXT NOT NULL`, `content_hash TEXT NOT NULL`, `created_at TEXT NOT NULL`; indexes on `(item_id, idx)` and on `(content_hash)` | The item's raw, un-embedded chunks. A staging DB never stores vectors, which is what makes it cheap to write and cheap to branch                                                                                     |
+| `notes`           | `id INTEGER PRIMARY KEY`, `unit_id TEXT NOT NULL`, `body TEXT NOT NULL`, `created_at TEXT NOT NULL`, `meta TEXT`; index on `(unit_id)`                                                                                                                   | Free working notes against the unit                                                                                                                                                                                  |
+| `kv`              | `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`, `updated_at TEXT NOT NULL`                                                                                                                                                                                | Cursor and checkpoint scratch space for producers; last write wins                                                                                                                                                   |
 
 The code-side check asserts the version row is 1 and the table set is exactly
 these five. Promotion adds one more table — the `atlas_manifest` stamp — to
@@ -172,18 +176,18 @@ The registry's own store, from `schema/stage_registry_v1.sql`, created and
 owned by the staging registry in `atlas-core`. Both tables are created with
 `IF NOT EXISTS`.
 
-| Table | Columns and shape | What it holds |
-|---|---|---|
-| `staging_units` | `unit_id TEXT PRIMARY KEY`, `db_uri TEXT NOT NULL`, `owner TEXT NOT NULL`, `sensitivity TEXT NOT NULL`, `state TEXT NOT NULL CHECK (state IN ('open','closing','merged'))`, `schema_version INTEGER NOT NULL`, `created_at TEXT NOT NULL`, `updated_at TEXT NOT NULL`; index on `(state)` | One row per staging unit: where its DB lives (`db_uri` is a local file path today), who owns it, its tier, and its lifecycle state |
-| `merge_manifests` | `unit_id TEXT PRIMARY KEY`, `rows_in INTEGER NOT NULL`, `rows_promoted INTEGER NOT NULL`, `content_hash TEXT NOT NULL`, `embedding_model TEXT NOT NULL`, `promoted_at TEXT NOT NULL` | The durable audit record of each successful promotion, kept after the unit leaves the active states |
+| Table             | Columns and shape                                                                                                                                                                                                                                                                         | What it holds                                                                                                                      |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `staging_units`   | `unit_id TEXT PRIMARY KEY`, `db_uri TEXT NOT NULL`, `owner TEXT NOT NULL`, `sensitivity TEXT NOT NULL`, `state TEXT NOT NULL CHECK (state IN ('open','closing','merged'))`, `schema_version INTEGER NOT NULL`, `created_at TEXT NOT NULL`, `updated_at TEXT NOT NULL`; index on `(state)` | One row per staging unit: where its DB lives (`db_uri` is a local file path today), who owns it, its tier, and its lifecycle state |
+| `merge_manifests` | `unit_id TEXT PRIMARY KEY`, `rows_in INTEGER NOT NULL`, `rows_promoted INTEGER NOT NULL`, `content_hash TEXT NOT NULL`, `embedding_model TEXT NOT NULL`, `promoted_at TEXT NOT NULL`                                                                                                      | The durable audit record of each successful promotion, kept after the unit leaves the active states                                |
 
 ## Gate v1
 
 One table, from `schema/gate_records_v1.sql`, kept in the registry DB beside
 `staging_units`.
 
-| Table | Columns and shape | What it holds |
-|---|---|---|
+| Table          | Columns and shape                                                                                                                                                                                                                                                                                                                                                                                                                                                         | What it holds                                                                                                                                                                                                                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `gate_records` | `batch_id TEXT PRIMARY KEY`, `unit_id TEXT NOT NULL`, `tier TEXT NOT NULL CHECK (tier IN ('public','internal','secret'))`, `state TEXT NOT NULL CHECK (state IN ('open','closing','gated','published','quarantined'))`, `stage_reached TEXT`, `verdicts_json TEXT NOT NULL`, `strikes_json TEXT NOT NULL`, `needs_review INTEGER NOT NULL CHECK (needs_review IN (0,1))`, `publish_manifest_id TEXT`, `updated_at TEXT NOT NULL`; indexes on `(unit_id)` and on `(state)` | One row per ingest batch: the five gate stages' verdicts as JSON, the per-reason strike counts as JSON, and the batch state. Written at the sensitivity of its batch, it holds only counts, enumerated reason codes, row ids, content hashes and the publish manifest id — never content |
 
 ## The query-embedding cache
@@ -236,8 +240,8 @@ shared D1 database (binding name `HOT_CACHE`, database name
 `atlas-hot-cache`); the tenant is carried in the key, never in a per-tenant
 database. Summarised:
 
-| Table | Columns and shape | What it holds |
-|---|---|---|
+| Table       | Columns and shape                                                                                                                                                                                                                                                                                                                                                                                                           | What it holds                                                                                                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hot_cache` | `tenant_id TEXT NOT NULL`, `cache_key TEXT NOT NULL`, `class TEXT NOT NULL` (one of `A`, `B` or `C`), `payload BLOB NOT NULL`, `payload_bytes INTEGER NOT NULL`, `source_watermark TEXT NOT NULL`, `filled_at INTEGER NOT NULL` (unix seconds), `last_hit_at INTEGER NOT NULL`, `hit_count INTEGER NOT NULL DEFAULT 0`; primary key `(tenant_id, cache_key)`; one index, `hot_cache_eviction` on `(tenant_id, last_hit_at)` | Opaque payloads supplied by a future filler, with their byte length, an opaque source watermark, and hit bookkeeping. The eviction index orders rows by least-recent hit per tenant |
 
 There is no expiry column and no freshness check: an entry lives until it is
