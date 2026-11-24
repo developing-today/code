@@ -54,12 +54,15 @@
 //! invocation per call, no chaining.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ops::{Deref, DerefMut};
 
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::agent_quota_ledger::{AgentQuotaLedger, LedgerCheckedOut, QuotaLedgerStore};
+use crate::agent_quota_ledger::{
+    AgentQuotaLedger, CheckedOutLedger, LedgerCheckedOut, QuotaLedgerStore,
+};
 use crate::mcp_bridge::{BridgeError, BridgeSession, ToolAction, ToolDefinition};
 use crate::role_config::QuotaClass;
 
@@ -623,17 +626,51 @@ pub enum PolicyOutcome {
 /// A bridge session behind the policy point: one role grant, one
 /// bridge session, one audit log, one quota budget.
 #[derive(Debug)]
-pub struct PolicySession {
+pub struct PolicySession<'a> {
     grant: RoleGrant,
     bridge: BridgeSession,
     audit: AuditLog,
-    ledger: AgentQuotaLedger,
+    ledger: LedgerSlot<'a>,
     parked: bool,
     object_classes: BTreeMap<String, String>,
     admitted_at: BTreeMap<String, VecDeque<u64>>,
 }
 
-impl PolicySession {
+/// Where a [`PolicySession`] keeps its quota ledger.
+#[derive(Debug)]
+enum LedgerSlot<'a> {
+    /// [`PolicySession::new`]: an ephemeral ledger that dies with the
+    /// session; it never touches a [`QuotaLedgerStore`].
+    Owned(AgentQuotaLedger),
+    /// [`PolicySession::open_stored`]: checked out of the host's store.
+    /// Dropping the session hands the current spend back and releases
+    /// the checkout (#14580), so a session lost to a panic unwind or a
+    /// forgotten [`PolicySession::close`] neither pins the pair nor
+    /// loses its spend.
+    Stored(CheckedOutLedger<'a>),
+}
+
+impl Deref for LedgerSlot<'_> {
+    type Target = AgentQuotaLedger;
+
+    fn deref(&self) -> &AgentQuotaLedger {
+        match self {
+            LedgerSlot::Owned(ledger) => ledger,
+            LedgerSlot::Stored(guard) => guard,
+        }
+    }
+}
+
+impl DerefMut for LedgerSlot<'_> {
+    fn deref_mut(&mut self) -> &mut AgentQuotaLedger {
+        match self {
+            LedgerSlot::Owned(ledger) => ledger,
+            LedgerSlot::Stored(guard) => guard,
+        }
+    }
+}
+
+impl<'a> PolicySession<'a> {
     /// Open a policy session for one role grant. The bridge session
     /// is started (and its definitions pinned) by the driver, as in
     /// [`BridgeSession::start`]; `host_key` signs the audit chain.
@@ -653,7 +690,7 @@ impl PolicySession {
             grant,
             bridge,
             audit: AuditLog::new(host_key),
-            ledger,
+            ledger: LedgerSlot::Owned(ledger),
             parked: false,
             object_classes: BTreeMap::new(),
             admitted_at: BTreeMap::new(),
@@ -666,6 +703,9 @@ impl PolicySession {
     /// persisted ledger with its spend intact, so rejoining never
     /// resets a budget (#8301).
     ///
+    /// Dropping the session without [`Self::close`] still hands the
+    /// current ledger back and releases the checkout (#14580).
+    ///
     /// # Errors
     ///
     /// Returns [`LedgerCheckedOut`] when the agent's ledger for
@@ -676,7 +716,7 @@ impl PolicySession {
         grant: RoleGrant,
         bridge: BridgeSession,
         host_key: SigningKey,
-        store: &mut QuotaLedgerStore,
+        store: &'a QuotaLedgerStore,
         now: u64,
     ) -> Result<Self, LedgerCheckedOut> {
         let ledger = store.open(
@@ -690,7 +730,7 @@ impl PolicySession {
             grant,
             bridge,
             audit: AuditLog::new(host_key),
-            ledger,
+            ledger: LedgerSlot::Stored(ledger),
             parked: false,
             object_classes: BTreeMap::new(),
             admitted_at: BTreeMap::new(),
@@ -699,9 +739,13 @@ impl PolicySession {
 
     /// End the session, handing its quota ledger back to the host's
     /// [`QuotaLedgerStore`]. The driver calls this on leave (or on
-    /// host shutdown) so the next join reopens the same spend.
-    pub fn close(self, store: &mut QuotaLedgerStore) {
-        store.close(self.ledger);
+    /// host shutdown) so the next join reopens the same spend. A
+    /// stored ledger is handed back even if
+    /// the driver forgets this call: dropping the session releases
+    /// the checkout and upserts the current spend (#14580).
+    pub fn close(self) {
+        // The `Stored` guard's `Drop` hands the ledger back; the
+        // `Owned` ledger is ephemeral and dies here, as before.
     }
 
     /// The role grant this session was opened with.
@@ -1148,7 +1192,7 @@ mod tests {
         }
     }
 
-    fn session(grant: RoleGrant) -> PolicySession {
+    fn session(grant: RoleGrant) -> PolicySession<'static> {
         PolicySession::new(
             grant,
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
@@ -1157,7 +1201,7 @@ mod tests {
         )
     }
 
-    fn joined(grant: RoleGrant) -> PolicySession {
+    fn joined(grant: RoleGrant) -> PolicySession<'static> {
         let mut session = session(grant);
         let outcome = session.act("world.join", &json!({ "capability": "cap-1" }), TEST_NOW);
         assert!(
@@ -1167,7 +1211,7 @@ mod tests {
         session
     }
 
-    fn last_outcome(session: &PolicySession) -> &AuditOutcome {
+    fn last_outcome<'s>(session: &'s PolicySession<'_>) -> &'s AuditOutcome {
         &session.audit_events().last().unwrap().outcome
     }
 
@@ -1556,7 +1600,7 @@ mod tests {
 
     #[test]
     fn stored_session_survives_leave_and_rejoin_without_resetting_spend() {
-        let mut store = QuotaLedgerStore::new();
+        let store = QuotaLedgerStore::new();
         let first_grant = grant();
         let agent = first_grant.agent_key;
         let world = first_grant.world.clone();
@@ -1565,7 +1609,7 @@ mod tests {
             first_grant,
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
             host_key(),
-            &mut store,
+            &store,
             TEST_NOW,
         )
         .unwrap();
@@ -1580,7 +1624,7 @@ mod tests {
         first.act("world.leave", &json!({}), TEST_NOW);
         let spent_after_leave = first.spend(TEST_NOW);
         assert_eq!(spent_after_leave, spent);
-        first.close(&mut store);
+        first.close();
 
         // The owner sees the spend while the agent is away.
         assert_eq!(
@@ -1593,7 +1637,7 @@ mod tests {
             grant(),
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
             host_key(),
-            &mut store,
+            &store,
             TEST_NOW + 1,
         )
         .unwrap();
@@ -1609,12 +1653,12 @@ mod tests {
 
     #[test]
     fn stored_session_refuses_a_second_live_open_for_the_same_pair() {
-        let mut store = QuotaLedgerStore::new();
+        let store = QuotaLedgerStore::new();
         let first = PolicySession::open_stored(
             grant(),
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
             host_key(),
-            &mut store,
+            &store,
             TEST_NOW,
         )
         .unwrap();
@@ -1627,7 +1671,7 @@ mod tests {
             grant(),
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
             host_key(),
-            &mut store,
+            &store,
             TEST_NOW,
         )
         .err()
@@ -1636,15 +1680,56 @@ mod tests {
         assert_eq!(refusal.world, grant().world);
 
         // Once the first session is handed back, a rejoin opens.
-        first.close(&mut store);
+        first.close();
         let rejoined = PolicySession::open_stored(
             grant(),
             BridgeSession::start(&v1_tool_definitions()).unwrap(),
             host_key(),
-            &mut store,
+            &store,
             TEST_NOW + 1,
         );
         assert!(rejoined.is_ok());
+    }
+
+    #[test]
+    fn stored_session_drop_without_close_hands_spend_back() {
+        // #14580: a session dropped without close() (panic unwind,
+        // early return, forgotten call) must neither pin the pair
+        // nor lose its spend: the guard's Drop hands the current
+        // ledger back, so a rejoin reopens with its charges intact.
+        let store = QuotaLedgerStore::new();
+        let agent = grant().agent_key;
+        let world = grant().world.clone();
+
+        let spent = {
+            let mut dropped = PolicySession::open_stored(
+                grant(),
+                BridgeSession::start(&v1_tool_definitions()).unwrap(),
+                host_key(),
+                &store,
+                TEST_NOW,
+            )
+            .unwrap();
+            assert!(matches!(
+                dropped.act("world.join", &json!({ "capability": "cap-1" }), TEST_NOW),
+                PolicyOutcome::Executed(_)
+            ));
+            dropped.act("screen.read", &json!({}), TEST_NOW);
+            let spent = dropped.spend(TEST_NOW);
+            // No close(): the session is dropped here.
+            spent
+        };
+        assert!(!store.is_checked_out(&agent, &world));
+
+        let rejoined = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &store,
+            TEST_NOW + 1,
+        )
+        .unwrap();
+        assert_eq!(rejoined.spend(TEST_NOW + 1), spent);
     }
 
     /// The #8301 acceptance against the #1067 (F12.10) consumed

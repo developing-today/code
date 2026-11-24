@@ -108,7 +108,7 @@ fn spike_grant() -> RoleGrant {
 /// verbatim; refusals send nothing; `Close` drops the connection.
 struct SpikeDriver {
     client: Option<WorldClient>,
-    session: PolicySession,
+    session: PolicySession<'static>,
 }
 
 impl SpikeDriver {
@@ -143,7 +143,7 @@ impl SpikeDriver {
     }
 
     /// Read host frames into the session until `ready` holds.
-    async fn pump_until(&mut self, what: &str, ready: impl Fn(&PolicySession) -> bool) {
+    async fn pump_until(&mut self, what: &str, ready: impl Fn(&PolicySession<'_>) -> bool) {
         tokio::time::timeout(TIMEOUT, async {
             loop {
                 if ready(&self.session) {
@@ -173,7 +173,7 @@ impl SpikeDriver {
     /// otherwise the bridge's revision can lag the host's current
     /// one by exactly the trailing view, and the host's
     /// stale-decision gate refuses the invoke.
-    async fn pump_drained(&mut self, what: &str, ready: impl Fn(&PolicySession) -> bool) {
+    async fn pump_drained(&mut self, what: &str, ready: impl Fn(&PolicySession<'_>) -> bool) {
         tokio::time::timeout(TIMEOUT, async {
             loop {
                 let frame = match tokio::time::timeout(
