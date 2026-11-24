@@ -2,7 +2,7 @@
 
 The estate holds exactly 50 Turso databases. The count is settled: a live `turso db list` on the laptop on 2026-11-23 returned exactly 50 rows, and every name in this chapter is copied from that list. Every database sits in the single Turso group `great-star-lord`; hostnames are all `…-dezren39.aws-us-east-1.turso.io`. The #13844 Turso audit's headline and group arithmetic (Atlas 33 + fleet plane 4 + `muse-meta` 1 + small product stores 4 + frozen 8 = 50) match the live list name for name outside the Atlas shard families.
 
-This book covers 15 of the 50 in full: the seven live PM stores and the frozen eight as one grouped entry. The other 35 are named in the table at the end: 34 with their covering book and chapter from the coverage ledger (the 33 Atlas databases and `fleet-queue`), and `fleet-dispatch-jobs`, the one gap the ledger assigns to the fleet book. Settled ledger arithmetic: 34 covered + 15 PM gaps + 1 fleet gap = 50. Three further stores named in the ledger are D1, not Turso, and close the chapter.
+This book covers 15 of the 50 in full: the seven live PM stores and the frozen eight as one grouped entry. The other 35 are named in the table at the end: 34 with their covering book and chapter from the coverage ledger (the 33 Atlas databases and `fleet-queue`), and `fleet-dispatch-jobs`, the one gap the ledger assigned to the fleet book (its chapter landed in the same programme, PR #13978). Settled ledger arithmetic: 34 covered + 15 PM gaps + 1 fleet gap = 50. Three further stores named in the ledger are D1, not Turso, and close the chapter.
 
 Every full entry follows the same shape: what the store is, its shape, its behaviour, and its failure shapes where the survey records them.
 
@@ -106,7 +106,7 @@ Every full entry follows the same shape: what the store is, its shape, its behav
 | `atlas-core-internal-work-engineering-05` | Atlas book — `reference/data-stores.md`, `concepts/corpus-and-provenance.md`. Content shard. |
 | `atlas-core-internal-work-engineering-06` | Atlas book — `reference/data-stores.md`, `concepts/corpus-and-provenance.md`. Content shard. |
 | `fleet-queue` | Fleet book — `concepts/queue.md`, `library/queue-client.md`, `tutorials/run-the-brokers.md`. The queue broker core: tasks, events, leases, placement, actions-exec tables. Published at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/) |
-| `fleet-dispatch-jobs` | Fleet book — this database is the fleet book's gap, not this book's: the fleet book is its home, and its fleet chapter is landing in the same programme (lane FLEET-SIDELINE-2, unmerged at this book's build time). The dispatch jobs store (`jobs`, 6 rows). Published at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/) |
+| `fleet-dispatch-jobs` | Fleet book — `concepts/dispatch-jobs-store.md` (The dispatch-test jobs store: fleet-dispatch-jobs), landed in this programme (lane FLEET-SIDELINE-2, PR #13978). This database was the fleet book's one gap in the ledger; the fleet book is its home, not this book's. The dispatch jobs store (`jobs`, 6 rows). Published at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/) |
 
 ## Not Turso: the D1 stores
 

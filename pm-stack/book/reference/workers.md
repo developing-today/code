@@ -120,8 +120,8 @@ The final arithmetic, stated once and plainly (D41): **the ledger's 24 rows are 
 | `id-hosted-worker` | ID book — `concepts/hosted.md`, `reference/hosted-worker.md`. Covered. |
 | `desktop-commander` | Fleet book — `concepts/commander.md` (The Commander door: Desktop Commander over MCP), landed in this programme (PR #13915). Covered. Published at [https://developing-today.github.io/code/fleet/](https://developing-today.github.io/code/fleet/) |
 | `mcpx` | mcpx book — `worker.md` (The door Worker at mcpx.security.cab), landed in this programme (PR #13906). Covered. |
-| `fleet-hosted` | Fleet book — gap assigned to the fleet book; its fleet chapter is landing in the same programme (lane FLEET-SIDELINE-2, unmerged at this book's build time). |
-| `queue-transport-alert` | Fleet book — gap assigned to the fleet book; its fleet chapter is landing in the same programme (lane FLEET-SIDELINE-2, unmerged at this book's build time). |
+| `fleet-hosted` | Fleet book — `concepts/fleet-hosted.md` (The hosted edition: fleet-hosted), landed in this programme (lane FLEET-SIDELINE-2, PR #13978). Covered. |
+| `queue-transport-alert` | Fleet book — `concepts/queue-transport-alert.md` (The queue watchdog: queue-transport-alert), landed in this programme (lane FLEET-SIDELINE-2, PR #13978). Covered. |
 | `mail` (id-mail worker) | ID book — `reference/mail-worker.md` (The mail Worker API), landed in this programme (PR #13914). Covered. |
 | `id-worker-poc` | ID book — `reference/worker-poc.md` (id-worker-poc: the World Durable Object proof of concept), landed in this programme (PR #13914). Covered. |
 | `id-d1-journal-poc` | ID book — `reference/d1-journal-poc.md` (id-d1-journal-poc: the D1 journal proof of concept), landed in this programme (PR #13914). Covered. |
