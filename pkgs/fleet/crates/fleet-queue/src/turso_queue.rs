@@ -3185,6 +3185,29 @@ mod tests {
     }
 
     #[test]
+    fn health_malformed_parked_includes_null_not_before_9179() {
+        // Oracle: stored not_before values must pass the same validator
+        // used by the hygiene fold; NULL is not an RFC 3339 timestamp.
+        // Health must therefore fetch NULL rows rather than filtering
+        // them out before the fold can report them.
+        let src = &test_source();
+        let sql = src
+            .split("SELECT queue, not_before FROM tasks")
+            .nth(1)
+            .and_then(|s| s.split("let hrows").next())
+            .unwrap_or("");
+        assert!(sql.contains("status = 'parked'"), "{sql}");
+        assert!(
+            !sql.contains("not_before IS NOT NULL"),
+            "NULL not_before rows must reach the malformed-row validator: {sql}"
+        );
+        let mut by_queue: Map<String, Value> = Map::new();
+        by_queue.insert("q1".to_string(), health_entry("q1"));
+        apply_malformed_parked(&mut by_queue, &[json!({"queue": "q1", "not_before": null})]);
+        assert_eq!(by_queue["q1"]["malformed_parked"], 1);
+    }
+
+    #[test]
     fn health_entry_defaults_at_cap_queued_to_zero() {
         let e = health_entry("repo-health-code-pilot");
         assert_eq!(e.get("at_cap_queued"), Some(&json!(0)));
