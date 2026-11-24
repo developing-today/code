@@ -433,11 +433,91 @@ impl ProjectedLineageClaim {
 /// versions require a binding, and both revision endpoints must be local rows.
 /// External note-create identities are trusted inputs, never inferred from rows.
 pub fn project_lineage_claims(
-    _rows: &[AtlasVersionRow],
-    _bindings: &[AtlasFileNoteBinding],
-    _edges: &[AtlasRevisionEdge],
+    rows: &[AtlasVersionRow],
+    bindings: &[AtlasFileNoteBinding],
+    edges: &[AtlasRevisionEdge],
 ) -> Result<Vec<ProjectedLineageClaim>> {
-    Ok(Vec::new())
+    // Reuse immutable-row validation without changing its output or contracts.
+    project_versions(rows)?;
+    let keys: BTreeSet<_> = rows
+        .iter()
+        .map(|row| AtlasVersionKey {
+            file_id: row.file_id.clone(),
+            version_seq: row.version_seq,
+        })
+        .collect();
+    let files: BTreeSet<_> = rows.iter().map(|row| row.file_id.as_str()).collect();
+    let mut by_file = BTreeMap::new();
+    for binding in bindings {
+        if !files.contains(binding.file_id.as_str())
+            || binding.note_create.file_id != binding.file_id
+            || binding.note_create.version_seq == 0
+            || by_file.insert(binding.file_id.as_str(), binding).is_some()
+        {
+            return Err(refuse("unknown, duplicate or invalid file-note binding"));
+        }
+    }
+    if by_file.len() != files.len() {
+        return Err(refuse(
+            "every file requires an explicit note-create binding",
+        ));
+    }
+    let mut claims = Vec::new();
+    for binding in by_file.values() {
+        claims.push(ProjectedLineageClaim {
+            subject: ProjectedLineageRef::NoteCreate(binding.note_create.clone()),
+            name: "atlas.fileId".into(),
+            value: ProjectedLineageValue::File {
+                file_id: binding.file_id.clone(),
+                source_anchor: binding.source_anchor.clone(),
+            },
+        });
+    }
+    for key in &keys {
+        let binding = by_file
+            .get(key.file_id.as_str())
+            .ok_or_else(|| refuse("missing binding"))?;
+        claims.push(ProjectedLineageClaim {
+            subject: ProjectedLineageRef::DocumentPut(key.clone()),
+            name: "atlas.specializationOf".into(),
+            value: ProjectedLineageValue::Specialization {
+                note: ProjectedLineageRef::NoteCreate(binding.note_create.clone()),
+            },
+        });
+    }
+    // Confidence is data, never an ordering key. Duplicate facts are refused
+    // even if they disagree on confidence instead of silently overwriting.
+    let mut ordered_edges = BTreeMap::new();
+    for edge in edges {
+        if !keys.contains(&edge.newer)
+            || !keys.contains(&edge.prior)
+            || edge.newer == edge.prior
+            || !edge.confidence.is_finite()
+            || !(0.0..=1.0).contains(&edge.confidence)
+            || ordered_edges
+                .insert((&edge.newer, &edge.prior, &edge.edge_kind), edge)
+                .is_some()
+        {
+            return Err(refuse("unknown, self, duplicate or invalid revision edge"));
+        }
+    }
+    for edge in ordered_edges.values() {
+        claims.push(ProjectedLineageClaim {
+            subject: ProjectedLineageRef::DocumentPut(edge.newer.clone()),
+            name: "atlas.wasRevisionOf".into(),
+            value: ProjectedLineageValue::Revision {
+                document: ProjectedLineageRef::DocumentPut(edge.prior.clone()),
+                edge_kind: edge.edge_kind.clone(),
+                confidence: edge.confidence,
+            },
+        });
+    }
+    // A real hash has exactly this width and ASCII encoding; do not let short
+    // symbolic row references disguise an oversized eventual ID claim value.
+    for claim in &claims {
+        claim.value_json(|_| Some("0".repeat(64)))?;
+    }
+    Ok(claims)
 }
 
 #[cfg(test)]
