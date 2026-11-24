@@ -15,6 +15,11 @@
 //! held-out test split is refused by `atlas_core::eval::
 //! select_best_signal`; this binary prints test reports for the
 //! final, single scoring pass the #5741 protocol allows.
+//!
+//! Exit status is the eval's verdict: 0 when every signal passes,
+//! 1 when the report contains ceiling/scope or provenance
+//! violations (#8627 — the report is still printed first, as the
+//! evidence), 2 on usage errors.
 
 use std::process::ExitCode;
 
@@ -67,7 +72,24 @@ fn main() -> ExitCode {
                 "{}",
                 serde_json::to_string_pretty(&report).expect("report serializes")
             );
-            ExitCode::SUCCESS
+            if report.passed() {
+                return ExitCode::SUCCESS;
+            }
+            for signal in &report.signals {
+                if let Some(first) = signal.violations.first() {
+                    eprintln!(
+                        "atlas-eval: FAIL signal {:?}: {} constraint violation(s); \
+                         first: query {:?} doc {:?} at rank {} ({:?})",
+                        signal.signal,
+                        signal.violations.len(),
+                        first.query,
+                        first.doc,
+                        first.rank,
+                        first.kind,
+                    );
+                }
+            }
+            ExitCode::FAILURE
         }
         Err(error) => {
             eprintln!("atlas-eval: {error}");

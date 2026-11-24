@@ -448,6 +448,12 @@ pub(super) fn default_lane(agent: &str) -> String {
 /// the mailbox, but a known lane may belong to a shared queue worker
 /// (for example `code-i` belongs to `repo-worker-code`).
 fn registered_lane_worker(lane: &str) -> Option<&'static str> {
+    // The `oc-*` scheduled lanes carry a registered family under an
+    // `oc-` prefix (`oc-code-02`); the broker binds them to the same
+    // shared worker as the bare family (#13073).
+    if let Some(inner) = lane.strip_prefix("oc-") {
+        return oc_lane_worker(inner);
+    }
     if matches!(lane, "not-code-a" | "not-code-g") {
         return Some("repo-worker-nix");
     }
@@ -470,6 +476,12 @@ fn registered_lane_worker(lane: &str) -> Option<&'static str> {
     if suffix.len() != 1 || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
         return None;
     }
+    family_worker(family)
+}
+
+/// The shared worker a registered lane family binds to, by family
+/// name alone.
+fn family_worker(family: &str) -> Option<&'static str> {
     match family {
         "code" | "any" | "not-code" => Some("repo-worker-code"),
         "opencode" => Some("repo-worker-opencode"),
@@ -477,6 +489,22 @@ fn registered_lane_worker(lane: &str) -> Option<&'static str> {
         "nix" => Some("repo-worker-nix"),
         _ => None,
     }
+}
+
+/// An `oc-*` lane with the prefix stripped. A letter suffix resolves
+/// exactly like the bare lane (`oc-not-code-a` is `not-code-a` under
+/// the prefix); the scheduled lanes' numeric suffix (`oc-code-02`)
+/// resolves by family. An unknown family stays unregistered, so the
+/// caller still falls back to the agent name.
+fn oc_lane_worker(inner: &str) -> Option<&'static str> {
+    if let Some(worker) = registered_lane_worker(inner) {
+        return Some(worker);
+    }
+    let (family, suffix) = inner.rsplit_once('-')?;
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    family_worker(family)
 }
 
 /// How many listed entries in a row may turn out stale in one run
@@ -506,6 +534,9 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             "--remaining-budget-minutes",
             "--filter",
             "--queue",
+            "--model-provider",
+            "--model-id",
+            "--model-variant",
         ],
     )?;
     a.no_positional("next")?;
@@ -610,6 +641,9 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
             "--remaining-budget-minutes",
             "--filter",
             "--queue",
+            "--model-provider",
+            "--model-id",
+            "--model-variant",
         ] {
             if let Some(v) = a.last(flag) {
                 claim.push(flag.to_string());

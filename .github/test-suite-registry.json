@@ -177,6 +177,7 @@
         "pkgs/id/examples/roc-chat/**",
         "pkgs/id/examples/roc-counter/**",
         "pkgs/id/examples/roc-grid/**",
+        "pkgs/id/examples/roc-mind-map/**",
         "pkgs/id/examples/roc-screen/**",
         "pkgs/id/examples/roc-text-counter/**",
         "pkgs/id/examples/territory/**",
@@ -219,6 +220,20 @@
       "status": "mapped",
       "related_issues": [7904],
       "notes": "Standalone crate (path dependency on plaza-sdk); its checked-in counter.wasm is loaded by the sandbox conformance tests (src/sandbox.rs), and the rust-counter-wasm check rebuilds the module from source (roc-examples pattern) and runs those tests against the rebuild -- wasm bytes are not reproducible across rustc builds, so no byte gate."
+    },
+    {
+      "id": "id.examples.rust-colony",
+      "paths": ["pkgs/id/examples/rust-colony/src/**"],
+      "invocation": "cargo test --manifest-path examples/rust-colony/Cargo.toml (test-rust-examples flake check)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-rust-examples",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [13605],
+      "notes": "Standalone crate, no path dependencies; pure domain twin of the Roc colony guest (#13605), oracle-checked against colony/two-deliveries. No wasm build yet."
     },
     {
       "id": "id.web.playwright",
@@ -271,6 +286,8 @@
         "pkgs/id/hosted-worker/test/persistent-account-directory.test.ts",
         "pkgs/id/hosted-worker/test/admission-gate.test.ts",
         "pkgs/id/hosted-worker/test/provisioning.test.ts",
+        "pkgs/id/hosted-worker/test/provisioning-surface.test.ts",
+        "pkgs/id/hosted-worker/test/enablement.test.ts",
         "pkgs/id/hosted-worker/test/blobs.test.ts",
         "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
@@ -282,9 +299,13 @@
         "pkgs/id/hosted-worker/test/bridge-range.test.ts",
         "pkgs/id/hosted-worker/test/bridge-store.test.ts",
         "pkgs/id/hosted-worker/test/bridge-session.test.ts",
-        "pkgs/id/hosted-worker/test/bridge-do.test.ts"
+        "pkgs/id/hosted-worker/test/bridge-do.test.ts",
+        "pkgs/id/hosted-worker/test/tenancy-schema.test.ts",
+        "pkgs/id/hosted-worker/test/export.test.ts",
+        "pkgs/id/hosted-worker/test/routing-boundary.test.ts",
+        "pkgs/id/hosted-worker/test/migration-control.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/persistent-account-directory.test.ts test/admission-gate.test.ts test/provisioning.test.ts test/provisioning-surface.test.ts test/enablement.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts test/id-uri-vectors.test.ts test/bridge-blake3.test.ts test/bridge-event.test.ts test/bridge-range.test.ts test/bridge-store.test.ts test/bridge-session.test.ts test/bridge-do.test.ts test/tenancy-schema.test.ts test/export.test.ts test/routing-boundary.test.ts test/migration-control.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -320,6 +341,19 @@
       },
       "status": "mapped",
       "notes": "The native-shell check runs every integration target in this non-default workspace member; suite paths trued up 2026-11-17 while repairing the registry ratchet (#10329)."
+    },
+    {
+      "id": "id.tui-shell.capability-statement",
+      "paths": ["pkgs/id/crates/id-tui-shell/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-tui-shell runs cargo nextest -p id-tui-shell)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-tui-shell",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The tui-shell check runs every integration target in this non-default workspace member; the first target is the capability-statement check recorded for #12818 (shells v2 slice 2, decision D3)."
     },
     {
       "id": "id.rust.id-hw-shell.integration",
@@ -712,6 +746,19 @@
       "related_issues": [9860]
     },
     {
+      "id": "pm-service.tenant-store",
+      "paths": ["pm-stack/pm-service/test/tenant-store.test.ts"],
+      "invocation": "cd pm-stack/pm-service && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test pm-service tenant-store suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12825]
+    },
+    {
       "id": "opencode-claimant.install",
       "paths": ["pm-stack/opencode-claimant/test/install.test.mjs"],
       "invocation": "cd pm-stack/opencode-claimant && bun test test/install.test.mjs",
@@ -802,6 +849,18 @@
       "venue": {
         "workflow": ".github/workflows/pm-stack-tests.yml",
         "job_step": "Test console",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
+      "id": "pm-stack.platform",
+      "paths": ["pm-stack/platform/*.test.ts"],
+      "invocation": "cd pm-stack/platform && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test the list of Workers against the repository",
         "state": "active",
         "dispatchable": true
       },
@@ -931,6 +990,20 @@
       "status": "mapped",
       "related_issues": [10423],
       "notes": "Script-style suite (19 checks; not unittest-discoverable). The workflow runs nightly on main with no path filters (2026-11-16 nightly-CI policy), so the step is the coverage; the step asserts the file exists and requires the checks-passed line."
+    },
+    {
+      "id": "pm-stack.host-health-collector",
+      "paths": ["pm-stack/tests/test_host_health_collector.py", "pm-stack/host-health-collector.py"],
+      "invocation": "python3 -m unittest discover -s pm-stack/tests -p 'test_host_health_collector.py'",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test host-health collector Python suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [3989],
+      "notes": "Wired for #3989 criterion 6: validates the host-health collector's backup restore-point projection. The workflow runs nightly on main with no path filters."
     },
     {
       "id": "pm-stack.meta-exporter",
@@ -1507,7 +1580,10 @@
         "pkgs/id/crates/id-sync/tests/federation_b28.rs",
         "pkgs/id/crates/id-sync/tests/federation_b31.rs",
         "pkgs/id/crates/id-sync/tests/federation_b32.rs",
-        "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs"
+        "pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs",
+        "pkgs/id/crates/id-sync/tests/bridge_live.rs",
+        "pkgs/id/crates/id-sync/tests/relay_poc.rs",
+        "pkgs/id/crates/id-sync/tests/forwarding_sink.rs"
       ],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
       "venue": {

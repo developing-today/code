@@ -258,7 +258,7 @@ feature, phase, fix and research records — run `ls doc/` for those.
 - [Design — the `id://` URI scheme and per-namespace handlers/encodings (#9117)](../../doc/2026-11-17T04-55-00Z_design_id9117_id_uri_scheme.md)
 - [Design (#9141): peer trust classes + signed-data acceptance rule](../../doc/2026-11-17T05-15-00Z_design_id9141_peer_trust_classes.md)
 - [Federated query fan-out — design record (#9144)](../../doc/2026-11-17T15-40-00Z_design_id_federated_query_fanout/2026-11-17T15-40-00Z_design_id_federated_query_fanout.md)
-- [Hosted tenancy architecture — per-user Turso databases + a central tenancy DB (component E of #9078)](../../doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture.md)
+- [Hosted tenancy architecture — per-tenant Turso databases + a central tenancy DB (component E of #9078)](../../doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture.md)
 - [Currency control plane — design: registry, account factory, gateway](../../doc/2026-10-29T12-42-21Z_design_currency_control_plane/2026-10-29T12-42-21Z_design_currency_control_plane.md)
 - [Design: ID app packaging — app manifest, folder layout, TUI/web parity](../../doc/2026-10-29T12-50-36Z_design_id_app_packaging/2026-10-29T12-50-36Z_design_id_app_packaging.md)
 - [One `/id-sync/1` handshake, and why serve's range flights moved to](../../doc/2026-10-29T16-21-00Z_design_id_sync_alpn_split/2026-10-29T16-21-00Z_design_id_sync_alpn_split.md)
@@ -301,6 +301,7 @@ feature, phase, fix and research records — run `ls doc/` for those.
 - [File listing provenance: origin node and upload time in List](../../doc/2026-11-04T10-46-17Z_design_listing_origin_and_upload_time/2026-11-04T10-46-17Z_design_listing_origin_and_upload_time.md)
 - [One `fleet` multicall binary: search, queue, dispatch, proxy](../../doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/2026-11-04T11-45-48Z_design_fleet_multicall_binary.md)
 - [Atlas / Turso data architecture — Scaler-era revision](../../doc/2026-11-04T21-27-34Z_design_atlas_scaler_revision/2026-11-04T21-27-34Z_design_atlas_scaler_revision.md)
+- [Sheet-derived staging and curated rows: Turso design addendum (#5692)](../../doc/2026-11-24T00-50-11Z_design_sheet-staging-turso/2026-11-24T00-50-11Z_design_sheet-staging-turso.md)
 - [Atlas — schema-driven filter surface from the classification manifest](../../doc/2026-11-05T13-03-49Z_design_atlas_manifest_filter_surface/2026-11-05T13-03-49Z_design_atlas_manifest_filter_surface.md)
 - [Design: shared threat-list feed protocol — versioned, signed, subscribable feeds with local override lists](../../doc/2026-11-05T13-36-21Z_design_threat_list_feed_protocol/2026-11-05T13-36-21Z_design_threat_list_feed_protocol.md)
 - [Capability-certification exception policy](../../doc/2026-11-08T01-10-24Z_design_id_capability_certification_exceptions/2026-11-08T01-10-24Z_design_id_capability_certification_exceptions.md)
@@ -348,6 +349,7 @@ feature, phase, fix and research records — run `ls doc/` for those.
 - [Atlas Program — Full Investigation, Next-Steps Design & Build-Out Prompt](../../doc/2026-11-23T12-06-51Z_design_atlas_program_investigation/2026-11-23T12-06-51Z_design_atlas_program_investigation.md)
 - [F12.10 per-account quotas — design for the ownership slice of #1067](../../doc/2026-11-23_design_id1067-account-quotas.md)
 - [Social app reference model (design record for #9128)](../../doc/2026-11-23_design_id9128_social_app_reference_model.md)
+- [Rust practices & opinions: Frugal Async Rust considerations (alpha seed for #13779)](../../doc/2026-11-23T22-21-27Z_design_rust-practices/2026-11-23T22-21-27Z_design_rust-practices.md)
 
 ## Package architecture docs (living, with the code)
 

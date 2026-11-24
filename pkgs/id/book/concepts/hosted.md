@@ -29,23 +29,23 @@ The per-user object is `UserDO` in `src/user-do.ts`. Its schema version is 3, st
 
 Every route first runs the common guard: routing context present, runtime jurisdiction matches, and the persisted (binding_id, jurisdiction) pair — bound immutably by the first routed request — matches. The object exposes 15 method routes over 13 paths:
 
-| Method and path | Purpose |
-|---|---|
-| `GET /v1/usage` | Usage, ceiling, and whether the user is at cap (`at_cap`) |
-| `GET /v1/export` | Full KV and blob index export; stays available at cap, by design |
-| `GET /v1/state` | binding_id, jurisdiction, schema_version, object name |
-| `GET /v1/bridge/challenge` | Issue a single-use ID-key proof nonce (bridge, #3818) |
-| `GET /v1/bridge/heads` | Bridge chain heads; a fresh ID-key proof is required per call |
-| `POST /v1/bridge/push` | Ingest a batch of signed events; outcomes are accepted, duplicate, fork, waiting, refused |
-| `POST /v1/bridge/pull` | Pull events beyond per-author positions; binary batch, with `x-bridge-more` and `x-bridge-heads` headers |
-| `GET /v1/bridge/export` | Export sets for the native `build_export` (#13157); 502 naming the hash if R2 cannot produce a cited blob |
-| `WS /v1/bridge/ws` | Bridge session; in-band CHALLENGE/AUTH, binary frames only |
-| `PUT /v1/blobs` | Store a content-addressed blob, keyed by SHA-256 hex; deduplicated across users, with a per-user reference row |
-| `GET /v1/blobs/{64-hex}` | Fetch a referenced blob |
+| Method and path             | Purpose                                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/usage`             | Usage, ceiling, and whether the user is at cap (`at_cap`)                                                           |
+| `GET /v1/export`            | Full KV and blob index export; stays available at cap, by design                                                    |
+| `GET /v1/state`             | binding_id, jurisdiction, schema_version, object name                                                               |
+| `GET /v1/bridge/challenge`  | Issue a single-use ID-key proof nonce (bridge, #3818)                                                               |
+| `GET /v1/bridge/heads`      | Bridge chain heads; a fresh ID-key proof is required per call                                                       |
+| `POST /v1/bridge/push`      | Ingest a batch of signed events; outcomes are accepted, duplicate, fork, waiting, refused                           |
+| `POST /v1/bridge/pull`      | Pull events beyond per-author positions; binary batch, with `x-bridge-more` and `x-bridge-heads` headers            |
+| `GET /v1/bridge/export`     | Export sets for the native `build_export` (#13157); 502 naming the hash if R2 cannot produce a cited blob           |
+| `WS /v1/bridge/ws`          | Bridge session; in-band CHALLENGE/AUTH, binary frames only                                                          |
+| `PUT /v1/blobs`             | Store a content-addressed blob, keyed by SHA-256 hex; deduplicated across users, with a per-user reference row      |
+| `GET /v1/blobs/{64-hex}`    | Fetch a referenced blob                                                                                             |
 | `DELETE /v1/blobs/{64-hex}` | Drop this user's reference only; the R2 bytes are deliberately not deleted (garbage collection is the #9935 family) |
-| `PUT /v1/kv/{key}` | Per-user KV write; the key must match `[A-Za-z0-9._-]{1,128}` |
-| `GET /v1/kv/{key}` | KV read |
-| `DELETE /v1/kv/{key}` | KV delete; available at cap |
+| `PUT /v1/kv/{key}`          | Per-user KV write; the key must match `[A-Za-z0-9._-]{1,128}`                                                       |
+| `GET /v1/kv/{key}`          | KV read                                                                                                             |
+| `DELETE /v1/kv/{key}`       | KV delete; available at cap                                                                                         |
 
 Any other path or method returns 404 with `{"error":"not_found"}`. Bridge routes additionally fail closed when the binding record names no ID (Iroh root) key.
 
@@ -69,6 +69,8 @@ The list of absences is part of the specification of the current state:
 Its worker (`src/worker.ts`) exposes a `WorldObject` Durable Object (binding `WORLD`, migration `v1-sqlite`, a CompiledWasm rule for the prebuilt guest) with three routes: `POST /step` taking `{participant, event}`, `POST /cold-start`, and `GET /state`. A SQLite `journal` table is the source of truth. The hosted loader (`src/manifest.ts`) refuses `portability=native` manifests and manifests declaring more than 64 MB of memory, up front.
 
 A subfolder, `d1-journal-poc/`, is a second, local-only fit probe for D1: `GET /health`, `POST /append`, `GET /snapshot`, `GET /tail`, with journal header version 1 entries `created` and `caps_granted`, a placeholder database ID, and always `--local`. Its own note records that a D1 bookmark is not a stream cursor.
+
+Both proofs of concept have their own chapters: [id-worker-poc: the World Durable Object proof of concept](../reference/worker-poc.md) and [id-d1-journal-poc: the D1 journal proof of concept](../reference/d1-journal-poc.md).
 
 ## Where the rest lives
 

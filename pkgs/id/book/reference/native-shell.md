@@ -16,13 +16,13 @@ usage: id-native-shell [--node <node-id> --capability <cap>] [--world <name>] [-
 
 ## Arguments
 
-| Argument | Value | Rule |
-|---|---|---|
-| `--node <node-id>` | 64-hex node ID | Must be given together with `--capability`. |
-| `--capability <cap>` | Capability string | Must be given together with `--node`. |
-| `--world <name>` | World name | Selects the world on the node. |
-| `--addr <ip:port>` | Socket address | Repeatable. Each occurrence adds a direct address and skips discovery for it. |
-| `--no-relay` | Flag, no value | Direct connections only; relay use is disabled. |
+| Argument             | Value             | Rule                                                                          |
+| -------------------- | ----------------- | ----------------------------------------------------------------------------- |
+| `--node <node-id>`   | 64-hex node ID    | Must be given together with `--capability`.                                   |
+| `--capability <cap>` | Capability string | Must be given together with `--node`.                                         |
+| `--world <name>`     | World name        | Selects the world on the node.                                                |
+| `--addr <ip:port>`   | Socket address    | Repeatable. Each occurrence adds a direct address and skips discovery for it. |
+| `--no-relay`         | Flag, no value    | Direct connections only; relay use is disabled.                               |
 
 ### The pairing rule
 
@@ -34,8 +34,8 @@ There is no way to connect with a node ID and no capability, and no way to suppl
 
 One environment variable is read by this binary:
 
-| Name | Effect |
-|---|---|
+| Name                      | Effect                                                                                                                                                                           |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ID_SHELL_FILE_READ_ROOT` | When set, configures an additional restriction on the native shell's file-read root. When unset, the file-read root is not additionally restricted or configured by environment. |
 
 ## There is no `--help` and no `--version`
@@ -50,11 +50,11 @@ This is deliberate parser behaviour, not a missing feature flag: the hand-rolled
 
 ## Exit behaviour
 
-| Outcome | Exit status |
-|---|---|
+| Outcome                                                                                | Exit status               |
+| -------------------------------------------------------------------------------------- | ------------------------- |
 | Argument error (unknown flag, `--help`, `--version`, unpaired `--node`/`--capability`) | `2`, usage text on stderr |
-| Session-start failure | `2`, error on stderr |
-| Clean window close | `0` |
+| Session-start failure                                                                  | `2`, error on stderr      |
+| Clean window close                                                                     | `0`                       |
 
 `id-native-shell` is the only binary in the workspace with a hand-coded exit code. The `id` binary exits `1` on handler errors and `2` only on clap parse errors; here both argument errors and session-start failures exit `2`.
 

@@ -266,8 +266,18 @@ mod tests {
     #[test]
     fn pick_session_prefers_the_newer_record() {
         // Oracle: updated_at decides; ties go to the backend copy.
-        let older = rec("fp_a", "2026-11-23T08:00:00Z", "2026-11-23T08:01:00Z", "running");
-        let newer = rec("fp_a", "2026-11-23T08:00:00Z", "2026-11-23T08:02:00Z", "succeeded");
+        let older = rec(
+            "fp_a",
+            "2026-11-23T08:00:00Z",
+            "2026-11-23T08:01:00Z",
+            "running",
+        );
+        let newer = rec(
+            "fp_a",
+            "2026-11-23T08:00:00Z",
+            "2026-11-23T08:02:00Z",
+            "succeeded",
+        );
         assert_eq!(
             pick_session(Some(older.clone()), Some(newer.clone())).unwrap(),
             newer
@@ -276,7 +286,12 @@ mod tests {
             pick_session(Some(newer.clone()), Some(older.clone())).unwrap(),
             newer
         );
-        let tied_remote = rec("fp_a", "2026-11-23T08:00:00Z", "2026-11-23T08:02:00Z", "failed");
+        let tied_remote = rec(
+            "fp_a",
+            "2026-11-23T08:00:00Z",
+            "2026-11-23T08:02:00Z",
+            "failed",
+        );
         assert_eq!(
             pick_session(Some(newer), Some(tied_remote.clone())).unwrap(),
             tied_remote
@@ -288,10 +303,30 @@ mod tests {
     fn merge_unions_without_dropping_local_only_records() {
         // Oracle: list shows every record from either store, the
         // newer copy of a shared handle wins, newest first.
-        let local_only = rec("fp_local", "2026-11-23T08:00:00Z", "2026-11-23T08:00:00Z", "queued");
-        let shared_old = rec("fp_shared", "2026-11-23T07:00:00Z", "2026-11-23T07:30:00Z", "running");
-        let shared_new = rec("fp_shared", "2026-11-23T07:00:00Z", "2026-11-23T07:45:00Z", "succeeded");
-        let remote_only = rec("fp_remote", "2026-11-23T09:00:00Z", "2026-11-23T09:00:00Z", "running");
+        let local_only = rec(
+            "fp_local",
+            "2026-11-23T08:00:00Z",
+            "2026-11-23T08:00:00Z",
+            "queued",
+        );
+        let shared_old = rec(
+            "fp_shared",
+            "2026-11-23T07:00:00Z",
+            "2026-11-23T07:30:00Z",
+            "running",
+        );
+        let shared_new = rec(
+            "fp_shared",
+            "2026-11-23T07:00:00Z",
+            "2026-11-23T07:45:00Z",
+            "succeeded",
+        );
+        let remote_only = rec(
+            "fp_remote",
+            "2026-11-23T09:00:00Z",
+            "2026-11-23T09:00:00Z",
+            "running",
+        );
         let merged = merge_session_records(
             vec![local_only.clone(), shared_old],
             vec![shared_new.clone(), remote_only.clone()],
@@ -330,7 +365,12 @@ mod tests {
         // Harness sanity: the fake the placement wiring tests use
         // behaves like the verb contract (put upserts, get reads).
         let remote = FakeRemote::new();
-        let r = rec("fp_a", "2026-11-23T08:00:00Z", "2026-11-23T08:00:00Z", "queued");
+        let r = rec(
+            "fp_a",
+            "2026-11-23T08:00:00Z",
+            "2026-11-23T08:00:00Z",
+            "queued",
+        );
         remote.put(&r).unwrap();
         assert_eq!(remote.get("fp_a").unwrap(), Some(r));
         assert_eq!(remote.get("fp_nope").unwrap(), None);

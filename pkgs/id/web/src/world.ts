@@ -2,9 +2,14 @@
 
 import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
 import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
-import { terminalBytesForKey } from "./world-keyboard";
-import { decodeViewPatch } from "./screen-codec";
+import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
+import { decodeViewPatchAsync } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
+import {
+  loadWorldSnapshot,
+  saveWorldSnapshot,
+  type StoredWorldSnapshot,
+} from "./world-snapshot-store";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
 type WorldFrame = {
@@ -125,6 +130,16 @@ function initWorld(): void {
   const worldSocketPath = root.dataset.worldSocket ?? "/ws/world";
   // `/world?world=arena` opens the page on that world.
   worldInput.value = new URLSearchParams(window.location.search).get("world") ?? "";
+  // The keyboard encoder for this connection (#787 Slice F): the legacy
+  // encoder is the default; `?keyboard=kitty` selects the
+  // kitty-disambiguate-v1 rich encoder for worlds compiled with the
+  // extended Key module. The choice is fixed for the page's lifetime —
+  // switching encoders mid-connection would mix two key grammars on one
+  // input stream.
+  const encodeKey =
+    new URLSearchParams(window.location.search).get("keyboard") === "kitty"
+      ? richTerminalBytesForKey
+      : terminalBytesForKey;
   // A program-only surface (#2146 phase 2) pins its world server-side:
   // the rendered data-world-program wins over the ?world= parameter.
   if (root.dataset.worldProgram) worldInput.value = root.dataset.worldProgram;
@@ -152,6 +167,52 @@ function initWorld(): void {
   // the #1461 socket identity guard, for the HTTP path).
   let hostViewGeneration = 0;
   let refreshHostView: () => Promise<void> = async () => {};
+
+  // #10927: the offline read model. `offlineSnapshot` accumulates the
+  // rendered state of the world being joined (identity, participants,
+  // last applied sequence, rendered view, records) and is written
+  // through to the snapshot store after every frame that changes it,
+  // so a reload can read the world with no connection at all.
+  // `offlineWorld` is the world name (null = default world) the
+  // accumulated snapshot belongs to.
+  let offlineSnapshot: StoredWorldSnapshot | null = null;
+  let offlineWorld: string | null = null;
+  const persistOfflineSnapshot = () => {
+    if (offlineSnapshot) saveWorldSnapshot(localStorage, window.location.host, offlineWorld, offlineSnapshot);
+  };
+  const renderParticipants = (list: Array<{ id: number; display_name: string }>) => {
+    participants.replaceChildren();
+    for (const participant of list) {
+      const tag = document.createElement("span");
+      tag.className = "badge badge-outline mr-2";
+      tag.dataset.participant = String(participant.id);
+      tag.textContent = participant.display_name;
+      participants.append(tag);
+    }
+  };
+  // Restore the stored snapshot for `world` as the offline read
+  // state: participants, view and records render with no socket, the
+  // resume cursor is seeded from the stored sequence, and the status
+  // says the shell is offline (a reader, not a writer).
+  const restoreOfflineSnapshot = (world: string | null) => {
+    offlineWorld = world;
+    const stored = loadWorldSnapshot(localStorage, window.location.host, world);
+    offlineSnapshot = stored;
+    if (!stored) return;
+    cursor = stored.sequence;
+    renderParticipants(stored.participants);
+    if (stored.view?.kind === "surface" && renderWorldSurface(view, stored.view.surface)) {
+      renderedSurface = stored.view.surface;
+      renderedViewRevision = stored.view_revision;
+    } else if (stored.view?.kind === "text") {
+      view.textContent = stored.view.text;
+      renderedViewRevision = stored.view_revision;
+    }
+    records = { ...stored.records };
+    recordsView.textContent = JSON.stringify(records, null, 2);
+    appendLine(log, `Showing ${stored.world_id} from the saved snapshot at event ${stored.sequence} (offline, read-only)`);
+    setStatus("Offline — saved snapshot");
+  };
 
   const setStatus = (text: string, state: "idle" | "good" | "error" = "idle") => {
     status.textContent = text;
@@ -237,21 +298,27 @@ function initWorld(): void {
     inviteOutput.hidden = false;
   };
 
-  const receiveBinary = (bytes: Uint8Array) => {
+  const receiveBinary = async (bytes: Uint8Array) => {
     // Negotiated binary screen transport (#12242, Rust half #12655):
     // a binary message is one versioned MessagePack view patch,
-    // applied exactly like a JSON view frame's patch. Anything
-    // undecodable or inapplicable falls back to asking for a full
-    // view, the same recovery as a JSON patch whose base mismatches.
-    const frame = decodeViewPatch(bytes);
-    if (frame && renderedSurface && renderedViewRevision === frame.base_view_revision) {
-      const patched = applyScreenPatch(renderedSurface, frame.patch);
-      if (patched && renderWorldSurface(view, patched)) {
-        renderedSurface = patched;
-        renderedViewRevision = frame.view_revision;
-        resumeToken = frame.resume_token;
-        return;
+    // applied exactly like a JSON view frame's patch. Compressed
+    // version-2 frames (#805) inflate through the async decoder.
+    // Anything undecodable or inapplicable falls back to asking for
+    // a full view, the same recovery as a JSON patch whose base
+    // mismatches.
+    try {
+      const frame = await decodeViewPatchAsync(bytes);
+      if (frame && renderedSurface && renderedViewRevision === frame.base_view_revision) {
+        const patched = applyScreenPatch(renderedSurface, frame.patch);
+        if (patched && renderWorldSurface(view, patched)) {
+          renderedSurface = patched;
+          renderedViewRevision = frame.view_revision;
+          resumeToken = frame.resume_token;
+          return;
+        }
       }
+    } catch {
+      // Any failure below falls through to a full view.
     }
     sendViewport(true);
   };
@@ -277,14 +344,23 @@ function initWorld(): void {
           return;
         }
         cursor = snapshot.current_sequence;
-        participants.replaceChildren();
-        for (const participant of snapshot.participants) {
-          const tag = document.createElement("span");
-          tag.className = "badge badge-outline mr-2";
-          tag.dataset.participant = String(participant.id);
-          tag.textContent = participant.display_name;
-          participants.append(tag);
-        }
+        renderParticipants(snapshot.participants);
+        // #10927: a snapshot (re)starts the offline read model for
+        // this world. Records are reset — the records fetch below
+        // re-reads them against this snapshot — while the rendered
+        // view carries over until the host re-sends it.
+        offlineSnapshot = {
+          world_id: snapshot.world_id,
+          sequence: cursor,
+          participants: snapshot.participants.map((participant) => ({
+            id: participant.id,
+            display_name: participant.display_name,
+          })),
+          view: offlineSnapshot?.view ?? null,
+          view_revision: offlineSnapshot?.view_revision ?? null,
+          records: {},
+        };
+        persistOfflineSnapshot();
         appendLine(log, `Connected to ${snapshot.world_id} at event ${cursor}`);
         setStatus("Connected", "good");
         if (!hostMode) requestRecords();
@@ -297,6 +373,11 @@ function initWorld(): void {
           return;
         }
         cursor = Math.max(cursor, event.sequence);
+        // #10927: the stored resume position tracks every applied event.
+        if (offlineSnapshot) {
+          offlineSnapshot.sequence = cursor;
+          persistOfflineSnapshot();
+        }
         if (event.kind.kind === "chat") {
           const who = participants.querySelector<HTMLElement>(`[data-participant="${event.participant_id}"]`);
           appendLine(log, `${who?.textContent ?? `player ${event.participant_id}`}: ${String(event.kind.data)}`);
@@ -332,6 +413,12 @@ function initWorld(): void {
               renderedSurface = patched;
               renderedViewRevision = frame.view_revision;
               resumeToken = frame.resume_token ?? null;
+              // #10927: the offline store holds the patched surface.
+              if (offlineSnapshot) {
+                offlineSnapshot.view = { kind: "surface", surface: patched };
+                offlineSnapshot.view_revision = frame.view_revision;
+                persistOfflineSnapshot();
+              }
               break;
             }
           }
@@ -349,6 +436,13 @@ function initWorld(): void {
           resumeToken = null;
           renderedViewRevision = frame.view_revision ?? null;
           formPresenter.present(frame.surface);
+          // #10927: a form is an interactive presentation, not offline
+          // content — the store keeps no view behind it.
+          if (offlineSnapshot) {
+            offlineSnapshot.view = null;
+            offlineSnapshot.view_revision = renderedViewRevision;
+            persistOfflineSnapshot();
+          }
           break;
         }
         if (frame.surface?.kind === "screen" && renderWorldSurface(view, frame.surface)) {
@@ -356,6 +450,12 @@ function initWorld(): void {
           renderedSurface = frame.surface;
           renderedViewRevision = frame.view_revision ?? null;
           resumeToken = frame.resume_token ?? null;
+          // #10927: the offline store holds the rendered screen.
+          if (offlineSnapshot) {
+            offlineSnapshot.view = { kind: "surface", surface: frame.surface };
+            offlineSnapshot.view_revision = renderedViewRevision;
+            persistOfflineSnapshot();
+          }
           break;
         }
         if (frame.data !== undefined) {
@@ -364,6 +464,12 @@ function initWorld(): void {
           renderedSurface = null;
           resumeToken = null;
           renderedViewRevision = frame.view_revision ?? null;
+          // #10927: the offline store holds the rendered text view.
+          if (offlineSnapshot) {
+            offlineSnapshot.view = { kind: "text", text: frame.data };
+            offlineSnapshot.view_revision = renderedViewRevision;
+            persistOfflineSnapshot();
+          }
         }
         break;
       }
@@ -390,6 +496,11 @@ function initWorld(): void {
         if (recordsAfter === null) {
           recordsPending = false;
           recordsView.textContent = JSON.stringify(records, null, 2);
+          // #10927: a complete records set joins the offline snapshot.
+          if (offlineSnapshot) {
+            offlineSnapshot.records = { ...records };
+            persistOfflineSnapshot();
+          }
           // #1458: a re-request arrived while this fetch was in flight
           // and was coalesced (see requestRecords). Now that a complete
           // set has rendered, run the refetch it was waiting for.
@@ -487,7 +598,7 @@ function initWorld(): void {
   };
 
   view.addEventListener("keydown", (event: KeyboardEvent) => {
-    const bytes = terminalBytesForKey(event);
+    const bytes = encodeKey(event);
     if (!bytes) return;
     if (sendInputBytes(bytes)) event.preventDefault();
   });
@@ -641,6 +752,10 @@ function initWorld(): void {
       return;
     }
     intentionalClose = false;
+    // #10927: joining a world other than the one the accumulated
+    // snapshot belongs to restores that world's stored snapshot first
+    // (which also seeds the resume cursor sent as `after` on open).
+    if (offlineWorld !== selectedWorld()) restoreOfflineSnapshot(selectedWorld());
     // A new connection owns no records fetch: one left pending by a
     // previous connection can never complete and must not coalesce
     // (block) this connection's first fetch.
@@ -673,6 +788,7 @@ function initWorld(): void {
           world: selectedWorld(),
           screen_patches: true,
           screen_msgpack: true,
+          screen_compress: true,
           resume_token: hasResumableScreen() ? resumeToken : undefined,
           device_input: {
             keys: 128,
@@ -1025,6 +1141,10 @@ function initWorld(): void {
     }
   });
 
+  // #10927: read the world offline from the snapshot store before
+  // any connection exists; a stored capability auto-joins on top of
+  // the restored state and resumes from the stored sequence.
+  restoreOfflineSnapshot(selectedWorld());
   if (capability.value) connect();
 }
 

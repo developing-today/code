@@ -66,6 +66,10 @@ export interface SyncRequest {
    * health answer, so whether a merge has reached the host can be seen
    * from anywhere, without reaching the host. */
   version?: string;
+  /** What this machine is called and what it can do. Absent from a
+   * console older than this: the edge then knows it only as a machine
+   * that reports. */
+  machine?: MachineReport;
   config: EdgeConfig;
   /** Sections that changed since the edge last had them. */
   sections: SyncSection[];
@@ -81,6 +85,81 @@ export interface SyncRequest {
   phones: PhoneLinks;
 }
 
+/** What a machine says of itself in each report. A machine is anything
+ * that reports to the edge under a key the edge knows. It reports the
+ * state only it has (`sections`) and does what only it can (`actions`,
+ * by kind); everything else the platform does without it. */
+export interface MachineReport {
+  name: string;
+  actions: string[];
+  sections: string[];
+}
+
+// A letter or digit first, never a blank last (two names that differ
+// only by one would look the same on the screen), 63 at most.
+const MACHINE_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,61}[A-Za-z0-9._-])?$/;
+const MACHINE_CAN = /^[A-Za-z][A-Za-z0-9._-]{0,47}$/;
+/** How many kinds of action, or sections, one machine may say it has. */
+const MACHINE_CAN_MAX = 200;
+
+/** A name fit to show for a machine, from whatever it is called
+ * locally; empty when nothing of it is. */
+export function machineName(value: unknown): string {
+  const name = String(value ?? "")
+    .trim()
+    .replace(/[^A-Za-z0-9 ._-]+/g, "-")
+    .replace(/^[^A-Za-z0-9]+/, "")
+    .slice(0, 63)
+    // The cut may land just after a blank.
+    .trimEnd();
+  return MACHINE_NAME.test(name) ? name : "";
+}
+
+/** A machine's account of itself as a report may give it, or null. */
+export function machineReport(value: unknown): MachineReport | null {
+  const v = value as Record<string, unknown> | null;
+  if (!v || typeof v !== "object") return null;
+  if (typeof v.name !== "string" || !MACHINE_NAME.test(v.name)) return null;
+  const list = (given: unknown): string[] | null => {
+    if (!Array.isArray(given) || given.length > MACHINE_CAN_MAX) return null;
+    if (!given.every((item) => typeof item === "string" && MACHINE_CAN.test(item))) return null;
+    return [...new Set(given as string[])].sort();
+  };
+  const actions = list(v.actions);
+  const sections = list(v.sections);
+  return actions && sections ? { name: v.name, actions, sections } : null;
+}
+
+/** What the Machines screen is drawn from: the platform's own part,
+ * each machine that reports, and what is held for one. */
+export interface MachinesAnswer {
+  /** Who answered: the edge, or a machine serving the app by itself. */
+  served: "edge" | "machine";
+  /** What the platform does with no machine: null when it is not in
+   * front, and an empty list of each when it only serves and waits. */
+  platform: { primary: boolean; actions: string[]; sections: string[]; refused: string[] } | null;
+  machines: {
+    name: string;
+    /** When it last reported, in milliseconds; null if it never has. */
+    seen: number | null;
+    /** It has not reported for long enough to be taken for away. */
+    quiet: boolean;
+    version: string | null;
+    actions: string[];
+    sections: string[];
+  }[];
+  /** What the owner did that waits to be done, oldest first, and who
+   * each waits for (absent from an answer older than the saying). */
+  held: (Held & { waits?: HeldFor })[];
+}
+
+/** Who a held action waits for. "either": the platform does it itself
+ * as soon as it can again, or a machine that is back first. "machine":
+ * only a machine can do it, or it comes after something that waits for
+ * one. "asked": a machine was given it, or may have got it, and says
+ * what became of it when it is back; nobody else does it meanwhile. */
+export type HeldFor = "either" | "machine" | "asked";
+
 export interface PhoneLinks {
   devices: { id: string; name: string; hash: string; createdAt: string; seenAt: string | null }[];
   removed: { hash: string; at: string }[];
@@ -94,6 +173,12 @@ export interface Held {
   /** Who took it, as the edge verified them. */
   who: string;
   at: string;
+  /** It certainly reached no machine: it was never sent toward one, or
+   * the one time it was, what answered in the machine's place said it
+   * never arrived. Only then may the platform do it itself. Without
+   * this a machine may have got it (no answer came, or one that does
+   * not say) and may have done it: it stays that machine's by name. */
+  unsent?: true;
 }
 
 export interface ApkReport {
@@ -200,6 +285,44 @@ export const HOLDABLE = new Set([
   "intake.send",
   "triage.enqueue",
 ]);
+/** What an action is about, where the order of two matters: a rank set
+ * twice, a task moved twice. Two about one thing are done in the order
+ * the owner did them: one that may be done late goes behind an earlier
+ * one about the same thing that is still held for a machine. Null: it
+ * stands alone. (The device keeps the same order for what it has not
+ * sent yet: `subject` in public/outbox.js says the same, and a test
+ * holds the two together.) */
+export function subjectOf(kind: string, args: Record<string, unknown> | null | undefined): string | null {
+  const a = args ?? {};
+  const of = (what: string, value: unknown) => {
+    const said = typeof value === "string" || typeof value === "number" ? String(value) : "";
+    return said === "" ? null : `${what}:${said}`;
+  };
+  switch (kind) {
+    case "ask.reply":
+    case "ask.close":
+    case "issue.comment":
+    case "issue.rank":
+      return of("issue", a.issue);
+    case "task.move":
+    case "task.cancel":
+    case "task.unblock":
+      return of("task", a.task);
+    case "hands.done":
+    case "need.comment":
+      return of("ref", a.ref);
+    case "question.answer":
+    case "question.defer":
+    case "questions.accept":
+      return of("questions", a.set);
+    case "pr.merge":
+      return of("pr", a.pr);
+    case "unit.act":
+      return of("unit", a.unit);
+    default:
+      return null;
+  }
+}
 /** A held action older than this is dropped, and said to have been. */
 export const HELD_FOR_MS = 24 * 60 * 60_000;
 /** A sync whose time is further than this from the edge's clock is refused. */
@@ -213,7 +336,7 @@ const b64u = (bytes: ArrayBuffer | Uint8Array): string => {
   for (const b of new Uint8Array(bytes as ArrayBuffer)) bin += String.fromCharCode(b);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
-const unb64u = (text: string): Uint8Array => {
+const unb64u = (text: string): Uint8Array<ArrayBuffer> => {
   if (!/^[A-Za-z0-9_-]*$/.test(text)) throw new Error("not base64url");
   const bin = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -250,11 +373,11 @@ export async function newKeyPair(): Promise<{ publicJwk: PublicKey; privateJwk: 
 
 export async function sign(privateJwk: JsonWebKey, body: Uint8Array): Promise<string> {
   const key = await crypto.subtle.importKey("jwk", privateJwk, CURVE, false, ["sign"]);
-  return b64u(await crypto.subtle.sign(SIGN, key, body));
+  return b64u(await crypto.subtle.sign(SIGN, key, body as BufferSource));
 }
 
 export async function verify(key: PublicKey, body: Uint8Array, signature: string): Promise<boolean> {
-  let sig: Uint8Array;
+  let sig: Uint8Array<ArrayBuffer>;
   try {
     sig = unb64u(signature);
   } catch {
@@ -262,7 +385,7 @@ export async function verify(key: PublicKey, body: Uint8Array, signature: string
   }
   if (sig.length !== 64) return false;
   const imported = await crypto.subtle.importKey("jwk", key, CURVE, false, ["verify"]);
-  return crypto.subtle.verify(SIGN, imported, sig, body);
+  return crypto.subtle.verify(SIGN, imported, sig, body as BufferSource);
 }
 
 const strings = (value: unknown): value is string[] =>

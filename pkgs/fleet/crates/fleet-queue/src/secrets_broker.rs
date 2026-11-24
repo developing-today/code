@@ -2,14 +2,17 @@
 //!
 //! Fetches the vault's secrets ONCE per TTL via the `bws` CLI on the
 //! laptop and serves them to token-authed local consumers, replacing the
-//! per-call `bws secret list` + `get` fetch that made every
+//! per-secret `bws secret get` refresh that made hundreds of
 //! repo-queue.py invocation pay 10-40 s. Binds the laptop tailnet IP
 //! only; consumers reach it through the sandbox session proxy.
 //!
 //! Endpoints (header `X-Agent-Token` required except /health):
 //!   GET /health        -> {ok, serving, secrets, last_refresh_unix, refreshing,
-//!                          oldest_secret_age_seconds} | 503 while `serving`
-//!                          is false (no successful refresh yet, #10868)
+//!                          refresh_progress, oldest_secret_age_seconds}
+//!                          | 503 while `serving` is false (no successful
+//!                          refresh yet, #10868). While a refresh is in
+//!                          flight, refresh_progress is {started_unix,
+//!                          fetched, total}; it is null when idle (#13081).
 //!   GET /secrets       -> {names: [...]}
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
@@ -18,20 +21,29 @@
 //! from Bitwarden (#6767), and /secret/<name> exposes that age plus
 //! the value's source (cache vs a just-now read-through), so a
 //! rotation runbook can tell whether it is verifying the broker or
-//! Bitwarden itself. A refresh installs per secret: fetches that
-//! succeed land immediately, a secret whose fetch fails keeps its
-//! previous value and age, and deletions follow the authoritative
-//! list — one broken fetch can no longer block every rotation in
-//! the vault the way the fail-whole install did (#6767, cf. #5504,
-//! whose no-eviction rule the per-secret install preserves). Only a
-//! refresh in which EVERY fetch fails keeps the whole previous
-//! cache untouched. A rotation therefore lands within one TTL of
-//! the edit, bounded and observable via the exposed age.
+//! Bitwarden itself. A refresh validates the complete one-call list
+//! before atomically replacing the cache; any failed or partial list
+//! preserves the previous values and watermark (#5504). A rotation
+//! therefore lands within one TTL of the edit, bounded and observable
+//! via the exposed age.
 //!
 //! A miss on a loaded cache is not final: the broker reads through
 //! to Bitwarden for that one name (single-flighted per name) and
 //! serves what it finds, so a secret minted moments ago is visible
 //! immediately instead of at the next TTL refresh (#6275).
+//!
+//! The heal contract (#13081): a supervisor that restarts this
+//! broker on a health verdict (the sandbox init-ensure prelude is
+//! the live one) must not restart it while a refresh is in flight
+//! and making progress — `refreshing` true with a present
+//! `refresh_progress` whose `fetched` count advances between
+//! probes, or a `secrets` count that reaches `refresh_progress.total`
+//! when the one-call list lands. A first refresh over the whole
+//! vault is a single `bws secret list` (seconds, #13948 S1), so the
+//! patience window is sized to one list call plus install — not to
+//! hundreds of per-secret fetches. Restart is for a broker that is
+//! absent, not refreshing and not serving, or still not serving
+//! after that window with no progress inside it.
 //!
 //! Env: SECRETS_BROKER_BIND (default 100.99.113.103:4800),
 //!      SECRETS_BROKER_SOCKET (Unix socket dual-bind, #6216; default
@@ -58,6 +70,17 @@ struct CachedSecret {
     fetched_at_unix: u64,
 }
 
+/// One in-flight refresh's progress (#13081): the unix time it
+/// started, the fetches completed so far (either outcome — a
+/// completed fetch is forward motion through the list), and the
+/// total the authoritative list carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RefreshProgress {
+    started_unix: u64,
+    fetched: usize,
+    total: usize,
+}
+
 struct State {
     secrets: RwLock<HashMap<String, CachedSecret>>,
     last_refresh: RwLock<Option<u64>>,
@@ -68,6 +91,13 @@ struct State {
     /// construction (BwsRunner discipline): never vault material.
     last_refresh_error: RwLock<Option<String>>,
     refreshing: RwLock<bool>,
+    /// The in-flight refresh's progress (#13081): when it started,
+    /// how many of the vault's fetches it has completed, and how
+    /// many the authoritative list carries. Present only while a
+    /// refresh is in flight; /health publishes it so a supervising
+    /// heal can tell a slow-but-advancing refresh from a wedged
+    /// one before it reaches for a restart.
+    refresh_progress: RwLock<Option<RefreshProgress>>,
     /// In-flight read-through fetches, one gate per name (#6275):
     /// the first misser fetches from Bitwarden; concurrent missers
     /// for the same name wait on the gate instead of stampeding the
@@ -180,7 +210,8 @@ fn bws_run(args: &[&str], token: &str) -> Result<String, String> {
         .map_err(|e| format!("bws {} failed: {e}", args.join(" ")))
 }
 
-/// One full vault refresh: list, then get each secret (8-way parallel).
+/// One full vault refresh: one `bws secret list` call carrying values,
+/// validated strictly, then installed atomically (#13948 S1).
 fn refresh(state: &Arc<State>) -> Result<usize, String> {
     {
         let mut r = state.refreshing.write().unwrap();
@@ -200,17 +231,45 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
         Ok(_) => *state.last_refresh_error.write().unwrap() = None,
         Err(e) => *state.last_refresh_error.write().unwrap() = Some(e.clone()),
     }
+    end_refresh_progress(state);
     *state.refreshing.write().unwrap() = false;
     result
 }
 
+/// Open the in-flight refresh's progress record (#13081): called
+/// once the authoritative list has landed, so `total` is the real
+/// vault size a heal sizes its patience against.
+fn begin_refresh_progress(state: &Arc<State>, total: usize) {
+    *state.refresh_progress.write().unwrap() = Some(RefreshProgress {
+        started_unix: now_unix(),
+        fetched: 0,
+        total,
+    });
+}
+
+/// Count one completed fetch against the in-flight refresh
+/// (#13081). Either outcome counts: the fetch finished, so the
+/// refresh is one step further through the list. A wedged refresh
+/// is precisely one whose count stops moving.
+fn note_refresh_fetch(state: &Arc<State>) {
+    if let Some(p) = state.refresh_progress.write().unwrap().as_mut() {
+        p.fetched += 1;
+    }
+}
+
+/// Close the in-flight refresh's progress record (#13081): the
+/// record exists only while a refresh is in flight, so a heal
+/// never mistakes a finished refresh's final count for live
+/// progress.
+fn end_refresh_progress(state: &Arc<State>) {
+    *state.refresh_progress.write().unwrap() = None;
+}
+
 /// Parse the `bws secret list` entries strictly: every entry must
-/// carry a string `id` and a string `key`. A malformed entry fails
-/// the whole parse (#6568): silently dropping it here would install
-/// the partial listing as the whole cache and evict a secret that
-/// exists, defeating the #5504 fail-whole fetch count below — the
-/// count can only see entries this parse kept.
-fn parse_list_entries(list: &Value) -> Result<Vec<(String, String)>, String> {
+/// carry a string `id`, `key`, and `value`. The list response is the
+/// complete refresh payload, so any malformed entry fails the whole
+/// parse before the cache is touched (#5504).
+fn parse_list_entries(list: &Value) -> Result<Vec<(String, String, String)>, String> {
     let arr = list.as_array().ok_or("bws list is not an array")?;
     let mut items = Vec::with_capacity(arr.len());
     for (i, s) in arr.iter().enumerate() {
@@ -222,7 +281,11 @@ fn parse_list_entries(list: &Value) -> Result<Vec<(String, String)>, String> {
             .get("key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| format!("bws list entry {i} has a missing or non-string key"))?;
-        items.push((id.to_string(), key.to_string()));
+        let value = s
+            .get("value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| format!("bws list entry {i} has a missing or non-string value"))?;
+        items.push((id.to_string(), key.to_string(), value.to_string()));
     }
     Ok(items)
 }
@@ -252,164 +315,57 @@ fn do_refresh(state: &Arc<State>) -> Result<usize, String> {
     let list_raw = bws_run(&["secret", "list", "-o", "json"], &token)?;
     let list: Value =
         serde_json::from_str(&list_raw).map_err(|e| format!("bws list not json: {e}"))?;
-    let items: Vec<(String, String)> = parse_list_entries(&list)?;
-    // Fetch values with a small worker pool over a shared index.
-    // Every per-item failure is counted, and the install below is
-    // per secret (#6767): successes land, failures keep their
-    // secret's previous value — the #5504 no-eviction rule, applied
-    // per secret instead of failing the whole refresh.
+    let items = parse_list_entries(&list)?;
     let total = items.len();
-    let items = Arc::new(items);
-    let idx = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let failed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let got = Arc::new(RwLock::new(HashMap::new()));
-    let mut handles = Vec::new();
-    for _ in 0..8 {
-        let items = Arc::clone(&items);
-        let idx = Arc::clone(&idx);
-        let failed = Arc::clone(&failed);
-        let got = Arc::clone(&got);
-        let token = token.clone();
-        handles.push(std::thread::spawn(move || {
-            loop {
-                let i = idx.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                if i >= items.len() {
-                    return;
-                }
-                let (id, key) = &items[i];
-                let fetched = bws_run(&["secret", "get", id, "-o", "json"], &token)
-                    .ok()
-                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                    .and_then(|v| v.get("value").and_then(|x| x.as_str()).map(str::to_string));
-                match fetched {
-                    Some(val) => {
-                        // Stamp the value with ITS fetch time, not
-                        // the batch's install time (Codex, PR #8491):
-                        // a slow sibling fetch must not make this
-                        // value look fresher than it is.
-                        got.write().unwrap().insert(key.clone(), (val, now_unix()));
-                    }
-                    None => {
-                        failed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    }
-                }
-            }
-        }));
+    // The complete list (including values) has landed and validated.
+    // No cache mutation happens until validation is complete, so a
+    // partial/failed list leaves the previous cache and watermark
+    // untouched (#5504).
+    begin_refresh_progress(state, total);
+    for _ in 0..total {
+        note_refresh_fetch(state);
     }
-    for h in handles {
-        let _ = h.join();
-    }
-    let failed = failed.load(std::sync::atomic::Ordering::SeqCst);
-    let fetched = got.read().unwrap().clone();
-    // Install per secret (#6767): the successes land, a failed fetch
-    // keeps its secret's previous value, and only a refresh in which
-    // EVERY fetch failed keeps the whole previous cache (the
-    // fail-whole tail this replaces let one broken fetch block every
-    // rotation in the vault indefinitely).
-    match install_refresh(state, &items, fetched, now_unix()) {
-        Some(outcome) => {
-            if outcome.kept_failed > 0 {
-                crate::log::info(
-                    "secrets-broker",
-                    &format!(
-                        "partial refresh: {failed} of {total} fetches failed; kept the previous values for {} secrets",
-                        outcome.kept_failed
-                    ),
-                );
-            }
-            Ok(outcome.total)
-        }
-        None => Err(format!(
-            "{failed} of {total} secret fetches failed; keeping the previous cache"
-        )),
-    }
+    Ok(install_list_refresh(state, &items, now_unix()))
 }
 
-/// What one refresh installed (#6767): how many listed secrets got a
-/// fresh value, how many kept their previous value because their
-/// fetch failed, how many cached names the authoritative list no
-/// longer carries, and the cache size after the install.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct InstallOutcome {
-    installed: usize,
-    kept_failed: usize,
-    removed: usize,
-    total: usize,
-}
-
-/// Install one refresh's fetches into the cache, per secret (#6767).
-///
-/// - a listed secret whose fetch succeeded takes the new value and
-///   its own fetch timestamp;
-/// - a listed secret whose fetch failed keeps its previous value
-///   AND its previous timestamp — a failure never evicts and never
-///   makes a stale value look fresh (#5504's rule, per secret);
-/// - a cached name absent from the list is removed: the list is
-///   authoritative for existence (it parsed strictly, #6568, so a
-///   name is absent only because the vault no longer carries it);
-/// - if the list is non-empty but NOT ONE fetch succeeded, the
-///   refresh is a source outage, not news about the vault: nothing
-///   is installed or removed and the caller keeps the whole
-///   previous cache (returns None).
-fn install_refresh(
-    state: &Arc<State>,
-    listed: &[(String, String)],
-    fetched: HashMap<String, (String, u64)>,
-    now: u64,
-) -> Option<InstallOutcome> {
-    if fetched.is_empty() && !listed.is_empty() {
-        return None;
-    }
-    let listed_keys: std::collections::HashSet<&str> =
-        listed.iter().map(|(_, key)| key.as_str()).collect();
-    let mut installed = 0;
-    let mut kept_failed = 0;
-    let (removed, total) = {
-        let mut secrets = state.secrets.write().unwrap();
-        let doomed: Vec<String> = secrets
-            .keys()
-            .filter(|k| !listed_keys.contains(k.as_str()))
-            .cloned()
-            .collect();
-        let removed = doomed.len();
-        for k in &doomed {
-            secrets.remove(k);
-        }
-        for (_, key) in listed {
-            match fetched.get(key) {
-                Some((v, at)) => {
-                    secrets.insert(
-                        key.clone(),
-                        CachedSecret {
-                            value: v.clone(),
-                            fetched_at_unix: *at,
-                        },
-                    );
-                    installed += 1;
-                }
-                None => {
-                    if secrets.contains_key(key) {
-                        kept_failed += 1;
-                    }
-                }
-            }
-        }
-        (removed, secrets.len())
-    };
+/// Atomically replace the cache with one fully validated list result.
+/// This is the only refresh install path: failed or partial list
+/// results never reach this function, preserving the prior cache and
+/// `last_refresh` (#5504).
+fn install_list_refresh(state: &Arc<State>, items: &[(String, String, String)], now: u64) -> usize {
+    let fetched_at_unix = now;
+    let secrets = items
+        .iter()
+        .map(|(_, key, value)| {
+            (
+                key.clone(),
+                CachedSecret {
+                    value: value.clone(),
+                    fetched_at_unix,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let total = secrets.len();
+    *state.secrets.write().unwrap() = secrets;
     *state.last_refresh.write().unwrap() = Some(now);
-    Some(InstallOutcome {
-        installed,
-        kept_failed,
-        removed,
-        total,
-    })
+    total
+}
+
+/// Validate a complete list before applying it. Keeping parsing and
+/// install behind this seam lets the regression test prove malformed
+/// list payloads are non-mutating, not merely rejected by the parser.
+#[cfg(test)]
+fn apply_list_refresh(state: &Arc<State>, list: &Value, now: u64) -> Result<usize, String> {
+    let items = parse_list_entries(list)?;
+    Ok(install_list_refresh(state, &items, now))
 }
 
 /// One name, straight from Bitwarden: resolve the key to its id via
-/// the list, then get the value — the same two calls the full
-/// refresh makes, scoped to a single secret. Ok(None) is a definite
-/// "not in the vault"; Err is a source failure (its detail carries
-/// the exit status only, per BwsRunner's discipline).
+/// the list, then get the value — the read-through path for a single
+/// cache miss (#6275). Ok(None) is a definite "not in the vault"; Err
+/// is a source failure (its detail carries the exit status only, per
+/// BwsRunner's discipline).
 fn fetch_one(name: &str) -> Result<Option<String>, String> {
     let token = bws_token().ok_or("no Bitwarden access token available")?;
     let list_raw = bws_run(&["secret", "list", "-o", "json"], &token)?;
@@ -569,6 +525,17 @@ fn handle_request(
             .max();
         let last_refresh_unix = state.last_refresh.read().unwrap().clone();
         let serving = last_refresh_unix.is_some();
+        // The in-flight refresh's progress (#13081): an object
+        // while a refresh is running, null when idle, so a heal
+        // reading this body can apply the refreshing-aware
+        // patience rule instead of a bare not-serving verdict.
+        let refresh_progress = state.refresh_progress.read().unwrap().map(|p| {
+            json!({
+                "started_unix": p.started_unix,
+                "fetched": p.fetched,
+                "total": p.total,
+            })
+        });
         (
             if serving { 200 } else { 503 },
             json!({
@@ -577,6 +544,7 @@ fn handle_request(
                 "secrets": state.secrets.read().unwrap().len(),
                 "last_refresh_unix": last_refresh_unix,
                 "refreshing": *state.refreshing.read().unwrap(),
+                "refresh_progress": refresh_progress,
                 "oldest_secret_age_seconds": oldest_secret_age_seconds,
             }),
         )
@@ -647,9 +615,9 @@ fn handle_request(
 pub const DEFAULT_TTL_S: u64 = 900;
 
 /// Smallest accepted SECRETS_BROKER_TTL_S. One interval costs a full
-/// vault refresh (one `bws secret list` plus one `bws secret get` per
-/// secret); below this floor the loop spends its life inside bws — at 0
-/// it never sleeps at all (#5860 measured ~110 full refreshes/sec).
+/// vault refresh (one `bws secret list`, #13948 S1); below this floor
+/// the loop spends its life inside bws — at 0 it never sleeps at all
+/// (#5860 measured ~110 full refreshes/sec).
 /// Startup refuses smaller values rather than clamping: a broker
 /// silently running at a different rate than configured is its own
 /// surprise on the credential path.
@@ -746,6 +714,7 @@ pub fn run() -> i32 {
         last_refresh: RwLock::new(None),
         last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
+        refresh_progress: RwLock::new(None),
         inflight: Mutex::new(HashMap::new()),
     });
 
@@ -921,8 +890,9 @@ fn url_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        CachedSecret, DEFAULT_TTL_S, MIN_TTL_S, State, fetch_through_with, handle_request,
-        install_refresh, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
+        CachedSecret, DEFAULT_TTL_S, MIN_TTL_S, State, apply_list_refresh, begin_refresh_progress,
+        end_refresh_progress, fetch_through_with, handle_request, install_list_refresh,
+        note_refresh_fetch, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
         resolve_list_id, url_decode,
     };
     use std::time::Duration;
@@ -960,6 +930,7 @@ mod tests {
             last_refresh: RwLock::new(Some(1)),
             last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
+            refresh_progress: RwLock::new(None),
             inflight: Mutex::new(HashMap::new()),
         })
     }
@@ -983,6 +954,85 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(body["serving"], true);
         assert_eq!(body["ok"], true);
+    }
+
+    #[test]
+    fn health_publishes_refresh_progress_only_while_refreshing() {
+        // oracle (#13081): a heal deciding whether to restart a
+        // not-yet-serving broker must be able to see that a first
+        // refresh is in flight and how far through the vault it
+        // is. In flight, /health carries the progress record
+        // (start, fetched, total); idle, the field is null — a
+        // finished refresh's final count is never mistaken for
+        // live progress.
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        let (_, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(body["refresh_progress"], serde_json::Value::Null);
+
+        *state.refreshing.write().unwrap() = true;
+        begin_refresh_progress(&state, 221);
+        note_refresh_fetch(&state);
+        note_refresh_fetch(&state);
+        let (status, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(status, 503);
+        assert_eq!(body["serving"], false);
+        assert_eq!(body["refreshing"], true);
+        assert_eq!(body["refresh_progress"]["total"], 221);
+        assert_eq!(body["refresh_progress"]["fetched"], 2);
+        assert!(
+            body["refresh_progress"]["started_unix"].as_u64().is_some(),
+            "progress carries its start: {body}"
+        );
+
+        end_refresh_progress(&state);
+        let (_, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(body["refresh_progress"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn atomic_install_serves_the_whole_set_at_once() {
+        // Oracle (#13948 S1): the one-call refresh swaps the whole
+        // cache at once — a loaded broker serves every listed name,
+        // and `serving` flips with the completed install.
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        let n = install_list_refresh(
+            &state,
+            &[
+                ("id-a".to_string(), "alpha".to_string(), "v-a".to_string()),
+                ("id-b".to_string(), "beta".to_string(), "v-b".to_string()),
+            ],
+            7,
+        );
+        assert_eq!(n, 2);
+        let (status, body) = handle_request(&state, "tok", "GET", "/secret/alpha", Some("tok"));
+        assert_eq!(status, 200);
+        assert_eq!(body["fetched_at_unix"], 7);
+        let (status, _) = handle_request(&state, "tok", "GET", "/secret/beta", Some("tok"));
+        assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn refresh_progress_counts_completions_and_stops_at_the_end() {
+        // oracle (#13081): the fetched count is the heal's motion
+        // signal — it advances once per completed fetch and the
+        // record closes with the refresh, so a wedged refresh
+        // (count frozen across probes) is distinguishable from a
+        // slow one (count advancing).
+        let state = empty_state();
+        begin_refresh_progress(&state, 3);
+        for want in 1..=3 {
+            note_refresh_fetch(&state);
+            let p = state.refresh_progress.read().unwrap().expect("in flight");
+            assert_eq!(p.fetched, want);
+            assert_eq!(p.total, 3);
+        }
+        end_refresh_progress(&state);
+        assert!(state.refresh_progress.read().unwrap().is_none());
+        // A stray completion outside a refresh records nothing.
+        note_refresh_fetch(&state);
+        assert!(state.refresh_progress.read().unwrap().is_none());
     }
 
     #[test]
@@ -1099,28 +1149,30 @@ mod tests {
     fn parse_list_entries_keeps_well_formed_entries_in_order() {
         let list = serde_json::json!([
             {"id": "id-1", "key": "alpha", "value": "x"},
-            {"id": "id-2", "key": "beta"}
+            {"id": "id-2", "key": "beta", "value": "y"}
         ]);
         assert_eq!(
             parse_list_entries(&list).unwrap(),
             vec![
-                ("id-1".to_string(), "alpha".to_string()),
-                ("id-2".to_string(), "beta".to_string())
+                ("id-1".to_string(), "alpha".to_string(), "x".to_string()),
+                ("id-2".to_string(), "beta".to_string(), "y".to_string())
             ]
         );
     }
 
     #[test]
     fn parse_list_entries_fails_whole_on_a_malformed_entry() {
-        // #6568: any entry with a missing or non-string id or key
-        // fails the parse, so a refresh can never install a partial
-        // listing as the whole cache and evict a listed secret.
+        // #6568/#5504: any entry with a missing or non-string id,
+        // key, or value fails the parse, so a refresh can never
+        // install a partial listing and evict a cached secret.
         for bad in [
             serde_json::json!([{"key": "alpha"}]),
-            serde_json::json!([{"id": 7, "key": "alpha"}]),
-            serde_json::json!([{"id": "id-1"}]),
-            serde_json::json!([{"id": "id-1", "key": 7}]),
-            serde_json::json!([{"id": "id-1", "key": "alpha"}, {"key": "beta"}]),
+            serde_json::json!([{"id": 7, "key": "alpha", "value": "x"}]),
+            serde_json::json!([{"id": "id-1", "value": "x"}]),
+            serde_json::json!([{"id": "id-1", "key": 7, "value": "x"}]),
+            serde_json::json!([{"id": "id-1", "key": "alpha"}]),
+            serde_json::json!([{"id": "id-1", "key": "alpha", "value": 7}]),
+            serde_json::json!([{"id": "id-1", "key": "alpha", "value": "x"}, {"id": "id-2", "key": "beta"}]),
         ] {
             assert!(parse_list_entries(&bad).is_err(), "accepted {bad}");
         }
@@ -1169,49 +1221,35 @@ mod tests {
     }
 
     #[test]
-    fn install_refresh_lands_successes_keeps_failures_and_drops_delisted() {
-        // #6767 oracle: one broken fetch must not block the rest of
-        // the vault. alpha rotates (lands, fresh timestamp), beta's
-        // fetch fails (previous value AND previous age kept — never
-        // evicted, never made to look fresh), gamma left the list
-        // (removed), delta is new (installed).
-        let state = seeded_state(&[
-            ("alpha", "old-alpha", 100),
-            ("beta", "old-beta", 100),
-            ("gamma", "old-gamma", 100),
-        ]);
-        let listed = vec![
-            ("id-a".to_string(), "alpha".to_string()),
-            ("id-b".to_string(), "beta".to_string()),
-            ("id-d".to_string(), "delta".to_string()),
-        ];
-        let fetched: HashMap<String, (String, u64)> = [
-            ("alpha".to_string(), ("new-alpha".to_string(), 190)),
-            ("delta".to_string(), ("fresh-delta".to_string(), 200)),
-        ]
-        .into_iter()
-        .collect();
-        let outcome = install_refresh(&state, &listed, fetched, 200).expect("partial install");
-        assert_eq!(outcome.installed, 2);
-        assert_eq!(outcome.kept_failed, 1);
-        assert_eq!(outcome.removed, 1);
-        assert_eq!(outcome.total, 3);
+    fn install_list_refresh_replaces_cache_and_drops_delisted() {
+        // Oracle (#13948 S1): a validated complete list replaces the
+        // whole cache; a cached name absent from the list is evicted
+        // (the list is authoritative for existence, #6568) and the
+        // successful-refresh watermark advances.
+        let state = seeded_state(&[("alpha", "old-alpha", 100), ("gamma", "old-gamma", 100)]);
+        let n = install_list_refresh(
+            &state,
+            &[
+                (
+                    "id-a".to_string(),
+                    "alpha".to_string(),
+                    "new-alpha".to_string(),
+                ),
+                (
+                    "id-d".to_string(),
+                    "delta".to_string(),
+                    "fresh-delta".to_string(),
+                ),
+            ],
+            200,
+        );
+        assert_eq!(n, 2);
         let secrets = state.secrets.read().unwrap();
-        // Alpha keeps its own fetch time (190), not the install
-        // time (200): a value fetched before a rotation must never
-        // claim a timestamp after it (Codex, PR #8491).
         assert_eq!(
             secrets.get("alpha"),
             Some(&CachedSecret {
                 value: "new-alpha".to_string(),
-                fetched_at_unix: 190
-            })
-        );
-        assert_eq!(
-            secrets.get("beta"),
-            Some(&CachedSecret {
-                value: "old-beta".to_string(),
-                fetched_at_unix: 100
+                fetched_at_unix: 200
             })
         );
         assert!(!secrets.contains_key("gamma"));
@@ -1220,20 +1258,31 @@ mod tests {
     }
 
     #[test]
-    fn install_refresh_with_zero_successes_keeps_the_whole_previous_cache() {
-        // A total fetch outage is not news about the vault: nothing
-        // installs and nothing is removed, not even a delisted name.
-        let state = seeded_state(&[("alpha", "old-alpha", 100), ("gamma", "old-gamma", 100)]);
-        let listed = vec![("id-a".to_string(), "alpha".to_string())];
-        assert_eq!(install_refresh(&state, &listed, HashMap::new(), 200), None);
+    fn failed_or_partial_list_refresh_applies_nothing() {
+        // Oracle (#5504): if the upstream list is malformed/partial,
+        // neither cached values nor the successful-refresh watermark
+        // change. A valid complete list may evict a delisted name, but
+        // only after every entry has validated.
+        let state = seeded_state(&[("alpha", "old-alpha", 100), ("beta", "old-beta", 100)]);
+        let partial = serde_json::json!([
+            {"id": "id-a", "key": "alpha", "value": "new-alpha"},
+            {"id": "id-b", "key": "beta"}
+        ]);
+
+        assert!(apply_list_refresh(&state, &partial, 200).is_err());
         let secrets = state.secrets.read().unwrap();
         assert_eq!(secrets.len(), 2);
         assert_eq!(
-            secrets.get("alpha"),
-            Some(&CachedSecret {
-                value: "old-alpha".to_string(),
-                fetched_at_unix: 100
-            })
+            secrets
+                .get("alpha")
+                .map(|s| (s.value.as_str(), s.fetched_at_unix)),
+            Some(("old-alpha", 100))
+        );
+        assert_eq!(
+            secrets
+                .get("beta")
+                .map(|s| (s.value.as_str(), s.fetched_at_unix)),
+            Some(("old-beta", 100))
         );
         assert_eq!(*state.last_refresh.read().unwrap(), Some(1));
     }
@@ -1256,22 +1305,22 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
 
-        /// PBT (#6568, testing doctrine): the strict list parser
-        /// succeeds iff every generated entry has string `id` and
-        /// `key` fields, and on success the output is exactly those
-        /// pairs in order. Oracle: the well-formedness predicate
-        /// recomputed from the generated payload itself.
+        /// PBT (#6568/#5504, testing doctrine): the strict list parser
+        /// succeeds iff every generated entry has string `id`, `key`,
+        /// and `value` fields, and on success output exactly preserves
+        /// those triples in order. Oracle: well-formedness recomputed
+        /// from the generated payload itself.
         #[test]
         fn parse_list_entries_succeeds_iff_every_entry_is_well_formed(
             entries in proptest::collection::vec(
-                (0u8..3, 0u8..3, "[a-z]{0,6}", "[a-z]{0,6}"),
+                (0u8..3, 0u8..3, 0u8..3, "[a-z]{0,6}", "[a-z]{0,6}", "[a-z]{0,6}"),
                 0..12,
             )
         ) {
             let list = serde_json::Value::Array(
                 entries
                     .into_iter()
-                    .map(|(id_kind, key_kind, id_s, key_s)| {
+                    .map(|(id_kind, key_kind, value_kind, id_s, key_s, value_s)| {
                         let mut obj = serde_json::Map::new();
                         match id_kind {
                             1 => {
@@ -1291,11 +1340,20 @@ mod tests {
                             }
                             _ => {}
                         }
+                        match value_kind {
+                            1 => {
+                                obj.insert("value".to_string(), serde_json::json!(value_s));
+                            }
+                            2 => {
+                                obj.insert("value".to_string(), serde_json::json!(true));
+                            }
+                            _ => {}
+                        }
                         serde_json::Value::Object(obj)
                     })
                     .collect(),
             );
-            let expected: Option<Vec<(String, String)>> = list
+            let expected: Option<Vec<(String, String, String)>> = list
                 .as_array()
                 .unwrap()
                 .iter()
@@ -1303,8 +1361,11 @@ mod tests {
                     match (
                         s.get("id").and_then(|v| v.as_str()),
                         s.get("key").and_then(|v| v.as_str()),
+                        s.get("value").and_then(|v| v.as_str()),
                     ) {
-                        (Some(i), Some(k)) => Some((i.to_string(), k.to_string())),
+                        (Some(i), Some(k), Some(v)) => {
+                            Some((i.to_string(), k.to_string(), v.to_string()))
+                        }
                         _ => None,
                     }
                 })

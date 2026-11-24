@@ -12,8 +12,10 @@ import { gunzipSync } from "node:zlib";
 import { actions, perform } from "../src/actions.ts";
 import { readConfig } from "../src/config.ts";
 import { Docs, Stamped } from "../src/docs.ts";
+import { Named } from "../src/named.ts";
 import { type Fetch, OpError, Ops, type Run } from "../src/ops.ts";
 import { type Deps, handle, loaders } from "../src/server.ts";
+import { memoryStore } from "../src/store.ts";
 import { promptPacket, Work } from "../src/work.ts";
 import { asThePlatformFetch } from "./support.ts";
 
@@ -320,6 +322,68 @@ describe("questions waiting on the owner", () => {
   });
 });
 
+describe("what needs the owner, read with no dashboard", () => {
+  const listed = (argv: string[]) => /^repos\/([^/]+\/[^/]+)\/issues\?state=open&labels=([^&]+)&/.exec(argv[3] ?? "");
+  const raw = (n: number, labels: string[], body: string | null = null) => ({
+    number: n,
+    title: `t${n}`,
+    body,
+    state: "open",
+    html_url: `https://github.com/x/y/issues/${n}`,
+    updated_at: "2026-11-20T01:02:03Z",
+    labels: labels.map((name) => ({ name })),
+  });
+
+  test("each repository's own list of each label is asked for through the fleet's gh, and makes the same three lists", async () => {
+    const w = world({
+      commands: (argv) => {
+        const m = listed(argv);
+        if (!m) return "[]";
+        // The first repository has something of each kind; the others have nothing.
+        if (m[1] !== CFG.needsRepos[0]) return "[]";
+        const label = decodeURIComponent(m[2]);
+        return JSON.stringify(
+          [
+            raw(1, ["user/escalated"], '<!-- hands:v1 kind=physical action="Power on the host." -->'),
+            raw(2, ["user/review"]),
+            raw(3, ["user/escalated"], "Reason: an agent could not choose"),
+          ].filter((i) => i.labels.some((l) => l.name === label)),
+        );
+      },
+    });
+    const c = await new Work(w.ops).censusDirect();
+    expect(c.hands.map((i) => [i.ref, i.kind, i.action])).toEqual([
+      [`${CFG.needsRepos[0]}#1`, "physical", "Power on the host."],
+    ]);
+    expect(c.reviews.map((i) => [i.ref, i.updated])).toEqual([[`${CFG.needsRepos[0]}#2`, "2026-11-20T01:02:03"]]);
+    expect(c.other.map((i) => [i.ref, i.why])).toEqual([[`${CFG.needsRepos[0]}#3`, "an agent could not choose"]]);
+    expect([c.at, c.complete, c.unread]).toEqual([null, true, []]);
+    // Asked of GitHub's REST lists, one page of each label for each repository, and never of the search.
+    const asked = w.calls.map((call) => call.argv.join(" "));
+    expect(asked).toHaveLength(CFG.needsRepos.length * 2);
+    expect(
+      asked.every((line) =>
+        /^fleet gh api repos\/\S+\/issues\?state=open&labels=user%2F(review|escalated)&per_page=100&page=1$/.test(line),
+      ),
+    ).toBe(true);
+    expect(asked.some((line) => line.includes("search/"))).toBe(false);
+  });
+
+  test("a repository the token cannot see is named, in the binary's own words for it; a failure that is not one repository's ends the read", async () => {
+    const unseen = CFG.needsRepos[1];
+    const w = world({
+      commands: (argv) => (listed(argv)?.[1] === unseen ? { code: 1, stderr: "gh: Not Found (HTTP 404)" } : "[]"),
+    });
+    const c = await new Work(w.ops).censusDirect();
+    expect([c.complete, c.unread]).toEqual([false, [unseen]]);
+    const limited = world({
+      commands: () => ({ code: 1, stderr: "gh: API rate limit exceeded for user ID 1. (HTTP 403)" }),
+    });
+    await expect(new Work(limited.ops).censusDirect()).rejects.toThrow(/rate limit exceeded/);
+    expect(limited.calls).toHaveLength(1);
+  });
+});
+
 describe("what needs the owner's hands", () => {
   test("the census is split into what only he can do, reviews, and the rest", async () => {
     const item = (n: number, labels: string[], hands?: unknown) => ({
@@ -369,6 +433,19 @@ describe("what needs the owner's hands", () => {
     ]);
     expect(c.reviews.map((i) => i.ref)).toEqual([`${REPO}#2`]);
     expect(c.other.map((i) => [i.ref, i.why])).toEqual([[`${REPO}#3`, "why"]]);
+    // When each was last touched is a time the app can read (it was once shortened like a
+    // title, with a mark at the cut, and every card then said "updated" and nothing after).
+    expect(c.reviews[0].updated).toBe("2026-11-20T01:02:03");
+    expect(Date.parse(`${c.reviews[0].updated}Z`)).toBe(Date.parse("2026-11-20T01:02:03Z"));
+    expect([c.at, c.complete, "unread" in c]).toEqual(["x", true, false]);
+    // A census the dashboard could not finish is not passed on as whole; one that does not say is.
+    const partly = (complete?: boolean) =>
+      new Work(
+        world({ dash: () => ({ fetchedAt: "x", items: [], ...(complete === undefined ? {} : { complete }) }) }).ops,
+      )
+        .census()
+        .then((census) => census.complete);
+    expect([await partly(false), await partly(true), await partly()]).toEqual([false, true, true]);
     const s = await work.sessions();
     expect(s.moving).toEqual([
       {
@@ -766,6 +843,25 @@ describe("the state kept ready", () => {
     expect(body.health.board).toEqual({ ok: false, error: "source is down" });
     expect(after.etag).not.toBe(good.etag);
     expect(after.asOf).toBe(now - 1_000); // the board is a second past its interval
+    // Two times travel with it: when the board was last tried, which the failed try moved
+    // on, and when what is shown of it was read, which it did not.
+    const wasRead = new Date(now - 11_000).toISOString();
+    expect([body.read.board, body.good.board]).toEqual([new Date(now).toISOString(), wasRead]);
+    expect(JSON.parse(good.body).good.board).toBe(wasRead);
+    // Tried again and failing again an hour on, the copy is as old as it is, not as the try.
+    now += 3_600_000;
+    await docs.refresh("board");
+    const later = JSON.parse((await docs.doc("core")).body);
+    expect([later.read.board, later.good.board]).toEqual([new Date(now).toISOString(), wasRead]);
+    // Read again, both are now.
+    s.break(false);
+    now += 11_000;
+    await docs.refresh("board");
+    const mended = JSON.parse((await docs.doc("core")).body);
+    expect([mended.read.board, mended.good.board]).toEqual([new Date(now).toISOString(), new Date(now).toISOString()]);
+    // A section never read has neither.
+    const never = new Docs(all({ ttlMs: 10_000, load: async () => new Promise(() => {}) }), () => now);
+    expect(never.goodAt("board")).toBe(0);
   });
 
   test("a copy kept from before is shown at once and read again behind the same answer", async () => {
@@ -989,7 +1085,7 @@ describe("the interface's endpoints", () => {
     const { d } = deps();
     const res = await handle(get("/console/api/doc/questions"), d);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = (await res.json()) as { questions: { total: number } };
     expect(body.questions.total).toBe(4);
     expect(JSON.stringify(body)).not.toContain(TOKEN);
     const etag = res.headers.get("etag") ?? "";
@@ -1005,6 +1101,209 @@ describe("the interface's endpoints", () => {
     expect(raw.byteLength).toBeLessThan(JSON.stringify(body).length / 2);
     expect((await handle(get("/console/api/doc/secrets"), d)).status).toBe(404);
     expect((await handle(get("/console/api/doc/core"), deps(401).d)).status).toBe(401);
+  });
+
+  test("with no edge in front of it, a host does an action once under the name a device gave it", async () => {
+    const { d, w } = deps();
+    d.named = new Named(memoryStore());
+    const id = "0e000000-0000-4000-8000-000000000001";
+    const moves = () => w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length;
+    const first = await handle(
+      post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }),
+      d,
+    );
+    expect(await first.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
+    const second = await handle(
+      post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }),
+      d,
+    );
+    expect(await second.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 }, again: true });
+    expect(moves()).toBe(1);
+    // Its record of what was done carries the name, once.
+    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as {
+      acts: { id: string; status: string }[];
+    };
+    expect(core.acts.map((a: { id: string; status: string }) => [a.id, a.status])).toEqual([[id, "done"]]);
+    // With nowhere to write names down, an action is done as often as it is asked: as it always was.
+    const bare = deps();
+    await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
+    await handle(post("/console/api/act", { kind: "task.move", args: { task: 21016, to: "first" }, id }), bare.d);
+    expect(bare.w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length).toBe(2);
+  });
+
+  test("two arrivals under one name at the same moment: one does it, the other is told it is being done", async () => {
+    const { d, w, audited } = deps();
+    d.named = new Named(memoryStore());
+    const moves = () => w.sqls.flat().filter((s) => s.sql.startsWith("UPDATE tasks SET priority")).length;
+    const body = (id: string) => ({ kind: "task.move", args: { task: 21016, to: "first" }, id });
+    // The record of what is done is slow to write, which is where two
+    // arrivals used to pass each other: both had looked, neither had begun.
+    let open: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const audit = d.audit;
+    d.audit = async (e) => {
+      await gate;
+      return audit(e);
+    };
+    const id = "0e000000-0000-4000-8000-000000000002";
+    const a = handle(post("/console/api/act", body(id)), d);
+    const b = handle(post("/console/api/act", body(id)), d);
+    await new Promise((r) => setTimeout(r, 5));
+    open();
+    const answers = await Promise.all([a, b]);
+    expect(answers.map((r) => r.status).sort()).toEqual([200, 409]);
+    const told = await (answers.find((r) => r.status === 409) as Response).json();
+    expect(told).toEqual({ error: "This is still being done.", running: true });
+    expect(moves()).toBe(1);
+    expect(audited.filter((e) => e.phase === "start")).toHaveLength(1);
+    // Asked again once it is over, it is answered from the record.
+    expect(await (await handle(post("/console/api/act", body(id)), d)).json()).toMatchObject({ ok: true, again: true });
+    // An action that could not be recorded is not taken, and its name
+    // is not left taken either: tried again, it is simply done.
+    const other = "0e000000-0000-4000-8000-000000000003";
+    d.audit = async () => {
+      throw new Error("disk full");
+    };
+    const refused = await handle(post("/console/api/act", body(other)), d);
+    expect([refused.status, await refused.json()]).toEqual([
+      502,
+      { error: "the action could not be recorded, so it was not taken" },
+    ]);
+    d.audit = audit;
+    const retried = await handle(post("/console/api/act", body(other)), d);
+    expect(await retried.json()).toEqual({ ok: true, result: { task: 21016, priority: 10 } });
+    expect(moves()).toBe(2);
+  });
+
+  test("the record of names: what each state means, how many are kept, and a record that cannot be read", async () => {
+    const store = memoryStore();
+    const named = new Named(store);
+    expect(await named.seen("a")).toBeNull();
+    await named.begin("a");
+    expect(await named.seen("a")).toEqual({ state: "running" });
+    await named.end("a", { ok: true, result: { n: 1 } });
+    expect(await named.seen("a")).toEqual({ state: "done", fate: { ok: true, result: { n: 1 } } });
+    await named.begin("b");
+    await named.end("b", { ok: false, error: "no", status: 404 });
+    expect(await named.seen("b")).toEqual({ state: "done", fate: { ok: false, error: "no", status: 404 } });
+    // Started, and the process stopped: another one, reading the same
+    // record, knows it was started and not how it ended.
+    await named.begin("c");
+    const after = new Named(store);
+    expect(await after.seen("c")).toEqual({ state: "lost" });
+    expect(await after.seen("a")).toEqual({ state: "done", fate: { ok: true, result: { n: 1 } } });
+    expect([named.isRunning("c"), after.isRunning("c")]).toEqual([true, false]);
+    // An outcome that cannot be written still frees the name in this process.
+    const failing = new Named({
+      read: async () => null,
+      write: async (text) => {
+        if (text.includes('"ok"')) throw new Error("disk full");
+      },
+    });
+    await failing.begin("d");
+    await expect(failing.end("d", { ok: true })).rejects.toThrow("disk full");
+    expect(failing.isRunning("d")).toBe(false);
+    // A name is taken by one at a time, and given back.
+    const one = new Named(memoryStore());
+    expect([one.take("t"), one.take("t"), one.isRunning("t")]).toEqual([true, false, true]);
+    expect(await one.seen("t")).toEqual({ state: "running" });
+    one.release("t");
+    expect([one.isRunning("t"), await one.seen("t"), one.take("t")]).toEqual([false, null, true]);
+    // Three hundred names are kept: the oldest is forgotten first, and
+    // one seen again counts as new.
+    const many = new Named(memoryStore());
+    for (let i = 0; i < 300; i++) await many.record(`n${i}`, { ok: true });
+    await many.record("n0", { ok: true });
+    await many.record("n300", { ok: true });
+    expect([await many.get("n1"), await many.get("n0"), await many.get("n2")]).toEqual([
+      undefined,
+      { ok: true },
+      { ok: true },
+    ]);
+    // A record that cannot be read is an empty one, not a crash.
+    const broken = new Named({ read: async () => "not json", write: async () => {} });
+    expect(await broken.seen("x")).toBeNull();
+  });
+
+  test("the record of names on a slow disk: read once however many ask together, and no write lands over a later one", async () => {
+    let content: string | null = JSON.stringify({ old: { ok: true } });
+    let reads = 0;
+    // Each write takes as long as it is told to.
+    const delays: number[] = [];
+    const disk = {
+      read: async () => {
+        reads++;
+        await new Promise((r) => setTimeout(r, 5));
+        return content;
+      },
+      write: async (text: string) => {
+        await new Promise((r) => setTimeout(r, delays.shift() ?? 1));
+        content = text;
+      },
+    };
+    const named = new Named(disk);
+    // Three ask at the same moment, before the record has been read.
+    await Promise.all([named.begin("a"), named.begin("b"), named.record("c", { ok: true })]);
+    expect(reads).toBe(1);
+    // All three are in the record, with what was there before.
+    expect(Object.keys(JSON.parse(content as string))).toEqual(["old", "a", "b", "c"]);
+    expect([named.isRunning("a"), named.isRunning("b")]).toEqual([true, true]);
+    // One write is slow, and another name is written down while it is
+    // out: the slow one does not land afterwards, over the newer.
+    delays.push(12, 1);
+    const slow = named.record("d", { ok: true });
+    await new Promise((r) => setTimeout(r, 3));
+    const quick = named.record("e", { ok: true });
+    await Promise.all([slow, quick]);
+    expect(Object.keys(JSON.parse(content as string))).toEqual(["old", "a", "b", "c", "d", "e"]);
+    // A process started now reads all of them back.
+    const after = new Named(disk);
+    expect([await after.seen("a"), await after.seen("c"), await after.seen("e")]).toEqual([
+      { state: "lost" },
+      { state: "done", fate: { ok: true } },
+      { state: "done", fate: { ok: true } },
+    ]);
+    // A write that fails is its own caller's to hear of; the next one is written all the same.
+    const flaky = { fail: true };
+    const kept: string[] = [];
+    const sometimes = new Named({
+      read: async () => null,
+      write: async (text) => {
+        if (flaky.fail) throw new Error("disk full");
+        kept.push(text);
+      },
+    });
+    await expect(sometimes.record("x", { ok: true })).rejects.toThrow("disk full");
+    flaky.fail = false;
+    await sometimes.record("y", { ok: true });
+    expect(Object.keys(JSON.parse(kept[kept.length - 1]))).toEqual(["x", "y"]);
+  });
+
+  test("asked which machines there are, a machine serving the app by itself answers with itself: nothing is in front of it, and nothing waits", async () => {
+    const { d } = deps();
+    d.self = { name: "nixos", version: "0123abcd4567" };
+    await handle(get("/console/api/doc/core"), d);
+    const answer = (await (await handle(get("/console/api/machines"), d)).json()) as {
+      served: string;
+      platform: unknown;
+      machines: { name: string; quiet: boolean; version: string | null; actions: string[]; sections: string[] }[];
+      held: unknown[];
+    };
+    expect([answer.served, answer.platform, answer.held]).toEqual(["machine", null, []]);
+    expect(answer.machines).toHaveLength(1);
+    const [self] = answer.machines;
+    expect([self.name, self.quiet, self.version]).toEqual(["nixos", false, "0123abcd4567"]);
+    // What it can do is what it has: its actions by kind, and every section it reads.
+    expect(self.actions).toEqual(Object.keys(d.actions ?? {}).sort());
+    expect(self.actions).toContain("task.cancel");
+    expect(self.sections).toContain("questions");
+    expect(self.sections).toEqual([...self.sections].sort());
+    // With no name given it, it is still a machine.
+    d.self = undefined;
+    const unnamed = (await (await handle(get("/console/api/machines"), d)).json()) as typeof answer;
+    expect([unnamed.machines[0].name, unnamed.machines[0].version]).toEqual(["this machine", null]);
   });
 
   test("an action runs, is recorded without the owner's words, and shows in the state", async () => {
@@ -1029,7 +1328,9 @@ describe("the interface's endpoints", () => {
       ["need.comment", "done", { ref: `${REPO}#5` }],
     ]);
     expect(JSON.stringify(audited)).not.toContain("private words");
-    const core = await (await handle(get("/console/api/doc/core"), d)).json();
+    const core = (await (await handle(get("/console/api/doc/core"), d)).json()) as {
+      acts: { kind: string; status: string }[];
+    };
     expect(core.acts.map((a: { kind: string; status: string }) => [a.kind, a.status])).toEqual([
       ["need.comment", "done"],
       ["task.move", "done"],
@@ -1047,7 +1348,9 @@ describe("the interface's endpoints", () => {
       expect((await handle(post("/console/api/act", body), d)).status).toBe(400);
     }
     expect(w.calls.length).toBe(before);
-    const failed = (await (await handle(get("/console/api/doc/core"), d)).json()).acts[0];
+    const failed = (
+      (await (await handle(get("/console/api/doc/core"), d)).json()) as { acts: { kind: string; status: string }[] }
+    ).acts[0];
     expect([failed.kind, failed.status]).toEqual(["task.move", "failed"]);
     await expect(perform(actions(w.ops, new Work(w.ops)), deps().docs, "__proto__", {})).rejects.toThrow(
       /not an action/,

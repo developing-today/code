@@ -1,11 +1,7 @@
 /**
- * IndexedDB request-batch store prototype (slice 9110-05, #10213).
- *
- * An isolated adapter that exercises the declared browser-store
- * capability subset of the port contract (port-v1, contract version
- * 2) against a real browser engine, without deciding product
- * adoption: the adapter is evaluation-only, nothing in the product
- * enables it, and the adopt/defer/reject decision belongs to #9082.
+ * IndexedDB request-batch record-store adapter (port contract version 2).
+ * #10213 evaluated it in Chromium; #9082 adopted that profile. The web
+ * product still chooses its own store. This adapter is opt-in.
  *
  * The one structural rule the evaluation exists to prove: this
  * adapter never advertises — and cannot express — a long-lived
@@ -42,11 +38,7 @@ export interface StoreWrite {
   value: string | null;
 }
 
-export type RefusalKind =
-  | "unsupported-capability"
-  | "version-mismatch"
-  | "conditional"
-  | "limit-exceeded";
+export type RefusalKind = "unsupported-capability" | "version-mismatch" | "conditional" | "limit-exceeded";
 
 /** A contract refusal, mirroring `PortError` in the Rust port. */
 export class PortRefusal extends Error {
@@ -91,7 +83,7 @@ export interface IndexedDbDescriptor {
  *   transaction may span every object store of the database, so a
  *   batch commits or aborts as a unit. It is *not* a session
  *   transaction — no capability here names one.
- * - `durable: true` means data survives a browser restart (the
+ * - `durable: true` means data survives closing and reopening the database (the
  *   conformance suite proves it by closing and reopening the
  *   database). Browser storage is best-effort under storage
  *   pressure unless the origin is granted persistence
@@ -109,11 +101,7 @@ export const INDEXEDDB_DESCRIPTOR: IndexedDbDescriptor = {
   contract_version: PORT_CONTRACT_VERSION,
   scope: "browser",
   required_capabilities: [],
-  optional_capabilities: [
-    "store.scan",
-    "store.txn.multi-record",
-    "store.txn.whole-database",
-  ],
+  optional_capabilities: ["store.scan", "store.txn.multi-record", "store.txn.whole-database"],
   guarantees: {
     ordered: false,
     durable: true,
@@ -144,10 +132,7 @@ function descriptorAdvertises(capability: string): boolean {
  * the protocol version is checked first, then every required
  * capability must be advertised. Refusals happen before any write.
  */
-export function negotiate(
-  requiredCapabilities: string[],
-  protocolVersion: number = PORT_CONTRACT_VERSION,
-): string[] {
+export function negotiate(requiredCapabilities: string[], protocolVersion: number = PORT_CONTRACT_VERSION): string[] {
   if (protocolVersion !== INDEXEDDB_DESCRIPTOR.contract_version) {
     throw new PortRefusal(
       "version-mismatch",
@@ -215,16 +200,14 @@ export function resolveOutcome(reported: string): string {
 function requestDone<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
-      reject(request.error ?? new Error("IndexedDB request failed"));
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed"));
   });
 }
 
 function transactionDone(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onabort = () =>
-      reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB transaction aborted"));
     transaction.onerror = () => {
       // A request error aborts the transaction; onabort reports it.
     };
@@ -232,7 +215,7 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 }
 
 /**
- * The prototype adapter. One instance owns one database connection;
+ * The request-batch adapter. One instance owns one database connection;
  * namespaces are object stores created at open (upgrade) time.
  */
 export class IndexedDbStore {
@@ -250,16 +233,9 @@ export class IndexedDbStore {
    * Reopening with a higher version and additional namespaces is
    * the upgrade path; existing stores and records are preserved.
    */
-  static async open(
-    name: string,
-    namespaces: string[],
-    version = 1,
-  ): Promise<IndexedDbStore> {
+  static async open(name: string, namespaces: string[], version = 1): Promise<IndexedDbStore> {
     if (namespaces.includes(META_STORE)) {
-      throw new PortRefusal(
-        "unsupported-capability",
-        `namespace ${META_STORE} is reserved for operation-ID records`,
-      );
+      throw new PortRefusal("unsupported-capability", `namespace ${META_STORE} is reserved for operation-ID records`);
     }
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open(name, version);
@@ -305,8 +281,7 @@ export class IndexedDbStore {
     await new Promise<void>((resolve, reject) => {
       const request = indexedDB.deleteDatabase(name);
       request.onsuccess = () => resolve();
-      request.onerror = () =>
-        reject(request.error ?? new Error("IndexedDB delete failed"));
+      request.onerror = () => reject(request.error ?? new Error("IndexedDB delete failed"));
       // onblocked is informational: the delete proceeds once the
       // remaining connections close; it is not a failure.
     });
@@ -318,10 +293,7 @@ export class IndexedDbStore {
 
   private assertNamespace(namespace: string): void {
     if (!this.namespaces.includes(namespace)) {
-      throw new PortRefusal(
-        "unsupported-capability",
-        `namespace ${namespace} was not declared at open time`,
-      );
+      throw new PortRefusal("unsupported-capability", `namespace ${namespace} was not declared at open time`);
     }
   }
 
@@ -337,15 +309,10 @@ export class IndexedDbStore {
    * Resolves `"committed"` when the transaction completes; rejects
    * if it aborts.
    */
-  async commitBatch(
-    opId: string,
-    writes: StoreWrite[],
-  ): Promise<"committed"> {
+  async commitBatch(opId: string, writes: StoreWrite[]): Promise<"committed"> {
     checkCommit(writes);
     for (const write of writes) this.assertNamespace(write.namespace);
-    const stores = [
-      ...new Set([...writes.map((write) => write.namespace), META_STORE]),
-    ];
+    const stores = [...new Set([...writes.map((write) => write.namespace), META_STORE])];
     const transaction = this.db.transaction(stores, "readwrite");
     const done = transactionDone(transaction);
     const meta = transaction.objectStore(META_STORE);
@@ -367,9 +334,7 @@ export class IndexedDbStore {
   async get(namespace: string, id: string): Promise<string | undefined> {
     this.assertNamespace(namespace);
     const transaction = this.db.transaction(namespace, "readonly");
-    const value = await requestDone(
-      transaction.objectStore(namespace).get(id),
-    );
+    const value = await requestDone(transaction.objectStore(namespace).get(id));
     return value as string | undefined;
   }
 
@@ -385,9 +350,6 @@ export class IndexedDbStore {
     const valuesRequest = store.getAll();
     const keys = await requestDone(keysRequest);
     const values = await requestDone(valuesRequest);
-    return keys.map((key, index) => [
-      String(key),
-      values[index] as string,
-    ]);
+    return keys.map((key, index) => [String(key), values[index] as string]);
   }
 }

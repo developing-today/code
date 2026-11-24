@@ -7,7 +7,9 @@ import { readFileSync } from "node:fs";
 import {
   ago,
   androidSource,
+  answeredKeys,
   awayNotice,
+  censusSaid,
   awayState,
   band,
   capital,
@@ -16,15 +18,29 @@ import {
   deviceLabel,
   deviceState,
   endpointMark,
+  everyRead,
+  flushSaid,
+  freshSaid,
   intakeArgs,
   intakeSaid,
+  keptGroups,
+  keptSaid,
+  heldWaitsSaid,
   levelHeadings,
+  listed,
+  machineSaid,
+  machinesMark,
   phaseHeading,
+  platformCounts,
   prCheck,
   runSaid,
+  sentSaid,
   servingSaid,
   subscriptionState,
   testSaid,
+  unreadSaid,
+  whySaid,
+  workerSaid,
 } from "../public/app.js";
 import { androidRelease } from "../src/edge-proto.ts";
 import { contact, endpointMark as serverMark } from "../src/push.ts";
@@ -305,7 +321,7 @@ test("a card's title is not announced as a skipped heading level", () => {
     const attrs: Record<string, string> = {};
     return { tagName, attrs, setAttribute: (k: string, v: string) => void (attrs[k] = v) };
   };
-  const levels = (tags: string[]) => {
+  const levels = (tags: string[]): (string | null)[] => {
     const els = tags.map(heading);
     levelHeadings(els);
     return els.map((e) => e.attrs["aria-level"] ?? null);
@@ -382,11 +398,23 @@ test("what a form on a plan screen sends is the owner's words and only the choic
 });
 
 test("a change form names a phase only when moving, and a name only when adding under", () => {
-  expect(changeAsked({ action: "move", to: "now", itemTitle: "left over from before" })).toEqual({
+  expect(
+    changeAsked({ action: "move", to: "now", itemTitle: "left over from before" }) as {
+      action: string;
+      to?: string;
+      title?: string;
+    },
+  ).toEqual({
     action: "move",
     to: "now",
   });
-  expect(changeAsked({ action: "add-under", to: "now", itemTitle: "Tiles" })).toEqual({
+  expect(
+    changeAsked({ action: "add-under", to: "now", itemTitle: "Tiles" }) as {
+      action: string;
+      to?: string;
+      title?: string;
+    },
+  ).toEqual({
     action: "add-under",
     title: "Tiles",
   });
@@ -473,12 +501,35 @@ test("the laptop being away is said differently when Cloudflare is carrying on",
   const carrying = awayNotice(true, "2 h ago");
   expect(carrying.title).toBe("The laptop is not connected");
   expect(carrying.text).toContain("Cloudflare is carrying on");
-  expect(carrying.text).toContain("as the laptop last reported them, 2 h ago");
+  expect(carrying.text).toContain("what is labelled as needing you are current");
+  expect(carrying.text).toContain("Sessions and questions are as the laptop last reported them, 2 h ago");
   const waiting = awayNotice(false, "2 h ago");
   expect(waiting.title).toBe("The laptop is out of reach");
   expect(waiting.text).toBe(
     "It last reported 2 h ago; this is the state as of then. You can keep working: what is safe to do late is held and sent when it is back.",
   );
+});
+
+test("lists of what needs the owner that are not whole say so, and name what could not be read when that is known", () => {
+  const lists = { hands: [], reviews: [], other: [] };
+  // Whole: nothing is said, with or without the word.
+  expect(censusSaid({ ...lists, complete: true, unread: [] })).toBe("");
+  expect(censusSaid(lists)).toBe("");
+  expect(censusSaid(null)).toBe("");
+  // Not whole, and the reader names what is missing.
+  expect(censusSaid({ ...lists, complete: false, unread: ["a/one"] })).toBe(
+    "Not the whole list: a/one could not be read just now.",
+  );
+  expect(censusSaid({ ...lists, complete: false, unread: ["a/one", "a/two (user/review)", "a/three"] })).toBe(
+    "Not the whole list: a/one, a/two (user/review) and a/three could not be read just now.",
+  );
+  // Not whole, from a reader that does not say what is missing (the laptop's dashboard).
+  for (const unread of [undefined, [], [""], "a/one", [3]]) {
+    expect([unread, censusSaid({ ...lists, complete: false, unread })]).toEqual([
+      unread,
+      "Not the whole list: some of it could not be read just now.",
+    ]);
+  }
 });
 
 test("text on a status colour can be read, on the dark page and the light one", () => {
@@ -536,5 +587,541 @@ test("text on a status colour can be read, on the dark page and the light one", 
     const body = block(at);
     const background = /background:\s*var\((--[a-z-]+)\)/.exec(body)?.[1];
     expect(body).toContain(`color: var(${background}-ink)`);
+  }
+  // A button on a toast (Undo) is written in the toast's ink, not the page's.
+  expect(block(css.indexOf("\n.toast button {"))).toContain("color: inherit");
+});
+
+test("the corner of the header says live, how old, offline or signed out", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const at = (secondsAgo: number) => now - secondsAgo * 1000;
+  expect(freshSaid({ asOf: at(10) }, now)).toEqual({ text: "live", tone: "" });
+  expect(freshSaid({ asOf: at(120) }, now)).toEqual({ text: "as of 2 min ago", tone: "" });
+  expect(freshSaid({ asOf: at(600) }, now)).toEqual({ text: "as of 10 min ago", tone: "stale" });
+  // With no connection it never says "live", however recent the copy.
+  expect(freshSaid({ asOf: at(10), offline: true }, now)).toEqual({ text: "offline · just now", tone: "stale" });
+  expect(freshSaid({ asOf: at(7200), offline: true }, now)).toEqual({ text: "offline · 2 h ago", tone: "stale" });
+  expect(freshSaid({ offline: true }, now)).toEqual({ text: "offline", tone: "stale" });
+  // Signed out is said before anything else: it is what to act on.
+  expect(freshSaid({ asOf: at(10), offline: true, signedOut: true }, now)).toEqual({
+    text: "signed out",
+    tone: "down",
+  });
+  expect(freshSaid({}, now)).toEqual({ text: "", tone: "" });
+});
+
+test("the line under the header says there is no connection and what is kept, and nothing when there is nothing to say", () => {
+  expect(keptSaid({})).toBeNull();
+  expect(
+    keptSaid({ offline: false, signedOut: false, summary: { waiting: 0, stale: 0, failed: 0, held: 2, done: 5 } }),
+  ).toBeNull();
+  expect(keptSaid({ offline: true })).toEqual({
+    text: "No connection: this is what the device last saw.",
+    tone: "",
+    to: "more/device",
+  });
+  expect(keptSaid({ offline: true, summary: { waiting: 1 } })).toEqual({
+    text: "No connection: this is what the device last saw · 1 thing kept to send.",
+    tone: "",
+    to: "more/device",
+  });
+  // Connected, and something still waits (it is being sent, or waits for a machine).
+  expect(keptSaid({ summary: { waiting: 3 } })).toEqual({
+    text: "3 things kept to send.",
+    tone: "",
+    to: "more/device",
+  });
+  // What needs the owner is said as needing them.
+  expect(keptSaid({ summary: { waiting: 1, stale: 2, failed: 1 } })).toEqual({
+    text: "1 thing kept to send · 2 things kept back for you to look at · 1 thing could not be done.",
+    tone: "warn",
+    to: "more/device",
+  });
+  // Signed out: a tap signs in again, unless there is something to look at first.
+  expect(keptSaid({ signedOut: true, offline: true, summary: { waiting: 2 } })).toEqual({
+    text: "Signed out: tap to sign in again · 2 things kept to send.",
+    tone: "warn",
+    to: "reload",
+  });
+  expect(keptSaid({ signedOut: true, summary: { failed: 1 } })?.to).toBe("more/device");
+});
+
+test("what a send did is said in one line, and nothing is said of nothing", () => {
+  const e = (state: string) => ({ state });
+  expect(flushSaid([])).toBe("");
+  expect(flushSaid([e("waiting")])).toBe("");
+  expect(flushSaid([e("done")])).toBe("What you did offline: 1 sent.");
+  // Taken by the platform for a machine counts as sent: it has it.
+  expect(flushSaid([e("done"), e("held"), e("failed"), e("stale"), e("stale")])).toBe(
+    "What you did offline: 2 sent, 1 could not be done, 2 kept back for you to look at.",
+  );
+});
+
+test("what is kept is listed by what it needs: waiting, kept back, failed, with the platform, sent", () => {
+  const e = (id: string, state: string, at: number) => ({ id, state, at });
+  const groups = keptGroups([
+    e("d1", "done", 1),
+    e("w1", "waiting", 2),
+    e("w2", "waiting", 5),
+    e("f1", "failed", 3),
+    e("s1", "stale", 4),
+    e("h1", "held", 6),
+  ]);
+  expect(groups.map((g) => [g.title, g.can, g.entries.map((x: { id: string }) => x.id)])).toEqual([
+    ["Waiting to send", ["drop"], ["w2", "w1"]],
+    ["Kept back for you to look at", ["send", "drop"], ["s1"]],
+    ["Could not be done", ["again", "drop"], ["f1"]],
+    ["With the platform, waiting to be done", [], ["h1"]],
+    ["Sent", [], ["d1"]],
+  ]);
+  // A group with nothing in it is not shown.
+  expect(keptGroups([e("w1", "waiting", 1)]).map((g) => g.state)).toEqual(["waiting"]);
+  expect(keptGroups([])).toEqual([]);
+});
+
+test("keeping a copy of every screen reads each under the address its screen asks for it by", () => {
+  const caps = [{ id: "id" }, { id: "pm-stack" }, { id: "repo-and-ci" }];
+  expect(everyRead(caps, true)).toEqual([
+    "doc/core",
+    "doc/questions",
+    "doc/ops",
+    "me",
+    "roadmaps",
+    "roadmap?area=id",
+    "roadmap?area=pm-stack",
+    "roadmap?area=repo-and-ci",
+    "bugs",
+    "intake",
+    "queue?status=blocked&q=",
+    "queue?status=queued&q=",
+    "queue?status=claimed&q=",
+    "queue?status=parked&q=",
+    "releases",
+    "platform",
+    "messages?limit=15",
+    "push",
+    "devices",
+    "machines",
+    "signin",
+    "android",
+  ]);
+  // Served straight from a machine there is no kept Android build to ask about.
+  expect(everyRead(caps, false)).not.toContain("android");
+  // The list of capabilities could not be read: the rest still is.
+  expect(everyRead(undefined, false)).toEqual([
+    "doc/core",
+    "doc/questions",
+    "doc/ops",
+    "me",
+    "roadmaps",
+    "bugs",
+    "intake",
+    "queue?status=blocked&q=",
+    "queue?status=queued&q=",
+    "queue?status=claimed&q=",
+    "queue?status=parked&q=",
+    "releases",
+    "platform",
+    "messages?limit=15",
+    "push",
+    "devices",
+    "machines",
+    "signin",
+  ]);
+});
+
+test("what the owner is told of something just done, from what became of it when it was sent in its turn", () => {
+  const id = "0c000000-0000-4000-8000-000000000001";
+  const older = [{ id: "x", state: "done" }];
+  const quiet = { others: [], signin: false, offline: false };
+  // Done: its result, and what else went with it.
+  expect(sentSaid({ ...quiet, entry: { state: "done", result: { rank: "next" } }, others: older }, id)).toEqual({
+    state: "done",
+    result: { rank: "next" },
+    others: older,
+  });
+  expect(sentSaid({ ...quiet, entry: { state: "done" } }, id)).toEqual({ state: "done", result: null, others: [] });
+  // Taken by the platform for a machine.
+  // Taken by the platform to be done later, with what it said of who will.
+  expect(sentSaid({ ...quiet, entry: { state: "held", note: "Kept: who will" }, others: older }, id)).toEqual({
+    state: "held",
+    note: "Kept: who will",
+    others: older,
+  });
+  expect(sentSaid({ ...quiet, entry: { state: "held" }, others: older }, id)).toEqual({
+    state: "held",
+    note: "",
+    others: older,
+  });
+  // Refused: said, and nothing more.
+  expect(sentSaid({ ...quiet, entry: { state: "failed", note: "no such issue" } }, id)).toEqual({
+    state: "failed",
+    note: "no such issue",
+  });
+  // Kept on the device: with no connection, with no sign-in, and when
+  // nothing could take it or it goes behind another, each said as itself.
+  expect(sentSaid({ ...quiet, offline: true, entry: { state: "waiting", note: "" } }, id)).toEqual({
+    state: "kept",
+    id,
+    note: "Kept on this device. It is sent when you are connected.",
+  });
+  expect(
+    sentSaid({ ...quiet, signin: true, entry: { state: "waiting", note: "Sign in again to send this." } }, id),
+  ).toEqual({
+    state: "kept",
+    id,
+    note: "Kept on this device. Sign in again to send it.",
+  });
+  expect(
+    sentSaid(
+      { ...quiet, entry: { state: "waiting", note: "Nothing could take it just now. It is offered again." } },
+      id,
+    ),
+  ).toEqual({
+    state: "kept",
+    id,
+    note: "Kept on this device: Nothing could take it just now. It is offered again.",
+  });
+  // Taken back by the owner while it was out.
+  expect(sentSaid({ ...quiet, entry: null }, id)).toEqual({
+    state: "refused",
+    note: "It was taken back before it was sent.",
+  });
+});
+
+test("a question is left out of the list while its answer is kept and not yet recorded, and is shown again when the answer is taken back", () => {
+  const answer = (qid: string, state: string, kind = "question.answer") => ({
+    kind,
+    state,
+    args: { set: "s1", ledger: "l1", qid, option: "a" },
+  });
+  // Waiting for a connection, or with the platform for a machine: left out.
+  expect([
+    ...answeredKeys([answer("q1", "waiting"), answer("q2", "held"), answer("q3", "waiting", "question.defer")]),
+  ]).toEqual(["s1|l1|q1", "s1|l1|q2", "s1|l1|q3"]);
+  // Recorded, refused, or kept back: nothing to leave out any more.
+  expect([...answeredKeys([answer("q1", "done"), answer("q2", "failed"), answer("q3", "stale")])]).toEqual([]);
+  // Taken back by the owner, the entry is gone, and so is the reason to hide the question.
+  expect([...answeredKeys([])]).toEqual([]);
+  expect([...answeredKeys(null)]).toEqual([]);
+  // Other things that are kept are not answers.
+  expect([
+    ...answeredKeys([
+      { kind: "ask.send", state: "waiting", args: { text: "x" } },
+      { kind: "questions.accept", state: "waiting", args: { set: "s1" } },
+    ]),
+  ]).toEqual([]);
+  // One being sent this moment is left out too, with what is kept.
+  expect([...answeredKeys([answer("q1", "waiting")], ["s1|l1|q9"])]).toEqual(["s1|l1|q9", "s1|l1|q1"]);
+});
+
+test("a machine, as the Machines screen says it: what only it reports and does, beside what the platform does itself", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const machine = {
+    name: "nixos",
+    seen: now - 12_000,
+    quiet: false,
+    version: "0123abcd4567",
+    actions: ["ask.send", "issue.rank", "question.answer", "task.cancel", "unit.act", "push.on", "something.new"],
+    sections: ["board", "sessions", "questionCount", "questions", "services", "asks"],
+  };
+  // The platform does the core itself: only what is left is the machine's.
+  const platform = {
+    primary: true,
+    actions: ["ask.send", "issue.rank", "push.on"],
+    sections: ["board", "asks"],
+    refused: [],
+  };
+  expect(machineSaid(machine, platform, now)).toEqual({
+    name: "nixos",
+    reporting: true,
+    state: "Reporting. Last heard from just now.",
+    version: "0123abc",
+    // The count of questions is part of the questions, not a thing of its own.
+    reports: ["sessions", "questions", "its units"],
+    // A kind this screen has no words for is said as it is named.
+    does: ["record an answer", "cancel a task", "start, stop or restart a unit", "something.new"],
+    said: true,
+  });
+  // With nothing in front of it, everything is the machine's.
+  const alone = machineSaid(machine, null, now);
+  expect(alone.reports).toEqual(["the board", "sessions", "questions", "its units", "your prompts"]);
+  expect(alone.does).toContain("send a prompt");
+  // Away, and for how long.
+  expect(machineSaid({ ...machine, seen: now - 2 * 3600_000, quiet: true }, platform, now)).toMatchObject({
+    reporting: false,
+    state: "Not reporting. Last heard from 2 h ago.",
+  });
+  expect(machineSaid({ ...machine, seen: null, quiet: true }, platform, now)).toMatchObject({
+    reporting: false,
+    state: "It has never reported.",
+  });
+  // A console older than this screen: a machine that has not said what it can do.
+  expect(
+    machineSaid(
+      { name: "A machine", seen: now, quiet: false, version: null, actions: [], sections: [] },
+      platform,
+      now,
+    ),
+  ).toMatchObject({
+    version: "",
+    reports: [],
+    does: [],
+    said: false,
+  });
+  // Lists in words.
+  expect([listed([]), listed(["a"]), listed(["a", "b"]), listed(["a", "b", "c"])]).toEqual([
+    "",
+    "a",
+    "a and b",
+    "a, b and c",
+  ]);
+});
+
+test("the Machines screen is drawn again when what it shows has changed, and not for a report that changed nothing", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const machine = {
+    name: "nixos",
+    seen: now - 5_000,
+    quiet: false,
+    version: "0123abcd4567",
+    actions: ["a.b"],
+    sections: ["board"],
+  };
+  const answer = (more: Record<string, unknown> = {}) => ({
+    served: "edge",
+    platform: { primary: true, actions: ["ask.send"], sections: ["board"], refused: [] },
+    machines: [machine],
+    held: [{ id: "h1", kind: "task.move" }],
+    ...more,
+  });
+  const mark = machinesMark(answer(), now);
+  // Another report from a machine that is still reporting changes nothing that is shown.
+  expect(machinesMark(answer({ machines: [{ ...machine, seen: now }] }), now + 5_000)).toBe(mark);
+  // Each of these does.
+  for (const [why, changed] of [
+    ["it went quiet", answer({ machines: [{ ...machine, quiet: true }] })],
+    ["it runs another commit", answer({ machines: [{ ...machine, version: "fedcba987654" }] })],
+    ["it can do something more", answer({ machines: [{ ...machine, actions: ["a.b", "c.d"] }] })],
+    ["it is called something else", answer({ machines: [{ ...machine, name: "amd" }] })],
+    ["there is another", answer({ machines: [machine, { ...machine, name: "amd" }] })],
+    ["there is none", answer({ machines: [] })],
+    ["something else waits", answer({ held: [{ id: "h1" }, { id: "h2" }] })],
+    ["what waits now waits for someone else", answer({ held: [{ id: "h1", kind: "task.move", waits: "asked" }] })],
+    ["nothing waits", answer({ held: [] })],
+    [
+      "the platform stopped doing the core",
+      answer({ platform: { primary: false, actions: [], sections: [], refused: [] } }),
+    ],
+    [
+      "the platform was turned away for something",
+      answer({ platform: { primary: true, actions: [], sections: ["board"], refused: ["pr.merge"] } }),
+    ],
+    ["nothing is in front any more", answer({ platform: null })],
+  ] as const) {
+    expect([why, machinesMark(changed, now) === mark]).toEqual([why, false]);
+  }
+  // Gone quiet, it is drawn again as the minutes pass (the screen says how long), not with every look.
+  const quiet = answer({ machines: [{ ...machine, quiet: true, seen: now - 90_000 }] });
+  expect(machinesMark(quiet, now + 20_000)).toBe(machinesMark(quiet, now));
+  expect(machinesMark(quiet, now + 60_000)).not.toBe(machinesMark(quiet, now));
+  // An answer that is not one is not a crash.
+  expect(machinesMark(null, now)).toBe(machinesMark({}, now));
+});
+
+test("who something held waits for is said in the owner's words, and not at all when the platform did not say", () => {
+  // Each of the three says something of its own.
+  const said = ["either", "machine", "asked"].map((waits) => heldWaitsSaid(waits));
+  expect(said.every((line) => line.length > 20)).toBe(true);
+  expect(new Set(said).size).toBe(3);
+  expect(said[0]).toContain("Cloudflare does this as soon as it can again");
+  expect(said[2]).toContain("may have got it");
+  // An answer older than the saying, or one that says something else: nothing is made up.
+  for (const waits of [undefined, null, "", "someone", "constructor", "toString", 3, {}]) {
+    expect([waits, heldWaitsSaid(waits)]).toEqual([waits, ""]);
+  }
+});
+
+test("a Worker's line on the Platform screen: how it gets into service, and how its last deploy went", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z");
+  const run = (state: string, more: Record<string, unknown> = {}) => ({
+    commit: "0123456789ab",
+    state,
+    at: "2026-11-23T10:00:00Z",
+    url: "https://github.com/x/y/actions/runs/1",
+    ...more,
+  });
+  // One whose deploy workflow puts what it ran on into service when it succeeds.
+  const from = (more: Record<string, unknown>) => ({
+    state: "in service",
+    deploy: "actions",
+    runDeploys: true,
+    run: null,
+    ...more,
+  });
+  // One that deploys in steps: a run that succeeded may only have uploaded a version.
+  const steps = (more: Record<string, unknown>) => ({ ...from(more), runDeploys: false });
+  expect(workerSaid(steps({ run: run("success") }), now)).toEqual({
+    text: "In service. The last run of its deploy workflow, 2 h ago, succeeded (0123456). It deploys in steps, so that run may not be what is serving.",
+    tone: "",
+  });
+  expect(workerSaid(steps({ run: run("failure") }), now)).toEqual({
+    text: "In service. The last run of its deploy workflow, 2 h ago, did not finish (failure) (0123456). It deploys in steps, so that run may not be what is serving.",
+    tone: "warn",
+  });
+  expect(workerSaid(steps({ run: run("in_progress") }), now).text).toContain("2 h ago, is in progress (0123456)");
+  expect(workerSaid(steps({ run: run("success") }), now).text).not.toContain("Last deploy");
+  expect(workerSaid(from({ run: run("success") }), now)).toEqual({
+    text: "In service. Last deploy 2 h ago, of 0123456.",
+    tone: "good",
+  });
+  // One that did not finish is said, and marked.
+  expect(workerSaid(from({ run: run("failure") }), now)).toEqual({
+    text: "In service. Its last deploy, 2 h ago, did not finish (failure).",
+    tone: "warn",
+  });
+  expect(workerSaid(from({ run: run("timed_out") }), now).text).toContain("did not finish (timed out)");
+  // One under way is neither good nor bad yet.
+  expect(workerSaid(from({ run: run("in_progress") }), now)).toEqual({
+    text: "In service. A deploy of 0123456 is in progress, started 2 h ago.",
+    tone: "",
+  });
+  expect(workerSaid(from({ run: { error: "rate limited" } }), now)).toEqual({
+    text: "In service. Deployed from Actions; its last run could not be read (rate limited).",
+    tone: "warn",
+  });
+  expect(workerSaid(from({}), now).text).toBe("In service. Deployed from Actions; it has not run on main yet.");
+  // By hand, from a machine: in service, and marked as what is left to do.
+  expect(workerSaid({ state: "in service", deploy: "by hand", run: null }, now)).toEqual({
+    text: "In service. Deployed by hand, from a machine.",
+    tone: "warn",
+  });
+  expect(workerSaid({ state: "not deployed", deploy: "none", run: null }, now)).toEqual({
+    text: "Not deployed.",
+    tone: "",
+  });
+  // The counts the screen opens with.
+  expect(
+    platformCounts([
+      { state: "in service", deploy: "actions" },
+      { state: "in service", deploy: "by hand" },
+      { state: "in service", deploy: "by hand" },
+      { state: "not deployed", deploy: "none" },
+    ]),
+  ).toEqual({ all: 4, live: 3, actions: 1, byHand: 2, idle: 1 });
+  expect(platformCounts([])).toEqual({ all: 0, live: 0, actions: 0, byHand: 0, idle: 0 });
+});
+
+test("why something could not be read is said in the owner's words where the reason is a known one", () => {
+  // As GitHub says it, through the fleet binary: seen in service on 2026-11-23.
+  const limited =
+    'fleet gh failed (exit 1): {"message":"API rate limit exceeded for user ID 11225574. If you reach out to GitHub Support for help, please include the request ID 312C:3E98FD:129EC6:13D870:6B047542","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api","status":"403"}';
+  const said = whySaid(limited);
+  expect(said).toBe(
+    "GitHub's allowance for the hour is used up on this account, which the agents share; it is asked again every few minutes and answers when the hour turns",
+  );
+  // None of the raw answer is shown: no JSON, no request number, no user number.
+  expect(/[{}"]|request ID|11225574/.test(said)).toBe(false);
+  // Turned away for going too fast is not the hour's allowance, and is not said to be.
+  const fast = "GitHub turned this account away for asking too often just now";
+  expect(whySaid("You have exceeded a secondary rate limit")).toBe(`${fast}; it is asked again every few minutes`);
+  // Where Cloudflare was the one turned away, why starts with the time GitHub gave, and that
+  // time is said as the clock on this device shows it.
+  const now = Date.UTC(2026, 10, 23, 17, 20, 0);
+  const back = Date.UTC(2026, 10, 23, 18, 0, 0);
+  const clock = (at: number) => new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const then = (at: number) => `GitHub says it answers again at ${clock(at)}, and it is not asked before then`;
+  const asked = (at: number, why: string) => `GitHub says to ask again at ${new Date(at).toISOString()}: ${why}`;
+  const hour = "GitHub's allowance for the hour is used up on this account, which the agents share";
+  const timed = `fleet gh failed (exit 1): ${asked(back, limited)}`;
+  expect(whySaid(timed, now)).toBe(`${hour}; ${then(back)}`);
+  expect(/[{}"]|request ID|11225574|2026-11-23T/.test(whySaid(timed, now))).toBe(false);
+  // What Cloudflare says of a call it did not make, GitHub having said not to ask yet: the same.
+  expect(whySaid(asked(back, `not asked again since GitHub answered: ${limited}`), now)).toBe(whySaid(timed, now));
+  // Read after the time has come (the notice is older than the wait): no time already past is promised.
+  expect(whySaid(timed, back + 1)).toBe(
+    `${hour}; the time GitHub gave for asking again has come, and it is being asked`,
+  );
+  expect(whySaid(timed, back)).toBe(whySaid(timed, back + 1));
+  // Going too fast, with a time.
+  expect(whySaid(asked(back, "You have exceeded a secondary rate limit"), now)).toBe(`${fast}; ${then(back)}`);
+  // GitHub says "rate limit exceeded" of searches too, which it counts by the minute: a wait
+  // of a minute or two is not the hour's allowance, whatever the words.
+  expect(whySaid(asked(now + 40_000, limited), now)).toBe(`${fast}; ${then(now + 40_000)}`);
+  expect(whySaid(asked(now + 120_000, limited), now)).toBe(`${fast}; ${then(now + 120_000)}`);
+  expect(whySaid(asked(now + 120_001, limited), now)).toBe(`${hour}; ${then(now + 120_001)}`);
+  // Turned away with a time and no words at all.
+  expect(whySaid(asked(back, "GitHub answered http 429"), now)).toBe(`${fast}; ${then(back)}`);
+  // A time that is not one is not read as one.
+  expect(whySaid("GitHub says to ask again at teatime: API rate limit exceeded", now)).toBe(said);
+  // Anything else is said as it came, and nothing is said as "no reason given".
+  expect(whySaid("connection refused")).toBe("connection refused");
+  expect(whySaid("  timed out \n")).toBe("timed out");
+  for (const none of ["", null, undefined, "   "]) expect([none, whySaid(none)]).toEqual([none, "no reason given"]);
+});
+
+test("each list that could not be read is said on the screens that show it, with why and how old the copy is", () => {
+  const now = Date.UTC(2026, 10, 23, 17, 20, 0);
+  const limited =
+    'fleet gh failed (exit 1): {"message":"API rate limit exceeded for user ID 11225574.","status":"403"}';
+  const doc = {
+    health: {
+      prs: { ok: false, error: limited },
+      priorities: { ok: true, error: null },
+      agents: { ok: false, error: "bridge: connection refused" },
+      services: { ok: false, error: "systemctl: timed out" },
+      // Not read, and no reason given: nothing is made up for it.
+      more: { ok: false, error: null },
+    },
+    // When each was last tried: just now, and failing. Not how old what is shown is.
+    read: {
+      prs: new Date(now - 20_000).toISOString(),
+      agents: new Date(now - 20_000).toISOString(),
+      services: new Date(now - 20_000).toISOString(),
+    },
+    // When what is shown of each was read.
+    good: {
+      prs: new Date(now - 12 * 60_000).toISOString(),
+      agents: null,
+      services: new Date(now - 2 * 3600_000).toISOString(),
+    },
+  };
+  const hour =
+    "GitHub's allowance for the hour is used up on this account, which the agents share; it is asked again every few minutes and answers when the hour turns";
+  // A screen that shows all of a document's lists is told of each, in the document's order.
+  expect(unreadSaid(doc, null, now)).toEqual([
+    `Could not read pull requests just now: ${hour}. Showing the last good copy, read 12 min ago.`,
+    "Could not read agents just now: bridge: connection refused. Showing the last good copy.",
+    "Could not read the machine's units just now: systemctl: timed out. Showing the last good copy, read 2 h ago.",
+  ]);
+  // A screen that shows one list is told of that one, and of no other's trouble.
+  expect(unreadSaid(doc, ["prs"], now)).toEqual([
+    `Could not read pull requests just now: ${hour}. Showing the last good copy, read 12 min ago.`,
+  ]);
+  expect(unreadSaid(doc, ["priorities"], now)).toEqual([]);
+  expect(unreadSaid(doc, ["agents", "services"], now)).toHaveLength(2);
+  // A copy of the document from before it said when each list was read (one kept on a
+  // device) gives no age, and none is made up from when reading was last tried.
+  expect(unreadSaid({ health: doc.health, read: doc.read }, ["prs"], now)).toEqual([
+    `Could not read pull requests just now: ${hour}. Showing the last good copy.`,
+  ]);
+  // A document with nothing wrong, or none yet, says nothing.
+  expect(unreadSaid({ health: { prs: { ok: true, error: null } } }, null, now)).toEqual([]);
+  for (const none of [null, undefined, {}]) expect(unreadSaid(none, ["prs"], now)).toEqual([]);
+  // Every screen drawn from the operations document names its own list, so that none shows
+  // an old copy with nothing said (the Pull requests screen did, until this was written).
+  const source = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+  for (const [view, list] of [
+    ["viewPrs", "prs"],
+    ["viewIssues", "priorities"],
+    ["viewAgents", "agents"],
+    ["viewServices", "services"],
+  ]) {
+    const at = source.indexOf(`function ${view}(`);
+    const body = source.slice(
+      at,
+      source.indexOf("\nfunction ", at + 10) > 0 ? source.indexOf("\nfunction ", at + 10) : undefined,
+    );
+    expect([view, at > 0 && body.includes(`...notices(docs.ops, ["${list}"])`)]).toEqual([view, true]);
   }
 });

@@ -103,6 +103,26 @@ a.button {
 .fresh.down {
   color: var(--bad);
 }
+/* The line under the header: no connection, and what is kept to send. */
+.kept {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  min-height: 44px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 500;
+  text-align: left;
+}
+.kept.warn {
+  color: var(--warn);
+}
 main {
   max-width: 760px;
   margin: 0 auto;
@@ -626,6 +646,12 @@ pre {
 .toast.bad {
   background: var(--bad);
   color: var(--bad-ink);
+}
+/* A button on it (Undo) is written in the toast's own ink: the page's
+   text colour is made for the page, not for this green or red. */
+.toast button {
+  color: inherit;
+  border-color: currentColor;
 }
 dialog {
   width: min(92vw, 520px);

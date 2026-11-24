@@ -434,7 +434,11 @@ export async function confirmOutageWrite(input: {
   if (!released.ok) return { ok: false, status: released.status, error: released.error };
   try {
     await input.events.record(
-      outageWriteConfirmedAuditEvent({ write: record, derivedAuthor: input.derivedAuthor, actionId: released.actionId }),
+      outageWriteConfirmedAuditEvent({
+        write: record,
+        derivedAuthor: input.derivedAuthor,
+        actionId: released.actionId,
+      }),
     );
   } catch {
     return { ok: false, status: 500, error: "outage-write confirmation audit write failed; the write stays queued" };

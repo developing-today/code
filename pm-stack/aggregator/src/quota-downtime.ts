@@ -42,7 +42,7 @@
 // Basis (§1: mandatory, singular): since_last_reset — the S1
 // projections are fit on the current reset period's same-period
 // series, and this module fits nothing itself; it intersects the
-// oracle's published intervals. Methodology version c4-meth:1
+// oracle's published intervals. Methodology version c4-meth:4
 // (c4-methodology-log.jsonl beside this module's package root,
 // §6). Advisory only: no placement path reads these records —
 // the C6 pages and forecast alerts named by #9572 consume them.
@@ -54,7 +54,7 @@ import type { ForecastLedgerRow, QuotaForecastFile } from "./quota-forecast.ts";
  * into the S1 source. */
 export const PREDICTION_LEDGER_SOURCE = "quota-prediction";
 
-export const C4_METHODOLOGY_VERSION = "c4-meth:1" as const;
+export const C4_METHODOLOGY_VERSION = "c4-meth:4" as const;
 
 export interface C4PredictionRecord {
   record_version: 1;
@@ -84,15 +84,28 @@ interface WallInterval {
 
 // --- Range rendering (design §4) ----------------------------------
 // One formatter for (earliest, latest, issued_at), in
-// America/Chicago wall-clock terms. Duration form under 48h,
-// day form at/over 48h, calendar form when the range crosses a
-// Chicago day boundary — the form preferred for downtime windows
-// and any range whose latest bound falls on a different day than
-// its earliest.
+// America/Chicago wall-clock terms. Day form at/over a 48h span,
+// checked first: a range that wide always crosses a Chicago day
+// boundary, so the calendar check below would otherwise swallow
+// every day-form range (#13357). Mixed spans render compound —
+// whole days + whole hours per bound — when either bound is not
+// an exact tenth of a day; otherwise plain decimal days. Calendar
+// form when the range crosses a Chicago day boundary, or when it
+// is already in progress (a past start has no "days from now"
+// reading); duration form otherwise. A calendar bound a week or
+// more from issuance carries its month/day date (a bare weekday
+// name repeats every seven days — #13536); this/tomorrow/today-
+// anchored bounds keep their short form.
 
 const CHICAGO = "America/Chicago";
-const dayKeyFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, year: "numeric", month: "2-digit", day: "2-digit" });
+const dayKeyFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: CHICAGO,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
 const weekdayFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, weekday: "long" });
+const monthDayFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, month: "short", day: "numeric" });
 const hourFmt = new Intl.DateTimeFormat("en-US", { timeZone: CHICAGO, hour: "numeric", hourCycle: "h23" });
 
 function chicagoDayRef(ms: number, issuedMs: number): string {
@@ -105,19 +118,54 @@ function chicagoDayRef(ms: number, issuedMs: number): string {
   return weekdayFmt.format(new Date(ms));
 }
 
+// A bare weekday name repeats every seven days, so a bound a
+// week or more from issuance carries its calendar date after the
+// daypart — otherwise a range like Sep 22 → Oct 6 renders as the
+// ambiguous "between Tuesday afternoon and Tuesday
+// afternoon" (#13536). Bounds anchored to this/tomorrow/today
+// are never ambiguous and keep their short form.
+function chicagoDateSuffix(ms: number, issuedMs: number): string {
+  const ref = chicagoDayRef(ms, issuedMs);
+  if (ref === "this" || ref === "tomorrow") return "";
+  if (Math.abs(ms - issuedMs) >= 7 * 86_400_000) return `, ${monthDayFmt.format(new Date(ms))}`;
+  return "";
+}
+
 function chicagoDaypart(ms: number, issuedMs: number): string {
   const ref = chicagoDayRef(ms, issuedMs);
+  const suffix = chicagoDateSuffix(ms, issuedMs);
   const hour = Number(hourFmt.format(new Date(ms)));
   const namedHour = hour === 0 ? "12 am" : hour < 12 ? `${hour} am` : hour === 12 ? "12 pm" : `${hour - 12} pm`;
-  if (hour >= 5 && hour < 12) return ref === "this" ? "this morning" : `${ref} morning`;
-  if (hour >= 12 && hour < 17) return ref === "this" ? "this afternoon" : `${ref} afternoon`;
-  if (hour >= 17 && hour < 22) return ref === "this" ? "this evening" : `${ref} evening`;
+  if (hour >= 5 && hour < 12) return ref === "this" ? "this morning" : `${ref} morning${suffix}`;
+  if (hour >= 12 && hour < 17) return ref === "this" ? "this afternoon" : `${ref} afternoon${suffix}`;
+  if (hour >= 17 && hour < 22) return ref === "this" ? "this evening" : `${ref} evening${suffix}`;
   // Night bounds are sharp in Drew's formats ("Sunday 2 am").
-  return ref === "tomorrow" ? `tomorrow ${namedHour}` : ref === "this" ? `today ${namedHour}` : `${ref} ${namedHour}`;
+  if (ref === "tomorrow") return `tomorrow ${namedHour}`;
+  if (ref === "this") return `today ${namedHour}`;
+  return `${ref} ${namedHour}${suffix}`;
 }
 
 const roundHalf = (x: number) => Math.round(x * 2) / 2;
 const fmtNum = (x: number) => (Number.isInteger(x) ? String(x) : x.toFixed(1));
+
+/** True when the offset is an exact tenth of a day — the plain
+ * day form's rounding is then lossless for that bound. */
+function isExactTenthDay(offsetMs: number): boolean {
+  const tenths = (offsetMs / 86_400_000) * 10;
+  return Math.abs(tenths - Math.round(tenths)) < 1e-9;
+}
+
+/** A day-form bound as whole days + whole hours, e.g. "2 days
+ * 4 hours" — the compound form's per-bound rendering (§4). */
+function daysHours(offsetMs: number): string {
+  const totalHours = Math.round(offsetMs / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours - days * 24;
+  const dPart = `${days} day${days === 1 ? "" : "s"}`;
+  if (hours === 0) return dPart;
+  if (days === 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  return `${dPart} ${hours} hour${hours === 1 ? "" : "s"}`;
+}
 
 /** The stored `rendered` string for a prediction range (§4):
  * what was shown is exactly what is scored, so it is produced
@@ -126,15 +174,18 @@ export function renderPredictionRange(earliestISO: string, latestISO: string, is
   const earliest = Date.parse(earliestISO);
   const latest = Date.parse(latestISO);
   const issued = Date.parse(issuedAtISO);
+  const spanH = (latest - earliest) / 3_600_000;
+  if (spanH >= 48 && earliest > issued) {
+    const roundTenth = (x: number) => Math.round(x * 10) / 10;
+    const earliestDays = (earliest - issued) / 86_400_000;
+    const latestDays = (latest - issued) / 86_400_000;
+    if (isExactTenthDay(earliest - issued) && isExactTenthDay(latest - issued)) {
+      return `${fmtNum(roundTenth(earliestDays))} to ${fmtNum(roundTenth(latestDays))} days`;
+    }
+    return `${daysHours(earliest - issued)} to up to ${daysHours(latest - issued)}`;
+  }
   if (dayKeyFmt.format(new Date(earliest)) !== dayKeyFmt.format(new Date(latest))) {
     return `between ${chicagoDaypart(earliest, issued)} and ${chicagoDaypart(latest, issued)}`;
-  }
-  const spanH = (latest - earliest) / 3_600_000;
-  if (spanH >= 48) {
-    const roundTenth = (x: number) => Math.round(x * 10) / 10;
-    return `${fmtNum(roundTenth((earliest - issued) / 86_400_000))} to ${fmtNum(
-      roundTenth((latest - issued) / 86_400_000),
-    )} days`;
   }
   if (earliest <= issued) {
     // Already in progress: "from now" cannot express a start in
@@ -210,7 +261,9 @@ export function deriveDowntimeWindowRecords(
   );
   const unknownIds = providers.filter((p) => p.unknown).map((p) => p.providerId);
 
-  const record = (over: Partial<C4PredictionRecord> & Pick<C4PredictionRecord, "id" | "state">): C4PredictionRecord => ({
+  const record = (
+    over: Partial<C4PredictionRecord> & Pick<C4PredictionRecord, "id" | "state">,
+  ): C4PredictionRecord => ({
     record_version: 1,
     kind: "downtime_window",
     subject: { pools: providerIds },
@@ -221,7 +274,12 @@ export function deriveDowntimeWindowRecords(
         "complete-downtime interval intersected from the Stage-3 per-pool pace projections (quota-forecast.json, #12695): " +
         "every routing pool's predicted wall has passed and the earliest reopening (any pool's reset) has not yet arrived",
     },
-    inputs: { series: "quota-forecast.json", samples: totalSamples, span: { from: spanFrom, to: issuedAt }, adjustments: [] },
+    inputs: {
+      series: "quota-forecast.json",
+      samples: totalSamples,
+      span: { from: spanFrom, to: issuedAt },
+      adjustments: [],
+    },
     prediction: null,
     methodology_version: C4_METHODOLOGY_VERSION,
     state_reason: null,
@@ -262,7 +320,9 @@ export function deriveDowntimeWindowRecords(
       if (runStart === null) runStart = t;
       if (i === points.length - 1) {
         const end = Math.min(
-          ...providers.map((p) => Math.min(...p.intervals.filter((iv) => iv.start <= t && t < iv.end).map((iv) => iv.end))),
+          ...providers.map((p) =>
+            Math.min(...p.intervals.filter((iv) => iv.start <= t && t < iv.end).map((iv) => iv.end)),
+          ),
         );
         if (end > runStart) overlaps.push({ start: runStart, end });
         runStart = null;

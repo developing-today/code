@@ -6,7 +6,7 @@ Related chapters: [Design: foundations — objects, graph and the file core](fou
 
 ## Currencies v1 (#2043)
 
-The governing record is `2026-11-01_design_id2043.md` (2026-11-01), the currencies v1 design under epic #2056, with Drew's 2026-11-08 policy rulings folded in. Its decision, in five parts:
+The governing record is `2026-11-01_design_id2043.md` (2026-11-01), the currencies v1 design under epic #2056, with the user's 2026-11-08 policy rulings folded in. Its decision, in five parts:
 
 1. A currency is a signed graph definition whose stable identity is the pair (issuer public key, definition event/hash). Name and symbol are labels, not identity.
 2. Each definition selects exactly one binding: graph-native (offline, peer-to-peer, balances derived by folding events) or ledger-anchored (online, gateway-mediated, TigerBeetle holds balance truth).

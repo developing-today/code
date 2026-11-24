@@ -11,7 +11,7 @@ A book that drifts from the system is worse than no book: agents and operators s
 Concretely, in the same change as the code:
 
 1. A new or changed command or flag → its reference chapter, plus [Add a command](add-a-verb.md) if the change alters the pattern that chapter teaches.
-2. A new or changed MCP tool → [The MCP bridge](../reference/mcp.md). A new or changed web route → [The web UI: pages and HTTP API](../reference/web-ui.md) or [WebSocket protocols](../reference/websockets.md), whichever serves it. A new or changed hosted Worker route → [The hosted Worker API](../reference/hosted-worker.md).
+2. A new or changed MCP tool → [The MCP bridge](../reference/mcp.md). A new or changed web route → [The web UI: pages and HTTP API](../reference/web-ui.md) or [WebSocket protocols](../reference/websockets.md), whichever serves it. A new or changed hosted Worker route → [The hosted Worker API](../reference/hosted-worker.md). A new or changed mail Worker route, caller grant, template, limit or binding (in `nixos/services/id-mail/worker/config.json` and its sources) → [The mail Worker API](../reference/mail-worker.md).
 3. A changed default → **every** chapter that states the old default. Search the book for the value; defaults are stated in more places than you remember.
 4. A new or changed config key or environment variable → [Configuration and environment](../reference/configuration.md).
 5. A schema or data-format change → [Data stores and schemas](../reference/data-stores.md). A new format version is described beside the old one, never written over it: the old version's readers are still in the field during a rollout, per [Release and rollout](release-and-rollout.md).
@@ -37,7 +37,7 @@ The contract is enforced by two gates, and they are the whole of its teeth today
 1. **`create-missing = false`.** The book's configuration, `pkgs/id/book.toml` (title `id`, sources in `pkgs/id/book/`), sets `create-missing = false` under `[build]`: a chapter listed in `SUMMARY.md` that does not exist is a **build failure, never a generated stub**. A new chapter is therefore a real file, written by its author, or the build is red.
 2. **The `.#id-docs` Nix build on `main`.** The workflow `.github/workflows/id-docs.yml` runs `nix build .#id-docs --print-build-logs` on every push to `main` and on manual dispatch, then stages the result and checks that the staged tree contains an `index.html`. The derivation is `pkgs/id/docs.nix`: it renders `book.toml` plus the `book/` tree with the flake-pinned mdBook, with no network access, exactly as the deploy will render it. The workflow builds only; it never deploys — deployment is the combined Pages deploy described in [Deploying this book](../operations/deploying-this-book.md).
 
-An honest limitation, recorded so nobody over-trusts the gates: neither gate checks that a chapter's *contents* still match the code. They prove the book is complete and renders; the same-change rule above, enforced by review, is what keeps it true — which is why this chapter exists in the book itself, where a contributor changing a surface will meet it.
+An honest limitation, recorded so nobody over-trusts the gates: neither gate checks that a chapter's _contents_ still match the code. They prove the book is complete and renders; the same-change rule above, enforced by review, is what keeps it true — which is why this chapter exists in the book itself, where a contributor changing a surface will meet it.
 
 ## Where the rule is recorded
 

@@ -212,6 +212,18 @@ export interface Config {
     ackWindowMin: number;
     tickMs: number;
   };
+  /** Notify relay (#8569 Phase 2 step 1): the Cloudflare edge
+   * dead-man's switch the aggregator heartbeats to and mirrors
+   * its push subscriptions into. `url` is null until the relay is
+   * deployed and PM_AGG_NOTIFY_RELAY_URL is set — the client is a
+   * no-op while unset, so this config is safe to ship ahead of
+   * the deploy. `stateFile` persists the subscription snapshot
+   * seq (the edge keeps only the highest; a lost counter would
+   * regress loudly, and the client re-adopts from /status). */
+  notifyRelay: {
+    url: string | null;
+    stateFile: string;
+  };
 }
 
 function parseAggregatorSource(env: Record<string, string | undefined>): "fixtures" | "live" {
@@ -240,10 +252,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
     promptsFile,
-    promptAttachmentsDir: s(
-      env.PM_AGG_PROMPT_ATTACHMENTS_DIR,
-      join(dirname(promptsFile), "prompt-attachments"),
-    ),
+    promptAttachmentsDir: s(env.PM_AGG_PROMPT_ATTACHMENTS_DIR, join(dirname(promptsFile), "prompt-attachments")),
     promptSyncTimeoutMs: parseAggregatorCount(
       env.PM_AGG_PROMPT_SYNC_TIMEOUT_MS,
       "PM_AGG_PROMPT_SYNC_TIMEOUT_MS",
@@ -401,6 +410,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     alerts: {
       ackWindowMin: parseAggregatorCount(env.ALERT_ACK_WINDOW_MIN, "ALERT_ACK_WINDOW_MIN", "15"),
       tickMs: 60_000,
+    },
+    notifyRelay: {
+      url: env.PM_AGG_NOTIFY_RELAY_URL?.trim() ? env.PM_AGG_NOTIFY_RELAY_URL.trim().replace(/\/+$/, "") : null,
+      stateFile: s(
+        env.PM_AGG_NOTIFY_RELAY_STATE_FILE,
+        join(homedir(), ".local", "state", "pm-aggregator", "notify-relay.json"),
+      ),
     },
   };
 }

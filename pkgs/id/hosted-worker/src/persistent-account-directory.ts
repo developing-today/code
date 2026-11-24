@@ -33,30 +33,35 @@ const COLUMNS =
   "subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch";
 
 function fromRow(row: StoredAccountRow): HostedAccountRecord {
-  if (
-    typeof row.subject_key !== "string" ||
-    row.subject_key.trim() === "" ||
-    typeof row.binding_id !== "string" ||
-    row.jurisdiction_pending !== null ||
-    row.migration_id !== null ||
-    row.phase !== "stable" ||
-    row.routing_epoch !== 0
-  ) {
+  try {
+    if (
+      typeof row.subject_key !== "string" ||
+      row.subject_key.trim() === "" ||
+      typeof row.binding_id !== "string" ||
+      row.jurisdiction_pending !== null ||
+      row.migration_id !== null ||
+      row.phase !== "stable" ||
+      row.routing_epoch !== 0
+    ) {
+      throw new Error("stored directory metadata is outside the stable account contract");
+    }
+
+    return {
+      subjectKey: row.subject_key,
+      bindingId: parseBindingId(row.binding_id),
+      jurisdiction: parseJurisdiction(row.jurisdiction),
+      jurisdictionPending: null,
+      migrationId: null,
+      phase: "stable",
+      routingEpoch: 0,
+    };
+  } catch {
     throw new FailClosed(
       503,
       "invalid_directory_record",
       "stored hosted account record is invalid; failing closed",
     );
   }
-  return {
-    subjectKey: row.subject_key,
-    bindingId: parseBindingId(row.binding_id),
-    jurisdiction: parseJurisdiction(row.jurisdiction),
-    jurisdictionPending: null,
-    migrationId: null,
-    phase: "stable",
-    routingEpoch: 0,
-  };
 }
 
 /**
@@ -74,6 +79,14 @@ export class PersistentHostedAccountDirectory {
     return row ? fromRow(row) : undefined;
   }
 
+  private async getByBindingId(bindingId: string): Promise<HostedAccountRecord | undefined> {
+    const row = await this.database
+      .prepare(`SELECT ${COLUMNS} FROM hosted_accounts WHERE binding_id = ?`)
+      .bind(bindingId)
+      .first<StoredAccountRow>();
+    return row ? fromRow(row) : undefined;
+  }
+
   async signup(input: NewHostedAccount): Promise<HostedAccountRecord> {
     // Match the directory contract: a duplicate subject reads its authoritative
     // row and never replaces its jurisdiction with a new signup's value.
@@ -81,22 +94,38 @@ export class PersistentHostedAccountDirectory {
     if (existing) return this.existingSubject(existing, input.bindingId);
 
     const candidate = createHostedAccountRecord(input);
-    const inserted = await this.database
-      .prepare(
-        `INSERT INTO hosted_accounts (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) ` +
-          "ON CONFLICT DO NOTHING " +
-          `RETURNING ${COLUMNS}`,
-      )
-      .bind(
-        candidate.subjectKey,
-        candidate.bindingId,
-        candidate.jurisdiction,
-        candidate.jurisdictionPending,
-        candidate.migrationId,
-        candidate.phase,
-        candidate.routingEpoch,
-      )
-      .first<StoredAccountRow>();
+    let inserted: StoredAccountRow | null;
+    try {
+      inserted = await this.database
+        .prepare(
+          `INSERT INTO hosted_accounts (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?) ` +
+            "ON CONFLICT(subject_key) DO NOTHING " +
+            `RETURNING ${COLUMNS}`,
+        )
+        .bind(
+          candidate.subjectKey,
+          candidate.bindingId,
+          candidate.jurisdiction,
+          candidate.jurisdictionPending,
+          candidate.migrationId,
+          candidate.phase,
+          candidate.routingEpoch,
+        )
+        .first<StoredAccountRow>();
+    } catch (error) {
+      const winner = await this.get(candidate.subjectKey);
+      if (winner) return this.existingSubject(winner, candidate.bindingId);
+
+      const bindingOwner = await this.getByBindingId(candidate.bindingId);
+      if (bindingOwner) {
+        throw new FailClosed(
+          409,
+          "binding_conflict",
+          "binding id is already assigned to another subject",
+        );
+      }
+      throw error;
+    }
     if (inserted) return fromRow(inserted);
 
     // A competing signup may have won after the initial read. Re-read the
@@ -104,11 +133,19 @@ export class PersistentHostedAccountDirectory {
     const winner = await this.get(candidate.subjectKey);
     if (winner) return this.existingSubject(winner, candidate.bindingId);
 
-    // No row for this subject means another subject owns the unique binding.
+    const bindingOwner = await this.getByBindingId(candidate.bindingId);
+    if (bindingOwner) {
+      throw new FailClosed(
+        409,
+        "binding_conflict",
+        "binding id is already assigned to another subject",
+      );
+    }
+
     throw new FailClosed(
-      409,
-      "binding_conflict",
-      "binding id is already assigned to another subject",
+      503,
+      "directory_write_conflict",
+      "directory write did not produce a row or an authoritative conflict; failing closed",
     );
   }
 

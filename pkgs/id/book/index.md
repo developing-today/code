@@ -1,6 +1,6 @@
 # id
 
-ID is Drew's identity and graph platform. It started as a peer-to-peer file
+ID is the user's identity and graph platform. It started as a peer-to-peer file
 sharing tool and is now a local-first, federated, capability-based
 application platform built on the Iroh networking stack. The parts of the
 system are:
@@ -36,7 +36,7 @@ crates under `pkgs/id/crates/` — surveyed at commit `1ccb4a19457` on
 
 ## Why ID exists
 
-Before ID, each of Drew's tools kept its own store in its own shape, and
+Before ID, each of the user's tools kept its own store in its own shape, and
 each program that needed identity, files, or shared state built its own
 version of them. ID replaces those separate stores with one platform:
 
@@ -60,7 +60,7 @@ version of them. ID replaces those separate stores with one platform:
 
 ## Who it serves
 
-- **Drew, at the command line.** The `id` binary is the owner's tool:
+- **The user, at the command line.** The `id` binary is the owner's tool:
   file commands (`put`, `get`, `find`, `list`, `cat`, `show`, `peek`),
   the `tag` family, `serve`, the `world` client commands, `group`,
   `doc`, `claim`, `key`, and `keyset`. Running `id` with no subcommand
@@ -89,15 +89,15 @@ ID is one platform with several surfaces. The map below is the whole
 system on one page; [The shape of the system](getting-started/shape.md)
 explains how the pieces fit together.
 
-| Surface | What it is | Where it is covered |
-| --- | --- | --- |
-| The crates | 17 packages: the `id` facade plus `id-core`, `id-caps`, `id-store`, `id-events`, `id-groups`, `id-sync`, `id-directory`, `id-worlds`, `id-web`, `id-cli`, `id-config`, `id-currency-registry`, `id-render`, `id-import-notion`, `id-native-shell`, and `id-hw-shell` | [The crates](library/crates.md), [The id facade crate](library/facade.md) |
-| The `id` binary | The CLI: 32 top-level commands and 113 leaf commands (surveyed 2026-11-23), including `serve`, the only command that hosts files, a world, or the web UI | [The id command line](reference/cli.md) |
-| The `id-native-shell` binary | A Bevy desktop client for the world shell contract; a workspace member but not a default member, so a normal `id` build never builds it | [id-native-shell](reference/native-shell.md) |
-| The REPL | The interactive shell started by `id repl` or by bare `id`, with its own parser, its own command set, and shell features (command substitution, the `|>` pipe-in operator, here-strings, and heredocs) | [The interactive REPL](reference/repl.md) |
-| The web UI | The `id-web` crate served by `id serve --web` (bind default `127.0.0.1`, port default `3000`): file browser, collaborative editor, world pages, program gallery, and the HTTP and WebSocket APIs — 54 distinct paths and 58 method bindings in the main router (surveyed 2026-11-23) | [The web UI: pages and HTTP API](reference/web-ui.md), [WebSocket protocols](reference/websockets.md) |
-| The hosted Worker scaffold | `pkgs/id/hosted-worker`: a Cloudflare Worker front door forwarding to one `UserDO` Durable Object per bound user, with 15 method routes; local-only, not deployed | [The hosted Worker API](reference/hosted-worker.md) |
-| The MCP bridge | `id_caps::mcp_bridge` and `id_caps::mcp_policy`: a library-level translator from 8 pinned MCP v1 tools to world session frames, plus the host-side policy point; no server binary and no transport of its own | [The MCP bridge](reference/mcp.md) |
+| Surface                      | What it is                                                                                                                                                                                                                                                                           | Where it is covered                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| The crates                   | 17 packages: the `id` facade plus `id-core`, `id-caps`, `id-store`, `id-events`, `id-groups`, `id-sync`, `id-directory`, `id-worlds`, `id-web`, `id-cli`, `id-config`, `id-currency-registry`, `id-render`, `id-import-notion`, `id-native-shell`, and `id-hw-shell`                 | [The crates](library/crates.md), [The id facade crate](library/facade.md)                             |
+| The `id` binary              | The CLI: 32 top-level commands and 113 leaf commands (surveyed 2026-11-23), including `serve`, the only command that hosts files, a world, or the web UI                                                                                                                             | [The id command line](reference/cli.md)                                                               |
+| The `id-native-shell` binary | A Bevy desktop client for the world shell contract; a workspace member but not a default member, so a normal `id` build never builds it                                                                                                                                              | [id-native-shell](reference/native-shell.md)                                                          |
+| The REPL                     | The interactive shell started by `id repl` or by bare `id`, with its own parser, its own command set, and shell features (command substitution, the `                                                                                                                                | >` pipe-in operator, here-strings, and heredocs)                                                      | [The interactive REPL](reference/repl.md) |
+| The web UI                   | The `id-web` crate served by `id serve --web` (bind default `127.0.0.1`, port default `3000`): file browser, collaborative editor, world pages, program gallery, and the HTTP and WebSocket APIs — 54 distinct paths and 58 method bindings in the main router (surveyed 2026-11-23) | [The web UI: pages and HTTP API](reference/web-ui.md), [WebSocket protocols](reference/websockets.md) |
+| The hosted Worker scaffold   | `pkgs/id/hosted-worker`: a Cloudflare Worker front door forwarding to one `UserDO` Durable Object per bound user, with 15 method routes; local-only, not deployed                                                                                                                    | [The hosted Worker API](reference/hosted-worker.md)                                                   |
+| The MCP bridge               | `id_caps::mcp_bridge` and `id_caps::mcp_policy`: a library-level translator from 8 pinned MCP v1 tools to world session frames, plus the host-side policy point; no server binary and no transport of its own                                                                        | [The MCP bridge](reference/mcp.md)                                                                    |
 
 ## How to read this book
 

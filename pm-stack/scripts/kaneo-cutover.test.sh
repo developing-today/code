@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# kaneo-cutover.test.sh — fixture tests for kaneo-cutover.sh (#6816).
+#
+# Oracle: pm-stack/STORE-MIGRATION-PLAN-6816.md §3-§4 plus
+# doc/pm-stack/COLD-RESTORE-RUNBOOK.md step 1 — promotion may happen only
+# when the old writer is fenced (proven by fence-check.sh) AND the final
+# delta has landed (target table count and exact rows equal the source's).
+# A refused promotion must not touch the stores at all.
+#
+# Every external binary is stubbed (pg_dump, pg_restore, psql on
+# --pg-bin-dir; docker/systemctl via fence-check fixtures), so these
+# checks verify the driver's ordering and gates, not a live database.
+#
+# Run from anywhere: bash pm-stack/scripts/kaneo-cutover.test.sh
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DRIVER="$SCRIPT_DIR/kaneo-cutover.sh"
+BASH_BIN="${BASH:-$(command -v bash)}"
+
+TMP_BASE="${TMPDIR:-/tmp/opencode}"
+mkdir -p "$TMP_BASE"
+TMP="$(mktemp -d "$TMP_BASE/kaneo-cutover.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
+
+FAILURES=0
+pass() { printf 'ok - %s\n' "$1"; }
+fail() {
+  printf 'FAIL - %s\n' "$1"
+  FAILURES=$((FAILURES + 1))
+}
+
+# --- stubs ---------------------------------------------------------------
+mkdir -p "$TMP/bin" "$TMP/fx"
+cat >"$TMP/bin/psql" <<'STUB'
+#!/usr/bin/env bash
+dsn=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d) dsn="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$dsn" in
+  *source*) f="$CUTOVER_FIXTURE_DIR/counts-source.txt" ;;
+  *target*) f="$CUTOVER_FIXTURE_DIR/counts-target.txt" ;;
+  *) echo "stub psql: unknown dsn" >&2; exit 1 ;;
+esac
+[ -r "$f" ] || { echo "stub psql: missing fixture $f" >&2; exit 1; }
+cat "$f"
+STUB
+cat >"$TMP/bin/pg_dump" <<'STUB'
+#!/usr/bin/env bash
+printf 'pg_dump\n' >>"$CUTOVER_FIXTURE_DIR/log"
+out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -f) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$out" ] || { echo "stub pg_dump: no -f" >&2; exit 1; }
+printf 'dump\n' >"$out"
+STUB
+cat >"$TMP/bin/pg_restore" <<'STUB'
+#!/usr/bin/env bash
+printf 'pg_restore\n' >>"$CUTOVER_FIXTURE_DIR/log"
+STUB
+chmod +x "$TMP/bin/psql" "$TMP/bin/pg_dump" "$TMP/bin/pg_restore"
+
+printf 'source-db dsn\n' >"$TMP/source.dsn"
+printf 'target-db dsn\n' >"$TMP/target.dsn"
+
+# Fence fixtures: all writers stopped/inactive.
+mkdir -p "$TMP/units"
+printf 'inactive' >"$TMP/units/docker-pm-grist.service"
+printf 'inactive' >"$TMP/units/docker-pm-pad.service"
+: >"$TMP/containers-clean.txt"
+printf 'pm-stack-kaneo-1 running\n' >"$TMP/containers-kaneo-running.txt"
+
+export CUTOVER_FIXTURE_DIR="$TMP/fx"
+set_counts() { # $1 = source "tables rows", $2 = target "tables rows"
+  printf '%s\n' "$1" >"$TMP/fx/counts-source.txt"
+  printf '%s\n' "$2" >"$TMP/fx/counts-target.txt"
+}
+reset_log() { : >"$TMP/fx/log"; }
+log_is_empty() { [ ! -s "$TMP/fx/log" ]; }
+
+run() { "$BASH_BIN" "$DRIVER" "$@" 2>&1; }
+
+common=(--pg-bin-dir "$TMP/bin" --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn")
+
+# 1. presync dumps then restores, and passes on schema parity.
+set_counts '45 90139' '45 0'
+reset_log
+if out="$(run --mode presync --dump-file "$TMP/k.dump" --receipt "$TMP/r1.md" "${common[@]}")"; then
+  if [ "$(cat "$TMP/fx/log" | tr '\n' ' ')" = "pg_dump pg_restore " ]; then
+    pass 'presync dumps then restores'
+  else
+    fail "presync dumps then restores (log: $(cat "$TMP/fx/log" | tr '\n' ' '))"
+  fi
+  if grep -q 'PASS (schema)' "$TMP/r1.md" && ! grep -q 'target-db\|source-db' "$TMP/r1.md"; then
+    pass 'presync receipt records schema parity and no DSN'
+  else
+    fail 'presync receipt records schema parity and no DSN'
+  fi
+else
+  fail "presync passes on schema parity (exit $?, got: $out)"
+fi
+
+# 2. presync fails on a schema mismatch (fewer target tables).
+set_counts '45 90139' '44 90000'
+reset_log
+if out="$(run --mode presync --dump-file "$TMP/k2.dump" --receipt "$TMP/r2.md" "${common[@]}")"; then
+  fail "presync fails on schema mismatch (exit 0, got: $out)"
+else
+  if [ "$?" -eq 4 ] && grep -q 'FAIL — schema parity' "$TMP/r2.md"; then
+    pass 'presync fails on schema mismatch with exit 4'
+  else
+    fail "presync fails on schema mismatch with exit 4 (got: $out)"
+  fi
+fi
+
+# 3. promote refuses while a writer is running — and touches nothing.
+set_counts '45 90139' '45 90139'
+reset_log
+if out="$(run --mode promote --receipt "$TMP/r3.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-kaneo-running.txt" "${common[@]}")"; then
+  fail "promote refuses while unfenced (exit 0, got: $out)"
+else
+  if [ "$?" -eq 3 ] && log_is_empty && grep -q 'REFUSED' "$TMP/r3.md"; then
+    pass 'promote refuses unfenced, writes REFUSED, touches no store'
+  else
+    fail "promote refuses unfenced, writes REFUSED, touches no store (got: $out)"
+  fi
+fi
+
+# 4. promote refuses on final-delta row mismatch even when fenced.
+set_counts '45 90139' '45 89000'
+reset_log
+if out="$(run --mode promote --receipt "$TMP/r4.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" "${common[@]}")"; then
+  fail "promote fails on row mismatch (exit 0, got: $out)"
+else
+  if [ "$?" -eq 4 ] && grep -q 'FAIL — final-delta parity' "$TMP/r4.md"; then
+    pass 'promote fails on row mismatch with exit 4'
+  else
+    fail "promote fails on row mismatch with exit 4 (got: $out)"
+  fi
+fi
+
+# 5. promote passes when fenced and counts match; receipt carries the fence.
+set_counts '45 90139' '45 90139'
+reset_log
+if out="$(run --mode promote --receipt "$TMP/r5.md" --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" "${common[@]}")"; then
+  case "$out" in
+  *'PROMOTE OK'*FENCED*) pass 'promote passes when fenced and parity holds' ;;
+  *) fail "promote passes when fenced and parity holds (got: $out)" ;;
+  esac
+  if grep -q 'Fence: FENCED' "$TMP/r5.md" && grep -q '45 90139' "$TMP/r5.md"; then
+    pass 'promote receipt records the fence and the counts'
+  else
+    fail 'promote receipt records the fence and the counts'
+  fi
+else
+  fail "promote passes when fenced and parity holds (exit $?, got: $out)"
+fi
+
+# 6. An unreadable target is a command failure (exit 5), not a pass.
+set_counts '45 90139' '45 90139'
+rm -f "$TMP/fx/counts-target.txt"
+if out="$(run --mode promote --units-dir "$TMP/units" --containers-file "$TMP/containers-clean.txt" "${common[@]}")"; then
+  fail "unreadable target exits 5 (exit 0, got: $out)"
+else
+  [ "$?" -eq 5 ] && pass 'unreadable target exits 5' || fail "unreadable target exits 5 (got: $out)"
+fi
+printf '45 90139\n' >"$TMP/fx/counts-target.txt"
+
+# 7. Contract (#3352): usage errors before any subprocess (exit 2).
+reset_log
+if run --bogus >/dev/null 2>&1; then fail 'unknown flag exits 2'; else
+  [ "$?" -eq 2 ] && pass 'unknown flag exits 2' || fail 'unknown flag exits 2'
+fi
+if run "${common[@]}" >/dev/null 2>&1; then fail 'missing --mode exits 2'; else
+  [ "$?" -eq 2 ] && pass 'missing --mode exits 2' || fail 'missing --mode exits 2'
+fi
+if run --mode presync --source-dsn-file "$TMP/source.dsn" --target-dsn-file "$TMP/target.dsn" >/dev/null 2>&1; then
+  fail 'missing --dump-file for presync exits 2'
+else
+  [ "$?" -eq 2 ] && pass 'missing --dump-file for presync exits 2' || fail 'missing --dump-file for presync exits 2'
+fi
+if run --mode promote --source-dsn-file "$TMP/nope.dsn" --target-dsn-file "$TMP/target.dsn" >/dev/null 2>&1; then
+  fail 'unreadable source DSN exits 2'
+else
+  [ "$?" -eq 2 ] && pass 'unreadable source DSN exits 2' || fail 'unreadable source DSN exits 2'
+fi
+log_is_empty && pass 'usage errors ran no subprocess' || fail 'usage errors ran no subprocess'
+
+if ((FAILURES)); then
+  printf 'kaneo-cutover.test.sh: %d check(s) failed\n' "$FAILURES"
+  exit 1
+fi
+echo 'LIMITATION: stubbed pg_dump/pg_restore/psql and fixture fence state; these checks verify the gated sequence, not a live cutover.'
+echo 'kaneo-cutover.test.sh: all checks passed'

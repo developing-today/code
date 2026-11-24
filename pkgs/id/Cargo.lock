@@ -4867,6 +4867,7 @@ dependencies = [
  "iroh-tickets",
  "libc",
  "n0-mainline",
+ "num-bigint 0.4.8",
  "p2panda-auth",
  "p2panda-core",
  "p2panda-store",
@@ -4960,6 +4961,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek 3.0.0",
+ "id-caps",
+ "id-config",
+ "id-core",
+ "id-directory",
+ "id-events",
+ "id-groups",
+ "id-store",
+ "id-sync",
+ "rand 0.10.3",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "id-config"
 version = "0.1.0"
 dependencies = [
@@ -4980,6 +5000,7 @@ dependencies = [
  "cbor-core",
  "chacha20poly1305 0.11.0",
  "ed25519-dalek 3.0.0",
+ "flate2",
  "futures-lite",
  "idna",
  "iroh",
@@ -4994,6 +5015,7 @@ dependencies = [
  "rmp-serde",
  "rqrr",
  "serde",
+ "serde_bytes",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
@@ -5112,6 +5134,7 @@ name = "id-import-notion"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "serde",
  "serde_json",
  "tempfile",
@@ -5211,6 +5234,13 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing",
  "unicode-normalization",
+]
+
+[[package]]
+name = "id-tui-shell"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

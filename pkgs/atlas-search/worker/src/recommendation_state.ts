@@ -120,13 +120,7 @@ export function hexToBytes(hex: string): Uint8Array {
 
 // --- Deterministic CBOR subset (mirrors recommendation-page-oracle.py) ---
 
-type CborValue =
-  | boolean
-  | number
-  | Uint8Array
-  | string
-  | CborValue[]
-  | { [key: string]: CborValue };
+type CborValue = boolean | number | Uint8Array | string | CborValue[] | { [key: string]: CborValue };
 
 function cborHead(major: number, value: number): Uint8Array {
   if (value < 24) return new Uint8Array([(major << 5) | value]);
@@ -202,19 +196,13 @@ export function deterministicCbor(value: CborValue): Uint8Array {
     return { ek, ev: deterministicCbor(v) };
   });
   entries.sort((a, b) => a.ek.length - b.ek.length || compareBytes(a.ek, b.ek));
-  return concat([
-    cborHead(5, entries.length),
-    ...entries.flatMap(({ ek, ev }) => [ek, ev]),
-  ]);
+  return concat([cborHead(5, entries.length), ...entries.flatMap(({ ek, ev }) => [ek, ev])]);
 }
 
 /** `sha256:` + hex(SHA-256(deterministic-CBOR(value))). */
 export async function digestId(value: CborValue): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", deterministicCbor(value));
-  return (
-    "sha256:" +
-    [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("")
-  );
+  return "sha256:" + [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // --- Snapshot / paging state machine ---

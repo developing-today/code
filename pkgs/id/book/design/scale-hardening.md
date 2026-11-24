@@ -51,12 +51,12 @@ The scale programme is #6304, under Phase 14 core topic #6281, with plan of reco
 
 The tier table, from the record:
 
-| Axis | 1x | 10x | 100x |
-|---|---|---|---|
-| Idle worlds | 1,000 | 10,000 | 100,000 |
-| Active worlds | 100 | 1,000 | 10,000 |
+| Axis                          | 1x     | 10x     | 100x      |
+| ----------------------------- | ------ | ------- | --------- |
+| Idle worlds                   | 1,000  | 10,000  | 100,000   |
+| Active worlds                 | 100    | 1,000   | 10,000    |
 | Single-world history (events) | 10,000 | 100,000 | 1,000,000 |
-| Members on the hot world | 32 | 320 | 3,200 |
+| Members on the hot world      | 32     | 320     | 3,200     |
 
 A tier is a measurement target, not a promise; the record states that a run hitting a wall — out-of-memory, eviction storm, p99 blowup, fuel exhaustion — is a result, and the wall is recorded as that tier's measured limit.
 

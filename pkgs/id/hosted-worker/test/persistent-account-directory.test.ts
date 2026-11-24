@@ -148,3 +148,55 @@ test("persistent signup fails closed before creating a row for invalid jurisdict
     db.close();
   }
 });
+
+test("directory migration CHECK constraints reject malformed identity and routing metadata", async () => {
+  const { db } = await createTestDirectory();
+  const insert = db.prepare(
+    "INSERT INTO hosted_accounts (subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
+  const valid = ["subject", BINDING, "us", null, null, "stable", 0] as const;
+  const cases = [
+    ["blank subject", ["   ", ...valid.slice(1)]],
+    ["short binding id", ["subject", "0123456789abcdef0123456789abcde", ...valid.slice(2)]],
+    ["non-hex binding id", ["subject", "g" + BINDING.slice(1), ...valid.slice(2)]],
+    ["unsupported jurisdiction", ["subject", BINDING, "unknown", ...valid.slice(3)]],
+    ["negative routing epoch", ["subject", BINDING, "us", null, null, "stable", -1]],
+  ] as const;
+
+  try {
+    for (const [name, values] of cases) {
+      assert.throws(() => insert.run(...values), undefined, name);
+      db.exec("DELETE FROM hosted_accounts");
+    }
+  } finally {
+    db.close();
+  }
+});
+
+test("persistent reads reject records outside the current stable account contract", async () => {
+  const { db, directory: accountDirectory } = await createTestDirectory();
+  const invalidRows = [
+    ["pending jurisdiction", "us", null, "stable", 0],
+    ["migration id", null, "migration-1", "stable", 0],
+    ["non-zero routing epoch", null, null, "stable", 1],
+    ["unknown phase", null, null, "moving", 0],
+  ] as const;
+
+  try {
+    for (const [index, [name, pending, migrationId, phase, epoch]] of invalidRows.entries()) {
+      db.prepare(
+        "INSERT INTO hosted_accounts (subject_key, binding_id, jurisdiction, jurisdiction_pending, migration_id, phase, routing_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(`subject-${index}`, BINDING, "us", pending, migrationId, phase, epoch);
+
+      await assert.rejects(
+        accountDirectory.get(`subject-${index}`),
+        (error: unknown) =>
+          error instanceof FailClosed && error.code === "invalid_directory_record",
+        name,
+      );
+      db.exec("DELETE FROM hosted_accounts");
+    }
+  } finally {
+    db.close();
+  }
+});

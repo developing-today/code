@@ -27,6 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
+pub mod actions_exec;
 mod commands_lifecycle;
 mod commands_query;
 mod fallback_stack;
@@ -580,12 +581,12 @@ mod tests {
         assert_eq!(batch_count_flag(Some(1)), Ok(1));
         assert_eq!(batch_count_flag(Some(2)), Ok(2));
         assert_eq!(
-            batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX)),
-            Ok(crate::turso_queue::BATCH_CLAIM_MAX)
+            batch_count_flag(Some(crate::BATCH_CLAIM_MAX)),
+            Ok(crate::BATCH_CLAIM_MAX)
         );
         assert!(batch_count_flag(Some(0)).is_err());
         assert!(batch_count_flag(Some(-3)).is_err());
-        assert!(batch_count_flag(Some(crate::turso_queue::BATCH_CLAIM_MAX + 1)).is_err());
+        assert!(batch_count_flag(Some(crate::BATCH_CLAIM_MAX + 1)).is_err());
     }
 
     #[test]
@@ -797,6 +798,39 @@ mod tests {
         let mut scalar = json!(5);
         attach_mode_line(&mut scalar, "heartbeat", legs_served(true, true));
         assert_eq!(scalar, json!(5));
+    }
+
+    #[test]
+    fn served_lifecycle_verbs_report_normal_cloud() {
+        // #8581 acceptance remainder: every task-row lifecycle
+        // verb whose served path prints the broker's row carries
+        // the contract mode line — a broker-served verb on a
+        // healthy store reports normal/cloud under its own CLI
+        // verb name (claim/heartbeat/checkpoint wire their legs
+        // explicitly and are covered above).
+        for verb in [
+            "release",
+            "lane",
+            "bind",
+            "park",
+            "wake",
+            "block",
+            "unblock",
+            "dep-recheck",
+            "quarantine-recheck",
+            "cancel",
+            "revive",
+            "fail",
+            "complete",
+        ] {
+            let row = served_row(json!({"id": 7, "status": "claimed"}), verb);
+            assert_eq!(
+                row["mode_line"],
+                json!({"verb": verb, "mode": "normal", "route": "cloud"}),
+                "served_row for {verb}"
+            );
+            assert_eq!(row["id"], json!(7));
+        }
     }
 
     #[test]
@@ -1482,14 +1516,13 @@ mod tests {
         // the same outcome class, distinct from unavailable —
         // and a denial is never retried under another identity.
         let at_transport = Err((3, "session proxy: unauthorized token".to_string()));
-        let (rec, code) =
-            exact_task_status("repo-health", 7, at_transport, "2026-11-23T12:05:00Z");
+        let (rec, code) = exact_task_status("repo-health", 7, at_transport, "2026-11-23T12:05:00Z");
         assert_eq!(code, 3);
         assert_eq!(rec["result"], json!("unknown"));
         assert_eq!(rec["detail"], json!("denied"));
-        let by_envelope = Ok(json!({"ok": false, "error": "permission denied for this queue", "exit": 4}));
-        let (rec, code) =
-            exact_task_status("repo-health", 7, by_envelope, "2026-11-23T12:05:00Z");
+        let by_envelope =
+            Ok(json!({"ok": false, "error": "permission denied for this queue", "exit": 4}));
+        let (rec, code) = exact_task_status("repo-health", 7, by_envelope, "2026-11-23T12:05:00Z");
         assert_eq!(code, 4);
         assert_eq!(rec["result"], json!("unknown"));
         assert_eq!(rec["detail"], json!("denied"));

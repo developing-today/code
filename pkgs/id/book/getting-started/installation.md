@@ -39,10 +39,10 @@ serve recipes are `just serve-lib` (which runs
 The two Nix packages in `pkgs/id/flake.nix` install the same single `id`
 binary under two feature sets:
 
-| Nix package | Features | Web UI | World SSH serving |
-| --- | --- | --- | --- |
-| `id-web` (the default package) | `web`, `sandbox`, `ssh`, `world` | yes | yes |
-| `id-lib` | `sandbox`, `world` (built with default features off) | no | no |
+| Nix package                    | Features                                             | Web UI | World SSH serving |
+| ------------------------------ | ---------------------------------------------------- | ------ | ----------------- |
+| `id-web` (the default package) | `web`, `sandbox`, `ssh`, `world`                     | yes    | yes               |
+| `id-lib`                       | `sandbox`, `world` (built with default features off) | no     | no                |
 
 Build them with `just build-nix` (the web variant) and
 `just build-nix-lib` (which runs `nix build .#id-lib`).
@@ -69,23 +69,24 @@ The root package's feature table is the authority:
 - `currency-poc-tb` adds the TigerBeetle client for the currency proof of
   concept. It adds no CLI surface.
 
-### The `--no-default-features` trap (disagreement CLI-2)
+### The `--no-default-features` trap (disagreement CLI-2, resolved)
 
-The README's Cargo quick start presents this command as the library-only
-build:
+The README's Cargo quick start once presented this command as the
+library-only build:
 
 ```bash
 cargo build --no-default-features
 ```
 
-The source disagrees with that framing, and this book follows the source.
+The source disagrees with the old framing, and this book follows the source.
 Because `default = [sandbox, world]`, `--no-default-features` removes
 `sandbox` and `world` as well as leaving `web` off. The concrete losses
 in a `--no-default-features` build are:
 
 - `id match-audit` and the four sandbox world commands — `id world dev`,
-  `id world measure`, `id world replay`, `id world verify` — do not exist
-  in the parser at all. Clap reports them as unrecognized subcommands.
+  `id world measure`, `id world replay`, `id world verify` — still parse
+  and print their `--help`, but fail at dispatch with the error
+  `this build has no sandbox support`.
 - Every other `id world …` command still parses and still prints its full
   `--help` tree, but fails at runtime with the error
   `this build has no world support`.
@@ -99,9 +100,9 @@ What a `--no-default-features` build keeps: the file commands, `tag`,
 `gallery`, `key`, `keyset`, `peers`, and the REPL. `id walk` is not
 feature-gated anywhere and works in every build.
 
-The Nix `id-lib` package is the build the README command intends: it is
+The Nix `id-lib` package is the build the old README command intended: it is
 built with default features off and then re-adds exactly the two features
-the README command leaves out — `buildNoDefaultFeatures = true` with
+the old README command left out — `buildNoDefaultFeatures = true` with
 `buildFeatures = [sandbox, world]`. If you want the `id-lib` feature set
 from Cargo directly, the equivalent is:
 
@@ -125,20 +126,21 @@ before the subcommand, change it:
 
 Inside the data directory, the layout is:
 
-| Path | What it is |
-| --- | --- |
-| `.iroh-store/` | The Iroh blob store (redb plus data files), with the Iroh docs store under `.iroh-store/docs/`. The constant is `STORE_PATH = ".iroh-store"` in `id-store`. |
-| `.iroh-key` | The node's own key file. The client key file is `.iroh-key-client`. |
-| `.iroh-serve.lock` | The lock file a running `id serve` holds. Its presence is how the REPL and other commands detect the local serve and proxy operations to it. The constant is `SERVE_LOCK = ".iroh-serve.lock"` in `id-core`. |
-| `.iroh-meta/` | The tag-store registry directory; the registry file inside it is `.iroh-meta/registry.json`. |
-| `.id-worlds/<NAME>/` | Per-world files for a hosted world, where `<NAME>` is the world name (default `lobby`). |
-| `events/` | The event store directory used by `doc`, `claim`, and `writer-sets`. This is the runtime default of the global `--event-store <DIR>` flag; a relative value is relative to the data directory. |
-| `groups.jsonl` | The group log used by `group`, `delegate`, and `revoke`. This is the runtime default of the global `--groups-log <FILE>` flag; a relative value is relative to the data directory. |
+| Path                 | What it is                                                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `.iroh-store/`       | The Iroh blob store (redb plus data files), with the Iroh docs store under `.iroh-store/docs/`. The constant is `STORE_PATH = ".iroh-store"` in `id-store`.                                                  |
+| `.iroh-key`          | The node's own key file. The client key file is `.iroh-key-client`.                                                                                                                                          |
+| `.iroh-serve.lock`   | The lock file a running `id serve` holds. Its presence is how the REPL and other commands detect the local serve and proxy operations to it. The constant is `SERVE_LOCK = ".iroh-serve.lock"` in `id-core`. |
+| `.iroh-meta/`        | The tag-store registry directory; the registry file inside it is `.iroh-meta/registry.json`.                                                                                                                 |
+| `.id-worlds/<NAME>/` | Per-world files for a hosted world, where `<NAME>` is the world name (default `lobby`).                                                                                                                      |
+| `events/`            | The event store directory used by `doc`, `claim`, and `writer-sets`. This is the runtime default of the global `--event-store <DIR>` flag; a relative value is relative to the data directory.               |
+| `groups.jsonl`       | The group log used by `group`, `delegate`, and `revoke`. This is the runtime default of the global `--groups-log <FILE>` flag; a relative value is relative to the data directory.                           |
 
 One disagreement is worth knowing before you go looking for the lock:
-the module documentation in `crates/id-cli/src/commands/serve.rs` draws
-the lock file as `.id-serve-lock`. That spelling is wrong (disagreement
-CLI-5). The constant, the `--data-dir` help text, and the code all use
+the module documentation in `crates/id-cli/src/commands/serve.rs` once
+drew the lock file as `.id-serve-lock`. That spelling was wrong
+(disagreement CLI-5, resolved — the module documentation now matches).
+The constant, the `--data-dir` help text, and the code all use
 `.iroh-serve.lock`.
 
 `id serve --ephemeral` skips provisioning entirely: it uses in-memory

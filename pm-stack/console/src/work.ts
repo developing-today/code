@@ -5,7 +5,9 @@
 // Every write is something the fleet already understands: an answer to a
 // decision set through the dashboard's own endpoint, an issue and a
 // queue task, a comment, a label.
+import { type Census, censusOf, type NeedsItem, readCensus } from "./needs.ts";
 import { OpError, type Ops, PRIORITY_SCALE, type Row, type RunResult } from "./ops.ts";
+import { timed } from "./timed.ts";
 
 const P = "CASE WHEN json_valid(payload) THEN payload ELSE '{}' END";
 const G = "CASE WHEN json_valid(progress) THEN progress ELSE '{}' END";
@@ -141,7 +143,7 @@ export class Work {
     return this.ops.cfg.repo;
   }
 
-  private task = (r: Row) => ({
+  private task = (r: Row): Row & { url: string | null } => ({
     ...r,
     url: r.issue ? `https://github.com/${this.repo}/issues/${r.issue}` : null,
   });
@@ -178,13 +180,15 @@ export class Work {
   private async dash(path: string, body?: unknown): Promise<unknown> {
     const base = this.ops.cfg.dashboardUrl;
     if (base === null) throw new OpError(502, "no dashboard is configured");
-    const res = await this.ops.fetchImpl(`${base}${path}`, {
-      method: body === undefined ? "GET" : "POST",
-      headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(20_000),
+    const { res, data } = await timed(20_000, async (signal) => {
+      const res = await this.ops.fetchImpl(`${base}${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal,
+      });
+      return { res, data: await res.json().catch(() => null) };
     });
-    const data = await res.json().catch(() => null);
     if (!res.ok) {
       const why = (data as { error?: string } | null)?.error ?? `http ${res.status}`;
       throw new OpError(
@@ -223,43 +227,30 @@ export class Work {
     return { moving, waiting };
   }
 
-  /** Issues and pull requests labelled as waiting on the owner. */
-  async census() {
+  /** Issues and pull requests labelled as waiting on the owner, as the
+   * dashboard has censused them. */
+  async census(): Promise<Census> {
     const data = (await this.dash("/api/needs-drew.json")) as {
       fetchedAt?: string;
       complete?: boolean;
-      items?: {
-        ref: string;
-        kind: string;
-        title: string;
-        url: string;
-        needsLabels: string[];
-        reason: string | null;
-        updatedAt: string;
-        hands?: { kind: string; action: string | null } | null;
-      }[];
+      items?: (Omit<NeedsItem, "kind"> & { kind: string })[];
     };
-    const base = (i: NonNullable<typeof data.items>[number]) => ({
-      ref: i.ref,
-      title: clip(i.title, 200),
-      url: i.url,
-      pr: i.kind === "pr",
-      updated: clip(i.updatedAt, 19),
-    });
-    const items = data.items ?? [];
-    return {
-      at: data.fetchedAt ?? null,
-      complete: data.complete !== false,
-      // A hands item is one action only a person can do (FDR-0013).
-      hands: items
-        .filter((i) => i.hands?.kind)
-        .map((i) => ({ ...base(i), kind: i.hands?.kind, action: clip(i.hands?.action, 400) })),
-      reviews: items.filter((i) => !i.hands?.kind && i.needsLabels.includes("user/review")).map(base),
-      // Escalated with no stated action: the fleet's to decide, listed so nothing is hidden.
-      other: items
-        .filter((i) => !i.hands?.kind && !i.needsLabels.includes("user/review"))
-        .map((i) => ({ ...base(i), why: clip(i.reason, 300) })),
-    };
+    const items = (data.items ?? []).map((i) => ({
+      ...i,
+      kind: i.kind === "pr" ? ("pr" as const) : ("issue" as const),
+    }));
+    return censusOf(items, data.fetchedAt ?? null, data.complete !== false);
+  }
+
+  /** The same list, read from GitHub by a side that has no dashboard to
+   * ask (see needs.ts). */
+  async censusDirect(): Promise<Census> {
+    try {
+      return await readCensus(this.ops.cfg.needsRepos, (path) => this.ops.gh([path]));
+    } catch (error) {
+      if (error instanceof OpError) throw error;
+      throw new OpError(502, `what needs you could not be read: ${(error as Error).message}`);
+    }
   }
 
   private async sets(): Promise<DecisionSet[]> {
@@ -284,7 +275,8 @@ export class Work {
           open.push({
             set: set.setId,
             setTitle: clip(set.title, 120),
-            created: clip(set.createdAt, 19),
+            // To the second, cut and not shortened with a mark: it is a time.
+            created: typeof set.createdAt === "string" ? set.createdAt.slice(0, 19) : "",
             ledger: item.ledgerId,
             item: clip(item.title, 200),
             links: (item.links ?? []).slice(0, 3),

@@ -20,7 +20,10 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
 - `src/service.ts` — calls to `fleet serve search`
   (`POST /v1/embed`, `POST /v1/search`) via the
   `atlas-search.security.cab` tunnel hostname + Cloudflare
-  Access service token. The service enforces this client's
+  Access service token. Search requests explicitly state the
+  `hosted-per-user` disclosure context (#12622, `CONTEXT` in
+  `src/space.ts`, typed as `DisclosureContext`) and this client's
+  `personal` tier ceiling. The service enforces this client's
   `personal` tier ceiling, and the Worker enforces it too: every
   search response's `effective_ceiling` is checked against the
   pinned ceiling and a mismatch is refused (502) before anything
@@ -34,6 +37,22 @@ and caches the result **indefinitely** (no TTL/eviction in v1).
   revision, vector table, and k. A cached entry is never served
   across ceilings, disclosure contexts, or embedding spaces;
   entries keyed under schema v1 are orphaned, never served.
+- `src/measurement.ts` — the D1 hot-cache measurement report
+  (#13107; design #9134 §7): the §7 counters (hits, skips,
+  revalidations per class and tenant; stale_serves, expected
+  zero; estimated Turso cost avoided; D1 bytes per tenant vs
+  quota) rendered as a report for #9098's economics prototype.
+  Pure accumulator + renderer, fed by the read path (follow-on 4).
+- `src/admission.ts` — the D1 hot-cache admission policy (#13103,
+  #9134 design §3/§5): heat counters, heavy-query immediate
+  admission, per-tenant quotas (tier weights 1:4:16, 5% floor),
+  entry size cap, negative-result TTL, and the LRU eviction sweep.
+  Pure policy, not yet wired into the read path (follow-on 4).
+- `src/freshness.ts` — the D1 hot-cache freshness evaluator
+  (#13101; design #9134 §1): pure per-class watermark/TTL rules
+  with fail-safe degradation, plus the tenant watermark read seam.
+  Not wired into a read path yet — the D1 store is #13100 and
+  read-path integration is follow-on 4 under #9134.
 
 ## Endpoints
 
@@ -82,8 +101,8 @@ wired into the request path at all: nothing in the Worker calls
 it outside tests, so the flag alone does not activate the cache —
 with the flag on and the binding present, the Worker still never
 touches D1 and the read path is unchanged. Freshness
-(#13101), admission/eviction (#13103), and read-path integration
-(#13105) are separate follow-ons. The committed `database_id` is a
+(#13101), admission/eviction (#13103), measurement (#13107),
+and read-path integration (#13105) are separate follow-ons. The committed `database_id` is a
 local placeholder: the real `atlas-hot-cache` database is created at
 deploy time and its id replaces the placeholder in both
 `wrangler.toml` and `cloudflare.config.ts`.

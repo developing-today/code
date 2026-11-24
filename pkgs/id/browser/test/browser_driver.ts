@@ -73,10 +73,7 @@ async function runVectors(
         case "commit_batch": {
           let observation: string;
           try {
-            observation = await store.commitBatch(
-              step.op_id as string,
-              parseWrites(step),
-            );
+            observation = await store.commitBatch(step.op_id as string, parseWrites(step));
           } catch (error) {
             observation = commitObservation(error);
           }
@@ -89,28 +86,18 @@ async function runVectors(
           // accepted and the batch commits normally, exactly as the
           // Rust state machine models drop-response / drop-request
           // for the redb profile.
-          const reported = await store.commitBatch(
-            step.op_id as string,
-            parseWrites(step),
-          );
-          trace.push(
-            `reported:${reported},resolved:${resolveOutcome(reported)}`,
-          );
+          const reported = await store.commitBatch(step.op_id as string, parseWrites(step));
+          trace.push(`reported:${reported},resolved:${resolveOutcome(reported)}`);
           break;
         }
         case "get": {
-          const value = await store.get(
-            step.namespace as string,
-            step.id as string,
-          );
+          const value = await store.get(step.namespace as string, step.id as string);
           trace.push(value === undefined ? "absent" : `value:${value}`);
           break;
         }
         case "scan": {
           const entries = await store.scan(step.namespace as string);
-          trace.push(
-            `entries:${entries.map(([id, v]) => `${id}=${v}`).join(",")}`,
-          );
+          trace.push(`entries:${entries.map(([id, v]) => `${id}=${v}`).join(",")}`);
           break;
         }
         case "negotiate": {
@@ -129,8 +116,7 @@ async function runVectors(
     const finalScans: Record<string, string> = {};
     for (const namespace of namespaces) {
       const entries = await store.scan(namespace);
-      finalScans[namespace] =
-        `entries:${entries.map(([id, v]) => `${id}=${v}`).join(",")}`;
+      finalScans[namespace] = `entries:${entries.map(([id, v]) => `${id}=${v}`).join(",")}`;
     }
     return { trace, finalScans };
   } finally {
@@ -172,13 +158,49 @@ async function probeTransactionLifetime(): Promise<string> {
   }
 }
 
+// Give one test database a genuine engine constraint. The second write in
+// the batch conflicts after a write in another namespace has been queued.
+// Retrying the same operation ID also checks that its dedupe marker rolled back.
+async function probeAbortedBatch() {
+  const name = "id-probe-atomic-abort";
+  await IndexedDbStore.deleteDatabase(name);
+  const seed = await new Promise<IDBDatabase>((resolve, reject) => {
+    const open = indexedDB.open(name, 1);
+    open.onupgradeneeded = () => {
+      open.result.createObjectStore("notes");
+      open.result.createObjectStore("tags").createIndex("unique-value", "", { unique: true });
+    };
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => reject(open.error);
+  });
+  seed.close();
+  const store = await IndexedDbStore.open(name, ["notes", "tags"], 2);
+  try {
+    await store.commitBatch("setup", [{ namespace: "tags", id: "original", value: "taken" }]);
+    const note = { namespace: "notes", id: "note", value: "kept" };
+    const tag = { namespace: "tags", id: "new", value: "taken" };
+    let error = "committed";
+    try {
+      await store.commitBatch("batch", [note, tag]);
+    } catch (cause) {
+      if (!(cause instanceof DOMException)) throw cause;
+      error = cause.name;
+    }
+    const afterAbort = [await store.scan("notes"), await store.scan("tags")];
+    await store.commitBatch("batch", [note, { ...tag, value: "free" }]);
+    const afterRetry = [await store.scan("notes"), await store.scan("tags")];
+    return { error, afterAbort, afterRetry };
+  } finally {
+    store.close();
+    await IndexedDbStore.deleteDatabase(name);
+  }
+}
+
 async function probeReopen(): Promise<string | undefined> {
   const dbName = "id-probe-reopen";
   await IndexedDbStore.deleteDatabase(dbName);
   let store = await IndexedDbStore.open(dbName, ["kv"]);
-  await store.commitBatch("probe-reopen-1", [
-    { namespace: "kv", id: "k", value: "persisted-value" },
-  ]);
+  await store.commitBatch("probe-reopen-1", [{ namespace: "kv", id: "k", value: "persisted-value" }]);
   store.close();
   store = await IndexedDbStore.open(dbName, ["kv"]);
   try {
@@ -196,16 +218,12 @@ async function probeUpgrade(): Promise<{
   const dbName = "id-probe-upgrade";
   await IndexedDbStore.deleteDatabase(dbName);
   let store = await IndexedDbStore.open(dbName, ["a"], 1);
-  await store.commitBatch("probe-upgrade-1", [
-    { namespace: "a", id: "k", value: "v1-data" },
-  ]);
+  await store.commitBatch("probe-upgrade-1", [{ namespace: "a", id: "k", value: "v1-data" }]);
   store.close();
   store = await IndexedDbStore.open(dbName, ["a", "b"], 2);
   try {
     const preserved = await store.get("a", "k");
-    await store.commitBatch("probe-upgrade-2", [
-      { namespace: "b", id: "k", value: "v2-data" },
-    ]);
+    await store.commitBatch("probe-upgrade-2", [{ namespace: "b", id: "k", value: "v2-data" }]);
     const newStoreValue = await store.get("b", "k");
     return { preserved, newStoreValue };
   } finally {
@@ -248,9 +266,7 @@ async function probeStorage(): Promise<{
   }
 }
 
-export async function runInBrowser(fixture: {
-  vectors: FixtureStep[];
-}): Promise<unknown> {
+export async function runInBrowser(fixture: { vectors: FixtureStep[] }): Promise<unknown> {
   const run1 = await runVectors(fixture, "run1");
   const run2 = await runVectors(fixture, "run2");
   return {
@@ -262,6 +278,7 @@ export async function runInBrowser(fixture: {
     probes: {
       transactionLifetime: await probeTransactionLifetime(),
       reopenValue: await probeReopen(),
+      abortedBatch: await probeAbortedBatch(),
       upgrade: await probeUpgrade(),
       storage: await probeStorage(),
       metaNamespace: await probeMetaNamespace(),

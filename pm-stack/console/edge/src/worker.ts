@@ -10,6 +10,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
+import { unread } from "../../src/timed.ts";
 
 interface Env {
   PM: DurableObjectNamespace;
@@ -30,6 +31,36 @@ interface Env {
   /** Local development only: where the host is, when it is not simply
    * behind this hostname's route. Never set where this is deployed. */
   HOST_ORIGIN?: string;
+  /** Local development only: how often the object's own clock wakes,
+   * in milliseconds, so a smoke run can watch an alarm fire instead
+   * of waiting out the minute. Never set where this is deployed. */
+  OWN_CLOCK_MS?: string;
+  /** Local development only: a sign-in issuer's key set, named by its
+   * real (https) address in KEYS_FROM, is fetched from KEYS_TO
+   * instead -- a stand-in on this machine serving the keys of a
+   * sign-in the run made itself, so a smoke run can sign the owner's
+   * token. The issuer's address in the settings is never rewritten;
+   * only this Worker's fetch of it is. Never set where deployed. */
+  KEYS_FROM?: string;
+  KEYS_TO?: string;
+}
+
+/** The fetch the object makes, with the local key-set stand-in above
+ * applied when the run names one; undefined (the plain fetch) when
+ * it does not. Only a request for that one address is rewritten. */
+function keysFetch(env: Env): typeof fetch | undefined {
+  if (!env.KEYS_FROM || !env.KEYS_TO) return undefined;
+  const from = env.KEYS_FROM;
+  const to = env.KEYS_TO;
+  return ((url: string | URL | Request, init?: RequestInit) =>
+    fetch(typeof url === "string" && url === from ? to : (url as string), init)) as typeof fetch;
+}
+
+/** The run's clock interval, when it names a usable one (a second or
+ * more); anything else leaves the object's own minute in place. */
+function ownClockMs(raw: string | undefined): number | undefined {
+  const n = Number(raw);
+  return raw !== undefined && Number.isFinite(n) && n >= 1_000 ? Math.floor(n) : undefined;
 }
 
 /** The object with the state. */
@@ -39,6 +70,7 @@ export class PmEdge extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.edge = new Edge({
+      fetchImpl: keysFetch(env),
       kv: {
         get: (key) => ctx.storage.get(key),
         put: (key, value) => ctx.storage.put(key, value),
@@ -55,6 +87,8 @@ export class PmEdge extends DurableObject<Env> {
         fetchImpl: fetch,
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
+      getAlarm: () => ctx.storage.getAlarm(),
+      ownClockMs: ownClockMs(env.OWN_CLOCK_MS),
       // A read started behind an answer is given the time to finish.
       later: (work) => ctx.waitUntil(work),
     });
@@ -75,9 +109,23 @@ function fromHost(res: Response): boolean {
   return res.headers.get("x-pm-console") === "1" || res.status < 500;
 }
 
+/** What answered in the host's place says that the host was never
+ * reached. Cloudflare answers 530 (with one of its 1xxx errors in the
+ * body: 1033 for a tunnel) when it has no way to the origin at all: for
+ * a tunnel, no connection of the machine's to send the request down.
+ * Nothing was handed to the machine, so nothing asked of it was done.
+ * Any other answer in the host's place does not say as much: a gateway
+ * that lost the connection part-way answers for a host that may have
+ * had the request. */
+function neverReached(res: Response): boolean {
+  return res.status === 530 && res.headers.get("x-pm-console") !== "1";
+}
+
 /** Ask the host. `ms` is how long it has to start answering; a stream it
- * then keeps open (the dashboard's live pages) is left to run. */
-async function host(request: Request, ms: number, origin?: string): Promise<Response | null> {
+ * then keeps open (the dashboard's live pages) is left to run. Null when
+ * it did not answer, and "unreached" when what answered in its place
+ * says it was never reached (see neverReached). */
+async function ask(request: Request, ms: number, origin?: string): Promise<Response | "unreached" | null> {
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), ms);
   try {
@@ -85,12 +133,21 @@ async function host(request: Request, ms: number, origin?: string): Promise<Resp
     const url = new URL(request.url);
     const target = origin ? new Request(`${origin}${url.pathname}${url.search}`, request) : request;
     const res = await fetch(new Request(target, { redirect: "manual", signal: abort.signal }));
-    return fromHost(res) ? res : null;
+    if (fromHost(res)) return res;
+    const never = neverReached(res);
+    // Not the host's, and not read: let go of, so nothing is left open.
+    unread(res);
+    return never ? "unreached" : null;
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function host(request: Request, ms: number, origin?: string): Promise<Response | null> {
+  const answer = await ask(request, ms, origin);
+  return answer === "unreached" ? null : answer;
 }
 
 export default {
@@ -101,6 +158,7 @@ export default {
       state: (r) => stub.fetch(r),
       asset: (path) => env.ASSETS.fetch(new Request(`https://assets.internal${path}`)),
       host: (r, ms) => host(r, ms, env.HOST_ORIGIN),
+      act: (r, ms) => ask(r, ms, env.HOST_ORIGIN),
       publicHost: env.PUBLIC_HOST,
       version: env.VERSION ?? null,
       later: (work) => ctx.waitUntil(work),

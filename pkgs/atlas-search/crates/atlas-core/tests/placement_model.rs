@@ -377,8 +377,8 @@ fn evaluate(
 /// `Err` carries every non-feasible decision so the caller can report
 /// why a proposal could not be made — an infeasible or unknown
 /// scenario is a result, not a crash.
-fn choose<'a>(
-    placements: &'a [Placement],
+fn choose(
+    placements: &[Placement],
     use_: Use,
     envelope: &Envelope,
     required_temp_gib: u64,
@@ -415,7 +415,7 @@ fn choose<'a>(
 /// placement the constraints forbid, so the oracle can tell the
 /// reference selector apart from a plausible wrong one.
 #[allow(dead_code)]
-fn choose_cheapest_first<'a>(placements: &'a [Placement], use_: Use) -> Option<(&'a str, Micros)> {
+fn choose_cheapest_first(placements: &[Placement], use_: Use) -> Option<(&str, Micros)> {
     placements
         .iter()
         .filter_map(|p| {

@@ -40,8 +40,8 @@
 set -euo pipefail
 
 # ---- pinned artifacts (update together; sha256 of the downloaded file) ----
-FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-bcc8043/fleet-x86_64-linux-musl}"
-FLEET_SHA256="${FLEET_SHA256:-33c1b5d0ac8df479cd813e9663b8c20d555a82d1ff50c48259a6919dfbc70bd5}"
+FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-74eee89/fleet-x86_64-linux-musl}"
+FLEET_SHA256="${FLEET_SHA256:-27eedcf9e0d6a1c251d6bc9ddf41212747f47cbce6d0cfe2cf96ea820708085d}"
 BWS_URL="https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-x86_64-unknown-linux-musl-2.1.0.zip"
 BWS_SHA256="f59ee150e42b82128d437087e9bac920053c6bfddcb960d20ce9386e5ac9bba6"
 RESTIC_URL="https://github.com/restic/restic/releases/download/v0.20.0/restic_0.20.0_linux_amd64.bz2"
@@ -447,6 +447,12 @@ elif want tailnet; then
     # have under load.
     RECORDED_MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "")
     [ "$RECORDED_MODE" = userspace ] && MODE=userspace
+    # tailscaled must not inherit the sandbox egress proxy: it TLS-intercepts
+    # the control plane and the re-issued register requests are rejected
+    # (seat fix, 2026-11-21/22; ported from the installed muse-bootstrap.sh).
+    # Strip the proxy vars for the daemon only; fleet keeps using
+    # tailscaled's local CONNECT proxy in userspace mode.
+    TS_ENV=(env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u all_proxy -u ALL_PROXY)
     ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
       python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
     ts_alive() { pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; }
@@ -461,7 +467,7 @@ elif want tailnet; then
     }
     ts_start_userspace() {
       ts_fresh_start
-      setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
+      "${TS_ENV[@]}" setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
     }
@@ -469,7 +475,7 @@ elif want tailnet; then
       MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
     elif [ "$MODE" = kernel ]; then
       ts_fresh_start
-      $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
+      $SUDO "${TS_ENV[@]}" setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
       # The probe can pick kernel where creating the TUN interface is
       # still forbidden (#12427): the daemon then exits during engine

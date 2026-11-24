@@ -45,10 +45,10 @@ compiles every registry dependency as its **own derivation**, keyed only on
 what can change dependency compilation. Two source tiers make that keying
 honest:
 
-| Tier | Contents | Feeds |
-|---|---|---|
-| Dependency tier | `Cargo.toml`, `Cargo.lock`, `crates/`, `schema/` | `buildDepsOnly` only |
-| Package tier | the dependency tier plus `fixtures/` | the package build and its check phase |
+| Tier            | Contents                                         | Feeds                                 |
+| --------------- | ------------------------------------------------ | ------------------------------------- |
+| Dependency tier | `Cargo.toml`, `Cargo.lock`, `crates/`, `schema/` | `buildDepsOnly` only                  |
+| Package tier    | the dependency tier plus `fixtures/`             | the package build and its check phase |
 
 `schema/` is in the dependency tier because atlas-core embeds the staging
 DDL from it with `include_str!` — a schema edit really can change a crate
@@ -90,7 +90,7 @@ tested a different compiler than the Nix build shipped; #13286 records
 the alignment.) The file also carries the warning that changing the
 channel may cause rustc itself to build, so a channel bump is committed
 only once nixpkgs has the new compiler cached.
-Separately, the workspace manifest's `rust-version = 1.96` is a *minimum*
+Separately, the workspace manifest's `rust-version = 1.96` is a _minimum_
 (the oldest compiler the code claims to support), not the pin.
 
 One release-profile rule with no exceptions: the release profile carries
@@ -102,7 +102,7 @@ argue with it.
 ## What CI actually runs
 
 House policy is CI on `main` only: workflows are not merge gates, and
-Atlas's run on the nightly-plus-dispatch pattern Drew set on 2026-11-16.
+Atlas's run on the nightly-plus-dispatch pattern the user set on 2026-11-16.
 State the triggers as they are in the files, not as the filenames or
 headers claim — all three Atlas workflows disagree with their own
 presentation somewhere, and the `on:` block is the truth in each case.
@@ -122,6 +122,7 @@ presentation somewhere, and the `on:` block is the truth in each case.
   ```
 
   for `-p atlas-search`, `-p atlas-core`, `-p atlas-proto`, `-p atlas-embed`.
+
 - There is **no `cargo fmt --check`**: formatting is not a merge gate in
   this repository; it is auto-fixed on main.
 - atlas-embed's Gate A model test stays `#[ignore]`d in this venue: it
@@ -186,7 +187,7 @@ new tests follow the same shape:
 - The staging tests carry an independent hash oracle over the archive's
   own rows and a lossless-partition oracle: chunks in index order rejoin
   to the staged text exactly.
-- Parity expectations are recorded from the *other* implementation:
+- Parity expectations are recorded from the _other_ implementation:
   `fixtures/core-expectations.json` was recorded from the production
   Python by `gen_core_fixtures.py`, and atlas-core's parity tests must
   reproduce every envelope and SQL string in it. Regenerate a fixture with
@@ -206,7 +207,7 @@ the query's exact vector and FTS terms and must be **absent** from the
 default-ceiling rendering — not down-ranked — and present, at the top,
 at a secret-bearing ceiling.
 
-Do not confuse these with the golden *query* sets. The output goldens pin
+Do not confuse these with the golden _query_ sets. The output goldens pin
 how results are **rendered**; golden-311 (311 judged queries, in
 `eval/fixtures/`) pins how well the system **retrieves**, and is scored by
 the evaluation harness in [Evaluation: golden sets and gates](../concepts/evaluation.md).

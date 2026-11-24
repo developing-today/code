@@ -32,11 +32,11 @@ A toy example, with invented data only: a registry operator registers a currency
 
 Metering that does ship, and that every operator meets, is the `id serve` budget family in the server configuration TOML (`[budgets]`, in `crates/id-cli/src/server_config/`). Budgets bound inbound traffic per application, per peer and per IP. The surveyed defaults are:
 
-| Key | Default |
-|---|---|
+| Key                          | Default                                |
+| ---------------------------- | -------------------------------------- |
 | `app_inbound_bytes_per_hour` | 20 GiB per hour (21,474,836,480 bytes) |
-| `per_peer_bytes_per_hour` | 100 MiB per hour (104,857,600 bytes) |
-| `per_ip_bytes_per_hour` | 250 MiB per hour (262,144,000 bytes) |
+| `per_peer_bytes_per_hour`    | 100 MiB per hour (104,857,600 bytes)   |
+| `per_ip_bytes_per_hour`      | 250 MiB per hour (262,144,000 bytes)   |
 
 Two further keys are implemented in the parser (`parse.rs`) but missing from the module's own doc table — survey disagreement WEB-14: `app_inbound_bytes_per_second`, default 33,554,432 (32 MiB, 1-second window), and `per_peer_burst_bytes_per_minute`, default 8,388,608 (8 MiB, 60-second window), both from `BudgetPolicy::default` in `crates/id-core/src/abuse.rs` (verified in the source for this book; the reference chapter on configuration is their home). A per-counterparty override table, `[[budgets.counterparty]]` with `peer`, `bytes_per_window`, `window_seconds` and optional `messages_per_window`, replaces — it does not stack on — the per-peer limits for that peer.
 
@@ -55,3 +55,7 @@ The commissioning assumption for this chapter placed the listing, suspension and
 A fourth, narrower member of the family sits in federation: key suspension records in `crates/id-sync/src/federation/slices/b02_key_revocation.rs`, covering operator maintenance suspension, bounded or indefinite. The residency side of suspension is noted in [Residency, jurisdiction and boundaries](residency.md).
 
 The correction matters because the three homes have three different authorities: a registry key lists and tombstones worlds, a declaration lifecycle governs providers, and a gallery operator admits and removes programs. A reader sent to `id-directory` would find none of them, and would miss that listing is a signed, sequenced, tombstone-bearing record — not a flag in a directory entry.
+
+## Reading the currency supply audit
+
+The report-only reconciliation job compares issuer net debits with the exact sum of holder, fee and burn balances. Lifetime posted counters are unsigned 128-bit values. The job subtracts before narrowing and keeps exact arithmetic across the complete account set. When either total or their difference exceeds the signed 128-bit report range, the currency has no numeric supply section and carries a SupplyOutsideReportRange finding with exact decimal issued, accounted and difference fields. Backend read errors retain their own finding. [Arithmetic decision and independent oracle](https://github.com/developing-today/code/issues/13542)

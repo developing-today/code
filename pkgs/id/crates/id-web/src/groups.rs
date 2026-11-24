@@ -268,6 +268,7 @@ mod tests {
                 grantee: ANN,
                 scope: Role::Read,
                 can_redelegate: true,
+                expires_at: None,
             }),
         )
         .unwrap();

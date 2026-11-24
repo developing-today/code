@@ -66,16 +66,16 @@ $ fleet queue bind 19479 --worker repo-worker-code --session-id ses_01J9EXAMPLE0
 usage: repo-queue heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]
 ```
 
-| Flag                     | Argument        | Default                          | Meaning                                                                                                           |
-| ------------------------ | --------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `<task-id>` (positional) | task id         | required                         | The claimed task whose lease to refresh.                                                                          |
-| `--worker`               | worker id       | `repo-worker-code`               | Holder identity.                                                                                                  |
-| `--lane`                 | lane id         | env `REPO_QUEUE_LANE`, else null | Holder lane check.                                                                                                |
-| `--extend-seconds`       | integer seconds | 900 (15 min)                     | New lease length from now. Range 1..=86400, exit 2 outside (a 0/negative extend "lapses the holder's own claim"). |
-| `--progress`             | text/JSON       | unset                            | Progress value merged into the row. Mutually exclusive with `--progress-file`.                                    |
-| `--progress-file`        | file path       | unset                            | File whose text is read as the progress value. Mutually exclusive with `--progress`.                              |
+| Flag                     | Argument        | Default                          | Meaning                                                                              |
+| ------------------------ | --------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| `<task-id>` (positional) | task id         | required                         | The claimed task whose lease to refresh.                                             |
+| `--worker`               | worker id       | `repo-worker-code`               | Holder identity.                                                                     |
+| `--lane`                 | lane id         | env `REPO_QUEUE_LANE`, else null | Holder lane check.                                                                   |
+| `--extend-seconds`       | integer seconds | 900 (15 min)                     | Minimum renewal window from now. Range 1..=86400, exit 2 outside.                    |
+| `--progress`             | text/JSON       | unset                            | Progress value merged into the row. Mutually exclusive with `--progress-file`.       |
+| `--progress-file`        | file path       | unset                            | File whose text is read as the progress value. Mutually exclusive with `--progress`. |
 
-**Behaviour.** Refreshes the claim lease: `lease_until = now + extend_seconds` on both the task row and the `leases` row (`heartbeat_at` updated). Note the asymmetry: claim's default lease is 2700 s but a heartbeat only adds 900 s unless told otherwise. `--progress`/`--progress-file` optionally merge a progress value into the row. Heartbeat goes through the fallback-switch path: a primary-store failure switches the work to the GitHub fallback, exit 6 (see [the fallback queue](queue-fallback.md)). Prints the row + `mode_line`.
+**Behaviour.** The Turso broker keeps the later of the current deadline and `now + extend_seconds`. It writes the resulting deadline to the task and its lease in one SQLite statement and refreshes `heartbeat_at`, including on an early heartbeat. A changed claim observed during renewal returns exit 5. Brokers built before [#13553](https://github.com/developing-today/code/issues/13553) replace the deadline with `now + extend_seconds` and can shorten a longer lease. Check the serving broker revision when interpreting older observations. `--progress`/`--progress-file` optionally merge a progress value into the row. Heartbeat goes through the fallback-switch path: a primary-store failure switches the work to the GitHub fallback, exit 6 (see [the fallback queue](queue-fallback.md)). Prints the row + `mode_line`.
 
 Exit codes: 0 ok · 2 usage / out-of-range `--extend-seconds` / both progress flags · 3 transport · 4 broker store failure · 5 no matching claimed row · 6 fallback switch.
 
@@ -290,11 +290,11 @@ $ fleet queue quarantine-recheck
 usage: repo-queue repair <task-id> [--worker <id>] [--reason <text>] [--dry-run]
 ```
 
-| Flag                     | Argument  | Default            | Meaning                                              |
-| ------------------------ | --------- | ------------------ | ---------------------------------------------------- |
-| `<task-id>` (positional) | task id   | required           | The quarantined / malformed task to repair in place. |
-| `--worker`               | worker id | `repo-worker-code` | Caller identity; recorded as the repair's operator.  |
-| `--reason`               | text      | empty string       | Why the task is repaired; recorded with the repair.  |
+| Flag                     | Argument  | Default            | Meaning                                                    |
+| ------------------------ | --------- | ------------------ | ---------------------------------------------------------- |
+| `<task-id>` (positional) | task id   | required           | The quarantined / malformed task to repair in place.       |
+| `--worker`               | worker id | `repo-worker-code` | Caller identity; recorded as the repair's operator.        |
+| `--reason`               | text      | empty string       | Why the task is repaired; recorded with the repair.        |
 | `--dry-run`              | —         | off                | Report the defects and the planned repairs; write nothing. |
 
 **Behaviour.** Repairs a stored packet that is malformed, in place — the gap the neighbouring verbs leave: the claim path quarantines such a row on every claim, `quarantine-recheck` can only release a row whose error no longer reproduces, and `unblock` refuses to clear a packet defect. (Worked example: a `payload.dedupe` missing its `checked_at`/`basis` stamp.) The broker re-runs the packet validators — `validate_packet` plus the claim-guard reason — applies the deterministic repairs whose correct value can be re-derived, re-validates the repaired packet in memory, and only then writes: one status-guarded update clears the quarantine and restores the task claimable (`queued`, or `blocked` with its deps intact when dep-blocked). A `repaired` timeline entry names the verb, the operator, the defects and the repairs. Output: the repaired row.

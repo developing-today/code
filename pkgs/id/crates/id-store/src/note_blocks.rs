@@ -703,7 +703,9 @@ mod tests {
                 children: vec![block],
             };
         }
-        let tree = BlockTree { blocks: vec![block] };
+        let tree = BlockTree {
+            blocks: vec![block],
+        };
         assert!(matches!(tree.check(), Err(BlockError::TooDeep)));
         let bytes = tree.to_bytes().unwrap();
         assert!(matches!(

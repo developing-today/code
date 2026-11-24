@@ -17,11 +17,11 @@ this chapter is the migration discipline for replacing it.
 One model is named in three places, in two spellings, and no code
 converts between them. A model change must update all three, in step:
 
-| Where | Constant | Current value |
-|---|---|---|
-| atlas-core's types (and atlas-proto's default, and the CLI's `--model` default) | `DEFAULT_MODEL` | `Snowflake/snowflake-arctic-embed-m-v2.0` — the HuggingFace org/name spelling |
-| atlas-core's shard module — the value actually **stamped into shard manifests and staging-database manifests**, and compared at discovery, fan-out and promotion | `EMBEDDING_MODEL_ID` | `snowflake-arctic-embed-m-v2.0` — no org, lowercase |
-| The Worker's pinned space (`worker/src/space.ts`) | `EMBED_MODEL` | `Snowflake/snowflake-arctic-embed-m-v2.0` — the HuggingFace spelling again |
+| Where                                                                                                                                                            | Constant             | Current value                                                                 |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------- |
+| atlas-core's types (and atlas-proto's default, and the CLI's `--model` default)                                                                                  | `DEFAULT_MODEL`      | `Snowflake/snowflake-arctic-embed-m-v2.0` — the HuggingFace org/name spelling |
+| atlas-core's shard module — the value actually **stamped into shard manifests and staging-database manifests**, and compared at discovery, fan-out and promotion | `EMBEDDING_MODEL_ID` | `snowflake-arctic-embed-m-v2.0` — no org, lowercase                           |
+| The Worker's pinned space (`worker/src/space.ts`)                                                                                                                | `EMBED_MODEL`        | `Snowflake/snowflake-arctic-embed-m-v2.0` — the HuggingFace spelling again    |
 
 Around them sit the rest of the pinned identity, all of which moves with
 a model change: the pinned revision (`95c2741480856aa9666782eb4afe11959938017f`

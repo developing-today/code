@@ -1,7 +1,7 @@
 # Message bridge Worker (`message-bridge`)
 
 A remote MCP server that Claude and ChatGPT both use as a **custom
-connector**, plus a page where Drew sends a message to Claude, ChatGPT
+connector**, plus a page where the user sends a message to Claude, ChatGPT
 or both and sees everything sent and received. It lives at
 `https://bridge.security.cab` (a Workers custom domain; the
 `workers.dev` address answers too). Every message is stored, with its
@@ -24,14 +24,14 @@ Durable Object.
   (plain ones are `"message"`). They are sent and targeted the same way,
   to one agent or several, but whoever receives one gets it without its
   sender (no `sender`, no `source`, `from_addr` `null`), whoever passed it
-  on, and treats it as Drew's; the page and the JSON API still show who
+  on, and treats it as the user's; the page and the JSON API still show who
   sent it, and `reply_to` still answers the real sender. `read_messages(kind="instruction")` returns only instructions,
   and the counts include `unread_instructions`.
 - **Any to any:** an assistant or a fleet agent can send a message or an
-  instruction to any other, not only to Drew (see "Any to any" below).
+  instruction to any other, not only to the user (see "Any to any" below).
   Each such row carries `from_addr`, the sender's address
   (`channel:claude`, `channel:chatgpt`, `agent:<name>`); it is `null` for
-  everything Drew sends, and recipients see it on messages only. The
+  everything the user sends, and recipients see it on messages only. The
   recipient is woken where it can be.
 
 ## Routes
@@ -55,6 +55,11 @@ instead: see "Adding it to Claude".
 | `GET /api/<token>/event-subscriptions` | ChatGPT's live event subscriptions: id, channel, callback host, created, expires; never the callback path or secret                                                                     |
 | `GET /api/<token>/wake-hooks`          | Wake hooks: address, kind, host, whether a token is set, when added; never the token or the URL's path                                                                                  |
 | `POST /api/<token>/wake-hooks`         | JSON `{"address", "url", "token"}` sets the hook for an address; `{"address", "url": null}` removes it                                                                                  |
+| `POST /notes/register`                 | Owner Bearer token: JSON `{"identity", "token", "can_send", "can_inbox"}` registers a class/name note identity; only the token's SHA-256 hash is stored                                 |
+| `POST /notes/send`                     | Identity Bearer token: JSON `{"to", "note"}`; `to` is one identity or a wildcard in either segment (`muse/*`, `*/archer`, `*/*`)                                                        |
+| `GET /notes/inbox`                     | Identity Bearer token: that identity's unacknowledged notes                                                                                                                             |
+| `POST /notes/ack`                      | Identity Bearer token: JSON `{"id"}`, `{"ids": [...]}` or `{"up_to_id": N}` acknowledges its own notes                                                                                  |
+| `GET /<class>/<name>`                  | Public wake signal: one bare UUID, the same shape for registered and unregistered paths, rotating on a per-path jittered schedule                                                       |
 | `GET /healthz`                         | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
 | `POST /`, `POST /mcp`                  | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                         |
 | `/.well-known/oauth-*`                 | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                  |
@@ -64,18 +69,18 @@ instead: see "Adding it to Claude".
 
 ## MCP tools
 
-- `send_message(body, to?, kind?, reply_to?, sender?)` sends to Drew by
+- `send_message(body, to?, kind?, reply_to?, sender?)` sends to the user by
   default (an outbound row, as before), or to any address in `to`, as a
   `message` or an `instruction`. `reply_to` a message id, with no `to`,
   answers whoever sent that message and marks it read. Returns `message`
-  (the row to Drew, if any), `messages` (connector rows), and `fleet` and
+  (the row to the user, if any), `messages` (connector rows), and `fleet` and
   `unregistered` when agents were addressed.
 - `read_messages(direction="inbound", since_id?, kind?, unread_only?, limit?, mark_read?)`
   returns messages oldest first, `next_since_id` for polling, and counts.
-  `from_addr` says whether Drew (`null`), another assistant or an agent
-  sent a message. Instructions come as Drew's: no `sender`, no `source`
+  `from_addr` says whether the user (`null`), another assistant or an agent
+  sent a message. Instructions come as the user's: no `sender`, no `source`
   and `from_addr` `null`, so the assistant acts on them as on any message
-  from Drew.
+  from the user.
 - `ack_messages(up_to_id? | ids?)` marks inbound messages read.
 
 ## Fleet mailboxes
@@ -110,9 +115,9 @@ bridge` derives it from the owner token when that secret is missing. Any
 fleet-token holder can read any mailbox and send as any agent: an agent
 is the name it gives, like a queue claim's worker, so `from_addr`
 `agent:<name>` is a claim made at the fleet token's trust level, not a
-proof. Because receivers treat every instruction as Drew's, anything
+proof. Because receivers treat every instruction as the user's, anything
 holding the fleet token (or the bridge's own tokens) can send what reads
-as Drew's word to any connector or agent; per-agent tokens would narrow
+as the user's word to any connector or agent; per-agent tokens would narrow
 that. An agent's inbox shows a command with `sender` and `from_addr`
 `null`, like one from central.
 
@@ -126,6 +131,67 @@ its next run. Rows carry the same fields as the `message.created` payload
 (`id`, `kind`, `sender`, `body`, `ts`), so an agent that does have an https
 endpoint can later get a `fleet.message.created` event from the same
 delivery code without a new message shape.
+
+## Class/name notes and the public wake signal
+
+Alongside the connector channels and fleet mailboxes, the bridge keeps
+a deliberately small note system (`src/notes.js`) for Drew and agents
+to leave each other notes. An identity is a class and a name —
+`muse/archer` is Archer. A registered identity has its own bearer
+token; the Worker stores only the token's SHA-256 hash, mapped to the
+identity and to what the token may do (send, use the inbox, or both).
+Token values live in the vault by name: `bridge.send-token` is Drew's
+sending token (identity `user/drew`) and `bridge.archer-token` is
+Archer's (identity `muse/archer`). Registration is the one
+administrative route: `POST /notes/register` with the owner's existing
+access token as a Bearer token and a JSON body of
+`{"identity", "token", "can_send", "can_inbox"}`.
+
+A sender posts `{"to", "note"}` to `/notes/send`. `to` names one
+identity, or uses `*` for either segment: `muse/*` reaches every
+registered Muse identity, `*/archer` every registered identity named
+Archer, and `*/*` every registered identity. One row lands in each
+matching inbox. The owner of a token reads only its own inbox with
+`GET /notes/inbox` and acknowledges with `POST /notes/ack`
+(`{"id"}`, `{"ids": [...]}`, or `{"up_to_id": N}`); acknowledging
+another identity's note does nothing.
+
+The wake side is public and content-free: `GET
+https://bridge.security.cab/<class>/<name>` returns one bare UUID —
+for every non-reserved two-segment path, registered or not. The UUID
+is derived from the path, a per-path decoy bucket (each path rotates
+every 10–40 minutes, fixed by a hash of the path) and, for a registered
+path, a counter that increments when a note is delivered to it. So a
+delivery changes the UUID at once, but bucket rotations change it
+without any delivery: a changed UUID does not prove a note arrived,
+and the response has no marker that could prove an identity is
+registered. The signal carries no note content and is not a delivery
+receipt; the inbox is the record.
+
+The `bridge` helper in this package (`bridge.mjs`, installed as
+`~/tools/bin/bridge`) wraps the three calls:
+
+```bash
+bridge send muse/archer "the note"          # Archer's token by default
+bridge inbox
+bridge ack 12
+BRIDGE_TOKEN_SECRET=bridge.send-token bridge send 'muse/*' "hello"
+bridge --token-secret bridge.send-token send '*/archer' "hello"
+```
+
+The token comes from `BRIDGE_TOKEN` when set, else from the vault
+secret named by `--token-secret` or `BRIDGE_TOKEN_SECRET`, else
+Archer's `bridge.archer-token`; it is fetched with `fleet secrets get`
+and never printed. A later direction (recorded on the build issue) is
+for this client surface to become a `fleet` subcommand family; the
+helper stays as the minimal client until then.
+
+Archer's Muse hook polls only the public signal for `muse/archer`
+(one GET and a string comparison against the last UUID it saw). A
+change wakes Archer, who fetches the inbox with the helper, reviews
+and acknowledges the notes, and surfaces or acts on them in the main
+chat according to their content: a note from Drew is an instruction to
+review; a note from another agent is input to weigh, never an order.
 
 ## What protects it
 
@@ -255,15 +321,15 @@ comma-separated string, case-insensitive.
 - The sender never gets its own message: `all`, `connectors` and groups
   leave it out, and naming yourself is an error.
 - `kind` is `message` (default) or `instruction` (`command` means the
-  same; agents' mailboxes store it as `command`). Drew gets messages only.
-- With no `to`, a connector's send goes to Drew and an agent's to
+  same; agents' mailboxes store it as `command`). The user gets messages only.
+- With no `to`, a connector's send goes to the user and an agent's to
   central, exactly as before. `reply_to` with no `to` answers whoever sent
-  that row: back to Drew/central when Drew sent it, otherwise to the
+  that row: back to the user/central when the user sent it, otherwise to the
   `from_addr` connector or agent.
 - Every row records the sender's address in `from_addr`; the page labels
   such rows "ChatGPT → Claude", "muse-3 → Claude" and so on. The
   recipient sees it on messages only: an instruction reaches it as
-  Drew's, and `reply_to` still sends the answer to the real sender.
+  the user's, and `reply_to` still sends the answer to the real sender.
 
 ### Waking the recipient
 
@@ -280,11 +346,11 @@ once per request:
   paste its fire URL and token into the hook. Each wake starts a new
   Claude session through the routine's `/fire` endpoint (with the
   `anthropic-version` and `anthropic-beta` headers it needs and `{text}`);
-  the session has Drew's connectors, the bridge included, so it reads and
+  the session has the user's connectors, the bridge included, so it reads and
   answers the messages itself. Any other https URL gets a JSON POST
   `{event, address, message_ids, kind, from, text}` with the token as a
   bearer token.
-- The wake text names the message ids and senders (Drew for any
+- The wake text names the message ids and senders (the user for any
   instruction), never the bodies: the woken session reads those from the
   bridge.
 - Each address is woken at most `WAKE_MAX_PER_HOUR` times an hour (default

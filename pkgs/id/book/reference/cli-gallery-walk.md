@@ -6,7 +6,7 @@ Three unrelated command groups share this chapter. `id gallery` administers the 
 
 Exit behaviour, all commands in this chapter unless a command states otherwise: success exits `0`; a handler error prints `Error: <message>` to stderr and exits `1`; a clap parse error (unknown subcommand or flag, missing required argument, conflicting flags, bad value) prints the error and usage to stderr and exits `2`.
 
-Feature gating differs per group. `id gallery` and `id walk` are not feature-gated: both work in every build, including a `--no-default-features` build. `id match-audit` is gated on the `sandbox` cargo feature at the parser level: in a build without `sandbox` the command does not exist in help or in the parser, and invoking it is a clap error, exit `2`. That is one half of disagreement CLI-10; the other half is `id world`, which parses without its feature and fails only at runtime — see [World commands: joining and playing](cli-worlds.md).
+Feature gating differs per group. `id gallery` and `id walk` are not feature-gated: both work in every build, including a `--no-default-features` build. `id match-audit` parses in every build but needs the `sandbox` cargo feature at dispatch: in a build without `sandbox` it fails with `this build has no sandbox support`, exit `1` — the same parse-everywhere, fail-at-dispatch pattern as `id world`, which parses without its feature and fails only at runtime (disagreement CLI-10, resolved; see [World commands: joining and playing](cli-worlds.md)).
 
 ## `gallery`
 
@@ -14,8 +14,8 @@ Feature gating differs per group. `id gallery` and `id walk` are not feature-gat
 id gallery --dir <DIR> <SUBCOMMAND>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag    | Argument       | Default                         | Meaning                                                                                                                                                                                                              |
+| ------- | -------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--dir` | directory path | required (env `ID_GALLERY_DIR`) | The gallery directory: the one `serve --gallery-dir` serves (see [serve and publications](cli-serve.md)). It is a flag on the `gallery` parent, given before the subcommand. Environment fallback: `ID_GALLERY_DIR`. |
 
 Behaviour common to all gallery subcommands: the subcommands edit the directory on disk. A running server reads the directory when it starts, so restart the server to serve a change. Admission is this endpoint's policy only: a removed record keeps verifying, keeps its bundle file here, and stays listed on any other host. Every removal, refusal and reinstatement is appended to the public transparency list.
@@ -32,11 +32,11 @@ Stops listing a record here and writes the removal to the public transparency li
 id gallery --dir <DIR> remove <CONTENT_HASH> --reason <REASON> [--note <TEXT>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<CONTENT_HASH>` | 64 hex characters | required positional | The record's content hash. |
-| `--reason` | `illegal_content\|malware\|spam\|policy` | required | The reason class for the transparency entry. The parser also accepts the hyphen spelling `illegal-content`. Omitting `--reason` is a clap error, exit `2`. |
-| `--note` | text | — (none) | A short public note for the transparency list. |
+| Flag             | Argument                                 | Default             | Meaning                                                                                                                                                    |
+| ---------------- | ---------------------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<CONTENT_HASH>` | 64 hex characters                        | required positional | The record's content hash.                                                                                                                                 |
+| `--reason`       | `illegal_content\|malware\|spam\|policy` | required            | The reason class for the transparency entry. The parser also accepts the hyphen spelling `illegal-content`. Omitting `--reason` is a clap error, exit `2`. |
+| `--note`         | text                                     | — (none)            | A short public note for the transparency list.                                                                                                             |
 
 Example:
 
@@ -56,11 +56,11 @@ Refuses a record waiting for review, publicly. The refusal goes on the transpare
 id gallery --dir <DIR> refuse <CONTENT_HASH> --reason <REASON> [--note <TEXT>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<CONTENT_HASH>` | 64 hex characters | required positional | The record's content hash. |
-| `--reason` | `illegal_content\|malware\|spam\|policy` | required | The reason class for the transparency entry. The parser also accepts the hyphen spelling `illegal-content`. |
-| `--note` | text | — (none) | A short public note for the transparency list. |
+| Flag             | Argument                                 | Default             | Meaning                                                                                                     |
+| ---------------- | ---------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `<CONTENT_HASH>` | 64 hex characters                        | required positional | The record's content hash.                                                                                  |
+| `--reason`       | `illegal_content\|malware\|spam\|policy` | required            | The reason class for the transparency entry. The parser also accepts the hyphen spelling `illegal-content`. |
+| `--note`         | text                                     | — (none)            | A short public note for the transparency list.                                                              |
 
 Example:
 
@@ -80,10 +80,10 @@ Reverses a removal or refusal (an appeal upheld) and lists the record again. The
 id gallery --dir <DIR> reinstate <CONTENT_HASH> [--note <TEXT>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<CONTENT_HASH>` | 64 hex characters | required positional | The record's content hash. |
-| `--note` | text | — (none) | A short public note for the transparency list. |
+| Flag             | Argument          | Default             | Meaning                                        |
+| ---------------- | ----------------- | ------------------- | ---------------------------------------------- |
+| `<CONTENT_HASH>` | 64 hex characters | required positional | The record's content hash.                     |
+| `--note`         | text              | — (none)            | A short public note for the transparency list. |
 
 Example:
 
@@ -103,8 +103,8 @@ Lists a record waiting for review. Under the `reviewed` posture (see `gallery po
 id gallery --dir <DIR> approve <CONTENT_HASH>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag             | Argument          | Default             | Meaning                    |
+| ---------------- | ----------------- | ------------------- | -------------------------- |
 | `<CONTENT_HASH>` | 64 hex characters | required positional | The record's content hash. |
 
 This subcommand takes no flags of its own.
@@ -126,8 +126,8 @@ Shows the records waiting for review.
 id gallery --dir <DIR> pending
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag    | Argument       | Default                         | Meaning                                                         |
+| ------- | -------------- | ------------------------------- | --------------------------------------------------------------- |
 | `--dir` | directory path | required (env `ID_GALLERY_DIR`) | The parent `gallery` flag; the only flag this subcommand takes. |
 
 Example:
@@ -146,8 +146,8 @@ Shows the transparency list: every removal, refusal and reinstatement, in order,
 id gallery --dir <DIR> transparency
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag    | Argument       | Default                         | Meaning                                                         |
+| ------- | -------------- | ------------------------------- | --------------------------------------------------------------- |
 | `--dir` | directory path | required (env `ID_GALLERY_DIR`) | The parent `gallery` flag; the only flag this subcommand takes. |
 
 Example:
@@ -166,8 +166,8 @@ Sets the admission posture.
 id gallery --dir <DIR> posture <open|reviewed>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag        | Argument         | Default             | Meaning                                                                                                                                                               |
+| ----------- | ---------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<POSTURE>` | `open\|reviewed` | required positional | `open`: every verified record is listed until it is removed. `reviewed`: a record is listed once the operator approves it. Any other value is a clap error, exit `2`. |
 
 Behaviour: the gallery's default posture, before any operator ruling is stored, is `open`. Switching posture changes what is listed at once, because a record's visibility is computed from the posture, the approvals and the transparency list.
@@ -188,10 +188,10 @@ States, or withdraws, the response time published for one reason class.
 id gallery --dir <DIR> response-hours <REASON> [HOURS]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag       | Argument                                 | Default             | Meaning                                                                                               |
+| ---------- | ---------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------- |
 | `<REASON>` | `illegal_content\|malware\|spam\|policy` | required positional | The reason class the statement covers. The parser also accepts the hyphen spelling `illegal-content`. |
-| `[HOURS]` | integer | — (none) | The published response time in hours. Omit it to withdraw the statement for that reason class. |
+| `[HOURS]`  | integer                                  | — (none)            | The published response time in hours. Omit it to withdraw the statement for that reason class.        |
 
 Example — publish a 24-hour response statement for malware, then withdraw it:
 
@@ -210,11 +210,11 @@ Sets the operator's own tags for a program or an author. Tags are operator speec
 id gallery --dir <DIR> tag [TAGS]... [--program <HASH> | --author <KEY>]
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `[TAGS]...` | tag strings | — (none) | The tags to set, in the portable form: lower-case letters, digits and `-`. Giving no tags clears the target's tags. |
-| `--program` | 64 hex characters | required unless `--author` is given | A program's content hash. Conflicts with `--author`. |
-| `--author` | public key | — (none) | An author's public key. Conflicts with `--program`. |
+| Flag        | Argument          | Default                             | Meaning                                                                                                             |
+| ----------- | ----------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `[TAGS]...` | tag strings       | — (none)                            | The tags to set, in the portable form: lower-case letters, digits and `-`. Giving no tags clears the target's tags. |
+| `--program` | 64 hex characters | required unless `--author` is given | A program's content hash. Conflicts with `--author`.                                                                |
+| `--author`  | public key        | — (none)                            | An author's public key. Conflicts with `--program`.                                                                 |
 
 Example — tag a toy program, then clear its tags:
 
@@ -229,7 +229,7 @@ Failures: giving neither `--program` nor `--author` is a clap error, exit `2` (t
 
 ## `match-audit`
 
-Exports and verifies match-audit v0 logs for tic-tac-toe. The whole command is gated on the `sandbox` cargo feature; see the gating note at the top of this chapter.
+Exports and verifies match-audit v0 logs for tic-tac-toe. The whole command needs the `sandbox` cargo feature at dispatch; see the gating note at the top of this chapter.
 
 ### `match-audit export-tic-tac-toe`
 
@@ -239,8 +239,8 @@ Exports a reference tic-tac-toe transcript using synthetic demo keys, as a binar
 id match-audit export-tic-tac-toe --output <FILE>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag       | Argument  | Default  | Meaning                                                                      |
+| ---------- | --------- | -------- | ---------------------------------------------------------------------------- |
 | `--output` | file path | required | Write the binary v0 log to this path. Omitting it is a clap error, exit `2`. |
 
 Example:
@@ -249,7 +249,7 @@ Example:
 $ id match-audit export-tic-tac-toe --output ./toy-match.log
 ```
 
-Failures: an unwritable output path fails the command, exit `1`. In a build without the `sandbox` feature the command does not exist: clap error, exit `2`.
+Failures: an unwritable output path fails the command, exit `1`. In a build without the `sandbox` feature the command fails at dispatch with `this build has no sandbox support`, exit `1`.
 
 ### `match-audit verify`
 
@@ -259,8 +259,8 @@ Verifies a v0 log against the pinned bundled tic-tac-toe program.
 id match-audit verify <LOG>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag    | Argument  | Default             | Meaning                                                        |
+| ------- | --------- | ------------------- | -------------------------------------------------------------- |
 | `<LOG>` | file path | required positional | Binary match-audit v0 log, as written by `export-tic-tac-toe`. |
 
 Example:
@@ -269,7 +269,7 @@ Example:
 $ id match-audit verify ./toy-match.log
 ```
 
-Failures: a log that does not verify against the pinned program fails the command, exit `1`. A missing log file fails the command, exit `1`. In a build without the `sandbox` feature the command does not exist: clap error, exit `2`.
+Failures: a log that does not verify against the pinned program fails the command, exit `1`. A missing log file fails the command, exit `1`. In a build without the `sandbox` feature the command fails at dispatch with `this build has no sandbox support`, exit `1`.
 
 ## `walk`
 
@@ -287,10 +287,10 @@ Creates a walk node in a directory.
 id walk init <DIR> --name <NAME>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DIR>` | directory path | required positional | The node directory. |
-| `--name` | string | required | The node's name: the resolver name in the addresses it mints, and the source label on what it produces. Omitting it is a clap error, exit `2`. |
+| Flag     | Argument       | Default             | Meaning                                                                                                                                        |
+| -------- | -------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<DIR>`  | directory path | required positional | The node directory.                                                                                                                            |
+| `--name` | string         | required            | The node's name: the resolver name in the addresses it mints, and the source label on what it produces. Omitting it is a clap error, exit `2`. |
 
 Behaviour: re-running `init` on an existing node keeps its records. The recorded name must match the `--name` given.
 
@@ -310,12 +310,12 @@ Writes a signed record (a note) on a node, and prints the record's `id://` addre
 id walk write <DIR> --as <alice|bob> --text <TEXT> [--parent <HEX>]...
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DIR>` | directory path | required positional | The node directory. |
-| `--as` | `alice\|bob` | required | The demo writer signing the record. Writers are demo keys derived from the name; `alice` and `bob` are the two demo writers. The flag is spelled `--as`. |
-| `--text` | text | required | The note's text. |
-| `--parent` | hex event ID | the node's current heads | A parent version the record follows; repeatable. Omitting it follows the node's current heads for the demo graph. Naming two or more parents resolves the conflict between them. |
+| Flag       | Argument       | Default                  | Meaning                                                                                                                                                                          |
+| ---------- | -------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<DIR>`    | directory path | required positional      | The node directory.                                                                                                                                                              |
+| `--as`     | `alice\|bob`   | required                 | The demo writer signing the record. Writers are demo keys derived from the name; `alice` and `bob` are the two demo writers. The flag is spelled `--as`.                         |
+| `--text`   | text           | required                 | The note's text.                                                                                                                                                                 |
+| `--parent` | hex event ID   | the node's current heads | A parent version the record follows; repeatable. Omitting it follows the node's current heads for the demo graph. Naming two or more parents resolves the conflict between them. |
 
 Example — Alice writes a toy note, then Bob writes a follow-up:
 
@@ -336,9 +336,9 @@ Reads the record an `id://` address names, from a node's store. The address may 
 id walk read <DIR> <ADDRESS>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DIR>` | directory path | required positional | The node directory. |
+| Flag        | Argument          | Default             | Meaning                                  |
+| ----------- | ----------------- | ------------------- | ---------------------------------------- |
+| `<DIR>`     | directory path    | required positional | The node directory.                      |
 | `<ADDRESS>` | `id://...` string | required positional | The address, as printed by `walk write`. |
 
 Example:
@@ -359,8 +359,8 @@ Shows a node's heads and conflict reports for the demo graph.
 id walk reports <DIR>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
+| Flag    | Argument       | Default             | Meaning                                                                 |
+| ------- | -------------- | ------------------- | ----------------------------------------------------------------------- |
 | `<DIR>` | directory path | required positional | The node directory. This command takes no flags beyond this positional. |
 
 Example:
@@ -379,9 +379,9 @@ Serves a node: answers federation exchanges from its directory until interrupted
 id walk serve <DIR>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DIR>` | directory path | required positional | The node directory. This command takes no flags beyond this positional. | It runs until interrupted (Ctrl+C).
+| Flag    | Argument       | Default             | Meaning                                                                 |
+| ------- | -------------- | ------------------- | ----------------------------------------------------------------------- |
+| `<DIR>` | directory path | required positional | The node directory. This command takes no flags beyond this positional. | It runs until interrupted (Ctrl+C). |
 
 Example:
 
@@ -399,10 +399,10 @@ Runs one exchange from a node to a serving peer, and persists what the node admi
 id walk sync <DIR> --peer <TOKEN>
 ```
 
-| Flag | Argument | Default | Meaning |
-|---|---|---|---|
-| `<DIR>` | directory path | required positional | The node directory. |
-| `--peer` | peer token | required | The peer token printed by the peer's `walk serve`: `<endpoint-id>@<socket-address>`. Omitting it is a clap error, exit `2`. |
+| Flag     | Argument       | Default             | Meaning                                                                                                                     |
+| -------- | -------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `<DIR>`  | directory path | required positional | The node directory.                                                                                                         |
+| `--peer` | peer token     | required            | The peer token printed by the peer's `walk serve`: `<endpoint-id>@<socket-address>`. Omitting it is a clap error, exit `2`. |
 
 Example — sync toy node B from the toy node A that is serving (the token is the invented one printed by that serve):
 

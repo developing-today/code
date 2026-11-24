@@ -280,6 +280,12 @@ pub enum ExportError {
     /// The manifest names a different binding or key than the
     /// binding record it travels with.
     ManifestBindingMismatch,
+    /// The manifest's §7 client-side-encryption choice differs from
+    /// the binding record's. The flag can only change by
+    /// re-encrypting via export/import, so an export whose halves
+    /// disagree does not describe one stored data set (§6.2 step 1,
+    /// §7).
+    CseChoiceMismatch,
     /// The manifest signature does not verify (against the user's
     /// root key, or the service key for an `unkeyed_export`).
     ManifestSignatureInvalid,
@@ -337,6 +343,12 @@ impl std::fmt::Display for ExportError {
                 write!(
                     f,
                     "manifest does not name the binding record it travels with"
+                )
+            }
+            Self::CseChoiceMismatch => {
+                write!(
+                    f,
+                    "manifest's client-side-encryption choice differs from the binding record's"
                 )
             }
             Self::ManifestSignatureInvalid => {
@@ -533,6 +545,17 @@ pub fn verify_import(
     ) {
         return Err(ExportError::ManifestSignatureInvalid);
     }
+    // Step 1, §7: the manifest's CSE choice is part of naming the
+    // binding's stored state. It is covered by the manifest
+    // signature (canonical_bytes), and the binding record's own
+    // flag is attested by the service; disagreement means the two
+    // halves do not describe one stored data set — an export
+    // stating the wrong choice misdirects every downstream reader
+    // of the payloads (§7: the flag changes only by re-encrypting
+    // via export/import).
+    if manifest.client_side_encryption != binding.client_side_encryption {
+        return Err(ExportError::CseChoiceMismatch);
+    }
 
     // Step 2: the binding chain. The transcript is reconstructed
     // from the exported record itself, never fetched.
@@ -631,6 +654,15 @@ pub fn verify_import(
         // source `cited_content_hashes` reads): the references
         // must name exactly the carried blobs whose bytes hash to
         // the cited contents — no decoy, no extra, none omitted.
+        let declared_refs: std::collections::HashSet<String> =
+            object.blob_refs.iter().cloned().collect();
+        // A reference naming a blob the export does not carry at
+        // all is the plain missing-blob refusal, checked before
+        // citation binding so a dangling reference is not masked
+        // as a citation mismatch (#13444).
+        if declared_refs.iter().any(|r| !carried_blobs.contains(r)) {
+            return Err(ExportError::MissingBlob);
+        }
         let cited: Vec<String> = match &event.header.extensions.document {
             Some(document) => vec![document.content.to_hex()],
             None => Vec::new(),
@@ -643,8 +675,6 @@ pub fn verify_import(
                 resolved_count += 1;
             }
         }
-        let declared_refs: std::collections::HashSet<String> =
-            object.blob_refs.iter().cloned().collect();
         if declared_refs != resolved_refs {
             return Err(ExportError::BlobCitationMismatch);
         }
@@ -794,6 +824,60 @@ mod tests {
         assert!(!export.manifest.client_side_encryption);
         let verified = verify_import(&export, false).unwrap();
         assert!(!verified.client_side_encryption);
+    }
+
+    #[test]
+    fn manifest_cse_choice_mismatching_the_binding_is_refused() {
+        // §7: the flag can only change by re-encrypting via
+        // export/import, so a manifest stating a different choice
+        // than the binding record it travels with does not name
+        // that binding (§6.2 step 1). Stating encryption under a
+        // binding that stored plaintext would decrypt wrong;
+        // stating plaintext under an encrypted binding downgrades
+        // opaque payloads — the import refuses, and ingests
+        // nothing.
+        let (_svc, mut export) = sample_export(Some(false));
+        assert!(!export.binding.client_side_encryption);
+        export.manifest.client_side_encryption = true;
+        // Re-sign so only the choice rule can fail: this is the
+        // misassembled pair (or the re-signed forgery), not a
+        // tampered manifest.
+        export.manifest.signature = hex_encode(
+            &root_key(21)
+                .sign(&export.manifest.canonical_bytes())
+                .to_bytes(),
+        );
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::CseChoiceMismatch)
+        );
+        // The other direction — CSE binding claimed as plaintext —
+        // is refused the same way.
+        let (_svc, mut cse_export) = sample_export(None);
+        assert!(cse_export.binding.client_side_encryption);
+        cse_export.manifest.client_side_encryption = false;
+        cse_export.manifest.signature = hex_encode(
+            &root_key(21)
+                .sign(&cse_export.manifest.canonical_bytes())
+                .to_bytes(),
+        );
+        assert_eq!(
+            verify_import(&cse_export, false),
+            Err(ExportError::CseChoiceMismatch)
+        );
+    }
+
+    #[test]
+    fn flipping_the_manifest_cse_flag_without_resigning_is_refused() {
+        // The CSE choice is inside the manifest's canonical bytes,
+        // so a flag flip without the key fails the signature first
+        // — the choice is authenticated, not decorative.
+        let (_svc, mut export) = sample_export(None);
+        export.manifest.client_side_encryption = false;
+        assert_eq!(
+            verify_import(&export, false),
+            Err(ExportError::ManifestSignatureInvalid)
+        );
     }
 
     #[test]
@@ -1240,13 +1324,9 @@ mod tests {
 
         // Objects from both sides of the rotation stay verifiable: the
         // binding chain in step 2 admits every key in the history.
-        let blob = ExportBlob::new(b"shared blob".to_vec());
-        let old_object = signed_object(
-            &old_key,
-            b"written before the rebind",
-            vec![blob.hash.clone()],
-        );
-        let new_object = signed_object(&new_key, b"written after", Vec::new());
+        let blob = ExportBlob::new(b"written before the rebind".to_vec());
+        let old_object = document_object(&old_key, &blob, b"written before the rebind");
+        let new_object = message_object(&new_key);
         let export = build_export(
             &svc,
             &binding,
@@ -1273,7 +1353,7 @@ mod tests {
         assert_eq!(binding.history[0].via, "old-key-signature");
         // The fast path is the old key's signature over the transfer,
         // checked at publication: the export carries no backing record.
-        let object = signed_object(&old_key, b"pre-rotation", Vec::new());
+        let object = message_object(&old_key);
         let export = build_export(
             &svc,
             &binding,
@@ -1483,8 +1563,8 @@ mod tests {
     fn export_is_canonical_and_survives_the_wire() {
         let mut svc = service();
         let binding = bind(&mut svc, 21, None);
-        let blob_b = ExportBlob::new(b"second".to_vec());
-        let blob_a = ExportBlob::new(b"first".to_vec());
+        let blob_b = ExportBlob::new(b"bbb".to_vec());
+        let blob_a = ExportBlob::new(b"a".to_vec());
         let obj_b = signed_object(&root_key(21), b"bbb", vec![blob_b.hash.clone()]);
         let obj_a = signed_object(&root_key(21), b"a", vec![blob_a.hash.clone()]);
         // Deliberately scrambled input order.

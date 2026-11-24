@@ -55,6 +55,24 @@ const SEARCH_TOOL = {
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 };
 
+// MCP 2025-06-18 introduced structured tool output declarations. The
+// result and metadata objects remain open so service extensions and cached
+// results from earlier generations share the same envelope contract.
+const STRUCTURED_SEARCH_TOOL = {
+  ...SEARCH_TOOL,
+  outputSchema: {
+    type: "object",
+    properties: {
+      cache: { type: "string", enum: ["hit", "miss"] },
+      key: { type: "string" },
+      query: { type: "string" },
+      result: { type: "object" },
+      meta: { type: "object" },
+    },
+    required: ["cache", "key", "query", "result", "meta"],
+  },
+};
+
 type JsonRpcId = string | number | null;
 
 interface JsonRpcMessage {
@@ -81,7 +99,11 @@ function paramsObject(msg: JsonRpcMessage): Record<string, unknown> {
  * executed and never answered — including a tools/call sent
  * as a notification).
  */
-async function handleMessage(msg: JsonRpcMessage, env: SearchEnv): Promise<Record<string, unknown> | null> {
+async function handleMessage(
+  msg: JsonRpcMessage,
+  env: SearchEnv,
+  protocolVersion: string | null,
+): Promise<Record<string, unknown> | null> {
   if (!("id" in msg)) return null;
   const id: JsonRpcId = msg.id ?? null;
   if (typeof msg.method !== "string") {
@@ -103,7 +125,7 @@ async function handleMessage(msg: JsonRpcMessage, env: SearchEnv): Promise<Recor
     case "ping":
       return rpcResult(id, {});
     case "tools/list":
-      return rpcResult(id, { tools: [SEARCH_TOOL] });
+      return rpcResult(id, { tools: [protocolVersion === "2025-06-18" ? STRUCTURED_SEARCH_TOOL : SEARCH_TOOL] });
     case "tools/call": {
       const params = paramsObject(msg);
       if (params.name !== SEARCH_TOOL.name) {
@@ -149,6 +171,7 @@ export async function handleMcp(req: Request, env: SearchEnv): Promise<Response>
   } catch {
     return jsonResponse(400, rpcError(null, -32700, "parse error: body must be JSON"));
   }
+  const protocolVersion = req.headers.get("MCP-Protocol-Version");
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) {
       return jsonResponse(400, rpcError(null, -32600, "invalid request: empty batch"));
@@ -159,7 +182,7 @@ export async function handleMcp(req: Request, env: SearchEnv): Promise<Response>
         responses.push(rpcError(null, -32600, "invalid request: batch items must be objects"));
         continue;
       }
-      const resp = await handleMessage(item as JsonRpcMessage, env);
+      const resp = await handleMessage(item as JsonRpcMessage, env, protocolVersion);
       if (resp !== null) responses.push(resp);
     }
     if (responses.length === 0) return new Response(null, { status: 202 });
@@ -168,7 +191,7 @@ export async function handleMcp(req: Request, env: SearchEnv): Promise<Response>
   if (typeof parsed !== "object" || parsed === null) {
     return jsonResponse(400, rpcError(null, -32600, "invalid request: body must be a JSON object or batch"));
   }
-  const resp = await handleMessage(parsed as JsonRpcMessage, env);
+  const resp = await handleMessage(parsed as JsonRpcMessage, env, protocolVersion);
   if (resp === null) return new Response(null, { status: 202 });
   return jsonResponse(200, resp);
 }

@@ -17,20 +17,9 @@
 // fixture's declared outcomes (below). The script runs twice and
 // the traces must be identical (determinism).
 //
-// Expectations keyed per profile: the fixture keys divergent
-// expectations by resource_id for the two simulated profiles. A
-// keyed expectation names an outcome per *behavior class* — for a
-// definitive, retry-as-new-operation local profile the applicable
-// value is the `redb` entry (the Rust state machine documents
-// network faults as inert for a definitive profile, and
-// `resolve_outcome` is the identity there). IndexedDB is evaluated
-// as a member of that class, and its own trace must prove it.
-//
-// The fixture itself is NOT modified: its `indexeddb` report stays
-// `reserved`. The verdict this evaluation produces — the proposed
-// capability report, in the fixture's schema — is asserted below
-// and recorded on #10213. Flipping the fixture entry to `active`
-// is #9082's adoption decision, not this prototype's.
+// #9082 adopts the browser request-batch profile. A divergent step has
+// its own indexeddb expectation, checked against the real engine and
+// the independent model. The public browser app need not enable it.
 
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -43,13 +32,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const PACKAGE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
-const FIXTURE_PATH = join(
-  PACKAGE_DIR,
-  "..",
-  "tests",
-  "fixtures",
-  "port-v1.json",
-);
+const FIXTURE_PATH = join(PACKAGE_DIR, "..", "tests", "fixtures", "port-v1.json");
 const FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, "utf8"));
 
 /** The verdict under evaluation: the indexeddb capability report
@@ -61,11 +44,7 @@ const EXPECTED_REPORT = {
   scope: "browser",
   status: "active",
   required_capabilities: [],
-  optional_capabilities: [
-    "store.scan",
-    "store.txn.multi-record",
-    "store.txn.whole-database",
-  ],
+  optional_capabilities: ["store.scan", "store.txn.multi-record", "store.txn.whole-database"],
   guarantees: {
     ordered: false,
     durable: true,
@@ -145,18 +124,10 @@ function parseWrites(step: any): Write[] {
   ];
 }
 
-/** The expectation a step declares for the indexeddb profile: a
- * string is shared by every profile; an object keys the divergent
- * outcomes by behavior class — the definitive local class is the
- * `redb` entry (see the header comment). */
 function expectFor(step: any): string {
   if (typeof step.expect === "string") return step.expect;
-  const value = step.expect?.redb;
-  assert.equal(
-    typeof value,
-    "string",
-    `step ${JSON.stringify(step)} has no definitive-class expect`,
-  );
+  const value = step.expect?.indexeddb;
+  assert.equal(typeof value, "string", "missing indexeddb fixture expectation");
   return value;
 }
 
@@ -197,12 +168,11 @@ function findChromium(): string {
 }
 
 function startServer(): Promise<{ base: string; close: () => void }> {
-  const adapterJs = stripTypeScriptTypes(
-    readFileSync(join(PACKAGE_DIR, "src", "indexeddb_store.ts"), "utf8"),
+  const adapterJs = stripTypeScriptTypes(readFileSync(join(PACKAGE_DIR, "src", "indexeddb_store.ts"), "utf8"));
+  const driverJs = stripTypeScriptTypes(readFileSync(join(PACKAGE_DIR, "test", "browser_driver.ts"), "utf8")).replace(
+    "../src/indexeddb_store.ts",
+    "/src/indexeddb_store.js",
   );
-  const driverJs = stripTypeScriptTypes(
-    readFileSync(join(PACKAGE_DIR, "test", "browser_driver.ts"), "utf8"),
-  ).replace("../src/indexeddb_store.ts", "/src/indexeddb_store.js");
   const server = createServer((request, response) => {
     if (request.url === "/") {
       response.setHeader("content-type", "text/html");
@@ -263,9 +233,7 @@ function connectCdp(wsUrl: string): Promise<Cdp> {
           const id = nextId++;
           return new Promise((sendResolve, sendReject) => {
             pending.set(id, { resolve: sendResolve, reject: sendReject });
-            socket.send(
-              JSON.stringify({ id, method, params: params ?? {}, sessionId }),
-            );
+            socket.send(JSON.stringify({ id, method, params: params ?? {}, sessionId }));
           });
         },
         waitEvent(method, sessionId) {
@@ -328,9 +296,7 @@ async function launchChromium(): Promise<{
           resolve(match[1]);
         }
       });
-      child.on("exit", (code) =>
-        fail(new Error(`chromium exited early with code ${code}`)),
-      );
+      child.on("exit", (code) => fail(new Error(`chromium exited early with code ${code}`)));
     });
     const cdp = await connectCdp(wsUrl);
     return { cdp, process: child, userDataDir };
@@ -367,9 +333,7 @@ async function runInEngine(base: string): Promise<any> {
       sessionId,
     );
     if (result.exceptionDetails) {
-      throw new Error(
-        `browser evaluation failed: ${JSON.stringify(result.exceptionDetails).slice(0, 2000)}`,
-      );
+      throw new Error(`browser evaluation failed: ${JSON.stringify(result.exceptionDetails).slice(0, 2000)}`);
     }
     return result.result.value;
   } finally {
@@ -381,146 +345,117 @@ async function runInEngine(base: string): Promise<any> {
 
 // ----------------------------------------------------------------
 
-test("the shared fixture still reserves the indexeddb verdict", () => {
-  const report = FIXTURE.capability_reports.find(
-    (entry: any) => entry.resource_id === "indexeddb",
-  );
-  assert.ok(report, "fixture carries an indexeddb report");
-  assert.equal(
-    report.status,
-    "reserved",
-    "adoption is #9082's decision; this evaluation must not flip the fixture",
-  );
+test("the shared fixture declares the adopted request-batch profile exactly once", () => {
+  const reports = FIXTURE.capability_reports.filter((entry: any) => entry.resource_id === "indexeddb");
+  assert.deepEqual(reports, [EXPECTED_REPORT]);
 });
 
-test(
-  "indexeddb conformance: shared vectors + engine probes in Chromium",
-  { timeout: 180_000 },
-  async () => {
-    const server = await startServer();
-    let result: any;
-    try {
-      result = await runInEngine(server.base);
-    } finally {
-      server.close();
-    }
+test("indexeddb conformance: shared vectors + engine probes in Chromium", { timeout: 180_000 }, async () => {
+  const server = await startServer();
+  let result: any;
+  try {
+    result = await runInEngine(server.base);
+  } finally {
+    server.close();
+  }
 
-    // Determinism: the script runs twice, traces identical.
-    assert.deepEqual(
-      result.traceRun2,
-      result.traceRun1,
-      "the vector script must be deterministic across runs",
-    );
+  // Determinism: the script runs twice, traces identical.
+  assert.deepEqual(result.traceRun2, result.traceRun1, "the vector script must be deterministic across runs");
 
-    // Three-way agreement per step: adapter observation, fixture
-    // expectation, reference model.
-    const model = new ReferenceModel();
-    const vectors = FIXTURE.vectors as any[];
-    assert.equal(result.traceRun1.length, vectors.length);
-    vectors.forEach((step, index) => {
-      const expect = expectFor(step);
-      const observation = result.traceRun1[index];
-      switch (step.op) {
-        case "put":
-        case "delete":
-        case "commit_batch": {
-          assert.equal(
-            observation,
-            expect,
-            `step ${index} (${step.op}) diverged`,
-          );
-          if (expect === "committed") model.apply(step.op_id, parseWrites(step));
-          break;
-        }
-        case "commit_fault": {
-          assert.equal(
-            observation,
-            expect,
-            `step ${index} (commit_fault) diverged`,
-          );
-          const resolved = observation.split("resolved:")[1];
-          if (resolved === "committed") {
-            model.apply(step.op_id, parseWrites(step));
-          }
-          break;
-        }
-        case "get": {
-          const modelValue = model.get(step.namespace, step.id);
-          const modelObservation =
-            modelValue === undefined ? "absent" : `value:${modelValue}`;
-          assert.equal(observation, modelObservation, `step ${index} (get) vs model`);
-          assert.equal(observation, expect, `step ${index} (get) vs fixture`);
-          break;
-        }
-        case "scan": {
-          const modelObservation = scanObservation(
-            model.scan(step.namespace),
-          );
-          assert.equal(observation, modelObservation, `step ${index} (scan) vs model`);
-          assert.equal(observation, expect, `step ${index} (scan) vs fixture`);
-          break;
-        }
-        case "negotiate": {
-          assert.equal(
-            observation,
-            expect,
-            `step ${index} (negotiate) diverged`,
-          );
-          break;
-        }
-        default:
-          assert.fail(`unknown fixture op ${step.op}`);
+  // Three-way agreement per step: adapter observation, fixture
+  // expectation, reference model.
+  const model = new ReferenceModel();
+  const vectors = FIXTURE.vectors as any[];
+  assert.equal(result.traceRun1.length, vectors.length);
+  vectors.forEach((step, index) => {
+    const expect = expectFor(step);
+    const observation = result.traceRun1[index];
+    switch (step.op) {
+      case "put":
+      case "delete":
+      case "commit_batch": {
+        assert.equal(observation, expect, `step ${index} (${step.op}) diverged`);
+        if (expect === "committed") model.apply(step.op_id, parseWrites(step));
+        break;
       }
-    });
-
-    // Final state: the adapter's visible state equals the model's
-    // in every namespace the script touched.
-    const namespaces = [
-      ...new Set(
-        vectors
-          .map((step) => step.namespace)
-          .filter((ns): ns is string => typeof ns === "string"),
-      ),
-    ];
-    for (const namespace of namespaces) {
-      assert.equal(
-        result.finalScans[namespace],
-        scanObservation(model.scan(namespace)),
-        `final state diverged in namespace ${namespace}`,
-      );
+      case "commit_fault": {
+        assert.equal(observation, expect, `step ${index} (commit_fault) diverged`);
+        const resolved = observation.split("resolved:")[1];
+        if (resolved === "committed") {
+          model.apply(step.op_id, parseWrites(step));
+        }
+        break;
+      }
+      case "get": {
+        const modelValue = model.get(step.namespace, step.id);
+        const modelObservation = modelValue === undefined ? "absent" : `value:${modelValue}`;
+        assert.equal(observation, modelObservation, `step ${index} (get) vs model`);
+        assert.equal(observation, expect, `step ${index} (get) vs fixture`);
+        break;
+      }
+      case "scan": {
+        const modelObservation = scanObservation(model.scan(step.namespace));
+        assert.equal(observation, modelObservation, `step ${index} (scan) vs model`);
+        assert.equal(observation, expect, `step ${index} (scan) vs fixture`);
+        break;
+      }
+      case "negotiate": {
+        assert.equal(observation, expect, `step ${index} (negotiate) diverged`);
+        break;
+      }
+      default:
+        assert.fail(`unknown fixture op ${step.op}`);
     }
+  });
 
-    // The verdict: the adapter's emitted report is exactly the
-    // declaration under evaluation.
-    assert.deepEqual(result.report, EXPECTED_REPORT);
-
-    // Engine probes (the issue's named evaluation areas).
+  // Final state: the adapter's visible state equals the model's
+  // in every namespace the script touched.
+  const namespaces = [
+    ...new Set(vectors.map((step) => step.namespace).filter((ns): ns is string => typeof ns === "string")),
+  ];
+  for (const namespace of namespaces) {
     assert.equal(
-      result.probes.transactionLifetime,
-      "InvalidStateError",
-      "a request placed after its transaction's task ends must be refused by the engine — the fact the request-batch shape is built on",
+      result.finalScans[namespace],
+      scanObservation(model.scan(namespace)),
+      `final state diverged in namespace ${namespace}`,
     );
-    assert.equal(result.probes.reopenValue, "persisted-value");
-    assert.deepEqual(result.probes.upgrade, {
-      preserved: "v1-data",
-      newStoreValue: "v2-data",
-    });
-    assert.equal(typeof result.probes.storage.quota, "number");
-    assert.ok(result.probes.storage.quota > 0);
-    assert.equal(typeof result.probes.storage.persisted, "boolean");
-    assert.equal(
-      result.probes.metaNamespace,
-      "refused:unsupported-capability",
-      "the internal operation-ID store must not be openable as a user namespace",
-    );
+  }
 
-    // The evidence record: engine, verdict, probes.
-    console.log(
-      JSON.stringify(
-        { engine: result.engine, report: result.report, probes: result.probes },
-        null,
-        2,
-      ),
-    );
-  },
-);
+  // The verdict: the adapter's emitted report is exactly the
+  // adopted declaration independently pinned by the shared fixture.
+  assert.deepEqual(result.report, EXPECTED_REPORT);
+
+  // Engine probes (the issue's named evaluation areas).
+  assert.equal(
+    result.probes.transactionLifetime,
+    "InvalidStateError",
+    "a request placed after its transaction's task ends must be refused by the engine — the fact the request-batch shape is built on",
+  );
+  assert.deepEqual(result.probes.abortedBatch, {
+    error: "ConstraintError",
+    afterAbort: [[], [["original", "taken"]]],
+    afterRetry: [
+      [["note", "kept"]],
+      [
+        ["new", "free"],
+        ["original", "taken"],
+      ],
+    ],
+  });
+  assert.equal(result.probes.reopenValue, "persisted-value");
+  assert.deepEqual(result.probes.upgrade, {
+    preserved: "v1-data",
+    newStoreValue: "v2-data",
+  });
+  assert.equal(typeof result.probes.storage.quota, "number");
+  assert.ok(result.probes.storage.quota > 0);
+  assert.equal(typeof result.probes.storage.persisted, "boolean");
+  assert.equal(
+    result.probes.metaNamespace,
+    "refused:unsupported-capability",
+    "the internal operation-ID store must not be openable as a user namespace",
+  );
+
+  // The evidence record: engine, verdict, probes.
+  console.log(JSON.stringify({ engine: result.engine, report: result.report, probes: result.probes }, null, 2));
+});

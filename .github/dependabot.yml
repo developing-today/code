@@ -18,11 +18,14 @@ updates:
       github-actions:
         patterns: ["*"]
   - package-ecosystem: "npm"
-    directory: "/"
+    directories:
+      - "/"
+      - "/pkgs/supergateway"
     schedule:
       interval: "weekly"
     exclude-paths:
       - "pkgs/grok-cli/**"
+      - "pkgs/supergateway/**"
       - "pm-stack/voice-line-worker/**"
     groups:
       npm:

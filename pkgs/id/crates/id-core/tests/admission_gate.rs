@@ -49,7 +49,7 @@ use admission_gate::{
 use ed25519_dalek::{Signer as _, SigningKey};
 use id_shape::HashProfile;
 use proptest::prelude::*;
-use signed_envelope::{signature_preimage, Body, Envelope, PayloadId, SUITE_ED25519};
+use signed_envelope::{Body, Envelope, PayloadId, SUITE_ED25519, signature_preimage};
 
 const RAW: HashProfile = HashProfile::RawBlake3_256;
 const DOMAIN: &str = "id/atlas";
