@@ -1038,6 +1038,49 @@ mod tests {
     }
 
     #[test]
+    fn lease_renewal_guidance_names_heartbeat_only_14653() {
+        // #14653 oracle: the lease-expiry diagnostic advertises
+        // exactly one renewal action — heartbeat — and that action
+        // is the verb whose statement actually advances the
+        // deadline. Checkpoint is never advertised as renewal:
+        // verb_checkpoint writes progress only, and this test fails
+        // if it ever gains a lease_until write, so the guidance
+        // and the behaviour cannot drift apart silently again.
+        let queued = json!({"status": "queued", "worker_id": null});
+        let expired = json!({
+            "worker_id": "archer",
+            "kind": "lease_expired",
+            "created_at": "2026-11-22T16:00:00Z",
+        });
+        let reason = not_claimed_reason(Some(&queued), Some(&expired), "archer");
+        assert!(reason.contains("heartbeat to keep a lease"), "{reason}");
+        assert!(
+            !reason.contains("or checkpoint"),
+            "checkpoint is not a renewal action: {reason}"
+        );
+        // The advertised action advances the deadline: the
+        // statement verb_heartbeat runs raises lease_until to the
+        // requested extension whenever that is later.
+        let heartbeat_sql = include_str!("turso_queue/heartbeat.sql");
+        assert!(
+            heartbeat_sql
+                .contains("SET lease_until = CASE WHEN julianday(lease_until) >= julianday(?1)"),
+            "heartbeat statement must advance lease_until: {heartbeat_sql}"
+        );
+        // Checkpoint's verb body touches no lease column.
+        let lifecycle_src = include_str!("turso_queue/lifecycle.rs");
+        let start = lifecycle_src
+            .find("pub(crate) fn verb_checkpoint")
+            .expect("verb_checkpoint exists");
+        let body = &lifecycle_src[start..];
+        let end = body.find("\npub(crate) fn ").unwrap_or(body.len());
+        assert!(
+            !body[..end].contains("lease_until"),
+            "verb_checkpoint must not write lease_until"
+        );
+    }
+
+    #[test]
     fn bind_rejects_malformed_session_id_8287() {
         // #8287 oracle: verb_bind refuses a malformed session id
         // as a usage error (exit 2) before any store access, so
