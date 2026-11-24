@@ -656,11 +656,11 @@ test("the deploy reads the uploaded version id from cf's output", async () => {
   assert.match(line, /c is not listed/);
 });
 
-test("the owner page shows a connector address that works with no sign-in", async () => {
+test("the connector address works with no sign-in", async () => {
   const { call } = harness();
-  const html = await (await call(`/p/${TOKEN}`)).text();
-  const addr = html.match(/id="connector" readonly value="([^"]+)"/)[1].replace(/&amp;/g, "&");
-  assert.equal(addr, `${BASE}/mcp/${TOKEN}`);
+  // The address the retired page used to show (#14378); --print-urls
+  // and the README carry it now.
+  const addr = `${BASE}/mcp/${TOKEN}`;
   const res = await call(new URL(addr).pathname, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
