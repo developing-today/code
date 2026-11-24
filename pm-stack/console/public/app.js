@@ -4,6 +4,9 @@
 //
 // The page draws from three documents the server keeps ready (core,
 // questions, ops), so moving between sections never waits on a fetch.
+import { h } from "./ui.js";
+import { PAGES } from "./pages/index.js";
+
 const API = "/console/api/";
 // Without a page (the tests import the small functions) nothing is found.
 const $ = (id) => (typeof document === "undefined" ? null : document.getElementById(id));
@@ -14,22 +17,6 @@ const freshEl = $("fresh");
 const keptEl = $("kept");
 
 // ---- small helpers -----------------------------------------------------
-
-function h(tag, attrs, ...kids) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs || {})) {
-    if (v === false || v === null || v === undefined) continue;
-    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
-    else if (k === "class") el.className = v;
-    else if (v === true) el.setAttribute(k, "");
-    else el.setAttribute(k, v);
-  }
-  for (const kid of kids.flat(Infinity)) {
-    if (kid === null || kid === undefined || kid === false) continue;
-    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
-  }
-  return el;
-}
 
 function icon(d) {
   const NS = "http://www.w3.org/2000/svg";
@@ -1647,6 +1634,8 @@ function viewMore() {
   const ops = docs.ops || {};
   const b = docs.core.board || { counts: {} };
   const tile = (to, title, sub) => h("button", { class: "tile", onclick: () => go(to) }, title, h("span", {}, sub));
+  // The pages that are modules of their own say which part they go in.
+  const pageTiles = (group) => PAGES.filter((page) => page.group === group).map((page) => tile(page.route, page.title, page.says));
   const out = [
     h("h2", {}, "Plan"),
     h(
@@ -1655,6 +1644,7 @@ function viewMore() {
       tile("more/roadmap", "Roadmap", "id, fleet, atlas, PM stack: built, in progress, planned"),
       tile("more/bugs", "Bugs", "report one; see what is open and what was fixed"),
       tile("more/intake", "Intake", "every note, bug and change you sent, and where it went"),
+      pageTiles("Plan"),
     ),
     h("h2", {}, "Operations"),
     h(
@@ -1673,6 +1663,7 @@ function viewMore() {
       tile("more/platform", "Platform", "every Worker: what it does, whether it is in service, how it is deployed"),
       tile("more/device", "On this device", "what is kept here to send, and what it shows with no connection"),
       Look ? tile("more/look", "Appearance", lookCounts()) : null,
+      pageTiles("Operations"),
       tile("more/releases", "Releases", "what is deployed, the Android app, and putting either out again"),
     ),
   ];
@@ -3707,6 +3698,13 @@ const VIEWS = {
   "more/bugs": ["Bugs", viewBugs],
   "more/intake": ["Intake", viewIntake],
 };
+/** What a page that is a module of its own (public/pages) is handed:
+ * the app's own parts, so that it reads, acts and moves about the same
+ * way as every screen written here. */
+const app = { api, freshly, act, go, toast, empty, ago, sheet, newId, redraw: () => draw() };
+for (const page of PAGES) VIEWS[page.route] = [page.title, (sub) => page.view(sub, app), page.doc];
+/** Every screen's address, for the tests. */
+export const routesKnown = () => Object.keys(VIEWS);
 let route = "now";
 let drawSeq = 0;
 /** The screen whose content the view holds, once it has been drawn. */

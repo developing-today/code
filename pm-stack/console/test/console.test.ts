@@ -1166,6 +1166,62 @@ describe("HTTP surface", () => {
     expect((await handle(get("/elsewhere"), alone)).status).toBe(404);
   });
 
+  test("a machine answers Trends too, with the same reader, through the fleet binary; and it remembers what it read between asks", async () => {
+    // GitHub's list of issues as the fleet binary gives it: one pull request merged and one issue filed.
+    const r = recorder((argv) => {
+      if (argv[1] === "gh" && argv[3].includes("/issues?state=all&sort=updated&direction=asc&since=")) {
+        return JSON.stringify([
+          {
+            number: 41,
+            title: "feat(fleet): a lane",
+            created_at: "2026-11-20T10:00:00Z",
+            updated_at: "2026-11-20T11:00:00Z",
+            closed_at: "2026-11-20T11:00:00Z",
+            state: "closed",
+            labels: [],
+            pull_request: { merged_at: "2026-11-20T11:00:00Z" },
+          },
+          {
+            number: 42,
+            title: "A bug",
+            created_at: "2026-11-21T10:00:00Z",
+            updated_at: "2026-11-21T10:00:00Z",
+            closed_at: null,
+            state: "open",
+            labels: [{ name: "kind/bug" }],
+          },
+        ]);
+      }
+      return argv[1] === "secrets" ? "token\n" : "{}";
+    });
+    const d = deps("owner", r);
+    const res = await handle(get("/console/api/trends?days=90"), d);
+    expect(res.status).toBe(200);
+    const doc = (await res.json()) as {
+      window: number;
+      days: string[];
+      history: { whole: boolean };
+      merged: { all: number[]; projects: Record<string, number[]> };
+      bugs: { opened: number[] };
+      features: { latest: Record<string, { number: number }[]> };
+    };
+    expect([doc.window, doc.history.whole]).toEqual([90, true]);
+    const at = (day: string) => doc.days.indexOf(day);
+    // (The days end today, so these two are shown only while they are within ninety days of it.)
+    if (at("2026-11-20") >= 0) {
+      expect([doc.merged.all[at("2026-11-20")], doc.merged.projects.fleet[at("2026-11-20")]]).toEqual([1, 1]);
+      expect(doc.bugs.opened[at("2026-11-21")]).toBe(1);
+      expect(doc.features.latest.fleet.map((f) => f.number)).toEqual([41]);
+    }
+    const asked = () => r.calls.filter((c) => c.argv[1] === "gh" && c.argv[3].includes("since=")).length;
+    expect(asked()).toBe(1);
+    // Asked again at once, GitHub is not: the same reader is kept, with what it read.
+    expect((await handle(get("/console/api/trends?days=7"), d)).status).toBe(200);
+    expect(asked()).toBe(1);
+    // Not the owner: no trends.
+    expect((await handle(get("/console/api/trends"), deps(403, r))).status).toBe(403);
+  });
+
   test("the app's files are named in one list, and this service, the Worker's build and the page all go by it", async () => {
     // public/files.json is the one place a file of the app is named.
     // The oracle for "is everything there" is what the page and its
@@ -1194,15 +1250,23 @@ describe("HTTP surface", () => {
       for (const m of read(`public/${sheet}`).matchAll(/url\("\/console\/([^"]+)"\)/g)) asked.add(m[1]);
     }
     for (const script of named.filter((n) => n.endsWith(".js"))) {
+      // What it imports is found from where it is: "./x.js" beside it, "../x.js" above.
       for (const m of read(`public/${script}`).matchAll(
-        /(?:^import [^"\n]*|importScripts\()"(?:\.\/|\/console\/)([^"]+)"/gm,
+        /(?:^import [^"\n]*|importScripts\()"(\.{1,2}\/[^"]+|\/console\/[^"]+)"/gm,
       ))
-        asked.add(m[1]);
+        asked.add(new URL(m[1], `https://pm.example/console/${script}`).pathname.replace("/console/", ""));
     }
     expect([...asked].filter((name) => !named.includes(name))).toEqual([]);
     // The page asks for its style sheets, the look, the outbox and the app (and the icon).
     for (const must of ["app.css", "themes.css", "look.css", "look.js", "outbox.js", "app.js", "icon.svg"])
       expect([...asked]).toContain(must);
+    // And what the app's script imports, and what those import.
+    for (const must of ["ui.js", "pages/index.js", "pages/trends.js", "charts.js"]) expect([...asked]).toContain(must);
+    // A script the app imports is needed to open it: kept from the start.
+    for (const name of asked) {
+      if (name.endsWith(".js"))
+        expect([name, list.files.find((f) => f.path === name)?.kept]).toEqual([name, "installed"]);
+    }
     // Everything the page needs to open is kept from the start; a
     // typeface is kept when used; the worker itself never.
     const keptWhen = Object.fromEntries(list.files.map((f) => [f.path, f.kept]));

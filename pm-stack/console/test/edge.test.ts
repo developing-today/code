@@ -39,6 +39,7 @@ import { Ops } from "../src/ops.ts";
 import { type Deps, handle, heldRunner, marked } from "../src/server.ts";
 import { memoryStore } from "../src/store.ts";
 import { EdgeLink } from "../src/sync.ts";
+import { TASKS_BY_DAY_SQL } from "../src/trends.ts";
 import { DONE_COUNT_SQL, DONE_KINDS_SQL, DONE_TASKS_SQL } from "../src/work.ts";
 import { asThePlatformFetch, browser, signer } from "./support.ts";
 
@@ -338,6 +339,19 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
   const queueAnswer = (sql: string, args: (string | number)[]) => {
     const cols = (names: string[]) => names.map((name) => ({ name }));
     const rows = (rs: { value: string | number | null }[][]) => rs;
+    if (sql === TASKS_BY_DAY_SQL) {
+      // Finished tasks by day, from the same finished tasks the Done screen is given.
+      const days = new Map<string, number>();
+      for (const t of queueDone) {
+        if (`${t.at}Z` >= String(args[0])) days.set(t.at.slice(0, 10), (days.get(t.at.slice(0, 10)) ?? 0) + 1);
+      }
+      return {
+        cols: cols(["day", "kind", "n"]),
+        rows: rows(
+          [...days.entries()].sort().map(([day, n]) => [{ value: day }, { value: "small fix" }, { value: n }]),
+        ),
+      };
+    }
     if (sql === DONE_TASKS_SQL) {
       return {
         cols: cols(["id", "title", "at", "lane", "model", "kind", "issue", "pr", "verdict"]),
@@ -471,6 +485,20 @@ async function setup(options: { direct?: boolean; kinds?: readonly string[] } = 
       return ok({ items: ghSearch, total_count: ghSearch.length });
     // What is closed is a list of its own.
     if (method === "GET" && path === "issues" && u.searchParams.get("state") === "closed") return ok(ghClosed);
+    // Everything changed at or after a time, oldest change first, a
+    // page at a time: what the history behind the Trends screen asks.
+    if (method === "GET" && path === "issues" && u.searchParams.get("state") === "all" && u.searchParams.has("since")) {
+      const since = u.searchParams.get("since") ?? "";
+      const per = Math.min(100, Number(u.searchParams.get("per_page") ?? 30));
+      const changed = (i: Record<string, unknown>) => String(i.updated_at ?? "");
+      return ok(
+        (ghClosed as Record<string, unknown>[])
+          .map((i): Record<string, unknown> => ({ state: "closed", created_at: i.closed_at, ...i }))
+          .filter((i) => changed(i) >= since)
+          .sort((a, b) => changed(a).localeCompare(changed(b)) || Number(a.number) - Number(b.number))
+          .slice(0, per),
+      );
+    }
     if (method === "GET" && path === "issues") {
       // GitHub lists the issues that carry the label asked for.
       const label = u.searchParams.get("labels");
@@ -5252,6 +5280,102 @@ describe("the edge does the core itself", () => {
         },
       );
     };
+
+    test("the history behind Trends is read and kept by Cloudflare: no machine is asked, and its own clock reads on", async () => {
+      const w = await primary();
+      finish(w);
+      w.ghClosed.push({
+        number: 78,
+        title: "feat(pm-console): a screen of trends",
+        html_url: "https://github.com/developing-today/code/pull/78",
+        created_at: "2026-11-22T09:00:00Z",
+        closed_at: "2026-11-22T10:00:00Z",
+        updated_at: "2026-11-22T10:00:00Z",
+        user: { login: "lane-b" },
+        pull_request: { merged_at: "2026-11-22T10:00:00Z" },
+      });
+      // No machine: the laptop is out of reach.
+      w.net.hostUp = false;
+      const saw = w.hostSaw.length;
+      const res = await w.browse("/console/api/trends?days=7");
+      expect(res.status).toBe(200);
+      const doc = (await res.json()) as {
+        window: number;
+        days: string[];
+        history: { whole: boolean; from: string };
+        merged: { all: number[]; kinds: Record<string, number[]>; projects: Record<string, number[]> };
+        features: { latest: Record<string, { number: number; title: string }[]> };
+        issues: { closed: number[] };
+        tasks: { all: number[] };
+        partial?: boolean;
+      };
+      expect([doc.window, doc.days[doc.days.length - 1], doc.history.whole, doc.partial]).toEqual([
+        7,
+        "2026-11-22",
+        true,
+        undefined,
+      ]);
+      const last = (list: number[]) => list[list.length - 1];
+      // Two pull requests merged that day (a fix and a feature), one issue closed, one task finished.
+      expect([last(doc.merged.all), last(doc.merged.kinds.feat), last(doc.merged.kinds.fix)]).toEqual([2, 1, 1]);
+      expect(last(doc.merged.projects["pm-stack"])).toBe(1);
+      expect(doc.features.latest["pm-stack"]).toEqual([
+        {
+          number: 78,
+          title: "a screen of trends",
+          at: "2026-11-22T10:00:00Z",
+          url: "https://github.com/developing-today/code/pull/78",
+        },
+      ] as never);
+      expect(last(doc.issues.closed)).toBe(1);
+      expect(last(doc.tasks.all)).toBe(1);
+      expect(w.hostSaw.length).toBe(saw);
+      // GitHub was asked for everything changed since ninety days back, and that answer was not kept
+      // among the lists it asks for again.
+      const asked = w.githubCalls.filter((c) => c.url.includes("since="));
+      expect(asked.map((c) => new URL(c.url).searchParams.get("since"))).toEqual(["2026-08-24T00:00:00Z"]);
+      // What it read is in the object's own storage: where it has read to, and a day.
+      const kept = [...w.stored.keys()].filter((k) => k.startsWith("trend:")).sort();
+      expect(kept).toEqual(["trend:day:2026-11-22", "trend:meta"]);
+      expect(JSON.parse(w.stored.get("trend:meta") as string)).toEqual({
+        from: "2026-08-24",
+        cursor: "2026-11-22T11:05:00Z",
+        whole: true,
+        readAt: new Date(w.now.t).toISOString(),
+      });
+      // Read again a minute later: GitHub is not asked (it was read to its end five minutes ago at most).
+      w.now.t += 60_000;
+      await w.browse("/console/api/trends?days=7");
+      expect(w.githubCalls.filter((c) => c.url.includes("since=")).length).toBe(1);
+      // Something merges. Nobody opens the screen; half an hour on, the object's own clock reads on
+      // from where it stopped, and the screen has it when it is next opened.
+      w.ghClosed.push({
+        number: 79,
+        title: "feat(id): later",
+        html_url: "https://github.com/developing-today/code/pull/79",
+        created_at: "2026-11-22T12:10:00Z",
+        closed_at: "2026-11-22T12:20:00Z",
+        updated_at: "2026-11-22T12:20:00Z",
+        pull_request: { merged_at: "2026-11-22T12:20:00Z" },
+      });
+      w.now.t += 31 * 60_000;
+      await w.edge.now.alarm();
+      const again = w.githubCalls.filter((c) => c.url.includes("since="));
+      expect(again.length).toBe(2);
+      expect(new URL(again[1].url).searchParams.get("since")).toBe("2026-11-22T11:05:00Z");
+      const day = JSON.parse(w.stored.get("trend:day:2026-11-22") as string) as { pm: Record<string, unknown[]> };
+      expect(Object.keys(day.pm).sort()).toEqual(["77", "78", "79"]);
+      expect(day.pm["79"]).toEqual(["feat", "id", 10, "12:20", "later"]);
+      // It reads on like that only while somebody looks at the screen. A day after it was last
+      // asked for, a wake reads nothing of it: an object nobody needs is not kept awake.
+      w.now.t += 25 * 60 * 60_000;
+      await w.edge.now.alarm();
+      await w.edge.now.alarm();
+      expect(w.githubCalls.filter((c) => c.url.includes("since=")).length).toBe(2);
+      // Opened again, it is read on at once (and by the clock again after).
+      await w.browse("/console/api/trends?days=7");
+      expect(w.githubCalls.filter((c) => c.url.includes("since=")).length).toBe(3);
+    });
 
     test("it comes from the queue store and GitHub, laptop or no laptop", async () => {
       const w = await primary();
