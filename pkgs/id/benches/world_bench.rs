@@ -138,10 +138,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
+use id::bench_ack_mode::{journal_ack_mode_name, mw_journal_ack_mode};
 use id::guest_burn::GuestBurnBudget;
 use id::sandbox::{GuestCall, Sandbox, SandboxLimits};
 use id::world::{
-    CapabilityBounds, JoinCapability, JournalAckMode, JournalEntry, Participant, RestoredWorld,
+    CapabilityBounds, JoinCapability, JournalEntry, Participant, RestoredWorld,
     WorldCore, WorldEvent, WorldEventKind, WorldHandle, WorldJournal, WorldLimits, WorldProgram,
     WorldScopes,
 };
@@ -263,33 +264,6 @@ fn mw_env(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
-}
-
-/// Benchmark-only journal ack mode selector (#557): `ID_BENCH_MW_JOURNAL_ACK_MODE`
-/// with `sync` (default), `batched`, or `async`. Unset or unparseable falls
-/// back to the production default [`JournalAckMode::Sync`] — the same
-/// fallback rule as [`mw_env`]. Never changes the production default or
-/// durability contracts; the bench alone opts into the relaxed modes.
-fn mw_journal_ack_mode() -> JournalAckMode {
-    parse_journal_ack_mode(&std::env::var("ID_BENCH_MW_JOURNAL_ACK_MODE").unwrap_or_default())
-}
-
-fn parse_journal_ack_mode(value: &str) -> JournalAckMode {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "batched" => JournalAckMode::Batched,
-        "async" => JournalAckMode::Async,
-        _ => JournalAckMode::Sync,
-    }
-}
-
-/// Machine-readable name of a [`JournalAckMode`] for the `bench many_worlds`
-/// result line (`journal_ack_mode=<name>`).
-fn journal_ack_mode_name(mode: JournalAckMode) -> &'static str {
-    match mode {
-        JournalAckMode::Sync => "sync",
-        JournalAckMode::Batched => "batched",
-        JournalAckMode::Async => "async",
-    }
 }
 
 impl ManyWorldsConfig {
@@ -1949,44 +1923,4 @@ fn main() -> Result<()> {
 
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
-}
-
-#[cfg(test)]
-mod ack_mode_selector_tests {
-    use super::{journal_ack_mode_name, parse_journal_ack_mode};
-    use id::world::JournalAckMode;
-
-    #[test]
-    fn accepted_values_map_to_modes() {
-        assert_eq!(parse_journal_ack_mode("sync"), JournalAckMode::Sync);
-        assert_eq!(parse_journal_ack_mode("batched"), JournalAckMode::Batched);
-        assert_eq!(parse_journal_ack_mode("async"), JournalAckMode::Async);
-    }
-
-    #[test]
-    fn matching_is_case_and_whitespace_tolerant() {
-        assert_eq!(parse_journal_ack_mode("  Batched "), JournalAckMode::Batched);
-        assert_eq!(parse_journal_ack_mode("ASYNC"), JournalAckMode::Async);
-    }
-
-    #[test]
-    fn unset_or_garbage_falls_back_to_sync_default() {
-        assert_eq!(parse_journal_ack_mode(""), JournalAckMode::Sync);
-        assert_eq!(
-            parse_journal_ack_mode("fsync-everything"),
-            JournalAckMode::Sync
-        );
-        assert_eq!(
-            parse_journal_ack_mode("sync "),
-            JournalAckMode::Sync,
-            "trailing input still resolves before the fallback"
-        );
-    }
-
-    #[test]
-    fn machine_readable_names_cover_every_mode() {
-        assert_eq!(journal_ack_mode_name(JournalAckMode::Sync), "sync");
-        assert_eq!(journal_ack_mode_name(JournalAckMode::Batched), "batched");
-        assert_eq!(journal_ack_mode_name(JournalAckMode::Async), "async");
-    }
 }
