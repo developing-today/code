@@ -140,7 +140,10 @@ test("read scope: the pipeline through the PM credential shows every surface wit
 
   const note = byBody.get("note for felix");
   assert.equal(note.surface, "notes");
-  assert.equal(note.sender_addr, "user:drew");
+  // A note's sender is its notes identity (user/drew), where a
+  // connector row spells the same person user:drew: each surface's
+  // own address, as the pipeline normalizes them.
+  assert.equal(note.sender_addr, "user/drew");
   assert.equal(note.receiver, "muse/felix");
 
   // The same filters the console offers narrow it the same way.

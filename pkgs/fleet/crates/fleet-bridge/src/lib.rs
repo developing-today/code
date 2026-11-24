@@ -522,7 +522,12 @@ struct Args {
 const VALUE_FLAGS: &[&str] = &[
     "--to",
     "--sender",
+    "--receiver",
+    "--surface",
+    "--batch",
+    "--work-state",
     "--agent",
+    "--identity",
     "--groups",
     "--direction",
     "--kind",

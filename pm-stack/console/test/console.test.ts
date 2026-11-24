@@ -746,7 +746,7 @@ describe("operations", () => {
     const rows = [{ surface: "fleet", kind: "command", sender_addr: "agent:felix", receiver: "agent:archer", body: "do it" }];
     const r = recorder(() => JSON.stringify({ messages: rows }));
     const ops = new Ops(CFG, r.run);
-    const got = await ops.pipeline(
+    const got = await ops.pipelineFeed(
       new URLSearchParams({ kind: "command", sender: "felix", surface: "fleet", unread: "1", limit: "25" }),
     );
     expect(got).toEqual(rows);
@@ -756,9 +756,9 @@ describe("operations", () => {
     ]);
     // A filter the bridge has no such value for is refused here, and
     // nothing is run for it.
-    await expect(ops.pipeline(new URLSearchParams({ kind: "shout" }))).rejects.toThrow(OpError);
-    await expect(ops.pipeline(new URLSearchParams({ surface: "smoke-signal" }))).rejects.toThrow(OpError);
-    await expect(ops.pipeline(new URLSearchParams({ sender: "a b" }))).rejects.toThrow(OpError);
+    await expect(ops.pipelineFeed(new URLSearchParams({ kind: "shout" }))).rejects.toThrow(OpError);
+    await expect(ops.pipelineFeed(new URLSearchParams({ surface: "smoke-signal" }))).rejects.toThrow(OpError);
+    await expect(ops.pipelineFeed(new URLSearchParams({ sender: "a b" }))).rejects.toThrow(OpError);
     expect(r.calls.length).toBe(1);
   });
 

@@ -58,7 +58,7 @@ export async function platformRead(
       // translates the bridge argv); on a machine the server's switch
       // may answer first, and either way the Ops call is the same.
       case "pipeline":
-        return ops.pipeline(query);
+        return ops.pipelineFeed(query);
       case "directory":
         return ops.directory();
       case "trends":

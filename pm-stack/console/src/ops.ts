@@ -542,9 +542,10 @@ export class Ops {
    * agents see, never this console. Filters are the bridge's own
    * (kind / sender / receiver / surface / batch / unread / work
    * state); each value is validated here and travels as its own
-   * argument.
+   * argument. (Named for the bridge's feed, not this class's own
+   * queue-store pipeline above.)
    */
-  async pipeline(query: URLSearchParams) {
+  async pipelineFeed(query: URLSearchParams) {
     const argv = [this.cfg.fleetBin, "bridge", "pipeline", "--order", "desc"];
     const one = (param: string, flag: string, name: string, ok: RegExp) => {
       const v = query.get(param);

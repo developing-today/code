@@ -345,7 +345,7 @@ describe("the edge's run: the bridge through its binding", () => {
       bridgeFetch,
     } as never);
     // The pipeline: rows from all three surfaces, real senders kept.
-    const feed = (await ops.pipeline(new URLSearchParams({ kind: "command" }))) as { sender_addr: string }[];
+    const feed = (await ops.pipelineFeed(new URLSearchParams({ kind: "command" }))) as { sender_addr: string }[];
     expect(feed.map((m) => m.sender_addr)).toEqual(["user:drew", "agent:felix-1", "user:drew"]);
     // The directory: the fleet row carries its credential state; the
     // notes-only identity is present, presence none, and its revoked
