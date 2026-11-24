@@ -177,6 +177,7 @@
         "pkgs/id/examples/roc-chat/**",
         "pkgs/id/examples/roc-counter/**",
         "pkgs/id/examples/roc-grid/**",
+        "pkgs/id/examples/roc-mind-map/**",
         "pkgs/id/examples/roc-screen/**",
         "pkgs/id/examples/roc-text-counter/**",
         "pkgs/id/examples/territory/**",
