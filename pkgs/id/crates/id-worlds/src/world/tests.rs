@@ -3234,6 +3234,7 @@ mod tests {
     /// (#1067, Codex review on #12557): exhausting the budget must not
     /// mark the program unhealthy, so the same input succeeds once the
     /// window rolls instead of requiring a program replacement.
+    #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn a_fuel_rate_refusal_keeps_the_actor_healthy() {
         use crate::sandbox::{Sandbox, SandboxLimits};
