@@ -25,5 +25,5 @@ sha2 = "0.11"
 ureq = { version = "3", features = ["rustls"] }
 
 [dev-dependencies]
-rusqlite = { version = "0.42", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }

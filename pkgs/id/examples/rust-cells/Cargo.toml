@@ -1,0 +1,18 @@
+[package]
+name = "rust-cells"
+version = "0.1.0"
+edition = "2021"
+description = "A manually stepped, bounded Conway world for Plaza ABI v1"
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+plaza-sdk = { path = "../rust-world" }
+
+[profile.release]
+opt-level = "s"
+strip = true

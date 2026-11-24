@@ -49,6 +49,7 @@ buildNpmPackage {
   };
 
   postPatch = ''
+    cp ${./package.json} package.json
     cp ${./package-lock.json} package-lock.json
     chmod +w package.json package-lock.json
 
@@ -62,7 +63,10 @@ buildNpmPackage {
     '
   '';
 
-  npmDepsHash = "sha256-PX7yp2bL1C+bqA5B2lKXe9b0NyCsJ9SicMLbefZQy00=";
+  # npmDepsFetcherVersion 2 caches packuments: required because the
+  # undici override below forces `npm ci` to re-resolve metadata offline.
+  npmDepsFetcherVersion = 2;
+  npmDepsHash = "sha256-dy7Y2eB9buAhL+BUj+vd7ezAltSyYpbw8VHm5eV451c=";
 
   npmFlags = [
     "--ignore-scripts"

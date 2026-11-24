@@ -1,0 +1,38 @@
+{
+  "title": "AUDIT-7 Lane 7 slice A: formalise text-linked stray issues in code (521 open)",
+  "body": "developing-today/code has 521 OPEN issues (AUDIT-7 Lane 7 census 2026-11-23, tracking #13874) that carry no epic/* or primary-parent/* label but reference another issue in the body. For each, one by one, read the issue and its comments in full (comments per_page=100, count-confirmed): if a comment claims the item for another AUDIT-7 lane, SKIP it (hard stop). Identify the referenced design/epic/parent; add labels stray-work + the matching epic/<slug> and primary-parent/<slug>; where the parent is an epic issue and the item is not already a sub-issue, add it via POST /issues/<parent>/sub_issues. If no appropriate parent exists, label stray/needs-parent instead and list it on #13874. Post per-batch progress on #13874.",
+  "priority": 60,
+  "dedupe_key": "audit7:lane7:feature_slice:code:13874:A",
+  "payload": {
+    "schema": "repo-health/v1",
+    "kind": "feature_slice",
+    "repo": "developing-today/code",
+    "max_attempts": 2,
+    "timebox_minutes": 120,
+    "risk": "low: label + sub-issue metadata only, no code changes, no closes",
+    "tests": [
+      "readback via fleet gh api: parent sub_issues list contains child; child labels contain stray-work + primary-parent/*"
+    ],
+    "slice": "A",
+    "issue": 13874,
+    "problem": "developing-today/code has 521 OPEN issues (AUDIT-7 Lane 7 census 2026-11-23, tracking #13874) that carry no epic/* or primary-parent/* label but reference another issue in the body. For each, one by one, read the issue and its comments in full (comments per_page=100, count-confirmed): if a comment claims the item for another AUDIT-7 lane, SKIP it (hard stop). Identify the referenced design/epic/parent; add labels stray-work + the matching epic/<slug> and primary-parent/<slug>; where the parent is an epic issue and the item is not already a sub-issue, add it via POST /issues/<parent>/sub_issues. If no appropriate parent exists, label stray/needs-parent instead and list it on #13874. Post per-batch progress on #13874.",
+    "scope": "developing-today/code has 521 OPEN issues (AUDIT-7 Lane 7 census 2026-11-23, tracking #13874) that carry no epic/* or primary-parent/* label but reference another issue in the body. For each, one by one, read the issue and its comments in full (comments per_page=100, count-confirmed): if a comment claims the item for another AUDIT-7 lane, SKIP it (hard stop). Identify the referenced design/epic/parent; add labels stray-work + the matching epic/<slug> and primary-parent/<slug>; where the parent is an epic issue and the item is not already a sub-issue, add it via POST /issues/<parent>/sub_issues. If no appropriate parent exists, label stray/needs-parent instead and list it on #13874. Post per-batch progress on #13874.",
+    "acceptance": [
+      "521 items labelled stray-work with correct epic/primary-parent labels or stray/needs-parent",
+      "every edited item read in full incl. comments; lane-claimed items untouched and listed",
+      "progress comment on code#13874 with counts"
+    ],
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/13874",
+      "https://github.com/developing-today/code/issues/13871"
+    ],
+    "priority_reason": "AUDIT-7 Lane 7 continuation slices ordered by the lane brief; exhaustive stray-work hygiene for the four repos",
+    "dedupe": {
+      "basis": "Singular ownership: Lane 7 tracking issue code#13874 is the only stray-work audit; batches 1-2 done by Lane 7 session 2026-11-23; these slices cover disjoint remaining sets (A: text-linked, B: orphans, C: forks/fleet)",
+      "checked_at": "2026-11-24T00:40:00Z"
+    },
+    "evidence": [
+      "Lane 7 census on code#13874 slice-1 comment: 18,594 items in window; 1,405 open; code open issues 587 parent-labelled / 521 text-linked / 91 orphaned"
+    ]
+  }
+}

@@ -130,6 +130,7 @@ describe("program-only surface (#2146 phase 2)", () => {
         world: "arena",
         screen_patches: true,
         screen_msgpack: true,
+        screen_compress: true,
         device_input: { keys: 128, encoder: false, pointer: true, text_entry: "keyboard" },
       },
     ]);

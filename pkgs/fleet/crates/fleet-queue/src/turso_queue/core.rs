@@ -318,6 +318,136 @@ pub fn dep_block_active(row: &Value) -> bool {
     !deps_of(row).is_empty()
 }
 
+/// A human label for one dep identity, used in drop errors and
+/// audit records: `issue owner/repo#12`, `pr owner/repo#3`,
+/// `ci owner/repo#456`, `task 789`.
+pub fn dep_label(dep: &Value) -> String {
+    let kind = dep.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+    let repo = dep.get("repo").and_then(|v| v.as_str()).unwrap_or("?");
+    match kind {
+        "task" => format!(
+            "task {}",
+            dep.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+        "ci" => format!(
+            "ci {repo}#{}",
+            dep.get("run_id").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+        _ => format!(
+            "{kind} {repo}#{}",
+            dep.get("number").and_then(|v| v.as_i64()).unwrap_or(0)
+        ),
+    }
+}
+
+/// Identity match between a stored dep record and a drop spec
+/// (#12777): same kind, and the same identity fields — repo +
+/// number for pr/issue, repo + run_id for ci, task_id for task.
+/// State, reason and bookkeeping fields never take part, so a
+/// spec written from the block-time ref alone always matches
+/// the record the broker stored for it.
+pub fn dep_spec_matches(dep: &Value, spec: &Value) -> bool {
+    let kind = spec.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    if dep.get("kind").and_then(|v| v.as_str()) != Some(kind) {
+        return false;
+    }
+    let same = |k: &str| dep.get(k) == spec.get(k);
+    match kind {
+        "pr" | "issue" => same("repo") && same("number"),
+        "ci" => same("repo") && same("run_id"),
+        "task" => same("task_id"),
+        _ => false,
+    }
+}
+
+/// Remove the dropped dep entries from a blocked task's record
+/// (#12777). Ok((remaining, dropped)) preserves record order;
+/// Err carries every drop spec that matched nothing — the
+/// caller refuses the whole correction, so a mistyped ref can
+/// never silently drop a different dep, or none at all.
+pub fn remove_deps(
+    deps: &[Value],
+    drops: &[Value],
+) -> Result<(Vec<Value>, Vec<Value>), Vec<Value>> {
+    let mut remaining: Vec<Value> = deps.to_vec();
+    let mut dropped = Vec::new();
+    let mut unmatched = Vec::new();
+    for spec in drops {
+        if let Some(pos) = remaining.iter().position(|d| dep_spec_matches(d, spec)) {
+            dropped.push(remaining.remove(pos));
+        } else {
+            unmatched.push(spec.clone());
+        }
+    }
+    if unmatched.is_empty() {
+        Ok((remaining, dropped))
+    } else {
+        Err(unmatched)
+    }
+}
+
+/// Validate the drop specs of an unblock request (#12777): the
+/// surgical form of /unblock. Ok(None) when the request carries
+/// no drop list — the classic full override, unchanged. Specs
+/// are identity-only and held to the same strictness as
+/// parse_block_deps: a ref the broker cannot name is a usage
+/// error here, never a silent no-match at drop time.
+pub fn parse_drop_deps(req: &Value) -> Result<Option<Vec<Value>>, String> {
+    let Some(raw) = req.get("drop_deps") else {
+        return Ok(None);
+    };
+    let Some(arr) = raw.as_array() else {
+        return Err("unblock: drop_deps must be an array".to_string());
+    };
+    if arr.is_empty() {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    for d in arr {
+        let kind = d.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let mut spec = json!({ "kind": kind });
+        let obj = spec.as_object_mut().expect("spec object");
+        match kind {
+            "pr" | "issue" | "ci" => {
+                let repo = d.get("repo").and_then(|v| v.as_str()).unwrap_or("");
+                if !valid_dep_repo(repo) {
+                    return Err(format!(
+                        "unblock: drop dep repo must be owner/name, got '{repo}'"
+                    ));
+                }
+                obj.insert("repo".to_string(), json!(repo));
+                if kind == "ci" {
+                    let run_id = d.get("run_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if run_id <= 0 {
+                        return Err("unblock: ci drop dep needs a positive run_id".to_string());
+                    }
+                    obj.insert("run_id".to_string(), json!(run_id));
+                } else {
+                    let number = d.get("number").and_then(|v| v.as_i64()).unwrap_or(0);
+                    if number <= 0 {
+                        return Err(format!("unblock: {kind} drop dep needs a positive number"));
+                    }
+                    obj.insert("number".to_string(), json!(number));
+                }
+            }
+            "task" => {
+                let task_id = d.get("task_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                if task_id <= 0 {
+                    return Err("unblock: task drop dep needs a positive task_id".to_string());
+                }
+                obj.insert("task_id".to_string(), json!(task_id));
+            }
+            _ => {
+                return Err(format!(
+                    "unblock: unknown drop dep kind '{kind}' (pr|issue|task|ci)"
+                ));
+            }
+        }
+        out.push(spec);
+    }
+    Ok(Some(out))
+}
+
 pub(crate) fn valid_dep_repo(repo: &str) -> bool {
     let mut parts = repo.split('/');
     matches!(
@@ -689,6 +819,13 @@ impl TursoBackend {
             .unwrap())
     }
 
+    /// #13146: several statements in one pipeline request (the
+    /// placement-sync batch insert). Same per-statement results as
+    /// repeated `exec` calls, one round trip.
+    pub(crate) fn exec_batch(&self, stmts: &[(&str, Vec<Arg>)]) -> Result<Vec<StmtResult>, TErr> {
+        self.pipeline(stmts)
+    }
+
     /// Rows of one SELECT as JSON objects, with the given TEXT
     /// columns parsed back into JSON values.
     pub(crate) fn query_objs(
@@ -811,6 +948,38 @@ impl TursoBackend {
                 &[],
             )?;
         }
+        // #13774 (ACTIONS-EXEC-3): the tiered-extension columns
+        // (ext_count / ext_total_s / ext_tier / ext_decide_after /
+        // ext_reason) and the session context land the same
+        // additive way for actions_exec_sessions tables created
+        // before them. No backfill: existing rows read the column
+        // default / NULL, which the verbs read as "no extensions
+        // yet, no context recorded".
+        let aecols = self.query_objs(
+            "SELECT name FROM pragma_table_info('actions_exec_sessions')",
+            &[],
+            &[],
+        )?;
+        if !aecols.is_empty() {
+            for (col, ty) in [
+                ("ext_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("ext_total_s", "INTEGER NOT NULL DEFAULT 0"),
+                ("ext_tier", "INTEGER"),
+                ("ext_decide_after", "TEXT"),
+                ("ext_reason", "TEXT"),
+                ("context", "TEXT"),
+            ] {
+                let has = aecols
+                    .iter()
+                    .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col));
+                if !has {
+                    self.exec(
+                        &format!("ALTER TABLE actions_exec_sessions ADD COLUMN {col} {ty}"),
+                        &[],
+                    )?;
+                }
+            }
+        }
         // #8210: the ledger's platform-limitation columns (a
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
@@ -846,7 +1015,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 17] = [
+pub(crate) const SCHEMA: [&str; 27] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -874,6 +1043,7 @@ pub(crate) const SCHEMA: [&str; 17] = [
     "CREATE TABLE IF NOT EXISTS leases (\
         task_id INTEGER PRIMARY KEY, worker_id TEXT NOT NULL, \
         lease_until TEXT NOT NULL, heartbeat_at TEXT NOT NULL)",
+    include_str!("heartbeat_lease_mirror.sql"),
     "CREATE TABLE IF NOT EXISTS lanes (\
         lane_id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, \
         queue TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1)",
@@ -917,9 +1087,39 @@ pub(crate) const SCHEMA: [&str; 17] = [
         id INTEGER PRIMARY KEY CHECK (id = 1), \
         consecutive_rate_limits INTEGER NOT NULL DEFAULT 0, \
         open_until TEXT, last_error_class TEXT, updated_at TEXT NOT NULL)",
+    // #14100: durable retry for priority-category synchronization.
+    // This is intentionally separate from creation_outbox: reprioritize
+    // edits an existing issue and is not an issue-creation intent.
+    "CREATE TABLE IF NOT EXISTS reprioritize_sync_outbox (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \
+        repo TEXT NOT NULL, issue INTEGER NOT NULL, category TEXT NOT NULL, \
+        label TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', \
+        attempts INTEGER NOT NULL DEFAULT 0, available_at TEXT NOT NULL, \
+        last_error_class TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS reprioritize_sync_due \
+        ON reprioritize_sync_outbox(state, available_at)",
     // #8582 increment 2: the merge-intent table, DDL of record in
     // the pure core module.
     crate::merge_intent::MERGE_INTENT_DDL,
+    // #13146: placement session records — the designed home for the
+    // fleet-place session store (intake DDL in
+    // doc/placement-intake/placement.md, carried into the Turso
+    // backend). `record` holds the full session JSON — the client
+    // record shape is the contract; the scalar columns are
+    // extractions for list/filter queries.
+    "CREATE TABLE IF NOT EXISTS placement_sessions (\
+        handle TEXT PRIMARY KEY, record TEXT NOT NULL DEFAULT '{}', \
+        state TEXT, surface TEXT, submitted_by TEXT, run_id INTEGER, \
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS placement_sessions_created \
+        ON placement_sessions(created_at)",
+    // #13774: actions exec sessions — DDL of record in the
+    // actions_exec module.
+    crate::turso_queue::ACTIONS_EXEC_DDL_SESSIONS,
+    crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS,
+    crate::turso_queue::ACTIONS_EXEC_DDL_COMMANDS_IDX,
+    crate::turso_queue::ACTIONS_EXEC_DDL_IO,
+    crate::turso_queue::ACTIONS_EXEC_DDL_IO_IDX,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1521,10 +1721,7 @@ pub(crate) fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         // sweep: its errors (store, unreadable log) are reported
         // inside its own summary and the cycle continues.
         let closed_bound_summary = if req_bool(req, "closed_bound").unwrap_or(true) {
-            match run_closed_bound_checks(
-                t,
-                req_i64(req, "closed_bound_limit").unwrap_or(200),
-            ) {
+            match run_closed_bound_checks(t, req_i64(req, "closed_bound_limit").unwrap_or(200)) {
                 Ok(s) => Some(s),
                 Err(e) => Some(json!({"error": e})),
             }

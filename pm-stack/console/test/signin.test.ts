@@ -24,6 +24,7 @@ const SECTION_NAMES = [
   "questions",
   "prs",
   "priorities",
+  "done",
   "agents",
   "services",
   "more",

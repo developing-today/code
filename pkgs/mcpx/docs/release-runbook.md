@@ -61,14 +61,14 @@ core. New wants go under `## Proposed`. Within a release, append in merge order.
 A small addition can be a heading and two links:
 
 ```markdown
-### [feat(a11y): support for Teletypewriter](../docs/tty.md) #123
+### feat(a11y): support for Teletypewriter #123
 
 2026-10-02T11:30:00-05:00
 ```
 
 Anything larger opens with a key block:
 
-````markdown
+```markdown
 ## Session-isolated process pools
 
 ​`
@@ -84,7 +84,7 @@ description:  one sentence, present tense, what it does
 Prose, examples, the reasoning that is not obvious from the code.
 
 2026-09-27T05:05:00-05:00
-````
+```
 
 Required keys: `created`, `last-updated`, `id`, `since`, `status`, `description`.
 

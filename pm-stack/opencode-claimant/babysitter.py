@@ -91,11 +91,37 @@ POOL_STATE_FILE_NAME = "pool-state.json"
 VERDICTS = (
     "progressing",
     "stalled",
+    "error-stopped",
     "done-unreported",
     "blocked",
     "walled",
     "idle",
 )
+
+ERROR_OUTCOMES = frozenset(("error", "failed", "failure", "timeout", "timed_out"))
+
+
+def session_error_outcome(session):
+    """Return a terminal error outcome, if this session has one.
+
+    The OpenCode session feed uses several error-class outcome strings;
+    keep the classifier strict so an arbitrary terminal marker cannot
+    trigger a retry.
+    """
+    outcome = session.get("outcome") if isinstance(session, dict) else None
+    if not isinstance(outcome, str):
+        return None
+    normalized = outcome.strip().lower()
+    return normalized if normalized in ERROR_OUTCOMES else None
+
+
+def public_binding(binding):
+    """The non-sensitive queue identity carried in round/action logs."""
+    if not isinstance(binding, dict):
+        return None
+    return {
+        key: binding.get(key) for key in ("task_id", "queue", "issue_number", "repo")
+    }
 
 
 def _required_home() -> Path:
@@ -169,6 +195,8 @@ def classify_session(session, *, binding, active_ids, pools, prior_entry, now_ms
         "pool_walled": pool_walled,
         "task_id": binding.get("task_id") if binding else None,
     }
+    if binding:
+        entry["binding"] = public_binding(binding)
 
     timing = poll._session_timing(session)
     member = active_ids is not None and session_id in active_ids
@@ -179,6 +207,7 @@ def classify_session(session, *, binding, active_ids, pools, prior_entry, now_ms
         idle_marker = t.get("idle") if isinstance(t, dict) else None
         updated = 0
     finished_markers = bool(idle_marker or session.get("outcome"))
+    error_outcome = session_error_outcome(session)
     # Active-set membership overrides stored terminal markers (a
     # resumed session keeps its earlier run's idle marker) - unless
     # the member's clock has not moved for poll.py's zombie bound,
@@ -199,13 +228,30 @@ def classify_session(session, *, binding, active_ids, pools, prior_entry, now_ms
 
     if finished:
         if binding:
+            if error_outcome:
+                entry.update(
+                    {
+                        "verdict": "error-stopped",
+                        "outcome": error_outcome,
+                        "retryable": True,
+                        "reason": (
+                            f"terminal outcome {error_outcome}; "
+                            "retry through the recorded queue route"
+                        ),
+                    }
+                )
+                return entry
             entry["verdict"] = "done-unreported"
             entry["reason"] = "finished; bound task still open"
             pr_merged = binding.get("pr_merged")
             entry["harvest_ready"] = pr_merged if isinstance(pr_merged, bool) else None
         else:
             entry["verdict"] = "idle"
-            entry["reason"] = "finished; nothing bound"
+            if error_outcome:
+                entry["outcome"] = error_outcome
+                entry["reason"] = "error-stopped; unbound session observed"
+            else:
+                entry["reason"] = "finished; nothing bound"
         return entry
 
     if progressing_now:

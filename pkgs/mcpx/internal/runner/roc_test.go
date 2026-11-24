@@ -205,10 +205,10 @@ func TestRocWireSerializationProperties(t *testing.T) {
 		call.args["required-key"] = requiredValue
 		presentFields := make([]bool, len(keys))
 		for j, key := range keys {
-			switch {
-			case i == 0:
+			switch i {
+			case 0:
 				// First schema/call proves all optional fields may be absent.
-			case i == 1:
+			case 1:
 				required = append(required, key)
 				presentFields[j] = true
 			default:

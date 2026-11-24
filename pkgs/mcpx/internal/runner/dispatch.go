@@ -929,7 +929,7 @@ func runDispatched(ctx context.Context, opts Options, d *dispatch) (*Result, err
 		return nil, err
 	}
 	dir = applyChdir(dir, d.chdir)
-	if d.lookupBin != "" && !(devshellIsFlake(opts.Devshell) && isRocInterpreter(d.lookupBin)) {
+	if d.lookupBin != "" && (!devshellIsFlake(opts.Devshell) || !isRocInterpreter(d.lookupBin)) {
 		// The interpreter a shebang names is resolved here, against
 		// the directory the run actually moves to: deciding earlier
 		// would check relative PATH entries against mcpx's own

@@ -4,19 +4,17 @@
 //   route match (404) -> authenticate (401/403/503) -> caller-tenancy
 //   assertion (403 cross-tenant) -> route scope for service tokens
 //   (403) -> door handler.
-// Public routes are exactly /health and /capabilities — the hosted
-// door's identity surface, which callers must be able to read before
-// they hold a credential. Every other route requires auth, including
-// unknown paths' absence: an unmatched path is a plain 404 and
-// advertises nothing about the doors.
+// Public routes are /health and /capabilities — the hosted door's
+// identity surface, which callers must be able to read before
+// they hold a credential — plus the ingestion webhook receiver
+// (#12590): GitHub deliveries hold no fleet credential, so that
+// route is reachable without one and its handler authenticates
+// each delivery by its HMAC signature instead (failing closed:
+// 503 unconfigured, 401 unverified). Every other route requires
+// auth, including unknown paths' absence: an unmatched path is a
+// plain 404 and advertises nothing about the doors.
 
-import {
-  assertCallerTenancy,
-  authenticate,
-  authorizeRoute,
-  type AuthDeps,
-  type CallerContext,
-} from "./auth.ts";
+import { assertCallerTenancy, authenticate, authorizeRoute, type AuthDeps, type CallerContext } from "./auth.ts";
 import { buildCapabilitiesDocument } from "./capabilities.ts";
 import { FailClosed } from "./errors.ts";
 import { buildHealthDocument } from "./health.ts";
@@ -33,11 +31,7 @@ export interface RouteDef {
   /** Door id for service-token scoping; null for the public meta routes. */
   door: string | null;
   public?: boolean;
-  handler: (
-    req: Request,
-    ctx: CallerContext | null,
-    deps: AuthDeps,
-  ) => Promise<Response> | Response;
+  handler: (req: Request, ctx: CallerContext | null, deps: AuthDeps) => Promise<Response> | Response;
 }
 
 function json(body: unknown, status = 200): Response {

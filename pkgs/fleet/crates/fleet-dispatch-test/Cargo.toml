@@ -14,4 +14,4 @@ serde = { workspace = true }
 # the schema's column order, part of the output shape agents consume.
 serde_json = { version = "1", features = ["preserve_order"] }
 # Same pin as fleet-search / fleet-queue.
-ureq = { version = "3", features = ["rustls", "json"] }
+ureq = { version = "3", features = ["rustls", "json", "platform-verifier"] }

@@ -32,7 +32,7 @@ func TestFeedbackStoreOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Input != rec.Input || len(got.ToolsUsed) != 1 || got.ToolsUsed[0] != "browser:screenshot" {
+	if got.Input != rec.Input || len(got.ToolsUsed) != 1 || got.ToolsUsed[0] != "browser.screenshot" {
 		t.Fatalf("unexpected record: %+v", got)
 	}
 	if got.Score != nil {

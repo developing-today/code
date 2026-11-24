@@ -30,13 +30,13 @@ futures-lite = "2"
 id-core = { path = "../id-core", default-features = false }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 iroh-docs = "0.101"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 # Store traits only. The default features would pull in SQLite.
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
 postcard = { version = "1", features = ["alloc"] }
-redb = "=4.6.0"
+redb = "=5.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -50,13 +50,13 @@ unicode-normalization = "0.1"
 # on it; production code in this crate never names the facade.
 dcbor = "=0.25.2"
 id = { path = "../.." }
-iroh-gossip = { version = "0.101", features = ["net"] }
+iroh-gossip = { version = "0.103", features = ["net"] }
 # Property tests for the chat-anchor fold (#5872): permutation invariance and
 # duplicate-delivery idempotence over generated event logs.
 proptest = "1.12"
 # The graph encoding bake-off (#10219) measures real SQLite JSONB and BLOB-row
 # candidates and hashes its fixture with SHA-256 for the Python validator.
-rusqlite = { version = "0.42", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 sha2 = "0.11"
 tempfile = "3"
 

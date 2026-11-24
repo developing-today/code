@@ -18,7 +18,7 @@ let
   # Rust toolchain, pinned by pkgs/id/rust-toolchain.toml and resolved through
   # rust-overlay. This is the modern way to get a complete toolchain: the
   # file's `components` list is what places clippy, rust-analyzer, rustfmt and
-  # llvm-tools in the toolchain, and `channel` (currently 1.99.0) is the single
+  # llvm-tools in the toolchain, and `channel` (currently 1.99.1) is the single
   # place the version lives. Nothing else needs to be added for those tools.
   rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./pkgs/id/rust-toolchain.toml;
 
@@ -95,7 +95,7 @@ let
     zig # id: builds the roc-world wasm host (build.zig.zon wants 0.16)
     cargo-watch
     cargo-nextest
-    # cargo-llvm-cov 0.9.0's test suite fails under the pinned Cargo 1.99.0.
+    # cargo-llvm-cov 0.9.0's test suite fails under the pinned Cargo 1.99.1.
     # The devShell needs the binary, not the package's tests, so keep the tool
     # and skip only its broken check phase (#4818; same narrow remedy as #5275).
     (cargo-llvm-cov.overrideAttrs (_: {

@@ -1,0 +1,109 @@
+# Upload an immutable candidate only. Promotion is a separate approved workflow.
+name: Voice line Worker upload
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: voice-line-worker-upload
+  cancel-in-progress: false
+
+jobs:
+  verify-environment:
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      name: ${{ steps.verify.outputs.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.0
+      - name: Require existing protected Voice Line environment
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VOICE_LINE_ENVIRONMENT: voice-line-worker-upload
+        run: |
+          set -euo pipefail
+          node pm-stack/voice-line-worker/scripts/check-environment.mjs "$VOICE_LINE_ENVIRONMENT"
+          echo "name=$VOICE_LINE_ENVIRONMENT" >> "$GITHUB_OUTPUT"
+
+  upload:
+    needs: verify-environment
+    if: github.repository == 'developing-today/code' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ needs.verify-environment.outputs.name }}
+    env:
+      CF_SEND_TELEMETRY: "false"
+      WRANGLER_SEND_METRICS: "false"
+      CLOUDFLARE_CI_OVERRIDE_WORKER_NAME: ""
+      WRANGLER_CI_OVERRIDE_NAME: ""
+      CF_WORKER_NAME: ""
+      CLOUDFLARE_WORKER_NAME: ""
+      WRANGLER_WORKER_NAME: ""
+      CF_MODE: ""
+      CLOUDFLARE_ENV: ""
+      WRANGLER_ENV: ""
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Stage the pinned CI toolchain without replacing operator files
+        working-directory: pm-stack/voice-line-worker
+        run: |
+          set -euo pipefail
+          mkdir -p -- .cloudflare
+          mkdir -m 700 -- .cloudflare/voice-line-release
+          install -m 644 -- ci/package.json ci/bun.lock .cloudflare/voice-line-release/
+          cp -R -- src scripts test cloudflare.config.ts tsconfig.json .cloudflare/voice-line-release/
+          install -m 644 -- ci/deployment-config.check.mjs .cloudflare/voice-line-release/test/deployment-config.test.mjs
+
+      - name: Install worker dependencies
+        working-directory: pm-stack/voice-line-worker/.cloudflare/voice-line-release
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Test offline worker and deployment contracts
+        working-directory: pm-stack/voice-line-worker/.cloudflare/voice-line-release
+        run: |
+          bun test
+          node --test test/{deployment-config,deploy-contract,release-safety}.test.mjs
+          bun run typecheck
+
+      - name: Build the Worker with cf
+        working-directory: pm-stack/voice-line-worker/.cloudflare/voice-line-release
+        run: npm run cf:build
+
+      - name: Upload an immutable Workers Version (no traffic change)
+        working-directory: pm-stack/voice-line-worker/.cloudflare/voice-line-release
+        run: npm run upload
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_VOICE_LINE_UPLOAD_TOKEN }}
+          VOICE_LINE_UPLOAD_RECEIPT: ${{ runner.temp }}/voice-line-upload-receipt.json
+
+      - name: Save the exact structured upload receipt
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: voice-line-upload-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/voice-line-upload-receipt.json
+          retention-days: 14
+          if-no-files-found: error

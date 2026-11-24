@@ -6,11 +6,16 @@ step 1; moved from `pm-stack/COLD-RESTORE-RUNBOOK.md` to this
 `doc/pm-stack/` home by the 2026-11-22 rehearsal slice, which is where
 #6816's acceptance criteria name it. The post-cutover source order (step
 "Restore sources" item 1) takes over when the #6816 cutover lands; the
-first isolated **laptop-off** drill is still owed — the 2026-11-22 pass
-was an isolated same-host rehearsal, not that drill. Design record:
+first isolated **laptop-off** drill ran 2026-11-23 as a simulation
+(off-machine sources only, isolated namespace on the laptop's Docker —
+no second Docker host exists on this seat; see the drill record).
+Design record:
 `doc/2026-11-01T21-12-00Z_pm-stack-durability-host-independence/` (#1258).
 A repeatable rehearsal driver lives at
-`pm-stack/scripts/restore-rehearsal.sh`.
+`pm-stack/scripts/restore-rehearsal.sh`. The cutover that precedes a
+post-cutover restore is gated by `pm-stack/scripts/kaneo-cutover.sh`
+(plan §4): promotion is refused unless `pm-stack/scripts/fence-check.sh`
+reports FENCED and the target's table/row counts equal the source's.
 
 Failover posture (Drew's #1258 rulings, 2026-11-03): all PM-stack state to
 Supabase `muse-dev2`, nothing laptop-only; **tested cold restore, no warm
@@ -61,7 +66,13 @@ loss, not from when work got convenient.
    (post-cutover: verify the `muse-dev2` schema is the live one and skip
    to step 6; pre-cutover or Supabase-loss: `pg_restore` the newest #1514
    dump whose timestamp is inside the 1 h RPO, or the newest available —
-   record which). Verify: user tables and row counts spot-checked against
+   record which). Note: `globals.sql` installs the production `kaneo`
+   role's password hash (one `ALTER ROLE … PASSWORD` statement), so
+   after restoring globals the app can only authenticate with that
+   password — set the restored role's password from Bitwarden by name
+   on a real restore, or reset it inside the drill database on a drill
+   (found by the 2026-11-23 drill, run 1: app boot failed 28P01 until
+   the reset). Verify: user tables and row counts spot-checked against
    the backup manifest (2026-11-22 rehearsal measured 45 public tables,
    ~90 k live rows; the 46-table figure in earlier notes dates from the
    2026-11-10 inventory). Note the daily #1514 cadence cannot meet the
@@ -80,7 +91,9 @@ loss, not from when work got convenient.
    Smoke: Kaneo UI loads and shows current boards; Grist opens the roadmap
    doc; Pad serves its UI. Kaneo's app container needs `DATABASE_URL`
    **and** `AUTH_SECRET` (from the rendered stack env, by name from
-   Bitwarden) — with `DATABASE_URL` alone the API process exits
+   Bitwarden), and its `DATABASE_URL` password must be the role
+   password as restored by `globals.sql` (see step 3) — with
+   `DATABASE_URL` alone the API process exits
    (found by the 2026-11-22 rehearsal; with both set, `/api/health`
    returns 200 against the restored database). The Cloudflare Access hostname and policy are
    re-pointed only at the tunnel step of a real host move — a drill uses an

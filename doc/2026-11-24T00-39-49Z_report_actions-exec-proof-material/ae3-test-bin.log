@@ -1,0 +1,988 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling serde v1.0.229
+   Compiling jobserver v0.1.35
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling once_cell v1.21.4
+   Compiling aws-lc-rs v1.19.0
+   Compiling num-traits v0.2.19
+   Compiling subtle v2.6.1
+   Compiling cc v1.11.0
+   Compiling minimal-lexical v0.2.1
+   Compiling rustls v0.23.46
+   Compiling nom v7.1.3
+   Compiling thiserror v2.0.21
+   Compiling crossbeam-utils v0.8.23
+   Compiling ident_case v1.0.1
+   Compiling cmake v0.1.58
+   Compiling ring v0.17.14
+   Compiling zerocopy v0.8.63
+   Compiling aws-lc-sys v0.47.0
+   Compiling getrandom v0.3.4
+   Compiling strsim v0.11.1
+   Compiling crossbeam-epoch v0.9.21
+   Compiling num-integer v0.1.47
+   Compiling time-core v0.1.9
+   Compiling num-conv v0.2.2
+   Compiling crossbeam-deque v0.8.8
+   Compiling time-macros v0.2.32
+   Compiling syn v3.0.9
+   Compiling syn v2.0.119
+   Compiling rayon-core v1.13.0
+   Compiling smallvec v1.16.4
+   Compiling deranged v0.5.9
+   Compiling rustversion v1.0.23
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+   Compiling darling_core v0.20.11
+   Compiling powerfmt v0.2.1
+   Compiling onig_sys v69.9.3
+   Compiling matrixmultiply v0.3.11
+   Compiling either v1.19.0
+   Compiling darling_macro v0.20.11
+   Compiling version_check v0.9.5
+   Compiling ahash v0.8.12
+   Compiling libsqlite3-sys v0.40.0
+   Compiling darling v0.20.11
+   Compiling time v0.3.55
+   Compiling derive_builder_core v0.20.2
+   Compiling ppv-lite86 v0.2.21
+   Compiling synstructure v0.13.2
+   Compiling rand_core v0.9.5
+   Compiling aho-corasick v1.1.5
+   Compiling paste v1.0.15
+   Compiling esaxx-rs v0.1.10
+   Compiling ort-sys v2.0.0-rc.15
+   Compiling rawpointer v0.2.1
+   Compiling regex-automata v0.4.18
+   Compiling castaway v0.2.4
+   Compiling rand_chacha v0.9.0
+   Compiling asn1-rs-derive v0.6.0
+   Compiling derive_builder_macro v0.20.2
+   Compiling rayon v1.12.0
+   Compiling itertools v0.14.0
+   Compiling monostate-impl v0.1.18
+   Compiling asn1-rs-impl v0.2.0
+   Compiling displaydoc v0.2.7
+   Compiling num-complex v0.4.6
+   Compiling rusticata-macros v4.1.0
+   Compiling semver v1.0.28
+   Compiling pastey v0.2.3
+   Compiling ryu v1.0.23
+   Compiling static_assertions v1.1.0
+   Compiling unicode-segmentation v1.13.3
+   Compiling base64 v0.13.1
+   Compiling macro_rules_attribute-proc_macro v0.2.3
+   Compiling rustc_version v0.4.1
+   Compiling ndarray v0.17.2
+   Compiling monostate v0.1.18
+   Compiling asn1-rs v0.7.2
+   Compiling rayon-cond v0.4.0
+   Compiling macro_rules_attribute v0.2.3
+   Compiling derive_builder v0.20.2
+   Compiling regex v1.13.1
+   Compiling rand v0.9.5
+   Compiling unicode-normalization-alignments v0.1.12
+   Compiling blake3 v1.8.7
+   Compiling libloading v0.9.0
+   Compiling daachorse v3.0.3
+   Compiling unicode_categories v0.1.1
+   Compiling oid-registry v0.8.1
+   Compiling rusqlite v0.42.0
+   Compiling ort v2.0.0-rc.15
+   Compiling curve25519-dalek v5.0.0
+   Compiling num-bigint v0.4.8
+   Compiling fleet-config v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-config)
+   Compiling fleet-proxy-proto v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-proxy-proto)
+   Compiling spm_precompiled v0.1.4
+   Compiling compact_str v0.9.1
+   Compiling dary_heap v0.3.9
+   Compiling tinyvec v1.13.3
+   Compiling fleet-secrets v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-secrets)
+   Compiling constant_time_eq v0.4.2
+   Compiling arrayvec v0.7.8
+   Compiling unicode-normalization v0.1.26
+   Compiling der-parser v10.0.0
+   Compiling atlas-proto v0.1.0 (/home/user/wt-actions-exec-3/pkgs/atlas-search/crates/atlas-proto)
+   Compiling yasna v0.6.0
+   Compiling curve25519-dalek-derive v0.1.1
+   Compiling pem v4.0.0
+   Compiling signature v3.0.0
+   Compiling lazy_static v1.5.1
+   Compiling data-encoding v2.11.1
+   Compiling ed25519 v3.0.0
+   Compiling tempfile v3.27.0
+   Compiling fleet v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet)
+   Compiling fleet-agent v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-agent)
+   Compiling rusty-fork v0.3.1
+   Compiling proptest v1.12.0
+   Compiling x509-parser v0.18.1
+   Compiling rustls-webpki v0.103.16
+   Compiling rcgen v0.14.10
+   Compiling ed25519-dalek v3.0.0
+   Compiling fleet-registry v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-registry)
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling fleet-proxy v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-proxy)
+   Compiling ureq v3.5.2
+   Compiling onig v6.5.3
+   Compiling tokenizers v0.23.2
+   Compiling fleet-dispatch v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-dispatch)
+   Compiling fleet-laptop-agent v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-laptop-agent)
+   Compiling fleet-cert v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-cert)
+warning: function `dechunked_len` is never used
+   --> crates/fleet-dispatch/src/lib.rs:453:4
+    |
+453 | fn dechunked_len(body: &[u8]) -> Option<usize> {
+    |    ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `dechunk` is never used
+   --> crates/fleet-dispatch/src/lib.rs:457:4
+    |
+457 | fn dechunk(body: &[u8]) -> Vec<u8> {
+    |    ^^^^^^^
+
+warning: unnecessary parentheses around assigned value
+    --> crates/fleet-cert/src/cli.rs:1003:24
+     |
+1003 |     params.not_after = (now.0 + time::Duration::days(1));
+     |                        ^                               ^
+     |
+     = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+     |
+1003 -     params.not_after = (now.0 + time::Duration::days(1));
+1003 +     params.not_after = now.0 + time::Duration::days(1);
+     |
+
+warning: `fleet-dispatch` (lib) generated 2 warnings
+   Compiling fleet-queue v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-queue)
+   Compiling fleet-bridge v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-bridge)
+   Compiling fleet-dispatch-test v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-dispatch-test)
+warning: field `spki_oid` is never read
+  --> crates/fleet-cert/src/chain.rs:53:5
+   |
+27 | pub struct CertInfo {
+   |            -------- field in this struct
+...
+53 |     spki_oid: String,
+   |     ^^^^^^^^
+   |
+   = note: `CertInfo` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Read` and `Write`
+  --> crates/fleet-queue/src/client.rs:22:15
+   |
+22 | use std::io::{Read, Write};
+   |               ^^^^  ^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::net::TcpStream`
+  --> crates/fleet-queue/src/client.rs:23:5
+   |
+23 | use std::net::TcpStream;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::os::unix::net::UnixStream`
+  --> crates/fleet-queue/src/client.rs:24:5
+   |
+24 | use std::os::unix::net::UnixStream;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::process::exit`
+  --> crates/fleet-queue/src/client.rs:25:5
+   |
+25 | use std::process::exit;
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Duration`, `SystemTime`, and `UNIX_EPOCH`
+  --> crates/fleet-queue/src/client.rs:26:17
+   |
+26 | use std::time::{Duration, SystemTime, UNIX_EPOCH};
+   |                 ^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `Map`
+  --> crates/fleet-queue/src/client.rs:28:18
+   |
+28 | use serde_json::{Map, Value, json};
+   |                  ^^^
+
+warning: unused imports: `Read` and `Write`
+ --> crates/fleet-queue/src/client/commands_lifecycle.rs:3:15
+  |
+3 | use std::io::{Read, Write};
+  |               ^^^^  ^^^^^
+
+warning: unused import: `std::net::TcpStream`
+ --> crates/fleet-queue/src/client/commands_lifecycle.rs:4:5
+  |
+4 | use std::net::TcpStream;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::os::unix::net::UnixStream`
+ --> crates/fleet-queue/src/client/commands_lifecycle.rs:5:5
+  |
+5 | use std::os::unix::net::UnixStream;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::process::exit`
+ --> crates/fleet-queue/src/client/commands_lifecycle.rs:6:5
+  |
+6 | use std::process::exit;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Duration`, `SystemTime`, and `UNIX_EPOCH`
+ --> crates/fleet-queue/src/client/commands_lifecycle.rs:7:17
+  |
+7 | use std::time::{Duration, SystemTime, UNIX_EPOCH};
+  |                 ^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused imports: `Read` and `Write`
+ --> crates/fleet-queue/src/client/commands_query.rs:3:15
+  |
+3 | use std::io::{Read, Write};
+  |               ^^^^  ^^^^^
+
+warning: unused import: `std::net::TcpStream`
+ --> crates/fleet-queue/src/client/commands_query.rs:4:5
+  |
+4 | use std::net::TcpStream;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::os::unix::net::UnixStream`
+ --> crates/fleet-queue/src/client/commands_query.rs:5:5
+  |
+5 | use std::os::unix::net::UnixStream;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::process::exit`
+ --> crates/fleet-queue/src/client/commands_query.rs:6:5
+  |
+6 | use std::process::exit;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Duration`, `SystemTime`, and `UNIX_EPOCH`
+ --> crates/fleet-queue/src/client/commands_query.rs:7:17
+  |
+7 | use std::time::{Duration, SystemTime, UNIX_EPOCH};
+  |                 ^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `Map`
+ --> crates/fleet-queue/src/client/commands_query.rs:9:18
+  |
+9 | use serde_json::{Map, Value, json};
+  |                  ^^^
+
+warning: unused import: `Write`
+ --> crates/fleet-queue/src/client/fallback_stack.rs:3:21
+  |
+3 | use std::io::{Read, Write};
+  |                     ^^^^^
+
+warning: unused import: `std::net::TcpStream`
+ --> crates/fleet-queue/src/client/fallback_stack.rs:4:5
+  |
+4 | use std::net::TcpStream;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::os::unix::net::UnixStream`
+ --> crates/fleet-queue/src/client/fallback_stack.rs:5:5
+  |
+5 | use std::os::unix::net::UnixStream;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::process::exit`
+ --> crates/fleet-queue/src/client/fallback_stack.rs:6:5
+  |
+6 | use std::process::exit;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `SystemTime` and `UNIX_EPOCH`
+ --> crates/fleet-queue/src/client/fallback_stack.rs:7:27
+  |
+7 | use std::time::{Duration, SystemTime, UNIX_EPOCH};
+  |                           ^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `Map`
+ --> crates/fleet-queue/src/client/fallback_stack.rs:9:18
+  |
+9 | use serde_json::{Map, Value, json};
+  |                  ^^^
+
+warning: unused import: `Write`
+ --> crates/fleet-queue/src/client/support.rs:3:21
+  |
+3 | use std::io::{Read, Write};
+  |                     ^^^^^
+
+warning: unused import: `std::net::TcpStream`
+ --> crates/fleet-queue/src/client/support.rs:4:5
+  |
+4 | use std::net::TcpStream;
+  |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::os::unix::net::UnixStream`
+ --> crates/fleet-queue/src/client/support.rs:5:5
+  |
+5 | use std::os::unix::net::UnixStream;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `SystemTime` and `UNIX_EPOCH`
+ --> crates/fleet-queue/src/client/transport.rs:7:27
+  |
+7 | use std::time::{Duration, SystemTime, UNIX_EPOCH};
+  |                           ^^^^^^^^^^  ^^^^^^^^^^
+
+warning: unused import: `Map`
+ --> crates/fleet-queue/src/client/transport.rs:9:18
+  |
+9 | use serde_json::{Map, Value, json};
+  |                  ^^^
+
+warning: glob import doesn't reexport anything with visibility `pub(crate)` because no imported item is public enough
+  --> crates/fleet-queue/src/client.rs:39:16
+   |
+39 | pub(crate) use self::commands_lifecycle::*;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the most public imported item is `pub(self)`
+  --> crates/fleet-queue/src/client.rs:39:16
+   |
+39 | pub(crate) use self::commands_lifecycle::*;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: reduce the glob import's visibility or increase visibility of imported items
+
+warning: glob import doesn't reexport anything with visibility `pub(crate)` because no imported item is public enough
+  --> crates/fleet-queue/src/client.rs:42:16
+   |
+42 | pub(crate) use self::mode_report::*;
+   |                ^^^^^^^^^^^^^^^^^^^^
+   |
+note: the most public imported item is `pub(self)`
+  --> crates/fleet-queue/src/client.rs:42:16
+   |
+42 | pub(crate) use self::mode_report::*;
+   |                ^^^^^^^^^^^^^^^^^^^^
+   = help: reduce the glob import's visibility or increase visibility of imported items
+
+warning: glob import doesn't reexport anything with visibility `pub(crate)` because no imported item is public enough
+  --> crates/fleet-queue/src/client.rs:45:16
+   |
+45 | pub(crate) use self::verify_disposition::*;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the most public imported item is `pub(self)`
+  --> crates/fleet-queue/src/client.rs:45:16
+   |
+45 | pub(crate) use self::verify_disposition::*;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: reduce the glob import's visibility or increase visibility of imported items
+
+warning: glob import doesn't reexport anything with visibility `pub` because no imported item is public enough
+  --> crates/fleet-queue/src/turso_queue.rs:59:9
+   |
+59 | pub use actions_exec::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+note: the most public imported item is `pub(crate)`
+  --> crates/fleet-queue/src/turso_queue.rs:59:9
+   |
+59 | pub use actions_exec::*;
+   |         ^^^^^^^^^^^^^^^
+   = help: reduce the glob import's visibility or increase visibility of imported items
+
+warning: glob import doesn't reexport anything with visibility `pub` because no imported item is public enough
+  --> crates/fleet-queue/src/turso_queue.rs:64:9
+   |
+64 | pub use label_enrich::*;
+   |         ^^^^^^^^^^^^^^^
+   |
+note: the most public imported item is `pub(crate)`
+  --> crates/fleet-queue/src/turso_queue.rs:64:9
+   |
+64 | pub use label_enrich::*;
+   |         ^^^^^^^^^^^^^^^
+   = help: reduce the glob import's visibility or increase visibility of imported items
+
+warning: glob import doesn't reexport anything with visibility `pub` because no imported item is public enough
+  --> crates/fleet-queue/src/turso_queue.rs:66:9
+   |
+66 | pub use placement_sessions::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^
+   |
+note: the most public imported item is `pub(crate)`
+  --> crates/fleet-queue/src/turso_queue.rs:66:9
+   |
+66 | pub use placement_sessions::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^
+   = help: reduce the glob import's visibility or increase visibility of imported items
+
+warning: glob import doesn't reexport anything with visibility `pub` because no imported item is public enough
+  --> crates/fleet-queue/src/turso_queue.rs:67:9
+   |
+67 | pub use repair::*;
+   |         ^^^^^^^^^
+   |
+note: the most public imported item is `pub(crate)`
+  --> crates/fleet-queue/src/turso_queue.rs:67:9
+   |
+67 | pub use repair::*;
+   |         ^^^^^^^^^
+   = help: reduce the glob import's visibility or increase visibility of imported items
+
+warning: `fleet-cert` (lib) generated 2 warnings (run `cargo fix --lib -p fleet-cert` to apply 1 suggestion)
+warning: unused import: `Read`
+ --> crates/fleet-queue/src/client/fallback_stack.rs:3:15
+  |
+3 | use std::io::{Read, Write};
+  |               ^^^^
+
+warning: unused import: `Read`
+ --> crates/fleet-queue/src/client/support.rs:3:15
+  |
+3 | use std::io::{Read, Write};
+  |               ^^^^
+
+warning: unused variable: `w`
+   --> crates/fleet-queue/src/fallback.rs:492:27
+    |
+492 |                     Some((w, activity)) => {
+    |                           ^ help: if this is intentional, prefix it with an underscore: `_w`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `gh`
+  --> crates/fleet-queue/src/placement/adapters.rs:33:39
+   |
+33 |     fn status(&self, session: &Value, gh: &dyn Gh) -> String {
+   |                                       ^^ help: if this is intentional, prefix it with an underscore: `_gh`
+
+warning: variable does not need to be mutable
+   --> crates/fleet-queue/src/turso_queue/lifecycle.rs:338:9
+    |
+338 |     let mut row: Value;
+    |         ----^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/fleet-queue/src/turso_queue/lifecycle.rs:339:9
+    |
+339 |     let mut id: i64;
+    |         ----^^
+    |         |
+    |         help: remove this `mut`
+
+warning: type `support::Args` is more private than the item `bare_list_note`
+   --> crates/fleet-queue/src/client/commands_query.rs:230:1
+    |
+230 | pub(crate) fn bare_list_note(args: &Args, resolved_queue: Option<&str>) -> Option<String> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ function `bare_list_note` is reachable at visibility `pub(crate)`
+    |
+note: but type `support::Args` is only usable at visibility `pub(in crate::client)`
+   --> crates/fleet-queue/src/client/support.rs:179:1
+    |
+179 | pub(super) struct Args {
+    | ^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: type `placement::Die` is more private than the item `placement::Gh::app_token`
+   --> crates/fleet-queue/src/placement.rs:322:5
+    |
+322 |     fn app_token(&self, repo: &str) -> R<String> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `placement::Gh::app_token` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `placement::Gh::api`
+   --> crates/fleet-queue/src/placement.rs:339:5
+    |
+339 |     fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `placement::Gh::api` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `placement::Gh::codespace_list`
+   --> crates/fleet-queue/src/placement.rs:341:5
+    |
+341 |     fn codespace_list(&self) -> R<Vec<Value>>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `placement::Gh::codespace_list` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `placement::Gh::codespace_ssh`
+   --> crates/fleet-queue/src/placement.rs:343:5
+    |
+343 |     fn codespace_ssh(&self, name: &str, command: &str) -> R<i32>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `placement::Gh::codespace_ssh` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `placement::Gh::codespace_ssh_capture`
+   --> crates/fleet-queue/src/placement.rs:346:5
+    |
+346 |     fn codespace_ssh_capture(&self, name: &str, command: &str) -> R<(i32, String)> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `placement::Gh::codespace_ssh_capture` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `decide`
+    --> crates/fleet-queue/src/placement.rs:1186:1
+     |
+1186 | / pub fn decide(
+1187 | |     registry: &Value,
+1188 | |     job: &Job,
+1189 | |     ctx: &Ctx,
+1190 | |     gh: &dyn Gh,
+1191 | | ) -> R<(Option<Box<dyn Adapter>>, Vec<String>)> {
+     | |_______________________________________________^ function `decide` is reachable at visibility `pub`
+     |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+    --> crates/fleet-queue/src/placement.rs:56:1
+     |
+  56 | struct Die(String);
+     | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `Adapter::dispatch`
+  --> crates/fleet-queue/src/placement/adapters.rs:32:5
+   |
+32 |     fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult>;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `Adapter::dispatch` is reachable at visibility `pub`
+   |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+  --> crates/fleet-queue/src/placement.rs:56:1
+   |
+56 | struct Die(String);
+   | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `<GithubActionsAdapter as Adapter>::dispatch`
+   --> crates/fleet-queue/src/placement/adapters.rs:559:5
+    |
+559 |     fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `<GithubActionsAdapter as Adapter>::dispatch` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `<BlacksmithAdapter as Adapter>::dispatch`
+   --> crates/fleet-queue/src/placement/adapters.rs:666:5
+    |
+666 |     fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `<BlacksmithAdapter as Adapter>::dispatch` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `<CodespaceAdapter as Adapter>::dispatch`
+   --> crates/fleet-queue/src/placement/adapters.rs:758:5
+    |
+758 |     fn dispatch(&self, job: &Job, gh: &dyn Gh) -> R<DispatchResult> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `<CodespaceAdapter as Adapter>::dispatch` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: type `placement::Die` is more private than the item `<LaptopAdapter as Adapter>::dispatch`
+   --> crates/fleet-queue/src/placement/adapters.rs:860:5
+    |
+860 |     fn dispatch(&self, _job: &Job, _gh: &dyn Gh) -> R<DispatchResult> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method `<LaptopAdapter as Adapter>::dispatch` is reachable at visibility `pub`
+    |
+note: but type `placement::Die` is only usable at visibility `pub(self)`
+   --> crates/fleet-queue/src/placement.rs:56:1
+    |
+ 56 | struct Die(String);
+    | ^^^^^^^^^^
+
+warning: function `find_task_row` is never used
+   --> crates/fleet-queue/src/client/commands_query.rs:221:15
+    |
+221 | pub(super) fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
+    |               ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `with_bin` is never used
+  --> crates/fleet-queue/src/client/fallback_stack.rs:32:19
+   |
+23 | impl GhRunner {
+   | ------------- associated function in this implementation
+...
+32 |     pub(super) fn with_bin(bin: impl Into<String>) -> Self {
+   |                   ^^^^^^^^
+
+warning: associated function `with_runner` is never used
+   --> crates/fleet-queue/src/client/fallback_stack.rs:123:19
+    |
+116 | impl GhCreator {
+    | -------------- associated function in this implementation
+...
+123 |     pub(super) fn with_runner(gh: GhRunner) -> Self {
+    |                   ^^^^^^^^^^^
+
+warning: function `disposition_record_in_comment` is never used
+    --> crates/fleet-queue/src/fallback.rs:1427:15
+     |
+1427 | pub(crate) fn disposition_record_in_comment(body: &str) -> Option<Value> {
+     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `worker` is never read
+    --> crates/fleet-queue/src/turso_queue/claim.rs:1874:16
+     |
+1871 | pub struct ClaimerCtx {
+     |            ---------- field in this struct
+...
+1874 |     pub(crate) worker: String,
+     |                ^^^^^^
+     |
+     = note: `ClaimerCtx` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `arg_json` is never used
+   --> crates/fleet-queue/src/turso_queue/core.rs:104:15
+    |
+104 | pub(crate) fn arg_json(v: &Value) -> Arg {
+    |               ^^^^^^^^
+
+warning: field `0` is never read
+  --> crates/fleet-queue/src/uds_http.rs:72:17
+   |
+72 | struct BindLock(std::fs::File);
+   |        -------- ^^^^^^^^^^^^^
+   |        |
+   |        field in this struct
+   |
+   = help: consider removing this field
+
+warning: function `read_request` is never used
+   --> crates/fleet-queue/src/uds_http.rs:284:4
+    |
+284 | fn read_request(stream: &mut UnixStream) -> Option<HttpRequest> {
+    |    ^^^^^^^^^^^^
+
+   Compiling atlas-embed v0.1.0 (/home/user/wt-actions-exec-3/pkgs/atlas-search/crates/atlas-embed)
+   Compiling atlas-core v0.1.0 (/home/user/wt-actions-exec-3/pkgs/atlas-search/crates/atlas-core)
+warning: `fleet-queue` (lib) generated 61 warnings (run `cargo fix --lib -p fleet-queue` to apply 32 suggestions)
+   Compiling fleet-search v0.1.0 (/home/user/wt-actions-exec-3/pkgs/fleet/crates/fleet-search)
+warning: function `run_with_provider` is never used
+    --> crates/fleet/src/gh.rs:1259:4
+     |
+1259 | fn run_with_provider<P: TokenProvider>(
+     |    ^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `EXIT_TRANSPORT` is never used
+  --> crates/fleet/src/actions.rs:90:7
+   |
+90 | const EXIT_TRANSPORT: i32 = 3;
+   |       ^^^^^^^^^^^^^^
+
+warning: enum `StampVerification` is never used
+   --> crates/fleet/src/gh_metadata.rs:441:10
+    |
+441 | pub enum StampVerification {
+    |          ^^^^^^^^^^^^^^^^^
+
+warning: function `verify_stamp` is never used
+   --> crates/fleet/src/gh_metadata.rs:454:8
+    |
+454 | pub fn verify_stamp(
+    |        ^^^^^^^^^^^^
+
+warning: struct `StoredRow` is never constructed
+   --> crates/fleet/src/gh_metadata.rs:923:12
+    |
+923 | pub struct StoredRow {
+    |            ^^^^^^^^^
+
+warning: method `get` is never used
+   --> crates/fleet/src/gh_metadata.rs:944:8
+    |
+942 | pub trait MetadataStore {
+    |           ------------- method in this trait
+943 |     fn insert(&self, record: &MetadataRecord) -> Result<(), String>;
+944 |     fn get(&self, artifact_id: &str) -> Result<Option<StoredRow>, String>;
+    |        ^^^
+
+warning: field `kind` is never read
+    --> crates/fleet/src/gh_metadata.rs:1251:9
+     |
+1250 | pub struct CreateIntent {
+     |            ------------ field in this struct
+1251 |     pub kind: &'static str,
+     |         ^^^^
+     |
+     = note: `CreateIntent` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `0` is never read
+    --> crates/fleet/src/gh_metadata.rs:1681:14
+     |
+1681 |     Inserted(CreatedItem),
+     |     -------- ^^^^^^^^^^^
+     |     |
+     |     field in this variant
+     |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+     |
+1681 -     Inserted(CreatedItem),
+1681 +     Inserted(()),
+     |
+
+warning: calls to `std::mem::drop` with a value that implements `Copy` does nothing
+    --> crates/fleet/src/gh.rs:1190:9
+     |
+1190 |         drop(fd);
+     |         ^^^^^--^
+     |              |
+     |              argument has type `BorrowedFd<'_>`
+     |
+     = note: `#[warn(dropping_copy_types)]` on by default
+help: use `let _ = ...` to ignore the expression or result
+     |
+1190 -         drop(fd);
+1190 +         let _ = fd;
+     |
+
+warning: call to `.clone()` on a reference in this situation does nothing
+  --> crates/fleet/src/gh_guard.rs:59:28
+   |
+59 |             item = Some(arg.clone());
+   |                            ^^^^^^^^ help: remove this redundant call
+   |
+   = note: the type `str` does not implement `Clone`, so calling `clone` on `&str` copies the reference, which does not do anything and can be removed
+   = note: `#[warn(noop_method_call)]` on by default
+
+warning: constant `EXIT_TRANSPORT` is never used
+  --> crates/fleet/src/actions.rs:90:7
+   |
+90 | const EXIT_TRANSPORT: i32 = 3;
+   |       ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `fleet` (bin "fleet") generated 10 warnings (run `cargo fix --bin "fleet" -p fleet` to apply 1 suggestion)
+warning: `fleet` (bin "fleet" test) generated 3 warnings (2 duplicates)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.32s
+     Running unittests src/main.rs (target/debug/deps/fleet-50985c6210b2e517)
+
+running 126 tests
+test commander::tests::pid_parses_from_start_reply ... ok
+test derived_version::tests::branch_class_defaults_detached_and_main_to_main ... ok
+test commander::tests::chunk_without_header_counts_lines ... ok
+test derived_version::tests::app_tag_parsing_is_scoped_to_the_app ... ok
+test commander::tests::chunk_parses_header_output_and_exit ... ok
+test derived_version::tests::derived_versions_have_at_most_one_plus ... ok
+test derived_version::tests::describe_parsing_handles_long_and_exact_forms ... ok
+test derived_version::tests::describe_round_trip_matches_the_policy_example ... ok
+test derived_version::tests::exact_tag_is_the_clean_release ... ok
+test derived_version::tests::feature_branch_adds_slug_metadata ... ok
+test derived_version::tests::main_after_tag_is_next_patch_dev ... ok
+test derived_version::tests::no_tag_falls_back_to_0_1_0_dev_form ... ok
+test derived_version::tests::slugify_sanitizes_branch_names ... ok
+test gh::tests::base64url_vectors ... ok
+test gh::tests::classify_failure_recognizes_refusals ... ok
+test gh::tests::audit_args_redact_secret_values ... ok
+test gh::tests::clustered_short_options_are_never_reads ... ok
+test gh::tests::hosts_yml_token_parse ... ok
+test gh::tests::personal_token_is_the_parsed_token_not_the_secret ... ok
+test gh::tests::raw_args_split ... ok
+test gh::tests::retry_gate_matches_the_rule ... ok
+test gh_cache::tests::live_entries_do_not_remint ... ok
+test gh::tests::successful_closure_binding_consumes_resolved_worktree_session ... ok
+test gh::tests::rotation_order_and_owner_hint ... ok
+test gh_cache::tests::expires_at_vectors ... ok
+test gh::tests::read_call_whitelist ... ok
+test gh_cache::tests::loopback_daemon_serves_the_client ... ok
+test gh_cache::tests::status_snapshot_leaks_no_names_or_values ... ok
+test gh_closure::tests::each_taxonomy_value_is_accepted ... ok
+test gh_cache::tests::serve_exits_3_when_it_cannot_bind ... ok
+test gh_closure::tests::close_without_reason_is_refused_with_policy_text ... ok
+test gh_cache::tests::serve_entry_point_stays_up_and_caches ... ok
+test gh_closure::tests::failed_session_resolution_never_falls_back_to_unvalidated_environment ... ok
+test gh_closure::tests::item_accepts_url_and_hash ... ok
+test gh_closure::tests::reason_becomes_the_close_comment ... ok
+fake gh output
+test gh_closure::tests::query_filters_by_item_number ... ok
+test gh_cache::tests::unknown_owner_names_the_owner ... ok
+test gh_closure::tests::other_gh_calls_are_not_intercepted ... ok
+test gh_closure::tests::resolved_fleet_session_id_precedes_opencode_for_provenance ... ok
+test gh_closure::tests::record_carries_item_reason_time_and_binding ... ok
+test gh_closure::tests::reopen_needs_no_reason_and_passes_through ... ok
+test gh::tests::raw_mode_runs_gh_without_token ... ok
+test gh_closure::tests::superseded_without_successor_is_refused ... ok
+test gh_closure::tests::unknown_reason_is_refused ... ok
+test gh_guard::tests::parses_close_and_done_label_and_strips_presented_record_flag ... ok
+test gh_guard::tests::matching_record_bypasses_but_other_records_do_not ... ok
+test gh_metadata::tests::assemble_from_no_block_injects_defaults ... ok
+test gh_metadata::tests::assemble_preserves_caller_fields_and_replaces_provenance ... ok
+test gh_metadata::tests::block_parse_accepts_and_preserves_surroundings ... ok
+test gh_metadata::tests::extract_indexes_strings_and_extras_the_rest ... ok
+test gh_metadata::tests::extract_numeric_queue_id_and_bad_parent_go_to_extras ... ok
+test gh_metadata::tests::finish_create_outcomes ... ok
+test gh_guard::tests::finds_only_matching_claimed_or_parked_tasks ... ok
+test gh_metadata::tests::intent_body_file_is_read_and_replaced_not_mutated ... ok
+test gh_metadata::tests::block_parse_refusals ... ok
+test gh_metadata::tests::intent_flag_values_are_not_mistaken_for_flags ... ok
+test gh_metadata::tests::intent_inline_body_forms ... ok
+test gh_metadata::tests::intent_passthrough_cases ... ok
+some unclassifiable failure
+test gh_metadata::tests::queue_record_maps_the_sessions_tasks ... ok
+test gh::tests::write_not_repeated_on_unknown_failure ... ok
+test gh_metadata::tests::rfc3339_known_values ... ok
+test gh_metadata::tests::block_parse_no_block_is_none ... ok
+test gh_metadata::tests::signer_rejects_bad_material ... ok
+test gh_metadata::tests::render_splices_in_place_and_appends ... ok
+GraphQL: Could not resolve to a node with the global id of PVT_kwHOA123
+test gh_metadata::tests::parse_created_url_forms ... ok
+test gh_metadata::tests::store_refuses_a_shapeless_record ... ok
+test secrets::tests::get_help_forms_name_the_get_usage ... ok
+test secrets::tests::list_help_forms_name_the_list_usage ... ok
+test secrets::tests::non_help_arguments_ask_for_no_usage ... ok
+test secrets::tests::write_line_keeps_other_errors_loud ... ok
+test secrets::tests::write_line_maps_broken_pipe_to_quiet_outcome ... ok
+test secrets::tests::write_line_reports_success ... ok
+test session_state::tests::bind_parser_owns_and_validates_its_arguments ... ok
+test gh_metadata::tests::pm_metadata_version_conformance_fixtures ... ok
+test session_state::tests::explicit_and_environment_values_do_not_read_an_invalid_marker ... ok
+test session_state::tests::explicit_argument_wins_over_both_environments_and_pwd_file ... ok
+test gh_metadata::tests::provenance_stamps_the_full_set ... ok
+fake gh output
+test session_state::tests::fleet_env_precedes_opencode_env_and_pwd_file ... ok
+test session_state::tests::git_spawn_failure_means_no_discoverable_worktree ... ok
+test session_state::tests::invalid_bind_does_not_invoke_session_initialization ... ok
+test gh::tests::failover_on_rate_limit ... ok
+test session_state::tests::invalid_environment_and_marker_ids_fail_closed ... ok
+test session_state::tests::marker_is_used_only_when_live_and_stale_marker_is_explicit ... ok
+test session_state::tests::no_worktree_still_resolves_environment_identity ... ok
+test session_state::tests::opencode_url_resolution_matches_fleet_queue_contract ... ok
+test session_state::tests::supplied_identity_is_persisted_for_a_later_bare_invocation ... ok
+test session_state::tests::opencode_env_precedes_pwd_file ... ok
+test session_state::tests::session_record_requires_matching_non_archived_json ... ok
+test session_state::tests::whitespace_values_are_absent ... ok
+test tests::builtin_help_flags_print_usage_instead_of_erroring ... ok
+test tests::broker_roles_reject_trailing_args_through_serve_and_argv0_aliases ... ok
+test tests::help_flag_after_a_serve_role_asks_for_domain_help ... ok
+test tests::help_flag_positions_for_other_domains_are_unchanged ... ok
+test tests::malformed_serve_list_does_not_resolve_session_state ... ok
+test tests::proxy_serve_args_classify_help_and_reject_strays ... ok
+test tests::proxy_connect_and_init_help_exit_ok ... ok
+test tests::proxy_ssh_rejects_missing_option_operands_and_second_separator ... ok
+test tests::proxy_ssh_builds_pinned_argv_and_preserves_remote_arguments ... ok
+test tests::proxy_ssh_splits_clustered_options_and_operands ... ok
+test tests::proxy_ssh_uses_connect_capability_and_explicit_separator ... ok
+test tests::malformed_proxy_init_does_not_resolve_session_state_twice ... ok
+test tests::root_help_rejects_arguments_after_the_domain_name ... ok
+test tests::root_builtins_reject_trailing_arguments ... ok
+test tests::search_serve_is_one_role_in_both_spellings ... ok
+test tests::root_init_help_and_extra_args_return_before_session_resolution ... ok
+test tests::serve_broker_role_help_prints_the_role_usage ... ok
+test tests::serve_list_help_prints_domain_help_instead_of_erroring ... ok
+test tests::serve_list_leaves_single_role_invocations_alone ... ok
+test tests::serve_list_parses_two_or_more_distinct_roles ... ok
+test tests::serve_set_covers_every_serve_token ... ok
+test tests::serve_list_rejects_duplicates_and_stray_tokens ... ok
+test tests::shell_help_prints_the_shell_usage ... ok
+test gh_metadata::tests::golden_native_vector_byte_exact ... ok
+test invocation_ledger::tests::appends_versioned_records_and_rotates ... ok
+fake gh output
+test gh_metadata::tests::verify_stamp_outcomes ... ok
+test gh::tests::write_not_repeated_on_node_resolution_failure ... ok
+test gh_metadata::tests::golden_hosted_vector_byte_exact ... ok
+test session_state::tests::session_id_format_accepts_only_nonempty_ascii_alphanumeric_suffix ... ok
+test gh::tests::audit_records_append_whole_lines ... ok
+test tests::queue_domain_version_rejects_trailing_arguments ... ok
+test gh_cache::tests::concurrent_miss_mints_once ... ok
+test gh::graphql_read_props::typed_placeholders_are_never_reads ... ok
+test gh::graphql_read_props::raw_read_documents_are_reads ... ok
+test gh::graphql_read_props::generated_writes_are_never_reads ... ok
+test gh::graphql_read_props::a_second_query_field_or_input_is_never_a_read ... ok
+test gh_metadata::tests::store_round_trips_the_full_record ... ok
+
+test result: ok. 126 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+     Running tests/invocation_ledger.rs (target/debug/deps/invocation_ledger-c75eed4a91827573)
+
+running 1 test
+test entry_path_records_success_usage_error_and_config_failure_once ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/proxy_ssh.rs (target/debug/deps/proxy_ssh-d50eabf6a2deccf5)
+
+running 1 test
+test proxy_ssh_execs_system_ssh_with_fixed_argv_and_stdio ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/search_serve.rs (target/debug/deps/search_serve-9964707af109a9a8)
+
+running 7 tests
+test the_registry_no_longer_calls_the_search_role_a_later_step ... ok
+test serve_without_a_role_names_search_among_the_roles ... ok
+test serve_search_help_prints_the_roles_own_usage ... ok
+test serve_search_with_a_missing_config_is_a_usage_failure_before_any_backend ... ok
+test the_fleet_serve_name_keeps_the_role_in_its_profile ... ok
+test the_atlas_search_argv0_serve_spelling_runs_the_same_role ... ok
+test serve_search_rejects_unknown_flags_including_any_backend_selector ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (target/debug/deps/fleet_registry-4317118a55c23167)
+
+running 5 tests
+test tests::domain_aliases_match_the_argv0_map ... ok
+test tests::aliases_route_to_real_domains ... ok
+test tests::capability_ids_are_unique_and_stable ... ok
+test tests::every_domain_primary_is_in_its_surface ... ok
+test tests::variant_profiles_nest ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/pmo_operator_docs.rs (target/debug/deps/pmo_operator_docs-75bdda6736f5ae96)
+
+running 1 test
+test pmo_operator_docs_match_registered_help_inventory ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests fleet_registry
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

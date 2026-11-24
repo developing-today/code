@@ -6,12 +6,17 @@
 // its result companion) on the same pattern. Everything underneath
 // (GitHub, Kaneo, Grist) stays read-only from here — the fleet jobs
 // apply actions; the dashboard only records them.
-import { readFile, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { createQuotaRefresher, systemdTrigger } from "./quota-refresh.ts";
+import { startPmCoreJobs } from "./pm-core-jobs.ts";
 import { buildQuotaAnalytics, primeAttemptAggregates, type QuotaAnalytics } from "./analytics-store.ts";
 import { decodePathSegment } from "./path-segment.ts";
 import { errorBoundaryResponse, notFoundResponse } from "./error-boundary.ts";
-import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction } from "./actions.ts";
+import { ACTION_STATES, ActionsStore, validateNewAction, type DashAction, type NewAction } from "./actions.ts";
 import {
   checkActionAgainstItem,
   effectiveNeedsOrder,
@@ -26,7 +31,15 @@ import {
   queuedComments,
   validateNewComment,
 } from "./comments.ts";
-import { PROMPT_STATUSES, PromptsStore, validateNewPrompt, type PromptStatus } from "./prompts.ts";
+import { PROMPT_STATUSES, PromptsStore, syncBlockHttpResult, validateNewPrompt, type PromptStatus } from "./prompts.ts";
+import { createPromptWsSession, type PromptWsSession } from "./prompt-ws.ts";
+import {
+  PromptAttachmentsStore,
+  readMultipartForm,
+  submissionFieldsFromForm,
+  uploadedFilesFromForm,
+  type PromptAttachment,
+} from "./prompt-attachments.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
@@ -35,6 +48,7 @@ import { FreshnessStore, type FreshnessInput } from "./freshness.ts";
 import { createFreshnessIpcHandler } from "./freshness-ipc.ts";
 import { freshnessDeliveryResponse } from "./freshness-delivery.ts";
 import { fleetFeedRevisionReader, FreshnessReconciler } from "./freshness-reconcile.ts";
+import { startPmCoreSchedulers } from "./pm-core-wiring.ts";
 import {
   IngestionStore,
   WatchdogEpisodeStabilizer,
@@ -47,9 +61,23 @@ import {
   type ActivitySourceStatus,
 } from "./activity.ts";
 import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
+import { FileOutcomeBindingSource, GithubOutcomeConsumer } from "./outcome-consumer.ts";
+import { buildOutcomeView, drillOutcomeFacts, type OutcomeDrillSelector } from "./outcome-view.ts";
+import { OutcomeFactStore } from "./outcome-attribution.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
+import { BreakGlassTokenStore, authorizeWithBreakGlassToken, presentedBreakGlassToken } from "./break-glass.ts";
+import {
+  OutageQueueStore,
+  confirmOutageWrite,
+  isStackLocalAddress,
+  outageQueueEligible,
+  queueOutageWrite,
+  rejectOutageWrite,
+  type OutageQueuedWrite,
+} from "./outage-queue.ts";
+import { STACK_TOKEN_TTL_SECONDS, mintStackToken, type StackTokenRole } from "./stack-token.ts";
 import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
   computeCoverage,
@@ -177,6 +205,7 @@ import {
   renderOverview,
   renderOverviewBody,
   renderOverviewShell,
+  renderChat,
   renderCommentsQueue,
   renderPages,
   renderProgram,
@@ -201,6 +230,7 @@ import { buildBriefs } from "./brief.ts";
 import { buildDigest, listDigestArchives, readDigestArchive, type Digest, type DigestKind } from "./digest.ts";
 import { timingSafeEqual } from "node:crypto";
 import {
+  classEnabled,
   getAlertsStore,
   requestAlertTick,
   sendClassTestPush,
@@ -209,9 +239,14 @@ import {
   toPublicSubscription,
   validateNewIncident,
   validateNewSubscription,
+  type PushPayload,
 } from "./alerts.ts";
-import { recordSwProbe, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { recordSwProbe, sendPush, swProbeSummary, VAPID_PUBLIC_KEY } from "./push.ts";
+import { notifyPromptCompletion, promptCompletionTransition } from "./prompt-notify.ts";
+import { requestNotifyRelaySubscriptionSync, startNotifyRelay } from "./notify-relay.ts";
 import { resolveBwsSecret, resolveBwsSecretLookup } from "./secrets.ts";
+import { openMetadataStore, type EpicSlugMap, type IngestionItem } from "./metadata-ingestion.ts";
+import { createMetadataWebhookHandler } from "./webhook-listener.ts";
 import { SW_SOURCE } from "./sw-source.ts";
 import { renderAlerts, renderNotificationPreferences, renderNotifications, renderDigest, esc } from "./render.ts";
 import type { QueueSnapshot } from "./queue.ts";
@@ -241,6 +276,9 @@ import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { watchdogHeartbeatLine } from "./watchdog-heartbeat.ts";
 import { createWatchdogHeartbeatRecorder, finishWatchdogGapSync } from "./watchdog-runner.ts";
+import type { EscalationSink } from "./escalation.ts";
+import { createEscalationTicker, escalationDelivery, escalationJournalLine } from "./escalation-tick.ts";
+import { emptyState } from "./remediation.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
 import {
@@ -281,6 +319,7 @@ const cfg = loadConfig();
 // the first request after a deploy serves it instead of a 503.
 const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
 const promptsStore = new PromptsStore(cfg.promptsFile);
+const promptAttachmentsStore = new PromptAttachmentsStore(cfg.promptAttachmentsDir);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
@@ -381,6 +420,29 @@ const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const reportRecordsLocation = storeRemotes?.aaLastGood ?? defaultReportRecordsFile();
 const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
+const breakGlassTokenStore = new BreakGlassTokenStore(cfg.breakGlassFile);
+const outageQueueStore = new OutageQueueStore(cfg.outageQueueFile);
+
+/**
+ * #9608 (design #1253 section 6): the outage-queueing gate for action
+ * writes whose Access verification failed. Queueing engages only on
+ * the enforcer's 401 (verification failed — a 403 is a verified
+ * identity contradicting the claim, not an outage), only from a
+ * stack-local peer address, and only for eligible writes; anything
+ * else returns null and the caller serves the enforcer's refusal
+ * exactly as before. Throws when the queue/audit write itself fails —
+ * callers map that to a 500 (fail closed: nothing was queued).
+ */
+async function tryQueueOutageAction(
+  action: NewAction,
+  accessStatus: number,
+  remoteAddress: string | undefined,
+): Promise<{ record: OutageQueuedWrite; created: boolean } | null> {
+  if (accessStatus !== 401) return null;
+  if (!isStackLocalAddress(remoteAddress)) return null;
+  if (!outageQueueEligible(action)) return null;
+  return queueOutageWrite({ store: outageQueueStore, events: eventsStore, action });
+}
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 
 /** #3976: the 5-minute anti-entropy reconciler over the freshness
@@ -397,6 +459,20 @@ const githubHotListConsumer =
         token: cfg.projector.apiToken,
         store: activityStore,
         events: eventsStore,
+      })
+    : null;
+
+/** #10910: the outcome consumer rides the same sweep as the hot-list
+ *  consumer, under its own projector checkpoint: it projects each fixed
+ *  high-water into the append-only outcome-fact ledger, joining events
+ *  to jobs/sessions/models only through the binding records. */
+const githubOutcomeConsumer =
+  cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
+    ? new GithubOutcomeConsumer({
+        baseUrl: cfg.projector.baseUrl,
+        token: cfg.projector.apiToken,
+        store: new OutcomeFactStore(cfg.outcomeFile),
+        bindings: new FileOutcomeBindingSource(cfg.outcomeBindingsFile),
       })
     : null;
 
@@ -2147,11 +2223,92 @@ async function digestContext(kind: DigestKind): Promise<Digest> {
 
 const GRAINS = new Set<string>(["quarter", "month", "week", "3d", "today"]);
 
-async function handler(req: Request): Promise<Response> {
+function runMetadataFleet(args: string[], input?: string): Promise<string> {
+  const fleetBin = process.env.FLEET_BIN ?? "fleet";
+  return new Promise((resolve, reject) => {
+    const child = execFile(fleetBin, args, { maxBuffer: 64 * 1024 * 1024, timeout: 60_000 }, (error, stdout) =>
+      error ? reject(new Error(`fleet ${args[0]} failed: ${(error as Error).message}`)) : resolve(stdout),
+    );
+    if (input !== undefined && child.stdin) {
+      child.stdin.write(input);
+      child.stdin.end();
+    }
+  });
+}
+
+async function withMetadataTempFile<T>(prefix: string, content: string, run: (path: string) => Promise<T>): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  const path = join(directory, "payload.json");
+  try {
+    await writeFile(path, content, { mode: 0o600 });
+    return await run(path);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+const metadataDbPath =
+  process.env.PM_METADATA_DB_PATH ?? join(homedir(), ".local/state/pm-aggregator/pm-metadata.sqlite");
+const metadataDb = openMetadataStore(metadataDbPath, (path) => new Database(path));
+const metadataWebhookHandler = createMetadataWebhookHandler({
+  secret: () => resolveBwsSecret("pm-aggregator.github-webhook-secret"),
+  db: metadataDb,
+  epicSlugs: async (item: IngestionItem): Promise<EpicSlugMap> => {
+    const output = await runMetadataFleet([
+      "gh",
+      "issue",
+      "list",
+      "--repo",
+      item.repo,
+      "--state",
+      "all",
+      "--limit",
+      "1000",
+      "--json",
+      "number,labels",
+    ]);
+    const rows: unknown = JSON.parse(output);
+    if (!Array.isArray(rows)) throw new Error(`unexpected epic list shape for ${item.repo}`);
+    const slugs: EpicSlugMap = new Map();
+    for (const row of rows as { number?: unknown; labels?: ({ name?: unknown } | string)[] }[]) {
+      if (!Number.isSafeInteger(row.number) || (row.number as number) < 1) continue;
+      const labels = (row.labels ?? []).map((label) => (typeof label === "string" ? label : String(label.name ?? "")));
+      if (!labels.includes("kind/epic")) continue;
+      for (const label of labels) {
+        const slug = /^epic\/(.+)$/.exec(label)?.[1]?.trim().toLowerCase();
+        if (slug && !slugs.has(slug)) slugs.set(slug, { repo: item.repo, number: row.number as number });
+      }
+    }
+    return slugs;
+  },
+  writeBack: async (item, body) => {
+    await withMetadataTempFile("pm-metadata-webhook-", body, async (path) => {
+      await runMetadataFleet([
+        "gh",
+        item.kind === "issue" ? "issue" : "pr",
+        "edit",
+        String(item.number),
+        "--repo",
+        item.repo,
+        "--body-file",
+        path,
+      ]);
+    });
+  },
+  enqueueTriage: async (packet) => {
+    await withMetadataTempFile("pm-metadata-triage-", JSON.stringify(packet, null, 2), async (path) => {
+      await runMetadataFleet(["queue", "enqueue", path, "--queue", "repo-health-code-pilot"]);
+    });
+  },
+});
+
+async function handler(req: Request, remoteAddress?: string): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const prov = () => source.provenance();
   const provDetail = () => source.provenanceDetail?.();
+
+  if (path === "/webhooks/github") return metadataWebhookHandler(req);
 
   if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
     try {
@@ -2384,10 +2541,26 @@ async function handler(req: Request): Promise<Response> {
   ) {
     const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
     if (!access.ok) return json({ error: access.error }, access.status);
-    if (!access.verified || access.author.kind !== "drew") {
-      return json({ error: "verified Access owner required" }, 403);
+    let auditActor: string;
+    if (access.verified && access.author.kind === "drew") {
+      // Access-verified owner proceeds exactly as before; a presented
+      // break-glass token is never touched on this path.
+      auditActor = access.identity?.sub || access.identity?.email || access.author.id;
+    } else {
+      // #9608: the Access/IdP-outage path. A presented single-use
+      // break-glass token is consumed atomically (with its audit
+      // event) and authorizes exactly this one admin request;
+      // anything invalid — or no token at all — fails closed.
+      const presented = presentedBreakGlassToken(req);
+      if (!presented) return json({ error: "verified Access owner required" }, 403);
+      const grant = await authorizeWithBreakGlassToken({
+        store: breakGlassTokenStore,
+        events: eventsStore,
+        token: presented,
+      });
+      if (!grant.ok) return json({ error: grant.error }, 403);
+      auditActor = grant.auditActor;
     }
-    const auditActor = access.identity?.sub || access.identity?.email || access.author.id;
     if (req.method === "GET") return json({ registry: await identityRegistryStore.list() });
     try {
       const body = await readJsonBody(req);
@@ -2437,6 +2610,39 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
+  // #9605: exchange the already-verified Access identity for a short-lived
+  // layer-scoped token. The target and action are request metadata; the
+  // principal and role always come from verified Access + the registry.
+  if (req.method === "POST" && path === "/api/stack-token/exchange") {
+    const access = await enforceAccessAuthor(req, { kind: "agent", id: "exchange", label: "exchange" });
+    if (!access.ok) return json({ error: access.error }, access.status);
+    if (!access.verified || !access.identity) return json({ error: "verified Access identity required" }, 403);
+    const secret = cfg.stackTokenSecret;
+    if (!secret) return json({ error: "stack token exchange is not configured" }, 503);
+    const identity = access.identity.sub || access.identity.email;
+    const role: StackTokenRole =
+      access.author.kind === "drew" ? "owner" : await identityRegistryStore.roleFor(identity);
+    if (role === "read-only") return json({ error: "identity role cannot mint write tokens" }, 403);
+    try {
+      const body = await readJsonBody(req);
+      const target =
+        typeof body === "object" && body !== null && typeof (body as { target?: unknown }).target === "string"
+          ? (body as { target: string }).target.trim()
+          : "";
+      const action =
+        typeof body === "object" && body !== null && typeof (body as { action?: unknown }).action === "string"
+          ? (body as { action: string }).action.trim()
+          : "";
+      if (!["kaneo", "pad", "grist"].includes(target))
+        return json({ error: "target must be kaneo, pad, or grist" }, 400);
+      if (!/^[A-Za-z][A-Za-z0-9._:-]{0,63}$/.test(action)) return json({ error: "action is invalid" }, 400);
+      const token = mintStackToken({ sub: identity, role, aud: target, act: action }, secret);
+      return json({ token, tokenType: "Bearer", audience: target, expiresIn: STACK_TOKEN_TTL_SECONDS });
+    } catch (error) {
+      return json({ error: `stack token exchange failed: ${error instanceof Error ? error.message : error}` }, 400);
+    }
+  }
+
   // --- Dashboard comment writes (#906 §2) --------------------------------
   if (req.method === "POST" && path === "/api/roadmap/annotations") {
     try {
@@ -2482,11 +2688,55 @@ async function handler(req: Request): Promise<Response> {
   }
 
   if (req.method === "POST" && path === "/api/prompt") {
-    const parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
-    if (!parsed.ok) return json({ error: parsed.error }, 400);
+    // #10036 S7 (design #9539 §3.2/§6): a multipart submission carries
+    // file parts under "attachments"; its text fields are shaped into
+    // the same JSON body the validator accepts, the files are persisted
+    // to the attachments dir first, and the record carries their
+    // storage refs. The JSON path is unchanged.
+    let savedAttachments: PromptAttachment[] = [];
+    let parsed: ReturnType<typeof validateNewPrompt>;
+    if ((req.headers.get("content-type") ?? "").startsWith("multipart/form-data")) {
+      let form: FormData;
+      try {
+        form = await readMultipartForm(req);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return json({ error: `invalid multipart body: ${message}` }, message === "body too large" ? 413 : 400);
+      }
+      try {
+        parsed = validateNewPrompt(submissionFieldsFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      try {
+        savedAttachments = await promptAttachmentsStore.saveAll(await uploadedFilesFromForm(form));
+      } catch (err) {
+        return json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+      if (savedAttachments.length > 0) parsed.value.attachments = savedAttachments;
+    } else {
+      parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+    }
     try {
-      return json({ prompt: await promptsStore.add(parsed.value) }, 201);
+      const record = await promptsStore.add(parsed.value);
+      // #10033 S3 (design §3.5/§3.7): a sync-block submission waits
+      // in-band for the answer and returns it in the response body,
+      // bounded by the configured timeout. Async returns the record
+      // immediately, and so does sync-ws — its callers then open the
+      // /ws/prompt/:id channel named by the returned id.
+      if (parsed.value.mode === "sync-block") {
+        const wait = await promptsStore.waitForAnswer(record.id, { timeoutMs: cfg.promptSyncTimeoutMs });
+        const result = syncBlockHttpResult(wait, cfg.promptSyncTimeoutMs);
+        return json(result.body, result.status);
+      }
+      return json({ prompt: record }, 201);
     } catch (err) {
+      // A submission that failed to persist must not orphan its blobs.
+      for (const attachment of savedAttachments) {
+        await promptAttachmentsStore.remove(attachment.ref).catch(() => {});
+      }
       return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
     }
   }
@@ -2523,6 +2773,35 @@ async function handler(req: Request): Promise<Response> {
     prompts.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     return json({ prompts });
   }
+  if (req.method === "GET" && path.startsWith("/api/prompt/") && path.includes("/attachments/")) {
+    // #10036 S7: fetch one attachment blob by its storage ref. The ref
+    // must be carried by the named prompt's record — a ref alone is not
+    // a capability — and the store revalidates the ref's shape before
+    // resolving it. Served as a download (never inline) with nosniff,
+    // so an uploaded HTML file cannot render as a stack page.
+    const rest = decodeURIComponent(path.slice("/api/prompt/".length));
+    const segments = rest.split("/");
+    if (segments.length !== 3 || segments[1] !== "attachments") {
+      return json({ error: "prompt not found" }, 404);
+    }
+    const [id, , ref] = segments;
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    if (!prompt.attachments.some((a) => a.ref === ref)) {
+      return json({ error: "attachment not found" }, 404);
+    }
+    const found = await promptAttachmentsStore.read(ref);
+    if (!found) return json({ error: "attachment not found" }, 404);
+    return new Response(found.bytes, {
+      headers: {
+        "content-type": found.meta.contentType,
+        "content-length": String(found.bytes.byteLength),
+        "content-disposition": `attachment; filename="${found.meta.name.replace(/"/g, "")}"; filename*=UTF-8''${encodeURIComponent(found.meta.name)}`,
+        "x-content-type-options": "nosniff",
+        "cache-control": "private, no-store",
+      },
+    });
+  }
   if (req.method === "GET" && path.startsWith("/api/prompt/")) {
     const rest = decodeURIComponent(path.slice("/api/prompt/".length));
     if (rest === "thread" || rest.startsWith("thread/")) {
@@ -2541,6 +2820,7 @@ async function handler(req: Request): Promise<Response> {
       read: prompt.read,
       replyTo: prompt.replyTo,
       refs: prompt.refs,
+      attachments: prompt.attachments,
     });
   }
   if (req.method === "PATCH" && path.startsWith("/api/prompt/")) {
@@ -2561,8 +2841,24 @@ async function handler(req: Request): Promise<Response> {
     if (typeof b.read === "boolean") patch.read = b.read;
     if (Array.isArray(b.refs) && b.refs.every((x) => typeof x === "string")) patch.refs = b.refs as string[];
     if (b.replyTo === null || typeof b.replyTo === "string") patch.replyTo = b.replyTo as string | null;
+    const before = await promptsStore.get(id);
     const updated = await promptsStore.update(id, patch);
     if (!updated) return json({ error: "prompt not found" }, 404);
+    // #10035 S6 (design #9539 §4): push on async completion, opt-in
+    // per submission (the record's notify flag). Answers land only
+    // through this route, so the terminal transition is detected
+    // here; the send is fire-and-forget — a push failure must never
+    // fail the answer itself.
+    if (promptCompletionTransition(before, updated)) {
+      void (async () => {
+        const store = await getAlertsStore();
+        if (store) await notifyPromptCompletion(store, updated, cfg.publicOrigin);
+      })().catch((err) => {
+        console.error(
+          `[prompt-notify] completion push failed for ${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
     return json({ prompt: updated });
   }
   if (req.method === "POST" && path === "/api/comments") {
@@ -2637,7 +2933,31 @@ async function handler(req: Request): Promise<Response> {
       // #1253 slice: gate every action write, including non-triage and
       // preference actions, on the configured Access identity.
       const actionAccess = await enforceAccessAuthor(req, parsed.value.author);
-      if (!actionAccess.ok) return json({ error: actionAccess.error }, actionAccess.status);
+      if (!actionAccess.ok) {
+        // #9608 (design #1253 section 6): during an Access/IdP outage
+        // an eligible write from the stack-local network queues as an
+        // unverified claim (provenance: outage-queued) instead of
+        // failing — held out of the actions store until its claimant
+        // confirms it with a fresh login. Anything else keeps the
+        // enforcer's refusal, byte-identical to before.
+        try {
+          const queued = await tryQueueOutageAction(parsed.value, actionAccess.status, remoteAddress);
+          if (queued) {
+            return json(
+              {
+                queued: true,
+                provenance: "outage-queued",
+                queue: queued.record,
+                ...(queued.created ? {} : { deduped: true }),
+              },
+              202,
+            );
+          }
+        } catch (err) {
+          return json({ error: `outage queueing failed: ${err instanceof Error ? err.message : err}` }, 500);
+        }
+        return json({ error: actionAccess.error }, actionAccess.status);
+      }
       parsed.value.author = actionAccess.author;
       // #1291/#1293: checks that need the currently published item —
       // option/survey membership, required-question coverage, proposal
@@ -2749,6 +3069,9 @@ async function handler(req: Request): Promise<Response> {
         ok: boolean;
         action?: unknown;
         deduped?: boolean;
+        // #9608: set when the item outage-queued instead of recording.
+        queued?: boolean;
+        queueId?: string;
         error?: string;
       }[] = [];
       // One enforcer for the whole batch: the request's JWT is
@@ -2766,6 +3089,31 @@ async function handler(req: Request): Promise<Response> {
         }
         const batchAccess = await enforceBatchAuthor(parsed.value.author);
         if (!batchAccess.ok) {
+          // #9608: the single-action outage posture, per item — an
+          // eligible item queues as an unverified claim; the rest of
+          // the batch is unaffected.
+          try {
+            const queued = await tryQueueOutageAction(parsed.value, batchAccess.status, remoteAddress);
+            if (queued) {
+              results.push({
+                index,
+                objectRef,
+                ok: true,
+                queued: true,
+                queueId: queued.record.id,
+                ...(queued.created ? {} : { deduped: true }),
+              });
+              continue;
+            }
+          } catch (err) {
+            results.push({
+              index,
+              objectRef,
+              ok: false,
+              error: `outage queueing failed: ${err instanceof Error ? err.message : err}`,
+            });
+            continue;
+          }
           results.push({ index, objectRef, ok: false, error: batchAccess.error });
           continue;
         }
@@ -2833,6 +3181,106 @@ async function handler(req: Request): Promise<Response> {
       return updated ? json({ action: updated }) : json({ error: "no such action" }, 404);
     } catch (err) {
       return json({ error: `invalid result: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  // --- Outage-queued action writes (#9608, design #1253 section 6) ---
+  // Queued writes appear ONLY on this read surface, stamped
+  // outage-queued with the claimed author kept a claim — never in
+  // /api/actions.json — until the claimant confirms one with a fresh
+  // verified login (confirm) or it is rejected (reject).
+  if (path === "/api/actions/outage-queue.json") {
+    const state = url.searchParams.get("state");
+    if (state && state !== "queued" && state !== "confirmed" && state !== "rejected") {
+      return json({ error: "state must be one of: queued, confirmed, rejected" }, 400);
+    }
+    let list = await outageQueueStore.list();
+    if (state) list = list.filter((w) => w.state === state);
+    return json({ queue: list });
+  }
+  if (req.method === "POST" && path === "/api/actions/outage-queue/confirm") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown };
+      if (typeof body.id !== "string" || body.id === "") return json({ error: "id required" }, 400);
+      const record = await outageQueueStore.get(body.id);
+      if (!record) return json({ error: "no such outage-queued write" }, 404);
+      // Confirmation IS a fresh login: the enforcer must succeed with
+      // a verified identity. The claimed author rides as the asserted
+      // author, so a verified non-owner presenting an owner claim is
+      // refused by the enforcer itself, exactly as on a fresh write.
+      const access = await enforceAccessAuthor(req, record.claimedAuthor);
+      if (!access.ok) return json({ error: access.error }, access.status);
+      if (!access.verified) {
+        return json({ error: "identity confirmation requires a fresh verified login" }, 403);
+      }
+      const result = await confirmOutageWrite({
+        store: outageQueueStore,
+        events: eventsStore,
+        id: record.id,
+        derivedAuthor: access.author,
+        release: async (action) => {
+          // The released write passes the same published-item checks
+          // as a fresh POST /api/actions (see that route): the item
+          // may have changed while the write sat in the queue.
+          if (action.kind === "triage") {
+            const section = await source.orchestration().catch(() => null);
+            let item: ReturnType<typeof findTierItem>;
+            if (section) {
+              item = findTierItem(section, action.objectRef);
+              const problem = checkActionAgainstItem(action, item, Date.now());
+              if (problem) return { ok: false as const, status: 400, error: problem };
+            }
+            if (action.verb === "answer" && action.payload.optionId) {
+              action.payload.questionId = questionIdForOption(item, action.payload.optionId) ?? "$options";
+            }
+          }
+          try {
+            const added = await actionsStore.add(action);
+            if (added.duplicateOf) {
+              return {
+                ok: false as const,
+                status: 409,
+                error: `duplicate answer recorded as ${added.action.id}; it points to existing answer action ${added.duplicateOf}`,
+              };
+            }
+            return { ok: true as const, actionId: added.action.id };
+          } catch (err) {
+            return {
+              ok: false as const,
+              status: 500,
+              error: `action persistence failed: ${err instanceof Error ? err.message : err}`,
+            };
+          }
+        },
+      });
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({ confirmed: true, queue: result.record, actionId: result.actionId });
+    } catch (err) {
+      return json({ error: `invalid confirmation: ${err instanceof Error ? err.message : err}` }, 400);
+    }
+  }
+  if (req.method === "POST" && path === "/api/actions/outage-queue/reject") {
+    try {
+      const body = (await readJsonBody(req)) as { id?: unknown };
+      if (typeof body.id !== "string" || body.id === "") return json({ error: "id required" }, 400);
+      const record = await outageQueueStore.get(body.id);
+      if (!record) return json({ error: "no such outage-queued write" }, 404);
+      // Same fresh-login gate as confirm; rejectOutageWrite owns the
+      // claimant/owner authorization for the rejection itself.
+      const access = await enforceAccessAuthor(req, record.claimedAuthor);
+      if (!access.ok) return json({ error: access.error }, access.status);
+      if (!access.verified) {
+        return json({ error: "rejecting a queued write requires a fresh verified login" }, 403);
+      }
+      const result = await rejectOutageWrite({
+        store: outageQueueStore,
+        events: eventsStore,
+        id: record.id,
+        derivedAuthor: access.author,
+      });
+      if (!result.ok) return json({ error: result.error }, result.status);
+      return json({ rejected: true, queue: result.record, byOwner: result.byOwner });
+    } catch (err) {
+      return json({ error: `invalid rejection: ${err instanceof Error ? err.message : err}` }, 400);
     }
   }
   if (path === "/api/events.json") {
@@ -3200,6 +3648,53 @@ async function handler(req: Request): Promise<Response> {
     return json({
       generatedAt: new Date().toISOString(),
       ...computeFlowAnalytics(cutoffs),
+    });
+  }
+
+  if (path === "/api/outcomes.json") {
+    // #10910: the outcome/rollup view over the append-only outcome-fact
+    // ledger (outcome-view.ts) — totals plus per-job/model/session
+    // groups, with drill-through (?drill=job&key=..., ?drill=session&key=...,
+    // ?drill=model&provider=...&model=..., ?drill=issue&ref=...,
+    // ?drill=unattributed&reason=...) returning the exact facts behind
+    // an aggregate, each with its canonical source URL. A corrupt
+    // ledger is an explicit error, never an empty view: a gap in the
+    // evidence must not render as zero activity.
+    let outcomeFacts: Awaited<ReturnType<OutcomeFactStore["readFacts"]>>;
+    try {
+      outcomeFacts = await new OutcomeFactStore(cfg.outcomeFile).readFacts();
+    } catch {
+      return json({ error: "outcome_fact_store_corrupt" }, 500);
+    }
+    const drill = url.searchParams.get("drill");
+    if (drill === null) {
+      return json({ generatedAt: new Date().toISOString(), ...buildOutcomeView(outcomeFacts) });
+    }
+    let selector: OutcomeDrillSelector | null = null;
+    if (drill === "job" || drill === "session") {
+      const key = url.searchParams.get("key")?.trim();
+      if (key) selector = { dimension: drill, key };
+    } else if (drill === "model") {
+      selector = {
+        dimension: "model",
+        providerID: url.searchParams.get("provider")?.trim() || null,
+        modelID: url.searchParams.get("model")?.trim() || null,
+      };
+    } else if (drill === "issue") {
+      const ref = url.searchParams.get("ref")?.trim();
+      if (ref) selector = { dimension: "issue", subjectRef: ref };
+    } else if (drill === "unattributed") {
+      const reason = url.searchParams.get("reason")?.trim();
+      selector = {
+        dimension: "unattributed",
+        reason: reason === "no-binding" || reason === "source-gap" ? reason : null,
+      };
+    }
+    if (!selector) return json({ error: "invalid_outcome_drill" }, 400);
+    return json({
+      generatedAt: new Date().toISOString(),
+      selector,
+      facts: drillOutcomeFacts(outcomeFacts, selector),
     });
   }
 
@@ -3683,6 +4178,14 @@ async function handler(req: Request): Promise<Response> {
     return html(renderCommentsQueue(await commentsStore.all(), prov()));
   }
 
+  if (path === "/chat") {
+    // #10035 S6: the threaded chat/session view over the prompt
+    // store. list() with includeArchived returns every record; the
+    // render hides archived unless ?archived=1 asks for them.
+    const showArchived = url.searchParams.get("archived") === "1";
+    return html(renderChat(await promptsStore.list({ includeArchived: true }), prov(), { showArchived }));
+  }
+
   if (path === "/api/comments/queue.json") {
     const all = await commentsStore.all();
     return json({ comments: queuedComments(all), counts: commentKindCounts(all) });
@@ -3932,6 +4435,13 @@ async function handler(req: Request): Promise<Response> {
       headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
     });
   }
+  if (path === "/assets/prompt-badge.js") {
+    const file = Bun.file(new URL("./assets/prompt-badge.js", import.meta.url));
+    if (!(await file.exists())) return json({ error: "asset missing" }, 404);
+    return new Response(file, {
+      headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" },
+    });
+  }
   if (path === "/assets/freshness-client.js") {
     const file = Bun.file(new URL("./assets/freshness-client.js", import.meta.url));
     if (!(await file.exists())) return json({ error: "asset missing" }, 404);
@@ -3954,14 +4464,22 @@ async function handler(req: Request): Promise<Response> {
   }
 
   // --- Alert throat (#3676): subscription API -------------------------
+  // #13979: method gating precedes the store check so a removed GET
+  // stays a 405 even when the alerts store is unavailable (fixtures /
+  // store outage would otherwise mask it as a 503).
   if (path === "/api/push/subscriptions") {
+    if (req.method !== "POST" && req.method !== "DELETE") {
+      return json({ error: "method not allowed" }, 405);
+    }
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     if (req.method === "POST") {
       try {
         const parsed = validateNewSubscription(await readJsonBody(req));
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        return json({ subscription: toPublicSubscription(await store.upsertSubscription(parsed.value)) }, 201);
+        const row = await store.upsertSubscription(parsed.value);
+        requestNotifyRelaySubscriptionSync();
+        return json({ subscription: toPublicSubscription(row) }, 201);
       } catch (err) {
         return json({ error: `invalid subscription: ${err instanceof Error ? err.message : err}` }, 400);
       }
@@ -3971,6 +4489,7 @@ async function handler(req: Request): Promise<Response> {
         const body = (await readJsonBody(req)) as { endpoint?: unknown };
         if (typeof body.endpoint !== "string") return json({ error: "endpoint required" }, 400);
         const deleted = await store.deleteSubscription(body.endpoint);
+        if (deleted) requestNotifyRelaySubscriptionSync();
         return deleted ? json({ deleted: true }) : json({ error: "no such subscription" }, 404);
       } catch (err) {
         return json({ error: `invalid delete: ${err instanceof Error ? err.message : err}` }, 400);
@@ -4053,7 +4572,7 @@ async function handler(req: Request): Promise<Response> {
         const v = validateNeedsDrew(ext.needsDrew);
         if (!v.ok) return json({ error: v.error }, 400);
         try {
-          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source, parsed.value.key);
           requestAlertTick();
           return json(
             { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
@@ -4690,8 +5209,19 @@ async function handler(req: Request): Promise<Response> {
     // #1147 extends the shape in place (services/feed/pages/jobs
     // added from the same assembly /health renders; the existing
     // status/source/sections keys are unchanged).
-    const view = await healthContext();
+    const [view, hostHealth] = await Promise.all([
+      healthContext(),
+      // #3989 criterion 6: expose the collector's active host and the
+      // newest verified backup generation (date / finish time / hash /
+      // destinations) on the existing machine health surface. A failed
+      // or unreadable generation remains explicit; never synthesize a
+      // healthy restore point from missing data.
+      readHostHealthSnapshot(cfg.hostHealthFile).catch(() => null),
+    ]);
     const body: Record<string, unknown> = { status: "ok", source: prov(), version: view.version };
+    body.hostHealth = hostHealth
+      ? { host: hostHealth.host, backup: hostHealth.backup }
+      : { host: null, backup: null, state: "unavailable" };
     const diag = source.diagnostics?.();
     if (diag) body.sections = diag;
     body.services = view.services.map((s) => ({
@@ -4834,14 +5364,14 @@ async function handler(req: Request): Promise<Response> {
  * attribution can never disagree.
  */
 
-async function fetchHandler(req: Request): Promise<Response> {
+async function fetchHandler(req: Request, remoteAddress?: string): Promise<Response> {
   // #1211: the top-level error boundary. A throwing handler degrades
   // to a styled 500 page (JSON for /api) instead of rejecting the
   // fetch; the render-health record below still runs, accounting the
   // failure as an unsuccessful render.
   let res: Response;
   try {
-    res = await dashboardResponseWithinDeadline(req, () => handler(req));
+    res = await dashboardResponseWithinDeadline(req, () => handler(req, remoteAddress));
   } catch (err) {
     console.error(`aggregator: handler failed for ${req.method} ${req.url}:`, err);
     res = errorBoundaryResponse(new URL(req.url).pathname, err);
@@ -4856,18 +5386,82 @@ async function fetchHandler(req: Request): Promise<Response> {
   return addConsoleShortcut(res, req, publicHost);
 }
 
+/** Per-socket state for the /ws/prompt/:id channel (#10033 S3). */
+interface PromptWsData {
+  promptId: string;
+  session?: PromptWsSession;
+}
+
+/**
+ * #10033 S3: upgrade a /ws/prompt/:id request. An unknown prompt id is
+ * a plain 404 JSON response (no upgrade attempted); a refused upgrade
+ * is a 400. On success the websocket handlers below own the socket and
+ * this fetch returns nothing further.
+ */
+async function promptWsUpgrade(
+  req: Request,
+  server: Bun.Server<PromptWsData>,
+  pathname: string,
+): Promise<Response | undefined> {
+  const id = decodeURIComponent(pathname.slice("/ws/prompt/".length));
+  const prompt = await promptsStore.get(id);
+  if (!prompt) return json({ error: "prompt not found" }, 404);
+  if (server.upgrade(req, { data: { promptId: id } })) return undefined;
+  return json({ error: "websocket upgrade failed" }, 400);
+}
+
 // One server per bind address (PM_AGG_HOSTS). Deployment on the
 // laptop binds loopback + the tailnet address, like Pad/Grist — no
 // public route (Drew, 2026-10-25: public only behind a password).
 const servers = cfg.hosts.map((hostname) =>
-  Bun.serve({
+  Bun.serve<PromptWsData>({
     hostname,
     port: cfg.port,
     // Phase B §13.1: slow fragments (overview/board/queue renders) exceed
     // Bun's 10s default idle timeout and the patch response gets killed
     // mid-render; 60s gives the heavy contexts room without going unbounded.
     idleTimeout: 60,
-    fetch: fetchHandler,
+    fetch(req, server) {
+      const pathname = new URL(req.url).pathname;
+      // #10033 S3: the sync-ws channel upgrades ahead of the ordinary
+      // request pipeline — it is a socket, not a rendered response.
+      if (pathname.startsWith("/ws/prompt/")) return promptWsUpgrade(req, server, pathname);
+      if (req.method === "POST" && pathname === "/api/prompt") {
+        // A sync-block submission may legitimately hold its request for
+        // the full configured answer wait (120s default), past the 60s
+        // socket idle timeout above; lift this request's cap to cover
+        // the wait plus margin (Bun caps the value at 255).
+        server.timeout(req, Math.min(255, Math.ceil(cfg.promptSyncTimeoutMs / 1000) + 5));
+      }
+      // #9608: the peer address rides along so the outage-queueing
+      // path can require a stack-local origin (design #1253 §6).
+      return fetchHandler(req, server.requestIP(req)?.address);
+    },
+    websocket: {
+      open(ws) {
+        const session = createPromptWsSession({
+          store: promptsStore,
+          promptId: ws.data.promptId,
+          socket: {
+            send: (data) => {
+              ws.send(data);
+            },
+            close: (code, reason) => {
+              ws.close(code, reason);
+            },
+          },
+          timeoutMs: cfg.promptSyncTimeoutMs,
+        });
+        ws.data.session = session;
+        void session.start();
+      },
+      message() {
+        // The channel is server-to-client only; inbound frames are ignored.
+      },
+      close(ws) {
+        ws.data.session?.stop();
+      },
+    },
   }),
 );
 
@@ -4925,11 +5519,33 @@ const freshnessIpcServer = Bun.serve({
 });
 console.log(`freshness publisher listening on http://${freshnessIpcServer.hostname}:${freshnessIpcServer.port}`);
 
+// #8570: in live mode the aggregator process owns the quota gatherer and
+// fleet-feed collector schedules. Their output files remain audit/debug
+// products; request freshness is held by the in-process stores/caches.
+if (cfg.source === "live") {
+  void startPmCoreJobs({
+    warn: (message) => console.log(`[pm-core] ${message}`),
+  }).catch((error) => {
+    console.error(
+      `[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  });
+}
+
 // #3976: start the anti-entropy loop in live mode — one pass now,
 // then the 5-minute cadence. Fixtures mode has no journal to reconcile.
 if (cfg.source === "live") {
   void freshnessReconciler.reconcile().catch(() => undefined);
   freshnessReconciler.start();
+}
+
+// #8570: pm-core consolidation — in live mode the quota gatherer and
+// the fleet-feed collector also run as in-process schedulers on the
+// seam's cadences (quota 15 minutes, fleet-feed 5 minutes), ahead of
+// the systemd timer-unit cutover (a later slice of this issue).
+// Shutdown is tied to process signals inside the wiring.
+if (cfg.source === "live") {
+  startPmCoreSchedulers({ feedFile: cfg.feedFile });
 }
 
 // Collector feeds are replaced on a ~5-minute cadence. Land their
@@ -4965,6 +5581,12 @@ if (githubHotListConsumer) {
     githubSyncRunning = true;
     try {
       await githubHotListConsumer.sync();
+      if (githubOutcomeConsumer) {
+        const outcome = await githubOutcomeConsumer.sync();
+        if (outcome.error) {
+          console.error(`[activity] WARNING: GitHub outcome sync ${outcome.state}: ${outcome.error}`);
+        }
+      }
     } catch (error) {
       console.error(
         `[activity] WARNING: GitHub hot-list worker failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -5006,6 +5628,72 @@ if (cfg.source !== "fixtures") {
   timer.unref?.();
 }
 
+// #9991: the §4 escalation sinks — the real journal/feed/push surfaces
+// escalation.ts's delivery step was built against. Journal: the
+// aggregator's append-only watchdog journal (the SLO journal file,
+// where the watchdog heartbeat already rides). Feed: the activity
+// stream #1148's watchdog reports into. Push: the page-health-push
+// path — sendPush fanned out over the alerts store's subscriptions
+// with the incident class enabled, sends logged like the test-push
+// path (design §6 question 1 is unanswered, so the interim channel is
+// the existing one, per #9991's acceptance). The push sink receives
+// only the page payload, so its sends-ledger rows carry the stable
+// objectRef below; the journal and feed entries carry the facet.
+const ESCALATION_PAGE_OBJECT_REF = "watchdog-escalation";
+const escalationSink: EscalationSink = {
+  journal: async (entry) => {
+    await sloJournal.append([escalationJournalLine(entry)]);
+  },
+  feedEvent: async (entry) => {
+    const result = await recordActivity([escalationDelivery(entry)]);
+    if (result.failed > 0) {
+      throw new Error(`activity ingestion failed for ${result.failedIds.join(", ")}`);
+    }
+  },
+  push: async (page) => {
+    const store = await getAlertsStore();
+    if (!store) return { ok: false, gone: false, error: "alerts store unavailable" };
+    const subs = (await store.listSubscriptions()).filter((sub) => classEnabled(sub, "incident"));
+    if (subs.length === 0) {
+      return { ok: false, gone: false, error: "no push subscription has the incident class enabled" };
+    }
+    const payload: PushPayload = {
+      class: "incident",
+      objectRef: ESCALATION_PAGE_OBJECT_REF,
+      url: `${cfg.publicOrigin}/alerts`,
+      title: page.title,
+      body: page.body,
+    };
+    let sent = 0;
+    let lastError = "push was not delivered";
+    for (const sub of subs) {
+      const outcome = await sendPush({ endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth }, payload);
+      if (outcome.ok) {
+        sent += 1;
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "sent" });
+        await store.noteSubscriptionAlive(sub.endpoint);
+      } else if (outcome.gone) {
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "gone" });
+        await store.noteSubscriptionGone(sub.endpoint);
+        lastError = outcome.error;
+      } else {
+        await store.logSend({ class: "incident", objectRef: ESCALATION_PAGE_OBJECT_REF, outcome: "error" });
+        lastError = outcome.error;
+      }
+    }
+    return sent > 0 ? { ok: true, status: 201 } : { ok: false, gone: false, error: lastError };
+  },
+};
+
+const escalationTicker = createEscalationTicker({
+  summaries: (now) => sloSummaries(now),
+  // No remediation executor host exists yet (escalation-tick.ts's seam
+  // note): the empty state is the stack's actual remediation
+  // condition — nothing attempted, nothing in flight, no breaker open.
+  remediationState: (now) => emptyState(now),
+  sink: escalationSink,
+});
+
 // Watchdog derivation must not depend on dashboard traffic or push
 // subscriptions. Its heartbeat is written only after deriveWatchdogItems
 // completes health/audit reads and gap sync. Keep this timer independent
@@ -5022,6 +5710,16 @@ if (cfg.source === "live") {
       // A source failure is not a successful watchdog pass.
       await source.orchestration();
       await deriveWatchdogItems(source.diagnostics?.().orchestration, "scheduled");
+      // #9991: the §4 escalation pass rides the same scheduled tick,
+      // in its own try/catch — an escalation failure must not fail
+      // the watchdog pass whose heartbeat deriveWatchdogItems wrote.
+      try {
+        await escalationTicker.tick();
+      } catch (error) {
+        console.error(
+          `[watchdog] WARNING: escalation pass failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     } catch (error) {
       console.error(
         `[watchdog] WARNING: scheduled derivation failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -5087,3 +5785,11 @@ startAlertEngine(cfg, async (): Promise<NotificationSnapshot> => {
     stackHealthStates,
   };
 });
+
+// The notify relay's laptop half (#8569 Phase 2 step 1): ~60s
+// heartbeats to the pm-notify edge Durable Object + the
+// subscription mirror that authorizes its sends. A no-op until
+// PM_AGG_NOTIFY_RELAY_URL is set (the deploy is a separate leg),
+// and fail-soft once running — the edge is a mirror of this
+// stack, never a dependency of it.
+startNotifyRelay(cfg, () => getAlertsStore());

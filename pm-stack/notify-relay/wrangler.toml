@@ -1,0 +1,28 @@
+# pm-notify relay Worker (#8569 Phase 2, design record
+# doc/2026-11-17_design_pm8569_notifications_phase2.md): the edge half
+# of the pm-stack dead-man's switch. One Worker + one singleton
+# Durable Object (pm-notify) holding the mirrored subscription
+# snapshot and the heartbeat alarm state. The DO alarm is the only
+# scheduler — there is no cron anywhere in this design.
+#
+# Secrets (wrangler secret put; values never in this file):
+#   RELAY_SHARED_SECRET  authenticates the laptop -> edge POSTs
+#     (/mirror/*, /heartbeat). Vaulted in Bitwarden by name
+#     `pm-aggregator.notify-relay-shared-secret`; the aggregator
+#     resolves the same name at send time.
+#   VAPID_PRIVATE_KEY    signs the edge's Web Push sends. The existing
+#     aggregator VAPID keypair — custody moves, the keypair does not
+#     change (design §4): the value is the same one the laptop fetches
+#     from Bitwarden by name `pm-aggregator.vapid-private-key`
+#     (base64url raw private scalar, the web-push package's form).
+name = "pm-notify"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = true
+
+[durable_objects]
+bindings = [{ name = "PM_NOTIFY", class_name = "PmNotify" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PmNotify"]

@@ -15,3 +15,17 @@ compatibility_date = "2025-06-01"
 # live in this file.
 [vars]
 RP_AUDIENCE = "fleet-hosted"
+
+# The ingestion sweeper's standing scope (#12590): the in-scope
+# repos the scheduled run re-scans (#9060 §16). Set per environment
+# at deployment; empty here (local only) means the scheduled sweep
+# has nothing to scan.
+# INGESTION_REPOS = "developing-today/code"
+
+# The ingestion sweeper (#12590; design §7.3): the scheduled Worker
+# half of dual ingestion, running the webhook route's check over
+# the configured scope to catch listener misses. Declared here so
+# the deployed shape carries it; inert until the deployment issue
+# lands this package (this config authorizes no deployment).
+[triggers]
+crons = ["*/15 * * * *"]

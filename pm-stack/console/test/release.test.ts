@@ -193,6 +193,9 @@ describe("a release, run against stand-ins", () => {
     existenceStatus: 0,
     hiddenFromServices: false,
     removeFails: false,
+    /** How many times standing a Worker up uploads it and then fails,
+     * as when Cloudflare is not done making it. */
+    standUpFails: 0,
   };
   let server: ReturnType<typeof Bun.serve>;
   let bin: string;
@@ -214,6 +217,11 @@ describe("a release, run against stand-ins", () => {
       else made.versions.set(id, { kind: "app", short: flagValue(argv, "--var").replace("VERSION:", "") });
       made.serving = id;
       state.workers.set(name, made);
+      // Uploaded, and then wrangler's next question of Cloudflare fails.
+      if (config === "init/wrangler.jsonc" && state.standUpFails > 0) {
+        state.standUpFails--;
+        return { status: 1 };
+      }
       return { status: 0 };
     }
     const worker = state.workers.get(name);
@@ -320,6 +328,7 @@ process.exit(status);
     state.existenceStatus = 0;
     state.hiddenFromServices = false;
     state.removeFails = false;
+    state.standUpFails = 0;
   };
   const worker = (short: string, migrationTag: string | null = "v1"): FakeWorker => ({
     migrationTag,
@@ -338,6 +347,7 @@ process.exit(status);
         PM_RELEASE_HEALTH: `${origin}/health`,
         PM_RELEASE_HEALTH_TRIES: "3",
         PM_RELEASE_HEALTH_WAIT_MS: "5",
+        PM_RELEASE_STAND_UP_WAIT_MS: "5",
         FAKE_CONTROL: `${origin}/_wrangler`,
         GITHUB_RUN_ID: "77",
       },
@@ -410,6 +420,11 @@ process.exit(status);
     // What was serving before is serving again.
     expect(serving(REAL)).toEqual({ kind: "app", short: "aaaaaaaaaaaa" });
     expect(got.err).toContain(`${REAL} is not serving ${SHORT}`);
+    // And the run says what it heard in place of a health answer: an
+    // error page is a different fault from no route, and "silent" alone
+    // told them apart for nobody.
+    expect(got.out + got.err).toContain("(last answer: silent; it said: http 500 ");
+    expect(got.out + got.err).toContain("error code: 1101");
   });
 
   test("an upload that fails changes nothing that is serving", async () => {
@@ -488,6 +503,49 @@ process.exit(status);
     state.emptyNeverAnswers = true;
     expect((await release()).code).toBe(0);
     expect(serving(REAL)).toEqual({ kind: "app", short: SHORT });
+  });
+
+  test("a stand-up Cloudflare is slow to finish is made again, and the run goes on", async () => {
+    // The Worker is uploaded, and wrangler's next question is answered
+    // "This Worker does not exist": twice, and then it is there.
+    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    state.standUpFails = 2;
+    const standUp = `wrangler deploy --config init/wrangler.jsonc --name ${SCRATCH} --message empty Worker, stood up by workflow run 77`;
+    const got = await release("--scratch");
+    expect(got.code).toBe(0);
+    expect(state.did).toEqual([
+      `api DELETE ${SCRATCH} force=true`,
+      standUp,
+      standUp,
+      standUp,
+      `wrangler versions upload --name ${SCRATCH} --tag git-${SHORT} --message git ${SHA} --var VERSION:${SHORT}`,
+      `wrangler versions deploy ${V(103)}@100% --name ${SCRATCH} --yes --message git ${SHA}`,
+      `api DELETE ${SCRATCH} force=true`,
+    ]);
+    expect(got.out).toContain("did not go through (try 1 of 4); trying again");
+    expect(got.out).toContain("did not go through (try 2 of 4); trying again");
+    expect(got.out).toContain("stood up from nothing");
+    // The real Worker's first stand-up, the same.
+    reset();
+    state.standUpFails = 1;
+    expect((await release()).code).toBe(0);
+    expect(serving(REAL)).toEqual({ kind: "app", short: SHORT });
+    // One that never goes through fails the run after its tries, and
+    // the scratch Worker it left half made is still removed.
+    reset({ [REAL]: worker("aaaaaaaaaaaa") });
+    state.standUpFails = 99;
+    const never = await release("--scratch");
+    expect(never.code).toBe(1);
+    expect(state.did).toEqual([
+      `api DELETE ${SCRATCH} force=true`,
+      standUp,
+      standUp,
+      standUp,
+      standUp,
+      `api DELETE ${SCRATCH} force=true`,
+    ]);
+    expect(state.workers.has(SCRATCH)).toBe(false);
+    expect(serving(REAL)).toEqual({ kind: "app", short: "aaaaaaaaaaaa" });
   });
 
   test("a scratch Worker that cannot be removed fails the run", async () => {

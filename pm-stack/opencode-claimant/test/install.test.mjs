@@ -59,12 +59,14 @@ async function expectNoWrites(stores) {
   // runs the installer (observed on CI runners where bun is installed under
   // ~/.bun); that is a runtime artifact, not an installer write, so it is
   // excluded from the no-write assertion. See developing-today/code#9532.
-  const homeEntries = (await readdir(stores.home)).filter(
-    (name) => name !== ".bun",
-  );
-  expect(homeEntries).toEqual([
-    ".config", "explicit-store.json",
-  ]);
+  // A directory is listed in whatever order the filesystem keeps it: on
+  // the CI runner that is not the order the entries were made in, which
+  // failed this assertion on every scheduled run. What is asserted is
+  // which entries exist, so both sides are put in one order.
+  const homeEntries = (await readdir(stores.home))
+    .filter((name) => name !== ".bun")
+    .sort();
+  expect(homeEntries).toEqual([".config", "explicit-store.json"].sort());
   expect(await readdir(stores.defaultDir)).toEqual([
     "path_L2hvbWUvdXNlci9naXQvY29kZQ.json",
   ]);

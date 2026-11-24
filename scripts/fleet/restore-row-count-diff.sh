@@ -33,23 +33,30 @@
 # Usage:
 #   restore-row-count-diff.sh --manifest MANIFEST.tsv --live LIVE.tsv #       [--inventory INVENTORY.txt]
 # Exit: 0 = gate passes, 1 = gate fails, 2 = usage/input error.
+# The command line is parsed strictly (#3352): a value option with no
+# value, or with a value that is itself an option, is a usage error.
 set -euo pipefail
+
+usage() {
+  echo "usage: restore-row-count-diff.sh --manifest M.tsv --live L.tsv [--inventory I.txt]" >&2
+}
 
 manifest=""
 live=""
 inventory=""
 while [ $# -gt 0 ]; do
   case "$1" in
-  --manifest)
-    manifest="$2"
-    shift 2
-    ;;
-  --live)
-    live="$2"
-    shift 2
-    ;;
-  --inventory)
-    inventory="$2"
+  --manifest | --live | --inventory)
+    if [ $# -lt 2 ] || [ "${2#--}" != "$2" ]; then
+      echo "option $1 requires a value" >&2
+      usage
+      exit 2
+    fi
+    case "$1" in
+    --manifest) manifest="$2" ;;
+    --live) live="$2" ;;
+    --inventory) inventory="$2" ;;
+    esac
     shift 2
     ;;
   *)
@@ -59,7 +66,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$manifest" ] && [ -n "$live" ] || {
-  echo "usage: restore-row-count-diff.sh --manifest M.tsv --live L.tsv [--inventory I.txt]" >&2
+  usage
   exit 2
 }
 [ -f "$manifest" ] && [ -f "$live" ] || {
@@ -79,6 +86,10 @@ done
 }
 if [ -n "$inventory" ] && [ ! -f "$inventory" ]; then
   echo "inventory file missing: $inventory" >&2
+  exit 2
+fi
+if [ -n "$inventory" ] && [ ! -r "$inventory" ]; then
+  echo "inventory file not readable: $inventory" >&2
   exit 2
 fi
 
@@ -140,11 +151,15 @@ exec awk -v inventory="$inventory" '
   }
   END {
     if (inventory != "") {
-      while ((getline line < inventory) > 0) {
+      inv_status = 0
+      while ((inv_status = (getline line < inventory)) > 0) {
         if (line == "") continue
         if (!(line in in_manifest)) {
           fail(line ": in source inventory but MISSING from the manifest — silence is not a disposition")
         }
+      }
+      if (inv_status < 0) {
+        fail("source inventory file could not be read: " inventory " — an unreadable inventory is not a pass")
       }
     }
     printf "----\n%s: %d failure(s), %d info line(s)\n", (fails > 0 ? "GATE FAILED" : "GATE PASSED"), fails, infos
