@@ -5,10 +5,72 @@
 // Every write is something the fleet already understands: an answer to a
 // decision set through the dashboard's own endpoint, an issue and a
 // queue task, a comment, a label.
+import { type Census, censusOf, type NeedsItem, readCensus } from "./needs.ts";
 import { OpError, type Ops, PRIORITY_SCALE, type Row, type RunResult } from "./ops.ts";
+import { timed } from "./timed.ts";
 
 const P = "CASE WHEN json_valid(payload) THEN payload ELSE '{}' END";
 const G = "CASE WHEN json_valid(progress) THEN progress ELSE '{}' END";
+/** A task's condition for being ready, where it is JSON; `{}` where it
+ * is words, or nothing. */
+const R = "CASE WHEN json_valid(ready_condition) THEN ready_condition ELSE '{}' END";
+/** How many tasks of a queue are blocked, by the kind of reason: one
+ * written on the task (each is its own text, so the texts are not
+ * counted: the commonest six once said fifteen of 272), a time waited
+ * for and whether it has passed, other tasks waited on, or nothing
+ * recorded. Every blocked task is counted once, in the order the
+ * reason shown for it is chosen (reason, blocker, condition, tasks). */
+export const BLOCKED_KINDS_SQL = `SELECT CASE
+  WHEN coalesce(json_extract(${G},'$.reason'), json_extract(${G},'$.blocker')) IS NOT NULL THEN 'reason'
+  WHEN json_extract(${R},'$.kind') = 'time' THEN
+    CASE WHEN substr(json_extract(${R},'$.until'),1,19) <= strftime('%Y-%m-%dT%H:%M:%S','now') THEN 'time-past' ELSE 'time' END
+  WHEN coalesce(ready_condition,'') <> '' THEN 'reason'
+  WHEN coalesce(blocked_deps,'') NOT IN ('','[]') THEN 'tasks'
+  ELSE 'none' END AS kind, count(*) AS n
+  FROM tasks WHERE queue = ? AND status = 'blocked' GROUP BY 1 ORDER BY n DESC`;
+const RES = "CASE WHEN json_valid(result) THEN result ELSE '{}' END";
+/** How many of each kind of finished thing are shown. */
+const DONE_SHOWN = 40;
+/** The events that say a task was finished: by whoever did it, or by
+ * the queue's own sweep finding it already done. */
+const FINISHED = "('completed','staleness_autocomplete')";
+const DONE_FROM = `FROM events e CROSS JOIN tasks t ON t.id = e.task_id
+  WHERE e.kind IN ${FINISHED} AND e.created_at >= ? AND t.queue = ? AND t.status = 'done'`;
+/** Tasks finished since a time, newest first: each once, at its last
+ * finishing, and only while it still stands as done (one taken up again
+ * is not). They are found by the events that say so, which the store
+ * keeps in order of time; the tasks themselves it does not, and there
+ * are tens of thousands of them. (CROSS JOIN is SQLite's way of being
+ * told to start from the events.) */
+export const DONE_TASKS_SQL = `SELECT t.id AS id, t.title AS title, substr(max(e.created_at),1,19) AS at,
+  t.lane_id AS lane, t.claim_model AS model,
+  json_extract(${P},'$.kind') AS kind, json_extract(${P},'$.issue.number') AS issue,
+  coalesce(json_extract(${RES},'$.disposition.pulls[0].number'), json_extract(${RES},'$.pr'),
+    json_extract(${P},'$.pr.number')) AS pr,
+  json_extract(${RES},'$.disposition.verdict') AS verdict
+  ${DONE_FROM}
+  GROUP BY t.id ORDER BY max(e.created_at) DESC, t.id DESC LIMIT ${DONE_SHOWN}`;
+/** How many tasks were finished since a time, each counted once. */
+export const DONE_COUNT_SQL = `SELECT count(DISTINCT t.id) AS n ${DONE_FROM}`;
+/** The same tasks by their kind, the most first: what the day went on. */
+export const DONE_KINDS_SQL = `SELECT coalesce(json_extract(${P},'$.kind'),'') AS kind, count(DISTINCT t.id) AS n
+  ${DONE_FROM}
+  GROUP BY 1 ORDER BY n DESC, kind ASC LIMIT 12`;
+/** One page of what GitHub lists as closed, most lately touched first. */
+const CLOSED_PAGE = 100;
+const DAY_MS = 24 * 3_600_000;
+/** How far back "lately" goes. */
+const DONE_SINCE_MS = 7 * DAY_MS;
+/** A time as the queue and GitHub both write it. */
+const stamp = (ms: number) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+/** A pull request's number, from a number or from its address. */
+function pullNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value !== "string") return null;
+  const found = /(?:\/pull\/|^#?)([1-9][0-9]{0,8})$/.exec(value.trim());
+  return found ? Number(found[1]) : null;
+}
+
 const TASK_COLS = `id, title, priority, status, attempts,
   substr(coalesce(claimed_at,''),1,19) AS claimed, substr(coalesce(lease_until,''),1,19) AS lease,
   substr(created_at,1,19) AS created, worker_id AS worker, lane_id AS lane, claim_model AS model,
@@ -162,29 +224,108 @@ export class Work {
         sql: `SELECT ${TASK_COLS} FROM tasks WHERE queue = ? AND status = 'queued' ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT 60`,
         args: [q],
       },
-      {
-        sql: `SELECT substr(coalesce(json_extract(${G},'$.reason'), json_extract(${G},'$.blocker'), ready_condition, blocked_deps, 'no reason recorded'),1,140) AS why, count(*) AS n FROM tasks WHERE queue = ? AND status = 'blocked' GROUP BY 1 ORDER BY n DESC LIMIT 6`,
-        args: [q],
-      },
+      { sql: BLOCKED_KINDS_SQL, args: [q] },
     ]);
     return {
       counts: Object.fromEntries(counts.map((r) => [String(r.status), Number(r.n)])),
       now: now.map(this.task),
       next: next.map(this.task),
-      blockedWhy: why,
+      blockedKinds: why.map((r) => ({ kind: String(r.kind), n: Number(r.n) })),
+    };
+  }
+
+  /** What was finished lately: tasks the queue says are done, pull
+   * requests merged and issues closed. One round trip to the queue
+   * store and one question of GitHub, at an address that is the same
+   * from one asking to the next, so an answer that has not changed
+   * costs nothing to fetch again. `day` is how many in the last day;
+   * `more` says GitHub's page was full of things touched within the
+   * day, so there may be more than were counted. */
+  async done() {
+    const now = this.clock().getTime();
+    const day = stamp(now - DAY_MS);
+    const since = stamp(now - DONE_SINCE_MS);
+    const [finished, counted, kinds] = await this.ops.reads([
+      { sql: DONE_TASKS_SQL, args: [since, this.ops.cfg.queue] },
+      { sql: DONE_COUNT_SQL, args: [day, this.ops.cfg.queue] },
+      { sql: DONE_KINDS_SQL, args: [day, this.ops.cfg.queue] },
+    ]);
+    const listed = await this.ops.gh([
+      `repos/${this.repo}/issues?state=closed&sort=updated&direction=desc&per_page=${CLOSED_PAGE}`,
+    ]);
+    const page = (Array.isArray(listed) ? listed : []) as (Record<string, unknown> | null)[];
+    const merged: { number: number; title: string; url: string; at: string; by: string }[] = [];
+    const closed: { number: number; title: string; url: string; at: string; reason: string | null }[] = [];
+    for (const item of page) {
+      if (item === null || typeof item !== "object") continue;
+      const { number, title, html_url: url } = item;
+      if (!Number.isSafeInteger(number) || typeof title !== "string" || typeof url !== "string") continue;
+      const base = { number: number as number, title: clip(title, 200), url: clip(url, 300) };
+      const pull = item.pull_request as { merged_at?: unknown } | null | undefined;
+      if (pull && typeof pull === "object") {
+        // Closed without merging is not something done.
+        if (typeof pull.merged_at !== "string") continue;
+        merged.push({
+          ...base,
+          at: pull.merged_at.slice(0, 19),
+          by: clip((item.user as { login?: unknown } | null)?.login, 60),
+        });
+      } else if (typeof item.closed_at === "string") {
+        closed.push({
+          ...base,
+          at: item.closed_at.slice(0, 19),
+          reason: typeof item.state_reason === "string" ? clip(item.state_reason, 40) : null,
+        });
+      }
+    }
+    // The page is in the order things were last touched. Full, with its
+    // last touched within the day, it may be followed by more closed today.
+    const last = page.at(-1);
+    const more = page.length >= CLOSED_PAGE && typeof last?.updated_at === "string" && last.updated_at >= day;
+    const lately = <T extends { at: string; number: number }>(list: T[]) => {
+      const within = list
+        .filter((x) => x.at >= since.slice(0, 19))
+        .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : b.number - a.number));
+      return { day: within.filter((x) => x.at >= day.slice(0, 19)).length, more, latest: within.slice(0, DONE_SHOWN) };
+    };
+    const whole = (value: unknown) => (Number.isSafeInteger(value) && (value as number) > 0 ? (value as number) : null);
+    const said = (value: unknown, max: number) => (typeof value === "string" && value !== "" ? clip(value, max) : null);
+    return {
+      tasks: {
+        day: Number(counted[0]?.n) || 0,
+        // By kind, for the same day: what it went on.
+        kinds: kinds.map((r) => ({ kind: said(r.kind, 40), n: Number(r.n) || 0 })),
+        latest: finished.map((r) => ({
+          id: Number(r.id),
+          title: clip(r.title, 200),
+          at: clip(r.at, 19),
+          lane: said(r.lane, 60),
+          model: said(r.model, 60),
+          kind: said(r.kind, 40),
+          issue: whole(r.issue),
+          pr: pullNumber(r.pr),
+          verdict: said(r.verdict, 40),
+          url: whole(r.issue) ? `https://github.com/${this.repo}/issues/${whole(r.issue)}` : null,
+          prUrl: pullNumber(r.pr) ? `https://github.com/${this.repo}/pull/${pullNumber(r.pr)}` : null,
+        })),
+      },
+      merged: lately(merged),
+      closed: lately(closed),
     };
   }
 
   private async dash(path: string, body?: unknown): Promise<unknown> {
     const base = this.ops.cfg.dashboardUrl;
     if (base === null) throw new OpError(502, "no dashboard is configured");
-    const res = await this.ops.fetchImpl(`${base}${path}`, {
-      method: body === undefined ? "GET" : "POST",
-      headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(20_000),
+    const { res, data } = await timed(20_000, async (signal) => {
+      const res = await this.ops.fetchImpl(`${base}${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { accept: "application/json", ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        signal,
+      });
+      return { res, data: await res.json().catch(() => null) };
     });
-    const data = await res.json().catch(() => null);
     if (!res.ok) {
       const why = (data as { error?: string } | null)?.error ?? `http ${res.status}`;
       throw new OpError(
@@ -223,43 +364,30 @@ export class Work {
     return { moving, waiting };
   }
 
-  /** Issues and pull requests labelled as waiting on the owner. */
-  async census() {
+  /** Issues and pull requests labelled as waiting on the owner, as the
+   * dashboard has censused them. */
+  async census(): Promise<Census> {
     const data = (await this.dash("/api/needs-drew.json")) as {
       fetchedAt?: string;
       complete?: boolean;
-      items?: {
-        ref: string;
-        kind: string;
-        title: string;
-        url: string;
-        needsLabels: string[];
-        reason: string | null;
-        updatedAt: string;
-        hands?: { kind: string; action: string | null } | null;
-      }[];
+      items?: (Omit<NeedsItem, "kind"> & { kind: string })[];
     };
-    const base = (i: NonNullable<typeof data.items>[number]) => ({
-      ref: i.ref,
-      title: clip(i.title, 200),
-      url: i.url,
-      pr: i.kind === "pr",
-      updated: clip(i.updatedAt, 19),
-    });
-    const items = data.items ?? [];
-    return {
-      at: data.fetchedAt ?? null,
-      complete: data.complete !== false,
-      // A hands item is one action only a person can do (FDR-0013).
-      hands: items
-        .filter((i) => i.hands?.kind)
-        .map((i) => ({ ...base(i), kind: i.hands?.kind, action: clip(i.hands?.action, 400) })),
-      reviews: items.filter((i) => !i.hands?.kind && i.needsLabels.includes("user/review")).map(base),
-      // Escalated with no stated action: the fleet's to decide, listed so nothing is hidden.
-      other: items
-        .filter((i) => !i.hands?.kind && !i.needsLabels.includes("user/review"))
-        .map((i) => ({ ...base(i), why: clip(i.reason, 300) })),
-    };
+    const items = (data.items ?? []).map((i) => ({
+      ...i,
+      kind: i.kind === "pr" ? ("pr" as const) : ("issue" as const),
+    }));
+    return censusOf(items, data.fetchedAt ?? null, data.complete !== false);
+  }
+
+  /** The same list, read from GitHub by a side that has no dashboard to
+   * ask (see needs.ts). */
+  async censusDirect(): Promise<Census> {
+    try {
+      return await readCensus(this.ops.cfg.needsRepos, (path) => this.ops.gh([path]));
+    } catch (error) {
+      if (error instanceof OpError) throw error;
+      throw new OpError(502, `what needs you could not be read: ${(error as Error).message}`);
+    }
   }
 
   private async sets(): Promise<DecisionSet[]> {
@@ -284,7 +412,8 @@ export class Work {
           open.push({
             set: set.setId,
             setTitle: clip(set.title, 120),
-            created: clip(set.createdAt, 19),
+            // To the second, cut and not shortened with a mark: it is a time.
+            created: typeof set.createdAt === "string" ? set.createdAt.slice(0, 19) : "",
             ledger: item.ledgerId,
             item: clip(item.title, 200),
             links: (item.links ?? []).slice(0, 3),
@@ -395,19 +524,30 @@ export class Work {
     return { repo: m[1], number: Number(m[2]) };
   }
 
-  /** The owner did the one thing only he could: say so and take the item off his list. */
+  /** The owner did the one thing only he could: take the item off his
+   * list and say so. The label goes first. Taking a label off twice is
+   * the same as once (GitHub says it is not there, which is what was
+   * wanted), and saying "done" twice is two comments: so a failure
+   * part-way can be tried again from the start, by the owner or by
+   * whoever holds this for him, and it is said once. */
   async handsDone(args: Record<string, unknown>) {
     const { repo, number } = this.ref(args.ref);
     const note =
       typeof args.note === "string" && args.note.trim() !== "" ? `\n\n${words(args.note, "note", 4000)}` : "";
+    try {
+      await this.ops.gh([
+        "-X",
+        "DELETE",
+        `repos/${repo}/issues/${number}/labels/${encodeURIComponent("user/escalated")}`,
+      ]);
+    } catch (error) {
+      // Already off: an agent took it, or this is a second try after
+      // the comment failed. GitHub's words for it, and no other 404.
+      if (!(error instanceof OpError) || !/Label does not exist/i.test(error.message)) throw error;
+    }
     await this.ops.gh(["-X", "POST", `repos/${repo}/issues/${number}/comments`], {
       body: `Done by the owner, from the PM console. The step that needed a person is finished; carry on.${note}\n\n${OWNER_REPLY_MARK}`,
     });
-    await this.ops.gh([
-      "-X",
-      "DELETE",
-      `repos/${repo}/issues/${number}/labels/${encodeURIComponent("user/escalated")}`,
-    ]);
     return { ref: args.ref, done: true };
   }
 

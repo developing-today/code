@@ -12,6 +12,28 @@
 
 - [Switches](network/switches.md)
 
+- [GitHub Actions](platform/github-actions.md)
+- [Nix and the NixOS flake](platform/nix-and-the-flake.md)
+- [NixOS flake apps](platform/flake-apps.md)
+- [The laptop NixOS config](platform/the-laptop-nixos-config.md)
+- [CI/CD: Nix and GitHub Actions](platform/ci-cd.md)
+- [Making Nix packages and apps](platform/making-nix-packages-and-apps.md)
+- [Containers and Docker images](platform/containers-and-images.md)
+- [DNS management](platform/dns-management.md)
+- [The Nix cache worker and its alternatives](platform/nix-caches.md)
+- [The pipes into Cloudflare and externally](platform/pipes-to-cloudflare.md)
+- [Dev shells as a default](platform/dev-shells.md)
+- [clan.lol and machine fleets](platform/clan.md)
+- [Minimal VMs and KubeVirt](platform/vms-and-kubevirt.md)
+- [The role of Terraform](platform/terraform.md)
+- [Crossplane and alternatives](platform/crossplane-and-alternatives.md)
+- [Nix apps V2 and next-gen tooling](platform/next-gen-nix-tooling.md)
+- [Build-server alternatives](platform/build-servers.md)
+- [Artifact and binary repositories](platform/artifact-repositories.md)
+- [Automation and automated scaling](platform/automation-and-scaling.md)
+- [Object storage: RustFS and SeaweedFS](platform/object-storage.md)
+- [Security: Falco runtime detection](platform/security-and-falco.md)
+
 - [ESP32](microcontrollers/esp32.md)
 
 - [High-level roadmap](roadmap/high-level-roadmap.md)

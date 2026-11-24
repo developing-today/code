@@ -596,6 +596,63 @@ describe("operations", () => {
     await expect(ops.queueList("done", "", "")).rejects.toThrow(/status/);
   });
 
+  // Oracle: the store's own wire format (Hrana over HTTP, as Turso
+  // documents it). A whole number is sent as text marked as an integer,
+  // because the wire carries 64 bits and a JSON number does not. Seen
+  // live on 2026-11-24: an issue's number arrived as "7920", and a
+  // screen that wanted a number showed no issue at all.
+  test("a whole number comes from the store as marked text and is read as the number it is", async () => {
+    const r = recorder(() => "secret-token\n");
+    const ops = new Ops(CFG, r.run, async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        results: [
+          {
+            type: "ok",
+            response: {
+              result: {
+                cols: ["id", "big", "below", "title", "ratio", "nothing", "odd", "empty", "bare"].map((name) => ({
+                  name,
+                })),
+                rows: [
+                  [
+                    { type: "integer", value: "7920" },
+                    // One more than a number can hold exactly: it stays the text it came as.
+                    { type: "integer", value: "9007199254740993" },
+                    { type: "integer", value: "-3" },
+                    // Text that looks like a number is text.
+                    { type: "text", value: "123" },
+                    { type: "float", value: 0.5 },
+                    { type: "null" },
+                    // Marked as an integer and not one: passed on as it came, not made into nonsense.
+                    { type: "integer", value: "seven" },
+                    { type: "integer", value: "" },
+                    // Not marked at all (a stand-in, or another store): as it came.
+                    { value: "7" },
+                  ],
+                ],
+              },
+            },
+          },
+        ],
+      }),
+    }));
+    expect(await ops.sql("SELECT 1", [])).toEqual([
+      {
+        id: 7920,
+        big: "9007199254740993",
+        below: -3,
+        title: "123",
+        ratio: 0.5,
+        nothing: null,
+        odd: "seven",
+        empty: "",
+        bare: "7",
+      },
+    ]);
+  });
+
   test("a rotated queue token is fetched again, once", async () => {
     let issued = 0;
     const r = recorder(() => `token-${++issued}\n`);

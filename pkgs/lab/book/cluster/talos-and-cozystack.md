@@ -12,19 +12,31 @@ that is proven.
   until the TALM bootstrap flow is proven" (status record
   2026-10-27). Bootstrap epic:
   [#1086](https://github.com/developing-today/code/issues/1086).
-- **Cozystack** on top of Talos: researched in depth (CNCF
-  Sandbox; LINSTOR on ZFS/DRBD for storage; Kube-OVN, Cilium and
-  MetalLB for networking; SeaweedFS buckets; KubeVirt; CNPG
-  Postgres). Install epic:
+- **Cozystack** on top of Talos: **the chosen platform — settled
+  by Drew on 2026-11-23 ("we will definitely use the Cozystack"),
+  no longer an open evaluation.** It was researched in depth
+  before the decision (CNCF Sandbox; LINSTOR on ZFS/DRBD for
+  storage; Kube-OVN, Cilium and MetalLB for networking; SeaweedFS
+  buckets; KubeVirt; CNPG Postgres). Storage preference, settled
+  by Drew 2026-11-23: LINSTOR-first, and Ceph avoided where
+  possible — see
+  [Storage: LINSTOR and DRBD](storage-linstor-and-drbd.md).
+  Install epic:
   [#1087](https://github.com/developing-today/code/issues/1087),
   "proposed/Later" in the roadmap. The CNCF census adds the caveat
   that Cozystack "decides storage/tenancy/GitOps for you"
-  (`doc/2026-11-23T22-33-41Z_research_cncf-landscape/`).
+  (`doc/2026-11-23T22-33-41Z_research_cncf-landscape/`) — a
+  property of the chosen platform, recorded with the decision.
+  Chosen is not built: the status below stands unchanged.
 - **Data services** as decided in the research brief:
   CloudNativePG managed Postgres (do not deploy a second
-  operator), and RustFS as the designated S3 target — with the
-  RustFS-versus-SeaweedFS decision still open under epic
-  [#1088](https://github.com/developing-today/code/issues/1088).
+  operator), and S3 object storage — the RustFS-versus-SeaweedFS
+  verdict landed 2026-11-24 (record
+  `doc/2026-11-24T01-33-33Z_research_rustfs-vs-seaweedfs/`, PR
+  #13990): SeaweedFS stays as Cozystack's S3 layer; see
+  [Object storage: RustFS and SeaweedFS](../platform/object-storage.md).
+  Epic [#1088](https://github.com/developing-today/code/issues/1088)
+  remains the programme home.
 - **Platform services** from the register's day-one list: NATS,
   FluxCD, a Cloudflare tunnel, Tailscale on-cluster (epic #1088).
 - **First workload:** the ID app on FluxCD, epic

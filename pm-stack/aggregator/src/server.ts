@@ -4464,7 +4464,13 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
   }
 
   // --- Alert throat (#3676): subscription API -------------------------
+  // #13979: method gating precedes the store check so a removed GET
+  // stays a 405 even when the alerts store is unavailable (fixtures /
+  // store outage would otherwise mask it as a 503).
   if (path === "/api/push/subscriptions") {
+    if (req.method !== "POST" && req.method !== "DELETE") {
+      return json({ error: "method not allowed" }, 405);
+    }
     const store = await getAlertsStore();
     if (!store) return json({ error: "alerts store unavailable" }, 503);
     if (req.method === "POST") {
@@ -4566,7 +4572,7 @@ async function handler(req: Request, remoteAddress?: string): Promise<Response> 
         const v = validateNeedsDrew(ext.needsDrew);
         if (!v.ok) return json({ error: v.error }, 400);
         try {
-          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source);
+          const item = await raiseNeedsDrew(cfg.needsDrewFile, v.value, parsed.value.source, parsed.value.key);
           requestAlertTick();
           return json(
             { incident, created, needsDrew: { ledgerId: item.ledgerId, answerUrl: needsDrewAnswerUrl(item) } },
@@ -5520,7 +5526,9 @@ if (cfg.source === "live") {
   void startPmCoreJobs({
     warn: (message) => console.log(`[pm-core] ${message}`),
   }).catch((error) => {
-    console.error(`[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[pm-core] failed to start scheduled jobs: ${error instanceof Error ? error.message : String(error)}`,
+    );
   });
 }
 

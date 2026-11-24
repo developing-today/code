@@ -100,6 +100,50 @@ describe("broker claimTask (claim-flow, #10737 + #9028)", () => {
     expect((err as ClaimLostError).taskId).toBe(7);
   });
 
+  test("a lost claim-flow response reconciles and finishes this session's committed claim", async () => {
+    const paths: string[] = [];
+    const bound = { ...row7, status: "claimed", progress: { session_id: "ses_1" } };
+    const calls = stubBroker((path) => {
+      paths.push(path);
+      if (path === "/claim-flow") throw new DOMException("The operation timed out", "TimeoutError");
+      if (path === "/list") return { ok: true, rows: [bound], total: 1 };
+      return { ok: true, row: { task_id: 7, session_id: "ses_1" } };
+    });
+    const client = new QueueClient("http://broker.test", "tok-1");
+
+    const row = await client.claimTask(row7 as never, "ses_1", "tester", 3600);
+
+    expect(row.status).toBe("claimed");
+    expect(paths).toEqual(["/claim-flow", "/list", "/lane", "/bind", "/list"]);
+    expect(calls.find((c) => c.url.endsWith("/bind"))?.body).toMatchObject({
+      task_id: 7,
+      worker: "dispatch-opencode",
+      session_id: "ses_1",
+      launched_by: "tester",
+    });
+  });
+
+  test("a lost claim-flow response does not adopt another session's claim", async () => {
+    const paths: string[] = [];
+    const calls = stubBroker((path) => {
+      paths.push(path);
+      if (path === "/claim-flow") throw new DOMException("The operation timed out", "TimeoutError");
+      return {
+        ok: true,
+        rows: [{ ...row7, status: "claimed", progress: { session_id: "ses_other" } }],
+        total: 1,
+      };
+    });
+    const client = new QueueClient("http://broker.test", "tok-1");
+
+    const err = await client.claimTask(row7 as never, "ses_1", "tester", 3600).catch((e) => e);
+
+    expect(err).toBeInstanceOf(QueueError);
+    expect((err as QueueError).outcomeUnknown).toBe(true);
+    expect(paths).toEqual(["/claim-flow", "/list"]);
+    expect(calls).toHaveLength(2);
+  });
+
   test("a bind-step partial throws — the session binding is the point of the claim", async () => {
     stubBroker(() => ({
       ok: true,

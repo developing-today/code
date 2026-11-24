@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Repair the three shell-substitution manglings in PR #13915's body, in place."""
+
 import json, subprocess, sys
 
 REPO = "developing-today/code"
@@ -7,7 +8,9 @@ PR = "13915"
 
 out = subprocess.run(
     ["gh", "api", f"repos/{REPO}/pulls/{PR}", "--jq", ".body"],
-    capture_output=True, text=True, check=True,
+    capture_output=True,
+    text=True,
+    check=True,
 )
 body = out.stdout
 if body.endswith("\n"):
@@ -48,7 +51,9 @@ for old, new in fixes:
 payload = json.dumps({"body": body_core})
 res = subprocess.run(
     ["gh", "api", "-X", "PATCH", f"repos/{REPO}/pulls/{PR}", "--input", "-"],
-    input=payload, capture_output=True, text=True,
+    input=payload,
+    capture_output=True,
+    text=True,
 )
 if res.returncode != 0:
     print("PATCH FAILED:", res.stderr[:500])

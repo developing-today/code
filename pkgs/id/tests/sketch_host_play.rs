@@ -225,6 +225,10 @@ fn host_participant_ids_gate_permissions_and_guest_strings_grant_nothing() {
     host.play(AUTHOR, r#"{"kind":"BeginDraft","at":[1,1]}"#);
     host.play(
         AUTHOR,
+        r#"{"kind":"AppendDraftVertices","points":[[3,1],[3,2]]}"#,
+    );
+    host.play(
+        AUTHOR,
         r#"{"kind":"ConfirmStroke","id":"A.1","event":"add1"}"#,
     );
     assert_eq!(host.records(), expected(COMMITTED_A1));

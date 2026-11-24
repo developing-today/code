@@ -16,14 +16,14 @@ You own the PR-vs-issue comparison: for every PR merged in the window, did it fu
 
 ## Outcome labels (create in each repo before applying)
 
-| Label | Meaning |
-|---|---|
-| `audit:complete` | PR fully implemented its spawning issue / stated intent |
-| `audit:partial` | PR partially implemented; remainder filed or already tracked (link it) |
-| `audit:gap-filed` | A gap / unfiled next step from this PR was filed as a new issue |
-| `audit:bug-filed` | A bug in the merged diff was filed as a new issue |
-| `audit:completed-later` | A later merged PR completed/fixed what this PR left undone |
-| `audit:no-issue` | No spawning issue; judged on stated intent only |
+| Label                   | Meaning                                                                |
+| ----------------------- | ---------------------------------------------------------------------- |
+| `audit:complete`        | PR fully implemented its spawning issue / stated intent                |
+| `audit:partial`         | PR partially implemented; remainder filed or already tracked (link it) |
+| `audit:gap-filed`       | A gap / unfiled next step from this PR was filed as a new issue        |
+| `audit:bug-filed`       | A bug in the merged diff was filed as a new issue                      |
+| `audit:completed-later` | A later merged PR completed/fixed what this PR left undone             |
+| `audit:no-issue`        | No spawning issue; judged on stated intent only                        |
 
 ## Steps
 

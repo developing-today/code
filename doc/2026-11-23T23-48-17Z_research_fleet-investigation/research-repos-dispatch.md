@@ -39,30 +39,30 @@ stderr; the JSON payloads quoted below are the in-process REST results.
   Source: `gh api repos/dezren39/fleet/contents/.gitmodules` (raw),
   file size 2,224 bytes. It declares **22 submodules**:
 
-  | path | url repo |
-  |---|---|
-  | code | developing-today/code |
-  | opencode | developing-today-forks/opencode |
-  | openchamber | developing-today-forks/openchamber |
-  | nix | dezren39/darwin-nix |
-  | zettel | developing-today/zettel |
-  | hatch | dezren39/hatch |
-  | hatch-personal | dezren39/hatch-personal |
-  | cairn | dezren39/cairn |
-  | dezren39-zettel | dezren39/zettel |
-  | org-readme | developing-today/.github |
-  | zulip-archive | developing-today/zulip-archive |
-  | hardware-doc | developing-today/hardware-doc |
-  | openclaw-personal | dezren39/openclaw-personal |
-  | cairn-private | dezren39/cairn-private |
-  | kaneo | developing-today/kaneo |
-  | nix-cache | developing-today/nix-cache |
-  | hatch-drawer | dezren39/hatch-drawer |
-  | hatch-personal-drawer | dezren39/hatch-personal-drawer |
-  | opencode-muse | dezren39/opencode-muse |
+  | path                   | url repo                                |
+  | ---------------------- | --------------------------------------- |
+  | code                   | developing-today/code                   |
+  | opencode               | developing-today-forks/opencode         |
+  | openchamber            | developing-today-forks/openchamber      |
+  | nix                    | dezren39/darwin-nix                     |
+  | zettel                 | developing-today/zettel                 |
+  | hatch                  | dezren39/hatch                          |
+  | hatch-personal         | dezren39/hatch-personal                 |
+  | cairn                  | dezren39/cairn                          |
+  | dezren39-zettel        | dezren39/zettel                         |
+  | org-readme             | developing-today/.github                |
+  | zulip-archive          | developing-today/zulip-archive          |
+  | hardware-doc           | developing-today/hardware-doc           |
+  | openclaw-personal      | dezren39/openclaw-personal              |
+  | cairn-private          | dezren39/cairn-private                  |
+  | kaneo                  | developing-today/kaneo                  |
+  | nix-cache              | developing-today/nix-cache              |
+  | hatch-drawer           | dezren39/hatch-drawer                   |
+  | hatch-personal-drawer  | dezren39/hatch-personal-drawer          |
+  | opencode-muse          | dezren39/opencode-muse                  |
   | opencode-auto-continue | developing-today/opencode-auto-continue |
-  | dezren39 | dezren39/dezren39 |
-  | muse-esp32-screen | dezren39/muse-esp32-screen |
+  | dezren39               | dezren39/dezren39                       |
+  | muse-esp32-screen      | dezren39/muse-esp32-screen              |
 
   The standing memory figure “fleet umbrella = 12 submodules
   (2026-11-03)” therefore no longer matches the live `.gitmodules`;
@@ -133,7 +133,7 @@ stderr; the JSON payloads quoted below are the in-process REST results.
     and **one todo issue filed in developing-today/code** carrying
     the same list. The issue is filed through the REST API
     (`POST repos/developing-today/code/issues`), not `gh issue
-    create`, because GraphQL issue creation is a separate
+create`, because GraphQL issue creation is a separate
     rate-limit bucket that walled the first run (2026-11-22; the
     list survived only in the job summary that time). A missing PAT
     is a configuration error and fails the run immediately, before
@@ -153,7 +153,7 @@ stderr; the JSON payloads quoted below are the in-process REST results.
     upstream)”, target branch, enforcement active.
     Detail (`…/rulesets/26550095`): conditions
     `refs/heads/main`; rules `creation, update, deletion,
-    non_fast_forward`; bypass actors: RepositoryRole id 5
+non_fast_forward`; bypass actors: RepositoryRole id 5
     (`always`) and Integration id **5454422** (`always`) — 5454422
     is the developing.today GitHub App (per MEMORY.md org facts).
   - `gh api repos/developing-today-forks/fleet/rulesets` → one
@@ -272,12 +272,12 @@ stderr; the JSON payloads quoted below are the in-process REST results.
 - Active GitHub-Actions surfaces (all workflow `fleet-command.yml`,
   `selection_priority: 10`, `sticky_queue_threshold: 2`):
 
-  | id | host repo | dispatch as | notes from registry |
-  |---|---|---|---|
-  | fleet-personal | dezren39/fleet | developing-today App installation 175747567 | Repo secrets include `GHCR_ORG_PAT` and `NIX_CACHE_*` for private checkouts, cross-run artifacts, Nix cache pushes |
-  | fleet-org | developing-today/fleet | user token (App installation 174792676 recorded) | “Canonical org Fleet command runner… GitHub-hosted Linux is preferred; this host also supports the Blacksmith fallback” |
-  | fleet-forks | developing-today-forks/fleet | user | Public targets only — “Private targets are rejected because this host has no GHCR_ORG_PAT secret” |
-  | fleet-org-blacksmith | developing-today/fleet (host_surface: fleet-org) | user | Blacksmith fallback, kind `blacksmith` (§2.3) |
+  | id                   | host repo                                        | dispatch as                                      | notes from registry                                                                                                     |
+  | -------------------- | ------------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+  | fleet-personal       | dezren39/fleet                                   | developing-today App installation 175747567      | Repo secrets include `GHCR_ORG_PAT` and `NIX_CACHE_*` for private checkouts, cross-run artifacts, Nix cache pushes      |
+  | fleet-org            | developing-today/fleet                           | user token (App installation 174792676 recorded) | “Canonical org Fleet command runner… GitHub-hosted Linux is preferred; this host also supports the Blacksmith fallback” |
+  | fleet-forks          | developing-today-forks/fleet                     | user                                             | Public targets only — “Private targets are rejected because this host has no GHCR_ORG_PAT secret”                       |
+  | fleet-org-blacksmith | developing-today/fleet (host_surface: fleet-org) | user                                             | Blacksmith fallback, kind `blacksmith` (§2.3)                                                                           |
 
   Plus: `org-run` (developing-today/code, workflow fleet-command.yml,
   status **standby**, priority 20 — retained for manual use; placement
@@ -288,6 +288,7 @@ stderr; the JSON payloads quoted below are the in-process REST results.
   on the laptop”).
   All Actions surfaces target `dezren39/*`, `developing-today/*`,
   `developing-today-forks/*`.
+
 - Dispatch flow (runbook, §2.4): dry-run unless `--dispatch` is
   present; returns a local `fp_…` handle, `run_id`, `runner_repo`,
   `run_url`, and once correlated a portable id `OWNER/REPO#RUN_ID`.
@@ -300,11 +301,11 @@ stderr; the JSON payloads quoted below are the in-process REST results.
   download the previous run's `fleet-output` artifact (files under
   `target/fleet-output/`).
 - A second, older route exists alongside: `fleet dispatch-test
-  scan|submit|status` dispatches `fleet-dispatch-test.yml` for work
+scan|submit|status` dispatches `fleet-dispatch-test.yml` for work
   inside a fleet-umbrella submodule, storing jobs in the
   fleet-dispatch Turso store (book `concepts/dispatch.md`). And the
   raw fallback: `gh workflow run fleet-command.yml --repo
-  developing-today/fleet -f repo=… -f ref=… -f command=…`, or
+developing-today/fleet -f repo=… -f ref=… -f command=…`, or
   `fleet-run.yml` on dezren39/fleet for the matrix-capable generic
   runner (runbook “Other dispatch routes”).
 
@@ -318,18 +319,19 @@ reads `concurrent_jobs_cap`; the macOS adapter reads
 `min(concurrent_jobs_cap, concurrent_macos_cap)` — book
 `library/placement.md` / `concepts/placement.md`):
 
-| owner | concurrent_jobs_cap | concurrent_macos_cap | plan (as recorded) | private_minutes_monthly |
-|---|---|---|---|---|
-| developing-today | **20** | **5** | free-org | 2000 |
-| developing-today-forks | **20** | **5** | free-org (assumed — “confirm”, per registry) | 2000 |
-| dezren39 | **40** | **5** | pro | 3000 |
+| owner                  | concurrent_jobs_cap | concurrent_macos_cap | plan (as recorded)                           | private_minutes_monthly |
+| ---------------------- | ------------------- | -------------------- | -------------------------------------------- | ----------------------- |
+| developing-today       | **20**              | **5**                | free-org                                     | 2000                    |
+| developing-today-forks | **20**              | **5**                | free-org (assumed — “confirm”, per registry) | 2000                    |
+| dezren39               | **40**              | **5**                | pro                                          | 3000                    |
 
 So the brief's figures (developing-today 20 / macOS 5; dezren39
 40 / macOS 5) are **exact** against the current registry.
 
 Blacksmith, from the same registry + runbook + workflow:
+
 - Surface `fleet-org-blacksmith`: budget `free_minutes_monthly:
-  3000`, `paid_cap_minutes: 0`, with the registry's rate note:
+3000`, `paid_cap_minutes: 0`, with the registry's rate note:
   “Blacksmith is orgs-only: 3,000 free min/mo, then PAID per-minute
   (it charges for public-repo minutes past the free tier).
   paid_cap_minutes is the registry knob Drew can raise; 0 = free
@@ -348,7 +350,7 @@ Blacksmith, from the same registry + runbook + workflow:
   (`containers/fleet-build/Containerfile`, dezren39/fleet) bakes
   into the vscode user's `nix.conf`:
   `extra-substituters = https://nix-cache.developing-today.workers.dev
-  https://developing-today.cachix.org` (plus the corresponding
+https://developing-today.cachix.org` (plus the corresponding
   trusted public keys, names/values of keys not reproduced here
   beyond the substituter URLs). The dispatch-test book page gives
   the same pair as the workflow's baked-in substituters.
@@ -382,7 +384,7 @@ Blacksmith, from the same registry + runbook + workflow:
     GitHub Actions runners; the sandbox is small and shared, the
     laptop is the fleet's machine of record and already loaded.
     Flow: push the code → `fleet queue dispatch --repo <owner/name>
-    --ref <ref> --command '<cmd>' --dispatch --json` → track with
+--ref <ref> --command '<cmd>' --dispatch --json` → track with
     `fleet queue session status/result <HANDLE>`; full log via
     `gh run view <RUN_ID> --repo <RUNNER_REPO> --log`.
   - Placement chooses the pool by live load (developing-today 20,
@@ -399,7 +401,7 @@ Blacksmith, from the same registry + runbook + workflow:
     “The public fork pool cannot build private targets.”
   - Runner choice: omit `--runner` for automatic placement;
     `--runner blacksmith` only intentionally; `--container
-    <image>`; `--actions-cache <key>:<path>` /
+<image>`; `--actions-cache <key>:<path>` /
     `--actions-cache-restore-key`; `--push-nix-cache` to publish.
   - `fleet shell` targets (laptop / Codespace / local / actions):
     `auto` never picks `actions`; an explicit target does not fall
@@ -466,12 +468,12 @@ failing **before any test code ran**, while the identical suites
 passed in the same dev shells on the laptop's NixOS:
 
 1. **Experimental features off** — `error: experimental Nix feature
-   'nix-command' is disabled`. Plain `nix develop` / `nix build`
+'nix-command' is disabled`. Plain `nix develop` / `nix build`
    fails immediately; no `NIX_CONFIG` in the command context
    enables `nix-command flakes`.
 2. **Missing `nixbld` group** — with the flags passed explicitly:
    `error: the group 'nixbld' specified in 'build-users-group'
-   does not exist`. The effective nix config names a group the
+does not exist`. The effective nix config names a group the
    image does not create. (Precursor on the org-run venue:
    code#12894, now **closed** — “nix unusable inside
    fleet-build:full legs — missing nixbld group”; #13159 notes the
@@ -479,7 +481,7 @@ passed in the same dev shells on the laptop's NixOS:
 3. **`/homeless-shelter` purity check** — with `build-users-group`
    overridden empty, sandboxing auto-disables and the build dies
    with `error: home directory "/homeless-shelter" exists; please
-   remove it to assure purity of builds without sandboxing`.
+remove it to assure purity of builds without sandboxing`.
    #13168's comment update (run 45150189636) records that the
    `rm -rf /homeless-shelter` caller-side prefix is **not** a
    sufficient workaround: builders run with
@@ -491,12 +493,12 @@ passed in the same dev shells on the laptop's NixOS:
 
 Per-issue records:
 
-| issue | filed by / during | distinguishing evidence | status |
-|---|---|---|---|
+| issue                                                                                                                                                                  | filed by / during                                                             | distinguishing evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | status   |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
 | **#13159** “fleet-command dispatch container cannot run nix develop out of the box (experimental features, nixbld group, homeless-shelter purity)” — label `app/fleet` | Lane ON (archer), verifying #3810's test oracle; created 2026-11-23T09:26:48Z | Runs 45142821380 (fleet-forks), 45143247862, 45144080446 — the three defects in sequence; same suite 9/9 green on laptop NixOS. Also records a 4th dispatch auto-selecting the `fleet-org-blacksmith` surface with no `--runner blacksmith` requested (no run materialised, no minutes confirmed burned) — the comment thread explicitly scopes that observation OUT of #13159 and points it at the placement program (#13146). A lane claim comment (Lane QB) records a **HOLD: execution stopped on a platform flag; awaiting Drew's item-specific approval** — the fix venue (dezren39/fleet checkout) was flagged by an execution-risk check and work stopped with nothing modified. | **open** |
-| **#13168** “fleet-command container: dispatched nix develop/build commands fail out of the box (3 stacked env defects)” | Lane PJ (archer), verifying PR #13147 (`cargo test -p id-native-shell`) | Runs 45145807796 (dezren39/fleet), 45146728602 (fleet-forks), 45147861730 (dezren39/fleet); workaround shape documented, then corrected by the 45150189636 comment above (defect 3 blocks regardless) | **open** |
-| **#13193** “fleet dispatch: nix develop commands fail in the fleet-build container (nix config / build-users-group / homeless-shelter purity)” | Lane OR (archer), verifying the #10191 conformance oracle | Four dispatches (45146910204, 45147692449, 45148497025, 45151466620, 45152850260 cited); notes dispatch works for plain shell/cargo/go commands the same night — only nix dev-shell repos (pkgs/id the standing example) are blocked and fall back to laptop builds | **open** |
-| **#13198** “fix(fleet-dispatch): nix develop commands fail in the fleet-command container (nix config shaped for a daemon that is not there)” | Lane PV work for #7916 | Runs 45154835360, 45155700465, 45156461202 — same three layers; the #7916 change itself was verified locally on the laptop and merged as PR #13182; the issue is only about the dispatched route | **open** |
+| **#13168** “fleet-command container: dispatched nix develop/build commands fail out of the box (3 stacked env defects)”                                                | Lane PJ (archer), verifying PR #13147 (`cargo test -p id-native-shell`)       | Runs 45145807796 (dezren39/fleet), 45146728602 (fleet-forks), 45147861730 (dezren39/fleet); workaround shape documented, then corrected by the 45150189636 comment above (defect 3 blocks regardless)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | **open** |
+| **#13193** “fleet dispatch: nix develop commands fail in the fleet-build container (nix config / build-users-group / homeless-shelter purity)”                         | Lane OR (archer), verifying the #10191 conformance oracle                     | Four dispatches (45146910204, 45147692449, 45148497025, 45151466620, 45152850260 cited); notes dispatch works for plain shell/cargo/go commands the same night — only nix dev-shell repos (pkgs/id the standing example) are blocked and fall back to laptop builds                                                                                                                                                                                                                                                                                                                                                                                                                      | **open** |
+| **#13198** “fix(fleet-dispatch): nix develop commands fail in the fleet-command container (nix config shaped for a daemon that is not there)”                          | Lane PV work for #7916                                                        | Runs 45154835360, 45155700465, 45156461202 — same three layers; the #7916 change itself was verified locally on the laptop and merged as PR #13182; the issue is only about the dispatched route                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | **open** |
 
 Common acceptance shape across the four: the runbook's boring form
 (e.g. `fleet queue dispatch --repo developing-today/code --ref
@@ -548,8 +550,8 @@ with no extra nix flags, no caller-side cleanup, in the command.
   Body evidence: run 45150362527 (dezren39/fleet, job
   137609977212), dispatched 2026-11-23 for #13146 verification:
   `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue
-  --features client,queue-broker` → `bash: line 1: cargo: command
-  not found` (exit 127). The body attributes it to the Run step
+--features client,queue-broker` → `bash: line 1: cargo: command
+not found` (exit 127). The body attributes it to the Run step
   executing with `CARGO_HOME`/`RUSTUP_HOME` pointed at the restored
   dependency cache without adding `$CARGO_HOME/bin` to PATH, and
   notes trivial probe commands pass (shell builtins/git), so the
@@ -577,15 +579,15 @@ with no extra nix flags, no caller-side cleanup, in the command.
 
 ### 3.4 Family status summary
 
-| issue | gap | status (2026-11-23, gh) |
-|---|---|---|
+| issue  | gap                                                                                            | status (2026-11-23, gh)                                           |
+| ------ | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | #13159 | nix develop: 3 stacked defects (+ Blacksmith auto-placement observation, scoped out to #13146) | open — lane HOLD recorded, awaiting Drew's item-specific approval |
-| #13168 | same 3 defects | open |
-| #13193 | same 3 defects | open |
-| #13198 | same 3 defects | open |
-| #13189 | no bun; + zod v4 import failure under curl-latest bun (comment evidence) | open |
-| #13170 | cargo not on PATH in the Run step | open |
-| #12894 | precursor: nix unusable in fleet-build:full legs on the org-run venue | closed |
+| #13168 | same 3 defects                                                                                 | open                                                              |
+| #13193 | same 3 defects                                                                                 | open                                                              |
+| #13198 | same 3 defects                                                                                 | open                                                              |
+| #13189 | no bun; + zod v4 import failure under curl-latest bun (comment evidence)                       | open                                                              |
+| #13170 | cargo not on PATH in the Run step                                                              | open                                                              |
+| #12894 | precursor: nix unusable in fleet-build:full legs on the org-run venue                          | closed                                                            |
 
 No fix, workaround-baking, or implementation is proposed here —
 per the brief, these are flag-held and Drew's to decide.
@@ -652,7 +654,7 @@ per the brief, these are flag-held and Drew's to decide.
     `developing-today/code`. If the release already exists, it
     re-uses it when the published sha256 matches, else re-uploads
     with `--clobber`; otherwise `gh release create --prerelease
-    --target <rev>` titled “fleet static build <short>”.
+--target <rev>` titled “fleet static build <short>”.
   - Prints `tag=` and `sha256=` — “the tag and sha256 to pin in
     scripts/muse/bootstrap.sh”.
 - Bootstrap pin: `scripts/muse/bootstrap.sh` in
@@ -700,11 +702,11 @@ independent sources agree: the profile tree
 
 ### 5.1 Current generations
 
-| target | live profile → generation | artifact (nix store) | source_rev (generation log) | activated |
-|---|---|---|---|---|
-| queue-broker | `.generations/queue-broker/5` | `/nix/store/0ymw7b3zl2hxij9npmzal6h5fq2g4cp3-fleet-0.1.0` | `b8bbcc0c49564ab31db8d58b026b67532db9491e` | 2026-11-23T09:08:19Z, result `activated` |
-| laptop-agent | `.generations/laptop-agent/3` | `/nix/store/20r9fbb0v81l61gk11vh2fj2dbclif8x-laptop-agent-0.1.0` | `b8bbcc0c49564ab31db8d58b026b67532db9491e` | 2026-11-23T09:11:22Z, result `activated` |
-| secrets-broker | `.generations/secrets-broker/2` | `/nix/store/v6g0952xc7w27xa8c2l4a6ga0rnddsp1-fleet-0.1.0` | `working-tree` | 2026-11-23T00:35:37Z, result `activated` |
+| target         | live profile → generation       | artifact (nix store)                                             | source_rev (generation log)                | activated                                |
+| -------------- | ------------------------------- | ---------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------- |
+| queue-broker   | `.generations/queue-broker/5`   | `/nix/store/0ymw7b3zl2hxij9npmzal6h5fq2g4cp3-fleet-0.1.0`        | `b8bbcc0c49564ab31db8d58b026b67532db9491e` | 2026-11-23T09:08:19Z, result `activated` |
+| laptop-agent   | `.generations/laptop-agent/3`   | `/nix/store/20r9fbb0v81l61gk11vh2fj2dbclif8x-laptop-agent-0.1.0` | `b8bbcc0c49564ab31db8d58b026b67532db9491e` | 2026-11-23T09:11:22Z, result `activated` |
+| secrets-broker | `.generations/secrets-broker/2` | `/nix/store/v6g0952xc7w27xa8c2l4a6ga0rnddsp1-fleet-0.1.0`        | `working-tree`                             | 2026-11-23T00:35:37Z, result `activated` |
 
 - The brief's expectation is **confirmed for queue-broker**:
   generation **5**, source rev **b8bbcc0** — the same rev as the
@@ -831,9 +833,9 @@ values were read in this pass.
    declares **22** (§1.1). The 22 figure is verified; when the
    count changed was not traced.
 2. **fleetNixpkgs pin**: brief expects `11dd50b…`; live flake.lock
-   + flake.nix in both fleet repos say
-   **`f9887a8a434bfba06e20dfc77bc8e0628266af84`** (§4.1). Verified
-   current; the `11dd50b` value is stale.
+   - flake.nix in both fleet repos say
+     **`f9887a8a434bfba06e20dfc77bc8e0628266af84`** (§4.1). Verified
+     current; the `11dd50b` value is stale.
 3. **“102/102” tally** for run 45022131766: run + job success
    verified via REST; the literal tally in the job summary/log
    was not downloaded (§1.3).

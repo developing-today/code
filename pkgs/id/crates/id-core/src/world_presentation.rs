@@ -947,8 +947,7 @@ impl SceneSurface {
                 node.position
                     .iter()
                     .chain(node.size.iter())
-                    .all(|component| component.is_finite()
-                        && component.abs() <= MAX_SCENE_EXTENT),
+                    .all(|component| component.is_finite() && component.abs() <= MAX_SCENE_EXTENT),
                 "scene geometry out of bounds"
             );
             ensure!(
@@ -1308,8 +1307,9 @@ impl WidgetSurface {
 /// A patch carries only the cells that changed, grouped into maximal runs of
 /// consecutive row-major indices. It is transport-neutral: the same patch can
 /// ride any shell transport, and a client that applies it to the previous
-/// screen holds exactly the next full frame. Binary encoding and compression
-/// are later F12.11 slices; this type is the delta they will encode.
+/// screen holds exactly the next full frame. Binary encoding is the F12.11
+/// phase-3 slice and optional compression the phase-4 slice, both in
+/// `screen_codec`; this type is the delta they encode.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenPatch {
@@ -2631,39 +2631,45 @@ mod tests {
             serde_json::json!({"kind": "scene", "version": 1, "nodes": nodes}).to_string()
         };
         // Bad versions.
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "scene", "version": 2, "nodes": [node("a")]})
-                .to_string()
-        )
-        .is_err());
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "scene", "version": 0, "nodes": [node("a")]})
-                .to_string()
-        )
-        .is_err());
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "scene", "version": 2, "nodes": [node("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "scene", "version": 0, "nodes": [node("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
         // Unknown fields, top level and per node (deny_unknown_fields).
         assert!(parse_surface(
             &serde_json::json!({"kind": "scene", "version": 1, "html": "<b>x</b>", "nodes": [node("a")]})
                 .to_string()
         )
         .is_err());
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0],
-             "size": [1, 1, 1], "onclick": "run()"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0],
+                 "size": [1, 1, 1], "onclick": "run()"}
+            ])))
+            .is_err()
+        );
         // Unknown shape: the shape set is closed.
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "mesh", "position": [0, 0, 0], "size": [1, 1, 1]}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "mesh", "position": [0, 0, 0], "size": [1, 1, 1]}
+            ])))
+            .is_err()
+        );
         // Empty and duplicate-id node sets.
         assert!(parse_surface(&scene(serde_json::json!([]))).is_err());
         assert!(parse_surface(&scene(serde_json::json!([node("a"), node("a")]))).is_err());
         // Too many nodes: the bound is 256 (MAX_SCENE_NODES).
-        let many: Vec<Value> = (0..257)
-            .map(|index| node(&format!("n{index}")))
-            .collect();
+        let many: Vec<Value> = (0..257).map(|index| node(&format!("n{index}"))).collect();
         assert!(parse_surface(&scene(Value::Array(many))).is_err());
         // Unsafe label text (a JSON-escaped ESC).
         assert!(parse_surface(&scene(serde_json::json!([
@@ -2672,14 +2678,18 @@ mod tests {
         .is_err());
         // Geometry bounds: size must be positive, position and size
         // components stay within 1_000_000 (MAX_SCENE_EXTENT).
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [0, 1, 1]}
-        ])))
-        .is_err());
-        assert!(parse_surface(&scene(serde_json::json!([
-            {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [-1, 1, 1]}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [0, 1, 1]}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&scene(serde_json::json!([
+                {"id": "a", "label": "A", "shape": "box", "position": [0, 0, 0], "size": [-1, 1, 1]}
+            ])))
+            .is_err()
+        );
         assert!(parse_surface(&scene(serde_json::json!([
             {"id": "a", "label": "A", "shape": "box", "position": [1000001, 0, 0], "size": [1, 1, 1]}
         ])))
@@ -2780,16 +2790,18 @@ mod tests {
             serde_json::json!({"kind": "audio", "version": 1, "cues": cues}).to_string()
         };
         // Bad versions.
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "audio", "version": 2, "cues": [cue("a")]})
-                .to_string()
-        )
-        .is_err());
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "audio", "version": 0, "cues": [cue("a")]})
-                .to_string()
-        )
-        .is_err());
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "audio", "version": 2, "cues": [cue("a")]}).to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "audio", "version": 0, "cues": [cue("a")]}).to_string()
+            )
+            .is_err()
+        );
         // Unknown fields, top level and per cue (deny_unknown_fields) —
         // in particular a cue carries no embedded bytes or URL.
         assert!(parse_surface(
@@ -2797,16 +2809,20 @@ mod tests {
                 .to_string()
         )
         .is_err());
-        assert!(parse_surface(&audio(serde_json::json!([
-            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 1000,
-             "repeat": false, "data": "AAAB"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 1000,
+                 "repeat": false, "data": "AAAB"}
+            ])))
+            .is_err()
+        );
         // Unknown format: the format set is closed.
-        assert!(parse_surface(&audio(serde_json::json!([
-            {"id": "a", "label": "A", "format": "flac", "duration_ms": 1000, "repeat": false}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "flac", "duration_ms": 1000, "repeat": false}
+            ])))
+            .is_err()
+        );
         // Empty and duplicate-id cue sets.
         assert!(parse_surface(&audio(serde_json::json!([]))).is_err());
         assert!(parse_surface(&audio(serde_json::json!([cue("a"), cue("a")]))).is_err());
@@ -2820,14 +2836,18 @@ mod tests {
         .is_err());
         // Duration bounds: a cue lasts 1..=3_600_000 ms
         // (MAX_AUDIO_DURATION_MS, one hour).
-        assert!(parse_surface(&audio(serde_json::json!([
-            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 0, "repeat": false}
-        ])))
-        .is_err());
-        assert!(parse_surface(&audio(serde_json::json!([
-            {"id": "a", "label": "A", "format": "ogg", "duration_ms": 3600001, "repeat": false}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 0, "repeat": false}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&audio(serde_json::json!([
+                {"id": "a", "label": "A", "format": "ogg", "duration_ms": 3600001, "repeat": false}
+            ])))
+            .is_err()
+        );
         // Oversize document: the serialized cap is 65536 bytes
         // (MAX_AUDIO_BYTES); a single huge label trips it.
         assert!(parse_surface(&audio(serde_json::json!([
@@ -2878,23 +2898,25 @@ mod tests {
         // parse_surface, which the host turns into an error frame),
         // never silently dropped to the legacy text path and never
         // accepted.
-        let button = |id: &str| {
-            serde_json::json!({"kind": "button", "id": id, "label": "A", "action": "go"})
-        };
+        let button = |id: &str| serde_json::json!({"kind": "button", "id": id, "label": "A", "action": "go"});
         let widget = |controls: Value| {
             serde_json::json!({"kind": "widget", "version": 1, "controls": controls}).to_string()
         };
         // Bad versions.
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "widget", "version": 2, "controls": [button("a")]})
-                .to_string()
-        )
-        .is_err());
-        assert!(parse_surface(
-            &serde_json::json!({"kind": "widget", "version": 0, "controls": [button("a")]})
-                .to_string()
-        )
-        .is_err());
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "widget", "version": 2, "controls": [button("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(
+            parse_surface(
+                &serde_json::json!({"kind": "widget", "version": 0, "controls": [button("a")]})
+                    .to_string()
+            )
+            .is_err()
+        );
         // Unknown fields, top level and per control
         // (deny_unknown_fields) — in particular a control carries no
         // URL or script.
@@ -2903,21 +2925,27 @@ mod tests {
                 .to_string()
         )
         .is_err());
-        assert!(parse_surface(&widget(serde_json::json!([
-            {"kind": "button", "id": "a", "label": "A", "action": "go",
-             "script": "run()"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A", "action": "go",
+                 "script": "run()"}
+            ])))
+            .is_err()
+        );
         // Unknown control kind: the kind set is closed.
-        assert!(parse_surface(&widget(serde_json::json!([
-            {"kind": "slider", "id": "a", "label": "A", "action": "go"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "slider", "id": "a", "label": "A", "action": "go"}
+            ])))
+            .is_err()
+        );
         // A link names no action: following it must deliver one.
-        assert!(parse_surface(&widget(serde_json::json!([
-            {"kind": "link", "id": "a", "label": "A"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "link", "id": "a", "label": "A"}
+            ])))
+            .is_err()
+        );
         // Empty and duplicate-id control sets.
         assert!(parse_surface(&widget(serde_json::json!([]))).is_err());
         assert!(parse_surface(&widget(serde_json::json!([button("a"), button("a")]))).is_err());
@@ -2926,21 +2954,27 @@ mod tests {
         assert!(parse_surface(&widget(Value::Array(many))).is_err());
         // Unsafe label text (a JSON-escaped ESC) and an unsafe action
         // id (a URL is not an action id).
-        assert!(parse_surface(&widget(serde_json::json!([
-            {"kind": "button", "id": "a", "label": "A\u{001b}[2J", "action": "go"}
-        ])))
-        .is_err());
-        assert!(parse_surface(&widget(serde_json::json!([
-            {"kind": "button", "id": "a", "label": "A",
-             "action": "https://example.invalid"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A\u{001b}[2J", "action": "go"}
+            ])))
+            .is_err()
+        );
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "A",
+                 "action": "https://example.invalid"}
+            ])))
+            .is_err()
+        );
         // Oversize document: the serialized cap is 65536 bytes
         // (MAX_WIDGET_BYTES); a single huge label trips it.
-        assert!(parse_surface(&widget(serde_json::json!([
-            {"kind": "button", "id": "a", "label": "x".repeat(70_000), "action": "go"}
-        ])))
-        .is_err());
+        assert!(
+            parse_surface(&widget(serde_json::json!([
+                {"kind": "button", "id": "a", "label": "x".repeat(70_000), "action": "go"}
+            ])))
+            .is_err()
+        );
     }
 
     #[test]

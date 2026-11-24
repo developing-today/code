@@ -5,13 +5,22 @@
 # not dispatch a workflow. The two PM pushes this raises are the
 # deliverable's own notifications, labeled as verification.
 set -u
-TOK=$(fleet secrets get fleet.queue-broker-token) || { echo "TOKEN-FETCH-FAILED"; exit 1; }
-[ -n "$TOK" ] || { echo "TOKEN-EMPTY"; exit 1; }
+TOK=$(fleet secrets get fleet.queue-broker-token) || {
+  echo "TOKEN-FETCH-FAILED"
+  exit 1
+}
+[ -n "$TOK" ] || {
+  echo "TOKEN-EMPTY"
+  exit 1
+}
 B=http://100.99.113.103:4801
 H="X-Agent-Token: $TOK"
 CT="Content-Type: application/json"
 
-OPEN=$(curl -fsS -X POST "$B/actions-exec-open" -H "$H" -H "$CT" -d '{"host_repo":"dezren39/fleet","workflow":"fleet-exec.yml","seat":"ae3-deploy-verify","lease_s":600,"max_s":900,"context":"https://github.com/developing-today/code/issues/13774"}') || { echo "OPEN-FAILED"; exit 1; }
+OPEN=$(curl -fsS -X POST "$B/actions-exec-open" -H "$H" -H "$CT" -d '{"host_repo":"dezren39/fleet","workflow":"fleet-exec.yml","seat":"ae3-deploy-verify","lease_s":600,"max_s":900,"context":"https://github.com/developing-today/code/issues/13774"}') || {
+  echo "OPEN-FAILED"
+  exit 1
+}
 HANDLE=$(printf %s "$OPEN" | jq -r .handle)
 echo "open: handle=$HANDLE context=$(printf %s "$OPEN" | jq -r .session.context)"
 

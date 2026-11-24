@@ -78,6 +78,7 @@ tiered sensitivity, and hybrid (FTS + vector) retrieval. Program epic:
 ## 2. Drew's directions (the next-steps agenda — design all of it, build what's unblocked)
 
 ### A. Integrate all data sources with automatic ingest
+
 Ingestion today is **manual/script-driven** — the only laptop schedule is the daily backup
 timer; ingest scripts still live in hatch-personal (#5670 migration open); the recurring sweep
 runner #7969 is unbuilt. The target list already exists as **#9097 Workstream E** (open,
@@ -100,6 +101,7 @@ checks (2026-11-22) — record it as a named future source; do not build Gmail i
 word.
 
 ### B. Query planning
+
 Design and build the planner the API already pretends to have: fast classifier (<10 ms) →
 conditional transforms → routed retrieval → fuse → rerank. Components: conversational query
 rewriting; expansion; multi-query / RAG-Fusion; HyDE (gated to underspecified queries);
@@ -110,6 +112,7 @@ transform; evaluation sliced by query class so each strategy proves itself. Mini
 planner: routing + filter extraction + conversational rewriting; HyDE/decomposition second wave.
 
 ### C. More search characteristics on top of Snowflake
+
 The base is Arctic Embed m-v2.0 (768d; MRL truncation to 256d retains ~98% quality — a free
 two-resolution index before any new model). Layer, each golden-set-measurable: lexical (BM25 —
 exists), **learned sparse (SPLADE)**, **late interaction (ColBERT) as a top-100 mid-stage**,
@@ -123,6 +126,7 @@ interesting challenger; any model change follows the migration discipline — mo
 vectors, shadow index, **cutover on eval result, not on completion**.
 
 ### D. Reranking
+
 Add a cross-encoder stage over the fused top-50–200: fixes precision, not recall; typical
 +5–15 nDCG@10 at 50–500 ms CPU. Default open candidate: **BGE-Reranker-v2-m3** (568M,
 multilingual) via fastembed-rs `TextRerank` (ONNX) or candle (avoids the ONNX Runtime AVX/SIGILL
@@ -133,6 +137,7 @@ the latency knob. Wire the feedback loop (#6046/#8062 seam, `atlas-feedback/v1`)
 experiments — it is the prerequisite for any learning-to-rank claims.
 
 ### E. Recommender
+
 Single-user system: no cross-user collaborative filtering exists to copy. The signals are
 **content similarity** (decaying weighted profile centroid over the existing embedding index),
 **session co-occurrence** (item-to-item CF over Drew's own sessions — the strongest single-user
@@ -145,6 +150,7 @@ foundation (#10158) when its shepherd hold clears; design the DO-accumulated "ne
 from #9109 Part C.
 
 ### F. Search integration for fleet and for ID
+
 - **Fleet**: `fleet search` is live but searches a stale corpus (§1) — freshness (§A) is the
   fleet-facing fix. Then: result caching keyed by index version, batch search for lanes,
   offline fallback via libSQL embedded replicas (native vectors work identically local/remote —
@@ -157,6 +163,7 @@ from #9109 Part C.
   embedder. ID has **no live query path today** — this workstream creates it.
 
 ### G. MCP and programmatic access
+
 One retrieval core, three surfaces, tier enforcement **inside the core** so every surface
 inherits it: **MCP** for agents (the copyable shape is `search → read` two-step tools returning
 references + snippets, never resource enumeration at corpus scale; the current server exposes a
@@ -171,6 +178,7 @@ multi-tenant answer he hasn't given. Also fix the Worker cache: indefinite with 
 (#6805) is not a caching strategy.
 
 ### H. Evaluation & quality programme
+
 Everything above is gated on measurement. Grow the golden set from real traces (gold contexts
 harvested from real retrieval runs — beware the 0.91-offline / 0.40-production trap), with
 no-answer probes and adversarial slices (distractors, semantic twins, alias-only, long-doc).
@@ -179,6 +187,7 @@ CI regression gate on **every** model / chunker / fusion / reranker / planner ch
 Online: lightweight failure mining from real fleet/ID queries folded back into the set.
 
 ### I. Book, issue map, and the living record
+
 1. **An Atlas book in bookwright form** (survey before structure; coordinator-fixed skeleton;
    mechanical coverage proof; zero-warning build), joining the existing code-repo Pages deploy
    under **https://developing-today.github.io/code/atlas/** (one Pages site per repo — never a

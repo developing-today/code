@@ -817,6 +817,7 @@ let
       fleetDocs = pkgs.callPackage ../pkgs/fleet/docs.nix { };
       atlasDocs = pkgs.callPackage ../pkgs/atlas-search/docs.nix { };
       idDocs = pkgs.callPackage ../pkgs/id/docs.nix { };
+      pmDocs = pkgs.callPackage ../pm-stack/docs.nix { };
       codeDocs = pkgs.callPackage ../pkgs/code-book/docs.nix { };
       labDocs = pkgs.callPackage ../pkgs/lab/docs.nix { };
       mcpxRealServers = pkgs.callPackage ../pkgs/mcpx/real-servers.nix { };
@@ -874,6 +875,7 @@ let
         fleet-docs = fleetDocs;
         atlas-docs = atlasDocs;
         id-docs = idDocs;
+        pm-docs = pmDocs;
         code-docs = codeDocs;
         lab-docs = labDocs;
         mcpx-real-servers = mcpxRealServers;
@@ -988,6 +990,7 @@ let
               # Root NixOS runtime output; the ID flake's named test
               # checks remain available and run through id-check CI.
               checkRuntimePackages = false;
+              crane = inputs.crane;
             }
           );
         in

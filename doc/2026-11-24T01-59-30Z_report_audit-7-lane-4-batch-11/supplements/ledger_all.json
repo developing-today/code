@@ -1,0 +1,1787 @@
+[
+  {
+    "evidence": "Explicit 'Closes no issue'; Rust codec foundation + golden vector + 4 tests pass; #805 stays open for negotiation/framing/TS-parity follow-ups as stated.",
+    "gap": null,
+    "issue": 805,
+    "pr": 12241,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Follow-up to merged PR #12227 (not an issue); all nine review findings fixed with failing-first tests (963 pass) and doc update.",
+    "gap": null,
+    "issue": null,
+    "pr": 12243,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Body closes #12244 (CLOSED 'Daily flake sync & config optimization'); 1-line PATH fix in nixos/services/pm-apps/default.nix does not match that scope.",
+    "gap": {
+      "title": "PR 12245 closes unrelated issue #12244",
+      "why": "Closing reference does not match the change; PATH fix may have no spawning issue; #12244 closure is suspect (Lane 2). Umbrella pointer filed; no reopen."
+    },
+    "issue": 12244,
+    "pr": 12245,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Closes #12208 (CLOSED 'Scheduled Palette'); 3-line image-node-view.ts alt-text labelling + test fits palette title.",
+    "gap": null,
+    "issue": 12208,
+    "pr": 12248,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Tracking #12250 (OPEN 'Palette: daily UX/accessibility'); 3-line cursors.ts focus restore matches body.",
+    "gap": null,
+    "issue": 12250,
+    "pr": 12251,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Bolt perf slice (Refs, not Closes); heap-ordered expiry + O(1) counter verified, regression test, 271 pass.",
+    "gap": null,
+    "issue": 12249,
+    "pr": 12253,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Body closes #12254; Rust half of #12242 bullet 2, TS parity deferred to follow-up slice PR 12667 (same batch).",
+    "gap": null,
+    "issue": 12254,
+    "pr": 12255,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Routine flake-input bump; flake evaluates, no tests.",
+    "gap": null,
+    "issue": null,
+    "pr": 12256,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Clock injected into main(), boundary test exact-24h posts / just-inside suppresses; 28 tests pass.",
+    "gap": null,
+    "issue": 12257,
+    "pr": 12258,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only Atlas metadata schema design note; no implementation, no close claim.",
+    "gap": null,
+    "issue": null,
+    "pr": 12259,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "eval removed; env via execve with hostile quote/substitution regression test (24 checks); matches issue suggested fix.",
+    "gap": null,
+    "issue": 12261,
+    "pr": 12262,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "onnxruntime from fork mirror (same NAR hash) per issue option 1; broker binds first with OnceLock + exit-3-until-ready; 437 tests pass.",
+    "gap": null,
+    "issue": 12247,
+    "pr": 12263,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "No close claim (refs closed PR #7657); v8-to-v9 in-place upgrade with refuse-untouched guard; 164 event_store tests pass.",
+    "gap": null,
+    "issue": null,
+    "pr": 12264,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "No close claim; repairs #10219 validator cell-comparison, failing-first test, FDR-0013/finish-work rules in AGENTS.md.",
+    "gap": null,
+    "issue": null,
+    "pr": 12265,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Disposition doc + golden fixture + seam test: producer_unavailable stays opaque, Atlas profile never converts to raw-blake3-256.",
+    "gap": null,
+    "issue": 10179,
+    "pr": 12266,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "All three acceptance items: units committed with per-job route, live timer fired 2026-11-21, evidence on #2019; issue closed by Drew day after merge.",
+    "gap": null,
+    "issue": 2232,
+    "pr": 12267,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Refs #9106/#12232/#10267, explicitly does not close #10267; 44 unreached modules declared, reach checker + skeleton tests (1463 pass).",
+    "gap": null,
+    "issue": 9106,
+    "pr": 12268,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "One backup leg (cold bundle + R2 upload/read-back, 7 tests) for open #8584; scheduling/freshness/rehosting/mirror/D1-restore left open.",
+    "gap": null,
+    "issue": 8584,
+    "pr": 12269,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Conservative cross-source identity resolver + canonical name + model_id FK per slice-3 scope; 12 gatherer tests incl. ambiguity rejection.",
+    "gap": null,
+    "issue": 10041,
+    "pr": 12271,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Doc-only acceptance: fleet-lane adoption decision recorded, deliverable box checked; issue closed.",
+    "gap": null,
+    "issue": 8871,
+    "pr": 12273,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "fd-3 adoption with descriptor validation, no-fallback errors, restart-endpoint refusal; 11 fixture modes + daemon package pass.",
+    "gap": null,
+    "issue": 12270,
+    "pr": 12276,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "No close claim; clamps Retry-After 1..=3600, live-bounds reconciliation on #9029; backoff test passes.",
+    "gap": null,
+    "issue": null,
+    "pr": 12277,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Browser join advertises device_input, session carries into actor validation, cancel/submit + gating tests; 14 form tests pass.",
+    "gap": null,
+    "issue": 8932,
+    "pr": 12281,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Names no issue; epic-closure classifier with fail-closed incomplete facts, 8 epics tests; wiring/reparenting left as follow-ups.",
+    "gap": null,
+    "issue": null,
+    "pr": 12282,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Implements spawnRollup API + 3 unambiguous parentings with live read-back (36 tests); F4/P2 homes and #8829/#8830 blocked by 100-child cap, issue stays open.",
+    "gap": null,
+    "issue": 9068,
+    "pr": 12283,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Adds retained meta quota-window regression in quota-current.ts and test; pinned retained-freshness contract. Issue 9358 is closed.",
+    "gap": null,
+    "issue": 9358,
+    "pr": 12285,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only C7 design (+214) for reporting architecture, referencing #9575; judged on stated intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12286,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Migration pass with provenance markers and owner-confirmed linking (+466/-17, 11 files) matches #9607 acceptance; issue closed.",
+    "gap": null,
+    "issue": 9607,
+    "pr": 12287,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only correction to #5866 local-dev record (+5/-8), follow-up to PR #11771; intent met.",
+    "gap": null,
+    "issue": null,
+    "pr": 12288,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Moves node setup into dht-node crate, slims main.rs to wiring (+117/-60); step 2 of #8957, which is closed.",
+    "gap": null,
+    "issue": 8957,
+    "pr": 12289,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Adds C8 design doc + index (+142); body leaves report-search and end-to-end investigation demos open, #9576 still open.",
+    "gap": {
+      "title": "C8 demonstrations: report search and end-to-end investigation",
+      "why": "PR body explicitly leaves acceptance demos open; verify whether tracked on #9576 before filing."
+    },
+    "issue": 9576,
+    "pr": 12290,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Watchdog recovery no longer closes incident issues or completes queue tasks (+46/-119); 39 tests reported passing. Judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12293,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Non-disruptive same-build slice of #10639 (socket activation and drain-signal handling not implemented; live verification unperformed).",
+    "gap": {
+      "title": "OpenCode socket activation and drain-signal handling (#10639 remainder)",
+      "why": "PR body explicitly excludes socket activation and drain handling; live PID/port continuity unverified. #10639 open - remainder tracked there unless demos unfiled."
+    },
+    "issue": 10639,
+    "pr": 12299,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "PR says independent page-health-push schedule is external and unconfigured here; two-cycle orchestrator-feed publication missing. Neither evidenced as filed.",
+    "gap": {
+      "title": "Wire watchdog heartbeat checker schedule and orchestrator feed",
+      "why": "Independent page-health-push schedule external/unconfigured; two-cycle orchestrator-feed publication missing (13019 may supersede part). Gap issue filed; no reopen."
+    },
+    "issue": null,
+    "pr": 12305,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Three settings effect probes (+275/-31); full internal/e2e suite and coverage-guard acceptance still pending per body.",
+    "gap": null,
+    "issue": 8470,
+    "pr": 12307,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "One-line docs change (+1/-1) aligning ERR-08 with recorded section E disposition and #2438 implementation.",
+    "gap": null,
+    "issue": 2438,
+    "pr": 12308,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Adds queue show/history verb (+181/-14). Acceptance requires demo on task 11300 and multi-lane timeline; not shown in body. Issue 8200 closed: suspect-closure.",
+    "gap": {
+      "title": "Suspect closure: #8200 closed without demo acceptance",
+      "why": "Queue show/history acceptance (demo on task 11300, multi-lane timeline) not evidenced; issue closed. Lane 2 pointer."
+    },
+    "issue": 8200,
+    "pr": 12311,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Partial #9075 checkpoint: automatic identity at Fleet start, create-path provenance stamp (needs #9073), launcher integration remain; issue open. Continued post-batch by #12838 (server-minted session ids); #9075 closed.",
+    "gap": null,
+    "issue": 9075,
+    "pr": 12326,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Cargo-broker workspace-output cleanup on lease with README and tests (+105/-1); scoped fix in #8392, closed.",
+    "gap": null,
+    "issue": 8392,
+    "pr": 12327,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "fileops.rs (+64/-1): base-name delete preserves foreign archive-shaped siblings per #11791 acceptance; closed.",
+    "gap": null,
+    "issue": 11791,
+    "pr": 12332,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Owner-inventory matcher in atlas-core with docs (+334/-1), synthetic fixtures only, fail-closed loading per #6049 Layer 3; closed.",
+    "gap": null,
+    "issue": 6049,
+    "pr": 12343,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Large pm-console feature (+4150/-11, 33 files) with per-section write surface and sign-in design; stated intent delivered.",
+    "gap": null,
+    "issue": null,
+    "pr": 12360,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Migrates web-gen-api to stable Leptos 0.8 (Cargo/toolchain). PR says wasm32 hydrate target check was unavailable.",
+    "gap": {
+      "title": "Verify web-gen-api hydrate target on wasm32 after Leptos 0.8 migration",
+      "why": "PR body says hydrate check unavailable; client build unverified. Check later PRs/CI before filing."
+    },
+    "issue": 12344,
+    "pr": 12362,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Closes #12349 but body says only period-generation slice landed. #12349 still lists canonical records, append/idempotency, conflict/soft-window enforcement, snapshots as open, yet issue CLOSED: suspect-closure.",
+    "gap": {
+      "title": "Suspect closure: #12349 closed after period slice only",
+      "why": "C7 leaf 1 remainder open per issue progress list; closed by PR #12364. Lane 2 pointer."
+    },
+    "issue": 12349,
+    "pr": 12364,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Ports web-gen-api-axum to stable Leptos build (Cargo/toolchain, lockfile mechanical). Matches #12275 baseline-repair scope; closed.",
+    "gap": null,
+    "issue": 12275,
+    "pr": 12366,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Restores stable Leptos build for web-gen (Cargo/toolchain), drops nightly-only setup. Matches #12274; closed.",
+    "gap": null,
+    "issue": 12274,
+    "pr": 12369,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Metadata store foundation (+235, parser + DDL with SQLite test). Writes no live rows, no GitHub ingest, lacks five query verbs and body/DB divergence reporting. Continued post-batch by #12864 (persist rows), #12872 (query surface), #12988 (create path); #9074 closed.",
+    "gap": null,
+    "issue": 9074,
+    "pr": 12371,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Docs-only: provisional sandbox defaults on #7011 recorded in owner-preferences.md (+2/-1) per decision record.",
+    "gap": null,
+    "issue": 7011,
+    "pr": 12388,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Design doc for self-hosted tier adapters (+120), the design-first deliverable #9087 asks for; closed.",
+    "gap": null,
+    "issue": 9087,
+    "pr": 12392,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Gated per-key purge route in worker index.ts + cache_do.ts with worker.test.ts test (+87); matches #8312 build-now scope; closed.",
+    "gap": null,
+    "issue": 8312,
+    "pr": 12393,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Converts three web-gen rust-toolchain files to .toml (6 files, +6/-3); closes #11350, closed with Dependabot parse error addressed.",
+    "gap": null,
+    "issue": 11350,
+    "pr": 12394,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Extracts AppError/ErrorTemplate into start-axum-error with compat re-export (5 files, +110/-78); closes #8967, closed, matches scope.",
+    "gap": null,
+    "issue": 8967,
+    "pr": 12395,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Moderation/hide/true-delete/GC transition spec + reciprocal links (3 files, +26/-1); closes #9130, closed, design-doc scope matches.",
+    "gap": null,
+    "issue": 9130,
+    "pr": 12397,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Journal event envelope, correction example, traceability for JRN-01 IDs (1 file, +51); closes #9463, closed.",
+    "gap": null,
+    "issue": 9463,
+    "pr": 12398,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Per-embed classification design doc (1 file, +137); closes #9096, closed; body states decisions and follow-ups.",
+    "gap": null,
+    "issue": 9096,
+    "pr": 12399,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "One-time enrollment handoff (12 files, +837/-11): Worker, enroll script, prompt, docs. No Closes ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12400,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Preserves identity generation floor after backup purge, rejects replay (1 file, +37/-1) with regression test; closes #9024, closed.",
+    "gap": null,
+    "issue": 9024,
+    "pr": 12401,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Explicit User-Agent in create-url.py + feedback note (2 files, +2); follow-up fix to #12400, no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12407,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Per-embed classification record parsing/composition in atlas-core (2 files, +465) with tests; no issue ref, judged on intent against #9096 design.",
+    "gap": null,
+    "issue": null,
+    "pr": 12408,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Classifies 'Could not resolve to a node' as permission refusal in gh.rs (1 file, +99/-4); closes #12154, closed, completing remaining half.",
+    "gap": null,
+    "issue": 12154,
+    "pr": 12409,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Isolates named Muse tailnet identities in bootstrap.sh (2 files, +76/-3) with probe + docs; no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12410,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Docs-only Iroh/Tailscale direct-path clarification (2 files, +6/-4); no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12411,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Console as gate for whole public hostname (11 files, +569/-85); body refs #12360 only (not closing); security intent implemented in server/config/tests.",
+    "gap": null,
+    "issue": 12360,
+    "pr": 12412,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Idle-connection effect probes, three exemptions removed (4 files, +186/-9); related to #8469, not closing; keeps http.streamBufferInit exempt while #8469 is closed: suspect-closure.",
+    "gap": {
+      "title": "Suspect closure: #8469 closed with http.streamBufferInit exemption remaining",
+      "why": "PR explicitly keeps http.streamBufferInit in exemptions; #8469 closed. Lane 2 pointer."
+    },
+    "issue": 8469,
+    "pr": 12413,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Affected-id-crate selector script + fixture tests (2 files, +275); no close ref; judged on intent with tests per body.",
+    "gap": null,
+    "issue": null,
+    "pr": 12418,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Daily R2 bundle systemd timer + multi-repo bundler (16 files, +300/-33) with tests; no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12419,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Restored-key markers via write_durable with temp cleanup + error context (1 file, +67/-2) + three tests; Fixes #12420, closed.",
+    "gap": null,
+    "issue": 12420,
+    "pr": 12421,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Fixes sign.sh double keystore password read (1 file, +5/-1); refs #12412 only; matches described apksigner EOF failure.",
+    "gap": null,
+    "issue": 12412,
+    "pr": 12422,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Console-served Android APK route for signed-in owner (7 files, +93/-19) with tests; refs #12360 only; judged on intent.",
+    "gap": null,
+    "issue": 12360,
+    "pr": 12423,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Console-gate-aware link + PWA shortcut behind PM_AGG_CONSOLE_HOST (5 files, +79/-1) with nav/a11y/curation tests; Closes #12416, closed.",
+    "gap": null,
+    "issue": 12416,
+    "pr": 12424,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only results-first plan Done/Progress rows (1 file, +28/-26); no close ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12425,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Queue-compatible any-* default lane for standalone agent names (5 files, +86/-6), fixing 'unknown lane_id shed' failure in #12236. Does not close; #12236 open with follow-ups tracked there.",
+    "gap": null,
+    "issue": 12236,
+    "pr": 12429,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Prefix-ordering marker to console.log for stable check (1 file, +10/-1); fixes amd-build blocker in #12428, closed.",
+    "gap": null,
+    "issue": 12428,
+    "pr": 12451,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Large console app overhaul (23 files, +4794/-396) with work/push/notify tests; refs #12360 only; judged on intent.",
+    "gap": null,
+    "issue": 12360,
+    "pr": 12452,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Prompt visibility + board-sync reply detection fixes + five review findings (5 files, +40/-40); refs #12452 only; judged on intent with tests.",
+    "gap": null,
+    "issue": 12452,
+    "pr": 12454,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Dated Phase 12 exit audit; explicitly defers release because evidence does not show all criteria met. Documentation intent fulfilled.",
+    "gap": null,
+    "issue": null,
+    "pr": 12455,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Batch planner, command builder, batch log as first slice of batched pre-merge gate; #12229 open, full gate not delivered.",
+    "gap": null,
+    "issue": 12229,
+    "pr": 12463,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Broker label-to-priority-band mapping as first code slice; broader queue-priority work on #7030 remains open.",
+    "gap": null,
+    "issue": 7030,
+    "pr": 12464,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Roc code generation + runner support matching #1964 Roc platform investigation/implementation intent; closed.",
+    "gap": null,
+    "issue": 1964,
+    "pr": 12465,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Fixes two named test failures (cold-cache schema output, server-side abort observation); #12428 closed.",
+    "gap": null,
+    "issue": 12428,
+    "pr": 12469,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Record-join validation at admission + federation tests + plan update; #12279 closed.",
+    "gap": null,
+    "issue": 12279,
+    "pr": 12470,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Diagnostic profiling + measurements, but p99 above target; PR and #557 state performance criterion open.",
+    "gap": null,
+    "issue": 557,
+    "pr": 12471,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Focus to main landmark after SPA navigation + regression test, matching a11y ask; #12468 closed.",
+    "gap": null,
+    "issue": 12468,
+    "pr": 12472,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Pareto nested scan replaced with sorted sweep + equal-axis/duplicate coverage; #12467 is open scheduled-work tracking item, optimization matches.",
+    "gap": null,
+    "issue": 12467,
+    "pr": 12473,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Gate execution/logging/bisect-merge added, but linked #12470 is the narrower record-join task already done by #12470; broader gate scope not represented by that issue.",
+    "gap": {
+      "title": "Confirm first live batch run for gate driver",
+      "why": "Body: no live batch attempted (rebuild running); first live batch remains. #12470 closed. Umbrella pointer filed; no reopen."
+    },
+    "issue": 12470,
+    "pr": 12474,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Roc client wire semantics + execution-safety gaps with compiler/runner/fail-closed regression coverage; #12466 closed.",
+    "gap": null,
+    "issue": 12466,
+    "pr": 12475,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Restore marker published before installing imported key bytes + failure-injection coverage; #12456 closed.",
+    "gap": null,
+    "issue": 12456,
+    "pr": 12476,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Prunes expensive persistent tree-scan path; installed Python profile for exposure service. Stated operational fixes; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12483,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Proving integration test for inventory item 9-7: source-only mode refuses start without configured compiler; #796 closed.",
+    "gap": null,
+    "issue": 796,
+    "pr": 12485,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "C7 period composer + generation command (period handling, rollups, storage-backend behavior); #12352 closed.",
+    "gap": null,
+    "issue": 12352,
+    "pr": 12486,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Ordered first provider slice, bounded durable per-world KV storage with refusal + replay coverage; #1062 closed.",
+    "gap": null,
+    "issue": 1062,
+    "pr": 12489,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Conflict-diff review UI + append-only correction/resolution ops per C7 leaf issue; #12350 closed.",
+    "gap": null,
+    "issue": 12350,
+    "pr": 12491,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Restored-key imports serialized with marker-derived advisory lock + concurrent replacement regression; #12487 closed.",
+    "gap": null,
+    "issue": 12487,
+    "pr": 12493,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Placement selection, runner handoff, registry, ops docs updated to dispatcher scope; documents known limitations. Judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12494,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "On-disk persistence for version/report records via content store + restart-path coverage; #12492 closed.",
+    "gap": null,
+    "issue": 12492,
+    "pr": 12497,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Profiler + dominant worker-parking cost fixed, latency improved, but 50ms p99 target unmet; #557 open.",
+    "gap": null,
+    "issue": 557,
+    "pr": 12499,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Token parsing on cache-daemon path: personal secret parsed into token per fleet gh rotation contract; #8887 closed.",
+    "gap": null,
+    "issue": 8887,
+    "pr": 12500,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Listed app fixes + review findings (prompt freshness, bot-comment filtering, Android widget/device-link); #12454 closed.",
+    "gap": null,
+    "issue": 12454,
+    "pr": 12501,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Post-fix measurement recorded, but p99 426.224ms vs 50ms target; PR explicitly leaves #557 open for unloaded rerun.",
+    "gap": null,
+    "issue": 557,
+    "pr": 12503,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "C7 rollup review gaps closed: point-in-time selection, period scoping, provenance separation, regression tests; follow-up to closed composer issue #12486.",
+    "gap": null,
+    "issue": 12486,
+    "pr": 12504,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Edge-served PM console with laptop relay + stale-state behavior (43 files, +6317/-693). No closing ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12505,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Dependabot: sharp/wrangler manifests + lockfile (2 files). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12506,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Dependabot: undici/wrangler manifests + lockfile (2 files). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12507,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Edge cutover + fixes from #12505 review (18 files, +640/-81). No closing ref; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12511,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Marker-recovery logic + tests (4 files, +225/-1); refuses unsafe local commits before tagging/refs. No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12515,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "ID gate runner evaluates batches inside candidate nix develop shell + runner tests (2 files, +65/-8). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12516,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "In-app Google sign-in setup flow with validation + secret-safe handling (13 files, +565/-37). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12517,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Dated plan update: edge migration, deploy stall fix, Sign-in screen, follow-ups (1 file, +3). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12522,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Retryable quiet + recovery push transitions, failed-delivery handling, regression tests for both paths (2 files, +67/-9); issue closed.",
+    "gap": null,
+    "issue": 12513,
+    "pr": 12523,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Whole-startup refusal + configured-compiler control tests for inventory item 9-7 (1 test file, +103); #796 scope.",
+    "gap": null,
+    "issue": 796,
+    "pr": 12524,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "KV journal JSON validation during replay + malformed in-bounds JSON coverage (2 files, +11); targeted test passed per body.",
+    "gap": null,
+    "issue": 12495,
+    "pr": 12525,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Nightly timeout 90->300 min (1 workflow file). #1372/#1374 referenced as beneficiaries, not spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12526,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Bidirectional linked-phone metadata sync, tombstone propagation, stale/malformed snapshot + token exclusion coverage (9 files, +193/-3).",
+    "gap": null,
+    "issue": 12519,
+    "pr": 12528,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Blob provider: bounded content-addressed storage, journaling/replay validation, checkpoint handling + tests (13 files, +1013/-17); planned second slice of #1062.",
+    "gap": null,
+    "issue": 1062,
+    "pr": 12529,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Portable Fleet run IDs, artifact reuse for follow-ups, verified remote-build handoff guide (3 files, +227/-19). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12530,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Build-lane perf: shared target leases for compile commands with verification + safeguards (15 files, +1408/-65). No unfiled remainder evidenced.",
+    "gap": null,
+    "issue": 557,
+    "pr": 12540,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Implements F2a only (2 files, +634/-9); F2b/F2c left for decision-record-backed steps. Completed-later by #12565 (F2b) and #12570 (F2c), same batch.",
+    "gap": null,
+    "issue": 12233,
+    "pr": 12543,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Fleet gh cache-daemon findings + write-path defect/fix doc (1 file, +90). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12545,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Protected manual publisher workflow + tests (6 files, +2382); cutover prerequisites documented. No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12549,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Trusted manual GitHub Actions deploy path with provenance + baseline checks (6 files, +315/-6). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12550,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Fleet command inventories + docs aligned; fleet-operations skill added; remote-build guidance (6 files, +372/-113). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12551,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Second-pass perf: inline journal write optimization + benchmark evidence (2 files, +72/-105); remaining audited seams described, no unfiled gap.",
+    "gap": null,
+    "issue": 557,
+    "pr": 12552,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Tailnet cold-start/logging/poll-budget port fixes + bash syntax validation (1 script, +20/-1). No spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12556,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Unknown-lane auto-registration, unknown-lane error path removed, tests pinning new behavior (3 files, +107/-55).",
+    "gap": null,
+    "issue": 12544,
+    "pr": 12558,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "http.fetch provider with host allowlist, bounds, off-by-default, unlisted-host refusal tests (11 files, +1132). Planned slice of #1062.",
+    "gap": null,
+    "issue": 1062,
+    "pr": 12559,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Refs #9800 (closed; context only). Manual upload/promote workflows, scripts, deploy-contract + release-safety tests (14 files, +1309); validation green.",
+    "gap": null,
+    "issue": 9800,
+    "pr": 12560,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "No issue refs; id-mail publish/promote workflows, scripts + unit tests (12 files, +2672); judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12562,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Closes #12542 (closed). Removes root git-hooks/pre-commit-hooks inputs; lock renames preserve reference mapping; eval + check pass.",
+    "gap": null,
+    "issue": 12542,
+    "pr": 12564,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "F2b verdict-coverage slice of #12233 (closed). F2a by #12543, F2c remainder completed-later by stacked #12570 (merged).",
+    "gap": null,
+    "issue": 12233,
+    "pr": 12565,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Closes #12233 (closed). Final F2c packet kind; enqueue validation + dedupe + property tests.",
+    "gap": null,
+    "issue": 12233,
+    "pr": 12570,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "block_in_place mechanism + failing-first test for #1067 (open); admission/quota lever remainder completed-later by #12615.",
+    "gap": null,
+    "issue": 1067,
+    "pr": 12571,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Attribution profile slice 1 of #1067 (open), no prod change; the fix it motivated completed-later by #12571/#12615.",
+    "gap": null,
+    "issue": 1067,
+    "pr": 12572,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Final provider (notify) of #1062 F12.5 set; siblings landed, #1062 closed. Registry + delivery + journal-v15 + tests; 7/7 notify tests re-run per #12598.",
+    "gap": null,
+    "issue": 1062,
+    "pr": 12574,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Closes #12468 (closed). Focusable image NodeViews, Enter/Space activation, focus-visible outline (3 files, +83) + 51-line test file.",
+    "gap": null,
+    "issue": 12468,
+    "pr": 12575,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Cross-group match counting fixes never-firing overlap half of partition guard + dead print removal; works #1372 (open). Close condition (completed full flake-check verdict) unmet.",
+    "gap": {
+      "title": "#1372 still needs a completed full nightly verdict",
+      "why": "PR body names the close condition as an in-flight run, not a landed one. #1372 open; remainder tracked there."
+    },
+    "issue": 1372,
+    "pr": 12578,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Refs #12518 (open). Edge direct read/write + held prompt.enqueue; task.unblock/task.cancel, pr.merge, sessions/census/questions/agents/services stay laptop-only per body.",
+    "gap": null,
+    "issue": 12518,
+    "pr": 12579,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Works #1374 (open) criterion-1 shape but legibility only: named 120s deadlines, logged targets, server-state capture; retry behavior unchanged from #4667.",
+    "gap": null,
+    "issue": 1374,
+    "pr": 12581,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Refs #1372 (open). Workflow-only legibility (watchdog heartbeat, log artifact, per-check budgets); no VM-test change.",
+    "gap": null,
+    "issue": 1372,
+    "pr": 12582,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Design record answering #9081 (open) four questions; native implementation deferred to #9073-#9076/#9016, token flows to H #9086.",
+    "gap": null,
+    "issue": 9081,
+    "pr": 12593,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Step 1 of 2 for #12231 (open), does-not-close. Exit-audit record 5/3/1; A10 tag step remains.",
+    "gap": null,
+    "issue": 12231,
+    "pr": 12594,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Re-run record for #12231 (open): 6/2/1 with fresh laptop evidence; tag still blocked; spawns tracking #12595/#12596/#12597.",
+    "gap": null,
+    "issue": 12231,
+    "pr": 12598,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Refs #9571 (open), does-not-close. Real hook failure/recovery cycles run; remains: merge #12226, 14-day production cutover (day 0 not started), gap filed as #12599.",
+    "gap": null,
+    "issue": 9571,
+    "pr": 12600,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Refs #8581/#12538 (both open). Degraded-mode contract + mode-line only; per-verb routing, drills, #8583/#8584 acceptance outstanding.",
+    "gap": null,
+    "issue": 8581,
+    "pr": 12601,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Bot flake-input bump (openchamber/opencode pins); flake evaluates incl. package outputs; no test suite on this surface.",
+    "gap": null,
+    "issue": null,
+    "pr": 12606,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Refs #12607 (closed at audit time). Two-line compile repair only; green-CI acceptance owed via #12609, completed-later by #12612.",
+    "gap": null,
+    "issue": 12607,
+    "pr": 12610,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Refs #12607 (closed). Root-causes dash `kill -0 --` group-poll bug + three test-expectation fixes; full fleet workspace suite passes.",
+    "gap": null,
+    "issue": 12607,
+    "pr": 12612,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "No issue refs in body. Fixes 6 darwin-nix mcpx e2e failures (procStat per-platform exited(), socket-path lookup, warm-async poll, JSON capture, TTL anchoring, defaults drift) with regression tests; validated via macOS go test + aarch64-darwin nix build. Judged on stated intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12613,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Refs #12604 (closes main-broken guard). Pure motion 1118+/1096- across 4 files; guard + placement (41) + portal (13) tests green.",
+    "gap": null,
+    "issue": 12604,
+    "pr": 12614,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Refs #1067 (open), explicitly does-not-close. Guest-burn budget + fair scheduling with reference verdict; remainder: per-account quotas, hub scheduler, back-pressure, persistent-spinner variant.",
+    "gap": null,
+    "issue": 1067,
+    "pr": 12615,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Closes #8968 (closed). Step-2 split verified byte-identical (one import line differs, dark_mode identical) + facade re-exports; all 4 CI gates green.",
+    "gap": null,
+    "issue": 8968,
+    "pr": 12617,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only B1 design record naming twelve-row path (2 files, +120/-1); #12232 closed; skeleton completed by PR 12621.",
+    "gap": null,
+    "issue": 12232,
+    "pr": 12619,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "CA bundle for sandboxed nix check phases (2 files, +33) for http_fetch panic; #12608 closed; body names matching nightly log evidence.",
+    "gap": null,
+    "issue": 12608,
+    "pr": 12620,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Walking-skeleton steps 3-4 across two processes (5 files, +1494/-2); #12232 closed; wired five-step path with differential oracles.",
+    "gap": null,
+    "issue": 12232,
+    "pr": 12621,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Pure boundary splitter slice (2 files, +632), explicitly does-not-close #12403; staging/promotion remainder merged in PR 12634 though #12403 still open.",
+    "gap": null,
+    "issue": 12403,
+    "pr": 12625,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Core disclosure-context enforcement (12 files, +1087/-59); body said 'Not merged, left for review' though merged_at set; #12404 open with follow-ups 12629/12633 covering fleet-search + Python gaps.",
+    "gap": null,
+    "issue": 12404,
+    "pr": 12626,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Ports #12404 context change into fleet-search so main compiles (2 files, +112/-12); Refs open #12404; stated scope fully covered.",
+    "gap": null,
+    "issue": 12404,
+    "pr": 12629,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Per-sibling span filtering for full-content payloads (6 files, +652/-30); #12624 closed; withheld-span rules + edges documented.",
+    "gap": null,
+    "issue": 12624,
+    "pr": 12630,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "cargo fmt + regenerated just-recipes.json (15 files, +75/-70); #12616 closed; drift checks passing.",
+    "gap": null,
+    "issue": 12616,
+    "pr": 12631,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Remainder sweep + review runner (4 files, +2889); #12405 closed; implementation mapped to design 5.1/5.2 + section-8 oracles.",
+    "gap": null,
+    "issue": 12405,
+    "pr": 12632,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Disclosure-context ceilings for legacy Python CLI (2 files, +334/-32) as #12404 follow-up; #12404 still open; PR notes deliberate atlas-core divergence.",
+    "gap": null,
+    "issue": 12404,
+    "pr": 12633,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Boundary-safe chunks wired into staging + promotion (6 files, +1068/-30); #12628 closed; fail-closed read-back + manifest coverage.",
+    "gap": null,
+    "issue": 12628,
+    "pr": 12634,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Plain-mirror sync command with ref-equality tests (4 files, +498/-2); body says broader backup acceptance on #8584 remains open; command not yet scheduled.",
+    "gap": {
+      "title": "Schedule the plain-mirror sync command (#8584)",
+      "why": "Command landed but not scheduled; broader #8584 backup acceptance open. Verify whether scheduling is tracked before filing."
+    },
+    "issue": 8584,
+    "pr": 12635,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Durable note policy snapshots + seeding (3 files, +397/-12), labeled 'Part of #3819 (still open)'; remainder intentionally out of slice.",
+    "gap": null,
+    "issue": 3819,
+    "pr": 12637,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Pure routing contract + replica trait (2 files, +719), wires no adapters; #8581/#8583 open; body names next slice (embedded replica routing) without a filed issue.",
+    "gap": {
+      "title": "File the embedded-replica-routing next slice (#8581/#8583)",
+      "why": "Body names the next slice but no filed issue evidenced. Verify tracking before filing."
+    },
+    "issue": 8581,
+    "pr": 12638,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "nix check phases get bash + setsid (2 files) fixing fleet-smoke failure on main; no spawning issue; judged on reproduced sandbox failure.",
+    "gap": null,
+    "issue": null,
+    "pr": 12639,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Releases replica lock across exchange peer waits + offer-limit tests (2 files, +342/-31); #12636 closed with lock-release/offer-limit tests.",
+    "gap": null,
+    "issue": 12636,
+    "pr": 12641,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Changes only the refusal message in claimed_by (2 files); #12618 closed, but body says lease-expiry root cause is inferred, not confirmed from store events. Completed by #12690 (4-hour lease + holder-aware refusal, same batch); #12618 closed.",
+    "gap": null,
+    "issue": 12618,
+    "pr": 12642,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Refuses fetched base with no remote prefix + test (2 files); #12172 closed; --no-fetch path described.",
+    "gap": null,
+    "issue": 12172,
+    "pr": 12643,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Clears inherited CARGO_BUILD_JOBS in five build-lock tests (1 file, +10); no spawning issue; judged on reproduced fleet-smoke failure.",
+    "gap": null,
+    "issue": null,
+    "pr": 12644,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Tailnet tunnels use seat's recorded proxy (3 files, +156/-3); #12555 closed; lookup order + tests described.",
+    "gap": null,
+    "issue": 12555,
+    "pr": 12645,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "healthHook extension to alerts intake + ledger; #12602 closed; validator, exclusion rules, read projection described.",
+    "gap": null,
+    "issue": 12602,
+    "pr": 12646,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Runner posts full incident record as healthHook (2 files, +169/-8); #12603 closed; test oracle + seam drill described.",
+    "gap": null,
+    "issue": 12603,
+    "pr": 12647,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Ready-PR shepherd fallback (8 files, +613/-20), warden job re-created outside diff; #12280 open; body reports 20 open PRs since 2026-11-17.",
+    "gap": null,
+    "issue": 12280,
+    "pr": 12649,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Userspace fallback for bootstrap tailnet phase (1 file, +45/-13); #12427 closed; stub-binary checks for both paths.",
+    "gap": null,
+    "issue": 12427,
+    "pr": 12650,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Shepherd packet prs shape fixed to PR references (2 files, +17/-2) before enqueue; scoped fix within #12280; satisfies validator.",
+    "gap": null,
+    "issue": 12280,
+    "pr": 12651,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Body closes #12622; hosted-per-user context pin forwarded on /v1/search, keyed cache (6 files, +88/-18). Issue state not fetched at audit time; verify.",
+    "gap": null,
+    "issue": 12622,
+    "pr": 12653,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only plan bookkeeping (1 file, +1/-1) updating B2 state line for #12232; no closing keyword.",
+    "gap": null,
+    "issue": 12232,
+    "pr": 12654,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Rust half of #12242 bullet 2 (12 files, +649/-15); TS golden parity deferred to follow-up slice PR 12667 (same batch).",
+    "gap": null,
+    "issue": 12242,
+    "pr": 12655,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Follow-on (c) of #6028 design record; row-watermark detector (3 files, +1472/-5). Rest of design coverage not checked at audit time. #6028 design record closed; sibling detectors #9978/#9980 landed earlier per body.",
+    "gap": null,
+    "issue": 6028,
+    "pr": 12656,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "TS/browser half of #12242 after Rust PR 12655; strict browser screen-codec decoder with Rust parity (7 files, +264/-2).",
+    "gap": null,
+    "issue": 12242,
+    "pr": 12667,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Body closes #12232; composes disk store (#12492) with transport; reconcile_remote_with + id walk CLI (11 files, +1523/-19). Issue state not fetched; verify.",
+    "gap": null,
+    "issue": 12232,
+    "pr": 12672,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Failing fleet-smoke fixed by adding session built-in to operator docs inventory (2 files, +3/-3); judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12673,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Slice 1a of #12657 (contract only, 4 files, +394/-8); renderer/audio/widget slices deferred. Remainder landed post-batch: slice 1b #12843, step 2a #13214, 2b #13244, 2c #13266; #12657 closed.",
+    "gap": null,
+    "issue": 12657,
+    "pr": 12674,
+    "verdict": "audit:completed-later"
+  },
+  {
+    "evidence": "Test-only #[allow] attributes for clippy unwrap errors (1 file, +2); no runtime change.",
+    "gap": null,
+    "issue": 12665,
+    "pr": 12675,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Fixture teardown into afterAll; no-op test removed in validate.test.ts. File list not retrieved at audit time; judged on body + file set.",
+    "gap": null,
+    "issue": 12670,
+    "pr": 12676,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Title references #1187; claimant cap-saturation handback (3 files, +421). Issue not read at audit time; judged on intent.",
+    "gap": null,
+    "issue": 1187,
+    "pr": 12678,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Body references #12659; http.fetch allowlist port matching fix (8 files, +291/-21) incl. design doc + Cargo changes.",
+    "gap": null,
+    "issue": 12659,
+    "pr": 12679,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Body references #12658; id-check.yml workflow (1 file, +60/-7) sizes timeouts + watchdog.",
+    "gap": null,
+    "issue": 12658,
+    "pr": 12680,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Body references #12671; production-line guard restore + pm-stack TypeScript coverage (16 files, +766/-605).",
+    "gap": null,
+    "issue": 12671,
+    "pr": 12683,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "fleet-smoke fix dropping ureq/rustls/base64 from connect variant (2 files, +31/-3); breakage ref #12326, no closing keyword.",
+    "gap": null,
+    "issue": null,
+    "pr": 12684,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Body references #8584 Turso-to-D1 export + restore drill (7 files, +828). Restore drill run status unchecked; overlaps PR 12686 file set.",
+    "gap": null,
+    "issue": 8584,
+    "pr": 12685,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Second PR for #8584 export-and-restore drill (13 files, +1216), overlapping 12685. Overlap/authoritativeness unchecked at audit time. Overlap with #12685 noted; both target open #8584 which tracks acceptance. No filing.",
+    "gap": null,
+    "issue": 8584,
+    "pr": 12686,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Title references #1338; babysitter verdict rounds (5 files, +925/-1). Issue body not read at audit time; judged on intent.",
+    "gap": null,
+    "issue": null,
+    "pr": 12687,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Title references #1187 (stall nudges + escalation). File list not retrieved at audit time; judged on title + file set.",
+    "gap": null,
+    "issue": null,
+    "pr": 12688,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Lands pool-state.json feed for #1338 under epic #1334 (4 files, +265/-3): projection + gather-quota wiring.",
+    "gap": null,
+    "issue": 1338,
+    "pr": 12689,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "4-hour lease in agent next (2 files, +68/-4) for #12618.",
+    "gap": null,
+    "issue": 12618,
+    "pr": 12690,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Title '#1744 Move 1 step 2'; dashboard comments moved to shared_comments (13 files, +460/-23). Body not read; judged on title + file set.",
+    "gap": null,
+    "issue": null,
+    "pr": 12691,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Local SQLite replica for #8583 against #12638 interface (4 files, +700). sync_up behavior unchecked against contract at audit time. sync_up delivered; remainder tracked by open #8583. No filing.",
+    "gap": null,
+    "issue": 8583,
+    "pr": 12692,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Closes #1782 concurrency gap by keying group on Breakage-ID (3 files, +524/-66) incl. budget script + tests.",
+    "gap": null,
+    "issue": 1782,
+    "pr": 12693,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Docs-only design record for #1177 Stage 3 (1 file, +368). Design, not implementation; D1-D4 implementation not evidenced in any merged PR here. Docs-only design record as intended; implementation tracked under epic #12694/#12695 (closed).",
+    "gap": null,
+    "issue": 1177,
+    "pr": 12702,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Browser + host preserve/restore resume state + viewport; regression tests cover JSON + MessagePack paths.",
+    "gap": null,
+    "issue": 12648,
+    "pr": 12704,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Off-box watch + registry entry landed, but #8427 requires detection or controlled drill; proof outstanding per body.",
+    "gap": null,
+    "issue": 8427,
+    "pr": 12705,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Client mode lines for selected verbs, but required per-leg drills + runbook updates remain; #8583 local replica not wired in.",
+    "gap": null,
+    "issue": 8581,
+    "pr": 12706,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Integration PoC covers A/B exchange, C's excluded-but-retrievable claim, README PoC/review-round gate.",
+    "gap": null,
+    "issue": 3790,
+    "pr": 12707,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Host persists/restores note events + policies, but #3819 also requires replica-sync recovery, concurrent/offline heads, merge behavior.",
+    "gap": null,
+    "issue": 3819,
+    "pr": 12708,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Outcome projector + rollups added, but #10910 broader attribution slice not fully delivered by this component alone.",
+    "gap": null,
+    "issue": 10910,
+    "pr": 12709,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Contract nullability now matches host Option field; compatibility evidence documented.",
+    "gap": null,
+    "issue": 12703,
+    "pr": 12710,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Collector PoC + tests in-repo; deployment, wake integration, three-day parallel fidelity run remain.",
+    "gap": null,
+    "issue": 2137,
+    "pr": 12711,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "App switch for edge direct mode landed; laptop-stopped end-to-end acceptance not demonstrated; real-account upload unchecked.",
+    "gap": null,
+    "issue": 12518,
+    "pr": 12712,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Registry corrected, but permanent-retirement decision open on #2138; missing triage-step registry row identified.",
+    "gap": null,
+    "issue": 2138,
+    "pr": 12713,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Restores compact seed records, excludes from formatting; no spawning issue referenced.",
+    "gap": null,
+    "issue": null,
+    "pr": 12714,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Report limiter landed; #12521 Android-build edge copy + cf deployment-flow items outside this PR.",
+    "gap": null,
+    "issue": 12521,
+    "pr": 12715,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Registry artifact + validator landed; first additional machine, watchdog coverage, live placement rule remain per body.",
+    "gap": null,
+    "issue": 2179,
+    "pr": 12717,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Persistent-failure notification landed, but #12520 rebuild flake.lock divergence fix outstanding.",
+    "gap": null,
+    "issue": 12520,
+    "pr": 12719,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Unit path configured, but PR says deployed aggregator predates writer: rebuild + live verification required; #12718 closed. Refs-only scope done (path pinned, registry row updated); #12718 closed, deployment presumed followed.",
+    "gap": null,
+    "issue": 12718,
+    "pr": 12720,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Fixes canonical issue-scoped dispatch idempotency keys; references related issues but no spawning issue.",
+    "gap": null,
+    "issue": null,
+    "pr": 12721,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Daily sync-health probe implements step 4 visibility; upstream convergence (steps 1-2) + three days of scheduled runs remain.",
+    "gap": null,
+    "issue": 12235,
+    "pr": 12722,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Android build cached at edge with freshness handling; #12521 cf deployment-flow change remains.",
+    "gap": null,
+    "issue": 12521,
+    "pr": 12723,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Forecast product + tests landed, but one-week live-run + five-pool quality acceptance outstanding; linked issue closed. S1 forecast product landed with tests; one-week live-run acceptance accrued post-deploy. #12695 closed with 8 comments; pointer filed to confirm acceptance recorded.",
+    "gap": null,
+    "issue": null,
+    "pr": 12724,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "embeddings.wasmPath made permanent exemption while #8471 requires real integration exercise + removal of every exemption; #8471 closed. Permanent reasoned exemption; #8471 acceptance (exercise + remove every exemption) tension remains. Umbrella pointer filed; no reopen.",
+    "gap": null,
+    "issue": 8471,
+    "pr": 12725,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Registry records Stage B, but live job bodies still run Stage A until charter applied via cron.update.",
+    "gap": null,
+    "issue": 2313,
+    "pr": 12727,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Package header documents vendored mirror + verified hash path; functional source fix present; clean-store proof recorded.",
+    "gap": null,
+    "issue": 12716,
+    "pr": 12728,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Sink-zone log-day selection fix + regression coverage; no spawning issue referenced.",
+    "gap": null,
+    "issue": null,
+    "pr": 12729,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Pool selection ordered with requested account first; parsed configuration verified.",
+    "gap": null,
+    "issue": 12730,
+    "pr": 12731,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Harness, explicit rename mapping, ledger landed; issue comments include full-store backtest report + per-pool findings.",
+    "gap": null,
+    "issue": 12696,
+    "pr": 12733,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Final four settings gain effect probes, exemptions lost; #8474 full list completed by this + earlier work, matching acceptance.",
+    "gap": null,
+    "issue": 8474,
+    "pr": 12735,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "TZ passed through child env allowlist + regression test; stated fix matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12736,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Secrets-broker unit moved into deploy registry; stated intent matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12737,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Per-account ownership resolution + charging across guest-burn path with tests + design record; no spawning issue linked.",
+    "gap": null,
+    "issue": null,
+    "pr": 12739,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Guarded standalone smoke Worker bootstrap, workflow, tests; stated scope matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12742,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Lane guidance prefers fleet agent next + prompt regression test; no spawning issue linked.",
+    "gap": null,
+    "issue": null,
+    "pr": 12745,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Selectable sync/batched/async journal acknowledgement modes with durability contract preserved as default; stated decision matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12746,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "S6 threaded chat/session surface (reply, cross-reference, archive, unread count) in prompt store; stated design slice matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12747,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Shadow forecast ordering + logging without changing live ordering. Acceptance needs >=1 week of records + outcome summary; PR says future work, yet issue closed.",
+    "gap": {
+      "title": "Suspect closure: #12697 closed before shadow acceptance period",
+      "why": "Closed issue requires week of shadow diff records + realized outcomes; PR implements only logging. Lane 2 pointer."
+    },
+    "issue": 12697,
+    "pr": 12748,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Typed note-block storage, tombstoned-ID non-reuse, anchor resolution, move provenance; projections + read-authority enforcement explicitly follow-on.",
+    "gap": null,
+    "issue": null,
+    "pr": 12749,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Documented timed path script added, but #12595 also requires nightly run + sub-five-minute result; PR adds no nightly workflow/measured result despite closing issue.",
+    "gap": {
+      "title": "Suspect closure: #12595 closed without nightly run evidence",
+      "why": "Done criteria need nightly run reporting under five minutes; only script + arg test landed. Lane 2 pointer."
+    },
+    "issue": 12595,
+    "pr": 12750,
+    "verdict": "audit:partial"
+  },
+  {
+    "evidence": "Sandbox quota-recorder deploy target + generic unit restorer, timer support, tests, schedule-registry updates; stated migration slice matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12753,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Three quota anomaly detectors, fail-soft gatherer wiring, replay tooling; no spawning issue linked.",
+    "gap": null,
+    "issue": null,
+    "pr": 12754,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Enqueue-time labels enriched from GitHub mirror so label-band priority applies without producer changes, with cross-path tests; addresses #12744 mirror-enrichment alternative + acceptance intent.",
+    "gap": null,
+    "issue": 12744,
+    "pr": 12755,
+    "verdict": "audit:complete"
+  },
+  {
+    "evidence": "Deployment packaging builds only selected target + lazy-target tests; stated intent matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12757,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Per-machine watchdog health reporting + registry validation/tests for amd-6; stated section-1.5 slice matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12758,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Android build reporting non-blocking, half-written APK copy prevented, tests for both; stated fix matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12760,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Quota re-weighting proposal generator + evidence-packed PR-only write path with tests; stated S6 intent matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12762,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Laptop-hosted Socket Mode collector service, launcher, package, registry/design updates; stated S2 intent matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12763,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Caution threshold 85->80 as stated; no spawning issue linked.",
+    "gap": null,
+    "issue": null,
+    "pr": 12764,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Worker bootstrap + release tooling + workflow/tests deploying latest version; stated intent matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12765,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Isolated private smoke-version upload workflow, tooling, tests; large lockfile is dependency setup for that path.",
+    "gap": null,
+    "issue": null,
+    "pr": 12767,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "fleet-machine-watchdog cron registered in schedule registry; stated intent matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12769,
+    "verdict": "audit:no-issue"
+  },
+  {
+    "evidence": "Automated Android build/release handling, release integrity checks, edge delivery, UI source reporting with focused tests; stated intent matched.",
+    "gap": null,
+    "issue": null,
+    "pr": 12770,
+    "verdict": "audit:no-issue"
+  }
+]

@@ -1,0 +1,2547 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+aa · stale · 5m old
+Cost Explorer
+Dataset version 
+2026-10-31 · ai_model_benchmark_inventory_advanced_2026-10… (latest)
+2026-10-31 · ai_model_benchmark_inventory_advanced_2026-10…
+2026-10-31 · ai_model_benchmark_inventory_advanced_2026-10…
+2026-10-31 · ai_model_benchmark_inventory_advanced_2026-10…
+2026-10-31 · ai_model_benchmark_inventory_advanced_2026-10…
+2026-10-31 · ai_model_benchmark_inventory_advanced_2026-10…
+2026-10-29 · ai_model_benchmark_inventory_advanced_2026-10…
+2026-10-21 · ai_model_benchmark_inventory_advanced_2026-10…
+Older versions show that import's rankings, thresholds, timings and coding-agent rows. The latest is the default. Token prices remain the current v_current_prices overlay, not a historical price snapshot.
+
+325 ranked configurations · 133 AA Intelligence Index configurations · 274 timing rows · 27 Coding Agent Index observations · 296 catalog models · collected 2026-11-23 23:13:03Z from ainventory batch fe02783b… (latest). Machine-first: /api/aa.json.
+
+Provenance
+
+
+These are the import snapshot's figures, not a live Artificial Analysis pull. Test_Runs snapshots in this batch: 2026-09-28 – 2026-11-16. A new import (coding-plan-watch) flips the batch; the feed collector picks it up within minutes. The explorer renders from the feed alone — when the data pipeline lands new models (Terra, Beam), they appear here with no page change. Token prices come from v_current_prices, a current-price overlay that is not scoped to the selected dataset version.
+ai_model_benchmark_inventory_advanced_2026-10-21 (drive-workbook) — imported 2026-10-31 15:00:50Z · file modified 2026-10-31 14:54:34Z
+model_value_data.csv (drive-csv) — imported 2026-10-31 15:00:51Z · file modified 2026-10-19 06:55:29Z
+model_value_data.csv (drive-csv) — imported 2026-11-02 15:06:25Z · file modified 2026-10-21 18:21:18Z
+Artificial Analysis Intelligence Index v5 — web pull 2026-11-02 (aa-web) — imported 2026-11-02 15:11:36Z · file modified —
+Artificial Analysis Intelligence Index v5 — web pull 2026-11-12 (aa-web) — imported 2026-11-12 20:30:09Z · file modified —
+Artificial Analysis Intelligence Index v5 — web pull 2026-11-14 (aa-web) — imported 2026-11-14 16:53:54Z · file modified —
+Artificial Analysis Intelligence Index v5 — web pull 2026-11-16 (aa-web) — imported 2026-11-16 12:00:23Z · file modified —
+AA Explorer
+Model Explorer
+Creator 
+All creators
+Alibaba
+Anthropic
+Cohere
+DeepSeek
+Google
+InclusionAI
+Kimi
+Meta
+MiniMax
+Mistral
+Moonshot AI
+NVIDIA
+OpenAI
+Reflection
+Reflection AI
+SpaceXAI
+StepFun
+Tencent
+Thinking Machines
+Thinking Machines Lab
+Upstage
+Xiaomi
+Z AI
+Family 
+All families
+Beam 1.0
+Claude 4.5 Haiku
+Claude Fable 5.1
+Claude Fable 5.2
+Claude Haiku 5.5
+Claude Opus 4.5
+Claude Opus 5
+Claude Opus 5.5
+Claude Sonnet 5
+Claude Sonnet 5.5
+Command A+
+DeepSeek V4 Flash 0731
+DeepSeek V4 Pro
+DeepSeek V4 Pro 0813
+DeepSeek V4.1 Flash
+DeepSeek V4.1 Flash 1017
+GLM-5.3
+GLM-5.3 Flash
+GPT-5.6 Luna
+GPT-5.6 Sol
+GPT-5.6 Terra
+GPT-6 Astra
+GPT-6 Luna
+GPT-6 Sol
+GPT-6.1 Sol
+GPT-6.1 Terra
+Gemini 2.5 Flash
+Gemini 2.5 Flash-Lite
+Gemini 2.5 Flash-Thinking
+Gemini 2.5 Pro
+Gemini 3.1 Pro
+Gemini 3.5 Flash-Lite
+Gemini 3.8 Flash
+Gemini 4 Argon
+Gemini 4 Carbon
+Gemini 4 Hydrogen
+Grok 4.7
+Inkling
+Inkling 2 Small
+Inkling Small
+Kimi K3
+Kimi K3.1 Pro
+Ling 3.1 Flash 1019
+MiMo-V2.6-Flash
+MiMo-V2.6-Pro
+MiniMax M3.1 Flash
+MiniMax-M3
+MiniMax-M3.1-Flash
+Mistral Large 4
+Mistral Large 4 Preview
+Mistral Small 4
+Muse Ember 1.0
+Muse Glimmer
+Muse Spark 1.3
+Muse Spark Open
+Muse Wonder
+Muse Wonder 1.0
+Muse Wonder Full
+Nemotron 3.5 Lightning
+Nemotron 3.5 Super VL
+Qwen3.6 Plus
+Qwen3.8 27B
+Qwen3.8 Max 0902
+Qwen3.8-Flash-Next
+Qwen4 Max
+Solar Mini 4
+Step 5 Preview
+Tencent Hy4
+Benchmark 
+All benchmarks
+AA|v5
+AA|v4.3.2
+AA|v4.1
+Plan
+API
+Per-task
+Intelligence & decode
+Coding agents
+
+Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the import's per-task figures (time excludes TTFT).
+
+Efforts: non-reasoninglowmediumhighxhighmaxreasoningdefaultthinking  Eligible only
+Model selection and advanced filters — inequality conditions
+Settings name  Save setup Saved setups 
+(none saved)
+ Load Export settings Import Reset all settings Download joined data (JSON) Download visible CSV
+
+API perspective — ranked on intelligence per dollar and cost per task; the cost × score frontier is the value curve.
+
+AA data age: 5m old (fleet-feed age).
+
+GPT-6.1 Terra
+Gemini 4 Hydrogen
+Claude Sonnet 5.5
+Gemini 4 Carbon
+Kimi K3.1 Pro
+Claude Fable 5.1
+GPT-6 Luna
+GPT-6 Sol
+GPT-6 Astra
+GPT-5.6 Luna
+GPT-5.6 Sol
+Claude Opus 5.5
+Claude Opus 5
+Claude Sonnet 5
+Claude 4.5 Haiku
+Claude Opus 4.5
+GLM-5.3 Flash
+Qwen3.8-Flash-Next
+MiMo-V2.6-Flash
+MiniMax-M3
+Muse Spark 1.3
+Gemini 3.8 Flash
+DeepSeek V4.1 Flash
+GLM-5.3
+Qwen3.8 Max 0902
+Qwen3.8 27B
+Kimi K3
+Gemini 4 Argon
+GPT-6.1 Sol
+Claude Haiku 5.5
+Mistral Large 4 Preview
+Grok 4.7
+Solar Mini 4
+Muse Wonder Full
+DeepSeek V4 Pro 0813
+MiMo-V2.6-Pro
+Muse Wonder
+GPT-5.6 Terra
+Mistral Large 4
+MiniMax-M3.1-Flash
+Ling 3.1 Flash 1019
+Step 5 Preview
+Muse Spark Open
+Nemotron 3.5 Super VL
+Inkling
+Inkling Small
+Gemini 3.5 Flash-Lite
+Command A+
+Nemotron 3.5 Lightning
+Beam 1.0
+DeepSeek V4.1 Flash 1017
+Muse Glimmer
+Mistral Small 4
+Gemini 2.5 Flash
+Gemini 2.5 Flash-Lite
+Gemini 2.5 Flash-Thinking
+Gemini 2.5 Pro
+DeepSeek V4 Pro
+Tencent Hy4
+MiniMax M3.1 Flash
+Claude Fable 5.2
+Muse Ember 1.0
+Muse Wonder 1.0
+Inkling 2 Small
+Qwen3.6 Plus
+Qwen4 Max
+DeepSeek V4 Flash 0731
+Gemini 3.1 Pro
+Completion time × Score
+ size dots by cost
+Download PNG
+⤢ Expand
++
+−
+⟲
+10s
+1m
+5m
+15m
+30m
+20
+30
+40
+50
+60
+Seconds to finish one task (log)
+Intelligence Index
+Gemini 4 Hydrogen xhigh
+Gemini 4 Carbon high
+GPT-6 Luna low
+GPT-6 Sol low
+GPT-6 Astra low
+GPT-6 Astra med
+GPT-6 Astra high
+GPT-6 Astra xhigh
+GPT-6 Astra max
+GPT-6.1 Sol max
+GPT-6.1 Sol max
+
+94 of 325 shown — the rest lack a measured per-task time in the import (nothing is estimated): GPT-6 Luna med, GPT-6 Sol med, GPT-5.6 Luna base, GPT-5.6 Luna low (+227 more).
+
+Cost × Score
+ size dots by time
+Download PNG
+⤢ Expand
++
+−
+⟲
+$0.01
+$0.1
+$1
+$10
+20
+30
+40
+50
+60
+Mid
+Premium
+Flagship
+II 40
+II 50
+Cost per task, USD (log)
+Intelligence Index
+Gemini 4 Carbon high
+Claude Opus 5.5 xhigh
+Claude Opus 5.5 max
+MiMo-V2.6-Flash reas
+GPT-6.1 Sol max
+MiMo-V2.6-Pro reas
+MiMo-V2.6-Flash reas
+GPT-6.1 Sol xhigh
+GPT-6.1 Sol high
+GPT-6.1 Sol med
+GPT-6 Luna xhigh
+GPT-6 Luna high
+GPT-6 Luna med
+GPT-6 Luna low
+Claude Opus 5.5 max
+Claude Opus 5.5 xhigh
+Claude Haiku 5.5 xhigh
+GPT-6.1 Sol max
+GPT-6.1 Sol max
+Gemini 4 Carbon med
+Claude Fable 5.2 max
+Claude Fable 5.2 xhigh
+Claude Fable 5.2 high
+Claude Fable 5.2 med
+
+251 of 325 shown — the rest lack a measured cost in the import (nothing is estimated): GPT-5.6 Sol base, Claude Sonnet 5 base, Claude Sonnet 5 xhigh, Claude 4.5 Haiku base (+70 more).
+
+Cost × Completion time
+ size dots by score
+Download PNG
+⤢ Expand
++
+−
+⟲
+$0.01
+$0.1
+$1
+$10
+10s
+1m
+5m
+15m
+30m
+Mid
+Premium
+Flagship
+Cost per task, USD (log)
+Seconds per task (log)
+GPT-6 Luna low
+
+93 of 325 shown — the rest lack a measured cost + per-task time in the import (nothing is estimated): GPT-6 Luna med, GPT-6 Sol med, GPT-5.6 Luna base, GPT-5.6 Luna low (+228 more).
+
+Tasks completed vs duration
+Seconds per task
+Total time to finish all tasks
+Download PNG
+⤢ Expand
++
+−
+⟲
+10
+30
+10s
+30s
+1m 40s
+5m 0s
+16m 40s
+tasks completed (log scale)
+duration per task
+GPT-6 Luna low
+
+93 of 325 shown — the rest lack a measured cost or per-task time: GPT-6 Luna med, GPT-6 Sol med, GPT-5.6 Luna base, GPT-5.6 Luna low (+228 more). Circles = a nominal budget ($0.25–$200, picked per model so its task count lands in range). ◆ = the model's published OpenCode Go monthly cap spent on that model alone (docs reading, 2026-10-20 — the fleet's workspaces appear to meter one pooled bar instead). Hollow = non-AA benchmark basis.
+
+Multiples of the baseline
+Baseline 
+Beam 1.0 reas
+Claude Fable 5.1 low
+Claude Fable 5.1 med
+Claude Fable 5.1 high
+Claude Fable 5.1 xhigh
+Claude Fable 5.1 max
+Claude Haiku 5.5 low
+Claude Haiku 5.5 low
+Claude Haiku 5.5 med
+Claude Haiku 5.5 med
+Claude Haiku 5.5 high
+Claude Haiku 5.5 high
+Claude Haiku 5.5 xhigh
+Claude Haiku 5.5 xhigh
+Claude Sonnet 5.5 low
+Claude Sonnet 5.5 med
+Claude Sonnet 5.5 high
+Claude Sonnet 5.5 xhigh
+Claude Sonnet 5.5 max
+DeepSeek V4.1 Flash base
+DeepSeek V4.1 Flash base
+DeepSeek V4.1 Flash max
+DeepSeek V4.1 Flash 1017 base
+DeepSeek V4.1 Flash 1017 max
+GLM-5.3 Flash reas
+GLM-5.3 Flash reas
+GPT-6 Astra low
+GPT-6 Astra med
+GPT-6 Astra high
+GPT-6 Astra xhigh
+GPT-6 Astra max
+GPT-6 Luna base
+GPT-6 Luna base
+GPT-6 Luna low
+GPT-6 Luna low
+GPT-6 Luna high
+GPT-6 Luna high
+GPT-6 Luna xhigh
+GPT-6 Luna xhigh
+GPT-6 Luna max
+GPT-6 Luna max
+GPT-6 Sol base
+GPT-6 Sol low
+GPT-6 Sol high
+GPT-6 Sol xhigh
+GPT-6 Sol max
+GPT-6 Sol max
+GPT-6.1 Sol low
+GPT-6.1 Sol low
+GPT-6.1 Sol med
+GPT-6.1 Sol med
+GPT-6.1 Sol high
+GPT-6.1 Sol high
+GPT-6.1 Sol xhigh
+GPT-6.1 Sol xhigh
+GPT-6.1 Sol max
+GPT-6.1 Sol max
+GPT-6.1 Terra base
+GPT-6.1 Terra low
+GPT-6.1 Terra med
+GPT-6.1 Terra high
+GPT-6.1 Terra xhigh
+GPT-6.1 Terra max
+Gemini 3.5 Flash-Lite high
+Gemini 3.8 Flash high
+Gemini 3.8 Flash high
+Gemini 4 Argon high
+Gemini 4 Carbon high
+Gemini 4 Hydrogen low
+Gemini 4 Hydrogen med
+Gemini 4 Hydrogen high
+Gemini 4 Hydrogen xhigh
+Grok 4.7 low
+Grok 4.7 high
+Inkling xhigh
+Inkling Small reas
+Kimi K3 low
+Kimi K3.1 Pro max
+MiMo-V2.6-Flash reas
+MiniMax-M3 reas
+MiniMax-M3.1-Flash max
+Mistral Large 4 high
+Muse Spark 1.3 max
+Muse Spark 1.3 max
+Muse Spark Open xhigh
+Muse Wonder max
+Nemotron 3.5 Lightning reas
+Nemotron 3.5 Super VL high
+Qwen3.8 27B base
+Qwen3.8 27B low
+Qwen3.8 27B med
+Qwen3.8-Flash-Next reas
+Step 5 Preview reas
+Download PNG
+⤢ Expand
++
+−
+⟲
+1×
+3×
+10×
+30×
+100×
+300×
+1000×
+1×
+3×
+10×
+30×
+100×
+cost multiple of the baseline (log scale)
+duration multiple of the baseline (lower = faster)
+GPT-6 Luna low
+
+Baseline: GPT-6 Luna low = 1× on all three measures ($0.0045/task, 14.1s/task, Intelligence 21). 93 of 325 configurations have all three measures.
+
+Scores — every measured configuration
+Download PNG
+⤢ Expand
++
+−
+⟲
+Claude Fable 5.2 max
+64.6
+Claude Fable 5.2 xhigh
+62.2
+Claude Fable 5.2 high
+61.8
+Gemini 4 Carbon xhigh
+61
+Gemini 4 Carbon high
+59
+Gemini 4 Carbon med
+58.3
+Claude Opus 5.5 max
+58
+Claude Opus 5.5 max
+58
+Claude Opus 5.5 max
+58
+GPT-6 Astra max
+57
+Claude Opus 5.5 xhigh
+57
+Claude Fable 5.2 med
+56.4
+Claude Sonnet 5.5 max
+56
+Claude Opus 5.5 xhigh
+56
+Claude Sonnet 5.5 max
+56
+Muse Wonder Full max (cost n/a)
+56
+Claude Opus 5.5 xhigh
+56
+GPT-6 Astra high
+55
+GPT-6 Astra xhigh
+55
+GPT-6.1 Sol max
+55
+GPT-6.1 Sol max
+55
+Gemini 4 Carbon low
+54.2
+Gemini 4 Hydrogen xhigh
+54
+Claude Sonnet 5.5 max
+54
+Claude Opus 5.5 high
+54
+Claude Opus 5.5 high
+54
+Claude Fable 5.2 low
+53.9
+GPT-6 Astra max
+53
+Gemini 4 Argon high
+53
+Gemini 4 Argon high
+53
+GPT-6 Astra max
+53
+Gemini 4 Argon high
+53
+GPT-6 Astra xhigh
+52
+Claude Sonnet 5.5 xhigh
+52
+GPT-6.1 Sol max
+52
+GPT-6.1 Sol max
+52
+Muse Wonder max
+52
+GPT-6 Astra xhigh
+52
+Claude Sonnet 5.5 xhigh
+52
+Claude Opus 5.5 high
+52
+
+Top 40 of 322 scored configurations (of 325 visible). Score-only view: configurations with no published cost belong here even though no cost chart can plot them.
+
+Scored configurations without a published cost
+
+These visible configurations have a score but no published cost, so they cannot appear on the cost charts. Select one to open its detail card.
+
+Muse Wonder Full — max · Intelligence 56 · no published cost
+GPT-6 Sol — max · Intelligence 51 · no published cost
+Claude Opus 5 — max · Intelligence 50 · no published cost
+Muse Wonder Full — max · Intelligence 50 · no published cost
+Claude Opus 5 — xhigh · Intelligence 49 · no published cost
+GPT-5.6 Sol — max · Intelligence 48 · no published cost
+GPT-6 Sol — xhigh · Intelligence 46 · no published cost
+Qwen3.8 Max 0902 — reasoning · Intelligence 45 · no published cost
+Claude Opus 5 — high · Intelligence 44 · no published cost
+GPT-5.6 Sol — xhigh · Intelligence 44 · no published cost
+GPT-6 Sol — high · Intelligence 44 · no published cost
+GPT-5.6 Sol — high · Intelligence 41 · no published cost
+Claude Opus 5 — medium · Intelligence 40 · no published cost
+GPT-6 Sol — medium · Intelligence 39 · no published cost
+GPT-5.6 Sol — medium · Intelligence 36 · no published cost
+Claude Sonnet 5 — max · Intelligence 34 · no published cost
+Grok 4.7 — xhigh · Intelligence 34 · no published cost
+Muse Spark 1.3 — xhigh · Intelligence 34 · no published cost
+Qwen3.8 27B — xhigh · Intelligence 34 · no published cost
+Qwen3.8 Max 0902 — reasoning · Intelligence 34 · no published cost
+Gemini 3.8 Flash — low · Intelligence 33 · no published cost
+Claude Opus 5 — low · Intelligence 32 · no published cost
+Gemini 3.8 Flash — xhigh · Intelligence 32 · no published cost
+Inkling 2 Small — default · Intelligence 31 · no published cost
+GPT-5.6 Terra — xhigh · Intelligence 30 · no published cost
+MiMo-V2.6-Pro — reasoning · Intelligence 30 · no published cost
+Claude Opus 4.5 — reasoning · Intelligence 29 · no published cost
+Claude Sonnet 5 — non-reasoning · Intelligence 29 · no published cost
+GPT-6 Sol — low · Intelligence 29 · no published cost
+GPT-5.6 Sol — non-reasoning · Intelligence 28 · no published cost
+Qwen3.8 27B — medium · Intelligence 28 · no published cost
+MiMo-V2.6-Flash — reasoning · Intelligence 27 · no published cost
+Qwen3.6 Plus — default · Intelligence 27 · no published cost
+Qwen3.8-Flash-Next — reasoning · Intelligence 27 · no published cost
+GPT-5.6 Sol — low · Intelligence 26 · no published cost
+Gemini 2.5 Pro — high · Intelligence 25.8 · no published cost
+GPT-5.6 Terra — high · Intelligence 25 · no published cost
+Mistral Large 4 Preview — reasoning · Intelligence 25 · no published cost
+Mistral Large 4 Preview — reasoning · Intelligence 25 · no published cost
+Claude Opus 4.5 — non-reasoning · Intelligence 24 · no published cost
+Claude Sonnet 5 — high · Intelligence 24 · no published cost
+GPT-5.6 Luna — xhigh · Intelligence 24 · no published cost
+DeepSeek V4 Pro 0813 — max · Intelligence 23 · no published cost
+Gemini 3.8 Flash — low · Intelligence 22 · no published cost
+GPT-5.6 Sol — non-reasoning · Intelligence 22 · no published cost
+GPT-6 Sol — non-reasoning · Intelligence 22 · no published cost
+GPT-5.6 Luna — high · Intelligence 21 · no published cost
+GPT-5.6 Terra — medium · Intelligence 20 · no published cost
+Qwen3.8 27B — xhigh · Intelligence 20 · no published cost
+MiniMax-M3 — reasoning · Intelligence 19 · no published cost
+Claude Opus 4.5 — reasoning · Intelligence 18 · no published cost
+Claude Sonnet 5 — non-reasoning · Intelligence 18 · no published cost
+GPT-5.6 Terra — low · Intelligence 18 · no published cost
+Claude Sonnet 5 — medium · Intelligence 17 · no published cost
+Claude 4.5 Haiku — non-reasoning · Intelligence 15 · no published cost
+Gemini 2.5 Flash-Thinking — thinking · Intelligence 14.1 · no published cost
+Claude Opus 4.5 — non-reasoning · Intelligence 14 · no published cost
+Claude Sonnet 5 — low · Intelligence 14 · no published cost
+GPT-5.6 Luna — medium · Intelligence 14 · no published cost
+Solar Mini 4 — reasoning · Intelligence 14 · no published cost
+Nemotron 3.5 Super VL — default · Intelligence 13.6 · no published cost
+GPT-5.6 Terra — non-reasoning · Intelligence 13 · no published cost
+DeepSeek V4 Pro 0813 — non-reasoning · Intelligence 11 · no published cost
+Gemini 2.5 Flash-Lite — default · Intelligence 10.4 · no published cost
+GPT-5.6 Luna — low · Intelligence 10 · no published cost
+Gemini 2.5 Flash — non-reasoning · Intelligence 9.8 · no published cost
+GPT-5.6 Luna — non-reasoning · Intelligence 8 · no published cost
+Claude 4.5 Haiku — reasoning · Intelligence 7 · no published cost
+Command A+ — reasoning · Intelligence 6.2 · no published cost
+Nemotron 3.5 Lightning — default · Intelligence 5.5 · no published cost
+Claude 4.5 Haiku — non-reasoning · Intelligence 5 · no published cost
+
+Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; white-ringed dots sit on it, dimmed dots are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only measured configurations are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.
+
+Multiples table
+
+Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.
+
+Multiples table — every visible configuration as multiples of the baseline
+Model	Effort	Score	Score ×	Cost/task	Cost ×	Time/task	Time ×	Benchmark
+GPT-6 Luna	low	21	1×	$0.0045	1×	14.1s	1×	AA|v4.3.2
+GPT-6 Luna	non-reasoning	18	0.86×	$0.010	2.22×	25.4s	1.79×	AA|v4.3.2
+GPT-6 Luna	low	10	0.48×	$0.010	2.22×	30s	2.12×	AA|v5
+GPT-6 Luna	high	32	1.52×	$0.030	6.67×	2m 10s	9.21×	AA|v4.3.2
+GPT-6 Luna	xhigh	34	1.62×	$0.040	8.89×	2m 54s	12.33×	AA|v4.3.2
+Claude Haiku 5.5	low	19	0.9×	$0.040	8.89×	1m 42s	7.22×	AA|v5
+Claude Haiku 5.5	low	19	0.9×	$0.040	8.89×	1m 42s	7.22×	AA|v5
+MiMo-V2.6-Flash	reasoning	38	1.81×	$0.060	13.33×	20m 53s	88.69×	AA|v4.3.2
+GPT-6 Luna	max	37	1.76×	$0.070	15.56×	5m 13s	22.17×	AA|v4.3.2
+GPT-6 Luna	non-reasoning	9	0.43×	$0.070	15.56×	1m 30s	6.37×	AA|v5
+GPT-6 Luna	high	21	1×	$0.070	15.56×	4m 36s	19.53×	AA|v5
+GPT-6.1 Terra	low	29	1.38×	$0.070	15.56×	48s	3.4×	AA|v5
+Claude Haiku 5.5	medium	25	1.19×	$0.090	20×	3m 12s	13.59×	AA|v5
+Claude Haiku 5.5	medium	25	1.19×	$0.090	20×	3m 12s	13.59×	AA|v5
+GPT-6 Luna	xhigh	23	1.1×	$0.100	22.22×	5m 48s	24.63×	AA|v5
+GPT-6 Sol	low	34	1.62×	$0.130	28.89×	41.1s	2.91×	AA|v4.3.2
+GPT-6 Luna	max	28	1.33×	$0.150	33.33×	10m 48s	45.86×	AA|v5
+GPT-6.1 Sol	low	35	1.67×	$0.160	35.56×	1m 44s	7.36×	AA|v5
+Claude Haiku 5.5	high	30	1.43×	$0.160	35.56×	5m 0s	21.23×	AA|v5
+GPT-6.1 Sol	low	35	1.67×	$0.160	35.56×	1m 44s	7.36×	AA|v5
+Claude Haiku 5.5	high	30	1.43×	$0.160	35.56×	5m 0s	21.23×	AA|v5
+GPT-6.1 Terra	medium	38	1.81×	$0.170	37.78×	1m 59s	8.42×	AA|v5
+Inkling Small	reasoning	12.9	0.61×	$0.200	44.44×	2m 30s	10.62×	AA|v5
+DeepSeek V4.1 Flash	non-reasoning	19	0.9×	$0.213	47.42×	44s	3.11×	AA|v5
+GPT-6.1 Terra	non-reasoning	30	1.43×	$0.230	51.11×	1m 45s	7.43×	AA|v5
+GLM-5.3 Flash	reasoning	42	2×	$0.250	55.56×	16m 24s	69.65×	AA|v4.3.2
+Claude Haiku 5.5	xhigh	34	1.62×	$0.250	55.56×	7m 12s	30.57×	AA|v5
+Claude Haiku 5.5	xhigh	34	1.62×	$0.250	55.56×	7m 12s	30.57×	AA|v5
+GPT-6.1 Terra	high	42	2×	$0.260	57.78×	3m 0s	12.74×	AA|v5
+Beam 1.0	reasoning	17.7	0.84×	$0.280	62.22×	1m 27s	6.16×	AA|v5
+Nemotron 3.5 Lightning	reasoning	5.5	0.26×	$0.290	64.44×	2m 59s	12.67×	AA|v5
+Gemini 4 Hydrogen	low	27	1.29×	$0.290	64.44×	1m 18s	5.52×	AA|v5
+GPT-6 Sol	non-reasoning	28	1.33×	$0.330	73.33×	1m 2s	4.38×	AA|v4.3.2
+GPT-6.1 Sol	medium	46	2.19×	$0.360	80×	3m 51s	16.35×	AA|v5
+GPT-6.1 Sol	medium	46	2.19×	$0.360	80×	3m 51s	16.35×	AA|v5
+GPT-6 Sol	high	43	2.05×	$0.370	82.22×	2m 6s	8.92×	AA|v4.3.2
+Qwen3.8-Flash-Next	reasoning	40	1.9×	$0.370	82.22×	27m 42s	117.63×	AA|v4.3.2
+GPT-6.1 Terra	xhigh	45	2.14×	$0.400	88.89×	4m 43s	20.03×	AA|v5
+DeepSeek V4.1 Flash	non-reasoning	19	0.9×	$0.427	94.84×	44s	3.11×	AA|v5
+DeepSeek V4.1 Flash 1017	non-reasoning	19	0.9×	$0.430	95.56×	5m 48s	24.63×	AA|v5
+MiniMax-M3.1-Flash	max	29	1.38×	$0.490	108.89×	16m 4s	68.22×	AA|v5
+MiniMax-M3	reasoning	29	1.38×	$0.510	113.33×	4m 55s	20.91×	AA|v4.3.2
+Claude Sonnet 5.5	low	25	1.19×	$0.510	113.33×	2m 1s	8.56×	AA|v5
+GPT-6 Sol	xhigh	44	2.1×	$0.530	117.78×	3m 19s	14.09×	AA|v4.3.2
+Nemotron 3.5 Super VL	high	13.6	0.65×	$0.540	120×	2m 34s	10.9×	AA|v5
+GLM-5.3 Flash	reasoning	28	1.33×	$0.580	128.89×	23m 30s	99.79×	AA|v5
+GPT-6.1 Sol	high	50	2.38×	$0.590	131.11×	5m 22s	22.79×	AA|v5
+GPT-6.1 Sol	high	50	2.38×	$0.590	131.11×	5m 22s	22.79×	AA|v5
+DeepSeek V4.1 Flash	max	32	1.52×	$0.600	133.33×	9m 51s	41.83×	AA|v5
+DeepSeek V4.1 Flash 1017	max	32	1.52×	$0.600	133.33×	9m 54s	42.04×	AA|v5
+Gemini 3.5 Flash-Lite	high	11.7	0.56×	$0.690	153.33×	1m 11s	5.02×	AA|v5
+GPT-6.1 Sol	xhigh	52	2.48×	$0.760	168.89×	7m 16s	30.86×	AA|v5
+GPT-6.1 Sol	xhigh	52	2.48×	$0.760	168.89×	7m 16s	30.86×	AA|v5
+Claude Sonnet 5.5	medium	30	1.43×	$0.780	173.33×	2m 58s	12.6×	AA|v5
+Gemini 4 Hydrogen	medium	41	1.95×	$0.800	177.78×	3m 42s	15.71×	AA|v5
+GPT-6 Astra	low	46	2.19×	$0.820	182.22×	1m 25s	6.01×	AA|v4.3.2
+GPT-6.1 Terra	max	51	2.43×	$0.960	213.33×	10m 10s	43.17×	AA|v5
+GPT-6 Sol	max	48	2.29×	$1.04	231.11×	4m 54s	20.79×	AA|v4.3.2
+GPT-6 Sol	max	48	2.29×	$1.06	235.56×	5m 48s	24.65×	AA|v4.3.2
+Gemini 3.8 Flash	high	41	1.95×	$1.24	275.56×	3m 51s	16.37×	AA|v4.3.2
+GPT-6.1 Sol	max	55	2.62×	$1.27	282.22×	14m 18s	60.72×	AA|v5
+GPT-6.1 Sol	max	55	2.62×	$1.27	282.22×	14m 18s	60.72×	AA|v5
+Inkling	xhigh	12.5	0.6×	$1.35	300×	3m 48s	16.14×	AA|v5
+GPT-6 Astra	medium	50	2.38×	$1.54	342.22×	3m 3s	12.98×	AA|v4.3.2
+Muse Spark 1.3	max	48	2.29×	$1.60	355.56×	5m 13s	22.14×	AA|v4.3.2
+Claude Sonnet 5.5	high	41	1.95×	$1.64	364.44×	5m 32s	23.5×	AA|v5
+GPT-6 Astra	high	51	2.43×	$1.73	384.44×	3m 48s	16.11×	AA|v4.3.2
+Gemini 4 Hydrogen	high	51	2.43×	$1.87	415.56×	6m 0s	25.48×	AA|v5
+Qwen3.8 27B	low	15.7	0.75×	$1.91	424.44×	28m 8s	119.46×	AA|v5
+Muse Spark Open	xhigh	24.7	1.18×	$2.02	448.89×	8m 0s	33.97×	AA|v5
+Mistral Large 4	high	26	1.24×	$2.06	457.78×	6m 22s	27.03×	AA|v5
+Qwen3.8 27B	medium	17	0.81×	$2.16	480×	32m 14s	136.87×	AA|v5
+GPT-6 Astra	xhigh	52	2.48×	$2.31	513.33×	5m 11s	22×	AA|v4.3.2
+Step 5 Preview	reasoning	28.5	1.36×	$2.35	522.22×	10m 17s	43.67×	AA|v5
+Kimi K3	low	17.4	0.83×	$2.37	526.67×	11m 15s	47.74×	AA|v5
+Muse Spark 1.3	max	36	1.71×	$2.39	531.11×	9m 0s	38.22×	AA|v5
+Grok 4.7	low	30.9	1.47×	$2.92	648.89×	9m 48s	41.61×	AA|v5
+Gemini 4 Hydrogen	xhigh	54	2.57×	$3.16	702.22×	13m 0s	55.2×	AA|v5
+GPT-6 Astra	max	53	2.52×	$3.26	724.44×	7m 4s	30.03×	AA|v4.3.2
+Kimi K3.1 Pro	max	46	2.19×	$3.68	817.78×	31m 31s	133.83×	AA|v5
+Qwen3.8 27B	non-reasoning	10	0.48×	$3.77	837.78×	16m 56s	71.9×	AA|v5
+Claude Sonnet 5.5	xhigh	50	2.38×	$4.09	908.89×	11m 31s	48.9×	AA|v5
+Claude Fable 5.1	low	38	1.81×	$4.47	993.33×	6m 54s	29.3×	AA|v5
+Claude Fable 5.1	medium	43	2.05×	$5.56	1235.56×	8m 56s	37.93×	AA|v5
+Grok 4.7	high	35	1.67×	$6.18	1373.33×	18m 33s	78.77×	AA|v5
+Muse Wonder	max	43	2.05×	$6.95	1544.44×	8m 24s	35.67×	AA|v5
+Claude Fable 5.1	high	47	2.24×	$7.54	1675.56×	12m 13s	51.88×	AA|v5
+Gemini 4 Argon	high	50	2.38×	$7.68	1706.67×	22m 42s	96.39×	AA|v5
+Gemini 4 Carbon	high	59	2.81×	$7.76	1724.44×	23m 39s	100.42×	AA|v5
+Gemini 3.8 Flash	high	31	1.48×	$7.77	1726.67×	12m 18s	52.23×	AA|v5
+Claude Sonnet 5.5	max	54	2.57×	$10.02	2226.67×	22m 6s	93.84×	AA|v5
+Claude Fable 5.1	xhigh	50	2.38×	$10.85	2411.11×	16m 11s	68.72×	AA|v5
+Claude Fable 5.1	max	49	2.33×	$12.99	2886.67×	17m 54s	76.01×	AA|v5
+Configurations
+
+325 of 325 ranked configurations · sorted by the api perspective · dots are colored by model family; white-ringed dots sit on that chart's frontier, dimmed dots are beaten on its axes
+
+Configurations — intelligence, cost, and speed per model
+Model	Effort	Intelligence	$/task	Time/task	TTFT	Speed (t/s)	Score / $	Score / s
+GPT-6 Luna
+OpenAI · fast-cheap / capable midtier	low	22	$0.0045	—	2.2s	118	4888.9	—
+GPT-6 Luna
+OpenAI · Contender	low	21	$0.0045	14.1s	1.9s	145	4666.7	1.486
+GPT-5.6 Luna
+OpenAI · Historical	low	21	$0.010	—	—	117	2100	—
+GPT-6 Luna
+OpenAI · Contender	non-reasoning	18	$0.010	25.4s	0.8s	144	1800	0.71
+GPT-6 Luna
+OpenAI · fast-cheap / capable midtier	non-reasoning	18	$0.010	—	1s	113	1800	—
+GPT-5.6 Luna
+OpenAI · Historical	non-reasoning	16	$0.010	—	—	122	1600	—
+GPT-6 Luna
+OpenAI · fast-cheap / capable midtier	medium	30	$0.020	—	—	—	1500	—
+GPT-6 Luna
+OpenAI · Contender	medium	29	$0.020	—	—	—	1450	—
+Claude Haiku 5.5
+Anthropic · new release / awaiting source-backed assessment	low	29	$0.020	—	6.3s	187	1450	—
+GPT-5.6 Luna
+OpenAI · Historical	medium	25	$0.020	—	—	120	1250	—
+GPT-6 Luna
+OpenAI · fast-cheap / capable midtier	high	33	$0.030	—	18.7s	120	1100	—
+GPT-6 Luna
+OpenAI · Contender	high	32	$0.030	2m 10s	5.6s	152	1066.7	0.246
+GPT-6 Luna
+OpenAI · Contender	low	10	$0.010	30s	—	125	1000	0.333
+GPT-6 Luna
+OpenAI · fast-cheap / capable midtier	xhigh	35	$0.040	—	21.3s	115	875	—
+GPT-6 Luna
+OpenAI · Contender	xhigh	34	$0.040	2m 54s	14.8s	156	850	0.195
+GPT-5.6 Luna
+OpenAI · Historical	high	32	$0.040	—	—	117	800	—
+Claude Haiku 5.5
+Anthropic · new release / awaiting source-backed assessment	medium	34	$0.050	—	8.5s	187	680	—
+MiMo-V2.6-Flash
+Xiaomi · Contender	reasoning	38	$0.060	20m 53s	3.5s	62	633.3	0.03
+MiMo-V2.6-Flash
+Xiaomi · ultra-cheap / long-running reasoner	reasoning	38	$0.060	—	3.6s	49	633.3	—
+GPT-6 Luna
+Openai · Contender	max	38	$0.070	—	1m 37s	122	542.9	—
+GPT-6 Luna
+OpenAI · Contender	max	37	$0.070	5m 13s	1m 34s	163	528.6	0.118
+Claude Haiku 5.5
+Anthropic · new release / awaiting source-backed assessment	high	38	$0.080	—	21.5s	182	475	—
+Claude Haiku 5.5
+Anthropic · Tracked	low	19	$0.040	1m 42s	—	158	475	0.186
+Claude Haiku 5.5
+Anthropic · new release / awaiting source-backed assessment	low	19	$0.040	1m 42s	—	158	475	0.186
+GPT-6 Luna
+OpenAI · Contender	medium	18	$0.040	—	—	92	450	—
+GPT-6.1 Terra
+OpenAI · Contender	low	29	$0.070	48s	—	91	414.3	0.604
+GPT-5.6 Luna
+OpenAI · Historical	xhigh	35	$0.090	—	—	124	388.9	—
+MiMo-V2.6-Pro
+Xiaomi · new release / awaiting source-backed assessment	reasoning	46	$0.130	—	4.1s	43	353.8	—
+Claude Haiku 5.5
+Anthropic · new release / awaiting source-backed assessment	xhigh	41	$0.120	—	58.9s	190	341.7	—
+GPT-6.1 Sol
+OpenAI · new release / awaiting source-backed assessment	low	42	$0.130	—	2.4s	51	323.1	—
+GPT-6 Luna
+OpenAI · Contender	high	21	$0.070	4m 36s	—	113	300	0.076
+Muse Ember 1.0
+Meta · Contender	xhigh	34.1	$0.116	—	—	434	293.5	—
+Claude Haiku 5.5
+Anthropic · Tracked	medium	25	$0.090	3m 12s	—	169	277.8	0.13
+Claude Haiku 5.5
+Anthropic · new release / awaiting source-backed assessment	medium	25	$0.090	3m 12s	—	169	277.8	0.13
+Muse Ember 1.0
+Meta · Contender	max	36	$0.136	—	—	431	264.9	—
+GPT-6 Sol
+OpenAI · Contender	low	34	$0.130	41.1s	1.7s	82	261.5	0.828
+GPT-6 Luna
+OpenAI · Contender	xhigh	23	$0.100	5m 48s	—	119	230	0.066
+GPT-6.1 Sol
+OpenAI · new release / awaiting source-backed assessment	medium	48	$0.210	—	4.2s	51	228.6	—
+GPT-6.1 Terra
+OpenAI · Contender	medium	38	$0.170	1m 59s	—	91	223.5	0.319
+GPT-6.1 Sol
+OpenAI · Tracked	low	35	$0.160	1m 44s	—	52	218.8	0.337
+GPT-6.1 Sol
+OpenAI · new release / awaiting source-backed assessment	low	35	$0.160	1m 44s	—	52	218.8	0.337
+MiMo-V2.6-Flash
+Xiaomi · Contender	default	26.7	$0.129	—	—	44	207.8	—
+GPT-5.6 Luna
+OpenAI · Historical	max	37	$0.180	—	—	121	205.6	—
+Claude Haiku 5.5
+Anthropic · Tracked	max	43	$0.210	—	5m 27s	238	204.8	—
+GPT-5.6 Terra
+OpenAI · Tracked	low	27	$0.140	—	1.5s	109	192.9	—
+Claude Haiku 5.5
+Anthropic · Tracked	high	30	$0.160	5m 0s	—	173	187.5	0.1
+Claude Haiku 5.5
+Anthropic · new release / awaiting source-backed assessment	high	30	$0.160	5m 0s	—	173	187.5	0.1
+GPT-6 Luna
+OpenAI · Contender	max	28	$0.150	10m 48s	—	118	186.7	0.043
+GLM-5.3 Flash
+Z AI · Contender	reasoning	42	$0.250	16m 24s	3.1s	57	168	0.043
+GLM-5.3 Flash
+Z AI · cheap / strong midtier / slower task	reasoning	42	$0.250	—	3s	61	168	—
+GPT-5.6 Terra
+OpenAI · Tracked	medium	30	$0.180	—	1.6s	108	166.7	—
+DeepSeek V4.1 Flash
+DeepSeek · Contender	non-reasoning	25	$0.150	—	—	239	166.7	—
+DeepSeek V4.1 Flash
+DeepSeek · ultra-cheap / fast reasoning	non-reasoning	25	$0.150	—	1.2s	211	166.7	—
+GPT-6.1 Terra
+OpenAI · Contender	high	42	$0.260	3m 0s	—	91	161.5	0.233
+GPT-6 Sol
+OpenAI · Contender	medium	40	$0.250	—	—	—	160	—
+GPT-6.1 Sol
+OpenAI · new release / awaiting source-backed assessment	high	50	$0.320	—	39.8s	58	156.3	—
+GPT-5.6 Terra
+OpenAI · Tracked	non-reasoning	21	$0.140	—	0.8s	121	150	—
+DeepSeek V4.1 Flash
+DeepSeek · Contender	max	39	$0.270	—	—	220	144.4	—
+DeepSeek V4.1 Flash
+DeepSeek · ultra-cheap / fast reasoning	max	39	$0.270	—	1.2s	217	144.4	—
+Claude Haiku 5.5
+Anthropic · Tracked	xhigh	34	$0.250	7m 12s	—	186	136	0.079
+Claude Haiku 5.5
+Anthropic · new release / awaiting source-backed assessment	xhigh	34	$0.250	7m 12s	—	186	136	0.079
+GPT-6.1 Sol
+OpenAI · new release / awaiting source-backed assessment	xhigh	51	$0.390	—	2m 1s	57	130.8	—
+GPT-6.1 Terra
+OpenAI · Contender	non-reasoning	30	$0.230	1m 45s	—	90	130.4	0.286
+GPT-6 Luna
+OpenAI · Contender	non-reasoning	9	$0.070	1m 30s	—	115	128.6	0.1
+GPT-6.1 Sol
+OpenAI · Tracked	medium	46	$0.360	3m 51s	—	50	127.8	0.199
+GPT-6.1 Sol
+OpenAI · new release / awaiting source-backed assessment	medium	46	$0.360	3m 51s	—	50	127.8	0.199
+GPT-5.6 Sol
+OpenAI · Historical	low	33	$0.260	—	—	80	126.9	—
+MiMo-V2.6-Pro
+Xiaomi · Contender	default	29.9	$0.257	—	—	57	116.3	—
+GPT-6 Sol
+OpenAI · Contender	high	43	$0.370	2m 6s	10.3s	81	116.2	0.341
+GPT-6.1 Terra
+OpenAI · Contender	xhigh	45	$0.400	4m 43s	—	92	112.5	0.159
+Qwen3.8-Flash-Next
+Alibaba · Close	reasoning	40	$0.370	27m 42s	2.5s	57	108.1	0.024
+Claude Sonnet 5.5
+Anthropic · smart-fast / premium mid-high	low	36	$0.350	—	1.4s	112	102.9	—
+Mistral Small 4
+Mistral · Tracked	reasoning	4	$0.040	—	—	—	100	—
+GPT-5.6 Terra
+OpenAI · Tracked	high	34	$0.340	—	2.3s	114	100	—
+Gemini 4 Hydrogen
+Google · Contender	low	27	$0.290	1m 18s	5.8s	—	93.1	0.346
+DeepSeek V4.1 Flash
+DeepSeek · Contender	non-reasoning	19	$0.213	44s	—	1486	89	0.432
+Claude Sonnet 5.5
+Anthropic · Contender	low	36	$0.410	—	1.1s	89	87.8	—
+Claude Haiku 5.5
+Anthropic · Tracked	max	36	$0.410	—	—	235	87.8	—
+Claude Haiku 5.5
+Anthropic · Tracked	max	36	$0.410	—	—	235	87.8	—
+Claude Sonnet 5.5
+Anthropic · smart-fast / premium mid-high	medium	41	$0.480	—	3s	118	85.4	—
+GPT-6 Sol
+OpenAI · Contender	non-reasoning	28	$0.330	1m 2s	0.9s	79	84.8	0.452
+GPT-6.1 Sol
+OpenAI · Tracked	high	50	$0.590	5m 22s	—	60	84.7	0.155
+GPT-6.1 Sol
+OpenAI · new release / awaiting source-backed assessment	high	50	$0.590	5m 22s	—	60	84.7	0.155
+GPT-5.6 Luna
+OpenAI · Historical	max	28	$0.331	—	—	119	84.5	—
+GPT-6 Sol
+OpenAI · Contender	xhigh	44	$0.530	3m 19s	38.2s	80	83	0.221
+GPT-5.6 Sol
+OpenAI · Historical	medium	39	$0.500	—	—	82	78	—
+Claude Opus 5.5
+Anthropic · Contender	low	42	$0.550	—	—	75	76.4	—
+Claude Opus 5.5
+Anthropic · frontier / judgment-heavy	low	42	$0.550	—	6.7s	89	76.4	—
+GPT-6.1 Sol
+Openai · Tracked	max	52	$0.720	—	4m 32s	57	72.2	—
+Claude Sonnet 5.5
+Anthropic · Contender	medium	41	$0.590	—	2.5s	111	69.5	—
+GPT-6.1 Sol
+OpenAI · Tracked	xhigh	52	$0.760	7m 16s	—	71	68.4	0.119
+GPT-6.1 Sol
+OpenAI · new release / awaiting source-backed assessment	xhigh	52	$0.760	7m 16s	—	71	68.4	0.119
+Inkling Small
+Thinking Machines · Tracked	reasoning	12.9	$0.200	2m 30s	—	204	64.5	0.086
+DeepSeek V4.1 Flash 1017
+DeepSeek · Contender	high	29	$0.456	—	—	168	63.6	—
+Beam 1.0
+Reflection · Tracked	reasoning	17.7	$0.280	1m 27s	—	299	63.2	0.203
+Beam 1.0
+Reflection AI · Contender	default	17.7	$0.284	—	—	271	62.2	—
+Claude 4.5 Haiku
+Anthropic · Historical	reasoning	17	$0.280	—	—	80	60.7	—
+GPT-5.6 Terra
+OpenAI · Tracked	xhigh	38	$0.630	—	17.3s	131	60.3	—
+MiniMax M3.1 Flash
+MiniMax · Contender	max	29.1	$0.491	—	—	137	59.3	—
+MiniMax-M3.1-Flash
+MiniMax · Contender	max	29	$0.490	16m 4s	—	119	59.2	0.03
+MiniMax-M3
+MiniMax · Close	reasoning	29	$0.510	4m 55s	1.1s	174	56.9	0.098
+GPT-6 Astra
+OpenAI · Contender	low	46	$0.820	1m 25s	2.4s	52	56.1	0.541
+GPT-6 Astra
+OpenAI · frontier / expensive / slow	low	46	$0.820	—	2.5s	51	56.1	—
+DeepSeek V4 Pro 0813
+DeepSeek · Tracked	non-reasoning	20	$0.360	—	1.7s	85	55.6	—
+DeepSeek V4 Pro 0813
+DeepSeek · Tracked	max	36	$0.670	—	1.6s	93	53.7	—
+Claude Sonnet 5.5
+Anthropic · smart-fast / premium mid-high	high	47	$0.880	—	12.4s	113	53.4	—
+DeepSeek V4.1 Flash
+DeepSeek · Contender	max	32	$0.600	9m 51s	—	182	53.3	0.054
+DeepSeek V4.1 Flash 1017
+DeepSeek · Contender	max	32	$0.600	9m 54s	—	171	53.3	0.054
+GPT-6.1 Terra
+OpenAI · Contender	max	51	$0.960	10m 10s	—	97	53.1	0.084
+GPT-5.6 Sol
+OpenAI · Historical	high	42	$0.810	—	—	81	51.9	—
+Gemini 4 Hydrogen
+Google · Contender	medium	41	$0.800	3m 42s	12.3s	—	51.3	0.185
+Claude Sonnet 5
+Anthropic · Historical	low	25	$0.510	—	—	56	49	—
+Claude Sonnet 5.5
+Anthropic · Contender	low	25	$0.510	2m 1s	2.7s	106	49	0.207
+GLM-5.3 Flash
+Z AI · Contender	reasoning	28	$0.580	23m 30s	—	69	48.3	0.02
+GLM-5.3 Flash
+Z AI · Contender	max	27.8	$0.583	—	—	48	47.7	—
+GPT-6 Sol
+Openai · Contender	max	48	$1.04	4m 54s	1m 54s	103	46.2	0.163
+GPT-6 Sol
+OpenAI · Contender	max	48	$1.06	5m 48s	2m 41s	90	45.3	0.138
+DeepSeek V4.1 Flash
+DeepSeek · Contender	non-reasoning	19	$0.427	44s	—	1486	44.5	0.432
+DeepSeek V4.1 Flash 1017
+DeepSeek · Contender	non-reasoning	19	$0.430	5m 48s	—	185	44.2	0.055
+Claude Sonnet 5.5
+Anthropic · Contender	high	47	$1.08	—	14.1s	95	43.5	—
+GPT-6.1 Sol
+OpenAI · Tracked	max	55	$1.27	14m 18s	—	79	43.3	0.064
+GPT-6.1 Sol
+Openai · Tracked	max	55	$1.27	14m 18s	—	79	43.3	0.064
+Gemini 3.8 Flash
+Google · Contender	medium	40	$0.930	—	—	—	43	—
+GLM-5.3
+Z AI · Historical	low	34	$0.850	—	—	85	40	—
+GLM-5.3
+Z AI · historical/replaced	low	34	$0.850	—	3.2s	75	40	—
+Claude Sonnet 5.5
+Anthropic · Contender	medium	30	$0.780	2m 58s	4.6s	101	38.5	0.169
+Claude Opus 5.5
+Anthropic · Contender	medium	51	$1.34	—	—	76	38.1	—
+Claude Opus 5.5
+Anthropic · frontier / judgment-heavy	medium	51	$1.34	—	17.4s	88	38.1	—
+Muse Glimmer
+Meta · Tracked	high	6	$0.160	—	—	—	37.5	—
+GPT-5.6 Sol
+OpenAI · Historical	xhigh	44	$1.18	—	—	83	37.3	—
+Claude Opus 5
+Anthropic · Historical	low	40	$1.10	—	—	47	36.4	—
+Claude Opus 5.5
+Anthropic · Contender	low	35	$0.980	—	4.8s	78	35.7	—
+Mistral Large 4 Preview
+Mistral · Tracked	reasoning	38	$1.13	—	—	—	33.6	—
+Tencent Hy4
+Tencent · Contender	default	34.6	$1.03	—	—	91	33.6	—
+Gemini 3.8 Flash
+Google · Contender	high	41	$1.24	3m 51s	38.2s	311	33.1	0.177
+Muse Spark 1.3
+Meta · Contender	xhigh	45	$1.37	—	—	196	32.8	—
+GPT-6 Astra
+OpenAI · Contender	medium	50	$1.54	3m 3s	4.8s	52	32.5	0.273
+GPT-6 Astra
+OpenAI · frontier / expensive / slow	medium	50	$1.54	—	6.5s	50	32.5	—
+GPT-6 Astra
+OpenAI · Contender	low	43	$1.42	—	—	58	30.2	—
+GPT-5.6 Terra
+OpenAI · Tracked	max	42	$1.40	—	1m 58s	134	30	—
+Muse Spark 1.3
+Meta · Contender	max	48	$1.60	5m 13s	25.5s	210	30	0.153
+Claude Opus 5.5
+Anthropic · Contender	high	54	$1.82	—	—	79	29.7	—
+Claude Opus 5.5
+Anthropic · frontier / judgment-heavy	high	54	$1.82	—	38.9s	87	29.7	—
+GPT-6 Astra
+OpenAI · Contender	high	51	$1.73	3m 48s	39s	52	29.5	0.224
+GPT-6 Astra
+OpenAI · frontier / expensive / slow	high	51	$1.73	—	47.5s	52	29.5	—
+Claude Sonnet 5
+Anthropic · Historical	medium	28	$1.00	—	—	57	28	—
+Gemini 4 Hydrogen
+Google · Contender	high	51	$1.87	6m 0s	15s	—	27.3	0.142
+Gemini 4 Argon
+Google · Tracked	high	53	$1.99	—	—	—	26.6	—
+Gemini 4 Argon
+Google · Tracked	high	53	$1.99	—	—	—	26.6	—
+Gemini 4 Argon
+Google · Tracked	high	53	$1.99	—	—	—	26.6	—
+GPT-6.1 Sol
+OpenAI · Tracked	max	52	$1.99	—	5m 21s	63	26.1	—
+Claude Sonnet 5.5
+Anthropic · smart-fast / premium mid-high	xhigh	52	$2.01	—	26s	114	25.9	—
+GPT-6.1 Sol
+OpenAI · Tracked	xhigh	51	$1.99	—	2m 53s	58	25.6	—
+Nemotron 3.5 Super VL
+NVIDIA · Tracked	high	13.6	$0.540	2m 34s	—	474	25.2	0.088
+GPT-6.1 Sol
+OpenAI · Tracked	high	50	$1.99	—	1m 3s	57	25.1	—
+Claude Sonnet 5.5
+Anthropic · Contender	high	41	$1.64	5m 32s	10.3s	103	25	0.123
+DeepSeek V4 Pro
+DeepSeek · Contender	high	20.8	$0.849	—	—	76	24.5	—
+GPT-6.1 Sol
+OpenAI · Tracked	medium	48	$1.99	—	7.2s	53	24.1	—
+GPT-5.6 Sol
+OpenAI · Historical	max	47	$1.99	—	—	90	23.6	—
+Grok 4.7
+SpaceXAI · Tracked	xhigh	46	$1.99	—	—	81	23.1	—
+GPT-6 Astra
+OpenAI · Contender	xhigh	52	$2.31	5m 11s	2m 0s	54	22.5	0.167
+GPT-6 Astra
+OpenAI · frontier / expensive / slow	xhigh	52	$2.31	—	1m 50s	53	22.5	—
+GLM-5.3
+Z AI · Historical	max	45	$2.01	—	—	91	22.4	—
+GLM-5.3
+Z AI · historical/replaced	max	45	$2.01	—	3.2s	68	22.4	—
+Kimi K3
+Kimi · Contender	max	44	$2.00	—	—	—	22	—
+Claude Haiku 5.5
+Anthropic · Tracked	max	43	$1.99	—	5m 6s	234	21.6	—
+GPT-6.1 Sol
+OpenAI · Tracked	low	42	$1.99	—	2.6s	52	21.1	—
+Claude Haiku 5.5
+Anthropic · Tracked	xhigh	41	$1.99	—	1m 4s	192	20.6	—
+Claude Opus 5
+Anthropic · Historical	medium	45	$2.19	—	—	48	20.5	—
+Claude Opus 5.5
+Anthropic · Contender	medium	48	$2.45	—	15.6s	80	19.6	—
+Claude Haiku 5.5
+Anthropic · Tracked	high	38	$1.99	—	23.8s	176	19.1	—
+Mistral Large 4 Preview
+Mistral · Tracked	reasoning	38	$1.99	—	—	—	19.1	—
+Claude Sonnet 5.5
+Anthropic · Contender	xhigh	52	$2.74	—	1m 34s	143	19	—
+Nemotron 3.5 Lightning
+NVIDIA · Tracked	reasoning	5.5	$0.290	2m 59s	—	293	19	0.031
+GPT-6 Astra
+OpenAI · Contender	medium	51	$2.73	—	—	57	18.7	—
+Claude Sonnet 5
+Anthropic · Historical	high	32	$1.79	—	—	60	17.9	—
+Claude Fable 5.2
+Anthropic · Contender	low	53.9	$3.10	—	—	103	17.4	—
+Gemini 4 Hydrogen
+Google · Contender	xhigh	54	$3.16	13m 0s	41.1s	198	17.1	0.069
+Claude Haiku 5.5
+Anthropic · Tracked	medium	34	$1.99	—	14.7s	169	17.1	—
+GPT-6 Astra
+OpenAI · Contender	high	55	$3.24	—	—	63	17	—
+Gemini 3.5 Flash-Lite
+Google · Tracked	high	11.7	$0.690	1m 11s	—	406	17	0.165
+Mistral Large 4
+Mistral · Contender	medium	23	$1.41	—	—	90	16.3	—
+GPT-6 Astra
+OpenAI · Contender	max	53	$3.26	7m 4s	4m 57s	64	16.3	0.125
+GPT-6 Astra
+Openai · Contender	max	53	$3.26	—	4m 13s	54	16.3	—
+Claude Opus 5.5
+Anthropic · Contender	xhigh	56	$3.46	—	—	82	16.2	—
+Claude Opus 5.5
+Anthropic · frontier / judgment-heavy	xhigh	56	$3.46	—	2m 3s	86	16.2	—
+Muse Spark 1.3
+Meta · Contender	max	36	$2.39	9m 0s	—	168	15.1	0.067
+GPT-6 Astra
+OpenAI · Contender	xhigh	55	$3.66	—	—	66	15	—
+Claude Opus 5.5
+Anthropic · Contender	high	52	$3.46	—	23.7s	80	15	—
+Claude Fable 5.2
+Anthropic · Contender	medium	56.4	$3.80	—	—	94	14.8	—
+MiniMax-M3
+MiniMax · Contender	default	18.9	$1.29	—	—	111	14.7	—
+GLM-5.3
+Z AI · Historical	low	23	$1.57	—	—	72	14.6	—
+Claude Haiku 5.5
+Anthropic · Tracked	low	29	$1.99	—	9.5s	176	14.6	—
+Claude Opus 5
+Anthropic · Historical	high	48	$3.61	—	—	50	13.3	—
+Qwen4 Max
+Alibaba · Contender	xhigh	42.9	$3.27	—	—	—	13.1	—
+DeepSeek V4 Pro
+DeepSeek · Contender	max	23.1	$1.77	—	—	84	13.1	—
+DeepSeek V4 Pro
+DeepSeek · Contender	non-reasoning	12.6	$0.977	—	—	83	12.9	—
+Kimi K3.1 Pro
+Moonshot AI · Contender	default	46.5	$3.68	—	—	30	12.6	—
+Mistral Large 4
+Mistral · Contender	high	26	$2.06	6m 22s	—	161	12.6	0.068
+Kimi K3.1 Pro
+Kimi · Contender	max	46	$3.68	31m 31s	—	31	12.5	0.024
+Grok 4.7
+Spacexai · Tracked	xhigh	46	$3.74	—	49s	102	12.3	—
+Muse Spark Open
+Meta · Tracked	xhigh	24.7	$2.02	8m 0s	—	139	12.2	0.051
+Claude Sonnet 5.5
+Anthropic · Contender	xhigh	50	$4.09	11m 31s	27.8s	107	12.2	0.072
+Step 5 Preview
+StepFun · Contender	default	28.5	$2.35	—	—	130	12.2	—
+Step 5 Preview
+StepFun · Tracked	reasoning	28.5	$2.35	10m 17s	—	165	12.1	0.046
+Solar Mini 4
+Upstage · Tracked	reasoning	24	$1.99	—	1.8s	64	12.1	—
+Muse Wonder
+Meta · Tracked	max	52	$4.52	—	36.3s	184	11.5	—
+Gemini 4 Argon
+Google · Tracked	medium	47.6	$4.31	—	—	58	11	—
+Grok 4.7
+SpaceXAI · Tracked	low	30.9	$2.92	9m 48s	—	72	10.6	0.053
+Claude Sonnet 5.5
+Anthropic · Contender	max	56	$5.46	—	6m 20s	138	10.3	—
+Claude Opus 5
+Anthropic · Historical	xhigh	50	$4.88	—	—	49	10.2	—
+Claude Opus 5.5
+Anthropic · Contender	max	58	$5.98	—	—	95	9.7	—
+Claude Opus 5.5
+Anthropic · frontier / judgment-heavy	max	58	$5.98	—	11m 7s	97	9.7	—
+Claude Opus 5.5
+Anthropic · Contender	xhigh	57	$6.05	—	1m 20s	85	9.4	—
+GPT-5.6 Terra
+OpenAI · Tracked	max	35	$3.73	—	—	111	9.4	—
+Inkling
+Thinking Machines · Tracked	xhigh	12.5	$1.35	3m 48s	—	196	9.3	0.055
+Ling 3.1 Flash 1019
+InclusionAI · Tracked	reasoning	29.5	$3.19	—	—	—	9.2	—
+GPT-6 Astra
+OpenAI · Contender	max	57	$6.24	—	—	78	9.1	—
+Muse Wonder 1.0
+Meta · Contender	high	40.5	$4.56	—	—	102	8.9	—
+Gemini 4 Carbon
+Google · Contender	medium	58.3	$6.59	—	23.3s	73	8.8	—
+Claude Opus 5
+Anthropic · Historical	max	51	$5.86	—	—	51	8.7	—
+Claude Fable 5.1
+Anthropic · Contender	low	38	$4.47	6m 54s	—	55	8.5	0.092
+Qwen3.8 27B
+Alibaba · Historical	low	15.7	$1.91	28m 8s	—	43	8.2	0.009
+Qwen3.8 27B
+Alibaba · Historical	medium	17	$2.16	32m 14s	—	43	7.9	0.009
+Claude Fable 5.1
+Anthropic · Contender	medium	43	$5.56	8m 56s	—	55	7.7	0.08
+Gemini 4 Carbon
+Google · Contender	high	59	$7.76	23m 39s	1m 8s	85	7.6	0.042
+Gemini 4 Carbon
+Google · Contender	low	54.2	$7.19	—	12.3s	61	7.5	—
+Claude Sonnet 5
+Anthropic · Historical	max	38	$5.09	—	—	84	7.5	—
+Claude Sonnet 5.5
+Anthropic · Contender	max	56	$7.60	—	5m 53s	142	7.4	—
+Kimi K3
+Kimi · Contender	low	17.4	$2.37	11m 15s	—	58	7.3	0.026
+Claude Fable 5.2
+Anthropic · Contender	high	61.8	$9.08	—	—	101	6.8	—
+Gemini 4 Argon
+Google · Tracked	high	50	$7.68	22m 42s	39.9s	83	6.5	0.037
+GLM-5.3
+Z AI · Historical	max	32	$5.01	—	—	76	6.4	—
+Muse Wonder 1.0
+Meta · Contender	max	43.6	$6.95	—	—	110	6.3	—
+Claude Fable 5.1
+Anthropic · Contender	high	47	$7.54	12m 13s	—	57	6.2	0.064
+Muse Wonder
+Meta · Tracked	max	43	$6.95	8m 24s	—	143	6.2	0.085
+Claude Opus 5.5
+Anthropic · Contender	max	58	$10.04	—	6m 2s	97	5.8	—
+Grok 4.7
+SpaceXAI · Tracked	high	35	$6.18	18m 33s	—	79	5.7	0.031
+Claude Sonnet 5.5
+Anthropic · Contender	max	54	$10.02	22m 6s	4m 20s	139	5.4	0.041
+Gemini 4 Argon
+Google · Tracked	low	45	$9.25	—	—	—	4.9	—
+Gemini 3.8 Flash
+Google · Contender	medium	30	$6.26	—	12.7s	107	4.8	—
+Gemini 4 Carbon
+Google · Contender	xhigh	61	$13.00	—	—	—	4.7	—
+Claude Fable 5.1
+Anthropic · Contender	xhigh	50	$10.85	16m 11s	—	62	4.6	0.051
+Grok 4.7
+SpaceXAI · Tracked	xhigh	34	$7.77	—	—	87	4.4	—
+Claude Fable 5.2
+Anthropic · Contender	xhigh	62.2	$14.83	—	—	97	4.2	—
+Gemini 3.8 Flash
+Google · Contender	high	31	$7.77	12m 18s	17.1s	120	4	0.042
+Claude Fable 5.1
+Anthropic · Contender	max	49	$12.99	17m 54s	—	69	3.8	0.046
+Qwen3.8 Max 0902
+Alibaba · Contender	xhigh	33.7	$10.02	—	—	59	3.4	—
+Gemini 4 Argon
+Google · Tracked	xhigh	51	$17.00	—	—	—	3	—
+Qwen3.8 27B
+Alibaba · Historical	non-reasoning	10	$3.77	16m 56s	—	43	2.7	0.01
+Claude Fable 5.2
+Anthropic · Contender	max	64.6	$26.54	—	—	101	2.4	—
+Muse Wonder Full
+Meta · Tracked	max	56	—	—	—	—	—	—
+GPT-6 Sol
+OpenAI · Contender	max	51	—	—	—	114	—	—
+Claude Opus 5
+Anthropic · Historical	max	50	—	—	—	52	—	—
+Muse Wonder Full
+Meta · Tracked	max	50	—	—	—	—	—	—
+Claude Opus 5
+Anthropic · Historical	xhigh	49	—	—	—	53	—	—
+GPT-5.6 Sol
+OpenAI · Historical	max	48	—	—	—	102	—	—
+GPT-6 Sol
+OpenAI · Contender	xhigh	46	—	—	—	104	—	—
+Qwen3.8 Max 0902
+Alibaba · Historical	reasoning	45	—	—	—	39	—	—
+GPT-6 Sol
+OpenAI · Contender	high	44	—	—	—	97	—	—
+GPT-5.6 Sol
+OpenAI · Historical	xhigh	44	—	—	—	99	—	—
+Claude Opus 5
+Anthropic · Historical	high	44	—	—	—	51	—	—
+GPT-5.6 Sol
+OpenAI · Historical	high	41	—	—	—	90	—	—
+Claude Opus 5
+Anthropic · Historical	medium	40	—	—	—	52	—	—
+GPT-6 Sol
+OpenAI · Contender	medium	39	—	—	—	—	—	—
+GPT-5.6 Sol
+OpenAI · Historical	medium	36	—	—	—	89	—	—
+Qwen3.8 27B
+Alibaba · Historical	xhigh	34	—	—	—	47	—	—
+Claude Sonnet 5
+Anthropic · Historical	max	34	—	—	—	79	—	—
+Muse Spark 1.3
+Meta · Contender	xhigh	34	—	—	—	307	—	—
+Qwen3.8 Max 0902
+Alibaba · Historical	reasoning	34	—	—	—	40	—	—
+Grok 4.7
+Spacexai · Tracked	xhigh	34	—	—	—	87	—	—
+Gemini 3.8 Flash
+Google · Contender	low	33	—	—	—	—	—	—
+Claude Opus 5
+Anthropic · Historical	low	32	—	—	—	51	—	—
+Gemini 3.8 Flash
+Google · Contender	xhigh	32	—	—	—	—	—	—
+Inkling 2 Small
+Thinking Machines Lab · Contender	default	31	—	—	—	—	—	—
+MiMo-V2.6-Pro
+Xiaomi · new release / awaiting source-backed assessment	reasoning	30	—	—	—	49	—	—
+GPT-5.6 Terra
+OpenAI · Tracked	xhigh	30	—	—	—	106	—	—
+Claude Sonnet 5
+Anthropic · Historical	non-reasoning	29	—	—	—	56	—	—
+Claude Opus 4.5
+Anthropic · Historical	reasoning	29	—	—	—	45	—	—
+GPT-6 Sol
+OpenAI · Contender	low	29	—	—	—	111	—	—
+GPT-5.6 Sol
+OpenAI · Historical	non-reasoning	28	—	—	—	84	—	—
+Qwen3.8 27B
+Alibaba · Historical	medium	28	—	—	—	56	—	—
+Qwen3.8-Flash-Next
+Alibaba · Close	reasoning	27	—	—	—	51	—	—
+MiMo-V2.6-Flash
+Xiaomi · Contender	reasoning	27	—	—	—	45	—	—
+Qwen3.6 Plus
+Alibaba · Contender	default	27	—	—	—	—	—	—
+GPT-5.6 Sol
+OpenAI · Historical	low	26	—	—	—	97	—	—
+Gemini 2.5 Pro
+Google · Tracked	high	25.8	—	—	—	—	—	—
+Mistral Large 4 Preview
+Mistral · Tracked	reasoning	25	—	—	—	—	—	—
+Mistral Large 4 Preview
+Mistral · Tracked	reasoning	25	—	—	—	—	—	—
+GPT-5.6 Terra
+OpenAI · Tracked	high	25	—	—	—	94	—	—
+Claude Opus 4.5
+Anthropic · Historical	non-reasoning	24	—	—	—	44	—	—
+GPT-5.6 Luna
+OpenAI · Historical	xhigh	24	—	—	—	115	—	—
+Claude Sonnet 5
+Anthropic · Historical	high	24	—	—	—	67	—	—
+DeepSeek V4 Pro 0813
+DeepSeek · Tracked	max	23	—	—	—	81	—	—
+GPT-6 Sol
+OpenAI · Contender	non-reasoning	22	—	—	—	99	—	—
+GPT-5.6 Sol
+OpenAI · Historical	non-reasoning	22	—	—	—	97	—	—
+Gemini 3.8 Flash
+Google · Contender	low	22	—	—	4.4s	102	—	—
+GPT-5.6 Luna
+OpenAI · Historical	high	21	—	—	—	104	—	—
+Qwen3.8 27B
+Alibaba · Historical	xhigh	20	—	—	—	38	—	—
+GPT-5.6 Terra
+OpenAI · Tracked	medium	20	—	—	—	92	—	—
+MiniMax-M3
+MiniMax · Close	reasoning	19	—	—	—	—	—	—
+Claude Sonnet 5
+Anthropic · Historical	non-reasoning	18	—	—	—	65	—	—
+Claude Opus 4.5
+Anthropic · Historical	reasoning	18	—	—	—	53	—	—
+GPT-5.6 Terra
+OpenAI · Tracked	low	18	—	—	—	95	—	—
+Claude Sonnet 5
+Anthropic · Historical	medium	17	—	—	—	64	—	—
+Claude 4.5 Haiku
+Anthropic · Historical	non-reasoning	15	—	—	—	78	—	—
+Gemini 2.5 Flash-Thinking
+Google · Tracked	thinking	14.1	—	—	12s	201	—	—
+GPT-5.6 Luna
+OpenAI · Historical	medium	14	—	—	—	103	—	—
+Claude Sonnet 5
+Anthropic · Historical	low	14	—	—	—	61	—	—
+Claude Opus 4.5
+Anthropic · Historical	non-reasoning	14	—	—	—	45	—	—
+Solar Mini 4
+Upstage · Tracked	reasoning	14	—	—	—	118	—	—
+Nemotron 3.5 Super VL
+NVIDIA · Contender	default	13.6	—	—	—	—	—	—
+GPT-5.6 Terra
+OpenAI · Tracked	non-reasoning	13	—	—	—	94	—	—
+DeepSeek V4 Pro 0813
+DeepSeek · Tracked	non-reasoning	11	—	—	—	—	—	—
+Gemini 2.5 Flash-Lite
+Google · Tracked	default	10.4	—	—	0.4s	—	—	—
+GPT-5.6 Luna
+OpenAI · Historical	low	10	—	—	—	105	—	—
+Gemini 2.5 Flash
+Google · Tracked	non-reasoning	9.8	—	—	0.6s	173	—	—
+GPT-5.6 Luna
+OpenAI · Historical	non-reasoning	8	—	—	—	113	—	—
+Claude 4.5 Haiku
+Anthropic · Historical	reasoning	7	—	—	—	93	—	—
+Command A+
+Cohere · Tracked	reasoning	6.2	—	3m 40s	—	148	—	0.028
+Nemotron 3.5 Lightning
+NVIDIA · Contender	default	5.5	—	—	—	—	—	—
+Claude 4.5 Haiku
+Anthropic · Historical	non-reasoning	5	—	—	—	82	—	—
+Claude Sonnet 5
+Anthropic · Historical	xhigh	—	—	—	—	65	—	—
+Claude Sonnet 5
+Anthropic · Historical	xhigh	—	—	—	—	69	—	—
+Kimi K3
+Kimi · Contender	max	—	—	—	—	62	—	—
+Pareto frontiers
+
+Each list keeps variants that are not dominated on its named dimensions: another variant cannot be at least as good on every dimension and strictly better on one. The first two lists are the same score–speed frontier in different priority orders. Percentile ranks use the current filtered models; 100% is best. Missing measures are excluded only from a frontier that needs them.
+
+Minimum score and speed percentile in the price shortlist 
+At least median · 50th percentile
+At least 60th percentile
+Top quarter · 75th percentile
+No cutoff · full Pareto frontier
+
+Score–speed frontier: 11 variants · three-way frontier (score and speed at or above the 50th percentile): 11 · price–speed trade-offs: 1. Missing measures are excluded only from a frontier that needs them.
+
+Score first, with competitive time
+Pareto frontier — score first, with competitive time
+Model / effort	Score · value / percentile	Time / task · value / percentile	Cost / task · value / percentile
+Gemini 4 Carbon high	59 · 99%	23m 39s · 4%	$7.76 · 5%
+GPT-6.1 Sol max	55 · 94%	14m 18s · 17%	$1.27 · 45%
+GPT-6.1 Sol max	55 · 94%	14m 18s · 17%	$1.27 · 45%
+Gemini 4 Hydrogen xhigh	54 · 93%	13m 0s · 18%	$3.16 · 22%
+GPT-6 Astra max	53 · 91%	7m 4s · 39%	$3.26 · 20%
+GPT-6 Astra xhigh	52 · 89%	5m 11s · 52%	$2.31 · 26%
+GPT-6 Astra high	51 · 85%	3m 48s · 63%	$1.73 · 39%
+GPT-6 Astra medium	50 · 81%	3m 3s · 70%	$1.54 · 41%
+GPT-6 Astra low	46 · 73%	1m 25s · 89%	$0.820 · 53%
+GPT-6 Sol low	34 · 45%	41.1s · 97%	$0.130 · 85%
+GPT-6 Luna low	21 · 17%	14.1s · 100%	$0.0045 · 100%
+Time first, with competitive score
+Pareto frontier — time first, with competitive score
+Model / effort	Score · value / percentile	Time / task · value / percentile	Cost / task · value / percentile
+GPT-6 Luna low	21 · 17%	14.1s · 100%	$0.0045 · 100%
+GPT-6 Sol low	34 · 45%	41.1s · 97%	$0.130 · 85%
+GPT-6 Astra low	46 · 73%	1m 25s · 89%	$0.820 · 53%
+GPT-6 Astra medium	50 · 81%	3m 3s · 70%	$1.54 · 41%
+GPT-6 Astra high	51 · 85%	3m 48s · 63%	$1.73 · 39%
+GPT-6 Astra xhigh	52 · 89%	5m 11s · 52%	$2.31 · 26%
+GPT-6 Astra max	53 · 91%	7m 4s · 39%	$3.26 · 20%
+Gemini 4 Hydrogen xhigh	54 · 93%	13m 0s · 18%	$3.16 · 22%
+GPT-6.1 Sol max	55 · 94%	14m 18s · 17%	$1.27 · 45%
+GPT-6.1 Sol max	55 · 94%	14m 18s · 17%	$1.27 · 45%
+Gemini 4 Carbon high	59 · 99%	23m 39s · 4%	$7.76 · 5%
+Price first, strong in score and time
+Pareto frontier — price first, strong in score and time
+Model / effort	Score · value / percentile	Time / task · value / percentile	Cost / task · value / percentile
+GPT-6.1 Terra medium	38 · 55%	1m 59s · 81%	$0.170 · 80%
+GPT-6.1 Terra high	42 · 64%	3m 0s · 71%	$0.260 · 74%
+GPT-6.1 Sol medium	46 · 73%	3m 51s · 61%	$0.360 · 68%
+GPT-6.1 Sol medium	46 · 73%	3m 51s · 61%	$0.360 · 68%
+GPT-6 Sol high	43 · 67%	2m 6s · 78%	$0.370 · 67%
+GPT-6 Sol xhigh	44 · 69%	3m 19s · 67%	$0.530 · 61%
+GPT-6 Astra low	46 · 73%	1m 25s · 89%	$0.820 · 53%
+GPT-6 Sol max	48 · 78%	4m 54s · 56%	$1.04 · 48%
+GPT-6 Astra medium	50 · 81%	3m 3s · 70%	$1.54 · 41%
+GPT-6 Astra high	51 · 85%	3m 48s · 63%	$1.73 · 39%
+GPT-6 Astra xhigh	52 · 89%	5m 11s · 52%	$2.31 · 26%
+Price–speed trade-offs
+Pareto frontier — price and speed trade-offs
+Model / effort	Time / task	Cost / task	Score · context
+GPT-6 Luna low	14.1s · 100%	$0.0045 · 100%	21
+Recommendations
+
+Build a useful shortlist: first require a near-top score in each band, then trade price against speed and choose distinct labs. Score bands are non-overlapping and calculated from the filtered population before tradeoff limits; absolute limits apply first, then relative price/speed limits against the cheapest and fastest near-top models passing them. Unknown selected values cannot be recommended.
+
+Fast near-topBalancedMore lab diversityTight budgetReset tradeoffs
+Score bands 
+2 tiers
+3 tiers
+4 tiers
+5 tiers
+6 tiers
+8 tiers
+Allow score below band best  points
+Favor price ← → favor speed  85% speed
+Extra price above cheapest near-top  %
+Slowest allowed vs fastest near-top  ×
+Allow alternatives within  × best tradeoff
+Lab diversity 
+One choice per lab
+Different labs first
+No lab grouping
+Remove dominated models 
+Within each lab
+Across all labs · strict Pareto
+Do not remove
+At most per band 
+1
+2
+3
+4
+5
+Maximum USD / task 
+Maximum seconds / task 
+Export shortlist CSV
+
+3 choices across 3 score bands · 2 labs. Near-top: 5 points · Speed priority: 85% · At most 2× slower · Price allowance: +500% · One per lab.
+
+Score band 1 · Intelligence 4 to < 24.2 · 71 variants
+
+Require score ≥ 19 (band best 24, allowance 5 points) · Relative price ceiling $0.027 · Relative time ceiling 28.3s
+
+⤢ Expand
++
+−
+⟲
+USD / task (log) — cheaper is left
+time — faster is down
+Best fit
+GPT-6 Luna low
+· OpenAI
+
+Intelligence 21 · $0.0045/task · 14.1s/task · 3 below band best · 1× best tradeoff
+
+vs band-best GPT-6 Luna xhigh: 95.9% less time · 95.5% less cost
+Why these choices?
+Score band 2 · Intelligence 24.2 to < 44.4 · 153 variants
+
+Require score ≥ 39 (band best 44, allowance 5 points) · Relative price ceiling $1.50 · Relative time ceiling 4m 12s
+
+⤢ Expand
++
+−
+⟲
+USD / task (log) — cheaper is left
+time — faster is down
+Best fit
+GPT-6 Sol high
+· OpenAI
+
+Intelligence 43 · $0.370/task · 2m 6s/task · 1 below band best · 1× best tradeoff
+
+vs band-best GPT-6 Sol xhigh: 36.7% less time · 30.2% less cost
+Alternative lab
+Gemini 4 Hydrogen med
+· Google
+
+Intelligence 41 · $0.800/task · 3m 42s/task · 3 below band best · 1.82× best tradeoff
+
+vs band-best GPT-6 Sol xhigh: 11.5% more time · 50.9% more cost
+Why these choices?
+Score band 3 · Intelligence 44.4 to ≤ 64.6 · 98 variants
+
+Require score ≥ 59.6 (band best 64.6, allowance 5 points) · no candidate carries all three measures
+
+⤢ Expand
++
+−
+⟲
+USD / task (log) — cheaper is left
+time — faster is down
+
+No recommendation survives the limits of this band.
+
+Why these choices?
+Band comparisons
+
+Best choices within each score and cost band; shortlists follow the current model and effort filters. Each band row shows the observed range of its other two measures with the endpoint configurations named.
+
+Near-leader window 
+0.5× · Very tight
+0.75× · Tight
+1× · Standard (score ±2 · time within 10% · price within 25%)
+1.5× · Generous
+2× · Wide
+3× · Broad
+Smartest within each task-cost band
+
+Highest scores only within each listed task-cost range; near-leaders sit within 2 points of the band's best score.
+
+Smartest within each task-cost band
+Cost band 1 · ≥ $0.0045 · ≤ $0.081
+5 near-leading · score 4 (Mistral Small 4 reas) – 38 (MiMo-V2.6-Flash reas) · time 14.1s (GPT-6 Luna low) – 20m 53s (MiMo-V2.6-Flash reas)	MiMo-V2.6-Flash reas — 38 · $0.060 · 20m 53s GPT-6 Luna max — 38 · $0.070 · — MiMo-V2.6-Flash reas — 38 · $0.060 · — Claude Haiku 5.5 high — 38 · $0.080 · — GPT-6 Luna max — 37 · $0.070 · 5m 13s
+(Better at: faster)
+
+Cost band 2 · > $0.081 · ≤ $1.47
+2 near-leading · score 5.5 (Nemotron 3.5 Lightning reas) – 55 (GPT-6.1 Sol max) · time 41.1s (GPT-6 Sol low) – 27m 42s (Qwen3.8-Flash-Next reas)	GPT-6.1 Sol max — 55 · $1.27 · 14m 18s GPT-6.1 Sol max — 55 · $1.27 · 14m 18s
+Cost band 3 · > $1.47 · ≤ $26.54
+1 near-leading · score 10 (Qwen3.8 27B base) – 64.6 (Claude Fable 5.2 max) · time 3m 3s (GPT-6 Astra med) – 32m 14s (Qwen3.8 27B med)	Claude Fable 5.2 max — 64.6 · $26.54 · —
+Lowest task cost within each score band
+
+Bands split the selected score range evenly; each model appears in one score band; near-price window 25%.
+
+Lowest task cost within each score band
+Intelligence band 1 · 4 – < 24.2
+2 near-leading · score 4 (Mistral Small 4 reas) – 24 (Claude Opus 4.5 base) · time 14.1s (GPT-6 Luna low) – 32m 14s (Qwen3.8 27B med)	GPT-6 Luna low — 21 · $0.0045 · 14.1s GPT-6 Luna low — 22 · $0.0045 · —
+(Better at: higher score)
+
+Intelligence band 2 · 24.2 – < 44.4
+4 near-leading · score 24.7 (Muse Spark Open xhigh) – 44 (GPT-6 Sol xhigh) · time 41.1s (GPT-6 Sol low) – 27m 42s (Qwen3.8-Flash-Next reas)	GPT-6 Luna med — 29 · $0.020 · — GPT-5.6 Luna med — 25 · $0.020 · — GPT-6 Luna med — 30 · $0.020 · —
+(Better at: higher score)
+ Claude Haiku 5.5 low — 29 · $0.020 · —
+Intelligence band 3 · 44.4 – ≤ 64.6
+1 near-leading · score 45 (GPT-6.1 Terra xhigh) – 64.6 (Claude Fable 5.2 max) · time 1m 25s (GPT-6 Astra low) – 31m 31s (Kimi K3.1 Pro max)	MiMo-V2.6-Pro reas — 46 · $0.130 · —
+Fastest within each score band
+
+Within 10% of the band's speed leader.
+
+⤢ Expand
++
+−
+⟲
+Time / task (lower is faster) (log scale)
+14.1s
+48.3s
+2m 45s
+9m 25s
+32m 14s
+Intelligence band 1 · 4 – < 24.2
+Intelligence band 2 · 24.2 – < 44.4
+Intelligence band 3 · 44.4 – ≤ 64.6
+Fastest within each score band
+Intelligence band 1 · 4 – < 24.2
+1 near-leading · score 4 (Mistral Small 4 reas) – 24 (Claude Opus 4.5 base) · time 14.1s (GPT-6 Luna low) – 32m 14s (Qwen3.8 27B med)	GPT-6 Luna low — 21 · $0.0045 · 14.1s
+Intelligence band 2 · 24.2 – < 44.4
+1 near-leading · score 24.7 (Muse Spark Open xhigh) – 44 (GPT-6 Sol xhigh) · time 41.1s (GPT-6 Sol low) – 27m 42s (Qwen3.8-Flash-Next reas)	GPT-6 Sol low — 34 · $0.130 · 41.1s
+Intelligence band 3 · 44.4 – ≤ 64.6
+1 near-leading · score 45 (GPT-6.1 Terra xhigh) – 64.6 (Claude Fable 5.2 max) · time 1m 25s (GPT-6 Astra low) – 31m 31s (Kimi K3.1 Pro max)	GPT-6 Astra low — 46 · $0.820 · 1m 25s
+Smartest within each speed band
+
+Selected speed values split into ordered, non-overlapping bands from slowest to fastest; near-leaders within the score window.
+
+⤢ Expand
++
+−
+⟲
+Intelligence (higher is better) (linear scale)
+5.5
+18.9
+32.3
+45.6
+59
+Slowest speed band · 6m 15s – 32m 14s
+Speed band 2 · 1m 13s – 6m 15s
+Fastest speed band · 14.1s – 1m 13s
+Smartest within each speed band
+Slowest speed band · 6m 15s – 32m 14s
+1 near-leading · score 10 (Qwen3.8 27B base) – 59 (Gemini 4 Carbon high) · time 6m 22s (Mistral Large 4 high) – 32m 14s (Qwen3.8 27B med)	Gemini 4 Carbon high — 59 · $7.76 · 23m 39s
+Speed band 2 · 1m 13s – 6m 15s
+6 near-leading · score 5.5 (Nemotron 3.5 Lightning reas) – 52 (GPT-6 Astra xhigh) · time 1m 18s (Gemini 4 Hydrogen low) – 6m 0s (Gemini 4 Hydrogen high)	GPT-6 Astra xhigh — 52 · $2.31 · 5m 11s Gemini 4 Hydrogen high — 51 · $1.87 · 6m 0s
+(Better at: lower price)
+ GPT-6 Astra high — 51 · $1.73 · 3m 48s
+(Better at: lower price, faster)
+ GPT-6 Astra med — 50 · $1.54 · 3m 3s
+(Better at: lower price, faster)
+ GPT-6.1 Sol high — 50 · $0.590 · 5m 22s
+(Better at: lower price)
+ GPT-6.1 Sol high — 50 · $0.590 · 5m 22s
+(Better at: lower price)
+
+Fastest speed band · 14.1s – 1m 13s
+1 near-leading · score 10 (GPT-6 Luna low) – 34 (GPT-6 Sol low) · time 14.1s (GPT-6 Luna low) – 1m 11s (Gemini 3.5 Flash-Lite high)	GPT-6 Sol low — 34 · $0.130 · 41.1s
+Fastest within each task-cost band
+
+Disjoint task-cost tiers; near-leaders are within 10% of the band's fastest time.
+
+⤢ Expand
++
+−
+⟲
+Time / task (lower is faster) (log scale)
+14.1s
+48.3s
+2m 45s
+9m 25s
+32m 14s
+Cost band 1 · ≥ $0.0045 · ≤ $0.081
+Cost band 2 · > $0.081 · ≤ $1.47
+Cost band 3 · > $1.47 · ≤ $26.54
+Fastest within each task-cost band
+Cost band 1 · ≥ $0.0045 · ≤ $0.081
+1 near-leading · score 4 (Mistral Small 4 reas) – 38 (MiMo-V2.6-Flash reas) · time 14.1s (GPT-6 Luna low) – 20m 53s (MiMo-V2.6-Flash reas)	GPT-6 Luna low — 21 · $0.0045 · 14.1s
+Cost band 2 · > $0.081 · ≤ $1.47
+3 near-leading · score 5.5 (Nemotron 3.5 Lightning reas) – 55 (GPT-6.1 Sol max) · time 41.1s (GPT-6 Sol low) – 27m 42s (Qwen3.8-Flash-Next reas)	GPT-6 Sol low — 34 · $0.130 · 41.1s DeepSeek V4.1 Flash base — 19 · $0.427 · 44s DeepSeek V4.1 Flash base — 19 · $0.213 · 44s
+Cost band 3 · > $1.47 · ≤ $26.54
+1 near-leading · score 10 (Qwen3.8 27B base) – 64.6 (Claude Fable 5.2 max) · time 3m 3s (GPT-6 Astra med) – 32m 14s (Qwen3.8 27B med)	GPT-6 Astra med — 50 · $1.54 · 3m 3s
+Lowest price within each speed target
+
+Each speed target is split into the selected number of log-spaced task-cost bands; nearby options within 25% of the tier's cheapest.
+
+Lowest price within each speed target
+Speed target	Tier 1 · ≥ $0.0045 · ≤ $0.081	Tier 2 · > $0.081 · ≤ $1.47	Tier 3 · > $1.47 · ≤ $26.54
+At least 50th percentile
+time ≤ 5m 13s	GPT-6 Luna low — 21 · $0.0045 · 14.1s	Claude Haiku 5.5 med — 25 · $0.090 · 3m 12s Claude Haiku 5.5 med — 25 · $0.090 · 3m 12s	GPT-6 Astra med — 50 · $1.54 · 3m 3s Muse Spark 1.3 max — 48 · $1.60 · 5m 13s GPT-6 Astra high — 51 · $1.73 · 3m 48s
+(Better at: higher score)
+
+At least 75th percentile
+time ≤ 10m 17s	GPT-6 Luna low — 21 · $0.0045 · 14.1s	Claude Haiku 5.5 med — 25 · $0.090 · 3m 12s Claude Haiku 5.5 med — 25 · $0.090 · 3m 12s GPT-6 Luna xhigh — 23 · $0.100 · 5m 48s	GPT-6 Astra med — 50 · $1.54 · 3m 3s Muse Spark 1.3 max — 48 · $1.60 · 5m 13s Claude Sonnet 5.5 high — 41 · $1.64 · 5m 32s GPT-6 Astra high — 51 · $1.73 · 3m 48s
+(Better at: higher score)
+ Gemini 4 Hydrogen high — 51 · $1.87 · 6m 0s
+(Better at: higher score)
+
+At least 90th percentile
+time ≤ 18m 33s	GPT-6 Luna low — 21 · $0.0045 · 14.1s	Claude Haiku 5.5 med — 25 · $0.090 · 3m 12s Claude Haiku 5.5 med — 25 · $0.090 · 3m 12s GPT-6 Luna xhigh — 23 · $0.100 · 5m 48s	GPT-6 Astra med — 50 · $1.54 · 3m 3s Muse Spark 1.3 max — 48 · $1.60 · 5m 13s Claude Sonnet 5.5 high — 41 · $1.64 · 5m 32s GPT-6 Astra high — 51 · $1.73 · 3m 48s
+(Better at: higher score)
+ Gemini 4 Hydrogen high — 51 · $1.87 · 6m 0s
+(Better at: higher score)
+
+Fastest available (100th percentile)
+time ≤ 32m 14s	GPT-6 Luna low — 21 · $0.0045 · 14.1s	Claude Haiku 5.5 med — 25 · $0.090 · 3m 12s Claude Haiku 5.5 med — 25 · $0.090 · 3m 12s GPT-6 Luna xhigh — 23 · $0.100 · 5m 48s	GPT-6 Astra med — 50 · $1.54 · 3m 3s Muse Spark 1.3 max — 48 · $1.60 · 5m 13s Claude Sonnet 5.5 high — 41 · $1.64 · 5m 32s GPT-6 Astra high — 51 · $1.73 · 3m 48s
+(Better at: higher score)
+ Gemini 4 Hydrogen high — 51 · $1.87 · 6m 0s
+(Better at: higher score)
+ Qwen3.8 27B low — 15.7 · $1.91 · 28m 8s
+⤢ Expand
++
+−
+⟲
+USD / task (lower is cheaper) (log scale)
+$0.0045
+$0.033
+$0.242
+$1.77
+$12.99
+At least 50th percentile · Tier 1 ·…
+At least 50th percentile · Tier 2 ·…
+At least 50th percentile · Tier 3 ·…
+At least 75th percentile · Tier 1 ·…
+At least 75th percentile · Tier 2 ·…
+At least 75th percentile · Tier 3 ·…
+At least 90th percentile · Tier 1 ·…
+At least 90th percentile · Tier 2 ·…
+At least 90th percentile · Tier 3 ·…
+Fastest available (100th percentile…
+Fastest available (100th percentile…
+Fastest available (100th percentile…
+Timing — Test_Runs
+
+Per-configuration timing from the import's Test_Runs data. "Not measured" means the import carries no value for that cell — nothing is estimated.
+
+Model configurations — intelligence and cost
+Configuration	Intelligence	$/task	TTFT	First answer	E2E (500 tok)	Time / task	Speed (t/s)
+qwen3-8-max-0902 · xhigh
+2026-11-14	33.7	$10.0239	not measured	not measured	not measured	not measured	58.5
+qwen3.6-plus · default
+2026-11-14	27	—	not measured	not measured	not measured	not measured	—
+qwen3.8-27b · medium
+2026-09-28	28	—	not measured	not measured	not measured	not measured	56
+qwen3.8-27b · xhigh
+2026-09-28	34	—	not measured	not measured	not measured	not measured	47
+qwen3.8-flash-next · reasoning
+2026-09-28	40	$0.37	2.5s	37.8s	46.7s	27m 42s	57
+qwen3.8-max-0902 · reasoning
+2026-09-28	45	—	not measured	not measured	not measured	not measured	39
+qwen4-max · xhigh
+2026-11-16	42.9	$3.2681	not measured	not measured	not measured	not measured	—
+claude-4.5-haiku · non-reasoning
+2026-09-28	15	—	not measured	not measured	not measured	not measured	78.3
+claude-4.5-haiku · reasoning
+2026-09-28	17	$0.28	not measured	not measured	not measured	not measured	80.3
+claude-fable-5-2 · high
+2026-11-14	61.8	$9.0784	not measured	not measured	not measured	not measured	101.4
+claude-fable-5-2 · low
+2026-11-14	53.9	$3.0972	not measured	not measured	not measured	not measured	102.5
+claude-fable-5-2 · max
+2026-11-14	64.6	$26.5386	not measured	not measured	not measured	not measured	100.8
+claude-fable-5-2 · medium
+2026-11-14	56.4	$3.8026	not measured	not measured	not measured	not measured	94.4
+claude-fable-5-2 · xhigh
+2026-11-14	62.2	$14.8286	not measured	not measured	not measured	not measured	97.4
+claude-fable-5.1 · high
+2026-11-14	47.2	$7.54	not measured	not measured	not measured	not measured	83.9
+claude-fable-5.1 · low
+2026-11-14	38.7	$4.4711	not measured	not measured	not measured	not measured	83.9
+claude-fable-5.1 · max
+2026-11-14	49.2	$12.994	not measured	not measured	not measured	not measured	88.2
+claude-fable-5.1 · medium
+2026-11-14	43.2	$5.5643	not measured	not measured	not measured	not measured	84.6
+claude-haiku-5-5 · high
+2026-10-11	38	$0.08	23.8s	not measured	not measured	not measured	176.4
+claude-haiku-5-5 · high
+2026-11-14	29.9	$0.1586	not measured	not measured	not measured	not measured	223.6
+claude-haiku-5-5 · high
+2026-10-16	38	$0.08	21.5s	not measured	not measured	not measured	182.2
+claude-haiku-5-5 · low
+2026-10-11	29	$0.02	9.5s	not measured	not measured	not measured	175.6
+claude-haiku-5-5 · low
+2026-11-14	18.6	$0.0438	not measured	not measured	not measured	not measured	210.2
+claude-haiku-5-5 · low
+2026-10-16	29	$0.02	6.3s	not measured	not measured	not measured	186.5
+claude-haiku-5-5 · max
+2026-10-11	43	$0.21	5m 6s	not measured	not measured	not measured	233.6
+claude-haiku-5-5 · max
+2026-11-14	36.5	$0.411	not measured	not measured	not measured	not measured	252.4
+claude-haiku-5-5 · max
+2026-10-16	43	$0.21	5m 27s	not measured	not measured	not measured	238.4
+claude-haiku-5-5 · max
+2026-10-21	43	$0.21	4m 38s	not measured	not measured	not measured	235
+claude-haiku-5-5 · medium
+2026-10-11	34	$0.05	14.7s	not measured	not measured	not measured	168.7
+claude-haiku-5-5 · medium
+2026-11-14	24.6	$0.0918	not measured	not measured	not measured	not measured	220.3
+claude-haiku-5-5 · medium
+2026-10-16	34	$0.05	8.5s	not measured	not measured	not measured	186.8
+claude-haiku-5-5 · xhigh
+2026-10-11	41	$0.12	1m 4s	not measured	not measured	not measured	192
+claude-haiku-5-5 · xhigh
+2026-11-14	34.6	$0.2484	not measured	not measured	not measured	not measured	230.7
+claude-haiku-5-5 · xhigh
+2026-10-16	41	$0.12	58.9s	not measured	not measured	not measured	190.2
+claude-opus-4.5 · non-reasoning
+2026-09-28	24	—	not measured	not measured	not measured	not measured	44
+claude-opus-4.5 · reasoning
+2026-09-28	29	—	not measured	not measured	not measured	not measured	45
+claude-opus-5.5 · high
+2026-09-28	54	$1.82	not measured	not measured	not measured	not measured	79
+claude-opus-5.5 · high
+2026-10-16	54	$1.82	38.9s	not measured	not measured	not measured	86.8
+claude-opus-5.5 · high
+2026-11-12	51.8	$3.46	23.7s	23.7s	not measured	not measured	105
+claude-opus-5.5 · low
+2026-09-28	42	$0.55	not measured	not measured	not measured	not measured	75
+claude-opus-5.5 · low
+2026-10-16	42	$0.55	6.7s	not measured	not measured	not measured	88.7
+claude-opus-5.5 · low
+2026-11-12	34.8	$0.98	4.8s	4.8s	not measured	not measured	107
+claude-opus-5.5 · max
+2026-09-28	58	$5.98	not measured	not measured	not measured	not measured	95
+claude-opus-5.5 · max
+2026-10-16	58	$5.98	11m 7s	not measured	not measured	not measured	96.8
+claude-opus-5.5 · max
+2026-11-12	59.1	$10.04	6m 2s	6m 2s	not measured	not measured	115
+claude-opus-5.5 · medium
+2026-09-28	51	$1.34	not measured	not measured	not measured	not measured	76
+claude-opus-5.5 · medium
+2026-10-16	51	$1.34	17.4s	not measured	not measured	not measured	88.4
+claude-opus-5.5 · medium
+2026-11-12	48.2	$2.45	15.6s	15.6s	not measured	not measured	103
+claude-opus-5.5 · xhigh
+2026-09-28	56	$3.46	not measured	not measured	not measured	not measured	82
+claude-opus-5.5 · xhigh
+2026-10-16	56	$3.46	2m 3s	not measured	not measured	not measured	85.5
+claude-opus-5.5 · xhigh
+2026-11-12	57.4	$6.05	1m 20s	1m 20s	not measured	not measured	109
+claude-opus-5 · high
+2026-09-28	48	$3.61	not measured	not measured	not measured	not measured	50
+claude-opus-5 · low
+2026-09-28	40	$1.1	not measured	not measured	not measured	not measured	47
+claude-opus-5 · max
+2026-09-28	51	$5.86	not measured	not measured	not measured	not measured	51
+claude-opus-5 · medium
+2026-09-28	45	$2.19	not measured	not measured	not measured	not measured	48
+claude-opus-5 · xhigh
+2026-09-28	50	$4.88	not measured	not measured	not measured	not measured	49
+claude-sonnet-5.5 · high
+2026-09-28	47	$1.08	14.1s	not measured	not measured	not measured	95
+claude-sonnet-5.5 · high
+2026-10-16	47	$0.88	12.4s	not measured	not measured	not measured	112.9
+claude-sonnet-5.5 · high
+2026-11-12	41.5	$1.64	10.3s	10.3s	not measured	not measured	139
+claude-sonnet-5.5 · low
+2026-09-28	36	$0.41	1.1s	not measured	not measured	not measured	89
+claude-sonnet-5.5 · low
+2026-10-16	36	$0.35	1.4s	not measured	not measured	not measured	112.3
+claude-sonnet-5.5 · low
+2026-11-12	25.6	$0.51	2.7s	2.7s	not measured	not measured	137
+claude-sonnet-5.5 · max
+2026-09-28	56	$7.6	5m 53s	not measured	not measured	not measured	141.9
+claude-sonnet-5.5 · max
+2026-10-16	56	$5.46	6m 20s	not measured	not measured	not measured	137.7
+claude-sonnet-5.5 · max
+2026-11-12	54.5	$10.02	4m 20s	4m 20s	not measured	not measured	146
+claude-sonnet-5.5 · medium
+2026-09-28	41	$0.59	2.5s	not measured	not measured	not measured	111
+claude-sonnet-5.5 · medium
+2026-10-16	41	$0.48	3s	not measured	not measured	not measured	118.3
+claude-sonnet-5.5 · medium
+2026-11-12	30.8	$0.78	4.6s	4.6s	not measured	not measured	137
+claude-sonnet-5.5 · xhigh
+2026-09-28	52	$2.74	1m 34s	not measured	not measured	not measured	143
+claude-sonnet-5.5 · xhigh
+2026-10-16	52	$2.01	25.9s	not measured	not measured	not measured	114.3
+claude-sonnet-5.5 · xhigh
+2026-11-12	49.9	$4.09	27.8s	27.8s	not measured	not measured	139
+claude-sonnet-5 · high
+2026-09-28	32	$1.79	not measured	not measured	not measured	not measured	60
+claude-sonnet-5 · low
+2026-09-28	25	$0.51	not measured	not measured	not measured	not measured	56
+claude-sonnet-5 · max
+2026-09-28	38	$5.09	not measured	not measured	not measured	not measured	83.9
+claude-sonnet-5 · medium
+2026-09-28	28	$1	not measured	not measured	not measured	not measured	57
+claude-sonnet-5 · non-reasoning
+2026-09-28	29	—	not measured	not measured	not measured	not measured	56
+claude-sonnet-5 · xhigh
+2026-09-28	—	—	not measured	not measured	not measured	not measured	65
+gemini-3-1-pro-preview · high
+2026-10-17	33	$1.04	not measured	not measured	not measured	11m 6s	—
+gemini-4-argon · not-stated
+2026-10-16	64	$5.84	not measured	not measured	not measured	34m 30s	—
+gemini-3-8-flash · high
+2026-10-17	42	$2.47	not measured	not measured	not measured	11m 42s	—
+claude-haiku-5-5 · high
+2026-10-16	35	$0.36	not measured	not measured	not measured	18m 24s	—
+claude-haiku-5-5 · low
+2026-10-16	28	$0.14	not measured	not measured	not measured	11m 36s	—
+claude-haiku-5-5 · max
+2026-10-16	36	$2.58	not measured	not measured	not measured	90m 0s	—
+claude-haiku-5-5 · medium
+2026-10-16	34	$0.23	not measured	not measured	not measured	14m 0s	—
+claude-haiku-5-5 · xhigh
+2026-10-16	41	$0.61	not measured	not measured	not measured	25m 54s	—
+claude-opus-5.5 · max
+2026-10-16	66	$13.04	not measured	not measured	not measured	66m 0s	—
+claude-sonnet-5.5 · high
+2026-10-16	55	$1.24	not measured	not measured	not measured	12m 18s	—
+claude-sonnet-5.5 · low
+2026-10-16	42	$0.48	not measured	not measured	not measured	6m 18s	—
+claude-sonnet-5.5 · max
+2026-10-16	68	$14.19	not measured	not measured	not measured	90m 0s	—
+claude-sonnet-5.5 · medium
+2026-10-16	46	$0.62	not measured	not measured	not measured	8m 30s	—
+claude-sonnet-5.5 · xhigh
+2026-10-16	63	$3.33	not measured	not measured	not measured	27m 0s	—
+deepseek-v4-flash-0731 · max
+2026-10-16	39	$0.09	not measured	not measured	not measured	18m 18s	—
+deepseek-v4-pro-0813 · max
+2026-10-16	43	$0.24	not measured	not measured	not measured	40m 18s	—
+gpt-6-1-sol · high
+2026-10-16	60	$0.89	not measured	not measured	not measured	13m 18s	—
+gpt-6-1-sol · low
+2026-10-16	57	$0.5	not measured	not measured	not measured	8m 36s	—
+gpt-6-1-sol · max
+2026-10-16	60	$1.55	not measured	not measured	not measured	24m 24s	—
+gpt-6-1-sol · medium
+2026-10-16	61	$0.7	not measured	not measured	not measured	10m 54s	—
+gpt-6-1-sol · xhigh
+2026-10-16	63	$1.04	not measured	not measured	not measured	15m 30s	—
+gpt-6-astra · max
+2026-10-16	62	$7.47	not measured	not measured	not measured	29m 24s	—
+gpt-6-luna · max
+2026-10-16	41	$0.18	not measured	not measured	not measured	21m 24s	—
+gpt-6-sol · max
+2026-10-16	57	$2.99	not measured	not measured	not measured	22m 18s	—
+muse-wonder-full · max
+2026-10-16	68	—	not measured	not measured	not measured	28m 48s	—
+muse-wonder · max
+2026-10-16	63	$8.05	not measured	not measured	not measured	22m 24s	—
+glm-5-3 · not-stated
+2026-10-16	54	$4.24	not measured	not measured	not measured	48m 6s	—
+deepseek-v4-1-flash-1017 · max
+2026-10-21	45	$0.26	not measured	not measured	not measured	not measured	209
+deepseek-v4-pro-0813 · high
+2026-11-14	20.8	$0.8485	not measured	not measured	not measured	not measured	76.3
+deepseek-v4-pro-0813 · max
+2026-10-12	36	$0.67	1.6s	not measured	not measured	not measured	93
+deepseek-v4-pro-0813 · max
+2026-11-14	23.1	$1.7691	not measured	not measured	not measured	not measured	83.6
+deepseek-v4-pro-0813 · non-reasoning
+2026-10-12	20	$0.36	1.7s	not measured	not measured	not measured	85
+deepseek-v4-pro-0813 · non-reasoning
+2026-11-14	12.6	$0.977	not measured	not measured	not measured	not measured	82.9
+deepseek-v4.1-flash-1017 · high
+2026-11-14	28.6	$0.4562	not measured	not measured	not measured	not measured	167.7
+deepseek-v4.1-flash-1017 · max
+2026-11-14	32.6	$0.6021	not measured	not measured	not measured	not measured	165.7
+deepseek-v4.1-flash-1017 · non-reasoning
+2026-11-14	18.5	$0.4254	not measured	not measured	not measured	not measured	145.5
+deepseek-v4.1-flash · max
+2026-09-28	39	$0.27	not measured	not measured	not measured	not measured	219.5
+deepseek-v4.1-flash · max
+2026-10-12	39	$0.27	1.2s	not measured	not measured	not measured	217
+deepseek-v4.1-flash · non-reasoning
+2026-09-28	25	$0.15	not measured	not measured	not measured	not measured	239
+deepseek-v4.1-flash · non-reasoning
+2026-10-12	25	$0.15	1.1s	not measured	not measured	not measured	211
+gemini-2.5-flash-lite · default
+2026-11-12	10.4	—	0.3s	0.3s	not measured	not measured	—
+gemini-2.5-flash-thinking · thinking
+2026-11-12	14.1	—	12s	12s	not measured	not measured	201
+gemini-2.5-flash · non-reasoning
+2026-11-12	9.8	—	0.6s	0.6s	not measured	not measured	173
+gemini-2.5-pro · high
+2026-11-12	25.8	—	not measured	not measured	not measured	not measured	—
+gemini-3-1-pro-preview · not-stated
+2026-10-17	30	$1.3	16.9s	16.9s	20.9s	2m 4s	140.1
+gemini-3-5-flash · high
+2026-10-17	33	$3.69	13.5s	13.5s	not measured	not measured	187.9
+gemini-3.8-flash · high
+2026-09-28	41	$1.24	38.1s	38.1s	39.8s	3m 51s	311
+gemini-3.8-flash · high
+2026-10-17	41	$1.24	22.6s	22.6s	26s	7m 54s	147.1
+gemini-3.8-flash · high
+2026-11-12	30.8	$7.77	17.1s	17.1s	not measured	14m 48s	112
+gemini-3.8-flash · low
+2026-09-28	33	—	not measured	not measured	not measured	not measured	—
+gemini-3.8-flash · low
+2026-10-17	33	—	not measured	not measured	not measured	not measured	—
+gemini-3.8-flash · low
+2026-11-12	22.5	—	4.4s	4.4s	not measured	not measured	102
+gemini-3.8-flash · medium
+2026-09-28	40	$0.93	not measured	not measured	not measured	not measured	—
+gemini-3.8-flash · medium
+2026-10-17	40	$0.93	not measured	not measured	not measured	not measured	—
+gemini-3.8-flash · medium
+2026-11-12	30.1	$6.26	12.7s	12.7s	not measured	not measured	107
+gemini-4-argon · high
+2026-10-04	53	$1.99	not measured	not measured	not measured	not measured	—
+gemini-4-argon · high
+2026-10-11	53	$1.99	not measured	not measured	not measured	not measured	—
+gemini-4-argon · high
+2026-10-16	53	$1.99	not measured	not measured	not measured	not measured	—
+gemini-4-argon · high
+2026-11-12	50.4	$9.95	39.9s	39.9s	not measured	30m 12s	65
+gemini-4-argon · medium
+2026-11-14	47.6	$4.3146	not measured	not measured	not measured	not measured	57.9
+gemini-4-carbon · high
+2026-11-12	60	$7.76	1m 8s	1m 8s	not measured	not measured	80
+gemini-4-carbon · low
+2026-11-12	54.2	$7.19	12.3s	12.3s	not measured	not measured	61
+gemini-4-carbon · medium
+2026-11-12	58.3	$6.59	23.3s	23.3s	not measured	not measured	73
+gemini-4-hydrogen · high
+2026-11-12	51	$1.87	15s	15s	not measured	6m 0s	—
+gemini-4-hydrogen · low
+2026-11-12	27	$0.29	5.8s	5.8s	not measured	1m 18s	—
+gemini-4-hydrogen · medium
+2026-11-12	41	$0.8	12.3s	12.3s	not measured	3m 42s	—
+gemini-4-hydrogen · xhigh
+2026-11-12	54	$3.16	41.1s	41.1s	not measured	13m 0s	198
+kimi-k3-1-pro · default
+2026-11-14	46.5	$3.6812	not measured	not measured	not measured	not measured	30.3
+kimi-k3 · max
+2026-09-28	44	$2	not measured	not measured	not measured	not measured	—
+muse-ember-1.0 · max
+2026-11-14	36	$0.1359	not measured	not measured	not measured	not measured	431.1
+muse-ember-1.0 · xhigh
+2026-11-14	34.1	$0.1162	not measured	not measured	not measured	not measured	433.7
+muse-spark-1.3 · max
+2026-09-28	48	$1.6	25.5s	35s	37.4s	5m 13s	210
+muse-spark-1.3 · max
+2026-11-14	36.6	$2.3858	not measured	not measured	not measured	not measured	132
+muse-spark-1.3 · xhigh
+2026-09-28	45	$1.37	not measured	not measured	not measured	not measured	196
+muse-spark-open · xhigh
+2026-10-21	39	$0.84	not measured	not measured	not measured	not measured	140.8
+muse-wonder-full · max
+2026-10-16	56	—	not measured	not measured	not measured	not measured	—
+muse-wonder · high
+2026-11-14	40.5	$4.5605	not measured	not measured	not measured	not measured	102.4
+muse-wonder · max
+2026-10-16	52	$4.52	36.3s	not measured	not measured	not measured	183.9
+muse-wonder · max
+2026-11-14	43.6	$6.952	not measured	not measured	not measured	not measured	109.7
+minimax-m3-1-flash · max
+2026-11-14	29.1	$0.491	not measured	not measured	not measured	not measured	137.3
+minimax-m3-1-flash · not-stated
+2026-10-21	43	$0.22	not measured	not measured	not measured	not measured	—
+minimax-m3 · default
+2026-11-14	18.9	$1.2851	not measured	not measured	not measured	not measured	111.4
+minimax-m3 · reasoning
+2026-09-28	29	$0.51	1.1s	12.5s	15.4s	4m 55s	174
+mistral-large-4-preview · reasoning
+2026-10-11	38	$1.13	not measured	not measured	not measured	not measured	—
+mistral-large-4-preview · reasoning
+2026-10-16	38	$1.13	not measured	not measured	not measured	not measured	—
+mistral-large-4 · high
+2026-11-14	26.1	$2.0617	not measured	not measured	not measured	not measured	103.9
+mistral-large-4 · medium
+2026-11-14	23.1	$1.4121	not measured	not measured	not measured	not measured	89.8
+voxtral-mini-transcribe-3 · default
+2026-10-21	2.2	—	not measured	not measured	not measured	not measured	—
+voxtral-small-transcribe-3 · default
+2026-10-21	2.1	—	not measured	not measured	not measured	not measured	—
+nemotron-3-5-bolt-74b-a9b · not-stated
+2026-10-21	21	—	not measured	not measured	not measured	not measured	—
+nemotron-3-5-lightning · default
+2026-11-14	5.5	—	not measured	not measured	not measured	not measured	—
+nemotron-3-5-super-vl · default
+2026-11-14	13.6	—	not measured	not measured	not measured	not measured	—
+nemotron-3-5-super-vl · not-stated
+2026-10-21	26	—	not measured	not measured	not measured	not measured	—
+gpt-5-6-terra · high
+2026-10-16	34	$0.34	2.3s	not measured	not measured	not measured	114.1
+gpt-5-6-terra · low
+2026-10-16	27	$0.14	1.4s	not measured	not measured	not measured	108.7
+gpt-5-6-terra · max
+2026-10-16	42	$1.4	1m 58s	not measured	not measured	not measured	133.9
+gpt-5-6-terra · max
+2026-11-14	32.3	$3.7349	not measured	not measured	not measured	not measured	99.4
+gpt-5-6-terra · medium
+2026-10-16	30	$0.18	1.6s	not measured	not measured	not measured	108.2
+gpt-5-6-terra · non-reasoning
+2026-10-16	21	$0.14	0.8s	not measured	not measured	not measured	121.1
+gpt-5-6-terra · xhigh
+2026-10-16	38	$0.63	17.3s	not measured	not measured	not measured	130.6
+gpt-5.6-luna · high
+2026-09-28	32	$0.04	not measured	not measured	not measured	not measured	117
+gpt-5.6-luna · low
+2026-09-28	21	$0.01	not measured	not measured	not measured	not measured	117
+gpt-5.6-luna · max
+2026-09-28	37	$0.18	not measured	not measured	not measured	not measured	121
+gpt-5.6-luna · max
+2026-11-14	23.8	$0.3313	not measured	not measured	not measured	not measured	106.4
+gpt-5.6-luna · medium
+2026-09-28	25	$0.02	not measured	not measured	not measured	not measured	120
+gpt-5.6-luna · non-reasoning
+2026-09-28	16	$0.01	not measured	not measured	not measured	not measured	122
+gpt-5.6-luna · xhigh
+2026-09-28	35	$0.09	not measured	not measured	not measured	not measured	124
+gpt-5.6-sol · high
+2026-09-28	42	$0.81	not measured	not measured	not measured	not measured	81
+gpt-5.6-sol · low
+2026-09-28	33	$0.26	not measured	not measured	not measured	not measured	80
+gpt-5.6-sol · max
+2026-09-28	47	$1.99	not measured	not measured	not measured	not measured	90
+gpt-5.6-sol · medium
+2026-09-28	39	$0.5	not measured	not measured	not measured	not measured	82
+gpt-5.6-sol · non-reasoning
+2026-09-28	28	—	not measured	not measured	not measured	not measured	84
+gpt-5.6-sol · xhigh
+2026-09-28	44	$1.18	not measured	not measured	not measured	not measured	83
+gpt-6-1-sol · high
+2026-10-11	50	$0.32	1m 3s	not measured	not measured	not measured	56.9
+gpt-6-1-sol · high
+2026-11-14	50.3	$0.591	not measured	not measured	not measured	not measured	47.8
+gpt-6-1-sol · high
+2026-10-16	50	$0.32	39.8s	not measured	not measured	not measured	58.2
+gpt-6-1-sol · low
+2026-10-11	42	$0.13	2.6s	not measured	not measured	not measured	52.4
+gpt-6-1-sol · low
+2026-11-14	34.8	$0.1615	not measured	not measured	not measured	not measured	48.1
+gpt-6-1-sol · low
+2026-10-16	42	$0.13	2.4s	not measured	not measured	not measured	50.8
+gpt-6-1-sol · max
+2026-10-11	52	$0.72	5m 21s	not measured	not measured	not measured	62.7
+gpt-6-1-sol · max
+2026-10-21	52	$0.72	not measured	not measured	not measured	not measured	54.3
+gpt-6-1-sol · max
+2026-11-14	54.6	$1.2721	not measured	not measured	not measured	not measured	49
+gpt-6-1-sol · max
+2026-10-16	52	$0.72	4m 32s	not measured	not measured	not measured	57.1
+gpt-6-1-sol · medium
+2026-10-11	48	$0.21	7.2s	not measured	not measured	not measured	52.6
+gpt-6-1-sol · medium
+2026-11-14	46.3	$0.3594	not measured	not measured	not measured	not measured	49.4
+gpt-6-1-sol · medium
+2026-10-16	48	$0.21	4.2s	not measured	not measured	not measured	50.7
+gpt-6-1-sol · xhigh
+2026-10-11	51	$0.39	2m 53s	not measured	not measured	not measured	57.7
+gpt-6-1-sol · xhigh
+2026-11-14	52.5	$0.764	not measured	not measured	not measured	not measured	47.4
+gpt-6-1-sol · xhigh
+2026-10-16	51	$0.39	2m 1s	not measured	not measured	not measured	56.7
+gpt-6-astra · high
+2026-09-28	51	$1.73	39s	39s	48.6s	3m 48s	52
+gpt-6-astra · high
+2026-10-16	51	$1.73	47.5s	not measured	not measured	not measured	52.1
+gpt-6-astra · high
+2026-11-14	54.8	$3.2386	not measured	not measured	not measured	not measured	40.7
+gpt-6-astra · low
+2026-09-28	46	$0.82	2.4s	2.4s	12s	1m 25s	52
+gpt-6-astra · low
+2026-10-16	46	$0.82	2.5s	not measured	not measured	not measured	50.5
+gpt-6-astra · low
+2026-11-14	43.3	$1.4237	not measured	not measured	not measured	not measured	39.2
+gpt-6-astra · max
+2026-09-28	53	$3.26	4m 57s	4m 57s	5m 5s	7m 4s	64
+gpt-6-astra · max
+2026-10-16	53	$3.26	4m 13s	not measured	not measured	not measured	53.7
+gpt-6-astra · max
+2026-10-21	53	$3.26	not measured	not measured	not measured	not measured	59.2
+gpt-6-astra · max
+2026-11-14	56.9	$6.2447	not measured	not measured	not measured	not measured	36.4
+gpt-6-astra · medium
+2026-09-28	50	$1.54	4.8s	4.8s	14.3s	3m 3s	52
+gpt-6-astra · medium
+2026-10-16	50	$1.54	6.5s	not measured	not measured	not measured	49.7
+gpt-6-astra · medium
+2026-11-14	51.6	$2.7324	not measured	not measured	not measured	not measured	39.3
+gpt-6-astra · xhigh
+2026-09-28	52	$2.31	2m 0s	2m 0s	2m 10s	5m 11s	54
+gpt-6-astra · xhigh
+2026-10-16	52	$2.31	1m 50s	not measured	not measured	not measured	52.5
+gpt-6-astra · xhigh
+2026-11-14	55.3	$3.6589	not measured	not measured	not measured	not measured	37.5
+gpt-6-luna · high
+2026-09-28	32	$0.03	5.5s	5.5s	8.8s	2m 10s	152
+gpt-6-luna · high
+2026-10-16	33	$0.03	18.7s	not measured	not measured	not measured	120.2
+gpt-6-luna · high
+2026-11-14	21.4	$0.0729	not measured	not measured	not measured	not measured	94.5
+gpt-6-luna · low
+2026-09-28	21	$0.0045	1.9s	1.9s	5.3s	14.1s	145
+gpt-6-luna · low
+2026-10-16	22	$0.0045	2.2s	not measured	not measured	not measured	117.9
+gpt-6-luna · low
+2026-11-14	9.7	$0.0051	not measured	not measured	not measured	not measured	88.7
+gpt-6-luna · max
+2026-09-28	37	$0.07	1m 34s	1m 34s	1m 37s	5m 13s	163
+gpt-6-luna · max
+2026-10-16	38	$0.07	1m 37s	not measured	not measured	not measured	122.1
+gpt-6-luna · max
+2026-10-21	38	$0.07	not measured	not measured	not measured	not measured	117.1
+gpt-6-luna · max
+2026-11-14	27.9	$0.152	not measured	not measured	not measured	not measured	105
+gpt-6-luna · medium
+2026-09-28	29	$0.02	not measured	not measured	not measured	not measured	—
+gpt-6-luna · medium
+2026-10-16	30	$0.02	not measured	not measured	not measured	not measured	—
+gpt-6-luna · medium
+2026-11-14	18.5	$0.0422	not measured	not measured	not measured	not measured	92.2
+gpt-6-luna · non-reasoning
+2026-09-28	18	$0.01	0.8s	0.8s	4.2s	25.4s	144
+gpt-6-luna · non-reasoning
+2026-10-16	18	$0.01	0.9s	not measured	not measured	not measured	113
+gpt-6-luna · non-reasoning
+2026-11-14	9.4	$0.0714	not measured	not measured	not measured	not measured	88.1
+gpt-6-luna · xhigh
+2026-09-28	34	$0.04	14.8s	14.8s	18s	2m 54s	156
+gpt-6-luna · xhigh
+2026-10-16	35	$0.04	21.3s	not measured	not measured	not measured	114.7
+gpt-6-luna · xhigh
+2026-11-14	23.5	$0.1041	not measured	not measured	not measured	not measured	98.2
+gpt-6-sol · high
+2026-09-28	43	$0.37	10.3s	10.3s	16.5s	2m 6s	81
+gpt-6-sol · low
+2026-09-28	34	$0.13	1.7s	1.7s	7.8s	41.1s	82
+gpt-6-sol · max
+2026-09-28	48	$1.06	2m 41s	2m 41s	2m 47s	5m 48s	90
+gpt-6-sol · max
+2026-10-16	48	$1.04	1m 54s	1m 54s	1m 59s	4m 54s	103
+gpt-6-sol · max
+2026-10-21	48	$1.04	1m 26s	1m 26s	1m 31s	4m 49s	104
+gpt-6-sol · medium
+2026-09-28	40	$0.25	not measured	not measured	not measured	not measured	—
+gpt-6-sol · non-reasoning
+2026-09-28	28	$0.33	0.9s	0.9s	7.3s	1m 2s	79
+gpt-6-sol · xhigh
+2026-09-28	44	$0.53	38.2s	38.2s	44.5s	3m 19s	80
+reflection-beam · default
+2026-11-14	17.7	$0.2844	not measured	not measured	not measured	not measured	270.7
+grok-4-7 · high
+2026-11-14	35.2	$6.1836	not measured	not measured	not measured	not measured	66.7
+grok-4-7 · low
+2026-11-14	31.1	$2.9222	not measured	not measured	not measured	not measured	65.3
+grok-4-7 · xhigh
+2026-10-11	46	$3.74	not measured	not measured	not measured	not measured	80.6
+grok-4-7 · xhigh
+2026-11-14	35.5	$7.7715	not measured	not measured	not measured	not measured	64.7
+grok-4-7 · xhigh
+2026-10-16	46	$3.74	49s	not measured	not measured	not measured	101.6
+grok-4-7 · xhigh
+2026-10-21	46	$3.74	38.9s	not measured	not measured	not measured	89.7
+step-5 · default
+2026-11-14	28.5	$2.3453	not measured	not measured	not measured	not measured	130.4
+hy4 · default
+2026-11-14	34.6	$1.0311	not measured	not measured	not measured	not measured	91.3
+inkling-2-small-free · default
+2026-11-14	31	—	not measured	not measured	not measured	not measured	—
+solar-mini-4 · reasoning
+2026-10-11	24	$0.37	1.8s	not measured	not measured	not measured	64.4
+mimo-v2-6-flash · default
+2026-11-14	26.7	$0.1285	not measured	not measured	not measured	not measured	43.5
+mimo-v2-6-pro · default
+2026-11-14	29.9	$0.2572	not measured	not measured	not measured	not measured	56.7
+mimo-v2-6-pro · reasoning
+2026-10-12	46	$0.13	4.1s	not measured	not measured	not measured	43
+mimo-v2.6-flash · reasoning
+2026-09-28	38	$0.06	3.5s	35.5s	43.6s	20m 53s	62
+mimo-v2.6-flash · reasoning
+2026-10-12	38	$0.06	3.6s	not measured	not measured	not measured	49
+glm-5-3-flash · max
+2026-11-14	27.8	$0.5833	not measured	not measured	not measured	not measured	47.8
+glm-5.3-flash · reasoning
+2026-09-28	42	$0.25	3.1s	38.4s	47.2s	16m 24s	57
+glm-5.3-flash · reasoning
+2026-10-12	42	$0.25	3s	not measured	not measured	not measured	61
+glm-5.3 · low
+2026-09-28	34	$0.85	not measured	not measured	not measured	not measured	85
+glm-5.3 · low
+2026-10-12	34	$0.85	3.2s	not measured	not measured	not measured	75
+glm-5.3 · low
+2026-11-14	23.1	$1.5749	not measured	not measured	not measured	not measured	63.9
+glm-5.3 · max
+2026-09-28	45	$2.01	not measured	not measured	not measured	not measured	91
+glm-5.3 · max
+2026-10-12	45	$2.01	3.2s	not measured	not measured	not measured	68
+glm-5.3 · max
+2026-11-14	31.7	$5.0093	not measured	not measured	not measured	not measured	76.9
+Measured configurations
+
+The AA Intelligence Index rows of the latest import batch, effort labels verbatim from the import.
+
+Models — effort, intelligence, cost, and speed
+Model	Effort (AA label)	Intelligence	$/task	Speed (t/s)
+Beam 1.0	default	17.7	$0.2844	270.7
+Claude 4.5 Haiku	Reasoning	17	$0.28	89.3
+Claude Fable 5.1	Adaptive Reasoning, High Effort, Default Fallback	47.2	$7.54	83.9
+Claude Fable 5.1	Adaptive Reasoning, Low Effort, Default Fallback	38.7	$4.4711	83.9
+Claude Fable 5.1	Adaptive Reasoning, Max Effort, Default Fallback	53	$7.63	69.3
+Claude Fable 5.1	Adaptive Reasoning, Max Effort, Default Fallback	49.2	$12.994	88.2
+Claude Fable 5.1	Adaptive Reasoning, Medium Effort, Default Fallback	43.2	$5.5643	84.6
+Claude Fable 5.2	Adaptive Reasoning, High Effort, Default Fallback	61.8	$9.0784	101.4
+Claude Fable 5.2	Adaptive Reasoning, Low Effort, Default Fallback	53.9	$3.0972	102.5
+Claude Fable 5.2	Adaptive Reasoning, Max Effort, Default Fallback	64.6	$26.5386	100.8
+Claude Fable 5.2	Adaptive Reasoning, Medium Effort, Default Fallback	56.4	$3.8026	94.4
+Claude Fable 5.2	Adaptive Reasoning, Xhigh Effort, Default Fallback	62.2	$14.8286	97.4
+Claude Haiku 5.5	Adaptive Reasoning, High Effort, Default Fallback	29.9	$0.1586	223.6
+Claude Haiku 5.5	Adaptive Reasoning, High Effort, Default Fallback	29.9	$0.1586	223.6
+Claude Haiku 5.5	Adaptive Reasoning, Low Effort, Default Fallback	18.6	$0.0438	210.2
+Claude Haiku 5.5	Adaptive Reasoning, Low Effort, Default Fallback	18.6	$0.0438	210.2
+Claude Haiku 5.5	Adaptive Reasoning, Max Effort, Default Fallback	36.5	$0.411	252.4
+Claude Haiku 5.5	Adaptive Reasoning, Max Effort, Default Fallback	36.5	$0.411	252.4
+Claude Haiku 5.5	Adaptive Reasoning, Medium Effort, Default Fallback	24.6	$0.0918	220.3
+Claude Haiku 5.5	Adaptive Reasoning, Medium Effort, Default Fallback	24.6	$0.0918	220.3
+Claude Haiku 5.5	Adaptive Reasoning, Xhigh Effort, Default Fallback	34.6	$0.2484	230.7
+Claude Haiku 5.5	Adaptive Reasoning, Xhigh Effort, Default Fallback	34.6	$0.2484	230.7
+Claude Opus 5.5	Adaptive Reasoning, High Effort, Default Fallback	54	$1.82	73.8
+Claude Opus 5.5	Adaptive Reasoning, High Effort, Default Fallback	51.8	$3.46	105
+Claude Opus 5.5	Adaptive Reasoning, Low Effort, Default Fallback	42	$0.55	72.6
+Claude Opus 5.5	Adaptive Reasoning, Low Effort, Default Fallback	34.8	$0.98	107
+Claude Opus 5.5	Adaptive Reasoning, Max Effort, Default Fallback	58	$5.98	92.2
+Claude Opus 5.5	Adaptive Reasoning, Max Effort, Default Fallback	59.1	$10.04	115
+Claude Opus 5.5	Adaptive Reasoning, Medium Effort, Default Fallback	51	$1.34	74
+Claude Opus 5.5	Adaptive Reasoning, Medium Effort, Default Fallback	48.2	$2.45	103
+Claude Opus 5.5	Adaptive Reasoning, Xhigh Effort, Default Fallback	56	$3.46	79.5
+Claude Opus 5.5	Adaptive Reasoning, Xhigh Effort, Default Fallback	57.4	$6.05	109
+Claude Sonnet 5.5	Adaptive Reasoning, High Effort, Default Fallback	47	$1.08	89.8
+Claude Sonnet 5.5	Adaptive Reasoning, High Effort, Default Fallback	41.5	$1.64	139
+Claude Sonnet 5.5	Adaptive Reasoning, Low Effort, Default Fallback	25.6	$0.51	137
+Claude Sonnet 5.5	Adaptive Reasoning, Max Effort, Default Fallback	56	$7.6	138.7
+Claude Sonnet 5.5	Adaptive Reasoning, Max Effort, Default Fallback	54.5	$10.02	146
+Claude Sonnet 5.5	Adaptive Reasoning, Medium Effort, Default Fallback	41	$0.59	91.4
+Claude Sonnet 5.5	Adaptive Reasoning, Medium Effort, Default Fallback	30.8	$0.78	137
+Claude Sonnet 5.5	Adaptive Reasoning, Xhigh Effort, Default Fallback	52	$2.74	104.9
+Claude Sonnet 5.5	Adaptive Reasoning, Xhigh Effort, Default Fallback	49.9	$4.09	139
+DeepSeek V4 Pro	high	20.8	$0.8485	76.3
+DeepSeek V4 Pro	max	23.1	$1.7691	83.6
+DeepSeek V4 Pro	non-reasoning	12.6	$0.977	82.9
+DeepSeek V4 Pro 0813	Reasoning, Max Effort	36	$0.67	81
+DeepSeek V4.1 Flash	Reasoning, Max Effort	39	$0.27	209.4
+DeepSeek V4.1 Flash 1017	high	28.6	$0.4562	167.7
+DeepSeek V4.1 Flash 1017	max	32.6	$0.6021	165.7
+DeepSeek V4.1 Flash 1017	non-reasoning	18.5	$0.4254	145.5
+GLM 5.3 Flash	—	42	$0.25	45
+GLM-5.3	low	23.1	$1.5749	63.9
+GLM-5.3	max	45	$2.01	82.7
+GLM-5.3	max	31.7	$5.0093	76.9
+GLM-5.3 Flash	max	27.8	$0.5833	47.8
+GPT-5.6 Luna	max	23.8	$0.3313	106.4
+GPT-5.6 Terra	max	32.3	$3.7349	99.4
+GPT-6 Astra	high	51	$1.73	47.1
+GPT-6 Astra	high	54.8	$3.2386	40.7
+GPT-6 Astra	low	46	$0.82	47.2
+GPT-6 Astra	low	43.3	$1.4237	39.2
+GPT-6 Astra	max	53	$3.26	55.7
+GPT-6 Astra	max	56.9	$6.2447	36.4
+GPT-6 Astra	medium	50	$1.54	46.3
+GPT-6 Astra	medium	51.6	$2.7324	39.3
+GPT-6 Astra	xhigh	55.3	$3.6589	37.5
+GPT-6 Luna	high	32	$0.03	125.1
+GPT-6 Luna	high	21.4	$0.0729	94.5
+GPT-6 Luna	low	21	$0.0045	124.4
+GPT-6 Luna	low	9.7	$0.0051	88.7
+GPT-6 Luna	max	37	$0.07	145.2
+GPT-6 Luna	max	27.9	$0.152	105
+GPT-6 Luna	medium	29	$0.02	—
+GPT-6 Luna	medium	18.5	$0.0422	92.2
+GPT-6 Luna	non-reasoning	9.4	$0.0714	88.1
+GPT-6 Luna	xhigh	23.5	$0.1041	98.2
+GPT-6.1 Sol	high	50	$0.32	65.4
+GPT-6.1 Sol	high	50.3	$0.591	47.8
+GPT-6.1 Sol	high	50.3	$0.591	47.8
+GPT-6.1 Sol	low	42	$0.13	69.4
+GPT-6.1 Sol	low	34.8	$0.1615	48.1
+GPT-6.1 Sol	low	34.8	$0.1615	48.1
+GPT-6.1 Sol	max	52	$0.72	67.8
+GPT-6.1 Sol	max	54.6	$1.2721	49
+GPT-6.1 Sol	max	54.6	$1.2721	49
+GPT-6.1 Sol	medium	48	$0.21	60.7
+GPT-6.1 Sol	medium	46.3	$0.3594	49.4
+GPT-6.1 Sol	medium	46.3	$0.3594	49.4
+GPT-6.1 Sol	xhigh	51	$0.39	63.6
+GPT-6.1 Sol	xhigh	52.5	$0.764	47.4
+GPT-6.1 Sol	xhigh	52.5	$0.764	47.4
+Gemini 3.8 Flash	high	41	$1.24	238.7
+Gemini 3.8 Flash	high	30.8	$7.77	112
+Gemini 3.8 Flash	low	22.5	—	102
+Gemini 3.8 Flash	medium	40	$0.93	—
+Gemini 3.8 Flash	medium	30.1	$6.26	107
+Gemini 4 Argon	high	50.4	$9.95	65
+Gemini 4 Argon	medium	47.6	$4.3146	57.9
+Gemini 4 Carbon	high	60	$7.76	80
+Gemini 4 Carbon	low	54.2	$7.19	61
+Gemini 4 Carbon	medium	58.3	$6.59	73
+Gemini 4 Hydrogen	high	51	$1.87	—
+Gemini 4 Hydrogen	low	27	$0.29	—
+Gemini 4 Hydrogen	medium	41	$0.8	—
+Gemini 4 Hydrogen	xhigh	54	$3.16	198
+Grok 4.7	high	35.2	$6.1836	66.7
+Grok 4.7	low	31.1	$2.9222	65.3
+Grok 4.7	xhigh	35.5	$7.7715	64.7
+Grok 4.7	xhigh	35.5	$7.7715	64.7
+Inkling 2 Small	default	31	—	—
+Kimi K3.1 Pro	default	46.5	$3.6812	30.3
+MiMo-V2.6-Flash	—	38	$0.06	56.6
+MiMo-V2.6-Flash	default	26.7	$0.1285	43.5
+MiMo-V2.6-Pro	—	46	$0.13	40.8
+MiMo-V2.6-Pro	default	29.9	$0.2572	56.7
+MiniMax M3.1 Flash	max	29.1	$0.491	137.3
+MiniMax-M3	—	29	$0.51	107.5
+MiniMax-M3	default	18.9	$1.2851	111.4
+Mistral Large 4	high	26.1	$2.0617	103.9
+Mistral Large 4	medium	23.1	$1.4121	89.8
+Muse Ember 1.0	max	36	$0.1359	431.1
+Muse Ember 1.0	xhigh	34.1	$0.1162	433.7
+Muse Spark 1.3	max	48	$1.6	177.3
+Muse Spark 1.3	max	36.6	$2.3858	132
+Muse Wonder 1.0	high	40.5	$4.5605	102.4
+Muse Wonder 1.0	max	43.6	$6.952	109.7
+Nemotron 3.5 Lightning	default	5.5	—	—
+Nemotron 3.5 Super VL	default	13.6	—	—
+Qwen3.6 Plus	default	27	—	—
+Qwen3.8 Max	0902	45	$5.41	39
+Qwen3.8 Max 0902	xhigh	33.7	$10.0239	58.5
+Qwen4 Max	xhigh	42.9	$3.2681	—
+Step 5 Preview	default	28.5	$2.3453	130.4
+Tencent Hy4	default	34.6	$1.0311	91.3
+Coding Agent Index observations
+
+The import's Coding Agent Index rows — a model plus its agent harness and settings, checked as published. Kept strictly separate from the AA Intelligence Index rows above: no score is converted between the indexes. "Not published" costs stay blank rather than estimated. These rows power the explorer's Coding agents perspective.
+
+Model benchmark scores
+Model	Effort	Harness	Version	CAI score	DeepSWE v1.1	Terminal-Bench 4.0	SWE-Atlas-QnA	$/task	Agent wall time / task	Tokens / task
+Claude Sonnet 5.5
+Anthropic · 2026-10-16	max	Claude Code	v1.5	68	72%	66%	67%	$14.19	90m 0s	27,700,000
+Muse Wonder Full
+Meta · 2026-10-16	max	Muse Code	v1.5	68	77%	59%	68%	—	28m 48s	15,000,000
+Claude Opus 5.5
+Anthropic · 2026-10-16	max	Claude Code	v1.5	66	68%	63%	66%	$13.04	66m 0s	15,600,000
+Gemini 4 Argon
+Google · 2026-10-16	not stated	Antigravity CLI	v1.5	64	79%	56%	56%	$5.84	34m 30s	13,700,000
+Claude Sonnet 5.5
+Anthropic · 2026-10-16	xhigh	Claude Code	v1.5	63	68%	58%	62%	$3.33	27m 0s	7,100,000
+GPT-6.1 Sol
+OpenAI · 2026-10-16	xhigh	Codex	v1.5	63	73%	55%	61%	$1.04	15m 30s	3,200,000
+Muse Wonder
+Meta · 2026-10-16	max	Muse Code	v1.5	63	76%	47%	67%	$8.05	22m 24s	15,000,000
+GPT-6 Astra
+OpenAI · 2026-10-16	max	Codex	v1.5	62	68%	56%	62%	$7.47	29m 24s	3,300,000
+GPT-6.1 Sol
+OpenAI · 2026-10-16	medium	Codex	v1.5	61	72%	52%	61%	$0.7	10m 54s	2,300,000
+GPT-6.1 Sol
+OpenAI · 2026-10-16	high	Codex	v1.5	60	71%	50%	60%	$0.89	13m 18s	2,800,000
+GPT-6.1 Sol
+OpenAI · 2026-10-16	max	Codex	v1.5	60	70%	53%	58%	$1.55	24m 24s	4,000,000
+GPT-6 Sol
+OpenAI · 2026-10-16	max	Codex	v1.5	57	69%	43%	58%	$2.99	22m 18s	9,800,000
+GPT-6.1 Sol
+OpenAI · 2026-10-16	low	Codex	v1.5	57	68%	49%	55%	$0.5	8m 36s	1,700,000
+Claude Sonnet 5.5
+Anthropic · 2026-10-16	high	Claude Code	v1.5	55	67%	42%	56%	$1.24	12m 18s	2,700,000
+GLM-5.3
+Z AI · 2026-10-16	not stated	OpenCode	v1.5	54	61%	40%	59%	$4.24	48m 6s	14,300,000
+Claude Sonnet 5.5
+Anthropic · 2026-10-16	medium	Claude Code	v1.5	46	65%	27%	45%	$0.62	8m 30s	1,300,000
+DeepSeek V4 Pro 0813
+DeepSeek · 2026-10-16	max	Codex	v1.5	43	57%	10%	62%	$0.24	40m 18s	24,200,000
+Claude Sonnet 5.5
+Anthropic · 2026-10-16	low	Claude Code	v1.5	42	62%	25%	39%	$0.48	6m 18s	977,300
+Gemini 3.8 Flash
+Google · 2026-10-17	high	Antigravity SDK	v1.5	42	66%	15%	45%	$2.47	11m 42s	13,500,000
+Claude Haiku 5.5
+Anthropic · 2026-10-16	xhigh	Claude Code	v1.5	41	49%	24%	52%	$0.61	25m 54s	7,100,000
+GPT-6 Luna
+OpenAI · 2026-10-16	max	Codex	v1.5	41	64%	15%	44%	$0.18	21m 24s	10,200,000
+DeepSeek V4 Flash 0731
+DeepSeek · 2026-10-16	max	Codex	v1.5	39	54%	11%	51%	$0.09	18m 18s	15,400,000
+Claude Haiku 5.5
+Anthropic · 2026-10-16	max	Claude Code	v1.5	36	46%	30%	34%	$2.58	90m 0s	13,800,000
+Claude Haiku 5.5
+Anthropic · 2026-10-16	high	Claude Code	v1.5	35	46%	13%	46%	$0.36	18m 24s	5,100,000
+Claude Haiku 5.5
+Anthropic · 2026-10-16	medium	Claude Code	v1.5	34	47%	12%	42%	$0.23	14m 0s	3,500,000
+Gemini 3.1 Pro
+Google · 2026-10-17	high	Gemini CLI	v1.4	33	—	—	9%	$1.04	11m 6s	4,700,000
+Claude Haiku 5.5
+Anthropic · 2026-10-16	low	Claude Code	v1.5	28	45%	6%	33%	$0.14	11m 36s	2,400,000
+Coverage — measured but not pooled
+
+The collector compares the AA-measured model names against the repo's .opencode/opencode.jsonc: the provider catalogs and every route pool's leaf targets (nested routes expanded). Matching is best-effort — normalization plus a small alias map in src/aa.ts — so a miss means "not matched", not "does not exist".
+
+In a catalog, in no pool (19)
+
+Measured and reachable today, but no route sends them work — the actionable list.
+
+Claude 4.5 Haiku
+Claude Fable 5.1
+Claude Opus 5
+Claude Sonnet 5
+DeepSeek V4.1 Flash 1017
+GLM-5.3
+GPT-5.6 Luna
+GPT-5.6 Sol
+GPT-5.6 Terra
+GPT-6 Astra
+GPT-6 Sol
+Grok 4.7
+Inkling
+Inkling Small
+Kimi K3
+MiMo-V2.6-Pro
+MiniMax-M3
+Mistral Large 4 Preview
+Muse Spark Open
+Measured, in no catalog (18)
+Beam 1.0
+Claude Opus 4.5
+Command A+
+Gemini 2.5 Flash
+Gemini 2.5 Flash-Lite
+Gemini 2.5 Pro
+Gemini 4 Carbon
+Ling 3.1 Flash 1019
+Mistral Small 4
+Muse Ember 1.0
+Muse Glimmer
+Muse Wonder Full
+Qwen3.6 Plus
+Qwen3.8 Max 0902
+Qwen3.8-Flash-Next
+Qwen4 Max
+Solar Mini 4
+Tencent Hy4
+Catalog models with no AA measurement and no pool seat (104)
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870

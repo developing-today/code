@@ -26,11 +26,7 @@ not background noise.
 `fleet gh`.** The verb is `fleet gh cache-serve` (default bind
 127.0.0.1:4802; `--bind` / `FLEET_GH_CACHE_BIND` to change). The cache is
 memory-only: a restart is a cold cache, never a stale one, so keeping it
-alive is cheap and safe. On Muse sandboxes, `~/tools/init-ensure.sh`
-keeps it running in the same ensure pattern as the session proxy and the
-sandbox-local secrets broker (pgrep/port gate, `setsid nohup` spawn,
-best-effort) — if `fleet gh` is slow on a sandbox, run `init-ensure.sh`
-and check `fleet gh cache-status` before anything else. Note the secrets
+alive is cheap and safe. On Muse sandboxes, `~/tools/init-ensure.sh` keeps it running (leg added 2026-11-24, code#14099 — before that the leg did not exist and this paragraph described a fiction) in the same ensure pattern as the session proxy and the sandbox-local secrets broker (pgrep/port gate, flock, `setsid nohup` spawn from the test-exec'd fleet binary, best-effort; log `~/logs/gh-cache-daemon.log`) — if `fleet gh` is slow on a sandbox, run `init-ensure.sh` and check `fleet gh cache-status` before anything else. On the laptop the daemon is a supervised systemd user unit, `fleet-gh-cache.service` (`~/.config/systemd/user/`, `Restart=on-failure`), not a session child. Note the secrets
 broker must also be alive: the daemon mints through the same secrets
 chain, and a dead broker makes even the daemon's first resolutions slow.
 

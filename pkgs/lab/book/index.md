@@ -53,9 +53,31 @@ is a deliverable, not an embarrassment.
   [Talos and Cozystack](cluster/talos-and-cozystack.md),
   [Storage: LINSTOR and DRBD](cluster/storage-linstor-and-drbd.md)
   and [Boot and auto-join](cluster/boot-and-auto-join.md) cover the
-  three design areas in turn.
+  three design areas in turn. The storage chapter's design centre
+  is the tiered-storage design, and it carries the Postgres
+  treatment (CloudNativePG with streaming replicas).
 - **The network** — [Switches](network/switches.md) folds in the
   dedicated switching research: 21 devices, enriched in April 2026.
+- **Platform and toolchain** — the part added from the platform
+  census of 2026-11-23 (landed as
+  `doc/2026-11-24T01-20-46Z_research_code-book-census-platform/`,
+  PR [#13959](https://github.com/developing-today/code/pull/13959)):
+  [GitHub Actions](platform/github-actions.md),
+  [Nix and the NixOS flake](platform/nix-and-the-flake.md),
+  [NixOS flake apps](platform/flake-apps.md),
+  [The laptop NixOS config](platform/the-laptop-nixos-config.md),
+  [CI/CD: Nix and GitHub Actions](platform/ci-cd.md),
+  [Making Nix packages and apps](platform/making-nix-packages-and-apps.md),
+  [Containers and Docker images](platform/containers-and-images.md),
+  [DNS management](platform/dns-management.md),
+  [The Nix cache worker and its alternatives](platform/nix-caches.md)
+  and
+  [The pipes into Cloudflare and externally](platform/pipes-to-cloudflare.md),
+  with shorter chapters on dev shells, clan, VMs and KubeVirt,
+  Terraform, Crossplane, next-gen Nix tooling, build servers,
+  artifact repositories, automation and scaling, the
+  RustFS-versus-SeaweedFS object-storage question, and
+  [Security: Falco runtime detection](platform/security-and-falco.md).
 - **Microcontrollers** — [ESP32](microcontrollers/esp32.md) covers
   the ESP32-S3 reference part, the ESP32-P4 tier, and the Tanmatsu.
 - **Roadmap and plans** — the
@@ -69,12 +91,12 @@ is a deliverable, not an embarrassment.
   [Deploying this book](operations/deploying-this-book.md) describes
   how the book is built and published.
 
-A second part of this book — the platform and toolchain running on
-the lab — is in preparation under
-[#13905](https://github.com/developing-today/code/issues/13905). Its
-census is still being gathered, so no platform chapters exist yet;
-the structure above is complete without them and they will slot in
-as their own part when the census lands.
+The platform and toolchain part above is that second part: it
+landed under
+[#13905](https://github.com/developing-today/code/issues/13905)
+from the platform census of 2026-11-23, with the same honesty
+markings as the rest of the book — including where the record is
+thin, planned, or absent, which its short chapters say plainly.
 
 ## Sibling books and records
 

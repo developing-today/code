@@ -6,7 +6,7 @@ This chapter does not replace [Roadmap and issue map](roadmap-and-issue-map.md).
 
 The merged list is ordered across the whole project: execution substrate first (fleet), then the physical substrate (lab), then the data substrate (backups, ingest, storage placement), then search intelligence (Atlas and ID together), then the ID platform build-out, then the gateway, PM and fork surfaces, then the record itself. Atlas owns items 7–14 — the whole data substrate and the whole search-intelligence tier. Item numbers below are the merged list's numbers, kept so a reader can move between books and the Code Book without renumbering.
 
-Types used below: a *capability set* is a capability set to reach; a *problem* is a problem to solve; a *milestone* is a milestone; a *shift goal* is a goal that marks a shift. Status words are the census's: done, in flight, designed, not started — each with its evidence.
+Types used below: a _capability set_ is a capability set to reach; a _problem_ is a problem to solve; a _milestone_ is a milestone; a _shift goal_ is a goal that marks a shift. Status words are the census's: done, in flight, designed, not started — each with its evidence.
 
 ## Item 7 — Backups and storage automated, minimal duplication, one coherent complete backup set
 
