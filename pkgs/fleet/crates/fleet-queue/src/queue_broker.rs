@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use fleet_secrets::{Resolver, SecretError, SecretSource, SecretValue};
 use serde_json::{Value, json};
-use tiny_http::{Header, Response, Server, StatusCode};
+use std::net::TcpListener;
 
 struct State {
     secrets_url: String,
@@ -907,13 +907,6 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
     }
 }
 
-fn json_response(status: u16, body: Value) -> Response<std::io::Cursor<Vec<u8>>> {
-    let data = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
-    Response::from_data(data)
-        .with_status_code(StatusCode(status))
-        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
-}
-
 fn token_matches(provided: Option<&str>, expected: &str) -> bool {
     // #6320 defence in depth: an empty expected token never authenticates,
     // not even against an empty X-Agent-Token header.
@@ -1001,7 +994,6 @@ fn handle_request(
 }
 
 pub fn run() -> i32 {
-    use std::io::Read as _;
     let bind =
         std::env::var("QUEUE_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4801".to_string());
     let home = match crate::home::from_env() {
@@ -1083,7 +1075,7 @@ pub fn run() -> i32 {
         turso_pending: Mutex::new("starting".to_string()),
     });
 
-    let server = match Server::http(&bind) {
+    let server = match TcpListener::bind(&bind) {
         Ok(server) => server,
         Err(e) => {
             crate::log::info("queue-broker", &format!("cannot bind {bind}: {e:?}"));
@@ -1184,67 +1176,40 @@ pub fn run() -> i32 {
         ),
     }
 
-    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    for mut req in server.incoming_requests() {
-        let Some(slot) = crate::uds_http::InFlightSlot::try_acquire(&in_flight) else {
-            let _ = req.respond(json_response(
-                503,
-                json!({"error": "too many concurrent requests"}),
-            ));
-            continue;
-        };
-        let state = Arc::clone(&state);
-        let token = token.clone();
-        std::thread::spawn(move || {
-            let _slot = slot;
-            let method = req.method().as_str().to_string();
-            let target = req.url().to_string();
-            let provided = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "x-agent-token")
-                .map(|h| h.value.as_str().to_string());
-            // #6515: authenticate and size-check from the headers
-            // before reading any body byte. tiny_http 0.12 exposes
-            // no per-connection read timeout, so the residual TCP
-            // slow-body risk is bounded by this gate plus the capped
-            // read below and thread-per-connection isolation; the
-            // UDS transport carries real read timeouts (uds_http).
-            let content_length = req
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str().to_ascii_lowercase() == "content-length")
-                .and_then(|h| h.value.as_str().parse::<u64>().ok());
-            if let Some((status, value)) = pre_body_refusal(
-                &method,
-                &target,
-                provided.as_deref(),
+    let pre_token = token.clone();
+    crate::tcp_http::serve(
+        server,
+        move |head| {
+            pre_body_refusal(
+                &head.method,
+                &head.target,
+                head.header("X-Agent-Token"),
+                &pre_token,
+                head.header("Content-Length")
+                    .and_then(|v| v.parse::<u64>().ok()),
+            )
+            .map(|(status, value)| {
+                (
+                    status,
+                    serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+                )
+            })
+        },
+        move |req| {
+            let (status, value) = handle_request(
+                &state,
                 &token,
-                content_length,
-            ) {
-                let _ = req.respond(json_response(status, value));
-                return;
-            }
-            let mut body = Vec::new();
-            if method == "POST" {
-                // Capped read: cap+1 bytes detect an overrun that
-                // the declared length hid (or never declared).
-                let cap = (crate::uds_http::MAX_BODY_BYTES + 1) as u64;
-                let _ = req.as_reader().take(cap).read_to_end(&mut body);
-                if body.len() > crate::uds_http::MAX_BODY_BYTES {
-                    let _ = req.respond(json_response(
-                        413,
-                        json!({"error": "request body too large"}),
-                    ));
-                    return;
-                }
-            }
-            let (status, value) =
-                handle_request(&state, &token, &method, &target, provided.as_deref(), &body);
-            let _ = req.respond(json_response(status, value));
-        });
-    }
-    // incoming_requests() ends only when the server stops.
+                &req.method,
+                &req.target,
+                req.header("X-Agent-Token"),
+                &req.body,
+            );
+            (
+                status,
+                serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+            )
+        },
+    );
     0
 }
 
