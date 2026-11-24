@@ -40,10 +40,12 @@ ratification (#8873); nothing in it is decided.
 stripe 3 × mirror 2 (6 drives), so two drives must die to down a
 machine.
 
-**RustFS** — The S3-compatible object store designated for CNPG
-backups and buckets on the HDD pools. Whether it also replaces
-Cozystack's bundled SeaweedFS as the general store is an open
-decision (epic #1088).
+**RustFS** — An S3-compatible object store, one of the two
+candidates for CNPG backups and buckets on the HDD pools. The
+RustFS-versus-SeaweedFS verdict is deferred to the comparison
+lane's dated record; Drew's current lean (2026-11-23) is
+SeaweedFS, because Cozystack ships it. See
+[Object storage: RustFS and SeaweedFS](../platform/object-storage.md).
 
 **TALM** — `cozystack/talm`: the tool that templates and applies
 Talos machine configuration per node from files in git. Its

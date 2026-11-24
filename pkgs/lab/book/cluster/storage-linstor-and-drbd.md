@@ -87,6 +87,9 @@ From the idea register (2026-10-20), carried into epic #1085 /
   CNPG Postgres backups to an S3 endpoint — in-cluster RustFS,
   Cozystack's bundled `cozy-backups` SeaweedFS bucket, or external
   (decision open, see [Talos and Cozystack](talos-and-cozystack.md)).
+  The wider RustFS-versus-SeaweedFS object-storage question —
+  object storage, not this chapter's block storage — is
+  [Object storage: RustFS and SeaweedFS](../platform/object-storage.md).
 - **Atlas sync shape (cross-link):** the Framework laptop stays
   the canonical Atlas home and ingest factory; a cluster Atlas
   serve mode would read the Turso hot copy (P9 draft phase 2 —
