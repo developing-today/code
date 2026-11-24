@@ -1,0 +1,1009 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+Alerts
+
+The alert throat (#3676): every sentinel posts to one intake; this page is the ack surface. Critical incidents push immediately to subscribed browsers; an unacknowledged critical escalates once after 15 minutes. Warnings are recorded here and in the ledger — no push in v1. Machine-first: /api/alerts.json. Per-class toggles, quiet hours, and per-class test sends live on the notification preferences page.
+
+Push delivery on this browser
+This browser is not subscribed yet — tap Enable push below.
+
+ Incident alerts
+A watchdog reports something down. Incident alerts always come through immediately, the moment they're posted.
+
+ Quiet hours
+Pause non-urgent notifications overnight, between  and  (Chicago time). Untick the box for no time-of-day limit at all. Incident alerts always come through immediately, quiet hours or not.
+
+Enable push on this browser
+Send a test alert
+Save preferences
+Disable push on this browser
+
+
+Subscriptions (0)
+
+No push subscriptions yet — enable push above.
+
+Open incidents (35)
+TEST (#13902) post-restart: broker-raised push proof after the aggregator restart
+warning
+open
+
+Post-restart re-proof for #13902: the aggregator was restarted at 21:24 CST so it re-reads the alerts-intake token. This raise should be accepted (no 401) and recorded.
+
+source fleet-queue · key needs-drew:test-13902-d · first seen 2026-11-24 03:25:58Z · 2 occurrences, last 2026-11-24 03:25:59Z
+
+
+Ack
+Close
+TEST (#13902) pre-restart: is the broker-raised push path alive?
+warning
+open
+
+Aggregator restart re-proof for #13902. This pre-restart raise is expected to fail with HTTP 401 if the bug is still live.
+
+source fleet-queue · key needs-drew:test-13902-b · first seen 2026-11-24 03:19:53Z · 2 occurrences, last 2026-11-24 03:19:53Z
+
+
+Ack
+Close
+Actions exec fx-883b8f3d848de77184f8: +10 min extension auto-approved (tier 1)
+info
+open
+
+Session fx-883b8f3d848de77184f8 (seat user@amd) on dezren39/fleet, workflow fleet-exec.yml run 45314828444 attempt 1. Opened 2026-11-24T02:46:31Z; granted lifespan 15 min, elapsed 1 min; lease_until 2026-11-24T02:56:47Z, max_until 2026-11-24T03:11:31Z. Ask: +10 min. Reason given: ACTIONS-EXEC-2-PROOF tier 1 - verification session, no action needed Cumulative extensions: 0 totalling 0 min before this one; 1 totalling 10 min counting it. Tier 1: the first extension within the auto caps is granted automatically; no action needed.
+
+source fleet-actions-exec · key actions-exec-ext:fx-883b8f3d848de77184f8:1 · first seen 2026-11-24 02:46:50Z
+
+
+Ack
+Close
+Actions exec session fx-883b8f3d848de77184f8 (+10 min, tier 2) approves itself at 2026-11-24T02:56:47Z unless you deny — let it?
+warning
+open
+
+Session fx-883b8f3d848de77184f8 (seat user@amd) on dezren39/fleet, workflow fleet-exec.yml run 45314828444 attempt 1. Opened 2026-11-24T02:46:31Z; granted lifespan 25 min, elapsed 1 min; lease_until 2026-11-24T02:56:47Z, max_until 2026-11-24T03:11:31Z. Ask: +10 min. Reason given: ACTIONS-EXEC-2-PROOF tier 2 - verification session, will be denied Cumulative extensions: 1 totalling 10 min before this one; 2 totalling 20 min counting it. Tier 2 deny window: silence approves automatically at 2026-11-24T02:56:47Z; deny ends the session at its current cap (hard deadline 2026-11-24T03:01:47Z); approve-now applies it immediately. Answers land via a seat running: fleet actions exec decide fx-883b8f3d848de77184f8 --deny|--approve.
+
+source fleet-actions-exec · key actions-exec-ext:fx-883b8f3d848de77184f8:2 · first seen 2026-11-24 02:46:49Z · 2 occurrences, last 2026-11-24 02:46:55Z
+
+
+Ack
+Close
+Actions exec session fx-7b1e10f4f67b257b018a (+10 min, tier 2) approves itself at 2026-11-24T02:43:57Z unless you deny — let it?
+warning
+open
+
+Session fx-7b1e10f4f67b257b018a (seat ae2-proof-t2silence) on dezren39/fleet, workflow fleet-exec.yml run - attempt -. Opened 2026-11-24T02:33:56Z; granted lifespan 40 min, elapsed 1 min; lease_until 2026-11-24T02:58:56Z, max_until 2026-11-24T03:13:56Z. Ask: +10 min. Reason given: ACTIONS-EXEC-2-PROOF tier 2 silence - verification session, no answer will be given Cumulative extensions: 1 totalling 10 min before this one; 2 totalling 20 min counting it. Session context: https://github.com/developing-today/code/issues/13774 Tier 2 deny window: silence approves automatically at 2026-11-24T02:43:57Z; deny ends the session at its current cap (hard deadline 2026-11-24T03:03:56Z); approve-now applies it immediately. Answers land via a seat running: fleet actions exec decide fx-7b1e10f4f67b257b018a --deny|--approve.
+
+source fleet-actions-exec · key actions-exec-ext:fx-7b1e10f4f67b257b018a:2 · first seen 2026-11-24 02:34:00Z
+
+
+Ack
+Close
+Actions exec fx-7b1e10f4f67b257b018a: +10 min extension auto-approved (tier 1)
+info
+open
+
+Session fx-7b1e10f4f67b257b018a (seat ae2-proof-t2silence) on dezren39/fleet, workflow fleet-exec.yml run - attempt -. Opened 2026-11-24T02:33:56Z; granted lifespan 30 min, elapsed 1 min; lease_until 2026-11-24T02:58:56Z, max_until 2026-11-24T03:13:56Z. Ask: +10 min. Reason given: ACTIONS-EXEC-2-PROOF tier 1 - verification session, no action needed Cumulative extensions: 0 totalling 0 min before this one; 1 totalling 10 min counting it. Session context: https://github.com/developing-today/code/issues/13774 Tier 1: the first extension within the auto caps is granted automatically; no action needed.
+
+source fleet-actions-exec · key actions-exec-ext:fx-7b1e10f4f67b257b018a:1 · first seen 2026-11-24 02:34:00Z
+
+
+Ack
+Close
+Stack health: Primary checkout is down
+warning
+open
+
+primary checkout blocked: on branch queue/21628-12215-program-run-history-decision, not main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-24 02:08:11Z
+
+
+Ack
+Close
+adapter schema drift: opencode-go.popesdrew parsed shape changed (appeared: window:credits_balance)
+warning
+open
+
+baseline: recorded parsed shape: usage:windows, window:5h, window:monthly, window:weekly observed: parsed shape now: usage:windows, window:5h, window:credits_balance, window:monthly, window:weekly — appeared: window:credits_balance
+
+source quota-anomaly · key schema-drift:opencode-go.popesdrew:shape:2026-11-24T01:30:14.553Z · first seen 2026-11-24 01:32:44Z
+
+
+Ack
+Close
+adapter schema drift: opencode-go.popesdrew parsed shape changed (appeared: window:credits_balance)
+warning
+open
+
+baseline: recorded parsed shape: usage:windows, window:5h, window:monthly, window:weekly observed: parsed shape now: usage:windows, window:5h, window:credits_balance, window:monthly, window:weekly — appeared: window:credits_balance
+
+source quota-anomaly · key schema-drift:opencode-go.popesdrew:shape:2026-11-24T00:45:09.505Z · first seen 2026-11-24 00:49:15Z
+
+
+Ack
+Close
+adapter schema drift: opencode-go.popesdrew parsed shape changed (disappeared: window:credits_balance)
+warning
+open
+
+baseline: recorded parsed shape: usage:windows, window:5h, window:credits_balance, window:monthly, window:weekly observed: parsed shape now: usage:windows, window:5h, window:monthly, window:weekly — disappeared: window:credits_balance
+
+source quota-anomaly · key schema-drift:opencode-go.popesdrew:shape:2026-11-24T00:15:04.741Z · first seen 2026-11-24 00:21:49Z
+
+
+Ack
+Close
+vendor plan change: _antigravity.claude-gpt window set changed (appeared: window:5h)
+warning
+open
+
+baseline: recorded window set: window:weekly observed: window set now: window:5h, window:weekly — appeared: window:5h
+
+source quota-anomaly · key plan-change:_antigravity.claude-gpt:shape:2026-11-23T23:30:02.379Z · first seen 2026-11-23 23:31:25Z
+
+
+Ack
+Close
+adapter schema drift: _antigravity.claude-gpt parsed shape changed (appeared: window:5h)
+warning
+open
+
+baseline: recorded parsed shape: usage:models, usage:windows, window:weekly observed: parsed shape now: usage:models, usage:windows, window:5h, window:weekly — appeared: window:5h
+
+source quota-anomaly · key schema-drift:_antigravity.claude-gpt:shape:2026-11-23T23:30:02.379Z · first seen 2026-11-23 23:31:24Z
+
+
+Ack
+Close
+adapter schema drift: _antigravity parsed shape changed (appeared: window:5h)
+warning
+open
+
+baseline: recorded parsed shape: usage:models, usage:windows, window:weekly observed: parsed shape now: usage:models, usage:windows, window:5h, window:weekly — appeared: window:5h
+
+source quota-anomaly · key schema-drift:_antigravity:shape:2026-11-23T23:30:02.379Z · first seen 2026-11-23 23:31:24Z
+
+
+Ack
+Close
+Extend actions exec session fx-6de80b149d8d8bd57535 past its max lifespan by 30 min?
+warning
+open
+
+Session fx-6de80b149d8d8bd57535 on dezren39/fleet reached its max lifespan cap. Approving adds 1800s to the max and the lease; denying lets the session expire (decision grace runs to 2026-11-23T23:09:07Z). Reason given: proof battery
+
+source fleet-actions-exec · key actions-exec-ext:fx-6de80b149d8d8bd57535 · first seen 2026-11-23 23:08:31Z
+
+
+Ack
+Close
+vendor plan change: openrouter window set changed (disappeared: window:monthly)
+warning
+open
+
+baseline: recorded window set: window:monthly observed: window set now: (empty) — disappeared: window:monthly
+
+source quota-anomaly · key plan-change:openrouter:shape:2026-11-23T21:45:18.313Z · first seen 2026-11-23 21:46:48Z
+
+
+Ack
+Close
+adapter schema drift: openrouter parsed shape changed (appeared: window:key_limit; disappeared: window:monthly)
+warning
+open
+
+baseline: recorded parsed shape: usage:windows, window:monthly observed: parsed shape now: usage:windows, window:key_limit — appeared: window:key_limit; disappeared: window:monthly
+
+source quota-anomaly · key schema-drift:openrouter:shape:2026-11-23T21:30:06.131Z · first seen 2026-11-23 21:31:51Z
+
+
+Ack
+Close
+burn spike: _openai.main weekly burned 17.6 pts/h against a spike threshold of 10.9 pts/h
+warning
+open
+
+baseline: forecast 1.3 pts/h + residual p99 7.4 pts/h (148 realized residuals for this pool/window) = band 8.7 pts/h; spike threshold = band x 1.25 = 10.9 pts/h observed: realized burn 17.6 pts/h over the hour from 81% at 2026-11-23T17:15:15.777Z
+
+source quota-anomaly · key burn-spike:_openai.main:weekly:2026-11-24T21:23:26.000Z:2026-11-23T17 · first seen 2026-11-23 18:17:48Z
+
+
+Ack
+Close
+burn spike: anthropic:claude-pro weekly burned 21.6 pts/h against a spike threshold of 12.5 pts/h
+warning
+open
+
+baseline: forecast 1.5 pts/h + residual p99 8.5 pts/h (146 realized residuals for this pool/window) = band 10 pts/h; spike threshold = band x 1.25 = 12.5 pts/h observed: realized burn 21.6 pts/h over the hour from 0% at 2026-11-23T15:45:13.916Z
+
+source quota-anomaly · key burn-spike:anthropic:claude-pro:weekly:2026-11-25T19:00:00.829Z:2026-11-23T15 · first seen 2026-11-23 17:01:29Z
+
+
+Ack
+Close
+burn spike: anthropic:claude-pro 5h burned 38.3 pts/h against a spike threshold of 7.9 pts/h
+warning
+open
+
+baseline: forecast -16.1 pts/h + residual p99 22.4 pts/h (175 realized residuals for this pool/window) = band 6.3 pts/h; spike threshold = band x 1.25 = 7.9 pts/h observed: realized burn 38.3 pts/h over the hour from 1% at 2026-11-23T15:45:13.916Z
+
+source quota-anomaly · key burn-spike:anthropic:claude-pro:5h:2026-11-23T20:40:00.829Z:2026-11-23T15 · first seen 2026-11-23 17:01:29Z
+
+
+Ack
+Close
+Bound task 19588: issue dezren39/darwin-nix#1914 closed without a completion record
+warning
+open
+
+Task 19588 is claimed on dezren39/darwin-nix#1914, but GitHub reports the issue CLOSED and the closure log holds no fleet-closure/v1 close record for task 19588. Present the task's completion record, or reopen the issue.
+
+source fleet-queue · key closed-bound:19588 · first seen 2026-11-23 16:35:26Z
+
+
+Ack
+Close
+burn spike: opencode-go weekly burned 26.4 pts/h against a spike threshold of 25.3 pts/h
+warning
+open
+
+baseline: forecast 1.7 pts/h + residual p99 18.5 pts/h (106 realized residuals for this pool/window) = band 20.2 pts/h; spike threshold = band x 1.25 = 25.3 pts/h observed: realized burn 26.4 pts/h over the hour from 3% at 2026-11-23T01:45:48.333Z
+
+source quota-anomaly · key burn-spike:opencode-go:weekly:2026-11-30T00:00:00.000Z:2026-11-23T01 · first seen 2026-11-23 03:02:16Z
+
+
+Ack
+Close
+burn spike: anthropic:claude-pro weekly burned 15.2 pts/h against a spike threshold of 11.3 pts/h
+warning
+open
+
+baseline: forecast 0.4 pts/h + residual p99 8.6 pts/h (137 realized residuals for this pool/window) = band 9 pts/h; spike threshold = band x 1.25 = 11.3 pts/h observed: realized burn 15.2 pts/h over the hour from 4% at 2026-11-23T00:30:23.641Z
+
+source quota-anomaly · key burn-spike:anthropic:claude-pro:weekly:2026-11-25T19:00:00.987Z:2026-11-23T00 · first seen 2026-11-23 02:31:16Z
+
+
+Ack
+Close
+burn spike: anthropic:claude-pro 5h burned 57 pts/h against a spike threshold of 47.1 pts/h
+warning
+open
+
+baseline: forecast 15.2 pts/h + residual p99 22.5 pts/h (172 realized residuals for this pool/window) = band 37.7 pts/h; spike threshold = band x 1.25 = 47.1 pts/h observed: realized burn 57 pts/h over the hour from 20% at 2026-11-23T01:15:28.299Z
+
+source quota-anomaly · key burn-spike:anthropic:claude-pro:5h:2026-11-23T04:50:00.018Z:2026-11-23T01 · first seen 2026-11-23 02:31:16Z
+
+
+Ack
+Close
+pkgs/web-gen-api (and sibling #8958): revive the Leptos starter to a coherent dependency graph on stable, pin an era nightly with a matching graph, or retire the starter?
+warning
+open
+
+Step 1 of the #8962 split (#8964) is mechanical and already extracted on this task branch, but cannot meet its green gate because cargo cannot resolve the crate on clean main: leptos 0.8 requires wasm-bindgen ^0.2.100 vs the pinned =0.2.87, and the tracked lock lags at leptos 0.4.5. Acceptance forbids dependency bumps, so either answer unblocks it.
+
+source fleet-queue · key needs-drew:web-gen-8958-revival · first seen 2026-11-17 16:45:43Z · 2 occurrences, last 2026-11-17 16:45:43Z
+
+
+Ack
+Close
+Stack health: Aggregator is down
+warning
+open
+
+probe failed: The operation timed out.
+
+source stack-sentinel · key service:aggregator · first seen 2026-11-17 09:08:25Z · 4 occurrences, last 2026-11-17 09:13:45Z
+
+
+Ack
+Close
+www.security.cab TLS invalid
+critical
+open
+
+Verify return code 10 (certificate has expired); cert notAfter Nov 1 23:59:18 2026 GMT, -16 days to expiry; HTTP probes US returned 307 (healthy status) but TLS verdict DOWN
+
+source globalping-watch · key www.security.cab · first seen 2026-11-17 07:09:20Z · 4 occurrences, last 2026-11-17 10:57:30Z · not yet pushed
+
+
+Ack
+Close
+lab-ops-hub.developing-today.workers.dev down
+critical
+open
+
+The measurement timed out on both probes; probe countries: US (Buffalo, Los Angeles)
+
+source globalping-watch · key lab-ops-hub.developing-today.workers.dev · first seen 2026-11-14 08:42:39Z · pushed 2026-11-14 08:42:48Z · escalated 2026-11-14 08:58:49Z
+
+
+Ack
+Close
+Blocked review — steer the whole blocked pile
+info
+open
+
+All 551 blocked/parked fleet-queue tasks, grouped into 527 steer questions across 39 page items: analysis, evidence, and options for each, with the fleet recommendation pre-marked. Answer per question, defer with a lean, comment, or request more info.
+
+source decisions-ledger · key decisions-2026-11-13-blocked-review · first seen 2026-11-13 07:48:57Z
+
+
+Ack
+Close
+Decisions — with the information you requested
+info
+open
+
+2 items, 2 questions — raised for the decisions page.
+
+source decisions-ledger · key decision-set:decisions-reraise-2026-11-12 · first seen 2026-11-12 20:37:04Z · 2 occurrences, last 2026-11-12 21:43:26Z
+
+
+Ack
+Close
+Decision set raised: Queue cleanup - questions only you can clear (43 items)
+info
+open
+
+Built 2026-11-12 from the queue cleanup passes: every item is a fleet-queue task verified blocked on a question only Drew can clear. Excludes everything already asked in the design-blocked set, the 2026-11-12 backlog set, and the needs-drew set.
+
+source decisions-ledger · key decision-set:decisions-2026-11-12-queue-cleanup · first seen 2026-11-12 19:01:18Z
+
+
+Ack
+Close
+6 decisions waiting for Drew
+info
+open
+
+The six published NEEDS DREW items from the orchestration queue, raised as one decisions set at Drew's request (2026-11-12).
+
+source orchestration-pass · key needs-drew-set-2026-11-12 · first seen 2026-11-12 08:16:24Z
+
+
+Ack
+Close
+All open questions — full backlog
+info
+open
+
+40 items, 42 questions — raised for the decisions page.
+
+source decisions-ledger · key decision-set:decisions-backlog-2026-11-12 · first seen 2026-11-12 07:11:23Z
+
+
+Ack
+Close
+Blocked design questions — your rulings
+info
+open
+
+11 items, 11 questions — raised for the decisions page.
+
+source decisions-ledger · key decision-set:decisions-2026-11-11-design-blocked · first seen 2026-11-12 02:17:45Z
+
+
+Ack
+Close
+Decisions — with the information you requested
+info
+open
+
+2 items, 2 questions — raised for the decisions page.
+
+source decisions-ledger · key decision-set:decisions-reraise-2026-11-11 · first seen 2026-11-11 23:34:39Z · 3 occurrences, last 2026-11-12 01:35:33Z
+
+
+Ack
+Close
+Nov 11 decisions batch
+info
+open
+
+15 items, 24 questions — raised for the decisions page.
+
+source decisions-ledger · key decision-set:decisions-2026-11-11 · first seen 2026-11-11 19:57:22Z
+
+
+Ack
+Close
+Closed (recent)
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 1 uncommitted path(s): " /"
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-24 01:39:09Z · 2 occurrences, last 2026-11-24 01:51:32Z · closed 2026-11-24 01:51:32Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch oc-code-02/design-2819-native-spill-lease, not main; 1 uncommitted path(s): doc/2026-11-24T00-45-00Z_design_fleet_hosted_tooling.md
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-24 00:49:49Z · 2 occurrences, last 2026-11-24 01:33:20Z · closed 2026-11-24 01:33:21Z
+Stack health: Primary checkout recovered
+warning
+closed
+
+primary checkout on clean main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-24 00:21:55Z · closed 2026-11-24 00:21:56Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 23:05:21Z · 2 occurrences, last 2026-11-23 23:05:54Z · closed 2026-11-23 23:05:54Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: <urlopen error [Errno 111] Connection refused>
+
+source health-hook · key health-hook:opencode-working:01542cd3-365a-4a67-af63-098e3a6c890d · first seen 2026-11-23 23:04:06Z · 5 occurrences, last 2026-11-24 02:58:19Z · closed 2026-11-24 02:58:20Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 21:33:16Z · 2 occurrences, last 2026-11-23 21:34:50Z · closed 2026-11-23 21:34:50Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: The operation timed out.
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 21:28:54Z · 2 occurrences, last 2026-11-23 21:30:43Z · closed 2026-11-23 21:30:44Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 2 uncommitted path(s): pm-stack/opencode-claimant/claimant.py, pm-stack/opencode-claimant/test_claimant.py
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 21:00:41Z · 2 occurrences, last 2026-11-24 00:21:28Z · closed 2026-11-24 00:21:30Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 1 uncommitted path(s): pkgs/id/crates/id-sync/src/lib.rs
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 20:08:50Z · 2 occurrences, last 2026-11-23 20:22:42Z · closed 2026-11-23 20:22:42Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: The operation timed out.
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 19:46:18Z · 2 occurrences, last 2026-11-23 19:46:51Z · closed 2026-11-23 19:46:51Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 19:33:41Z · 2 occurrences, last 2026-11-23 19:35:20Z · closed 2026-11-23 19:35:21Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: timed out
+
+source health-hook · key health-hook:opencode-working:c40682c8-9c21-4521-872e-a9e7157a0906 · first seen 2026-11-23 19:30:13Z · 18 occurrences, last 2026-11-23 22:19:44Z · closed 2026-11-23 22:19:45Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: timed out
+
+source health-hook · key health-hook:opencode-working:cf9446c4-8c9c-4053-84bb-52e460f7cecc · first seen 2026-11-23 19:28:48Z · 2 occurrences, last 2026-11-23 19:29:33Z · closed 2026-11-23 19:29:35Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: The operation timed out.
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 19:26:34Z · 2 occurrences, last 2026-11-23 19:31:05Z · closed 2026-11-23 19:31:05Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: timed out
+
+source health-hook · key health-hook:opencode-working:fd85e3bb-49d7-4c02-b094-95b03dd9d840 · first seen 2026-11-23 19:26:04Z · 4 occurrences, last 2026-11-23 19:28:04Z · closed 2026-11-23 19:28:05Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch sweep/13536-calendar-week-dates, not main; 1 uncommitted path(s): pm-stack/aggregator/src/quota-downtime.ts
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 18:27:13Z · 2 occurrences, last 2026-11-23 19:28:37Z · closed 2026-11-23 19:28:39Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch fix/dc-promote-idempotent-13472, not main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 16:54:00Z · 2 occurrences, last 2026-11-23 16:56:04Z · closed 2026-11-23 16:56:05Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 15:03:27Z · 2 occurrences, last 2026-11-23 15:04:36Z · closed 2026-11-23 15:04:37Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 1 uncommitted path(s): doc/fleet-schedule-registry.md
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 13:54:54Z · 2 occurrences, last 2026-11-23 16:25:49Z · closed 2026-11-23 16:25:50Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 13:47:13Z · 2 occurrences, last 2026-11-23 13:49:21Z · closed 2026-11-23 13:49:22Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: <urlopen error [Errno 111] Connection refused>
+
+source health-hook · key health-hook:opencode-working:8d2d4f9d-e185-4265-9097-a1681ff56758 · first seen 2026-11-23 13:46:23Z · 10 occurrences, last 2026-11-23 19:24:36Z · closed 2026-11-23 19:24:37Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: The operation timed out.
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 12:08:59Z · 2 occurrences, last 2026-11-23 12:13:35Z · closed 2026-11-23 12:13:36Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 11:18:38Z · 2 occurrences, last 2026-11-23 11:20:41Z · closed 2026-11-23 11:20:41Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 14 uncommitted path(s): pkgs/fleet/book/concepts/bridge.md, pkgs/fleet/book/reference/bridge.md, pkgs/fleet/crates/fleet-bridge/src/lib.rs, pkgs/fleet/crates/fleet-bridge/src/tests.rs, pkgs/id/Cargo.lock, +9 more
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 11:02:20Z · 2 occurrences, last 2026-11-23 11:02:53Z · closed 2026-11-23 11:02:54Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 1 uncommitted path(s): doc/fleet-schedule-registry.md
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 08:41:18Z · 2 occurrences, last 2026-11-23 09:13:47Z · closed 2026-11-23 09:13:47Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: HEAD is detached (not on main)
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 07:41:05Z · 2 occurrences, last 2026-11-23 07:47:08Z · closed 2026-11-23 07:47:09Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: timed out
+
+source health-hook · key health-hook:opencode-working:4c0c68e2-243c-4d87-9ac7-b5923c954bed · first seen 2026-11-23 07:06:26Z · 11 occurrences, last 2026-11-23 12:27:34Z · closed 2026-11-23 12:27:35Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: timed out
+
+source health-hook · key health-hook:opencode-working:2bd25764-d121-4b99-a97b-43a97e5e76e6 · first seen 2026-11-23 06:39:26Z · 2 occurrences, last 2026-11-23 06:48:11Z · closed 2026-11-23 06:48:13Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: timed out
+
+source health-hook · key health-hook:opencode-working:2bd25764-d121-4b99-a97b-43a97e5e76e6 · first seen 2026-11-23 05:29:17Z · 2 occurrences, last 2026-11-23 06:37:13Z · closed 2026-11-23 06:37:16Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: timed out
+
+source health-hook · key health-hook:opencode-working:3858bb35-f139-499f-9896-d09efbd00dae · first seen 2026-11-23 05:26:51Z · 2 occurrences, last 2026-11-23 05:27:17Z · closed 2026-11-23 05:27:18Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: timed out
+
+source health-hook · key health-hook:opencode-working:761d65f4-9fc1-4c91-a3a8-0483d55d9894 · first seen 2026-11-23 04:38:36Z · 2 occurrences, last 2026-11-23 05:11:25Z · closed 2026-11-23 05:11:27Z
+Stack health: Primary checkout recovered
+warning
+closed
+
+primary checkout on clean main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 04:25:22Z · closed 2026-11-23 04:25:27Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 04:09:30Z · 2 occurrences, last 2026-11-23 04:10:45Z · closed 2026-11-23 04:10:47Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 1 uncommitted path(s): doc/fleet-schedule-registry.md
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 03:58:29Z · 2 occurrences, last 2026-11-23 04:24:43Z · closed 2026-11-23 04:24:48Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 03:51:48Z · 2 occurrences, last 2026-11-23 03:54:13Z · closed 2026-11-23 03:54:13Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 03:46:24Z · 2 occurrences, last 2026-11-23 03:47:02Z · closed 2026-11-23 03:47:06Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-23 03:32:59Z · 2 occurrences, last 2026-11-23 03:34:34Z · closed 2026-11-23 03:34:35Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch xaltha/12751-read-authority, not main; 1 uncommitted path(s): .fleet-session-id
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 02:56:48Z · 2 occurrences, last 2026-11-23 03:30:24Z · closed 2026-11-23 03:30:24Z
+Health hook: OpenCode working is down
+warning
+closed
+
+OpenCode unreachable: <urlopen error [Errno 111] Connection refused>
+
+source health-hook · key health-hook:opencode-working:dfb9f3e2-3af7-4bce-a790-7acd2271b9ca · first seen 2026-11-23 02:27:07Z · 12 occurrences, last 2026-11-23 04:27:41Z · closed 2026-11-23 04:27:43Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 1 uncommitted path(s): pm-stack/opencode-claimant/claimant.py
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 02:00:19Z · 2 occurrences, last 2026-11-23 02:05:01Z · closed 2026-11-23 02:05:01Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch queue/20463-10035-s6-chat-session-surface, not main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 01:07:22Z · 2 occurrences, last 2026-11-23 01:08:24Z · closed 2026-11-23 01:08:24Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch queue/20463-10035-s6-chat-session-surface, not main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 01:00:07Z · 2 occurrences, last 2026-11-23 01:03:12Z · closed 2026-11-23 01:03:12Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 4 uncommitted path(s): pkgs/id/crates/id-store/src/lib.rs, pkgs/mcpx/internal/e2e/feature_coverage_exemptions.txt, pkgs/mcpx/internal/settings/effect.go, pkgs/id/crates/id-store/src/note_blocks.rs
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-23 00:07:52Z · 2 occurrences, last 2026-11-23 00:20:17Z · closed 2026-11-23 00:20:17Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-22 21:18:02Z · 2 occurrences, last 2026-11-22 21:19:04Z · closed 2026-11-22 21:19:04Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch xaltha/1233-failed-events-7d, not main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-22 20:57:06Z · 2 occurrences, last 2026-11-22 21:12:22Z · closed 2026-11-22 21:12:22Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-22 20:06:04Z · 2 occurrences, last 2026-11-22 20:07:38Z · closed 2026-11-22 20:07:39Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-22 20:03:00Z · 2 occurrences, last 2026-11-22 20:04:32Z · closed 2026-11-22 20:04:32Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch xaltha/fleet-queue-db-routing, not main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-22 17:09:09Z · 2 occurrences, last 2026-11-22 17:28:59Z · closed 2026-11-22 17:28:59Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch xaltha/id-f1210-account-quota, not main; 1 uncommitted path(s): pkgs/id/Cargo.lock
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-22 15:56:53Z · 2 occurrences, last 2026-11-22 16:28:57Z · closed 2026-11-22 16:28:57Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-22 13:48:06Z · 2 occurrences, last 2026-11-22 13:50:10Z · closed 2026-11-22 13:50:11Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-22 10:49:06Z · 2 occurrences, last 2026-11-22 10:51:12Z · closed 2026-11-22 10:51:12Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-22 09:58:06Z · 2 occurrences, last 2026-11-22 09:58:38Z · closed 2026-11-22 09:58:38Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-22 09:32:41Z · 2 occurrences, last 2026-11-22 09:34:18Z · closed 2026-11-22 09:34:19Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-22 09:19:41Z · 2 occurrences, last 2026-11-22 09:20:12Z · closed 2026-11-22 09:20:12Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 2 uncommitted path(s): nixos/services/default.nix, pm-stack/systemd/pm-console-expose.service
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-22 08:28:32Z · 2 occurrences, last 2026-11-22 08:34:42Z · closed 2026-11-22 08:34:42Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: on branch queue/18761-8871-p7-design-acceptance, not main
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-22 01:18:55Z · 2 occurrences, last 2026-11-22 01:25:41Z · closed 2026-11-22 01:25:42Z
+Stack health: Kaneo is down
+warning
+closed
+
+probe failed: ECONNRESET: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()
+
+source stack-sentinel · key service:kaneo · first seen 2026-11-21 21:46:42Z · 2 occurrences, last 2026-11-22 00:08:30Z · closed 2026-11-22 00:08:30Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 2 uncommitted path(s): pm-stack/opencode-claimant/poll.py, pm-stack/opencode-claimant/test_poll.py
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-21 11:29:44Z · 2 occurrences, last 2026-11-21 11:30:15Z · closed 2026-11-21 11:30:15Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-21 08:25:57Z · 2 occurrences, last 2026-11-21 08:26:29Z · closed 2026-11-21 08:26:30Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 2 uncommitted path(s): pkgs/id/crates/id-web/src/templates.rs, pm-stack/aggregator/src/notifications.ts
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-21 08:06:02Z · 2 occurrences, last 2026-11-21 08:13:22Z · closed 2026-11-21 08:13:22Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-21 08:02:25Z · 2 occurrences, last 2026-11-21 08:03:27Z · closed 2026-11-21 08:03:27Z
+Stack health: OpenCode is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:opencode · first seen 2026-11-21 07:51:33Z · 2 occurrences, last 2026-11-21 07:52:05Z · closed 2026-11-21 07:52:06Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 3 uncommitted path(s): pm-stack/aggregator/src/prompt-widget.ts, pm-stack/aggregator/src/prompts.test.ts, pm-stack/aggregator/src/prompts.ts
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-21 04:28:59Z · 2 occurrences, last 2026-11-21 04:41:46Z · closed 2026-11-21 04:41:46Z
+Stack health: Primary checkout is down
+warning
+closed
+
+primary checkout blocked: 1 uncommitted path(s): advocate-ledger.md
+
+source stack-sentinel · key service:primary-checkout · first seen 2026-11-20 19:10:56Z · 2 occurrences, last 2026-11-20 20:13:39Z · closed 2026-11-20 20:13:39Z
+Stack health: Queue Broker is down
+warning
+closed
+
+probe failed: ECONNREFUSED: Unable to connect. Is the computer able to access the url?
+
+source stack-sentinel · key service:queue-broker · first seen 2026-11-20 15:11:34Z · 2 occurrences, last 2026-11-20 15:13:07Z · closed 2026-11-20 15:13:07Z
+Ledger — recent transitions
+Recent alert-ledger transitions
+at	kind	incident	source · key
+2026-11-24 03:25:59Z	opened	TEST (#13902) post-restart: broker-raised push proof after the aggregator restart	fleet-queue · needs-drew:test-13902-d
+2026-11-24 03:19:53Z	opened	TEST (#13902) pre-restart: is the broker-raised push path alive?	fleet-queue · needs-drew:test-13902-b
+2026-11-24 02:58:20Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:01542cd3-365a-4a67-af63-098e3a6c890d
+2026-11-24 02:46:50Z	opened	Actions exec fx-883b8f3d848de77184f8: +10 min extension auto-approved (tier 1)	fleet-actions-exec · actions-exec-ext:fx-883b8f3d848de77184f8:1
+2026-11-24 02:46:49Z	opened	Actions exec session fx-883b8f3d848de77184f8 (+10 min, tier 2) approves itself at 2026-11-24T02:56:47Z unless you deny — let it?	fleet-actions-exec · actions-exec-ext:fx-883b8f3d848de77184f8:2
+2026-11-24 02:34:01Z	opened	Actions exec session fx-7b1e10f4f67b257b018a (+10 min, tier 2) approves itself at 2026-11-24T02:43:57Z unless you deny — let it?	fleet-actions-exec · actions-exec-ext:fx-7b1e10f4f67b257b018a:2
+2026-11-24 02:34:00Z	opened	Actions exec fx-7b1e10f4f67b257b018a: +10 min extension auto-approved (tier 1)	fleet-actions-exec · actions-exec-ext:fx-7b1e10f4f67b257b018a:1
+2026-11-24 02:08:12Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-24 01:51:32Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-24 01:39:09Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-24 01:33:21Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-24 01:32:45Z	opened	adapter schema drift: opencode-go.popesdrew parsed shape changed (appeared: window:credits_balance)	quota-anomaly · schema-drift:opencode-go.popesdrew:shape:2026-11-24T01:30:14.553Z
+2026-11-24 00:49:49Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-24 00:49:15Z	opened	adapter schema drift: opencode-go.popesdrew parsed shape changed (appeared: window:credits_balance)	quota-anomaly · schema-drift:opencode-go.popesdrew:shape:2026-11-24T00:45:09.505Z
+2026-11-24 00:21:57Z	closed	Stack health: Primary checkout recovered	stack-sentinel · service:primary-checkout
+2026-11-24 00:21:55Z	opened	Stack health: Primary checkout recovered	stack-sentinel · service:primary-checkout
+2026-11-24 00:21:49Z	opened	adapter schema drift: opencode-go.popesdrew parsed shape changed (disappeared: window:credits_balance)	quota-anomaly · schema-drift:opencode-go.popesdrew:shape:2026-11-24T00:15:04.741Z
+2026-11-24 00:21:32Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 23:31:25Z	opened	vendor plan change: _antigravity.claude-gpt window set changed (appeared: window:5h)	quota-anomaly · plan-change:_antigravity.claude-gpt:shape:2026-11-23T23:30:02.379Z
+2026-11-23 23:31:25Z	opened	adapter schema drift: _antigravity.claude-gpt parsed shape changed (appeared: window:5h)	quota-anomaly · schema-drift:_antigravity.claude-gpt:shape:2026-11-23T23:30:02.379Z
+2026-11-23 23:31:24Z	opened	adapter schema drift: _antigravity parsed shape changed (appeared: window:5h)	quota-anomaly · schema-drift:_antigravity:shape:2026-11-23T23:30:02.379Z
+2026-11-23 23:08:31Z	opened	Extend actions exec session fx-6de80b149d8d8bd57535 past its max lifespan by 30 min?	fleet-actions-exec · actions-exec-ext:fx-6de80b149d8d8bd57535
+2026-11-23 23:05:54Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 23:05:21Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 23:04:06Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:01542cd3-365a-4a67-af63-098e3a6c890d
+2026-11-23 22:19:45Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:c40682c8-9c21-4521-872e-a9e7157a0906
+2026-11-23 21:46:48Z	opened	vendor plan change: openrouter window set changed (disappeared: window:monthly)	quota-anomaly · plan-change:openrouter:shape:2026-11-23T21:45:18.313Z
+2026-11-23 21:34:50Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 21:33:16Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 21:31:51Z	opened	adapter schema drift: openrouter parsed shape changed (appeared: window:key_limit; disappeared: window:monthly)	quota-anomaly · schema-drift:openrouter:shape:2026-11-23T21:30:06.131Z
+2026-11-23 21:30:44Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 21:28:54Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 21:00:41Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 20:22:42Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 20:08:51Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 19:46:51Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 19:46:18Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 19:35:21Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 19:33:42Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 19:31:05Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 19:30:13Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:c40682c8-9c21-4521-872e-a9e7157a0906
+2026-11-23 19:29:35Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:cf9446c4-8c9c-4053-84bb-52e460f7cecc
+2026-11-23 19:28:48Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:cf9446c4-8c9c-4053-84bb-52e460f7cecc
+2026-11-23 19:28:39Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 19:28:05Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:fd85e3bb-49d7-4c02-b094-95b03dd9d840
+2026-11-23 19:26:34Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 19:26:05Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:fd85e3bb-49d7-4c02-b094-95b03dd9d840
+2026-11-23 19:24:37Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:8d2d4f9d-e185-4265-9097-a1681ff56758
+2026-11-23 18:27:14Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 18:17:48Z	opened	burn spike: _openai.main weekly burned 17.6 pts/h against a spike threshold of 10.9 pts/h	quota-anomaly · burn-spike:_openai.main:weekly:2026-11-24T21:23:26.000Z:2026-11-23T17
+2026-11-23 17:01:30Z	opened	burn spike: anthropic:claude-pro weekly burned 21.6 pts/h against a spike threshold of 12.5 pts/h	quota-anomaly · burn-spike:anthropic:claude-pro:weekly:2026-11-25T19:00:00.829Z:2026-11-23T15
+2026-11-23 17:01:29Z	opened	burn spike: anthropic:claude-pro 5h burned 38.3 pts/h against a spike threshold of 7.9 pts/h	quota-anomaly · burn-spike:anthropic:claude-pro:5h:2026-11-23T20:40:00.829Z:2026-11-23T15
+2026-11-23 16:56:05Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 16:54:00Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 16:35:26Z	opened	Bound task 19588: issue dezren39/darwin-nix#1914 closed without a completion record	fleet-queue · closed-bound:19588
+2026-11-23 16:25:50Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 15:04:37Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 15:03:27Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 13:54:56Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 13:49:22Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 13:47:13Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 13:46:23Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:8d2d4f9d-e185-4265-9097-a1681ff56758
+2026-11-23 12:27:35Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:4c0c68e2-243c-4d87-9ac7-b5923c954bed
+2026-11-23 12:13:36Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 12:08:59Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 11:20:41Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 11:18:38Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 11:02:55Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 11:02:21Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 09:13:49Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 08:41:19Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 07:47:09Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 07:41:07Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 07:06:26Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:4c0c68e2-243c-4d87-9ac7-b5923c954bed
+2026-11-23 06:48:13Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:2bd25764-d121-4b99-a97b-43a97e5e76e6
+2026-11-23 06:39:27Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:2bd25764-d121-4b99-a97b-43a97e5e76e6
+2026-11-23 06:37:16Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:2bd25764-d121-4b99-a97b-43a97e5e76e6
+2026-11-23 05:29:17Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:2bd25764-d121-4b99-a97b-43a97e5e76e6
+2026-11-23 05:27:18Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:3858bb35-f139-499f-9896-d09efbd00dae
+2026-11-23 05:26:51Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:3858bb35-f139-499f-9896-d09efbd00dae
+2026-11-23 05:11:27Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:761d65f4-9fc1-4c91-a3a8-0483d55d9894
+2026-11-23 04:38:36Z	opened	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:761d65f4-9fc1-4c91-a3a8-0483d55d9894
+2026-11-23 04:27:43Z	closed	Health hook: OpenCode working is down	health-hook · health-hook:opencode-working:dfb9f3e2-3af7-4bce-a790-7acd2271b9ca
+2026-11-23 04:25:29Z	closed	Stack health: Primary checkout recovered	stack-sentinel · service:primary-checkout
+2026-11-23 04:25:24Z	opened	Stack health: Primary checkout recovered	stack-sentinel · service:primary-checkout
+2026-11-23 04:24:50Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 04:10:50Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 04:09:34Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 03:58:31Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 03:54:14Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 03:51:49Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 03:47:08Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 03:46:25Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 03:34:35Z	closed	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 03:32:59Z	opened	Stack health: OpenCode is down	stack-sentinel · service:opencode
+2026-11-23 03:30:24Z	closed	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 03:02:17Z	opened	burn spike: opencode-go weekly burned 26.4 pts/h against a spike threshold of 25.3 pts/h	quota-anomaly · burn-spike:opencode-go:weekly:2026-11-30T00:00:00.000Z:2026-11-23T01
+2026-11-23 02:56:49Z	opened	Stack health: Primary checkout is down	stack-sentinel · service:primary-checkout
+2026-11-23 02:31:17Z	opened	burn spike: anthropic:claude-pro weekly burned 15.2 pts/h against a spike threshold of 11.3 pts/h	quota-anomaly · burn-spike:anthropic:claude-pro:weekly:2026-11-25T19:00:00.987Z:2026-11-23T00
+2026-11-23 02:31:16Z	opened	burn spike: anthropic:claude-pro 5h burned 57 pts/h against a spike threshold of 47.1 pts/h	quota-anomaly · burn-spike:anthropic:claude-pro:5h:2026-11-23T04:50:00.018Z:2026-11-23T01
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870

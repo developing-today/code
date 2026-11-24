@@ -1,0 +1,183 @@
+OVERVIEW
+Overview
+Today
+Needs you
+Decision sets
+Roadmap
+WORK
+Program status
+Queue
+OPS
+Usage & billing
+Health
+Alerts
+Pages ▾
+Overview — The stack front door (#1134): needs-you, projects, quotas, and health at a glance.
+Today — The day's top objectives + per-project momentum.
+Digest — The scheduled PM digest (#1278): moved / blocked / needs Drew / done / quota outlook from the canonical projection, archived per day at /digest?date=<date>.
+Needs you — NEEDS USER vs NEEDS ORCHESTRATOR, and every live session.
+Decision sets — Every raised decision set (#8867): new today, this week, or all — with open-question counts. Each row opens the set's own page.
+Board — The curated cross-repo WIP board.
+Roadmap — The program roadmap at every grain.
+Reports — Review report versions and resolve prose conflicts without overwriting stored text.
+Source conflicts — One read-only queue of every live source disagreement, with both values and its age.
+Sessions — The agent/session identity registry: who ran what, tokens, task links.
+Search — Search board, roadmap, registry sessions, DNS, services, and tier items by title or linked issue/PR ref.
+Events — The cross-stack chronological stream of dashboard actions, orchestration publishes, and session outcomes.
+Comments queue — Dashboard comments still waiting on a loop (#1210): messages awaiting triage and GitHub comments pending or failed to post, with kind/state counts and each failed item's last error.
+Program status — The projects hub: every project's status, roadmap, and tracked work, one page per project under /program/<id> — fed from the project registry, the tracked issues, and the Project pool.
+Queue — In progress, blocked, recently completed, and next-up work across projects.
+Usage & billing — Token quotas, PAYG dollars, and every SaaS service's usage vs its limits.
+DNS register — Every domain: next renewal, unused, earmarked. (#902's register)
+Cost Explorer — Two tabs over the fleet's cost data: AA Explorer (Artificial Analysis measurements, frontier charts, plan/API/per-task efficiency) and Model Explorer (every model in the fleet's catalogs, its pool seats, plan, and measured value).
+Health — Service & page health (#1147): live probes for every stack service, feed section ages, last job runs, this dashboard's render history — and the services & ports topology (#1137).
+Alerts — The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.
+Notifications — Notification measurement (#3319): the weekly sent-vs-acted-on roll-up over the alert throat's send ledger, with display-only default-off proposals under 10%.
+All pages — This manifest as a page — every registered view in one place.
+Search
+◐
+Dark
+items · live · 4m old
+quota · live · 4m old
+PM daily digest — 2026-11-24
+
+Generated 2026-11-24T03:31:29.555Z from the canonical projection · window 24h from 2026-11-23T03:31:29.555Z · machine twin: /api/digest.json?date=2026-11-24&kind=daily
+
+Data freshness: board=live · roadmap=live · items=live (4m old) · comments=live · quota=live (4m old) · usage=live (4m old) · attention=live (4m old) · orchestration=live (18m old) · dns=live (4m old) · registry=live (4m old) · aa=live (4m old)
+
+Moved today
+impl(pm-stack): primary-parent convention + historical link semantics + crate-split backfill developing-today/code#9066 — In Review · updated 2026-11-24T03:24:00Z
+id(phase-14) v2 step 1: role configuration — roles as first-class world config (#6301) developing-today/code#8299 — In Review · updated 2026-11-24T03:20:54Z
+atlas memory slice 1: corpus registry + memory-lancedb connector into Atlas staging (#8567) developing-today/code#8622 — In Review · updated 2026-11-24T03:05:09Z
+epic: ID platform expansion — apps, comms, currency, hosting, boards (2026-10-28 directive, LIST 6–15) developing-today/code#2056 — In Review · updated 2026-11-24T03:04:34Z
+atlas: provenance registry (chunk occurrences), content-addressed extracts, multi-DB vector resolution developing-today/code#3125 — In Review · updated 2026-11-24T02:55:10Z
+design(pm-orchestration): Typed edge model, canonical direction, and JSON/error contract developing-today/code#9503 — Todo · updated 2026-11-24T02:55:06Z
+impl(pm-stack): move stateful services off the laptop and prove host failover developing-today/code#3989 — Todo · updated 2026-11-24T02:55:03Z
+impl(atlas/id): ID-graph publication conformance audit (#6062 follow-on 5) developing-today/code#11186 — Todo · updated 2026-11-24T02:52:15Z
+pm stack → Supabase phase 3 (#3142): fleet-feed snapshots land as DB rows first, served JSON derived developing-today/code#5006 — Todo · updated 2026-11-24T02:49:19Z
+fleet orgs: Turso-backed org/App registry + list subcommand developing-today/code#8884 — In Review · updated 2026-11-24T02:43:51Z
+pm-console edge: its own GitHub allowance, so the core does not stop when the fleet is busy developing-today/code#13489 — Todo · updated 2026-11-24T02:42:01Z
+design(pm-orchestration): Managed comment conflict and creation recovery; no exactly-once claim developing-today/code#9430 — Todo · updated 2026-11-24T02:32:35Z
+Scheduled Palette — developing-today/code developing-today/code#9404 — Todo · updated 2026-11-24T02:32:34Z
+research(id): triple encoding bake-off — compressed binary vs JSONB vs normalized byte-key maps developing-today/code#9125 — Todo · updated 2026-11-24T02:32:32Z
+bench(atlas): embed-storage economics — vectors+hash+metadata in Turso, raw content content-addressed (feeds #9084) developing-today/code#9098 — Todo · updated 2026-11-24T02:32:30Z
+design(pm-stack): SSO relying-party integration — hosted editions consume #9077; tenancy accounts aligned with #1253 roles developing-today/code#9086 — Todo · updated 2026-11-24T02:32:29Z
+design(pm-stack): content-addressed media/data plane — R2 dedup, reference-based access, GC when the last reference drops developing-today/code#9084 — Todo · updated 2026-11-24T02:32:27Z
+pm-stack Phase 3: consolidation — merge aggregator, quota gatherer, fleet-feed collector and projector into one pm-core service (dispatch stays separate) developing-today/code#8570 — Todo · updated 2026-11-24T02:32:26Z
+fleet(secrets-broker): a partial vault refresh silently evicts cached secrets — one failed bws get becomes a 404 and a 'successful' refresh developing-today/code#5504 — Todo · updated 2026-11-24T02:32:24Z
+design(pm-orchestration): Operation/session attribution and external-only semantics developing-today/code#9509 — Todo · updated 2026-11-24T02:32:19Z
+
+… capped at 20 items
+
+Blocked
+id(phase-14) v3 step 1: shared work-surface data model — task boards and shared documents as world state (#6302) developing-today/code#10049 — blocked by developing-today/code#8300, developing-today/code#8299
+id(phase-14) v3 step 2: concurrency and conflict handling on shared surfaces (#6302) developing-today/code#10050 — blocked by developing-today/code#10049
+id(phase-14) v3 step 3: agent-to-agent task delegation protocol (#6302) developing-today/code#10051 — blocked by developing-today/code#10050, developing-today/code#10049
+id(phase-14) v3 step 4: agent-majority worlds and human visitors (#6302) developing-today/code#10052 — blocked by developing-today/code#8300, developing-today/code#10049
+id(phase-14) v3 step 5: review and quota for shared surfaces (#6302) developing-today/code#10053 — blocked by developing-today/code#8302, developing-today/code#8301, developing-today/code#10049
+id(phase-14) v3 step 6: shared-worlds conformance + spike run (#6302) developing-today/code#10054 — blocked by developing-today/code#10053, developing-today/code#10052, developing-today/code#10051, developing-today/code#10050
+Cache epoch and hot-result contract developing-today/code#10154 — blocked by developing-today/code#9092
+Separate canonical content ID from encrypted object locator developing-today/code#10155 — blocked by developing-today/code#9084
+Specify authoritative generation fence with #9084 developing-today/code#10156 — blocked by developing-today/code#9084
+Evaluate second embedder candidates without selecting for owner developing-today/code#10157 — blocked by developing-today/code#9092, developing-today/code#9113
+Migrate indefinite Worker cache to bounded tenant-safe cache developing-today/code#10166 — blocked by developing-today/code#10154
+Implement shared-bucket broker authorization developing-today/code#10168 — blocked by developing-today/code#10155
+Build resumable generation-conditional large-object collector developing-today/code#10170 — blocked by developing-today/code#9084, developing-today/code#10156
+Add pipeline-qualified async vectorization contract developing-today/code#10171 — blocked by developing-today/code#10157, developing-today/code#9113, developing-today/code#9084
+Versioned recommendation object and retention contract developing-today/code#10173 — blocked by developing-today/code#9084
+Persist recommendation snapshots and before/after comparison developing-today/code#10189 — blocked by developing-today/code#10173
+Model peer, link, storage, tier, and namespace planes independently developing-today/code#10194 — blocked by developing-today/code#9084
+Preserve signed-artifact bytes while resolving codec mismatch developing-today/code#10211 — blocked by developing-today/code#9113
+Evaluate single-writer SQLite sync and restore alternatives developing-today/code#10212 — blocked by developing-today/code#10187
+Add durable outbox recovery and at-least-once hook delivery developing-today/code#10214 — blocked by developing-today/code#10192
+
+… capped at 20 items
+
+Needs Drew
+Dependency Dashboard developing-today/code#24 — labelled user/review — no reason recorded on the item
+Nix Playwright E2E suite fails after vendoring dependencies developing-today/code#176 — labelled user/review — no reason recorded on the item
+Seitan V2 (P6.1): check the Keybase server side, old-style invites, and a real accept before P6.3 developing-today/code#194 — Sign in to a Keybase client on this laptop with authorized team access so I can capture a real accept.
+chore(usage-hub): close master-tracker open checks (ChatGPT tier, Go exact %, Claude reset, Wispr, Bitwarden, Muse plan) developing-today/code#1055 — Connect an approved signed-in console route for the remaining account reads to this session.
+epic(cluster): hardware inventory & first-node selection developing-today/code#1080 — Power on one Threadripper host and make its BMC/KVM reachable to the worker.
+epic(cluster): TALM + Talos bootstrap developing-today/code#1086 — Power on the first selected cluster node and make its console or BMC reachable so the Talos bootstrap can run.
+task(cluster): gather stats - core Threadripper machines developing-today/code#1095 — In the server room, power on the first core Threadripper machine, confirm it boots, and post its inventory record here.
+task(cluster): gather stats - remaining machines + boxed HDD baseline developing-today/code#1096 — In the server room, connect the first boxed HDD and record its model, serial, SMART status, and firmware here.
+task(cluster): verify NIC and switch-gear facts developing-today/code#1097 — During the on-site cluster session, read one core machine's NIC model and negotiated link speed and post them here.
+task(cluster): bring core machines to the golden baseline developing-today/code#1101 — In the server room, power on the first core machine and capture its BIOS and BMC screens for the baseline proof, then post them here.
+Home network: IPv6 uplink stalls on payload transfers (PMTUD/router/ISP) developing-today/code#1280 — In the Deco admin app during your planned router session, open the IPv6 WAN screen and post the WAN IPv6 and MTU details here.
+power-guard: gate UPower's critical-power hybrid-sleep behind a sustained-reading confirmation (laptop slept 2h40m on a glitched battery reading, 2026-10-28) developing-today/code#1687 — Unplug the laptop AC adapter, confirm power-guard prevents hybrid-sleep on a glitch reading, then replug - or reply waive on this issue.
+Files under $TMPDIR/opencode are being deleted (9 repos lost HEAD, config and loose refs) developing-today/code#1862 — Run the sudo home-manager rebuild on the Mac and laptop so the TMPDIR-wrapped opencode from dezren39/nix lands on PATH.
+mcpx docs: a custom subdomain for the site (DNS, CNAME, HTTPS) developing-today/code#1943 — Comment 'apply it' here; the plan of record adds the mcpx CNAME and removes the phantom linstor state entry.
+Add OpenClaw to #alignment — decide one shared channel vs point-to-point developing-today/code#2170 — labelled user/review — no reason recorded on the item
+openclaw: gateway home module applies to all hosts but sops secrets are amd-only — audit/scope the Intel host developing-today/code#2875 — labelled user/review — no reason recorded on the item
+Design: reconstruction is admission — validate authority-bearing inputs where they are rebuilt (pkgs/id) developing-today/code#2898 — labelled user/review — no reason recorded on the item
+supabase backups: staging uploads leak incomplete multipart uploads; staging never reconciled developing-today/code#3860 — labelled user/review — no reason recorded on the item
+ops(cluster): OCI tenancy access + Always Free fleet provisioning (child of #1091) developing-today/code#4904 — In your browser on the laptop, finish the parked OCI signup's final step and note the tenancy name here.
+implement: placement framework v1 — machine-readable decision table + placement record on fleet dispatches (from #2024) developing-today/code#4986 — labelled user/review — no reason recorded on the item
+
+… capped at 20 items
+
+Done today
+impl(aggregator): source coverage and gap-aware activity ingestion developing-today/code#3321 — closed · completed 2026-11-24T00:26:57Z
+impl(pm-stack): PM tenant store — schema + migrations (component A slice 1, from #9079) developing-today/code#12825 — closed · completed 2026-11-24T00:25:09Z
+id(phase-14): shells v2 slice 4 — mobile-native decision record (#6297) developing-today/code#12820 — closed · completed 2026-11-24T00:25:02Z
+impl(fleet-hosted): thin TS CLI — session carriage, create/query/intake verbs, no local stamping authority developing-today/code#12588 — closed · completed 2026-11-24T00:22:50Z
+fleet-queue: chunked_list declares required-features=[client] but the crate does not compile with client alone developing-today/code#13078 — closed · completed 2026-11-24T00:22:31Z
+Scoped social-feed freshness cursor and delta pages developing-today/code#10268 — closed · completed 2026-11-24T00:19:04Z
+Document store ownership and identity seams developing-today/code#10167 — closed · completed 2026-11-23T22:43:24Z
+design(quota-plane): Stage 3 — predictive, self-tuning quota operations developing-today/code#1177 — closed · completed 2026-11-23T22:33:23Z
+design(id): store abstraction — Turso/SQLite-over-HTTP beside redb, IndexedDB evaluated (one interface, pluggable backends) developing-today/code#9082 — closed · completed 2026-11-23T20:53:34Z
+id: Phase 13 F13.5 kitty keyboard protocol on the raw input path developing-today/code#787 — closed · completed 2026-11-23T20:51:59Z
+design(P4): SaaS service for ID/Atlas/fleet — DRAFT for Drew's ratification developing-today/code#8869 — closed · completed 2026-11-23T20:26:21Z
+Inform requester/parties about duplicates and specifically signal detected loops developing-today/code#10230 — closed · completed 2026-11-23T20:03:46Z
+design(id): relay duplicate + loop handling — inform, short-circuit, dedup, loop-inform developing-today/code#9145 — closed · completed 2026-11-23T20:03:44Z
+design(id): versioning — succeeds triples + carried-forward comments developing-today/code#9129 — closed · completed 2026-11-23T19:41:01Z
+atlas memory slice 5: cross-agent eval sets for the unified index (standing oracle) (#8567) developing-today/code#8627 — closed · completed 2026-11-23T19:20:06Z
+pm-stack notifications Phase 2: Cloudflare edge relay + Durable Object dead-man's switch — push that survives the stack being down developing-today/code#8569 — closed · completed 2026-11-23T17:37:22Z
+Phase 4 of #6582 — closing read-site inventory: disposition every frame/peer value read in fleet-proxy + fleet-dispatch against the validated-and-bounded contract developing-today/code#6583 — closed · completed 2026-11-23T16:35:54Z
+lib/test-harness.sh: hermetic test harness (scratch env, stub builder, ps double, skip accounting) + db ps pair migrated (design #1473, phase 1) dezren39/darwin-nix#1474 — closed · completed 2026-11-23T16:27:54Z
+design(pm-orchestration): Read-only work inspect/status and identity resolution developing-today/code#9439 — closed · completed 2026-11-23T15:46:46Z
+design(id): bare-string shorthand + default-index configuration; streaming interfaces + max-items developing-today/code#9119 — closed · completed 2026-11-23T15:44:42Z
+
+… capped at 20 items
+
+Quota outlook — STALE: provider reads degraded for Meta Model API, Anthropic, DeepSeek, Mistral AI — affected pools are marked in their notes
+Meta Model API — Muse API High Usage meta — provider read stale (measured 2026-11-21T04:45:56.270Z) — figures are the last read, not current; near wall — fullest window 100% used
+Anthropic — Claude Pro anthropic:claude-pro — provider read error: Rate limited. Retrying soon. — current readings unavailable; any figures below are the last successful read
+OpenAI — ChatGPT (Main — drewrypope) _openai.main — walled
+OpenAI — ChatGPT (Alternate — popesdrew) _openai.alt — walled
+OpenCode Go — drewrypope account opencode-go.drewrypope — walled
+OpenCode Go — popesdrew account opencode-go.popesdrew — walled
+OpenCode Go — developing-today-0 account opencode-go.developing-today-0 — walled
+ClinePass — Cline Pass (Annual) cline-pass — walled
+Command Code — GO _commandcode — near wall — fullest window 100% used
+Open Design — Go opendesign — walled
+DeepSeek — API (PAYG) deepseek — provider read stale (measured 2026-11-23T20:45:25.067Z) — figures are the last read, not current
+Mistral AI — API + Vibe (monthly credits) mistral — provider read stale (measured 2026-11-16T11:29:48.783Z) — figures are the last read, not current; walled
+OpenCode Go — 0x111dev account opencode-go.0x111dev — walled
+Archive
+2026-11-23 daily
+2026-11-23 weekly
+2026-11-22 daily
+2026-11-21 daily
+2026-11-20 daily
+2026-11-19 daily
+2026-11-18 daily
+2026-11-17 daily
+2026-11-16 daily
+2026-11-16 weekly
+2026-11-15 daily
+2026-11-14 daily
+2026-11-13 daily
+2026-11-12 daily
+2026-11-11 daily
+2026-11-10 daily
+2026-11-09 daily
+2026-11-09 weekly
+2026-11-08 daily
+2026-11-07 daily
+2026-11-06 daily
+2026-11-05 daily
+2026-11-04 daily
+source detail
+⌘K palette · on Needs you: j/k move · s snooze · e escalate · g delegate · x dismiss · m mark done · ? all keys · tailnet: amd-6.raptor-pumpkinseed.ts.net:4870
