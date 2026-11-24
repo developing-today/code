@@ -47,6 +47,12 @@ pub(crate) struct ViewRevisionState {
     /// transport carries bytes, so patch frames are sent as versioned
     /// MessagePack binary frames instead of JSON `view` frames.
     pub(crate) msgpack_patches: bool,
+    /// Negotiated compressed patches (F12.11 phase 4, contract
+    /// revision 16): the join also offered `screen_compress`, so patch
+    /// frames are sent as version-2 compressed frames whenever
+    /// compression makes the complete frame smaller, and as version-1
+    /// frames otherwise.
+    pub(crate) compress_patches: bool,
     /// A resume token presented at join and not yet consumed by a view send.
     pub(crate) pending_resume: Option<String>,
     /// Agent profile (contract revision 11): set from the join frame's
@@ -279,8 +285,12 @@ pub(crate) async fn send_view<I: SessionIo>(
                     // same patch and envelope fields, as one versioned
                     // MessagePack binary frame, when that is smaller
                     // than the full view the client would otherwise
-                    // get. An encoding failure falls through to the
-                    // JSON choice below — never a guessed encoding.
+                    // get. With compression negotiated (F12.11 phase 4)
+                    // the frame is the version-2 compressed form when
+                    // that is smaller still, and the version-1 form
+                    // otherwise — compression never grows a frame. An
+                    // encoding failure falls through to the JSON choice
+                    // below — never a guessed encoding.
                     if view_state.msgpack_patches {
                         let binary = id_core::screen_codec::ViewPatchFrame {
                             sequence,
@@ -289,10 +299,12 @@ pub(crate) async fn send_view<I: SessionIo>(
                             resume_token: resume_token.clone(),
                             patch: patch.clone(),
                         };
-                        if let (Ok(bytes), Ok(full)) = (
-                            id_core::screen_codec::encode_view_patch(&binary),
-                            &full_size,
-                        ) {
+                        let encoded = if view_state.compress_patches {
+                            id_core::screen_codec::encode_view_patch_compressed(&binary)
+                        } else {
+                            id_core::screen_codec::encode_view_patch(&binary)
+                        };
+                        if let (Ok(bytes), Ok(full)) = (encoded, &full_size) {
                             if bytes.len() < *full {
                                 let sent = send_binary(service.frame_meter(), io, bytes).await;
                                 if sent {

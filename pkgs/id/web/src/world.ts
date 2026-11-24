@@ -3,7 +3,7 @@
 import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
 import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
 import { richTerminalBytesForKey, terminalBytesForKey } from "./world-keyboard";
-import { decodeViewPatch } from "./screen-codec";
+import { decodeViewPatchAsync } from "./screen-codec";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
@@ -247,21 +247,27 @@ function initWorld(): void {
     inviteOutput.hidden = false;
   };
 
-  const receiveBinary = (bytes: Uint8Array) => {
+  const receiveBinary = async (bytes: Uint8Array) => {
     // Negotiated binary screen transport (#12242, Rust half #12655):
     // a binary message is one versioned MessagePack view patch,
-    // applied exactly like a JSON view frame's patch. Anything
-    // undecodable or inapplicable falls back to asking for a full
-    // view, the same recovery as a JSON patch whose base mismatches.
-    const frame = decodeViewPatch(bytes);
-    if (frame && renderedSurface && renderedViewRevision === frame.base_view_revision) {
-      const patched = applyScreenPatch(renderedSurface, frame.patch);
-      if (patched && renderWorldSurface(view, patched)) {
-        renderedSurface = patched;
-        renderedViewRevision = frame.view_revision;
-        resumeToken = frame.resume_token;
-        return;
+    // applied exactly like a JSON view frame's patch. Compressed
+    // version-2 frames (#805) inflate through the async decoder.
+    // Anything undecodable or inapplicable falls back to asking for
+    // a full view, the same recovery as a JSON patch whose base
+    // mismatches.
+    try {
+      const frame = await decodeViewPatchAsync(bytes);
+      if (frame && renderedSurface && renderedViewRevision === frame.base_view_revision) {
+        const patched = applyScreenPatch(renderedSurface, frame.patch);
+        if (patched && renderWorldSurface(view, patched)) {
+          renderedSurface = patched;
+          renderedViewRevision = frame.view_revision;
+          resumeToken = frame.resume_token;
+          return;
+        }
       }
+    } catch {
+      // Any failure below falls through to a full view.
     }
     sendViewport(true);
   };
@@ -683,6 +689,7 @@ function initWorld(): void {
           world: selectedWorld(),
           screen_patches: true,
           screen_msgpack: true,
+          screen_compress: true,
           resume_token: hasResumableScreen() ? resumeToken : undefined,
           device_input: {
             keys: 128,
