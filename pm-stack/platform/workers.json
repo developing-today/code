@@ -34,10 +34,10 @@
       "path": "pm-stack/decision-events-worker",
       "does": "The Cloudflare half of the decision-set event pipeline: takes each event once and keeps it for the dashboard's questions.",
       "state": "in service",
-      "deploy": "by hand",
-      "workflow": null,
+      "deploy": "actions",
+      "workflow": "decision-events-worker-deploy.yml",
       "address": "https://decision-events.developing-today.workers.dev",
-      "next": "Deployed from Actions, stood up, checked and rolled back the way the PM console is; listed here with its last deploy. Then the questions it feeds can be read at the edge with no machine."
+      "next": "Deployed from Actions with VERSION set to the full commit SHA and /health required to report that exact SHA. The broader PM migration will add the console's staged route-flip and rollback flow."
     },
     {
       "name": "pm-notify",

@@ -47,6 +47,10 @@ Turso. Credentials are resolved **by name** only:
 
 ## Deploy
 
+Production code deploys run from `.github/workflows/decision-events-worker-deploy.yml` on changes to this Worker on `main`, or by manually dispatching that workflow on `main`. The workflow tests and type-checks the Worker, deploys with `VERSION` set to the full `GITHUB_SHA`, and fails unless `/health` reports that exact SHA. Cloudflare Actions secrets are `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+
+Initial database provisioning and the webhook secret remain operator setup:
+
 ```sh
 # Token by name, piped — never on disk/argv (fleet wrangler pattern):
 fleet secrets get cloudflare.api-token-day-to-day | \
@@ -54,8 +58,6 @@ fleet secrets get cloudflare.api-token-day-to-day | \
 # put the returned database_id in wrangler.toml, then:
 fleet secrets get cloudflare.api-token-day-to-day | \
   python3 ~/tools/cloudflare/wrangler-authed.py d1 execute decision-events --remote --file schema.sql
-fleet secrets get cloudflare.api-token-day-to-day | \
-  python3 ~/tools/cloudflare/wrangler-authed.py deploy
 fleet secrets get cloudflare.decision-events.webhook-secret | \
   python3 ~/tools/cloudflare/wrangler-secret.py  # or: wrangler secret put WEBHOOK_SECRET
 ```
