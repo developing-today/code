@@ -19,6 +19,11 @@ export default defineConfig({
     env: {
       QUERY_CACHE: bindings.durableObject({ worker: "atlas-search", exportName: "QueryCache" }),
       SERVICE_BASE: bindings.text("https://atlas-search.security.cab"),
+      // D1 tenant hot cache (#9134 §5, #13100): mirrors the
+      // wrangler.toml binding; placeholder id until the database
+      // is created at deploy time. Flag default off.
+      HOT_CACHE: bindings.d1({ name: "atlas-hot-cache", id: "00000000-0000-0000-0000-000000000001" }),
+      HOT_CACHE_ENABLED: bindings.text("false"),
     },
   },
 });

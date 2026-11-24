@@ -1,0 +1,914 @@
+{
+  "comparison_scope": "local-only",
+  "corpus_bytes_base64": "YWJj",
+  "dataset_digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "engine_state": {
+    "redb": {
+      "network": "local-only"
+    },
+    "turso": {
+      "network": "local-only",
+      "sync_samples": [
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_lookup",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_scan",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 3,
+          "network": "local-only",
+          "operation": "ref_remove",
+          "pending_push_revisions": 3,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 5,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 5,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 6,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 6,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "object_delete_captured_key",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_lookup",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_scan",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 3,
+          "network": "local-only",
+          "operation": "ref_remove",
+          "pending_push_revisions": 3,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 5,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 5,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 6,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 6,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "object_delete_captured_key",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_lookup",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_scan",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 3,
+          "network": "local-only",
+          "operation": "ref_remove",
+          "pending_push_revisions": 3,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 5,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 5,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 6,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 6,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "object_delete_captured_key",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_lookup",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_scan",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 3,
+          "network": "local-only",
+          "operation": "ref_remove",
+          "pending_push_revisions": 3,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 5,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 5,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 6,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 6,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "object_delete_captured_key",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_lookup",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 1,
+          "network": "local-only",
+          "operation": "metadata_scan",
+          "pending_push_revisions": 1,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 2,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 2,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 3,
+          "network": "local-only",
+          "operation": "ref_remove",
+          "pending_push_revisions": 3,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "object_tombstone_delete",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 4,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 4,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 5,
+          "network": "local-only",
+          "operation": "blob_put_if_absent",
+          "pending_push_revisions": 5,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 6,
+          "network": "local-only",
+          "operation": "ref_commit_if_live",
+          "pending_push_revisions": 6,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "object_delete_captured_key",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        },
+        {
+          "local_revision": 7,
+          "network": "local-only",
+          "operation": "blob_get",
+          "pending_push_revisions": 7,
+          "pulled_revision": 0,
+          "pushed_revision": 0
+        }
+      ]
+    }
+  },
+  "fixture_bytes_base64": "ewogICJmb3JtYXQiOiAiaWQtYXRsYXMtc3ludGhldGljLXdvcmtsb2FkL3YzIiwKICAibWVhc3VyZW1lbnRfc3RhdHVzIjogInN5bnRoZXRpYyBjb3JyZWN0bmVzcyBmaXh0dXJlOyBubyB0aW1pbmdzIG1lYXN1cmVkIiwKICAiaWRlbnRpdHlfcHJvZmlsZSI6ICJmaXh0dXJlLW9ubHkgU0hBMjU2IG92ZXIgZXhhY3QgcHJvZmlsZSBieXRlczsgbm90IGEgcHJvZHVjdGlvbiBDb250ZW50SWQgYWxnb3JpdGhtIGNsYWltIiwKICAicGh5c2ljYWxfa2V5X3Byb2ZpbGUiOiAiZml4dHVyZS1vbmx5IGltbXV0YWJsZSBnZW5lcmF0aW9uLXF1YWxpZmllZCBrZXlzOyBrZXkgbm9uLXJldXNlIG1vZGVsZWQsIG5vdCBwcm92aWRlci1lbmZvcmNlZCIsCiAgInRlbmFudCI6ICJ0ZW5hbnQtYSIsCiAgImV4cGVjdGVkX2NvbnRlbnRfaWQiOiAic2hhMjU2OmJhNzgxNmJmOGYwMWNmZWE0MTQxNDBkZTVkYWUyMjIzYjAwMzYxYTM5NjE3N2E5Y2I0MTBmZjYxZjIwMDE1YWQiLAogICJvcGVyYXRpb25zIjogWwogICAgewogICAgICAiaWQiOiAiYmxvYl9wdXRfaWZfYWJzZW50IiwKICAgICAgImlucHV0IjogeyAiYnl0ZXNfaGV4IjogIjYxNjI2MyIsICJtZXRhZGF0YSI6IHsgIm93bmVyIjogImZpeHR1cmUiIH0gfSwKICAgICAgImV4cGVjdGVkIjogewogICAgICAgICJhY2NlcHRlZCI6IHRydWUsCiAgICAgICAgImNyZWF0ZWQiOiB0cnVlLAogICAgICAgICJnZW5lcmF0aW9uIjogMSwKICAgICAgICAicGh5c2ljYWxfa2V5IjogImZpeHR1cmUvc2hhMjU2LWJhNzgxNmJmL2dlbi0xIiwKICAgICAgICAibGlmZWN5Y2xlIjogIkxpdmUiLAogICAgICAgICJyb3dfcmV2aXNpb24iOiAxCiAgICAgIH0sCiAgICAgICJlbmdpbmVfc3VwcG9ydCI6IHsgImQxIjogInN1cHBvcnRlZCIsICJyMiI6ICJzdXBwb3J0ZWQiLCAicmVkYiI6ICJzdXBwb3J0ZWQiLCAidHVyc28iOiAic3VwcG9ydGVkIiB9CiAgICB9LAogICAgewogICAgICAiaWQiOiAiYmxvYl9wdXRfaWZfYWJzZW50IiwKICAgICAgImlucHV0IjogeyAiYnl0ZXNfaGV4IjogIjYxNjI2MyIsICJtZXRhZGF0YSI6IHsgIm93bmVyIjogImZpeHR1cmUiIH0gfSwKICAgICAgImV4cGVjdGVkIjogewogICAgICAgICJhY2NlcHRlZCI6IHRydWUsCiAgICAgICAgImNyZWF0ZWQiOiBmYWxzZSwKICAgICAgICAiZ2VuZXJhdGlvbiI6IDEsCiAgICAgICAgImxpZmVjeWNsZSI6ICJMaXZlIiwKICAgICAgICAicmVmZXJlbmNlX2NvdW50IjogMCwKICAgICAgICAicm93X3JldmlzaW9uIjogMQogICAgICB9LAogICAgICAiZW5naW5lX3N1cHBvcnQiOiB7ICJkMSI6ICJzdXBwb3J0ZWQiLCAicjIiOiAic3VwcG9ydGVkIiwgInJlZGIiOiAic3VwcG9ydGVkIiwgInR1cnNvIjogInN1cHBvcnRlZCIgfQogICAgfSwKICAgIHsKICAgICAgImlkIjogImJsb2JfZ2V0IiwKICAgICAgImlucHV0Ijoge30sCiAgICAgICJleHBlY3RlZCI6IHsgImJ5dGVzX2hleCI6ICI2MTYyNjMiLCAiZ2VuZXJhdGlvbiI6IDEsICJsaWZlY3ljbGUiOiAiTGl2ZSIgfSwKICAgICAgImVuZ2luZV9zdXBwb3J0IjogeyAiZDEiOiAic3VwcG9ydGVkIiwgInIyIjogInN1cHBvcnRlZCIsICJyZWRiIjogInN1cHBvcnRlZCIsICJ0dXJzbyI6ICJzdXBwb3J0ZWQiIH0KICAgIH0sCiAgICB7CiAgICAgICJpZCI6ICJtZXRhZGF0YV9sb29rdXAiLAogICAgICAiaW5wdXQiOiB7fSwKICAgICAgImV4cGVjdGVkIjogeyAibWV0YWRhdGEiOiB7ICJvd25lciI6ICJmaXh0dXJlIiB9LCAiZ2VuZXJhdGlvbiI6IDEgfSwKICAgICAgImVuZ2luZV9zdXBwb3J0IjogeyAiZDEiOiAic3VwcG9ydGVkIiwgInIyIjogInN1cHBvcnRlZCIsICJyZWRiIjogInN1cHBvcnRlZCIsICJ0dXJzbyI6ICJzdXBwb3J0ZWQiIH0KICAgIH0sCiAgICB7CiAgICAgICJpZCI6ICJtZXRhZGF0YV9zY2FuIiwKICAgICAgImlucHV0IjogeyAidGVuYW50IjogInRlbmFudC1hIiwgInByZWZpeCI6ICJzaGEyNTY6IiB9LAogICAgICAiZXhwZWN0ZWQiOiB7ICJjb250ZW50X2lkcyI6IFsic2hhMjU2OmJhNzgxNmJmOGYwMWNmZWE0MTQxNDBkZTVkYWUyMjIzYjAwMzYxYTM5NjE3N2E5Y2I0MTBmZjYxZjIwMDE1YWQiXSB9LAogICAgICAiZW5naW5lX3N1cHBvcnQiOiB7ICJkMSI6ICJzdXBwb3J0ZWQiLCAicjIiOiAidW5zdXBwb3J0ZWQiLCAicmVkYiI6ICJzdXBwb3J0ZWQiLCAidHVyc28iOiAic3VwcG9ydGVkIiB9CiAgICB9LAogICAgewogICAgICAiaWQiOiAicmVmX2NvbW1pdF9pZl9saXZlIiwKICAgICAgImlucHV0IjogeyAiZ2VuZXJhdGlvbiI6IDEsICJyZWZlcmVuY2UiOiAibG9jLTEiIH0sCiAgICAgICJleHBlY3RlZCI6IHsgImFjY2VwdGVkIjogdHJ1ZSwgImdlbmVyYXRpb24iOiAxLCAicmVmZXJlbmNlX2NvdW50IjogMSB9LAogICAgICAiZW5naW5lX3N1cHBvcnQiOiB7CiAgICAgICAgImQxIjogInN1cHBvcnRlZCIsCiAgICAgICAgInIyIjogImV4dGVybmFsLWF1dGhvcml0eS1yZXF1aXJlZCIsCiAgICAgICAgInJlZGIiOiAic3VwcG9ydGVkIiwKICAgICAgICAidHVyc28iOiAic3VwcG9ydGVkIgogICAgICB9CiAgICB9LAogICAgewogICAgICAiaWQiOiAiYmxvYl9wdXRfaWZfYWJzZW50IiwKICAgICAgImlucHV0IjogeyAiYnl0ZXNfaGV4IjogIjYxNjI2MyIsICJtZXRhZGF0YSI6IHsgIm93bmVyIjogImZpeHR1cmUiIH0gfSwKICAgICAgImV4cGVjdGVkIjogewogICAgICAgICJhY2NlcHRlZCI6IHRydWUsCiAgICAgICAgImNyZWF0ZWQiOiBmYWxzZSwKICAgICAgICAiZ2VuZXJhdGlvbiI6IDEsCiAgICAgICAgImxpZmVjeWNsZSI6ICJMaXZlIiwKICAgICAgICAicmVmZXJlbmNlX2NvdW50IjogMSwKICAgICAgICAicm93X3JldmlzaW9uIjogMQogICAgICB9LAogICAgICAiZW5naW5lX3N1cHBvcnQiOiB7ICJkMSI6ICJzdXBwb3J0ZWQiLCAicjIiOiAic3VwcG9ydGVkIiwgInJlZGIiOiAic3VwcG9ydGVkIiwgInR1cnNvIjogInN1cHBvcnRlZCIgfQogICAgfSwKICAgIHsKICAgICAgImlkIjogIm9iamVjdF90b21ic3RvbmVfZGVsZXRlIiwKICAgICAgImlucHV0IjogeyAiZ2VuZXJhdGlvbiI6IDEgfSwKICAgICAgImV4cGVjdGVkIjogeyAidG9tYnN0b25lZCI6IGZhbHNlLCAicmVhc29uIjogInJlZmVyZW5jZXMtcHJlc2VudCIsICJsaWZlY3ljbGUiOiAiTGl2ZSIgfSwKICAgICAgImVuZ2luZV9zdXBwb3J0IjogewogICAgICAgICJkMSI6ICJhdXRob3JpdHktZmVuY2Utb25seSIsCiAgICAgICAgInIyIjogImV4dGVybmFsLWF1dGhvcml0eS1mZW5jZS1yZXF1aXJlZCIsCiAgICAgICAgInJlZGIiOiAiYXV0aG9yaXR5LWZlbmNlLW9ubHkiLAogICAgICAgICJ0dXJzbyI6ICJhdXRob3JpdHktZmVuY2Utb25seSIKICAgICAgfQogICAgfSwKICAgIHsKICAgICAgImlkIjogInJlZl9yZW1vdmUiLAogICAgICAiaW5wdXQiOiB7ICJnZW5lcmF0aW9uIjogMSwgInJlZmVyZW5jZSI6ICJsb2MtMSIgfSwKICAgICAgImV4cGVjdGVkIjogeyAicmVtb3ZlZCI6IHRydWUsICJyZWZlcmVuY2VfY291bnQiOiAwIH0sCiAgICAgICJlbmdpbmVfc3VwcG9ydCI6IHsKICAgICAgICAiZDEiOiAic3VwcG9ydGVkIiwKICAgICAgICAicjIiOiAiZXh0ZXJuYWwtYXV0aG9yaXR5LXJlcXVpcmVkIiwKICAgICAgICAicmVkYiI6ICJzdXBwb3J0ZWQiLAogICAgICAgICJ0dXJzbyI6ICJzdXBwb3J0ZWQiCiAgICAgIH0KICAgIH0sCiAgICB7CiAgICAgICJpZCI6ICJvYmplY3RfdG9tYnN0b25lX2RlbGV0ZSIsCiAgICAgICJpbnB1dCI6IHsgImdlbmVyYXRpb24iOiAxIH0sCiAgICAgICJleHBlY3RlZCI6IHsKICAgICAgICAidG9tYnN0b25lZCI6IHRydWUsCiAgICAgICAgImdlbmVyYXRpb24iOiAxLAogICAgICAgICJwaHlzaWNhbF9rZXkiOiAiZml4dHVyZS9zaGEyNTYtYmE3ODE2YmYvZ2VuLTEiLAogICAgICAgICJsaWZlY3ljbGUiOiAiVG9tYnN0b25lZCIKICAgICAgfSwKICAgICAgImVuZ2luZV9zdXBwb3J0IjogewogICAgICAgICJkMSI6ICJhdXRob3JpdHktZmVuY2Utb25seSIsCiAgICAgICAgInIyIjogImV4dGVybmFsLWF1dGhvcml0eS1mZW5jZS1yZXF1aXJlZCIsCiAgICAgICAgInJlZGIiOiAiYXV0aG9yaXR5LWZlbmNlLW9ubHkiLAogICAgICAgICJ0dXJzbyI6ICJhdXRob3JpdHktZmVuY2Utb25seSIKICAgICAgfQogICAgfSwKICAgIHsKICAgICAgImlkIjogInJlZl9jb21taXRfaWZfbGl2ZSIsCiAgICAgICJpbnB1dCI6IHsgImdlbmVyYXRpb24iOiAxLCAicmVmZXJlbmNlIjogImxhdGUtcmVmIiB9LAogICAgICAiZXhwZWN0ZWQiOiB7ICJhY2NlcHRlZCI6IGZhbHNlLCAicmVhc29uIjogImdlbmVyYXRpb24tZmVuY2VkIiB9LAogICAgICAiZW5naW5lX3N1cHBvcnQiOiB7CiAgICAgICAgImQxIjogInN1cHBvcnRlZCIsCiAgICAgICAgInIyIjogImV4dGVybmFsLWF1dGhvcml0eS1yZXF1aXJlZCIsCiAgICAgICAgInJlZGIiOiAic3VwcG9ydGVkIiwKICAgICAgICAidHVyc28iOiAic3VwcG9ydGVkIgogICAgICB9CiAgICB9LAogICAgewogICAgICAiaWQiOiAiYmxvYl9wdXRfaWZfYWJzZW50IiwKICAgICAgImlucHV0IjogeyAiYnl0ZXNfaGV4IjogIjYxNjI2MyIsICJtZXRhZGF0YSI6IHsgIm93bmVyIjogImZpeHR1cmUiIH0gfSwKICAgICAgImV4cGVjdGVkIjogewogICAgICAgICJhY2NlcHRlZCI6IGZhbHNlLAogICAgICAgICJjcmVhdGVkIjogZmFsc2UsCiAgICAgICAgImdlbmVyYXRpb24iOiAxLAogICAgICAgICJsaWZlY3ljbGUiOiAiVG9tYnN0b25lZCIsCiAgICAgICAgInJlYXNvbiI6ICJleHBsaWNpdC1yZXN1cnJlY3Rpb24tcmVxdWlyZWQiCiAgICAgIH0sCiAgICAgICJlbmdpbmVfc3VwcG9ydCI6IHsgImQxIjogInN1cHBvcnRlZCIsICJyMiI6ICJzdXBwb3J0ZWQiLCAicmVkYiI6ICJzdXBwb3J0ZWQiLCAidHVyc28iOiAic3VwcG9ydGVkIiB9CiAgICB9LAogICAgewogICAgICAiaWQiOiAiYmxvYl9wdXRfaWZfYWJzZW50IiwKICAgICAgImlucHV0IjogeyAiYnl0ZXNfaGV4IjogIjYxNjI2MyIsICJtZXRhZGF0YSI6IHsgIm93bmVyIjogImZpeHR1cmUiIH0sICJyZXN1cnJlY3Rpb24iOiB0cnVlIH0sCiAgICAgICJleHBlY3RlZCI6IHsKICAgICAgICAiYWNjZXB0ZWQiOiB0cnVlLAogICAgICAgICJjcmVhdGVkIjogdHJ1ZSwKICAgICAgICAiZ2VuZXJhdGlvbiI6IDIsCiAgICAgICAgInBoeXNpY2FsX2tleSI6ICJmaXh0dXJlL3NoYTI1Ni1iYTc4MTZiZi9nZW4tMiIsCiAgICAgICAgImxpZmVjeWNsZSI6ICJMaXZlIiwKICAgICAgICAicm93X3JldmlzaW9uIjogMSwKICAgICAgICAiY29udGVudF9pZCI6ICJzaGEyNTY6YmE3ODE2YmY4ZjAxY2ZlYTQxNDE0MGRlNWRhZTIyMjNiMDAzNjFhMzk2MTc3YTljYjQxMGZmNjFmMjAwMTVhZCIKICAgICAgfSwKICAgICAgImVuZ2luZV9zdXBwb3J0IjogeyAiZDEiOiAic3VwcG9ydGVkIiwgInIyIjogInN1cHBvcnRlZCIsICJyZWRiIjogInN1cHBvcnRlZCIsICJ0dXJzbyI6ICJzdXBwb3J0ZWQiIH0KICAgIH0sCiAgICB7CiAgICAgICJpZCI6ICJyZWZfY29tbWl0X2lmX2xpdmUiLAogICAgICAiaW5wdXQiOiB7ICJnZW5lcmF0aW9uIjogMiwgInJlZmVyZW5jZSI6ICJsb2MtMiIgfSwKICAgICAgImV4cGVjdGVkIjogeyAiYWNjZXB0ZWQiOiB0cnVlLCAiZ2VuZXJhdGlvbiI6IDIsICJyZWZlcmVuY2VfY291bnQiOiAxIH0sCiAgICAgICJlbmdpbmVfc3VwcG9ydCI6IHsKICAgICAgICAiZDEiOiAic3VwcG9ydGVkIiwKICAgICAgICAicjIiOiAiZXh0ZXJuYWwtYXV0aG9yaXR5LXJlcXVpcmVkIiwKICAgICAgICAicmVkYiI6ICJzdXBwb3J0ZWQiLAogICAgICAgICJ0dXJzbyI6ICJzdXBwb3J0ZWQiCiAgICAgIH0KICAgIH0sCiAgICB7CiAgICAgICJpZCI6ICJvYmplY3RfZGVsZXRlX2NhcHR1cmVkX2tleSIsCiAgICAgICJpbnB1dCI6IHsgImdlbmVyYXRpb24iOiAxIH0sCiAgICAgICJleHBlY3RlZCI6IHsKICAgICAgICAiZGVsZXRlZF9rZXkiOiAiZml4dHVyZS9zaGEyNTYtYmE3ODE2YmYvZ2VuLTEiLAogICAgICAgICJkZWxldGVkIjogdHJ1ZSwKICAgICAgICAiZ2VuZXJhdGlvbl8yX2tleV9wcmVzZW50IjogdHJ1ZSwKICAgICAgICAiZ2VuZXJhdGlvbl8yX3JlZmVyZW5jZV9jb3VudCI6IDEsCiAgICAgICAgImNvbnRlbnRfaWRfdW5jaGFuZ2VkIjogdHJ1ZQogICAgICB9LAogICAgICAiZW5naW5lX3N1cHBvcnQiOiB7CiAgICAgICAgImQxIjogImRlbGV0ZS1jYXB0dXJlZC1rZXktYWZ0ZXItZmVuY2UiLAogICAgICAgICJyMiI6ICJwbGFpbi1kZWxldGUtY2FwdHVyZWQtbmV2ZXItcmV1c2VkLWtleS1hZnRlci1mZW5jZSIsCiAgICAgICAgInJlZGIiOiAiYXV0aG9yaXR5LXRoZW4tcGxhaW4tZGVsZXRlLWNhcHR1cmVkLWtleSIsCiAgICAgICAgInR1cnNvIjogImF1dGhvcml0eS10aGVuLXBsYWluLWRlbGV0ZS1jYXB0dXJlZC1rZXkiCiAgICAgIH0KICAgIH0sCiAgICB7CiAgICAgICJpZCI6ICJibG9iX2dldCIsCiAgICAgICJpbnB1dCI6IHt9LAogICAgICAiZXhwZWN0ZWQiOiB7ICJieXRlc19oZXgiOiAiNjE2MjYzIiwgImdlbmVyYXRpb24iOiAyLCAibGlmZWN5Y2xlIjogIkxpdmUiIH0sCiAgICAgICJlbmdpbmVfc3VwcG9ydCI6IHsgImQxIjogInN1cHBvcnRlZCIsICJyMiI6ICJzdXBwb3J0ZWQiLCAicmVkYiI6ICJzdXBwb3J0ZWQiLCAidHVyc28iOiAic3VwcG9ydGVkIiB9CiAgICB9CiAgXQp9Cg==",
+  "fixture_digest": "sha256:4726b322eba7d6618f9637e827d565fc4fb074a3977dd09d8cf12e2e259a7d69",
+  "format": "id-atlas-local-result/v1",
+  "notice": "These local measurements are not cloud performance comparisons or shard recommendations.",
+  "operation_ids": [
+    "blob_put_if_absent",
+    "blob_put_if_absent",
+    "blob_get",
+    "metadata_lookup",
+    "metadata_scan",
+    "ref_commit_if_live",
+    "blob_put_if_absent",
+    "object_tombstone_delete",
+    "ref_remove",
+    "object_tombstone_delete",
+    "ref_commit_if_live",
+    "blob_put_if_absent",
+    "blob_put_if_absent",
+    "ref_commit_if_live",
+    "object_delete_captured_key",
+    "blob_get"
+  ],
+  "raw_operation_samples": {
+    "redb": [
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [6.510406, 5.667689, 5.724044, 6.5287310000000005, 6.775773]
+      },
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [5.07476, 6.007776000000001, 5.858416, 4.850209, 5.370473]
+      },
+      {
+        "operation": "blob_get",
+        "samples_ms": [0.036648, 0.06321900000000001, 0.038562, 0.032912, 0.079298]
+      },
+      {
+        "operation": "metadata_lookup",
+        "samples_ms": [0.015880000000000002, 0.017953, 0.015669, 0.01055, 0.014287000000000001]
+      },
+      {
+        "operation": "metadata_scan",
+        "samples_ms": [0.02684, 0.033493, 0.025728, 0.028654, 0.040645999999999995]
+      },
+      {
+        "operation": "ref_commit_if_live",
+        "samples_ms": [6.327003, 5.613528, 5.2368429999999995, 6.649066, 6.409878]
+      },
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [1.346942, 2.244571, 1.300023, 1.49555, 1.3499569999999999]
+      },
+      {
+        "operation": "object_tombstone_delete",
+        "samples_ms": [1.668954, 1.7154010000000002, 2.576703, 1.679874, 1.889417]
+      },
+      {
+        "operation": "ref_remove",
+        "samples_ms": [1.668143, 1.669164, 1.621706, 2.661873, 1.6949429999999999]
+      },
+      {
+        "operation": "object_tombstone_delete",
+        "samples_ms": [11.499956000000001, 10.982708, 10.813281, 11.308588, 10.85034]
+      },
+      {
+        "operation": "ref_commit_if_live",
+        "samples_ms": [6.455994, 6.374843, 5.719497, 5.7953980000000005, 6.308278]
+      },
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [1.5022220000000002, 1.467938, 2.3762879999999997, 1.42114, 1.456105]
+      },
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [6.4375, 5.461463, 5.4319679999999995, 6.627997, 6.302117]
+      },
+      {
+        "operation": "ref_commit_if_live",
+        "samples_ms": [1.696676, 2.630534, 1.626494, 1.711925, 1.631394]
+      },
+      {
+        "operation": "object_delete_captured_key",
+        "samples_ms": [1.7776070000000002, 1.973354, 2.6862779999999997, 1.863007, 1.751328]
+      },
+      {
+        "operation": "blob_get",
+        "samples_ms": [0.029505, 0.028031999999999998, 0.037530999999999995, 0.041558, 0.029756]
+      }
+    ],
+    "turso": [
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [16.167183, 15.307394, 20.840040000000002, 16.265557, 16.280244]
+      },
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [0.10329400000000001, 0.099727, 0.078237, 0.100518, 0.116709]
+      },
+      {
+        "operation": "blob_get",
+        "samples_ms": [0.08811500000000001, 0.087794, 0.06407, 0.087253, 0.09475800000000001]
+      },
+      {
+        "operation": "metadata_lookup",
+        "samples_ms": [0.0429, 0.043961999999999994, 0.042117999999999996, 0.04298, 0.043852]
+      },
+      {
+        "operation": "metadata_scan",
+        "samples_ms": [0.098524, 0.129152, 0.107642, 0.134391, 0.14017200000000002]
+      },
+      {
+        "operation": "ref_commit_if_live",
+        "samples_ms": [15.057095, 16.172142, 14.929506, 15.144447999999999, 15.026335999999999]
+      },
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [0.127288, 0.13210699999999997, 0.15593200000000002, 0.117109, 0.133831]
+      },
+      {
+        "operation": "object_tombstone_delete",
+        "samples_ms": [0.078738, 0.08655199999999999, 0.082975, 0.073718, 0.07613299999999999]
+      },
+      {
+        "operation": "ref_remove",
+        "samples_ms": [16.085099, 20.540298, 17.444494000000002, 16.124102, 16.047338]
+      },
+      {
+        "operation": "object_tombstone_delete",
+        "samples_ms": [20.513548999999998, 15.069157, 15.296462, 14.950555000000001, 15.022871]
+      },
+      {
+        "operation": "ref_commit_if_live",
+        "samples_ms": [0.093034, 0.103223, 0.07632299999999999, 0.06794700000000001, 0.089728]
+      },
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [0.072616, 0.08060099999999999, 0.057166999999999996, 0.055563999999999995, 0.073378]
+      },
+      {
+        "operation": "blob_put_if_absent",
+        "samples_ms": [20.731185999999997, 16.309099, 16.183033, 16.15501, 15.934667]
+      },
+      {
+        "operation": "ref_commit_if_live",
+        "samples_ms": [15.017722000000001, 20.406368, 14.9587, 15.236641, 15.044632]
+      },
+      {
+        "operation": "object_delete_captured_key",
+        "samples_ms": [15.828779, 20.999158, 15.890615, 16.207408, 15.959914]
+      },
+      {
+        "operation": "blob_get",
+        "samples_ms": [0.12221800000000001, 0.13883, 0.095469, 0.119644, 0.158016]
+      }
+    ]
+  },
+  "runs": [
+    {
+      "correctness": {
+        "engine_operation_capability_mappings_checked": 16,
+        "fixture_digest_verified": true,
+        "provider_calls": 0,
+        "reference_transitions_executed_and_matched": 80,
+        "timings_measured": true
+      },
+      "dataset_digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "engine": "redb",
+      "environment": {
+        "cache_mode": "cold",
+        "cpu_count": 16,
+        "dataset_digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "git_revision": "914266d021218590329bf893d57360d3a64a823f",
+        "hardware_model": "Laptop 13 (AMD Ryzen 7040Series)",
+        "memory_bytes": 132749258752,
+        "os_kernel": "Linux-6.18.60-x86_64-with-glibc2.44",
+        "runner_version": "id-benchmarks-local/1",
+        "runtime_versions": {
+          "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+          "python": "3.14.8",
+          "rustc": "rustc 1.99.0 (b940084d7 2026-09-28) (built from a source tarball)"
+        },
+        "start_time_utc": "2026-11-23T15:19:25.464769Z",
+        "storage_shard_count": 1
+      },
+      "metrics": {
+        "error_rate": 0.0,
+        "p50_ms": 1.751328,
+        "p95_ms": 10.813281,
+        "p99_ms": 11.308588,
+        "throughput_ops_s": 307.956730000727
+      },
+      "raw_samples": [
+        6.510406, 5.667689, 5.724044, 6.5287310000000005, 6.775773, 5.07476, 6.007776000000001, 5.858416, 4.850209,
+        5.370473, 0.036648, 0.06321900000000001, 0.038562, 0.032912, 0.079298, 0.015880000000000002, 0.017953, 0.015669,
+        0.01055, 0.014287000000000001, 0.02684, 0.033493, 0.025728, 0.028654, 0.040645999999999995, 6.327003, 5.613528,
+        5.2368429999999995, 6.649066, 6.409878, 1.346942, 2.244571, 1.300023, 1.49555, 1.3499569999999999, 1.668954,
+        1.7154010000000002, 2.576703, 1.679874, 1.889417, 1.668143, 1.669164, 1.621706, 2.661873, 1.6949429999999999,
+        11.499956000000001, 10.982708, 10.813281, 11.308588, 10.85034, 6.455994, 6.374843, 5.719497, 5.7953980000000005,
+        6.308278, 1.5022220000000002, 1.467938, 2.3762879999999997, 1.42114, 1.456105, 6.4375, 5.461463,
+        5.4319679999999995, 6.627997, 6.302117, 1.696676, 2.630534, 1.626494, 1.711925, 1.631394, 1.7776070000000002,
+        1.973354, 2.6862779999999997, 1.863007, 1.751328, 0.029505, 0.028031999999999998, 0.037530999999999995,
+        0.041558, 0.029756
+      ],
+      "schema_version": 1,
+      "workload_id": "C9133-LOCAL-synthetic-workload-v3"
+    },
+    {
+      "correctness": {
+        "engine_operation_capability_mappings_checked": 16,
+        "fixture_digest_verified": true,
+        "provider_calls": 0,
+        "reference_transitions_executed_and_matched": 80,
+        "timings_measured": true
+      },
+      "dataset_digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      "engine": "turso",
+      "environment": {
+        "cache_mode": "cold",
+        "cpu_count": 16,
+        "dataset_digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "git_revision": "914266d021218590329bf893d57360d3a64a823f",
+        "hardware_model": "Laptop 13 (AMD Ryzen 7040Series)",
+        "memory_bytes": 132749258752,
+        "os_kernel": "Linux-6.18.60-x86_64-with-glibc2.44",
+        "runner_version": "id-benchmarks-local/1",
+        "runtime_versions": {
+          "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+          "python": "3.14.8",
+          "rustc": "rustc 1.99.0 (b940084d7 2026-09-28) (built from a source tarball)"
+        },
+        "start_time_utc": "2026-11-23T15:19:25.464769Z",
+        "storage_shard_count": 1
+      },
+      "metrics": {
+        "error_rate": 0.0,
+        "p50_ms": 0.133831,
+        "p95_ms": 20.513548999999998,
+        "p99_ms": 20.840040000000002,
+        "throughput_ops_s": 137.13632686769893
+      },
+      "raw_samples": [
+        16.167183, 15.307394, 20.840040000000002, 16.265557, 16.280244, 0.10329400000000001, 0.099727, 0.078237,
+        0.100518, 0.116709, 0.08811500000000001, 0.087794, 0.06407, 0.087253, 0.09475800000000001, 0.0429,
+        0.043961999999999994, 0.042117999999999996, 0.04298, 0.043852, 0.098524, 0.129152, 0.107642, 0.134391,
+        0.14017200000000002, 15.057095, 16.172142, 14.929506, 15.144447999999999, 15.026335999999999, 0.127288,
+        0.13210699999999997, 0.15593200000000002, 0.117109, 0.133831, 0.078738, 0.08655199999999999, 0.082975, 0.073718,
+        0.07613299999999999, 16.085099, 20.540298, 17.444494000000002, 16.124102, 16.047338, 20.513548999999998,
+        15.069157, 15.296462, 14.950555000000001, 15.022871, 0.093034, 0.103223, 0.07632299999999999,
+        0.06794700000000001, 0.089728, 0.072616, 0.08060099999999999, 0.057166999999999996, 0.055563999999999995,
+        0.073378, 20.731185999999997, 16.309099, 16.183033, 16.15501, 15.934667, 15.017722000000001, 20.406368, 14.9587,
+        15.236641, 15.044632, 15.828779, 20.999158, 15.890615, 16.207408, 15.959914, 0.12221800000000001, 0.13883,
+        0.095469, 0.119644, 0.158016
+      ],
+      "schema_version": 1,
+      "workload_id": "C9133-LOCAL-synthetic-workload-v3"
+    }
+  ],
+  "schema_version": 1,
+  "workload_id": "C9133-LOCAL-synthetic-workload-v3"
+}

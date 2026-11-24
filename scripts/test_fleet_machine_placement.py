@@ -46,7 +46,12 @@ def health(status, last_seen=FRESH, failed=()):
         "active_within_cadence": 17,
         "max_sessions": 12,
     }
-    return {"source": "watchdog", "last_seen": last_seen, "status": status, "checks": checks}
+    return {
+        "source": "watchdog",
+        "last_seen": last_seen,
+        "status": status,
+        "checks": checks,
+    }
 
 
 def record(state="active", health_block=None, **cap_overrides):

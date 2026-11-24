@@ -841,7 +841,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   return withIndex;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const now = new Date();
   const sectionStatuses: NonNullable<FleetFeed["meta"]>["sections"] = {};
   const markSection = (

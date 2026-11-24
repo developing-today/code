@@ -553,7 +553,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "partly: proxy re-emits upstream failures as its own JSON-RPC errors / isError results; origin is text-only"
+      "server": "yes: locally minted JSON-RPC errors include `{\"mcpx\":{\"origin\":\"local\"}}` in error data; relayed peer errors pass through unchanged"
     }
   },
   {
@@ -591,7 +591,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "no: mcpx answers methods it did not advertise for that revision (accept-liberally, e.g. resources/subscribe from modern)"
+      "server": "yes: the capability gate rejects methods whose capabilities were not advertised where that revision defines the capability; revisions predating skills extension advertisement retain legacy acceptance (C24)"
     }
   },
   {
@@ -14461,7 +14461,7 @@
     },
     "notes": {
       "client": "yes — broker records `Server`",
-      "server": "yes — message rewritten \"\u003cserver\u003e (via mcpx) asks:\" so the downstream can meet it"
+      "server": "yes — message rewritten \"\u0026lt;server\u0026gt; (via mcpx) asks:\" so the downstream can meet it"
     }
   },
   {

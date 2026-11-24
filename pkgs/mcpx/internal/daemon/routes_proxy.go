@@ -242,12 +242,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if fb := s.reg.FeedbackStore(); fb != nil {
 		outStr := fmt.Sprintf("mcpx reverse proxy: semantically injected %d tools for query %q.", len(discovered), query)
 		_ = fb.RecordInteraction(logstore.InteractionRecord{
-			TraceID:   turnID,
-			Timestamp: time.Now(),
-			Source:    "proxy",
-			Input:     query,
-			Output:    outStr,
-			ToolsUsed: toolNames,
+			TraceID:      turnID,
+			Timestamp:    time.Now(),
+			Source:       "proxy",
+			Input:        query,
+			Output:       outStr,
+			ToolsOffered: toolNames,
 		})
 	}
 
@@ -302,12 +302,12 @@ func (s *Server) proxyToUpstream(w http.ResponseWriter, r *http.Request, upstrea
 
 	if fb := s.reg.FeedbackStore(); fb != nil {
 		_ = fb.RecordInteraction(logstore.InteractionRecord{
-			TraceID:   turnID,
-			Timestamp: time.Now(),
-			Source:    "proxy",
-			Input:     query,
-			Output:    buf.String(),
-			ToolsUsed: toolNames,
+			TraceID:      turnID,
+			Timestamp:    time.Now(),
+			Source:       "proxy",
+			Input:        query,
+			Output:       buf.String(),
+			ToolsOffered: toolNames,
 		})
 	}
 }

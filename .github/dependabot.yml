@@ -18,11 +18,14 @@ updates:
       github-actions:
         patterns: ["*"]
   - package-ecosystem: "npm"
-    directory: "/"
+    directories:
+      - "/"
+      - "/pkgs/supergateway"
     schedule:
       interval: "weekly"
     exclude-paths:
       - "pkgs/grok-cli/**"
+      - "pkgs/supergateway/**"
       - "pm-stack/voice-line-worker/**"
     groups:
       npm:
@@ -75,6 +78,12 @@ updates:
       - "/pkgs/tea"
     schedule:
       interval: "weekly"
+    # charmbracelet/ssh v0.4.x+ declares itself as charm.land/ssh, so
+    # Dependabot's gomod update fails the module-path check in chat,
+    # identity, launcher and tea (run 45347745147). Ignored until the
+    # imports move to charm.land/ssh deliberately.
+    ignore:
+      - dependency-name: "github.com/charmbracelet/ssh"
     groups:
       gomod:
         patterns: ["*"]
@@ -91,4 +100,11 @@ updates:
       interval: "weekly"
     groups:
       nuget:
+        patterns: ["*"]
+  - package-ecosystem: "npm"
+    directory: "/pkgs/grok-cli"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-grok-cli:
         patterns: ["*"]

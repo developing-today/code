@@ -26,7 +26,7 @@ export function instructionsFor(channel = "claude") {
     `send_message sends to Drew by default; its to argument reaches anyone else (${ADDRESS_HELP}), as a message ` +
     'or, with kind "instruction", an instruction to act on; the recipient is woken where it can be. ' +
     `read_messages returns stored messages; inbound ones were sent to ${who}. from_addr says who sent one: null is ` +
-    'Drew (his page or API), "channel:claude"/"channel:chatgpt" another assistant, "agent:<name>" a fleet agent. ' +
+    'Drew (his console or API), "channel:claude"/"channel:chatgpt" another assistant, "agent:<name>" a fleet agent. ' +
     "Answer one with send_message reply_to its id, which sends the answer back to whoever sent it. " +
     "Use read_messages with unread_only to check for new inbound messages, then ack_messages (or mark_read) " +
     "so they are not reported as new again. Every message is kept with its direction, source and time. " +
@@ -42,7 +42,7 @@ export const TOOLS = [
     name: "send_message",
     title: "Send a message",
     description:
-      "Send a message or an instruction. By default it goes to Drew (stored as an outbound message on the history page). " +
+      "Send a message or an instruction. By default it goes to Drew (stored as an outbound message he reads in the console). " +
       `to sends it to anyone else instead or as well: ${ADDRESS_HELP}. ` +
       "reply_to a message id (with no to) sends the answer back to whoever sent that message and marks it read. " +
       "Another assistant or agent is woken when it can be. Returns the stored messages.",
@@ -62,8 +62,19 @@ export const TOOLS = [
         },
         reply_to: { type: "integer", minimum: 1, description: "Id of an inbound message this answers." },
         sender: { type: "string", description: "Optional label for who is sending, e.g. 'claude' or 'chatgpt'." },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Cap fleet deliveries: the first N agents the addresses match, in name order. The result's report says how many matched, were delivered and remain.",
+        },
+        broaden: {
+          type: "string",
+          description:
+            "Batch id of an earlier fleet send: re-delivers its body to the matched-but-undelivered remainder (widened by to when given). No body needed, and nobody is sent the same batch twice.",
+        },
       },
-      required: ["body"],
+      required: [],
       additionalProperties: false,
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -140,7 +151,7 @@ export async function callTool(name, args, store, channel = "claude", delivered 
   if (typeof args !== "object" || Array.isArray(args)) throw new InputError("arguments must be an object");
   switch (name) {
     case "send_message": {
-      rejectUnknownArgs(args, ["body", "sender", "to", "kind", "reply_to"]);
+      rejectUnknownArgs(args, ["body", "sender", "to", "kind", "reply_to", "limit", "broaden"]);
       let to = args.to;
       let answering = null;
       if (args.reply_to !== undefined && args.reply_to !== null) {
@@ -156,6 +167,8 @@ export async function callTool(name, args, store, channel = "claude", delivered 
         body: args.body,
         kind: args.kind,
         sender: args.sender,
+        limit: args.limit,
+        broaden: args.broaden,
       });
       if (answering && answering.read_at === null) await store.ack({ ids: [answering.id], channel });
       delivered(out);
@@ -166,6 +179,17 @@ export async function callTool(name, args, store, channel = "claude", delivered 
         messages,
         ...(out.fleet.length ? { fleet: out.fleet } : {}),
         ...(out.unregistered.length ? { unregistered: out.unregistered } : {}),
+        ...(out.report
+          ? {
+              report: {
+                batch: out.report.batch,
+                matched: out.report.matched,
+                delivered: out.report.delivered,
+                recipients: out.report.recipients,
+                remaining: out.report.remaining,
+              },
+            }
+          : {}),
       };
     }
     case "read_messages": {

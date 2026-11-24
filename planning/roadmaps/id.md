@@ -10,14 +10,11 @@ Sources: [Phase 11](../../.opencode/plans/phase-11-foundations.md), [Phase 12](.
 
 **Update 2026-11-21 (proposed in the [results-first plan](../plans/2026-11-21_results-first.md)):** the ordered path to Phase 12 closed on 2026-11-08 (#1235), and 14 of the 18 Phase 12 items are closed. The four that remain are the Now work, together with one end-to-end slice of the #9106 substrate. The phase is finished when its nine exit criteria are each recorded as met by a command, and the first `id` release is tagged. Priority labels and queue bands follow at that plan's step 0.
 
-| Title                                               | Status      | Intent                                                                                                                                                                                                                                                             | Links         |
-| --------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- |
-| Validate the delivered work                         | in-progress | Phases 9 and 10 were delivered faster than they were verified. The remaining verification-debt inventory gets a proving test or its own issue per item, and Phase 12 gets an exit audit: one row per exit criterion with the command and its output.               | umbrella #796 |
-| Many worlds per node                                | in-progress | 1,000 idle / 100 active worlds with a per-world memory budget. Memory budget and eviction are done; the latency target is not: p99 measured 5,650 ms against 50 ms (#557, 2026-11-17). The profile comes before any fix.                                           | F12.12 #557   |
-| Fair scheduling and quotas                          | planned     | A world that spins on fuel cannot raise another world's p99 latency by more than 10 percent; per-account quotas for worlds, storage and fuel.                                                                                                                      | F12.10 #1067  |
-| Delta and binary frames                             | planned     | A typical redraw costs under 10 percent of a full frame. Waits on four protocol decisions, which are asked with defaults.                                                                                                                                          | F12.11 #805   |
-| First new providers                                 | planned     | A bounded key-value store, content-addressed blobs, an allowlisted `http.fetch` (off by default) and rate-limited notifications — the notifications provider also covers the old "outbound notifications" idea. Inward-facing providers (`kv`, `blob`) land first. | F12.5 #1062   |
-| One end-to-end slice of the signed-record substrate | proposed    | Two nodes: a signed record written at an `id://` address, synced, a conflicting write reported, and a CLI command that shows it. The library modules are merged; nothing reaches them from the CLI yet.                                                            | #9106, #9112  |
+| Title                                               | Status      | Intent                                                                                                                                                                                                                   | Links        |
+| --------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------ |
+| Many worlds per node                                | in-progress | 1,000 idle / 100 active worlds with a per-world memory budget. Memory budget and eviction are done; the latency target is not: p99 measured 5,650 ms against 50 ms (#557, 2026-11-17). The profile comes before any fix. | F12.12 #557  |
+| Delta and binary frames                             | planned     | A typical redraw costs under 10 percent of a full frame. Waits on four protocol decisions, which are asked with defaults.                                                                                                | F12.11 #805  |
+| One end-to-end slice of the signed-record substrate | proposed    | Two nodes: a signed record written at an `id://` address, synced, a conflicting write reported, and a CLI command that shows it. The library modules are merged; nothing reaches them from the CLI yet.                  | #9106, #9112 |
 
 ## Next — Phase 12: platform flexibility
 
@@ -31,13 +28,12 @@ Make the platform something other people can build on without changing its core:
 
 Phase 13 plan: [phase-13-client-shells.md](../../.opencode/plans/phase-13-client-shells.md). F13.1 (shell contract, #783) and F13.2 (SSH frame transport, #784) are already done; the rest waits behind Phase 12 foundations (F13.7 needs F12.4 + F12.6; F13.4/F13.5 need the F11.9 baseline).
 
-| Title                         | Status  | Intent                                                                                                         | Links      |
-| ----------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- | ---------- |
-| Presentation capability tiers | planned | Terminal classes detected in-band; tiered rendering instead of one assumed terminal.                           | F13.4 #786 |
-| Kitty keyboard protocol       | planned | Disambiguated keys on the raw input path, so worlds can tell key combinations apart.                           | F13.5 #787 |
-| Native client shells          | planned | A reference native shell on the shell contract. Umbrella: #538. Prerequisite: session identity on input, #840. | F13.6 #788 |
-| Native TUI client             | idea    | A ratatui TUI on the shell contract, with a custom efficient presentation protocol.                            | #1071      |
-| Native GUI client             | idea    | A full GUI app (Tauri/egui/Bevy family) doing what the TUI does, faster and better.                            | #1072      |
+| Title                         | Status  | Intent                                                                               | Links      |
+| ----------------------------- | ------- | ------------------------------------------------------------------------------------ | ---------- |
+| Presentation capability tiers | planned | Terminal classes detected in-band; tiered rendering instead of one assumed terminal. | F13.4 #786 |
+| Kitty keyboard protocol       | planned | Disambiguated keys on the raw input path, so worlds can tell key combinations apart. | F13.5 #787 |
+| Native TUI client             | idea    | A ratatui TUI on the shell contract, with a custom efficient presentation protocol.  | #1071      |
+| Native GUI client             | idea    | A full GUI app (Tauri/egui/Bevy family) doing what the TUI does, faster and better.  | #1072      |
 
 ## Later — Phase 14: hosted, federated, local-first (plan of record #6312)
 

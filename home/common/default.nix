@@ -7,6 +7,7 @@
   ...
 }:
 let
+  opencodeServerPort = 13420;
   # Local proxy ports, each defined ONCE. Each value flows to the systemd
   # user service that binds it, to the shell session (<NAME>_PROXY_PORT),
   # and — for the proxies opencode talks to — into opencode.jsonc's
@@ -52,7 +53,7 @@ let
   atlasSearchPort = 18760;
   # The atlas-search package (pkgs/atlas-search), built with the
   # toolchain pinned by its own rust-toolchain.toml (channel
-  # 1.99.0) through the fleet's rust-overlay lock — the pkgs/id
+  # 1.99.1) through the fleet's rust-overlay lock — the pkgs/id
   # pattern (cf. rustToolchain in nixos/environment/default.nix).
   # Used as the atlas-search unit's ExecStart below and, since
   # the step-6 cutover (#5356), as a home package below so the
@@ -135,6 +136,10 @@ let
   # Commander" plugin. See pkgs/desktop-commander for the packaging; the
   # desktop-commander-remote unit below keeps the device agent online.
   desktop-commander = pkgs.callPackage ../../pkgs/desktop-commander { };
+  # supergateway: the stdio <-> streamable-HTTP bridge that fronts the
+  # packaged Desktop Commander for the self-hosted endpoint (#13404).
+  # See pkgs/supergateway; the desktop-commander-bridge unit below runs it.
+  supergateway = pkgs.callPackage ../../pkgs/supergateway { };
   # Hidden-shell auth hook (1Password service account, Cloudflare).
   # Same derivation nixos/agent-auth uses, so the BASH_ENV paths agree.
   agent-shell-env = pkgs.callPackage ../../pkgs/agent-shell-env { };
@@ -1068,6 +1073,37 @@ in
     Install.WantedBy = [ "default.target" ];
   };
 
+  # Self-hosted Desktop Commander endpoint (#13404): the local half of
+  # commander.security.cab. supergateway wraps the packaged Desktop
+  # Commander (stdio) as a streamable-HTTP MCP server on
+  # 127.0.0.1:8931/mcp; the sandbox-link Cloudflare Tunnel carries it to
+  # the bridge door (commander-link.security.cab, Access service-token
+  # only), where the desktop-commander Worker picks it up. This unit
+  # replaces nothing: the vendor device agent above stays until the
+  # self-hosted endpoint is verified and is stood down separately.
+  #
+  # PATH matters for the same reason it does in
+  # desktop-commander-remote above: the wrapped server exists to run
+  # arbitrary user commands, so it needs the real user PATH.
+  systemd.user.services.desktop-commander-bridge = {
+    Unit = {
+      Description = "Desktop Commander local MCP bridge (stdio to streamable HTTP, 127.0.0.1:8931)";
+      After = [ "network-online.target" ];
+      Wants = [ "network-online.target" ];
+    };
+    Service = {
+      ExecStart = toString (
+        pkgs.writeShellScript "desktop-commander-bridge-start" ''
+          export PATH="/run/current-system/sw/bin:/run/wrappers/bin:/etc/profiles/per-user/$USER/bin:$HOME/.nix-profile/bin:$PATH"
+          exec ${supergateway}/bin/supergateway --stdio ${desktop-commander}/bin/desktop-commander --outputTransport streamableHttp --streamableHttpPath /mcp --port 8931 --host 127.0.0.1 --stateful --healthEndpoint /healthz --logFormat json
+        ''
+      );
+      Restart = "on-failure";
+      RestartSec = 5;
+    };
+    Install.WantedBy = [ "default.target" ];
+  };
+
   # ── Service cascade (2026-11-03) ─────────────────────────────────
   # The three standing services are defined by the fleet's layered
   # modules now, not by hand-rolled units in this file:
@@ -1173,6 +1209,23 @@ in
   # Home Manager still reloads the unit; the activation below owns build
   # changes explicitly, using only the serving package's store path as key.
   systemd.user.services.opencode.Unit."X-RestartIfChanged" = false;
+  # The package launcher forwards TERM from the systemd main process to the
+  # serving child. With the default control-group kill mode, systemd also
+  # signals that child directly, so one stop becomes two TERM deliveries and
+  # the fork's second-TERM drain escape ends the grace window early (#10639).
+  # Signal only the launcher; it forwards exactly one TERM to the child.
+  systemd.user.services.opencode.Service.KillMode = "process";
+  # Keep the listening port outside the server process so it survives a
+  # service handover. The OpenCode fork adopts systemd's fd 3 via
+  # LISTEN_FDS/LISTEN_PID; the socket is enabled through sockets.target.
+  systemd.user.sockets.opencode = {
+    Unit.Description = "OpenCode server listener (handover-safe)";
+    Socket = {
+      ListenStream = "127.0.0.1:${toString opencodeServerPort}";
+      Service = "opencode.service";
+    };
+    Install.WantedBy = [ "sockets.target" ];
+  };
   home.activation.opencodeDeploy = lib.hm.dag.entryAfter [ "reloadSystemd" ] ''
     run ${pkgs.bash}/bin/bash ${./opencode-deploy.sh} \
       '${opencodeCascade}' \

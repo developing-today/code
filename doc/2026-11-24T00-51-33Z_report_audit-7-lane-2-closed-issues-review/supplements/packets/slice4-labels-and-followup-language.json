@@ -1,0 +1,64 @@
+{
+  "title": "AUDIT-7 Lane 2 slice 4: no-label backlog (490) + promised-follow-up verification sample",
+  "body": "490 issues closed in the window carry no labels at all, and 1,898 bodies contain follow-up language ('follow-up', 'separate issue', 'deferred', 'out of scope', 'later'). Tasks: (a) apply the repos' existing label taxonomy to the 490 unlabelled closed issues (type/area labels as the taxonomy provides; note additions on #13878 for Lane 7 coordination); (b) verify a structured sample of the follow-up-language set \u2014 every issue whose body explicitly promises a separate/follow-up issue \u2014 and file any promised follow-up that does not exist.",
+  "priority": 40,
+  "dedupe_key": "repo-health:v1:slice:developing-today/code:issue:13878:slice-4",
+  "payload": {
+    "schema": "repo-task/v1",
+    "kind": "feature_slice",
+    "repo": "developing-today/code",
+    "queue": "repo-health-code-pilot",
+    "slice": {
+      "name": "slice4-labels-and-followup-language",
+      "kind": "closed-issues-review",
+      "tracking_issue": 13878,
+      "umbrella_issue": 13871,
+      "scope_summary": "490 issues closed in the window carry no labels at all, and 1,898 bodies contain follow-up language ('follow-up', 'separate issue', 'deferred', 'out of scope', 'later'). Tasks: (a) apply the repos' existing label taxonomy to the 490 unlabelled closed issues (type/area labels as the taxonomy provides; note additions on #13878 for Lane 7 coordination); (b) verify a structured sample of the follow-up",
+      "parent_issue": 13878,
+      "number": 4,
+      "criterion": "Every in-scope closed issue has a recorded verdict on tracking issue #13878 (clean / reopened+why / follow-up filed+link / labels added), from a fresh full read (body + comments per_page=100, count-confirmed) via fleet gh.",
+      "done_check": "Comment on #13878 lists every in-scope issue number with its verdict and links to any reopened/filed items; no in-scope issue is unaccounted for.",
+      "owned_paths": ["doc/"]
+    },
+    "issue": {
+      "number": 13878,
+      "url": "https://github.com/developing-today/code/issues/13878",
+      "title": "AUDIT-7 Lane 2 \u2014 Closed-Issues Review (past month, since 2026-10-23)",
+      "state_checked_at": "2026-11-23T23:58:00Z"
+    },
+    "problem": "490 issues closed in the window carry no labels at all, and 1,898 bodies contain follow-up language ('follow-up', 'separate issue', 'deferred', 'out of scope', 'later'). Tasks: (a) apply the repos' existing label taxonomy to the 490 unlabelled closed issues (type/area labels as the taxonomy provides; note additions on #13878 for Lane 7 coordination); (b) verify a structured sample of the follow-up-language set \u2014 every issue whose body explicitly promises a separate/follow-up issue \u2014 and file any promised follow-up that does not exist.",
+    "evidence": [
+      "https://github.com/developing-today/code/issues/13878",
+      "Counts from full-corpus triage of all 8,161 closed issues (fleet gh search dump, bodies+labels machine-read)."
+    ],
+    "acceptance": [
+      "490 unlabelled closed issues labelled or explicitly recorded as no-fitting-label on #13878.",
+      "Every explicit follow-up promise in the sample has either a link to the existing follow-up issue (added as a comment) or a newly filed follow-up, linked on #13878."
+    ],
+    "tests": [
+      "Re-read each in-scope issue fresh via fleet gh api (comments per_page=100, count-confirmed) before acting; record the verdict per issue on #13878."
+    ],
+    "scope": {
+      "include": [
+        "Label the 490 no-label closed issues per existing taxonomy",
+        "Verify explicit follow-up promises and file missing follow-ups"
+      ],
+      "exclude": ["Open issues' labels (Lane 7 stray-work scope)", "Not_planned/duplicate adjudication (slices 1-2)"]
+    },
+    "risk": {
+      "level": "low",
+      "flags": ["audit", "read-mostly"]
+    },
+    "priority_reason": "AUDIT-7 lane 2 remainder: exhaustive closed-issue review ordered 2026-11-23; slices exceed one session.",
+    "timebox_minutes": 240,
+    "max_attempts": 6,
+    "context_refs": [
+      "https://github.com/developing-today/code/issues/13871",
+      "https://github.com/developing-today/code/issues/13878"
+    ],
+    "dedupe": {
+      "checked_at": "2026-11-23T23:58:00Z",
+      "basis": "Singular ownership: AUDIT-7 Lane 2 owns closed-issue review; umbrella #13871 checked, no other lane claimed these slices (Lane 4 owns the PR side only, Lane 7 owns stray-work labelling outside this scope). Dedupe key per slice pattern for parent tracking issue #13878."
+    }
+  }
+}

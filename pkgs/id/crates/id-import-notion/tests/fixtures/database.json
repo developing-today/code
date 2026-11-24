@@ -2,8 +2,5 @@
   "object": "database",
   "id": "db-alpha",
   "parent": { "type": "workspace", "workspace": true },
-  "data_sources": [
-    { "id": "source-alpha", "name": "Tasks" },
-    { "id": "source-beta", "name": "Archived tasks" }
-  ]
+  "data_sources": [{ "id": "source-alpha", "name": "Tasks" }, { "id": "source-beta", "name": "Archived tasks" }]
 }

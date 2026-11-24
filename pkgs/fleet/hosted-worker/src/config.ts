@@ -12,7 +12,10 @@
 // held as bytes, and never logged or reported. Malformed material is a
 // configuration failure — that piece parses to null and the stamp path
 // fails closed (see stamp-sig.ts), exactly like a malformed tenancy
-// fixture.
+// fixture. The fleet App material for the hosted GitHub rotation
+// (#12585) parses the same way: malformed → null → the fixture writer
+// stands in locally and no real GitHub write is attempted with bad
+// material.
 
 import type { RpValidationConfig } from "./jwt.ts";
 import { parseTenancyFixture, type TenancyDirectory } from "./tenancy.ts";
@@ -35,6 +38,56 @@ export interface HostedEnv {
    * base64url raw Ed25519 public key. Several ids = the rotation
    * window; both editions' authorities appear here side by side. */
   STAMP_VERIFY_KEYS_JSON?: string;
+  /** Fleet App id (#12585): the hosted rotation point's App. */
+  GITHUB_APP_ID?: string;
+  /** Fleet App private key (#12585): base64url PKCS#8 RSA key. A
+   * secret, referenced by name only; never logged. (GitHub issues
+   * the key as a PEM download; provisioning converts it to PKCS#8 —
+   * the only RSA form WebCrypto imports.) */
+  GITHUB_APP_PRIVATE_KEY_PKCS8?: string;
+  /** Fleet App installation ids (#12585), comma-separated, in
+   * rotation order: rate-limit / permission refusals fail over to
+   * the next installation (the native #8887 rule). */
+  GITHUB_APP_INSTALLATION_IDS?: string;
+  /** GitHub webhook secret (#12590): the shared secret GitHub signs
+   * deliveries with (X-Hub-Signature-256, HMAC-SHA256). A secret,
+   * referenced by name only; never logged. Absent → the webhook
+   * receiver fails closed (503), like unconfigured auth. */
+  GITHUB_WEBHOOK_SECRET?: string;
+  /** Ingestion scope (#12590): the repos the scheduled sweeper
+   * re-scans, comma-separated owner/name — "in-scope repos" in
+   * #9060 §16's terms (all repos the fleet works in). The sweep
+   * route may name repos per request instead; this is the
+   * scheduled run's standing scope. */
+  INGESTION_REPOS?: string;
+  /** Metadata DB id (#12592): the one database a direct-read token
+   * may be bound to. A plain identifier, not a secret. */
+  METADATA_DB_ID?: string;
+  /** Queue DB id (#12592): named in configuration so the direct-read
+   * scope can refuse it by name — direct access to the queue DB is
+   * forbidden (design §3.3 rule 2). A plain identifier. */
+  QUEUE_DB_ID?: string;
+  /** Direct-read mint signing key (#12592): base64url PKCS#8 Ed25519
+   * private key. A secret, referenced by name only; never logged. */
+  DIRECT_READ_SIGNING_KEY_PKCS8?: string;
+  /** Key id the direct-read mint signs under ([A-Za-z0-9_-]+). */
+  DIRECT_READ_SIGNING_KEY_ID?: string;
+  /** Direct-read verifier keys (#12592): JSON object mapping key id
+   * to a base64url raw Ed25519 public key. */
+  DIRECT_READ_VERIFY_KEYS_JSON?: string;
+  /** Direct-read TTL cap in seconds (#12592): a token's requested
+   * lifetime may not exceed it. Defaults to 3600 when unset. */
+  DIRECT_READ_MAX_TTL_SECONDS?: string;
+  /** The message bridge, by service binding (#14373): the bridge
+   * door calls it with the PM credential below. A binding, not a
+   * value: present when the deployed shape carries it (wrangler.toml
+   * declares it; local dev and tests inject their own or none). */
+  BRIDGE?: { fetch(request: Request): Promise<Response> };
+  /** The PM stack's bridge credential (#14373): minted on the bridge
+   * for service:pm-stack, held as a Worker secret. A secret,
+   * referenced by name only; never logged. Absent or short → the
+   * bridge door fails closed (503). */
+  BRIDGE_PM_TOKEN?: string;
 }
 
 /** Stamp signing key material: the parsed key, bytes only. */
@@ -51,6 +104,28 @@ export interface StampConfig {
   verifyKeys: ReadonlyMap<string, Uint8Array> | null;
 }
 
+/** Direct-read configuration for the direct-Turso Metadata read path
+ * (#12592; design §3.3): the two DB ids the scope distinguishes, the
+ * mint's signing material, the verifier keys, and the TTL cap. Null
+ * as a whole when any piece is missing or malformed — minting then
+ * fails closed and inspection refuses everything. */
+export interface DirectReadConfig {
+  metadataDbId: string;
+  queueDbId: string;
+  signing: StampSigningMaterial;
+  verifyKeys: ReadonlyMap<string, Uint8Array>;
+  maxTtlSeconds: number;
+}
+
+/** Fleet App configuration for the hosted rotation point (#12585):
+ * the parsed App id, private-key bytes, and installation ids in
+ * rotation order. */
+export interface GitHubAppConfig {
+  appId: string;
+  privateKeyPkcs8: Uint8Array;
+  installationIds: number[];
+}
+
 export interface HostedConfig {
   version: string;
   /** RP validation config, or null when no issuer is configured. */
@@ -61,6 +136,28 @@ export interface HostedConfig {
   authConfigured: boolean;
   /** Stamp signature key material (#12586), independent of auth. */
   stamp: StampConfig;
+  /** Fleet App rotation configuration (#12585), or null when no
+   * (valid) App material is set — the Worker then wires the fixture
+   * GitHub writer (local/dev semantics, src/github.ts). */
+  github: GitHubAppConfig | null;
+  /** GitHub webhook secret (#12590), or null when unset/empty —
+   * the ingestion receiver then fails closed (503). */
+  webhookSecret: string | null;
+  /** The sweeper's standing repo scope (#12590), parsed from
+   * INGESTION_REPOS: owner/name entries only, in listed order.
+   * Empty when unconfigured — the scheduled sweep then has
+   * nothing to scan and the sweep route must be given repos. */
+  ingestionRepos: string[];
+  /** Direct-Turso read-path configuration (#12592), or null when no
+   * (valid) DB ids / mint material are set. Independent of auth,
+   * like the stamp material. */
+  directRead: DirectReadConfig | null;
+  /** The PM bridge credential (#14373), or null when unset or too
+   * short to be one — the bridge door then fails closed (503). The
+   * value is held only to be presented to the bridge; it is never
+   * logged or reported. Independent of auth, like the webhook
+   * secret. */
+  bridge: { token: string } | null;
 }
 
 /** Stamp key ids name a key inside the stamp_sig value, so they may
@@ -89,11 +186,7 @@ function parseStampConfig(env: HostedEnv): StampConfig {
   let signing: StampSigningMaterial | null = null;
   if (env.STAMP_SIGNING_KEY_PKCS8 && env.STAMP_SIGNING_KEY_ID) {
     const pkcs8 = b64urlToBytesOrNull(env.STAMP_SIGNING_KEY_PKCS8);
-    if (
-      pkcs8 !== null &&
-      pkcs8.length === ED25519_PKCS8_BYTES &&
-      isValidStampKeyId(env.STAMP_SIGNING_KEY_ID)
-    ) {
+    if (pkcs8 !== null && pkcs8.length === ED25519_PKCS8_BYTES && isValidStampKeyId(env.STAMP_SIGNING_KEY_ID)) {
       signing = { keyId: env.STAMP_SIGNING_KEY_ID, pkcs8 };
     }
     // Malformed signing material stays null: signing fails closed.
@@ -128,6 +221,26 @@ function parseStampConfig(env: HostedEnv): StampConfig {
   return { signing, verifyKeys };
 }
 
+function parseGitHubAppConfig(env: HostedEnv): GitHubAppConfig | null {
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY_PKCS8 || !env.GITHUB_APP_INSTALLATION_IDS) {
+    return null;
+  }
+  if (!/^[0-9]+$/.test(env.GITHUB_APP_ID)) return null;
+  const pkcs8 = b64urlToBytesOrNull(env.GITHUB_APP_PRIVATE_KEY_PKCS8);
+  // A PKCS#8 RSA key is far larger than any Ed25519 material; the
+  // floor only rejects obvious garbage — the real check is the
+  // WebCrypto import at first use, which fails closed (502).
+  if (pkcs8 === null || pkcs8.length < 256) return null;
+  const installationIds: number[] = [];
+  for (const part of env.GITHUB_APP_INSTALLATION_IDS.split(",")) {
+    const trimmed = part.trim();
+    if (!/^[0-9]+$/.test(trimmed)) return null;
+    installationIds.push(Number(trimmed));
+  }
+  if (installationIds.length === 0) return null;
+  return { appId: env.GITHUB_APP_ID, privateKeyPkcs8: pkcs8, installationIds };
+}
+
 export function configFromEnv(env: HostedEnv): HostedConfig {
   const rp: RpValidationConfig | null = env.RP_ISSUER
     ? {
@@ -155,5 +268,84 @@ export function configFromEnv(env: HostedEnv): HostedConfig {
     tenancy,
     authConfigured: rp !== null && tenancy !== null,
     stamp: parseStampConfig(env),
+    github: parseGitHubAppConfig(env),
+    webhookSecret: env.GITHUB_WEBHOOK_SECRET && env.GITHUB_WEBHOOK_SECRET !== "" ? env.GITHUB_WEBHOOK_SECRET : null,
+    ingestionRepos: parseIngestionRepos(env.INGESTION_REPOS),
+    directRead: parseDirectReadConfig(env),
+    bridge: parseBridgeConfig(env),
+  };
+}
+
+/** The PM bridge credential (#14373): present only when the secret
+ * is set and long enough to be a bridge credential (the bridge's own
+ * minimum is 32 characters); anything shorter is treated as unset,
+ * so a truncated paste fails closed instead of sending garbage. */
+function parseBridgeConfig(env: HostedEnv): { token: string } | null {
+  const token = env.BRIDGE_PM_TOKEN?.trim();
+  return token && token.length >= 32 ? { token } : null;
+}
+
+/** The sweeper's repo scope: comma-separated owner/name entries.
+ * A malformed entry is dropped, not fatal — the residue is a
+ * smaller scope, and an all-malformed value parses to the empty
+ * (unconfigured) scope, whose sweep fails closed like every
+ * unconfigured dependency. */
+function parseIngestionRepos(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const out: string[] = [];
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(trimmed) && !out.includes(trimmed)) {
+      out.push(trimmed);
+    }
+  }
+  return out;
+}
+
+/** Default cap on a direct-read token's lifetime (design §3.3:
+ * tokens are expiring; the cap keeps "expiring" short). */
+export const DEFAULT_DIRECT_READ_MAX_TTL_SECONDS = 3600;
+
+/** Parse the direct-read configuration (#12592). Every piece is
+ * required and any malformed piece nulls the whole: a half-configured
+ * mint that guessed a DB id or a key would be a fail-open scope. The
+ * metadata and queue DB ids must be distinct — a scope that cannot
+ * tell its one allowed DB from the forbidden one is no scope. */
+function parseDirectReadConfig(env: HostedEnv): DirectReadConfig | null {
+  const metadataDbId = env.METADATA_DB_ID?.trim();
+  const queueDbId = env.QUEUE_DB_ID?.trim();
+  if (!metadataDbId || !queueDbId || metadataDbId === queueDbId) return null;
+  if (!env.DIRECT_READ_SIGNING_KEY_PKCS8 || !env.DIRECT_READ_SIGNING_KEY_ID) return null;
+  if (!isValidStampKeyId(env.DIRECT_READ_SIGNING_KEY_ID)) return null;
+  const pkcs8 = b64urlToBytesOrNull(env.DIRECT_READ_SIGNING_KEY_PKCS8);
+  if (pkcs8 === null || pkcs8.length !== ED25519_PKCS8_BYTES) return null;
+  if (!env.DIRECT_READ_VERIFY_KEYS_JSON) return null;
+  let verifyKeys: Map<string, Uint8Array>;
+  try {
+    const parsed: unknown = JSON.parse(env.DIRECT_READ_VERIFY_KEYS_JSON);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    verifyKeys = new Map();
+    for (const [keyId, text] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!isValidStampKeyId(keyId) || typeof text !== "string") return null;
+      const raw = b64urlToBytesOrNull(text);
+      if (raw === null || raw.length !== ED25519_PUBLIC_KEY_BYTES) return null;
+      verifyKeys.set(keyId, raw);
+    }
+  } catch {
+    return null;
+  }
+  if (verifyKeys.size === 0) return null;
+  let maxTtlSeconds = DEFAULT_DIRECT_READ_MAX_TTL_SECONDS;
+  if (env.DIRECT_READ_MAX_TTL_SECONDS !== undefined) {
+    if (!/^[0-9]+$/.test(env.DIRECT_READ_MAX_TTL_SECONDS)) return null;
+    maxTtlSeconds = Number(env.DIRECT_READ_MAX_TTL_SECONDS);
+    if (!Number.isSafeInteger(maxTtlSeconds) || maxTtlSeconds <= 0) return null;
+  }
+  return {
+    metadataDbId,
+    queueDbId,
+    signing: { keyId: env.DIRECT_READ_SIGNING_KEY_ID, pkcs8 },
+    verifyKeys,
+    maxTtlSeconds,
   };
 }

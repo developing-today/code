@@ -209,7 +209,8 @@ pub fn build_reference_index(
 /// be the snapshot from startup, or a removed member would keep fetching and a new
 /// document would stay unreferenced until a restart. The producer re-folds and calls
 /// [`RefreshingWorlds::refresh`]; each decision then reads the latest fold. A poisoned
-/// lock fails closed, like every other gate refusal.
+/// lock fails closed, like every other gate refusal. Rebuilds install through
+/// [`RefreshingWorlds::try_refresh`], so a failed rebuild keeps the last good fold.
 #[derive(Debug)]
 pub struct RefreshingWorlds {
     inner: RwLock<FoldedWorlds>,
@@ -227,6 +228,25 @@ impl RefreshingWorlds {
     pub fn refresh(&self, next: FoldedWorlds) {
         if let Ok(mut current) = self.inner.write() {
             *current = next;
+        }
+    }
+
+    /// Installs a rebuilt fold, or keeps the current one when the rebuild
+    /// failed (#13821).
+    ///
+    /// A rebuild reads live sources — the group log, the event store — and
+    /// any of those reads can fail transiently. The fold the gate already
+    /// holds is the last one built from a complete read, so a failed rebuild
+    /// must not replace it: the error goes back to the caller to log, and
+    /// every later decision keeps reading the previous fold until a rebuild
+    /// succeeds.
+    pub fn try_refresh<E>(&self, rebuilt: Result<FoldedWorlds, E>) -> Result<(), E> {
+        match rebuilt {
+            Ok(next) => {
+                self.refresh(next);
+                Ok(())
+            }
+            Err(error) => Err(error),
         }
     }
 }
@@ -279,6 +299,7 @@ mod tests {
                 author: founder,
                 after: Vec::new(),
                 group: None,
+                at: None,
                 body: Body::Create(Create {
                     template: Template::Custom,
                     policy: Policy::default(),
@@ -291,6 +312,7 @@ mod tests {
                 author: founder,
                 after: vec![create],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member,
                     role: Role::Read,
@@ -303,6 +325,7 @@ mod tests {
                 author: founder,
                 after: vec![add],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Remove {
                     member,
                     mode: crate::groups::RemoveMode::Revoke,
@@ -389,6 +412,7 @@ mod tests {
                 author: founder,
                 after: Vec::new(),
                 group: None,
+                at: None,
                 body: create(),
             },
             Event {
@@ -396,6 +420,7 @@ mod tests {
                 author: founder,
                 after: vec![create_a],
                 group: Some(create_a),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member: member_a,
                     role: Role::Read,
@@ -406,6 +431,7 @@ mod tests {
                 author: founder,
                 after: vec![create_a, add_a],
                 group: None,
+                at: None,
                 body: create(),
             },
             Event {
@@ -413,6 +439,7 @@ mod tests {
                 author: founder,
                 after: vec![create_b, add_a],
                 group: Some(create_b),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member: member_b,
                     role: Role::Read,
@@ -470,6 +497,7 @@ mod tests {
                 author: founder,
                 after: Vec::new(),
                 group: None,
+                at: None,
                 body: Body::Create(Create {
                     template: Template::Custom,
                     policy: Policy::default(),
@@ -482,6 +510,7 @@ mod tests {
                 author: founder,
                 after: vec![create],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Add {
                     member: member_key,
                     role: crate::groups::Role::Read,
@@ -494,6 +523,7 @@ mod tests {
                 author: founder,
                 after: vec![add],
                 group: Some(create),
+                at: None,
                 body: Body::Member(MemberOp::Remove {
                     member: member_key,
                     mode: crate::groups::RemoveMode::Revoke,
@@ -534,5 +564,50 @@ mod tests {
             "a removed member loses fetch on the next request"
         );
         let _ = BTreeMap::<String, String>::new();
+    }
+
+    #[test]
+    fn failed_rebuild_keeps_the_previous_fold_until_a_successful_one() {
+        let member = id(2);
+        let (events, world) = group_events(member, false);
+        let projection = fold_group_events(&events).expect("the log folds");
+        let index = build_reference_index([(blob(7), world.clone())], |_| Vec::new());
+        let gate = RefreshingWorlds::new(FoldedWorlds::from_group_projection(projection, index));
+        let policy = BlobPolicy::default();
+        assert!(
+            decide(&gate, &policy, &member, &blob(7), Request::Fetch),
+            "a current member fetches a referenced blob"
+        );
+
+        // Every step serve's rebuild can fail at — opening the group log,
+        // folding it, reading the document references — reaches the gate as
+        // an `Err`; the previous fold must stay in force through each one
+        // (#13821).
+        for step in [
+            "cannot open group log",
+            "group log does not fold",
+            "cannot read document references",
+        ] {
+            let failed: Result<FoldedWorlds, &str> = Err(step);
+            assert!(gate.try_refresh(failed).is_err(), "the failure surfaces");
+            assert!(
+                decide(&gate, &policy, &member, &blob(7), Request::Fetch),
+                "a rebuild failing at {step} keeps the previous membership in force"
+            );
+        }
+
+        // A later successful rebuild that removes the member revokes the
+        // fetch, exactly as a direct refresh does.
+        let (events, world) = group_events(member, true);
+        let projection = fold_group_events(&events).expect("the log folds");
+        let index = build_reference_index([(blob(7), world)], |_| Vec::new());
+        let rebuilt: Result<FoldedWorlds, &str> =
+            Ok(FoldedWorlds::from_group_projection(projection, index));
+        gate.try_refresh(rebuilt)
+            .expect("a successful rebuild installs");
+        assert!(
+            !decide(&gate, &policy, &member, &blob(7), Request::Fetch),
+            "a removed member loses fetch once a rebuild succeeds"
+        );
     }
 }

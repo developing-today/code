@@ -15,6 +15,28 @@ mcpx ls
 mcpx tui
 ```
 
+### Fleet laptop to the VM
+
+From the fleet NixOS laptop, set the endpoint for just one command:
+
+```sh
+MCPX_DAEMON_ENDPOINT=ssh://user@100.99.113.103 mcpx ls
+```
+
+This discovers the VM's MCP servers through its existing mcpx daemon. To make
+a real MCP call, use the same endpoint with `mcpx exec`, for example:
+
+```sh
+MCPX_DAEMON_ENDPOINT=ssh://user@100.99.113.103 \
+  mcpx exec 'console.log(await tools.codedb.status({}))'
+```
+
+The laptop must already have `mcpx` installed and an SSH identity authorized
+for the VM's `user` account; no mcpx token, new credential, port opening or
+daemon reconfiguration is involved. `ssh -T -o BatchMode=yes
+user@100.99.113.103 mcpx stdio-proxy --help` is a useful transport preflight.
+The daemon stays on its Unix socket, and SSH provides the access boundary.
+
 The client runs your own `ssh` binary (`ssh -T -o BatchMode=yes buildbox
 mcpx stdio-proxy`) and speaks the daemon's HTTP API through it. Your ssh
 agent, `ssh_config`, `known_hosts`, jump hosts and `Match` rules are the
@@ -32,7 +54,7 @@ Details worth knowing:
 - `?sock=/run/user/1000/mcpx/daemon.sock` picks a specific remote daemon,
   for a host running more than one.
 - `user@` and `:port` work as in any ssh target:
-  `ssh://drew@buildbox:2222`.
+  `ssh://user@buildbox:2222`.
 - `BatchMode=yes` is set, so ssh never stops to ask for a password or a
   passphrase: an HTTP request has no terminal to answer on. Load the key in
   your agent, or use a key with no passphrase.
@@ -117,6 +139,32 @@ The short version:
 
 That runs `mcpx serve` on the remote host, so the daemon there is the one
 answering — again with no port and no credential beyond ssh.
+
+## 5. `tsnet://` — a daemon with a tailnet identity
+
+A daemon can join a tailnet as a node in its own right (#1967):
+it embeds a Tailscale node in the daemon process (tsnet), so it
+is reachable by its MagicDNS name from any other node on the
+tailnet — from another network, with no port forwarded and no
+public address. mcpx stays a pure-Go, `CGO_ENABLED=0` binary;
+the node is a library compiled in, not a sidecar to install.
+
+- The daemon's tailnet name is the `daemon.tsnet.hostname`
+  setting. Its node keys live in a state directory on the
+  daemon's machine, so the name survives restarts.
+- The Tailscale auth key comes from the `TS_AUTHKEY`
+  environment variable — never from a setting, on purpose: a
+  credential that cannot be written into a config file cannot
+  leak into a settings dump or a log either.
+- The listener serves on port 80, and a client names the
+  daemon as a `tsnet://` endpoint (`tsnet://<hostname>`). The
+  client builds its own tsnet dialer, so reaching the daemon
+  needs no system Tailscale install on the client side.
+- Startup waits for the node to authenticate and reach
+  Running, bounded by the `daemon.tsnetUpTimeout` setting: a
+  daemon whose key has expired or been revoked fails its
+  startup honestly instead of reporting success while its
+  identity route never joins the tailnet.
 
 ## What a remote endpoint is not
 

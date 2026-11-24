@@ -27,11 +27,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Push-to-main runs are keyed by run_id so every merged tree gets
-  # its own completed run (the scripts-test/nix-ci contract); manual
-  # dispatch runs share a per-ref group so a new dispatch supersedes
-  # the stale one. (Main-only CI policy: no PR runs exist.)
-  group: fleet-rust-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  # This workflow has no push trigger (nightly schedule +
+  # workflow_dispatch only), so every run shares a per-ref group and
+  # a new run supersedes the stale one.
+  group: fleet-rust-tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

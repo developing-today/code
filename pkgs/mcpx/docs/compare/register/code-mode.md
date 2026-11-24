@@ -266,7 +266,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
   register's AUTH-25 and AUTH-24.
 - **Sources.** `.lootbox/src/lib/constants.ts:78` `export const DEFAULT_PERMISSION_FLAGS: readonly string[] =
 ["--allow-net"];`; `.lootbox/src/lib/get_config.ts:485`; `internal/runner/runner.go:47` "The default is wide open.";
-  `ASSESSMENT.md:73` "deno run --allow-all --reload=http://localhost:PORT/client.ts --no-check=remote <tmpfile>"
+  `ASSESSMENT.md:73` "deno run --allow-all --reload=http://localhost:PORT/client.ts --no-check=remote &lt;tmpfile&gt;"
 
 ## CODE-09 Cloudflare blocks or proxies all outbound network
 
@@ -560,7 +560,7 @@ input.entry.tool.timeout` (`v1:packages/opencode/src/tool/code-mode.ts:154-158`)
   for writes, which also need a permission.
 - **Sources.** `.lootbox/src/lib/lootbox-cli/exec.ts:40` `ws.send(JSON.stringify({ script, id }));`;
   `.lootbox/src/lib/execute_llm_script.ts:20`; `nix:configuration.nix:742` `WorkingDirectory =
-"/Users/drewry.pope/.config/nix";`
+"/Users/<user>/.config/nix";`
 
 ## CODE-22 Caller chooses local or remote execution
 

@@ -150,12 +150,11 @@ pub struct MergeManifest {
 /// database reports `_schema_version = 1` and exactly
 /// [`STAGE_V1_TABLES`].
 pub fn provision_staging_db(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Error::backend(format!("staging: creating {}: {e}", parent.display()))
-            })?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::backend(format!("staging: creating {}: {e}", parent.display())))?;
     }
     let conn = open(path)?;
     let existing = user_tables(&conn)?;
@@ -201,7 +200,11 @@ pub fn user_tables(conn: &Connection) -> Result<BTreeSet<String>> {
 
 /// Assert a database is exactly a v1 staging DB: `_schema_version = 1`
 /// and the exact [`STAGE_V1_TABLES`] table set. This is the invariant
-/// the schema oracle checks.
+/// the schema oracle checks. One deliberate consequence: a promoted
+/// unit's DB no longer satisfies it — promotion stamps a sixth
+/// table (`atlas_manifest`) into the unit DB, which is what closes
+/// it to further `stage_artifact` writes (see
+/// [`crate::aggregate`]'s step 4; #13284).
 pub fn check_stage_schema(conn: &Connection) -> Result<()> {
     let version = schema_version(conn)?;
     if version != STAGE_SCHEMA_VERSION {
@@ -257,13 +260,15 @@ pub struct ArtifactEntry {
     pub text: String,
 }
 
-/// One staged item, read back from a staging DB ([`list_staged_items`]).
+/// One staged item, read back from a staging DB ([`list_staged_items`]),
+/// with its full text and chunk count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StagedItem {
     pub id: i64,
     pub unit_id: String,
     pub kind: String,
     pub source: Option<String>,
+    pub text: String,
     pub sensitivity: String,
     pub created_at: String,
     pub meta: Option<String>,
@@ -327,7 +332,7 @@ pub fn chunk_artifact_text(text: &str) -> Vec<String> {
     chunks
 }
 
-fn sha256_hex(text: &str) -> String {
+pub(crate) fn sha256_hex(text: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(text.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -669,7 +674,7 @@ pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec
     check_stage_schema(conn)?;
     let mut stmt = conn
         .prepare(
-            "SELECT i.id, i.unit_id, i.kind, i.source, i.sensitivity, i.created_at, i.meta, \
+            "SELECT i.id, i.unit_id, i.kind, i.source, i.text, i.sensitivity, i.created_at, i.meta, \
              (SELECT COUNT(*) FROM chunks_raw c WHERE c.item_id = i.id) \
              FROM items i WHERE (?1 IS NULL OR i.unit_id = ?1) ORDER BY i.id",
         )
@@ -681,10 +686,11 @@ pub fn list_staged_items(conn: &Connection, unit_id: Option<&str>) -> Result<Vec
                 unit_id: r.get(1)?,
                 kind: r.get(2)?,
                 source: r.get(3)?,
-                sensitivity: r.get(4)?,
-                created_at: r.get(5)?,
-                meta: r.get(6)?,
-                chunk_count: r.get(7)?,
+                text: r.get(4)?,
+                sensitivity: r.get(5)?,
+                created_at: r.get(6)?,
+                meta: r.get(7)?,
+                chunk_count: r.get(8)?,
             })
         })
         .map_err(|e| Error::backend(format!("staging: listing items: {e}")))?;
@@ -715,12 +721,12 @@ impl Registry {
     /// Open (creating if needed) a registry at `path` and ensure its
     /// v1 table exists.
     pub fn open(path: &Path) -> Result<Registry> {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| {
-                    Error::backend(format!("registry: creating {}: {e}", parent.display()))
-                })?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::backend(format!("registry: creating {}: {e}", parent.display()))
+            })?;
         }
         let conn = open(path)?;
         ensure_registry(&conn)?;
@@ -1216,7 +1222,7 @@ fn ensure_registry(conn: &Connection) -> Result<()> {
         .map_err(|e| Error::backend(format!("registry: applying v1 DDL: {e}")))
 }
 
-fn open(path: &Path) -> Result<Connection> {
+pub(crate) fn open(path: &Path) -> Result<Connection> {
     Connection::open(path)
         .map_err(|e| Error::backend(format!("staging: opening {}: {e}", path.display())))
 }

@@ -1,6 +1,6 @@
 # github-backup
 
-Mirrors of Drew's GitHub estate, kept on the laptop, updatable forever,
+Mirrors of the user's GitHub estate, kept on the laptop, updatable forever,
 with a dedicated GitHub App for rate limits and webhook freshness.
 
 **This directory is the canonical home of the whole system** — scripts,
@@ -24,7 +24,7 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
 ## Design
 
 - **Scope (config.json):** all non-fork repos + forks under 500 MB across
-  17 owners, plus force-includes; 7 passive giants are excluded by Drew's
+  17 owners, plus force-includes; 7 passive giants are excluded by the user's
   ruling 2026-10-31 (upstream is their backup). Edsebooks (HTTP 451) and
   vertexinc (SAML) are recorded gaps, not silent misses.
 - **Pool/dedupe:** forks sharing an upstream are cloned with git
@@ -45,7 +45,7 @@ reconcile-YYYY-MM-DD.md  weekly sweep reports
   coalescing), so even total webhook loss degrades to daily freshness.
 - **Rate limits:** the App's installation tokens have their own pool
   (5,000/hr base, scaling with installed repos toward 12,500/hr),
-  separate from Drew's personal token that the fleet uses.
+  separate from the user's personal token that the fleet uses.
 - **Secrets:** by name only, in Bitwarden Secrets Manager — see
   `config.json` → `app.bitwarden_secret_names`. Values never enter this
   repo, the backup tree, or chat.

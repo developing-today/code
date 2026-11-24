@@ -1371,6 +1371,32 @@ class PersistedJobTimestampTest(unittest.TestCase):
             self.assertTrue(la.JOBS["interrupted-job"]["interrupted"])
             self.assertFalse(la.JOBS["plain-job"]["interrupted"])
 
+    def test_failed_final_meta_write_is_reported_not_silent(self):
+        # Issue #12195 (darwin-nix#2037): a failed final meta write was
+        # swallowed by a bare except OSError, so a finished job restored
+        # as interrupted with exit=null. Oracle: one stderr line naming
+        # the job and the OSError, and no exception escapes.
+        la = self._import_agent()
+        job = {
+            "id": "unwritable-job",
+            "cwd": "/",
+            "cmd_repr": "true",
+            "started_at": 100.0,
+            "ended_at": 150.0,
+            "exit": 0,
+            "state": "done",
+        }
+        with tempfile.TemporaryDirectory() as state_dir:
+            err = io.StringIO()
+            with (
+                patch.object(la, "STATE_DIR", Path(state_dir)),
+                patch.object(la.os, "replace", side_effect=OSError("disk full")),
+                contextlib.redirect_stderr(err),
+            ):
+                la._write_meta(job)
+            self.assertIn("cannot write meta for job unwritable-job", err.getvalue())
+            self.assertIn("disk full", err.getvalue())
+
     def test_invalid_state_skipped_healthy_kept(self):
         # Issue #1556: a persisted state outside {running, done} was
         # restored verbatim, so /jobs served a nonexistent state and
@@ -1624,6 +1650,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                 "exit",
                 "state",
                 "interrupted",
+                "ctx",
             ],
         )
         for row in la.RESTORE_FIELD_TABLE:
@@ -1631,6 +1658,8 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
         by_field = {row[0]: row for row in la.RESTORE_FIELD_TABLE}
         for field in ("exit", "cwd", "cmd"):
             self.assertIn("#1568", by_field[field][3])
+        self.assertIn("#14186", by_field["ctx"][1])
+        self.assertIn("#14186", by_field["ctx"][3])
 
     def test_malformed_matrix_rows_are_skipped(self):
         la = self._import_agent()
@@ -1812,6 +1841,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
             "exit": 3,
             "state": "done",
             "interrupted": False,
+            "ctx": {"FLEET_CTX_TASK_ID": "23046"},
             "_files": (),
         }
         with tempfile.TemporaryDirectory() as state_dir:
@@ -1829,6 +1859,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                 "exit",
                 "state",
                 "interrupted",
+                "ctx",
             ):
                 self.assertEqual(restored[key], job[key], key)
             with patch.object(la, "STATE_DIR", Path(state_dir)):
@@ -1843,6 +1874,7 @@ class PersistedJobRestoreContractTest(unittest.TestCase):
                     "cmd": "echo hi",
                     "started_at": 100.0,
                     "interrupted": False,
+                    "ctx": {"FLEET_CTX_TASK_ID": "23046"},
                     "duration_ms": 50000,
                     "stdout": "",
                     "stderr": "",

@@ -1423,7 +1423,7 @@ mod tests {
 
     const ABI_MD: &str = include_str!("../../../examples/roc-world/ABI.md");
 
-    const CONFORMANCE_MODULES: [(&str, &[u8]); 3] = [
+    const CONFORMANCE_MODULES: [(&str, &[u8]); 4] = [
         (
             "roc-counter",
             include_bytes!("../../../examples/roc-counter/counter.wasm"),
@@ -1431,6 +1431,10 @@ mod tests {
         (
             "rust-counter",
             include_bytes!("../../../examples/rust-counter/counter.wasm"),
+        ),
+        (
+            "zig-counter",
+            include_bytes!("../../../examples/zig-counter/counter.wasm"),
         ),
         (
             "tic-tac-toe",
@@ -2104,6 +2108,305 @@ mod tests {
         restored.restore(&snapshot).unwrap();
         let text = render(&mut restored);
         assert!(text.contains("cells=11 at11=65 out=63"), "{text}");
+    }
+
+    #[test]
+    fn checked_in_mind_map_replays_same_label_distinct_nodes() {
+        // Oracle: mind-map/same-label-distinct-nodes in app-vectors.json
+        // (revision b9d8177). Inputs carry the event tag stripped; the after
+        // states below are literal copies of the vector projections.
+        let wasm = include_bytes!("../../../examples/roc-mind-map/mind-map.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let nodes = |u_name: &str, u_parent: &str| -> serde_json::Value {
+            serde_json::json!([
+                {"id": "P", "name": "North", "parent": "R", "position": [0, 1]},
+                {"id": "Q", "name": "South", "parent": "R", "position": [2, 1]},
+                {"id": "R", "name": "World", "parent": null, "position": [1, 0]},
+                {"id": "U", "name": u_name, "parent": u_parent, "position": [0, 2]},
+                {"id": "V", "name": "Archive", "parent": "Q", "position": [2, 2]}
+            ])
+        };
+        // (input, expected outcome, expected after-state)
+        let steps = [
+            (
+                r#"{"kind":"AddCrossLink","source":"U","target":"V"}"#,
+                "linked",
+                serde_json::json!({
+                    "root": "R",
+                    "nodes": nodes("Archive", "P"),
+                    "cross_links": [{"from": "U", "to": "V"}]
+                }),
+            ),
+            (
+                r#"{"kind":"Reparent","id":"U","new_parent":"Q"}"#,
+                "moved",
+                serde_json::json!({
+                    "root": "R",
+                    "nodes": nodes("Archive", "Q"),
+                    "cross_links": [{"from": "U", "to": "V"}]
+                }),
+            ),
+            (
+                r#"{"kind":"Rename","id":"U","name":"Inbox"}"#,
+                "renamed",
+                serde_json::json!({
+                    "root": "R",
+                    "nodes": nodes("Inbox", "Q"),
+                    "cross_links": [{"from": "U", "to": "V"}]
+                }),
+            ),
+            (
+                r#"{"kind":"Reparent","id":"Q","new_parent":"U"}"#,
+                "refused-cycle",
+                serde_json::json!({
+                    "root": "R",
+                    "nodes": nodes("Inbox", "Q"),
+                    "cross_links": [{"from": "U", "to": "V"}]
+                }),
+            ),
+        ];
+        assert_eq!(records(&mut live)["nodes"], nodes("Archive", "P"));
+        for (input, outcome, after) in steps {
+            live.update(1, input.as_bytes()).unwrap();
+            let doc = records(&mut live);
+            assert_eq!(doc["outcome"], outcome, "{input}");
+            assert_eq!(doc["root"], after["root"], "{input}");
+            assert_eq!(doc["nodes"], after["nodes"], "{input}");
+            assert_eq!(doc["cross_links"], after["cross_links"], "{input}");
+        }
+        let snapshot = live.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut live));
+    }
+
+    #[test]
+    fn checked_in_burrow_replays_detour_to_exit() {
+        // Oracle: burrow/detour-to-exit in app-vectors.json (revision
+        // b9d8177). Inputs are the vector's own, event tags included: the
+        // tag is host journal deduplication metadata and the guest does not
+        // read it. The after states are literal copies of the vector
+        // projections; the outcome is asserted beside them.
+        let wasm = include_bytes!("../../../examples/roc-burrow/burrow.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let mut live = runner.instantiate(7).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let expected = |after: serde_json::Value, outcome: &str| -> serde_json::Value {
+            let mut doc = after;
+            doc["outcome"] = serde_json::json!(outcome);
+            doc
+        };
+        let view_rows = |world: &mut WorldInstance| -> Vec<String> {
+            let view = String::from_utf8(world.view().unwrap()).unwrap();
+            let Some(crate::world_presentation::WorldSurface::Screen(screen)) =
+                crate::world_presentation::parse_surface(&view).unwrap()
+            else {
+                panic!("the burrow view must be a structured screen: {view}");
+            };
+            screen
+                .cells
+                .chunks(usize::from(screen.width))
+                .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
+                .collect()
+        };
+        assert_eq!(
+            records(&mut live),
+            expected(
+                serde_json::json!({
+                    "digger": [0, 1],
+                    "soil": [[1, 1], [2, 1], [2, 2]],
+                    "cleared_count": 0,
+                    "phase": "digging"
+                }),
+                ""
+            )
+        );
+        // The semantic text grid: digger west, two soil cells and the rock
+        // on the middle row; the third soil and the exit on the bottom row.
+        let rows = view_rows(&mut live);
+        assert!(rows.iter().any(|row| row.contains("A s s #")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains(". . s X")), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.contains("soil left=3 cleared=0/3")),
+            "{rows:?}"
+        );
+        // (input, expected outcome, expected after-state)
+        let steps = [
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d1"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [1, 1],
+                    "soil": [[2, 1], [2, 2]],
+                    "cleared_count": 1,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d2"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [2, 1],
+                    "soil": [[2, 2]],
+                    "cleared_count": 2,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"E","event":"d3"}"#,
+                "blocked-rock",
+                serde_json::json!({
+                    "digger": [2, 1],
+                    "soil": [[2, 2]],
+                    "cleared_count": 2,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Dig","direction":"S","event":"d4"}"#,
+                "cleared",
+                serde_json::json!({
+                    "digger": [2, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "digging"
+                }),
+            ),
+            (
+                r#"{"kind":"Walk","direction":"E","event":"w1"}"#,
+                "escaped",
+                serde_json::json!({
+                    "digger": [3, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "escaped"
+                }),
+            ),
+        ];
+        for (input, outcome, after) in steps {
+            live.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut live), expected(after, outcome), "{input}");
+        }
+        // Escaped: the digger stands on the exit cell, no soil remains,
+        // and a further dig is refused with the state final.
+        let rows = view_rows(&mut live);
+        assert!(rows.iter().any(|row| row.contains(". . . A")), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.contains("soil left=0 cleared=3/3")),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("phase=escaped last=escaped")),
+            "{rows:?}"
+        );
+        live.update(1, br#"{"kind":"Dig","direction":"W","event":"d5"}"#)
+            .unwrap();
+        assert_eq!(
+            records(&mut live),
+            expected(
+                serde_json::json!({
+                    "digger": [3, 2],
+                    "soil": [],
+                    "cleared_count": 3,
+                    "phase": "escaped"
+                }),
+                "refused"
+            )
+        );
+    }
+
+    #[test]
+    fn checked_in_burrow_snapshot_restore_and_scope_distinctions() {
+        // The snapshot/restore half of the #13603 acceptance, plus the
+        // scope distinctions: host events never drive the guest, the
+        // view's presentation text is not domain state, and refusals the
+        // vector does not exercise still change nothing.
+        let wasm = include_bytes!("../../../examples/roc-burrow/burrow.wasm");
+        let runner = Sandbox::compile(wasm, SandboxLimits::default()).unwrap();
+        let records = |world: &mut WorldInstance| -> serde_json::Value {
+            serde_json::from_slice(&world.records().unwrap().unwrap()).unwrap()
+        };
+        let initial = serde_json::json!({
+            "digger": [0, 1],
+            "soil": [[1, 1], [2, 1], [2, 2]],
+            "cleared_count": 0,
+            "phase": "digging",
+            "outcome": ""
+        });
+
+        // Restore a snapshot into a new instance and compare the next
+        // accepted operations through the regular host.
+        let mut live = runner.instantiate(7).unwrap();
+        live.update(1, br#"{"kind":"Dig","direction":"E","event":"d1"}"#)
+            .unwrap();
+        live.update(1, br#"{"kind":"Dig","direction":"E","event":"d2"}"#)
+            .unwrap();
+        let snapshot = live.snapshot().unwrap().unwrap();
+        let mut restored = runner.instantiate(7).unwrap();
+        restored.restore(&snapshot).unwrap();
+        assert_eq!(records(&mut restored), records(&mut live));
+        assert_eq!(restored.view().unwrap(), live.view().unwrap());
+        assert_eq!(restored.snapshot().unwrap().unwrap(), snapshot);
+        for input in [
+            r#"{"kind":"Dig","direction":"E","event":"d3"}"#,
+            r#"{"kind":"Dig","direction":"S","event":"d4"}"#,
+            r#"{"kind":"Walk","direction":"E","event":"w1"}"#,
+        ] {
+            live.update(1, input.as_bytes()).unwrap();
+            restored.update(1, input.as_bytes()).unwrap();
+            assert_eq!(records(&mut restored), records(&mut live), "{input}");
+        }
+        assert_eq!(
+            records(&mut restored)["phase"],
+            serde_json::json!("escaped")
+        );
+
+        // A host (participant 0) delivery is not a player command.
+        let mut host_driven = runner.instantiate(7).unwrap();
+        host_driven
+            .update(0, br#"{"kind":"Dig","direction":"E","event":"d1"}"#)
+            .unwrap();
+        assert_eq!(records(&mut host_driven), initial);
+
+        // Records carry exactly the five domain keys: no grid glyphs, no
+        // status lines, no level constants.
+        let doc = records(&mut host_driven);
+        let mut keys: Vec<&str> = doc
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["cleared_count", "digger", "outcome", "phase", "soil"]
+        );
+        let text = doc.to_string();
+        assert!(!text.contains("soil left"), "{text}");
+        assert!(!text.contains("rock"), "{text}");
+
+        // Walking into uncleared soil and digging off the board edge are
+        // refusals that change nothing but the last outcome.
+        let mut refused = runner.instantiate(7).unwrap();
+        refused
+            .update(1, br#"{"kind":"Walk","direction":"E","event":"w0"}"#)
+            .unwrap();
+        let mut after = initial.clone();
+        after["outcome"] = serde_json::json!("blocked-soil");
+        assert_eq!(records(&mut refused), after);
+        refused
+            .update(1, br#"{"kind":"Dig","direction":"W","event":"d0"}"#)
+            .unwrap();
+        after["outcome"] = serde_json::json!("blocked-edge");
+        assert_eq!(records(&mut refused), after);
     }
 
     #[test]

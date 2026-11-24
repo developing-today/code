@@ -20,10 +20,22 @@
 //   doors[]      — the component-C front doors of design §3.1 and their
 //                  skeleton state.
 //
-// Skeleton truth: the route modules for the hosted doors are compiled
-// in, but no door carries business logic in this slice, so no native
-// domain is available yet and both capability lists are empty. Each
-// filling issue flips its domain to available as it lands.
+// Truth, kept current per door: the route modules for the hosted
+// doors are compiled in; a domain reports available only when its
+// filling issue has landed the business logic. The stamping create
+// path (#12585) made the hosted-transformed `gh` domain available,
+// the query door (#12587) is live over the same domain, the
+// queue door (#12589) made the `queue` domain available, and the
+// ingestion door (#12590) and the sync door (#12591) are live —
+// every component-C door has landed, and the document says so.
+// The bridge door (#14373) then wired the `bridge` domain to the
+// message bridge over its service binding, with the PM stack's own
+// credential: the PM service API and the console's edge share that
+// one send path, and the domain reports available for it.
+// The ingestion door then gained its backfill + divergence surface
+// (#14312, the #9074 remainder): recorded backfill runs and the
+// body-vs-DB divergence report ride the same door, so the door's
+// route list names them while its filling issue stays #12590.
 
 import { SERVICE_NAME, type HostedConfig } from "./config.ts";
 
@@ -31,14 +43,73 @@ export interface HostedDoor {
   id: string;
   routes: string[];
   fillingIssue: string;
+  /** "live" once the filling issue landed the door's logic. */
+  state?: "live" | "stub";
 }
 
 export const HOSTED_DOORS: HostedDoor[] = [
-  { id: "stamping", routes: ["POST /v1/stamps"], fillingIssue: "#12585" },
-  { id: "query", routes: ["GET /v1/query", "POST /v1/query"], fillingIssue: "#12587" },
-  { id: "queue", routes: ["POST /v1/queue"], fillingIssue: "#12589" },
-  { id: "ingestion", routes: ["POST /v1/ingestion/github"], fillingIssue: "#12590" },
-  { id: "sync", routes: ["POST /v1/sync/project", "POST /v1/sync/queue-github"], fillingIssue: "#12591" },
+  { id: "stamping", routes: ["POST /v1/stamps"], fillingIssue: "#12585", state: "live" },
+  { id: "query", routes: ["GET /v1/query", "POST /v1/query"], fillingIssue: "#12587", state: "live" },
+  {
+    id: "queue",
+    routes: [
+      "POST /v1/queue/validate",
+      "POST /v1/queue/enqueue",
+      "POST /v1/queue/claim",
+      "POST /v1/queue/lane",
+      "POST /v1/queue/bind",
+      "POST /v1/queue/heartbeat",
+      "POST /v1/queue/checkpoint",
+      "POST /v1/queue/park",
+      "POST /v1/queue/release",
+      "POST /v1/queue/wake",
+      "POST /v1/queue/block",
+      "POST /v1/queue/unblock",
+      "POST /v1/queue/dep-recheck",
+      "POST /v1/queue/cancel",
+      "POST /v1/queue/fail",
+      "POST /v1/queue/complete",
+      "POST /v1/queue/list",
+      "POST /v1/queue/show",
+      "POST /v1/queue/timeline",
+      "POST /v1/queue/health",
+      "POST /v1/queue/revive",
+      "POST /v1/queue/events-append",
+      "POST /v1/queue/events-seen",
+      "POST /v1/queue/events-count",
+      "POST /v1/queue/events-prune",
+      "POST /v1/queue/fallback/status",
+      "POST /v1/queue/fallback/claim",
+      "POST /v1/queue/fallback/heartbeat",
+      "POST /v1/queue/fallback/release",
+    ],
+    fillingIssue: "#12589",
+    state: "live",
+  },
+  {
+    id: "ingestion",
+    routes: [
+      "POST /v1/ingestion/github",
+      "POST /v1/ingestion/sweep",
+      "POST /v1/ingestion/backfill",
+      "GET /v1/ingestion/backfill/runs",
+      "POST /v1/ingestion/divergence",
+    ],
+    fillingIssue: "#12590",
+    state: "live",
+  },
+  {
+    id: "sync",
+    routes: ["POST /v1/sync/project", "POST /v1/sync/queue-github"],
+    fillingIssue: "#12591",
+    state: "live",
+  },
+  {
+    id: "bridge",
+    routes: ["POST /v1/bridge/send", "GET /v1/bridge/agents", "GET /v1/bridge/messages"],
+    fillingIssue: "#14373",
+    state: "live",
+  },
 ];
 
 interface NativeDomain {
@@ -48,6 +119,8 @@ interface NativeDomain {
   capabilities: string[];
   hosted: string;
   fillingIssue?: string;
+  /** True once the filling issue landed this domain at the door. */
+  available?: boolean;
 }
 
 // Name / summary / aliases / capabilities verbatim from
@@ -60,6 +133,7 @@ const NATIVE_DOMAINS: NativeDomain[] = [
     capabilities: ["queue"],
     hosted: "hosted-front-door",
     fillingIssue: "#12589",
+    available: true,
   },
   {
     name: "serve",
@@ -70,7 +144,8 @@ const NATIVE_DOMAINS: NativeDomain[] = [
   },
   {
     name: "proxy",
-    summary: "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put).",
+    summary:
+      "The session proxy: serve the broker socket, connect or init through it, run recovery SSH, splice raw TCP streams, or transfer files (get/put).",
     aliases: ["laptop-agent-broker"],
     capabilities: ["proxy-serve", "proxy-connect", "proxy-raw-splice"],
     hosted: "native-only",
@@ -84,7 +159,8 @@ const NATIVE_DOMAINS: NativeDomain[] = [
   },
   {
     name: "dispatch-test",
-    summary: "Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.",
+    summary:
+      "Explicit-dispatch CI test: scan fleet repos for free Actions capacity, submit a job, track its stored status.",
     aliases: [],
     capabilities: ["dispatch-test"],
     hosted: "native-only",
@@ -98,22 +174,28 @@ const NATIVE_DOMAINS: NativeDomain[] = [
   },
   {
     name: "gh",
-    summary: "The real `gh` CLI, passed through under a rotating fleet token (personal, then the developing.today App's installations); rate-limit and permission failures fail over to the next token.",
+    summary:
+      "The real `gh` CLI, passed through under a rotating fleet token (personal, then the developing.today App's installations); rate-limit and permission failures fail over to the next token.",
     aliases: [],
     capabilities: ["gh"],
     hosted: "hosted-transformed",
     fillingIssue: "#12585",
+    available: true,
   },
   {
     name: "bridge",
-    summary: "Fleet messaging through the message bridge: central sends messages or commands to an agent, a group or all; agents read their mailbox, answer and ack.",
+    summary:
+      "Fleet messaging through the message bridge: central sends messages or commands to an agent, a group or all; agents read their mailbox, answer and ack.",
     aliases: [],
     capabilities: ["bridge"],
     hosted: "already-hosted",
+    fillingIssue: "#14373",
+    available: true,
   },
   {
     name: "agent",
-    summary: "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
+    summary:
+      "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
     aliases: [],
     capabilities: ["agent"],
     hosted: "hosted",
@@ -142,6 +224,7 @@ const NATIVE_DOMAINS: NativeDomain[] = [
 ];
 
 export function buildCapabilitiesDocument(config: HostedConfig): Record<string, unknown> {
+  const availableCapabilities = NATIVE_DOMAINS.filter((d) => d.available).flatMap((d) => d.capabilities);
   return {
     build: {
       name: SERVICE_NAME,
@@ -150,22 +233,22 @@ export function buildCapabilitiesDocument(config: HostedConfig): Record<string, 
       profile: "hosted",
       edition: "hosted",
     },
-    capabilities: [],
-    compiled_capabilities: [],
+    capabilities: availableCapabilities,
+    compiled_capabilities: availableCapabilities,
     domains: NATIVE_DOMAINS.map((d) => ({
       name: d.name,
       summary: d.summary,
       aliases: d.aliases,
       capabilities: d.capabilities,
-      available: false,
-      state: "not-in-build",
+      available: d.available ?? false,
+      state: d.available ? "available" : "not-in-build",
       hosted: d.hosted,
       ...(d.fillingIssue ? { filling_issue: d.fillingIssue } : {}),
     })),
     doors: HOSTED_DOORS.map((d) => ({
       id: d.id,
       routes: d.routes,
-      state: "stub",
+      state: d.state ?? "stub",
       filling_issue: d.fillingIssue,
     })),
   };

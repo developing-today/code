@@ -1633,9 +1633,12 @@ mod tests {
     }
 
     fn lease_header() -> JournalEntry {
+        // Stamped lease entries (#13711) require version 16; the
+        // unstamped legacy header (version 7) is covered by
+        // `unstamped_lease_entries_still_restore_at_version_7`.
         JournalEntry::Created {
             world_id: "w".to_owned(),
-            version: JOURNAL_VERSION_WRITE_LEASE,
+            version: JOURNAL_VERSION_LEASE_POSITION,
         }
     }
 
@@ -1645,6 +1648,7 @@ mod tests {
             to: "native-1".to_owned(),
             epoch: 1,
             expires_at_ms: Some(30_000),
+            position: 1,
         }
     }
 
@@ -1653,6 +1657,7 @@ mod tests {
             holder: "native-1".to_owned(),
             epoch: 1,
             expires_at_ms: 40_000,
+            position: 2,
         }
     }
 
@@ -1666,6 +1671,7 @@ mod tests {
             observed_epoch: 1,
             reason: LeaseRejectionReason::StaleEpoch,
             received_at_ms: 35_000,
+            position: 3,
         }
     }
 
@@ -1674,25 +1680,54 @@ mod tests {
         // Design #2819 phase 2 (#3804): lease kinds are the first
         // entries a version-6 binary cannot read, so they pin the
         // header to version 7 under the #227 bump-on-first-write
-        // contract.
+        // contract. Unstamped (position 0) entries still require
+        // exactly 7; a stamped position (#13711) requires 16.
         for entry in [
             JournalEntry::LeaseGranted {
                 holder: "native-1".to_owned(),
                 epoch: 1,
                 expires_at_ms: Some(30_000),
+                position: 0,
             },
-            spill_renewal(),
-            spill_handoff(),
+            JournalEntry::LeaseRenewed {
+                holder: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: 40_000,
+                position: 0,
+            },
+            JournalEntry::LeaseHandedOff {
+                from: DO_WRITE_LEASE_HOLDER.to_owned(),
+                to: "native-1".to_owned(),
+                epoch: 1,
+                expires_at_ms: Some(30_000),
+                position: 0,
+            },
             JournalEntry::LeaseRevoked {
                 former_holder: "native-1".to_owned(),
                 epoch: 2,
                 reason: "expired".to_owned(),
+                position: 0,
             },
-            stale_rejection(),
+            JournalEntry::LeaseWriteRejected {
+                writer: "native-1".to_owned(),
+                presented_epoch: 0,
+                operation_id: "op-1".to_owned(),
+                observed_epoch: 1,
+                reason: LeaseRejectionReason::StaleEpoch,
+                received_at_ms: 35_000,
+                position: 0,
+            },
         ] {
             assert_eq!(
                 journal_version_required_by(&entry),
                 JOURNAL_VERSION_WRITE_LEASE,
+                "{entry:?}"
+            );
+        }
+        for entry in [spill_handoff(), spill_renewal(), stale_rejection()] {
+            assert_eq!(
+                journal_version_required_by(&entry),
+                JOURNAL_VERSION_LEASE_POSITION,
                 "{entry:?}"
             );
         }
@@ -1704,13 +1739,19 @@ mod tests {
         // Version 12 (#11960) records join and revoke times, version
         // 13 the kv store entries, version 14 the blob store entries,
         // and version 15 the notify provider's `Notification` events
-        // (all #1062).
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_NOTIFY);
+        // (all #1062). Version 16 (#13711) stamps lease positions.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
+        // A checkpoint whose lease history carries stamped positions
+        // requires version 16.
         let mut lease = WriteLease::bootstrap();
         lease
-            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000))
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000), 0)
+            .unwrap();
+        let mut stamped = WriteLease::bootstrap();
+        stamped
+            .apply_handoff(DO_WRITE_LEASE_HOLDER, "native-1", 1, Some(30_000), 1)
             .unwrap();
         let checkpoint = |lease: Option<WriteLease>| JournalEntry::Checkpoint {
             sequence: 0,
@@ -1734,6 +1775,10 @@ mod tests {
             JOURNAL_VERSION_WRITE_LEASE
         );
         assert_eq!(
+            journal_version_required_by(&checkpoint(Some(stamped))),
+            JOURNAL_VERSION_LEASE_POSITION
+        );
+        assert_eq!(
             journal_version_required_by(&checkpoint(None)),
             JOURNAL_VERSION
         );
@@ -1749,8 +1794,10 @@ mod tests {
                 "{json}"
             );
         }
-        // A lease entry in a journal whose header predates version 7 is
-        // refused at restore, never applied mid-read.
+        // A lease entry in a journal whose header predates the
+        // version it requires is refused at restore, never applied
+        // mid-read. The handoff helper carries a stamped position
+        // (#13711), so it requires version 16.
         let error = WorldCore::restore(
             "w",
             WorldLimits::default(),
@@ -1764,7 +1811,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            error.to_string().contains("requires version 7"),
+            error.to_string().contains("requires version 16"),
             "{error:#}"
         );
     }
@@ -1801,11 +1848,13 @@ mod tests {
                     former_holder: "native-1".to_owned(),
                     epoch: 2,
                     reason: "term expired without renewal".to_owned(),
+                    position: 3,
                 },
                 JournalEntry::LeaseGranted {
                     holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                     epoch: 3,
                     expires_at_ms: None,
+                    position: 4,
                 },
             ],
         )
@@ -1827,6 +1876,14 @@ mod tests {
                 LeaseTransitionKind::Granted,
             ]
         );
+        // Positions ride the history in journal order (#13711), and
+        // the watermark is the highest position replayed.
+        let positions: Vec<u64> = lease
+            .transitions()
+            .map(|transition| transition.position)
+            .collect();
+        assert_eq!(positions, [1, 2, 3, 4]);
+        assert_eq!(restored.core.lease_position_watermark(), 4);
         // The ex-holder is fenced at the new epoch, and the returned
         // holder presenting an old epoch is stale.
         assert_eq!(
@@ -1905,6 +1962,7 @@ mod tests {
             observed_epoch: 1,
             reason: LeaseRejectionReason::Expired,
             received_at_ms: 35_000,
+            position: 2,
         };
         let error = WorldCore::restore(
             "w",
@@ -1928,6 +1986,7 @@ mod tests {
                     to: "native-1".to_owned(),
                     epoch: 2,
                     expires_at_ms: Some(30_000),
+                    position: 1,
                 }],
                 "advances the write lease epoch from 0 to 2",
             ),
@@ -1937,6 +1996,7 @@ mod tests {
                     holder: "native-1".to_owned(),
                     epoch: 1,
                     expires_at_ms: None,
+                    position: 1,
                 }],
                 "while",
             ),
@@ -1948,6 +2008,7 @@ mod tests {
                         holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                         epoch: 1,
                         expires_at_ms: 50_000,
+                        position: 2,
                     },
                 ],
                 "held by",
@@ -1961,6 +2022,7 @@ mod tests {
                         holder: "native-1".to_owned(),
                         epoch: 1,
                         expires_at_ms: 35_000,
+                        position: 3,
                     },
                 ],
                 "backwards",
@@ -1973,6 +2035,7 @@ mod tests {
                         former_holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                         epoch: 2,
                         reason: "operator".to_owned(),
+                        position: 2,
                     },
                 ],
                 "held by",
@@ -1984,6 +2047,7 @@ mod tests {
                     to: "native-1".to_owned(),
                     epoch: 1,
                     expires_at_ms: None,
+                    position: 1,
                 }],
                 "held by",
             ),
@@ -2017,11 +2081,13 @@ mod tests {
                     former_holder: "native-1".to_owned(),
                     epoch: 2,
                     reason: "term expired without renewal".to_owned(),
+                    position: 4,
                 },
                 JournalEntry::LeaseGranted {
                     holder: DO_WRITE_LEASE_HOLDER.to_owned(),
                     epoch: 3,
                     expires_at_ms: None,
+                    position: 5,
                 },
             ],
         )
@@ -2054,16 +2120,17 @@ mod tests {
         let lease = restored.core.write_lease().clone();
 
         // Compaction carries the lease whole on the checkpoint: the
-        // header rises to version 7 and a restore of the compacted
-        // journal rebuilds the identical lease — epoch, holder, term,
-        // transition history and rejection audit all preserved.
+        // header rises to version 16 (stamped positions, #13711) and
+        // a restore of the compacted journal rebuilds the identical
+        // lease — epoch, holder, term, transition history and
+        // rejection audit all preserved.
         let mut core = restored.core;
         core.active_module_hash = Some("h".to_owned());
         let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
         assert!(matches!(
             compacted[0],
             JournalEntry::Created {
-                version: JOURNAL_VERSION_WRITE_LEASE,
+                version: JOURNAL_VERSION_LEASE_POSITION,
                 ..
             }
         ));
@@ -2089,6 +2156,253 @@ mod tests {
         }
         let error = WorldCore::restore("w", WorldLimits::default(), tampered).unwrap_err();
         assert!(error.to_string().contains("write lease"), "{error:#}");
+    }
+
+    #[test]
+    fn lease_position_watermark_reports_the_grant_position_after_replay() {
+        // #13711 oracle: a successor replaying a journal with a
+        // grant at position P reports watermark >= P before it may
+        // accept writes. Bootstrap has no stamped position.
+        let bootstrap = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [JournalEntry::Created {
+                world_id: "w".to_owned(),
+                version: JOURNAL_VERSION,
+            }],
+        )
+        .unwrap();
+        assert_eq!(bootstrap.core.lease_position_watermark(), 0);
+
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                JournalEntry::LeaseRevoked {
+                    former_holder: "native-1".to_owned(),
+                    epoch: 2,
+                    reason: "term expired without renewal".to_owned(),
+                    position: 2,
+                },
+                JournalEntry::LeaseGranted {
+                    holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    epoch: 3,
+                    expires_at_ms: None,
+                    position: 3,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+        assert_eq!(restored.core.write_lease().last_position(), 3);
+
+        // Compaction preserves the watermark: the checkpoint carries
+        // the whole lease history, positions included.
+        let mut core = restored.core;
+        core.active_module_hash = Some("h".to_owned());
+        let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+    }
+
+    #[test]
+    fn unstamped_lease_entries_still_restore_at_version_7() {
+        // #13711 back-compat: lease entries written before positions
+        // existed parse with position 0, restore under a version-7
+        // header, and report watermark 0 — the barrier simply has
+        // no stamped grant to name yet.
+        let restored = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                JournalEntry::Created {
+                    world_id: "w".to_owned(),
+                    version: JOURNAL_VERSION_WRITE_LEASE,
+                },
+                JournalEntry::LeaseHandedOff {
+                    from: DO_WRITE_LEASE_HOLDER.to_owned(),
+                    to: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: Some(30_000),
+                    position: 0,
+                },
+                JournalEntry::LeaseRenewed {
+                    holder: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: 40_000,
+                    position: 0,
+                },
+            ],
+        )
+        .unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-1"));
+        assert_eq!(lease.epoch, 1);
+        assert_eq!(restored.core.lease_position_watermark(), 0);
+        assert!(
+            lease
+                .transitions()
+                .all(|transition| transition.position == 0)
+        );
+    }
+
+    #[test]
+    fn lease_positions_that_do_not_advance_are_refused() {
+        // #13711: a stamped position that does not advance past the
+        // highest stamped position already replayed is a corrupt
+        // journal, refused at restore — not silently reordered.
+        let error = WorldCore::restore(
+            "w",
+            WorldLimits::default(),
+            [
+                lease_header(),
+                spill_handoff(),
+                JournalEntry::LeaseRenewed {
+                    holder: "native-1".to_owned(),
+                    epoch: 1,
+                    expires_at_ms: 40_000,
+                    position: 1,
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("does not advance past"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn lease_positions_are_strictly_increasing_across_appends_and_compaction() {
+        // #13711 property test. Oracle: the lease history after
+        // restore (and after compaction + restore) carries exactly
+        // the positions the appends stamped, in order — one per
+        // lease record, strictly increasing. The generator folds
+        // op bytes through the lease state machine (holder, epoch,
+        // expiry), so every sequence is one the append authority
+        // could legally have written: handoff/renew/revoke while a
+        // holder stands, grant only while none does.
+        use proptest::prelude::*;
+        proptest!(|(ops in proptest::collection::vec(0u8..=255, 1..=12))| {
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum ModelHolder {
+                Do,
+                Native,
+            }
+            let mut holder = Some(ModelHolder::Do);
+            let mut epoch = 0u64;
+            let mut expiry: Option<u64> = None;
+            let mut entries = vec![lease_header()];
+            let mut position = 0u64;
+            for op in ops {
+                position += 1;
+                match holder {
+                    Some(current) => match op % 3 {
+                        0 => {
+                            let (from, to) = match current {
+                                ModelHolder::Do => (DO_WRITE_LEASE_HOLDER, "native-1"),
+                                ModelHolder::Native => ("native-1", DO_WRITE_LEASE_HOLDER),
+                            };
+                            epoch += 1;
+                            let next_expiry = if current == ModelHolder::Do {
+                                Some(30_000 + epoch * 1_000)
+                            } else {
+                                None
+                            };
+                            entries.push(JournalEntry::LeaseHandedOff {
+                                from: from.to_owned(),
+                                to: to.to_owned(),
+                                epoch,
+                                expires_at_ms: next_expiry,
+                                position,
+                            });
+                            holder = Some(if current == ModelHolder::Do {
+                                ModelHolder::Native
+                            } else {
+                                ModelHolder::Do
+                            });
+                            expiry = next_expiry;
+                        }
+                        1 => {
+                            let next_expiry = expiry.map_or(40_000, |e| e + 1_000);
+                            let holder_name = match current {
+                                ModelHolder::Do => DO_WRITE_LEASE_HOLDER,
+                                ModelHolder::Native => "native-1",
+                            };
+                            entries.push(JournalEntry::LeaseRenewed {
+                                holder: holder_name.to_owned(),
+                                epoch,
+                                expires_at_ms: next_expiry,
+                                position,
+                            });
+                            expiry = Some(next_expiry);
+                        }
+                        _ => {
+                            let former = match current {
+                                ModelHolder::Do => DO_WRITE_LEASE_HOLDER,
+                                ModelHolder::Native => "native-1",
+                            };
+                            epoch += 1;
+                            entries.push(JournalEntry::LeaseRevoked {
+                                former_holder: former.to_owned(),
+                                epoch,
+                                reason: "term expired without renewal".to_owned(),
+                                position,
+                            });
+                            holder = None;
+                            expiry = None;
+                        }
+                    },
+                    None => {
+                        epoch += 1;
+                        if op % 2 == 0 {
+                            entries.push(JournalEntry::LeaseGranted {
+                                holder: DO_WRITE_LEASE_HOLDER.to_owned(),
+                                epoch,
+                                expires_at_ms: None,
+                                position,
+                            });
+                            holder = Some(ModelHolder::Do);
+                            expiry = None;
+                        } else {
+                            entries.push(JournalEntry::LeaseGranted {
+                                holder: "native-1".to_owned(),
+                                epoch,
+                                expires_at_ms: Some(30_000 + epoch * 1_000),
+                                position,
+                            });
+                            holder = Some(ModelHolder::Native);
+                            expiry = Some(30_000 + epoch * 1_000);
+                        }
+                    }
+                }
+            }
+            let expected: Vec<u64> = (1..=position).collect();
+            let restored = WorldCore::restore("w", WorldLimits::default(), entries).unwrap();
+            let positions: Vec<u64> = restored
+                .core
+                .write_lease()
+                .transitions()
+                .map(|transition| transition.position)
+                .collect();
+            prop_assert_eq!(positions, expected.clone());
+            prop_assert_eq!(restored.core.lease_position_watermark(), position);
+
+            let mut core = restored.core;
+            core.active_module_hash = Some("h".to_owned());
+            let compacted = core.checkpoint_entries("state".to_owned()).unwrap();
+            let restored = WorldCore::restore("w", WorldLimits::default(), compacted).unwrap();
+            let positions: Vec<u64> = restored
+                .core
+                .write_lease()
+                .transitions()
+                .map(|transition| transition.position)
+                .collect();
+            prop_assert_eq!(positions, expected);
+            prop_assert_eq!(restored.core.lease_position_watermark(), position);
+        });
     }
 
     #[test]
@@ -8772,8 +9086,13 @@ mod tests {
         let entries = w.journal.entries();
         assert!(matches!(
             entries.last(),
-            Some(JournalEntry::LeaseHandedOff { from, to, epoch: 1, .. })
-                if from == DO_WRITE_LEASE_HOLDER && to == "native-1"
+            Some(JournalEntry::LeaseHandedOff {
+                from,
+                to,
+                epoch: 1,
+                position: 1,
+                ..
+            }) if from == DO_WRITE_LEASE_HOLDER && to == "native-1"
         ));
         assert!(
             !entries
@@ -8839,6 +9158,14 @@ mod tests {
                 LeaseTransitionKind::HandedOff
             ]
         );
+        // Live handoffs stamp successive positions (#13711): the
+        // first handoff is position 1, the handback position 2, and
+        // the successor's watermark is 2.
+        assert_eq!(
+            lease.transitions().map(|t| t.position).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(restored.core.lease_position_watermark(), 2);
     }
 
     #[tokio::test]
@@ -8870,6 +9197,108 @@ mod tests {
         let refused_again = w.handle.input(w.token.clone(), b"0".to_vec()).await;
         assert!(refused_again.is_err());
         assert_eq!(committed_inputs(&w.journal), 0);
+    }
+
+    #[tokio::test]
+    async fn failover_after_expiry_grants_the_caught_up_pool_successor() {
+        // Oracle: design #5787 §7 — the holder dies mid-term with a
+        // caught-up replica in the pool. The grantor fences first
+        // (revoke at e+1), grants the successor at e+2, and the grant's
+        // journal position is the barrier the successor resumes at.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+
+        // native-2 has served as a reader at the tip for the full
+        // observation window; the grantor's tip for this grant is 2.
+        let mut pool = spill_pool::SpillPool::default();
+        pool.configure("native-2");
+        for cycle in 0..u64::from(spill_pool::READER_OBSERVATION_CYCLES) {
+            assert!(pool.observe("native-2", cycle, true, true, true, 2, 2, 0, 0));
+        }
+
+        // The term lapses on the authority clock (start 1_000 + 60_000).
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(pool, 2, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), "native-2");
+        assert_eq!(execution.grant_epoch(), 3);
+        assert_eq!(execution.grant_position(), 3);
+        assert!(!execution.resume_ready(2));
+        assert!(execution.resume_ready(3));
+
+        // The journal carries the fence before the grant, positions
+        // continuing the lease chain (handoff 1, revoke 2, grant 3).
+        let entries = w.journal.entries();
+        assert!(matches!(
+            &entries[entries.len() - 2],
+            JournalEntry::LeaseRevoked {
+                former_holder,
+                epoch: 2,
+                position: 2,
+                ..
+            } if former_holder == "native-1"
+        ));
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseGranted {
+                holder,
+                epoch: 3,
+                position: 3,
+                ..
+            }) if holder == "native-2"
+        ));
+
+        // Replay is the oracle: the journal alone rebuilds native-2
+        // holding epoch 3, watermark at the grant position, and the
+        // dead holder fenced.
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some("native-2"));
+        assert_eq!(lease.epoch, 3);
+        assert_eq!(restored.core.lease_position_watermark(), 3);
+        assert_eq!(
+            lease.check_writer("native-1", 1, 61_000),
+            Err(LeaseRejectionReason::NotHolder)
+        );
+
+        // The DO executor no longer holds the lease: its commands are
+        // refused, exactly as after a handoff.
+        let refused = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert_eq!(
+            lease_error(&refused.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+    }
+
+    #[tokio::test]
+    async fn failover_with_no_eligible_successor_recovers_to_the_do() {
+        // Oracle: design #5787 §7 — no eligible successor: the DO
+        // grants to itself rather than to a lagging replica, and the
+        // world resumes under its authority.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        w.clock.advance(60_000);
+        let execution = w
+            .handle
+            .failover_write_lease(spill_pool::SpillPool::default(), 0, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(execution.successor(), DO_WRITE_LEASE_HOLDER);
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(committed_inputs(&w.journal), 1);
     }
 
     #[tokio::test]
@@ -11642,8 +12071,7 @@ mod schedule_tests {
             }),
             JOURNAL_VERSION_NOTIFY
         );
-        // A checkpoint retaining one requires it too, and it is
-        // the newest version this binary reads.
+        // A checkpoint retaining one requires it too.
         let checkpoint = JournalEntry::Checkpoint {
             sequence: 1,
             module_hash: "h".to_owned(),
@@ -11665,7 +12093,9 @@ mod schedule_tests {
             journal_version_required_by(&checkpoint),
             JOURNAL_VERSION_NOTIFY
         );
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_NOTIFY);
+        // Version 16 (#13711, stamped lease positions) is the newest
+        // version this binary reads.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_LEASE_POSITION);
     }
 
     #[tokio::test]
@@ -13411,9 +13841,11 @@ mod audit_tests {
     // id on every line, admin commands included.
     #[test]
     fn audit_records_carry_target_correlation_and_schema_v2() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-correlation", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13468,9 +13900,11 @@ mod audit_tests {
 
     #[test]
     fn admin_audit_replays_grants_and_ceiling_and_records_refusal_once() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new(
             "audit-test",
@@ -13584,9 +14018,11 @@ mod audit_tests {
 
     #[test]
     fn issuance_is_audited_alongside_revocation_without_the_token() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13642,9 +14078,11 @@ mod audit_tests {
 
     #[test]
     fn install_program_writability_refusal_is_audited_once() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13734,9 +14172,11 @@ mod audit_tests {
 
     #[test]
     fn participant_readable_queries_emit_no_admin_audit_record() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13841,9 +14281,11 @@ mod audit_tests {
 
     #[test]
     fn revocation_on_a_read_only_replica_is_audited_once_as_refused() {
+        crate::test_tracing::register_audit_callsite();
         let records = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        crate::test_tracing::rebuild_interest_cache();
 
         let core = WorldCore::new("audit-test", WorldLimits::default()).unwrap();
         let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
@@ -13907,6 +14349,7 @@ mod audit_tests {
 
     #[test]
     fn admin_audit_replay_matches_live_state_for_generated_sequences() {
+        crate::test_tracing::register_audit_callsite();
         // Oracle: the audit records themselves (model-based replay).
         // Folding the accepted records — plus first-use grants — over
         // the initial state must reproduce the live ledger grants and
@@ -13922,6 +14365,7 @@ mod audit_tests {
             let records = Arc::new(Mutex::new(Vec::new()));
             let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
             let _guard = tracing::subscriber::set_default(subscriber);
+            crate::test_tracing::rebuild_interest_cache();
 
             let core = WorldCore::new(
                 "audit-test",

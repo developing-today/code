@@ -24,6 +24,23 @@ fleet agent next                                   # each time you want work
   done. Exit `5` means no rung had work this run.
 - `fleet agent doctor` repeats the reachability check at any time.
 
+## One-command bootstrap per seat kind
+
+When starting on a bare seat that has no `fleet` binary yet, pick the
+bootstrap script for the seat kind (#12236):
+
+| Seat kind       | Script                                      | Defaults                          |
+| --------------- | ------------------------------------------- | --------------------------------- |
+| Muse sandbox    | `scripts/muse/bootstrap.sh`                 | `--kind muse`, restores home      |
+| Codespace       | `scripts/fleet/bootstrap-codespace.sh`      | `--kind generic --name codespace` |
+| Laptop service  | `scripts/fleet/bootstrap-laptop-service.sh` | `--kind laptop --name laptop`     |
+| Plain Linux box | `scripts/fleet/bootstrap-linux.sh`          | `--kind generic`                  |
+
+All four also accept `scripts/fleet/bootstrap.sh --seat <kind>`. Each
+non-Muse script installs the sha256-verified `fleet` binary, runs
+`fleet agent enroll` and `fleet agent doctor`, and enters the three-line
+`fleet agent next` loop.
+
 ## An agent that can only make HTTPS requests
 
 Enrol it from any seat that has the binary, then give the agent its name:

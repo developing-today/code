@@ -67,7 +67,7 @@ def make_source():
 class TestBuildDump(unittest.TestCase):
     def test_dump_rebuilds_source_exactly(self):
         conn, task_rows = make_source()
-        dump, counts = fq_common.build_dump(
+        dump, counts, _splits = fq_common.build_dump(
             SqliteLibsqlAdapter(conn), "2026-11-22T00:00:00Z"
         )
         self.assertEqual(counts, {"tasks": 3, "notes": 3})
@@ -94,7 +94,7 @@ class TestBuildDump(unittest.TestCase):
     def test_dump_is_reimportable(self):
         conn, _rows = make_source()
         adapter = SqliteLibsqlAdapter(conn)
-        dump, _counts = fq_common.build_dump(adapter, "2026-11-22T00:00:00Z")
+        dump, _counts, _splits = fq_common.build_dump(adapter, "2026-11-22T00:00:00Z")
         # A second export over the rebuilt copy renders the same rows:
         # DROP+CREATE makes the dump idempotent against a live target.
         rebuilt = sqlite3.connect(":memory:")
