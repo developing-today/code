@@ -104,6 +104,15 @@ impl AgentQuotaLedger {
         self.spend
     }
 
+    /// The spend outstanding as of `now`, read without touching the
+    /// ledger: replenishment is applied to a copy.
+    #[must_use]
+    pub fn spend_at(&self, now: u64) -> Quota {
+        let mut copy = self.clone();
+        copy.refresh(now);
+        copy.spend
+    }
+
     /// Charge one admitted action at `now`. A charge that would exceed
     /// the budget is refused and charges nothing.
     ///
