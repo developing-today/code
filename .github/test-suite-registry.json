@@ -1622,6 +1622,7 @@
       "id": "id.rust.id-import-notion.integration",
       "paths": [
         "pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs",
+        "pkgs/id/crates/id-import-notion/tests/recorded_comments.rs",
         "pkgs/id/crates/id-import-notion/tests/recorded_content.rs",
         "pkgs/id/crates/id-import-notion/tests/recorded_databases.rs"
       ],
