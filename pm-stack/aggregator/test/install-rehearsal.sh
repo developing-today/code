@@ -5,7 +5,9 @@
 set -euo pipefail
 
 PKG="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d /tmp/opencode/pm-aggregator-install.XXXXXX)"
+TMP_ROOT="${TMPDIR:-${XDG_RUNTIME_DIR:-/tmp}}"
+if [[ ! -d "$TMP_ROOT" || ! -w "$TMP_ROOT" ]]; then TMP_ROOT=/tmp; fi
+TMP="$(mktemp -d "${TMP_ROOT%/}/pm-aggregator-install.XXXXXX")"
 # The legacy-store seed below writes through the INSTALL_SRC symlink
 # into the real package dir, so a pre-existing real store is copied
 # aside first and restored on every exit path (Codex P1 on PR #8765):
