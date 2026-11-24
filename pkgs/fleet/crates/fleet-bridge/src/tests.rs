@@ -184,6 +184,10 @@ fn every_verb_has_its_own_help() {
         "directory",
         "credentials",
         "revoke",
+        "mint-enroll",
+        "enroll-tokens",
+        "revoke-enroll",
+        "mint-credential",
         "hello",
         "inbox",
         "post",
@@ -239,6 +243,13 @@ fn usage_errors_exit_2_before_any_request() {
         vec!["revoke"],
         vec!["revoke", "--agent", "a", "--identity", "muse/a"],
         vec!["revoke", "felix"],
+        vec!["mint-enroll"],
+        vec!["mint-enroll", "--agent", "a", "--ttl", "soon"],
+        vec!["mint-enroll", "--agent", "a", "extra"],
+        vec!["enroll-tokens", "extra"],
+        vec!["revoke-enroll"],
+        vec!["revoke-enroll", "--agent", "a", "--token-hash", "ab12"],
+        vec!["mint-credential"],
     ] {
         let e = run_with(url, &s, &args, "").unwrap_err();
         assert_eq!(e.exit_code(), EXIT_USAGE, "{args:?}: {e}");
@@ -507,6 +518,79 @@ fn pipeline_directory_credentials_and_revoke_shapes() {
     assert_eq!(
         seen[4].body.as_ref().unwrap(),
         &json!({"identity": "muse/felix"})
+    );
+}
+
+#[test]
+fn provisioning_verb_shapes() {
+    // #14376: the console's provisioning verbs, as owner-token calls on
+    // the bridge's own routes. The mint answers carry the values; the
+    // CLI passes them through untouched and keeps nothing.
+    let (url, seen) = fake_bridge(|_, _, _| (201, r#"{"ok":true}"#.into()));
+    let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
+    run_with(
+        &url,
+        &s,
+        &[
+            "mint-enroll",
+            "--agent",
+            "new-1",
+            "--kind",
+            "muse",
+            "--groups",
+            "muse,code-lanes",
+            "--notes-identity",
+            "muse/new-1",
+            "--ttl",
+            "3600",
+        ],
+        "",
+    )
+    .unwrap();
+    run_with(&url, &s, &["enroll-tokens"], "").unwrap();
+    run_with(&url, &s, &["revoke-enroll", "--token-hash", "ab12"], "").unwrap();
+    run_with(&url, &s, &["revoke-enroll", "--agent", "new-1"], "").unwrap();
+    run_with(
+        &url,
+        &s,
+        &[
+            "mint-credential",
+            "--agent",
+            "pm-stack",
+            "--scopes",
+            "send,read",
+            "--addr",
+            "service:pm-stack",
+        ],
+        "",
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].method, "POST");
+    assert_eq!(seen[0].url, format!("/api/{OWNER}/enroll-tokens"));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({"agent": "new-1", "kind": "muse", "groups": ["muse", "code-lanes"], "notes_identity": "muse/new-1", "ttl_seconds": 3600})
+    );
+    assert_eq!(seen[1].method, "GET");
+    assert_eq!(seen[1].url, format!("/api/{OWNER}/enroll-tokens"));
+    assert_eq!(seen[2].url, format!("/api/{OWNER}/enroll-tokens/revoke"));
+    assert_eq!(
+        seen[2].body.as_ref().unwrap(),
+        &json!({"token_hash": "ab12"})
+    );
+    assert_eq!(seen[3].url, format!("/api/{OWNER}/enroll-tokens/revoke"));
+    assert_eq!(
+        seen[3].body.as_ref().unwrap(),
+        &json!({"agent": "new-1"})
+    );
+    assert_eq!(
+        seen[4].url,
+        format!("/api/{OWNER}/fleet/credentials/mint")
+    );
+    assert_eq!(
+        seen[4].body.as_ref().unwrap(),
+        &json!({"agent": "pm-stack", "scopes": ["send", "read"], "addr": "service:pm-stack"})
     );
 }
 

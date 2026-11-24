@@ -112,6 +112,117 @@ $ fleet bridge log --kind command --limit 5
 
 Shows the five most recent commands in the central log.
 
+## fleet bridge mint-enroll
+
+```
+fleet bridge mint-enroll --agent A [--kind K] [--groups g1,g2] [--notes-identity I] [--ttl SECS]
+```
+
+| Flag               | Argument | Default  | Meaning                                                                                     |
+| ------------------ | -------- | -------- | ------------------------------------------------------------------------------------------- |
+| `--agent`          | `A`      | required | The new agent's name; the token is bound to it and enrolls no other.                        |
+| `--kind`           | `K`      | `agent`  | The agent kind the token is bound to.                                                       |
+| `--groups`         | `g1,g2`  | —        | Groups the mailbox registers with at exchange.                                              |
+| `--notes-identity` | `I`      | —        | A class/name notes identity to register at exchange.                                        |
+| `--ttl`            | `SECS`   | `86400`  | The token's lifetime in seconds (60 to 604800).                                             |
+
+### Behaviour
+
+Central verb (owner token). Mints a bootstrap enroll token. Route: `POST /api/<owner-token>/enroll-tokens`. The answer carries the token value **once**: the bridge stores only its SHA-256 hash and can never show it again. Hand the value to the new seat, which runs `fleet agent enroll --name A --kind K --bootstrap <value>`; the exchange burns the token and returns the agent's fleet credential and notes token, likewise once. The PM console's Agents screen mints these from its Provisioning section and shows the value and the command once, on that screen only.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge mint-enroll --agent scout-2 --kind muse --groups muse
+```
+
+Mints a day-long bootstrap token for `scout-2` and prints it, once.
+
+## fleet bridge enroll-tokens
+
+```
+fleet bridge enroll-tokens
+```
+
+| Flag | Argument | Default | Meaning                          |
+| ---- | -------- | ------- | -------------------------------- |
+| —    | —        | —       | Takes no arguments and no flags. |
+
+### Behaviour
+
+Central verb (owner token). Lists every minted bootstrap token's state: `pending`, `used` (with the exchange's time), `expired` (its TTL lapsed), or `revoked` (with the revocation time), each with its binding (agent, kind, groups, notes identity) and mint/expiry times. Route: `GET /api/<owner-token>/enroll-tokens`. State only: no hash or value is ever shown — the value existed once, in the mint answer.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge enroll-tokens
+```
+
+Shows which minted tokens are still outstanding, and how each closed one ended.
+
+## fleet bridge revoke-enroll
+
+```
+fleet bridge revoke-enroll (--agent A | --token-hash H)
+```
+
+| Flag           | Argument | Default | Meaning                                                                                          |
+| -------------- | -------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `--agent`      | `A`      | —       | Take back every still-pending token minted for this agent; the answer counts them.             |
+| `--token-hash` | `H`      | —       | Revoke the one token stored under this SHA-256 hash; the answer is `{revoked: true\|false}`.   |
+
+### Behaviour
+
+Central verb (owner token). Revokes unused bootstrap tokens. Route: `POST /api/<owner-token>/enroll-tokens/revoke`. Exactly one form is required. The hash is not a credential — it cannot enroll anything — so it may travel where a token value never may. Used tokens are untouched: they became credentials, revoked with `fleet bridge revoke --agent`. Expired tokens are already dead and keep their state.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge revoke-enroll --agent scout-2
+```
+
+Takes back every outstanding token minted for `scout-2`.
+
+## fleet bridge mint-credential
+
+```
+fleet bridge mint-credential --agent A [--scopes s1,s2] [--addr service:<name>]
+```
+
+| Flag       | Argument        | Default      | Meaning                                                                                          |
+| ---------- | --------------- | ------------ | ------------------------------------------------------------------------------------------------ |
+| `--agent`  | `A`             | required     | The agent (or service) the credential belongs to; it acts only as itself.                        |
+| `--scopes` | `s1,s2`         | see below    | Any of `inbox`, `send`, `read`. Agent mints default to `inbox, send`; service mints to `send, read`. |
+| `--addr`   | `service:<name>` | —           | Make it a service credential, bound to that address; the name must be the agent's own.           |
+
+### Behaviour
+
+Central verb (owner token). Mints a per-agent credential directly, for an agent already enrolled or for a service. Route: `POST /api/<owner-token>/fleet/credentials/mint`. Like the enroll mint, the answer carries the credential value **once** and the bridge stores only its hash. Enroll-minted credentials never carry `read`; that scope is for service credentials like the PM stack's.
+
+### Exit codes
+
+`0` ok · `2` usage · `3` transport or credentials · `4` the bridge refused the request.
+
+### Example
+
+```console
+$ fleet bridge mint-credential --agent pm-stack --addr service:pm-stack
+```
+
+Mints the PM stack's service credential and prints it, once, to be stored in the vault as `bridge.pm-stack-token`.
+
 ## fleet bridge hello
 
 ```

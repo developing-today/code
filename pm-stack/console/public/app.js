@@ -3771,12 +3771,220 @@ async function viewAgents() {
         : null,
     );
   };
+  // ---- provisioning (#14376, design §4.9) -------------------------------
+  // Minted enroll tokens, by state. Where the read cannot be made the
+  // screen says so, as it does for the directory.
+  let enroll = null;
+  try {
+    const got = await api("enroll-tokens");
+    if (Array.isArray(got)) enroll = got;
+  } catch {
+    enroll = null;
+  }
+  // A minted value, shown once: the card is built from the mint's
+  // answer and put straight into the page — never into this screen's
+  // state, the documents, or the outbox — so the next draw (leaving
+  // the screen, a refresh) takes it with it, and neither the bridge
+  // nor this console can show it again. That is the property, not a
+  // courtesy: the bridge keeps only the value's hash.
+  const showOnce = (title, note, value, command) => {
+    const copy = (what, label) =>
+      h(
+        "button",
+        {
+          class: "small",
+          onclick: () =>
+            navigator.clipboard
+              .writeText(what)
+              .then(() => toast("Copied"))
+              .catch(() => toast("Copying failed — select the text and copy it by hand", true)),
+        },
+        label,
+      );
+    const node = card(
+      h("h3", {}, title),
+      h("p", { class: "why" }, note),
+      h("pre", {}, value),
+      command ? h("pre", {}, command) : null,
+      h(
+        "div",
+        { class: "row end" },
+        copy(value, "Copy the value"),
+        command ? copy(command, "Copy the command") : null,
+        h("button", { class: "small ghost", onclick: () => node.remove() }, "Hide it"),
+      ),
+    );
+    view.prepend(node);
+    node.scrollIntoView();
+  };
+  const pName = h("input", { type: "text", "aria-label": "New agent name", placeholder: "new agent's name" });
+  const pKind = h("input", { type: "text", "aria-label": "Kind", list: "agent-kinds", placeholder: "kind — muse, codex, …" });
+  const pGroups = h("input", { type: "text", "aria-label": "Groups", placeholder: "groups, comma-separated" });
+  const pNotes = h("input", { type: "text", "aria-label": "Notes identity", placeholder: "notes identity (class/name) — blank for none" });
+  const pTtl = h(
+    "select",
+    { "aria-label": "Token lifetime" },
+    h("option", { value: "3600" }, "For an hour"),
+    h("option", { value: "86400" }, "For a day"),
+    h("option", { value: "604800" }, "For a week"),
+  );
+  pTtl.value = "86400";
+  const newAgent = card(
+    h("h3", {}, "New agent"),
+    h(
+      "p",
+      { class: "meta" },
+      "Mint a bootstrap enroll token, bound to the name, kind, groups and notes identity below. The token and the enroll command are shown once, when it is minted.",
+    ),
+    pName,
+    pKind,
+    h("datalist", { id: "agent-kinds" }, ["muse", "claude-code", "codex", "opencode", "openchamber", "openclaw", "gemini", "antigravity", "grok", "chatgpt", "generic"].map((k) => h("option", { value: k }))),
+    pGroups,
+    pNotes,
+    pTtl,
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "button",
+        {
+          onclick: async (e) => {
+            const agent = pName.value.trim();
+            if (!agent) return toast("Name the new agent first", true);
+            const result = await act(
+              "agent.mint-enroll",
+              {
+                agent,
+                kind: pKind.value.trim() || undefined,
+                groups: pGroups.value.split(",").map((g) => g.trim()).filter(Boolean),
+                notesIdentity: pNotes.value.trim() || undefined,
+                ttlSeconds: Number(pTtl.value) || undefined,
+              },
+              `Enroll token minted for ${agent}`,
+              e.target,
+            );
+            if (result && typeof result.bootstrap_token === "string") {
+              const groups = Array.isArray(result.groups) && result.groups.length ? ` --groups ${result.groups.join(",")}` : "";
+              showOnce(
+                `Enroll token for ${result.agent}`,
+                `Shown once: the bridge keeps only its hash, and it can never be shown again. It works until ${result.expires_at}. Run this on the new seat:`,
+                result.bootstrap_token,
+                `fleet agent enroll --name ${result.agent} --kind ${result.kind}${groups} --bootstrap ${result.bootstrap_token}`,
+              );
+            }
+          },
+        },
+        "Mint enroll token",
+      ),
+    ),
+  );
+  const cName = h("input", { type: "text", "aria-label": "Agent for the credential", list: "agent-names", placeholder: "agent's name" });
+  const cScope = (value, label, on) => {
+    const box = h("input", { type: "checkbox", value });
+    box.checked = on;
+    return { box, label: h("label", { class: "row check meta" }, box, label) };
+  };
+  const cInbox = cScope("inbox", "inbox", true);
+  const cSend = cScope("send", "send", true);
+  const cRead = cScope("read", "read", false);
+  const cService = h("input", { type: "checkbox" });
+  const newCredential = card(
+    h("h3", {}, "New credential"),
+    h(
+      "p",
+      { class: "meta" },
+      "Mint a credential directly, for an agent that is already enrolled or for a service. The value is shown once, when it is minted; keep it in the vault under the agent's token name.",
+    ),
+    cName,
+    h("datalist", { id: "agent-names" }, roster.filter((a) => a.surface === "fleet").map((a) => h("option", { value: a.name }))),
+    h("div", { class: "row" }, cInbox.label, cSend.label, cRead.label, h("label", { class: "row check meta" }, cService, "Service (service:<name>)")),
+    h(
+      "div",
+      { class: "row end" },
+      h(
+        "button",
+        {
+          onclick: async (e) => {
+            const agent = cName.value.trim();
+            if (!agent) return toast("Name the agent first", true);
+            const scopes = [cInbox, cSend, cRead].filter((s) => s.box.checked).map((s) => s.box.value);
+            if (!scopes.length) return toast("Pick at least one scope", true);
+            const result = await act(
+              "agent.mint-credential",
+              { agent, scopes, addr: cService.checked ? `service:${agent}` : undefined },
+              `Credential minted for ${agent}`,
+              e.target,
+            );
+            if (result && typeof result.credential === "string") {
+              showOnce(
+                `Credential for ${result.agent}`,
+                "Shown once: the bridge keeps only its hash, and it can never be shown again. Store it in the vault now, under the agent's token name.",
+                result.credential,
+                null,
+              );
+            }
+          },
+        },
+        "Mint credential",
+      ),
+    ),
+  );
+  const tokenRow = (t) => {
+    const closed =
+      t.state === "used"
+        ? `used ${ago(t.used_at)} — the exchange burned it`
+        : t.state === "revoked"
+          ? `revoked ${ago(t.revoked_at)} — taken back by the owner`
+          : t.state === "expired"
+            ? `expired ${ago(t.expires_at)} — its time ran out`
+            : `minted ${ago(t.created)} · works until ${t.expires_at}`;
+    return card(
+      h(
+        "div",
+        { class: "row" },
+        h("h3", {}, t.agent),
+        chip(t.state, t.state === "pending" ? "warn" : t.state === "used" ? "good" : ""),
+      ),
+      h(
+        "p",
+        { class: "meta" },
+        `${t.kind}${t.groups?.length ? ` · groups ${t.groups.join(", ")}` : ""}${t.notes_identity ? ` · notes ${t.notes_identity}` : ""} · ${closed}`,
+      ),
+      t.state === "pending"
+        ? h(
+            "div",
+            { class: "row end" },
+            h(
+              "button",
+              {
+                class: "small ghost",
+                onclick: async (e) => {
+                  const yes = await ask({
+                    title: `Take back ${t.agent}'s unused enroll tokens?`,
+                    text: "Every still-pending token minted for this agent is revoked. One already used is not touched — its credentials are revoked from the roster above.",
+                    okLabel: "Take back",
+                    danger: true,
+                  });
+                  if (yes !== null) act("agent.revoke-enroll", { agent: t.agent }, `Took back ${t.agent}'s enroll tokens`, e.target);
+                },
+              },
+              "Take back",
+            ),
+          )
+        : null,
+    );
+  };
   return [
     ...notices(docs.ops, ["agents"]),
     compose,
     h("h2", {}, `Agents (${roster.length})`),
     directory === null ? empty("The unified directory could not be read just now; the fleet roster is shown, without credential state.") : null,
     ...roster.map(agentCard),
+    h("h2", {}, "Provisioning"),
+    newAgent,
+    newCredential,
+    enroll === null ? empty("The enroll tokens could not be read just now.") : null,
+    ...(enroll ?? []).map(tokenRow),
     h("h2", {}, "Recent messages"),
     ...(recent.length
       ? recent.map((m) => card(h("p", { class: "meta" }, `${ago(m.ts)} · ${m.direction} · ${m.agent} · ${m.kind}`), h("p", {}, String(m.body ?? "").slice(0, 600))))
