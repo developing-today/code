@@ -3313,11 +3313,92 @@ export function freshSaid(state, now = Date.now()) {
   if (state.signedOut) return { text: "signed out", tone: "down" };
   if (state.offline) return { text: since ? `offline · ${since}` : "offline", tone: "stale" };
   if (age === null) return { text: "", tone: "" };
+  // Connected to be told of changes: what is shown is current until
+  // something is said, however long ago it was read.
+  if (state.live) return { text: "live", tone: "" };
   return age < 45 ? { text: "live", tone: "" } : { text: `as of ${since}`, tone: age > 180 ? "stale" : "" };
 }
 
+// ---- live: told when something changes -----------------------------------
+// Cloudflare holds a connection open to the app and says which
+// documents have changed; the app reads them again at once (by their
+// tags, so being told of nothing new costs one "not modified"). What
+// the owner does still goes by its own requests, which are kept and
+// sent again when there is no connection. With no live connection (a
+// machine serving the app by itself, a network that will not carry
+// one) the app looks every twenty seconds, as it always did.
+
+const LIVE_DOCS = ["core", "questions", "ops"];
+
+/** What a message over the live connection asks for: the documents to
+ * read again. Anything that is not such a message asks for nothing. */
+export function liveMessage(text) {
+  let msg = null;
+  try {
+    msg = typeof text === "string" ? JSON.parse(text) : null;
+  } catch {
+    msg = null;
+  }
+  if (msg?.t !== "changed" || !Array.isArray(msg.docs)) return { docs: [] };
+  return { docs: msg.docs.filter((doc) => LIVE_DOCS.includes(doc)) };
+}
+
+/** How long to wait before connecting again after the connection
+ * dropped `tries` times running. */
+export function liveDelay(tries) {
+  return Math.min(30_000, 1_000 * 2 ** Math.max(0, Math.min(tries, 10) - 1));
+}
+
+/** Where the live connection is, for a page at `at`. */
+export function liveUrl(at) {
+  return `${at.protocol === "https:" ? "wss:" : "ws:"}//${at.host}${API}events`;
+}
+
+let live = null;
+let liveTries = 0;
+let liveTimer = null;
+let livePing = null;
+const liveOpen = () => live !== null && live.readyState === 1;
+
+function connectLive() {
+  clearTimeout(liveTimer);
+  liveTimer = null;
+  // Only where Cloudflare is in front (a machine serving the app by
+  // itself holds no connections), and only while someone is looking.
+  if (live || !me?.edge || signedOut || typeof WebSocket === "undefined" || document.visibilityState !== "visible") return;
+  let ws;
+  try {
+    ws = new WebSocket(liveUrl(location));
+  } catch {
+    return;
+  }
+  live = ws;
+  ws.onopen = () => {
+    liveTries = 0;
+    // The platform answers "ping" itself; saying it keeps the
+    // connection from being dropped as idle.
+    livePing = setInterval(() => liveOpen() && ws.send("ping"), 45_000);
+    drawFresh();
+    // What changed while nothing was connected.
+    refresh(false);
+  };
+  ws.onmessage = (event) => {
+    if (liveMessage(event.data).docs.length > 0) refresh(false);
+  };
+  const ended = () => {
+    if (live !== ws) return;
+    live = null;
+    clearInterval(livePing);
+    liveTries++;
+    drawFresh();
+    liveTimer = setTimeout(connectLive, liveDelay(liveTries));
+  };
+  ws.onclose = ended;
+  ws.onerror = ended;
+}
+
 function drawFresh() {
-  const said = freshSaid({ asOf: asOf.core, offline, signedOut });
+  const said = freshSaid({ asOf: asOf.core, offline, signedOut, live: liveOpen() });
   freshEl.className = `fresh${said.tone ? ` ${said.tone}` : ""}`;
   freshEl.textContent = said.text;
 }
@@ -3470,16 +3551,26 @@ if (typeof document !== "undefined" && view) {
     if (document.visibilityState === "hidden") flushPending();
     else {
       refresh(false);
+      connectLive();
       // Back from the Android app after linking: show the phone it added.
       if (route === "more/phone") draw();
     }
   });
   addEventListener("pagehide", flushPending);
-  setInterval(() => document.visibilityState === "visible" && refresh(false), 20_000);
+  // Looking every twenty seconds is what keeps the screen current with
+  // no live connection. With one, a change is said as it happens, and
+  // this is only a look every minute in case something was missed.
+  let looks = 0;
+  setInterval(() => {
+    looks++;
+    if (document.visibilityState !== "visible") return;
+    if (!liveOpen() || looks % 3 === 0) refresh(false);
+  }, 20_000);
   setInterval(drawFresh, 10_000);
   api("me")
     .then((m) => {
       me = m;
+      connectLive();
     })
     .catch(() => {});
   // The worker shows notifications, keeps the app and what it last saw

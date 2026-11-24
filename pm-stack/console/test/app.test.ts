@@ -31,6 +31,9 @@ import {
   heldWaitsSaid,
   levelHeadings,
   listed,
+  liveDelay,
+  liveMessage,
+  liveUrl,
   machineSaid,
   needsLead,
   recommendedSets,
@@ -1084,6 +1087,64 @@ test("a task's agent, to message it: its lane where that is an agent's name, els
   expect(taskAgent({ lane: null, worker: "conductor" })).toBe("conductor");
   expect(taskAgent({ lane: "", worker: "" })).toBeNull();
   expect(taskAgent(null)).toBeNull();
+});
+
+// The app is told when something changes (a WebSocket the Worker
+// holds) and reads again at once. What it is told is the Worker's to
+// word (edge.ts `changed`); the oracle for the wire is that message.
+test("what the Worker says over the live connection: which documents to read again, and nothing else is acted on", () => {
+  expect(liveMessage('{"t":"changed","docs":["core"]}')).toEqual({ docs: ["core"] });
+  expect(liveMessage('{"t":"changed","docs":["core","ops","questions"]}')).toEqual({
+    docs: ["core", "ops", "questions"],
+  });
+  // The platform's own answer to "ping", a kind this app does not know, and anything that is not a message.
+  for (const text of [
+    "pong",
+    '{"t":"something-new","docs":["core"]}',
+    '{"t":"changed"}',
+    '{"t":"changed","docs":"core"}',
+    "{",
+    "",
+    null,
+    7,
+  ]) {
+    expect([text, liveMessage(text)]).toEqual([text, { docs: [] }]);
+  }
+  // A document this app does not have is not asked for.
+  expect(liveMessage('{"t":"changed","docs":["core","secrets",7]}')).toEqual({ docs: ["core"] });
+});
+
+test("a live connection that drops is tried again, soon at first and then no more often than every half minute", () => {
+  const delays = [1, 2, 3, 4, 5, 6, 7, 20].map((tries) => liveDelay(tries));
+  expect(delays[0]).toBe(1_000);
+  // Never sooner than the time before, never more than half a minute.
+  for (let i = 1; i < delays.length; i++) expect(delays[i]).toBeGreaterThanOrEqual(delays[i - 1]);
+  expect(Math.max(...delays)).toBe(30_000);
+  expect(liveDelay(0)).toBe(1_000);
+});
+
+test("where the live connection is: the same host, secure where the page is", () => {
+  expect(liveUrl({ protocol: "https:", host: "pm.example.com" })).toBe("wss://pm.example.com/console/api/events");
+  expect(liveUrl({ protocol: "http:", host: "127.0.0.1:4872" })).toBe("ws://127.0.0.1:4872/console/api/events");
+});
+
+test("the header says the screen is live only while it is: connected, or read within the last look", () => {
+  const now = Date.parse("2026-11-24T09:00:00Z");
+  // Connected: live, however long ago the last read was, since a change would have been said.
+  expect(freshSaid({ asOf: now - 5 * 60_000, offline: false, signedOut: false, live: true }, now)).toEqual({
+    text: "live",
+    tone: "",
+  });
+  // Not connected: by how old what is shown is, as before.
+  expect(freshSaid({ asOf: now - 10_000, offline: false, signedOut: false, live: false }, now).text).toBe("live");
+  expect(freshSaid({ asOf: now - 5 * 60_000, offline: false, signedOut: false, live: false }, now).text).toBe(
+    "as of 5 min ago",
+  );
+  // No connection at all, or signed out, is said first.
+  expect(freshSaid({ asOf: now - 5 * 60_000, offline: true, signedOut: false, live: true }, now).text).toBe(
+    "offline · 5 min ago",
+  );
+  expect(freshSaid({ asOf: now, offline: false, signedOut: true, live: true }, now).text).toBe("signed out");
 });
 
 test("everything Cloudflare does or reads itself has words for being turned away for it", () => {
