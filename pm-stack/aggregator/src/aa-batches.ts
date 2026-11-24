@@ -202,6 +202,25 @@ export function summarizeBatches(
       latest: kept.length === 0,
     });
   }
+  // Only presentation changes here. A label collision is not evidence that
+  // two imports carry identical data; the fingerprint rule above decides that.
+  const baseCounts = new Map<string, number>();
+  for (const { label } of kept) baseCounts.set(label, (baseCounts.get(label) ?? 0) + 1);
+  const used = new Set(baseCounts.keys());
+  kept.forEach((batch, index) => {
+    if (baseCounts.get(batch.label) === 1) return;
+    const time = batch.importedAt ? Date.parse(batch.importedAt) : NaN;
+    const imported = Number.isFinite(time) ? new Date(time).toISOString() : "unknown import time";
+    const counts = Object.entries(batch.insertedCounts ?? {});
+    counts.sort(([a], [b]) => a.localeCompare(b));
+    const rows = counts.map(([table, count]) => `${table}: ${count}`).join(", ");
+    const detail = `${batch.label} · ${imported}${rows ? ` · ${rows}` : ""}`;
+    let label = detail;
+    // Exact timestamp/count ties and missing metadata still need unique labels.
+    for (let suffix = index + 1; used.has(label); suffix++) label = `${detail} · import ${suffix}`;
+    used.add(label);
+    batch.label = label;
+  });
   return kept;
 }
 

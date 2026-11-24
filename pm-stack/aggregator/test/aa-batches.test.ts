@@ -236,6 +236,20 @@ describe("batch summaries", () => {
     const out = summarizeBatches(rows, new Map());
     expect(out).toHaveLength(2);
     expect(out.every((b) => b.fingerprint === null)).toBe(true);
+    expect(out.map((b) => b.label)).toEqual([
+      `${batchLabel(rows[0])} · 2026-10-31T15:00:00.000Z`,
+      `${batchLabel(rows[1])} · 2026-10-31T14:00:00.000Z`,
+    ]);
+  });
+
+  test("identical import metadata still yields distinct picker labels", () => {
+    const at = "2026-10-31T15:00:00Z";
+    const extra = { insertedCounts: { sheet_rows: 12 } };
+    const rows = parseBatchIndex([rawRow(B1, at, extra), rawRow(B2, at, extra)]);
+    const out = summarizeBatches(rows, new Map());
+    expect(out.map((b) => b.importBatch)).toEqual([B1, B2]);
+    expect(out.every((b) => b.label.includes("sheet_rows: 12"))).toBe(true);
+    expect(new Set(out.map((b) => b.label)).size).toBe(2);
   });
 
   test("cache entries validate measurement scope and fingerprint (#10042)", () => {
