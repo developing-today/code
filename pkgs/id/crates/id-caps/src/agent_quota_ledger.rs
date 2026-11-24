@@ -14,7 +14,7 @@
 //! close, so leave/rejoin cycles and host restarts never reset a
 //! budget.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +43,13 @@ pub struct LedgerCheckedOut {
 }
 
 /// The quota ledger for one agent in one world.
+///
+/// `checkout_epoch` is store bookkeeping, not quota state: the
+/// [`QuotaLedgerStore`] stamps each [`QuotaLedgerStore::open`] with
+/// the pair's next epoch so a stale [`QuotaLedgerStore::close`]
+/// from an older handle can be told apart from the live checkout
+/// (#14602). It defaults to zero for ledgers written before the
+/// field existed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentQuotaLedger {
     agent_key: [u8; 32],
@@ -52,6 +59,8 @@ pub struct AgentQuotaLedger {
     replenishment: Option<Replenishment>,
     spend: Quota,
     last_replenished_at: u64,
+    #[serde(default)]
+    checkout_epoch: u64,
 }
 
 impl AgentQuotaLedger {
@@ -74,6 +83,7 @@ impl AgentQuotaLedger {
             replenishment: class.replenishment,
             spend: Quota::zero(),
             last_replenished_at: now,
+            checkout_epoch: 0,
         }
     }
 
@@ -124,6 +134,14 @@ impl AgentQuotaLedger {
         let mut copy = self.clone();
         copy.refresh(now);
         copy.spend
+    }
+
+    /// The checkout epoch the store stamped on this handle at open
+    /// (#14602). The store compares it on close to tell the live
+    /// checkout apart from an older handle's stale close.
+    #[must_use]
+    pub const fn checkout_epoch(&self) -> u64 {
+        self.checkout_epoch
     }
 
     /// Whether a charge of `charge` at `now` would be admitted,
@@ -234,12 +252,28 @@ pub fn spend_by_role(ledgers: &mut [AgentQuotaLedger], now: u64) -> BTreeMap<Str
 pub struct QuotaLedgerStore {
     ledgers: BTreeMap<([u8; 32], String), AgentQuotaLedger>,
     /// Pairs whose ledger is currently checked out by a live
-    /// handle (#14526). A checkout is taken by [`Self::open`] and
-    /// released by [`Self::close`]; it is runtime state, not part
-    /// of a snapshot -- a restored store starts with nothing
-    /// checked out.
+    /// handle (#14526), mapped to the checkout epoch stamped on
+    /// that handle at open (#14602). A checkout is taken by
+    /// [`Self::open`] and released by [`Self::close`]; it is
+    /// runtime state, not part of a snapshot -- a restored store
+    /// starts with nothing checked out.
+    ///
+    /// The epoch is what makes a stale close safe: `release`
+    /// cannot tell a dropped handle from a live one, so a
+    /// release-while-live followed by another open hands out two
+    /// handles briefly -- but the second open stamps a newer
+    /// epoch, and the first handle's later close carries the old
+    /// one and is ignored instead of clearing the live checkout
+    /// and writing its older ledger back over the newer spend.
     #[serde(default)]
-    checked_out: BTreeSet<([u8; 32], String)>,
+    checked_out: BTreeMap<([u8; 32], String), u64>,
+    /// Next checkout epoch per pair (#14602). Runtime state like
+    /// `checked_out`, except it must never go backwards across a
+    /// snapshot/restore: a pre-restart handle that still closes
+    /// late must carry an epoch older than any post-restart open,
+    /// so `restore` reseeds each pair past its snapshot's epoch.
+    #[serde(default)]
+    next_epoch: BTreeMap<([u8; 32], String), u64>,
 }
 
 impl QuotaLedgerStore {
@@ -279,10 +313,10 @@ impl QuotaLedgerStore {
     ) -> Result<AgentQuotaLedger, LedgerCheckedOut> {
         let world = world.into();
         let key = (agent_key, world.clone());
-        if self.checked_out.contains(&key) {
+        if self.checked_out.contains_key(&key) {
             return Err(LedgerCheckedOut { agent_key, world });
         }
-        let ledger = match self.ledgers.get_mut(&key) {
+        let mut ledger = match self.ledgers.get_mut(&key) {
             Some(ledger) => {
                 ledger.reopen(role, class, now);
                 ledger.clone()
@@ -292,21 +326,39 @@ impl QuotaLedgerStore {
         // The ledger lives in the store from the open on (#14580):
         // if the handle is dropped without close, the pair's
         // ledger -- with every earlier session's banked spend --
-        // is still here for `release` to hand back.
+        // is still here for `release` to hand back. The epoch
+        // stamped here (#14602) is what lets a later close tell
+        // this handle apart from an older one: each open for the
+        // pair moves to a fresh epoch, so a stale close from a
+        // handle opened before a `release` can never match the
+        // live checkout.
+        let epoch = self.next_epoch.get(&key).copied().unwrap_or(0) + 1;
+        self.next_epoch.insert(key.clone(), epoch);
+        ledger.checkout_epoch = epoch;
         self.ledgers.insert(key.clone(), ledger.clone());
-        self.checked_out.insert(key);
+        self.checked_out.insert(key, epoch);
         Ok(ledger)
     }
 
     /// Hand a session's ledger back to the store, e.g. on leave,
     /// releasing its checkout so the pair can open again. Upserts
     /// by the ledger's own agent and world, so a close after a
-    /// role edit keeps the ledger under its new role. Closing a
-    /// ledger that was never checked out (e.g. via [`Self::restore`])
-    /// simply upserts it.
+    /// role edit keeps the ledger under its new role. A close of
+    /// a ledger whose epoch does not match the live checkout --
+    /// an older handle closing after a `release` admitted a newer
+    /// one (#14602) -- is ignored: it clears nothing and banks
+    /// nothing, so the live handle's checkout and spend survive.
+    /// Closing a ledger that was never checked out (e.g. via
+    /// [`Self::restore`]) simply upserts it.
     pub fn close(&mut self, ledger: AgentQuotaLedger) {
         let key = (*ledger.agent_key(), ledger.world().to_owned());
-        self.checked_out.remove(&key);
+        match self.checked_out.get(&key).copied() {
+            Some(live) if live != ledger.checkout_epoch => return,
+            Some(_) => {
+                self.checked_out.remove(&key);
+            }
+            None => {}
+        }
         self.ledgers.insert(key, ledger);
     }
 
@@ -319,9 +371,18 @@ impl QuotaLedgerStore {
     /// handle owned them, and only a close banks a session's
     /// spend. Returns `None`, changing nothing, when the pair is
     /// not checked out.
+    ///
+    /// `release` cannot tell a dropped handle from a live one:
+    /// calling it while the handle is still live clears the
+    /// checkout, and the next open is admitted alongside the old
+    /// handle (#14602). That misuse stays safe, though: the new
+    /// open stamps a fresh checkout epoch, so the old handle's
+    /// later close is stale and ignored -- the live checkout is
+    /// not cleared and its spend is not overwritten. Reserve
+    /// `release` for the genuinely-dropped case.
     pub fn release(&mut self, agent_key: &[u8; 32], world: &str) -> Option<AgentQuotaLedger> {
         let key = (*agent_key, world.to_owned());
-        if self.checked_out.remove(&key) {
+        if self.checked_out.remove(&key).is_some() {
             self.ledgers.get(&key).cloned()
         } else {
             None
@@ -340,11 +401,19 @@ impl QuotaLedgerStore {
 
     /// Rebuild a store from a snapshotted ledger list, e.g. after a
     /// host restart. Later entries win on duplicate (agent, world)
-    /// keys, so a concatenated snapshot still converges.
+    /// keys, so a concatenated snapshot still converges. Each
+    /// pair's next epoch is reseeded past its snapshot's epoch
+    /// (#14602), so a pre-restart handle that still closes late
+    /// can never match a post-restart checkout.
     #[must_use]
     pub fn restore(ledgers: Vec<AgentQuotaLedger>) -> Self {
         let mut store = Self::new();
         for ledger in ledgers {
+            let key = (*ledger.agent_key(), ledger.world().to_owned());
+            let next = ledger.checkout_epoch() + 1;
+            if store.next_epoch.get(&key).copied().unwrap_or(0) < next {
+                store.next_epoch.insert(key, next);
+            }
             store.close(ledger);
         }
         store
@@ -360,7 +429,8 @@ impl QuotaLedgerStore {
     /// live handle (#14526).
     #[must_use]
     pub fn is_checked_out(&self, agent_key: &[u8; 32], world: &str) -> bool {
-        self.checked_out.contains(&(*agent_key, world.to_owned()))
+        self.checked_out
+            .contains_key(&(*agent_key, world.to_owned()))
     }
 
     /// The spend outstanding for one agent in one world as of `now`,
@@ -793,9 +863,92 @@ mod tests {
         // A properly closed pair has no checkout to release, and
         // release must not disturb the banked ledger.
         assert_eq!(store.release(&AGENT, "w"), None);
+        assert_eq!(store.spend_for_agent(&AGENT, "w", 0).unwrap().tool_calls, 1);
+    }
+
+    #[test]
+    fn store_release_of_a_live_handle_cannot_lose_a_newer_handles_spend() {
+        // The #14602 repro: open A, call `release` while A is
+        // still live (misusing the dropped-handle recovery API),
+        // open and charge B, then close A. Before the checkout
+        // epoch, A's stale close cleared B's checkout and wrote
+        // A's older ledger over B's spend, silently dropping B's
+        // charges and admitting a third open beside the still-live
+        // B. Now A's close is stale and ignored.
+        let mut store = QuotaLedgerStore::new();
+        let mut a = store
+            .open(AGENT, "w", "archivist", class(4, None), 0)
+            .unwrap();
+        a.charge(0, call()).unwrap();
+        assert!(store.release(&AGENT, "w").is_some());
+
+        // The misuse admits a second live handle: the store cannot
+        // tell a live handle from a dropped one, so this stays
+        // permitted -- but it must be safe.
+        let mut b = store
+            .open(AGENT, "w", "archivist", class(4, None), 1)
+            .unwrap();
+        b.charge(1, call()).unwrap();
+        b.charge(1, call()).unwrap();
+        b.charge(1, call()).unwrap();
+
+        // A's stale close changes nothing: B stays checked out, and
+        // the store still holds B-as-opened rather than A's older
+        // ledger with its single charge.
+        store.close(a);
+        assert!(store.is_checked_out(&AGENT, "w"));
+        assert_eq!(store.spend_for_agent(&AGENT, "w", 1).unwrap().tool_calls, 0);
+        assert!(store
+            .open(AGENT, "w", "archivist", class(4, None), 2)
+            .is_err());
+
+        // B's own close is the live one: it banks B's three
+        // charges and releases the pair for the next open.
+        store.close(b);
+        assert!(!store.is_checked_out(&AGENT, "w"));
+        let rejoined = store
+            .open(AGENT, "w", "archivist", class(4, None), 3)
+            .unwrap();
+        assert_eq!(rejoined.spend_at(3).tool_calls, 3);
+    }
+
+    #[test]
+    fn restored_store_ignores_a_pre_restart_handles_late_close() {
+        // A handle that survives a snapshot/restore (the host dies
+        // while it is live) carries an epoch from before the
+        // restore; `restore` reseeds past it (#14602), so a late
+        // close from it cannot clear or overwrite the post-restart
+        // checkout.
+        let mut store = QuotaLedgerStore::new();
+        let mut first = store
+            .open(AGENT, "w", "archivist", class(9, None), 0)
+            .unwrap();
+        first.charge(0, call()).unwrap();
+        store.close(first);
+
+        let mut live = store
+            .open(AGENT, "w", "archivist", class(9, None), 1)
+            .unwrap();
+        live.charge(1, call()).unwrap();
+        let snapshot = serde_json::to_string(&store.ledgers()).unwrap();
+        let mut restored = QuotaLedgerStore::restore(serde_json::from_str(&snapshot).unwrap());
+
+        let mut rejoined = restored
+            .open(AGENT, "w", "archivist", class(9, None), 2)
+            .unwrap();
+        rejoined.charge(2, call()).unwrap();
+
+        restored.close(live);
+        assert!(restored.is_checked_out(&AGENT, "w"));
         assert_eq!(
-            store.spend_for_agent(&AGENT, "w", 0).unwrap().tool_calls,
+            restored.spend_for_agent(&AGENT, "w", 2).unwrap().tool_calls,
             1
+        );
+
+        restored.close(rejoined);
+        assert_eq!(
+            restored.spend_for_agent(&AGENT, "w", 2).unwrap().tool_calls,
+            2
         );
     }
 }
