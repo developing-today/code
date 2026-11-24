@@ -1620,6 +1620,18 @@
       "status": "mapped"
     },
     {
+      "id": "id.rust.id-directory.integration",
+      "paths": ["pkgs/id/crates/id-directory/tests/derived_visibility.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
+    },
+    {
       "id": "id.rust.id-import-notion.integration",
       "paths": ["pkgs/id/crates/id-import-notion/tests/recorded_inventory.rs"],
       "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",

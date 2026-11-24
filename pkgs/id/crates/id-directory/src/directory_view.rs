@@ -1615,6 +1615,99 @@ fn scope_names(scopes: WorldScopes) -> Vec<String> {
     .collect()
 }
 
+/// One page of the friendship adjacency one viewer may see.
+///
+/// The derived-visibility graph oracle for #13583 pages this type: the
+/// page holds only neighbours the viewer is authorized for, its length is
+/// the visible count for the page, and [`VisibleAdjacencyPage::has_next`]
+/// is the next-page indication. Makes no timing claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibleAdjacencyPage {
+    /// The visible neighbours on this page, in account-ID order.
+    pub neighbours: Vec<String>,
+    /// Whether more visible neighbours follow after this page.
+    pub has_next: bool,
+}
+
+/// The friendship neighbours of `account` that `viewer` may see.
+///
+/// The reader contract mirrors [`view`]: an account sees exactly its own
+/// adjacency, the admin sees every account's adjacency, and anyone else —
+/// anonymous viewers, and accounts asking about somebody else's adjacency —
+/// sees nothing. Unknown accounts read the same as unauthorized ones, so
+/// neither existence form leaks through the query.
+#[must_use]
+pub fn visible_friends(
+    viewer: &Viewer,
+    directory: &Directory,
+    account: &str,
+) -> Vec<String> {
+    let authorized = match viewer {
+        Viewer::Admin => true,
+        Viewer::Account(me) => me.as_str() == account,
+        Viewer::Anonymous => false,
+    };
+    if authorized {
+        let mut neighbours = directory.friends_of(account);
+        neighbours.sort();
+        neighbours
+    } else {
+        Vec::new()
+    }
+}
+
+/// How many friendship neighbours of `account` `viewer` may see: the
+/// length of [`visible_friends`].
+#[must_use]
+pub fn visible_friend_count(
+    viewer: &Viewer,
+    directory: &Directory,
+    account: &str,
+) -> usize {
+    visible_friends(viewer, directory, account).len()
+}
+
+/// [`visible_friends`] one page at a time, for the derived-visibility
+/// fixture (#13583): a reader walks the visible adjacency of `account`
+/// without ever learning about hidden neighbours. `limit` caps the page
+/// size; `after` is the neighbour ID that ended the previous page, or
+/// [`None`] for the first page.
+///
+/// The cursor is resolved in the already-filtered visible list, never in
+/// the full adjacency: an `after` naming a hidden neighbour — or any ID
+/// the viewer may not see — matches nothing and yields an empty page with
+/// `has_next` false, the same in every store. A hidden neighbour can
+/// therefore never change a page's contents, its count, or its next-page
+/// flag. Makes no timing claim.
+#[must_use]
+pub fn visible_friends_page(
+    viewer: &Viewer,
+    directory: &Directory,
+    account: &str,
+    limit: usize,
+    after: Option<&str>,
+) -> VisibleAdjacencyPage {
+    let visible = visible_friends(viewer, directory, account);
+    let start = match after {
+        None => 0,
+        Some(cursor) => match visible.iter().position(|id| id.as_str() == cursor) {
+            Some(index) => index + 1,
+            None => {
+                return VisibleAdjacencyPage {
+                    neighbours: Vec::new(),
+                    has_next: false,
+                };
+            }
+        },
+    };
+    let neighbours: Vec<String> = visible.iter().skip(start).take(limit).cloned().collect();
+    let has_next = start + neighbours.len() < visible.len();
+    VisibleAdjacencyPage {
+        neighbours,
+        has_next,
+    }
+}
+
 pub const fn level_name(level: Level) -> &'static str {
     match level {
         Level::Access => "access",
