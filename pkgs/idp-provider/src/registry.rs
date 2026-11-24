@@ -146,8 +146,9 @@ mod saml_registration_tests {
             // Oracle: std's IP loopback classification, independent of URL policy.
             let ip = std::net::Ipv4Addr::from(octets);
             let http = format!("http://{ip}:{port}/{path}");
+            let https = format!("https://{ip}:{port}/{path}");
             prop_assert_eq!(validate_acs_url(&http).is_ok(), ip.is_loopback());
-            prop_assert!(validate_acs_url(&format!("https://{ip}:{port}/{path}")).is_ok());
+            prop_assert!(validate_acs_url(&https).is_ok());
         }
 
         #[test]
@@ -159,7 +160,8 @@ mod saml_registration_tests {
             let sp: SamlSp = serde_json::from_value(sp(&entity, &url)).unwrap();
             prop_assert!(validate_saml_registrations(std::slice::from_ref(&sp)).is_ok());
             prop_assert!(sp.accepts_acs(&url));
-            prop_assert!(!sp.accepts_acs(&format!("{url}/")));
+            let different_acs = format!("{url}/");
+            prop_assert!(!sp.accepts_acs(&different_acs));
             prop_assert!(validate_saml_registrations(&[sp.clone(), sp]).is_err());
         }
     }
