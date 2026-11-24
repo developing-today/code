@@ -1,9 +1,8 @@
 # Cloudflare rehost of the four fleet repos — evaluation (#8584)
 
-Status: **evaluation complete; surface decision is Drew's.** Until a
-surface is chosen and provisioned, the five-copy freshness probe
-reports `cloudflare_rehost` STALE — loudly, by design, so the missing
-copy is never silently forgotten.
+Status: **decided and built.** Drew picked option 2 (Workers + R2
+smart-HTTP) on 2026-11-24 — see the addendum at the end of this file.
+The evaluation below is the record the decision was made from.
 
 ## The question
 
@@ -96,3 +95,19 @@ verify HEAD against the source).
 
 Recorded on #8584 with this evaluation; the freshness readout keeps
 the leg visible as STALE until it lands.
+
+## Decision and build (2026-11-24)
+
+Drew picked **option 2** — "Go with Workers + R2 smart-HTTP instead"
+(2026-11-24 04:24 CST, recorded on #8584) — over this evaluation's
+option-3 recommendation, accepting the effort/l protocol build in
+exchange for a serving path that survives the laptop being down.
+
+Built in the same pass (PR pending Felix's review at the time of
+writing): R2 bucket `fleet-git-rehost`; Worker `fleet-git-rehost`
+serving protocol-v0 smart-HTTP at the custom domain
+`git.security.cab` (workers.dev address also answers); the publisher
+`bin/rehost_publish.py` + `bin/rehost_publish_all.py` on the daily
+03:20 `github-backup-rehost.timer`; and the freshness probe's
+`cloudflare_rehost` checker wired to a real HEAD comparison against
+the live advertisement. Design: `infra/github-backup/rehost/README.md`.
