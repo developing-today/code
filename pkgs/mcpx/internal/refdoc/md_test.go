@@ -60,3 +60,36 @@ func TestRenderingIsDeterministic(t *testing.T) {
 		t.Error("same input rendered different bytes across runs")
 	}
 }
+
+func TestTableEscapesAnglePlaceholdersInProse(t *testing.T) {
+	got := refdoc.Table(
+		[]string{"setting", "governs"},
+		[][]string{
+			{"`a.b`", "visible via mcpx elicit result <id>"},
+			{"`c.d`", "host, or `flake:<ref>` for a Nix flake devshell"},
+		},
+	)
+	want := "| setting | governs |\n" +
+		"| --- | --- |\n" +
+		"| `a.b` | visible via mcpx elicit result &lt;id&gt; |\n" +
+		"| `c.d` | host, or `flake:<ref>` for a Nix flake devshell |\n"
+	if got != want {
+		t.Errorf("Table mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestEscapeAngles(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain text", "plain text"},
+		{"a <server> b", "a &lt;server&gt; b"},
+		{"`<server>` in code", "`<server>` in code"},
+		{"``a ` <b>`` and <c>", "``a ` <b>`` and &lt;c&gt;"},
+		{"already &lt;escaped&gt;", "already &lt;escaped&gt;"},
+		{"a lone ` backtick, then <x>", "a lone ` backtick, then &lt;x&gt;"},
+	}
+	for _, c := range cases {
+		if got := refdoc.EscapeAngles(c.in); got != c.want {
+			t.Errorf("EscapeAngles(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

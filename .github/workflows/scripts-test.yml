@@ -32,8 +32,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run update-nixpkgs-inputs contract tests (#603)
         run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_inputs.py' -v
+      - name: Run fleet per-seat bootstrap contract tests (#12236)
+        run: |
+          test -f scripts/tests/test_fleet_bootstrap.py
+          python3 -m unittest discover -s scripts/tests -p 'test_fleet_bootstrap.py' -v
+      - name: Run muse bootstrap check-op contract tests (#13048)
+        run: |
+          test -f scripts/tests/test_muse_bootstrap_check_op.py
+          python3 -m unittest discover -s scripts/tests -p 'test_muse_bootstrap_check_op.py' -v
       - name: Run worker preflight contract tests (#4862)
         run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
+      - name: Run orchestration-pass retirement record contract tests (#2136)
+        run: |
+          test -f scripts/tests/test_orchestration_pass_retirement.py
+          python3 -m unittest discover -s scripts/tests -p 'test_orchestration_pass_retirement.py' -v
       - name: Run failure classifier contract tests (#2176)
         run: python3 -m unittest discover -s scripts/tests -p 'test_classify_failure.py' -v
       - name: Run bitwarden-load-secrets multiline contract tests (#5650)
@@ -44,6 +56,10 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_hardware_doc_init.py' -v
       - name: Run provider retirement gate contract tests (#5610)
         run: python3 -m unittest discover -s scripts/tests -p 'test_check_provider_retirement_gate.py' -v
+      - name: Run restore row-count diff contract tests (#12788)
+        run: |
+          test -f scripts/tests/test_restore_row_count_diff.py
+          python3 -m unittest discover -s scripts/tests -p 'test_restore_row_count_diff.py' -v
       - name: Run auto-format workflow contract tests (#7664)
         run: python3 -m unittest discover -s scripts/tests -p 'test_auto_format_workflow.py' -v
       - name: Run power-guard timing validation tests (#6477)

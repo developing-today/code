@@ -1,0 +1,37 @@
+# Live help dumps from the laptop's installed fleet binary — 2026-11-23
+# (via ~/tools/laptop-ssh.sh: `fleet bridge --help`, `fleet bridge inbox --help`,
+#  `fleet commander --help`)
+
+===== fleet bridge --help =====
+fleet bridge — Fleet messaging through the message bridge: central sends messages or commands to an agent, a group or all; agents read their mailbox, answer and ack.
+
+Usage: fleet bridge <command> [args...]
+Commands: send, agents, log, hello, inbox, post, ack, health
+Status: included in this build (options: fleet bridge <command> --help)
+
+===== fleet bridge inbox --help =====
+usage: fleet bridge inbox [--agent A] [--groups g1,g2] [--commands | --messages] [--all]
+        [--since-id N] [--limit N] [--take] [--wait SECS] [--interval SECS]
+
+agent (fleet token). Unread by default; --all includes read ones;
+--take marks what it returns as read; --wait polls until something
+arrives or SECS pass.
+
+The agent defaults to $FLEET_AGENT, then [bridge] agent; groups to
+$FLEET_AGENT_GROUPS, then [bridge] groups. The bridge URL is
+$FLEET_BRIDGE_URL, then [bridge] url, then https://bridge.security.cab.
+Output is the bridge's JSON. Exit: 0 ok, 2 usage, 3 transport or
+credentials, 4 the bridge refused the request.
+
+===== fleet commander --help =====
+fleet commander — Tier T1 (commander/fleet) of the laptop route forms (#13717): run commands on the laptop through the Desktop Commander MCP endpoint.
+
+Usage: fleet commander <command> [args...]
+Commands: health, exec
+Status: included in this build
+
+# Notes:
+# - The per-verb inbox help proves per-verb --help is live (contra the old
+#   tutorial claim; #13213/#13197).
+# - No get / receive / watch verbs exist in either domain. `fleet commander`
+#   existing proves #13654 is implemented (disagreement D2).

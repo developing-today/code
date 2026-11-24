@@ -108,6 +108,13 @@ type ToolSpec struct {
 	// appearing on the command line. Some programs only take input that way,
 	// and everything else about them is worth exposing.
 	Stdin string `json:"stdin,omitempty"`
+	// Dir names a parameter whose value is the invocation's working
+	// directory instead of appearing on the command line, overriding the
+	// spec's Dir for that call. The bare passthrough tool names its cwd
+	// parameter this way: programs like git are meaningless without a
+	// working directory, and a declaration's Dir is fixed when the
+	// declaration is written (#11147).
+	Dir string `json:"dir,omitempty"`
 	// JSON parses the output as JSON before returning it, so a caller gets
 	// structure rather than a string containing structure.
 	JSON bool `json:"json,omitempty"`
@@ -147,6 +154,33 @@ type Param struct {
 // <name>.run runs the binary with the given argv, no shell anywhere.
 const bareToolName = "run"
 
+// CheckBareAllowed is the adapters.allowBare gate (#11147, from #1962),
+// shared by every path that can bring a declaration into a running
+// system: the CLI's load and serve paths, and the daemon's live add,
+// which must refuse a bare declaration BEFORE persisting it -- a
+// declaration written first and refused at reload would break every
+// later reload and daemon start.
+//
+// A bare declaration exposes a binary's whole argv surface, so loading
+// one is a policy decision, not just a parse: while the setting is off
+// (its default) any bare declaration fails, naming the setting that
+// would permit it, so an organisation can forbid passthrough
+// declarations centrally instead of auditing every file paths.adapters
+// might be pointed at.
+func CheckBareAllowed(specs []Spec, allowBare bool) error {
+	if allowBare {
+		return nil
+	}
+	for _, s := range specs {
+		if s.Bare {
+			return fmt.Errorf("adapter %q is a bare (passthrough) declaration, and adapters.allowBare is off: "+
+				"set adapters.allowBare to true (or MCPX_ADAPTERS_ALLOW_BARE=true) to permit bare declarations, "+
+				"or remove \"bare\": true from the declaration", s.Name)
+		}
+	}
+	return nil
+}
+
 // ExposedTools is what a declaration presents: the declared tools, or,
 // for a bare declaration, the single passthrough tool. Every listing,
 // calling and serving path uses this, so a bare spec shows one tool
@@ -164,8 +198,11 @@ func (s Spec) ExposedTools() []ToolSpec {
 				Description: "Arguments passed straight through to the binary, in order."},
 			{Name: "stdin",
 				Description: "Written to the binary's stdin instead of appearing on the command line."},
+			{Name: "cwd",
+				Description: "The working directory for this invocation, overriding the declaration's dir. Must name an existing directory."},
 		},
 		Stdin: "stdin",
+		Dir:   "cwd",
 	}}
 }
 
@@ -233,6 +270,16 @@ func (s Spec) Validate() error {
 			problems = append(problems, fmt.Sprintf(
 				"%s.%s: stdin names %q, which is not a parameter",
 				s.Name, t.Name, t.Stdin))
+		}
+		if t.Dir != "" && !params[t.Dir] {
+			problems = append(problems, fmt.Sprintf(
+				"%s.%s: dir names %q, which is not a parameter",
+				s.Name, t.Name, t.Dir))
+		}
+		if t.Dir != "" && t.Dir == t.Stdin {
+			problems = append(problems, fmt.Sprintf(
+				"%s.%s: %s is named as both the stdin and the dir parameter; one value cannot ride both",
+				s.Name, t.Name, t.Dir))
 		}
 		if _, err := parseDuration(t.Timeout, 0); err != nil {
 			problems = append(problems, s.Name+"."+t.Name+": timeout "+err.Error())
@@ -336,7 +383,7 @@ func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 			s.Name, tool, strings.Join(names, ", "))
 	}
 
-	argv, stdin, err := spec.buildArgs(args)
+	argv, stdin, dir, err := spec.buildArgs(args)
 	if err != nil {
 		return nil, err
 	}
@@ -365,6 +412,19 @@ func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 
 	cmd := exec.CommandContext(cctx, bin, cmdArgs...)
 	cmd.Dir = s.Dir
+	if dir != "" {
+		// Validated here rather than left to the exec: a missing or
+		// non-directory cwd would otherwise surface as a bare chdir
+		// error naming no parameter.
+		info, err := os.Stat(dir)
+		if err != nil {
+			return nil, fmt.Errorf("%s.%s: cwd %q: %w", s.Name, tool, dir, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("%s.%s: cwd %q is not a directory", s.Name, tool, dir)
+		}
+		cmd.Dir = dir
+	}
 	cmd.Env = os.Environ()
 	for k, v := range s.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
@@ -409,15 +469,16 @@ func (s Spec) Call(ctx context.Context, tool string, args map[string]any) (*Resu
 }
 
 // buildArgs turns named arguments into a command line.
-func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
+func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, string, error) {
 	out := append([]string{}, t.Args...)
 	stdin := ""
+	dir := ""
 
 	for _, p := range t.Params {
 		raw, given := args[p.Name]
 		if !given || raw == nil {
 			if p.Required {
-				return nil, "", fmt.Errorf("%s is required", p.Name)
+				return nil, "", "", fmt.Errorf("%s is required", p.Name)
 			}
 			if p.Default == "" {
 				continue
@@ -426,12 +487,12 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 		}
 		values, err := toValues(raw)
 		if err != nil {
-			return nil, "", fmt.Errorf("%s: %w", p.Name, err)
+			return nil, "", "", fmt.Errorf("%s: %w", p.Name, err)
 		}
 		if len(p.Enum) > 0 {
 			for _, v := range values {
 				if !contains(p.Enum, v) {
-					return nil, "", fmt.Errorf("%s must be one of %s, got %q",
+					return nil, "", "", fmt.Errorf("%s must be one of %s, got %q",
 						p.Name, strings.Join(p.Enum, ", "), v)
 				}
 			}
@@ -440,6 +501,13 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 			// Diverted only after validation: a stdin parameter's enum is
 			// enforced exactly like every other parameter's.
 			stdin = toString(raw)
+			continue
+		}
+		if p.Name == t.Dir {
+			// Diverted only after validation, like the stdin parameter:
+			// the value becomes the invocation's working directory and
+			// never reaches the command line.
+			dir = toString(raw)
 			continue
 		}
 		// A boolean flag is its presence, not its value: --verbose true is
@@ -485,10 +553,10 @@ func (t ToolSpec) buildArgs(args map[string]any) ([]string, string, error) {
 	}
 	if len(unknown) > 0 {
 		sort.Strings(unknown)
-		return nil, "", fmt.Errorf("unknown argument %q (declared parameters: %s)",
+		return nil, "", "", fmt.Errorf("unknown argument %q (declared parameters: %s)",
 			strings.Join(unknown, ", "), strings.Join(names, ", "))
 	}
-	return out, stdin, nil
+	return out, stdin, dir, nil
 }
 
 func toValues(v any) ([]string, error) {

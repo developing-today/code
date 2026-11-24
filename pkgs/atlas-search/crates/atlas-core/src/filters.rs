@@ -4,7 +4,11 @@
 //! concatenation the Python's f-strings use (including the double
 //! space the empty Turso `sens_join` leaves in two statements): the
 //! strings are the contract with the database, and the parity
-//! fixtures record them byte-for-byte.
+//! fixtures record them byte-for-byte. One named exception to
+//! the byte-for-byte claim: the topics/projects LIKE clauses
+//! escape `%`, `_`, `\` and carry `ESCAPE '\'` where the Python
+//! emits a bare `LIKE ?` (#5375) — see the fixtures README's
+//! "Intentional parity deviation" section and #13280.
 
 use serde_json::{Map, Value as Json};
 

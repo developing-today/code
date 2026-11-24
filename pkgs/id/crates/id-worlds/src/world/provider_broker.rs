@@ -761,6 +761,7 @@ mod tests {
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
         side: ProviderSide::Client,
+        class: id_caps::cap_class::CLASS_UNKNOWN,
     };
 
     const SESSION_A: SessionId = SessionId::new(41);

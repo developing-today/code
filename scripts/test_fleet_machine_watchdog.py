@@ -146,7 +146,8 @@ class PlacementViewTests(unittest.TestCase):
         self.assertEqual(watchdog.placement_view(health, NOW), "degraded")
 
     def test_stale_record_reads_as_left(self):
-        health = {"last_seen": "2026-11-22T18:59:59Z", "status": "healthy"}
+        # 60m01s old: just past two cadences at the 30-minute cadence.
+        health = {"last_seen": "2026-11-22T18:29:59Z", "status": "healthy"}
         self.assertEqual(watchdog.placement_view(health, NOW), "left")
 
     def test_never_seen_reads_as_left(self):

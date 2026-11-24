@@ -1004,6 +1004,23 @@ test("the tick publishes the Stage-3 forecast product beside quota-current.json 
     expect(weekly.projectedWallAt).toBeGreaterThan(now - 60_000);
     expect(weekly.projectedWallAt).toBeLessThan(resetMs);
     expect(weekly.wallsBeforeReset).toBe(true);
+
+    // C4.1 (#13257): the same tick appends the complete-downtime
+    // prediction record to the C4 log beside the forecast product.
+    // The fixture's single pool walls before its reset, so the
+    // all-pools-walled interval is that pool's own wall interval.
+    const predictions = (await readFile(join(dir, "quota-predictions.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const downtime = predictions.filter((r: { kind: string }) => r.kind === "downtime_window");
+    expect(downtime).toHaveLength(1);
+    expect(downtime[0].subject.pools).toEqual(["cline-pass"]);
+    expect(downtime[0].state).toBe("predicted");
+    expect(downtime[0].basis.name).toBe("since_last_reset");
+    expect(downtime[0].prediction.earliest).toBe(new Date(weekly.projectedWallAt).toISOString());
+    expect(downtime[0].prediction.latest).toBe(resetIso);
+    expect(typeof downtime[0].prediction.rendered).toBe("string");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

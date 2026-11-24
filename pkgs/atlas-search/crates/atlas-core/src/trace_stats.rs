@@ -546,7 +546,11 @@ impl WindowStats {
     }
 }
 
-fn hot_trace_files(dir: &Path) -> Result<Vec<(PathBuf, (i64, u32, u32))>> {
+/// One hot trace file and the civil day `(year, month, day)` its
+/// file name encodes.
+type HotTraceFile = (PathBuf, (i64, u32, u32));
+
+fn hot_trace_files(dir: &Path) -> Result<Vec<HotTraceFile>> {
     let mut files = Vec::new();
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -681,10 +685,10 @@ pub fn aggregate_traces(
                     embed_id: embed_id.clone(),
                     ..Default::default()
                 });
-                if e.embed_content_hash.is_empty() {
-                    if let Some(h) = r.get("embed_content_hash").and_then(Json::as_str) {
-                        e.embed_content_hash = h.to_string();
-                    }
+                if e.embed_content_hash.is_empty()
+                    && let Some(h) = r.get("embed_content_hash").and_then(Json::as_str)
+                {
+                    e.embed_content_hash = h.to_string();
                 }
                 e.pool_entries += 1;
                 e.pool_queries.insert(query_id.clone());

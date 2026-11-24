@@ -259,6 +259,81 @@ impl LinkProjection {
             .filter(|edge| visible.contains(&edge.source))
             .collect()
     }
+
+    /// [`LinkProjection::links_from_visible`] one page at a time, for the
+    /// derived-visibility fixture (#13583): a reader walks the visible
+    /// adjacency of `source` without ever learning about hidden neighbours.
+    /// `limit` caps the page size; `after` is the link ID that ended the
+    /// previous page, or [`None`] for the first page. The returned
+    /// [`VisibleLinkPage::has_next`] says whether more visible edges follow.
+    ///
+    /// The cursor is looked up in the already-filtered visible list, never in
+    /// the full edge set: an `after` that names a hidden edge — or any edge
+    /// the viewer may not see — matches nothing and yields an empty page with
+    /// `has_next` false, the same in every store. A hidden neighbour can
+    /// therefore never change a page's contents, its count, or its
+    /// next-page flag. Makes no timing claim.
+    #[must_use]
+    pub fn links_from_visible_page(
+        &self,
+        source: Hash,
+        visible: &HashSet<Hash>,
+        limit: usize,
+        after: Option<Hash>,
+    ) -> VisibleLinkPage<'_> {
+        Self::page(self.links_from_visible(source, visible), limit, after)
+    }
+
+    /// [`LinkProjection::backlinks_to_visible`] one page at a time, with the
+    /// same cursor rule as [`LinkProjection::links_from_visible_page`]: the
+    /// cursor is resolved inside the visible list only, so a hidden source
+    /// can never steer or leak through the walk.
+    #[must_use]
+    pub fn backlinks_to_visible_page(
+        &self,
+        target: Hash,
+        visible: &HashSet<Hash>,
+        limit: usize,
+        after: Option<Hash>,
+    ) -> VisibleLinkPage<'_> {
+        Self::page(self.backlinks_to_visible(target, visible), limit, after)
+    }
+
+    /// Pages an already-filtered visible edge list. `after` names the link ID
+    /// that ended the previous page; an unknown ID yields an empty page, so a
+    /// cursor the viewer may not see can never advance the walk.
+    fn page(edges: Vec<&LinkRecord>, limit: usize, after: Option<Hash>) -> VisibleLinkPage<'_> {
+        let start = match after {
+            None => 0,
+            Some(cursor) => match edges.iter().position(|edge| edge.id == cursor) {
+                Some(index) => index + 1,
+                None => {
+                    return VisibleLinkPage {
+                        edges: Vec::new(),
+                        has_next: false,
+                    };
+                }
+            },
+        };
+        let page: Vec<&LinkRecord> = edges.iter().skip(start).take(limit).copied().collect();
+        let has_next = start + page.len() < edges.len();
+        VisibleLinkPage {
+            edges: page,
+            has_next,
+        }
+    }
+}
+
+/// One page of a visible adjacency walk: the visible edges on this page, in
+/// projection order, and whether more visible edges follow. The page contains
+/// only edges the viewer may see; its length is the visible count for the
+/// page, and [`VisibleLinkPage::has_next`] is the next-page indication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibleLinkPage<'a> {
+    /// The visible edges on this page, in projection order.
+    pub edges: Vec<&'a LinkRecord>,
+    /// Whether more visible edges follow after this page.
+    pub has_next: bool,
 }
 
 /// Projects the applied link events against the folded notes.
@@ -702,6 +777,121 @@ mod tests {
                 .backlinks_to_visible(hash(20), &only_source)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn test_two_stores_agree_on_visible_adjacency_count_and_pagination() {
+        // Derived-visibility fixture (#13583, slice 1; design proposal in open
+        // PR #13582, doc/2026-11-23T14-05-00Z_design_id_derived_visibility):
+        // two stores with identical material authorized to the reader and one
+        // different restricted record. Store A holds notes A(10), B(20), C(21)
+        // and the edges A->B, A->C. Store B adds a hidden neighbour H(30) and
+        // the edges A->H and H->B. The reader may access {A, B, C} only.
+        // Every declared graph-query observable — authorized adjacency, count,
+        // and pagination at the same visible frontier — must agree between
+        // the stores, while the full-trust view of store B still shows H.
+        let visible: HashSet<Hash> = HashSet::from([hash(10), hash(20), hash(21)]);
+        let shared_notes = [create(10, b"a"), create(20, b"b"), create(21, b"c")];
+        let shared_links = vec![
+            link(40, 10, 10, 20, "to b", None),
+            link(43, 10, 10, 21, "to c", None),
+        ];
+        let store_a = project_links(&notes(&shared_notes), &shared_links).unwrap();
+
+        let mut hidden_notes = shared_notes.to_vec();
+        hidden_notes.push(create(30, b"hidden"));
+        let mut hidden_links = shared_links.clone();
+        hidden_links.push(link(41, 10, 10, 30, "to h", None));
+        hidden_links.push(link(42, 30, 30, 20, "from h", None));
+        let store_b = project_links(&notes(&hidden_notes), &hidden_links).unwrap();
+
+        // Authorized adjacency and counts agree.
+        let from_a_in_a: Vec<Hash> = store_a
+            .links_from_visible(hash(10), &visible)
+            .iter()
+            .map(|edge| edge.target)
+            .collect();
+        let from_a_in_b: Vec<Hash> = store_b
+            .links_from_visible(hash(10), &visible)
+            .iter()
+            .map(|edge| edge.target)
+            .collect();
+        assert_eq!(from_a_in_a, vec![hash(20), hash(21)]);
+        assert_eq!(from_a_in_a, from_a_in_b);
+        let backlinks_in_a: Vec<Hash> = store_a
+            .backlinks_to_visible(hash(20), &visible)
+            .iter()
+            .map(|edge| edge.source)
+            .collect();
+        let backlinks_in_b: Vec<Hash> = store_b
+            .backlinks_to_visible(hash(20), &visible)
+            .iter()
+            .map(|edge| edge.source)
+            .collect();
+        assert_eq!(backlinks_in_a, vec![hash(10)]);
+        assert_eq!(backlinks_in_a, backlinks_in_b);
+
+        // Pagination agrees page by page, including the next-page flag:
+        // page one holds B with more to come, page two holds C and ends.
+        for store in [&store_a, &store_b] {
+            let first = store.links_from_visible_page(hash(10), &visible, 1, None);
+            assert_eq!(first.edges.len(), 1);
+            assert_eq!(first.edges[0].target, hash(20));
+            assert!(first.has_next);
+            let second =
+                store.links_from_visible_page(hash(10), &visible, 1, Some(first.edges[0].id));
+            assert_eq!(second.edges.len(), 1);
+            assert_eq!(second.edges[0].target, hash(21));
+            assert!(!second.has_next);
+            // The same walk over backlinks: one visible source, one page.
+            let back = store.backlinks_to_visible_page(hash(20), &visible, 1, None);
+            assert_eq!(back.edges.len(), 1);
+            assert_eq!(back.edges[0].source, hash(10));
+            assert!(!back.has_next);
+        }
+
+        // A cursor naming a hidden edge steers neither store: both return an
+        // empty page with no next page, so the hidden edge's existence never
+        // shows through the walk.
+        for store in [&store_a, &store_b] {
+            let page = store.links_from_visible_page(hash(10), &visible, 1, Some(hash(41)));
+            assert!(page.edges.is_empty());
+            assert!(!page.has_next);
+        }
+
+        // The authorized full-trust view of store B still works: with every
+        // note visible, the hidden neighbour and its edges are present.
+        let all: HashSet<Hash> = HashSet::from([hash(10), hash(20), hash(21), hash(30)]);
+        let full = store_b.links_from_visible(hash(10), &all);
+        assert_eq!(full.len(), 3);
+        assert!(full.iter().any(|edge| edge.target == hash(30)));
+        let full_back = store_b.backlinks_to_visible(hash(20), &all);
+        assert_eq!(full_back.len(), 2);
+        assert!(full_back.iter().any(|edge| edge.source == hash(30)));
+
+        // Arrival order changes nothing: the hidden links projected in reverse
+        // order give the same visible walk.
+        let mut reversed_links = hidden_links.clone();
+        reversed_links.reverse();
+        let reversed = project_links(&notes(&hidden_notes), &reversed_links).unwrap();
+        assert_eq!(
+            reversed.links_from_visible(hash(10), &visible),
+            store_b.links_from_visible(hash(10), &visible)
+        );
+    }
+
+    #[test]
+    fn test_a_visible_page_with_limit_zero_reports_whether_edges_follow() {
+        let folded = three_notes();
+        let links = vec![link(40, 10, 10, 20, "one", None)];
+        let projection = project_links(&folded, &links).unwrap();
+        let visible: HashSet<Hash> = HashSet::from([hash(10), hash(20)]);
+        let page = projection.links_from_visible_page(hash(10), &visible, 0, None);
+        assert!(page.edges.is_empty());
+        assert!(page.has_next);
+        let empty = projection.links_from_visible_page(hash(20), &visible, 0, None);
+        assert!(empty.edges.is_empty());
+        assert!(!empty.has_next);
     }
 
     #[test]

@@ -49,8 +49,7 @@
 //! from a grant and never changes the immutable space address.
 //!
 //! Cross-signing statements and recovery policy are not part of this
-//! slice. Module wiring into `graph/mod.rs` belongs to slice 9110-09;
-//! until then the integration test includes this file by path.
+//! slice.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;

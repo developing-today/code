@@ -16,6 +16,9 @@
 // controls are unchanged.
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AmbiguousCreateError, GitHubClient, GitHubError } from "../src/github.ts";
 
 const REPO = "pm-dispatch-7101/nonexistent"; // a slug no gh route can succeed on: the CLI fallback fails deterministically and can never create anything, in any environment
@@ -274,12 +277,60 @@ describe("GitHubClient create-issue timeout (#10849)", () => {
     expect((err as Error).message).not.toContain("via gh");
   });
 
-  test("a POST that fails before reaching GitHub still falls back to gh", async () => {
+  test("a POST that fails before reaching GitHub still falls back to fleet gh", async () => {
     const err = await createWithPost(async () => {
       throw new TypeError("fetch failed");
     });
     // The fallback ran (and failed on the unroutable test slug).
     expect(err).toBeInstanceOf(GitHubError);
-    expect((err as Error).message).toContain("via gh");
+    expect((err as Error).message).toContain("via fleet gh");
+  });
+});
+
+describe("gh CLI fallback bound (#6992)", () => {
+  // The fetch routes are bounded (#10825) but the gh subprocess fallback
+  // was not: a gh call parked on API rate-limit retries held the launch
+  // handler open indefinitely. These tests point the client's ghBinary
+  // seam at a fake `gh` — a sleeper for the timeout, an echo for the
+  // control — and call the private fallback with a short bound, in the
+  // cast style of fetch-timeout.test.ts.
+  const ghOf = (c: GitHubClient) =>
+    (
+      c as unknown as {
+        gh: (args: string[], input?: string, timeoutMs?: number) => Promise<string>;
+      }
+    ).gh.bind(c);
+
+  function fakeGh(script: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "dispatch-gh-test-"));
+    const bin = join(dir, "gh");
+    writeFileSync(bin, script, { mode: 0o755 });
+    return bin;
+  }
+
+  test("a gh call that outlives the bound is killed and surfaces as a GitHubError naming the timeout", async () => {
+    const bin = fakeGh("#!/bin/sh\nsleep 30\n");
+    try {
+      const started = Date.now();
+      const err = await ghOf(new GitHubClient("12345", pem, bin))(["api", "repos/x/y"], undefined, 150).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(GitHubError);
+      expect((err as Error).message).toContain("timed out after 150 ms");
+      expect(Date.now() - started).toBeLessThan(10_000);
+    } finally {
+      rmSync(join(bin, ".."), { recursive: true, force: true });
+    }
+  });
+
+  test("a gh call inside the bound returns its stdout unchanged", async () => {
+    const bin = fakeGh("#!/bin/sh\necho fake-gh-output\n");
+    try {
+      const out = await ghOf(new GitHubClient("12345", pem, bin))(["--version"], undefined, 5_000);
+      expect(out).toContain("fake-gh-output");
+    } finally {
+      rmSync(join(bin, ".."), { recursive: true, force: true });
+    }
   });
 });

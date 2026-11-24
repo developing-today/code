@@ -30,7 +30,18 @@ the binary, it can be produced with **no daemon running**:
 a superset of the other. Every path they share is identical, byte
 for byte, and `mcpx openapi` adds the MCP endpoint, a REST path
 per mcpx tool (`POST /v1/tools/{tool}` is itself an operation in
-the table) and the settings index. The daemon's document instead
+the table) and the settings index.
+
+In the printed document those per-tool paths are concrete — one
+`POST` path per tool mcpx itself serves: `/v1/tools/mcpx_exec`,
+`/v1/tools/mcpx_search`, `/v1/tools/mcpx_types`,
+`/v1/tools/mcpx_catalog`, `/v1/tools/mcpx_call`,
+`/v1/tools/mcpx_batch`, `/v1/tools/mcpx_namespaces`,
+`/v1/tools/mcpx_registry`, `/v1/tools/mcpx_status`,
+`/v1/tools/mcpx_stats`, `/v1/tools/mcpx_log`, and the batch form
+`/v1/tools/batch_call`. [parity.md](./parity.md) carries the
+living table behind the names; the list above is the set the
+binary prints today. The daemon's document instead
 adds one concrete path per tool in the **live catalogue**
 (`POST /v1/call/<namespace>/<tool>`, with that tool's input
 schema, generated per request by `handleOpenAPI` in

@@ -1,0 +1,38 @@
+# desktop-commander Worker (#13404). The self-hosted replacement for the
+# vendor's metered Remote Desktop Commander relay: an OAuth-fronted MCP
+# door that proxies to the Desktop Commander bridge on the laptop.
+#
+# workers_dev is OFF: the only door is the custom domain
+# commander.security.cab. Hosted MCP clients (Claude, ChatGPT) cannot
+# pass a Cloudflare Access login at /mcp, so the Worker runs an OAuth
+# 2.1 authorization server (src/oauth.ts): public discovery +
+# registration, /token with PKCE, and /authorize — the one path still
+# behind a Cloudflare Access app scoped to commander.security.cab/
+# authorize (owner Google identity only). /mcp accepts the OAuth
+# Bearer tokens it issues, or the machine bearer for the owner's
+# tooling.
+#
+# Secrets (uploaded per version with --secrets-file at publish time;
+# values never in this file):
+#   ACCESS_CLIENT_ID      Cloudflare Access service token for the
+#   ACCESS_CLIENT_SECRET  bridge door, commander-link.security.cab
+#                         (fleet secrets:
+#                          cloudflare.access.desktop-commander-link-client-id
+#                          cloudflare.access.desktop-commander-link-client-secret)
+#   MACHINE_BEARER        Bearer for the owner's machine MCP clients
+#                         (fleet secrets: desktop-commander.machine-bearer)
+name = "desktop-commander"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = false
+
+[vars]
+BRIDGE_BASE = "https://commander-link.security.cab"
+ACCESS_TEAM_DOMAIN = "snowy-sun-58a9.cloudflareaccess.com"
+# Audience of the Access app scoped to /authorize (the Worker verifies
+# it on the Access JWT before rendering the approval page).
+ACCESS_AUD = "c6ddf0a5c0ba8742c0a3c74d12495bf5c4fe9bf6f01f604d62583cb2ed353879"
+
+[[kv_namespaces]]
+binding = "OAUTH_KV"
+id = "ea675d3c7d5b4f3b9f1cecae82e57d1b"

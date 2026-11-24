@@ -454,7 +454,7 @@ pub(crate) fn claim_pick_once(
         // lookup claims the row exactly as before.
         if !handoff_pick {
             if let Some(stale) = stale_pick(t, &candidate) {
-                retire_stale(t, &worker, &candidate, &stale)?;
+                retire_stale(t, &worker, &candidate, &stale, "claim_staleness_check")?;
                 retired += 1;
                 if retired >= MAX_STALENESS_RETIRES_PER_CALL {
                     return Ok(None);
@@ -551,13 +551,11 @@ pub(crate) fn claim_pick_once(
 /// the quarantine rechecker's releases.
 pub const MAX_CLAIM_QUARANTINES_PER_CALL: usize = 512;
 
-/// The most tasks one batch claim may take (#8217). A batch is
-/// only legitimate paired with immediate per-item dispatch, and
-/// the dispatcher must launch + verify-bind every item inside one
-/// touch before leases age: five dedicated launches fit that
-/// window with margin, and a bigger batch would recreate the
-/// claimed-and-idle pile the single-session design forbids.
-pub const BATCH_CLAIM_MAX: i64 = 5;
+/// The batch-claim bound (#8217) is defined at the crate root so
+/// the client surface validates `--count` against the same value
+/// the broker enforces here; re-exported so this module's parse
+/// path and the `turso_queue::BATCH_CLAIM_MAX` path keep working.
+pub use crate::BATCH_CLAIM_MAX;
 
 /// Parse a claim request's batch count (#8217): absent means the
 /// single claim (1); anything outside 1..=BATCH_CLAIM_MAX is a
@@ -874,7 +872,7 @@ pub(crate) fn budget_skip_sql(scope_sql: &str) -> String {
          AND (((status = 'queued' AND attempts < max_attempts \
            AND (not_before IS NULL OR not_before <= ?)) \
          OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
-           OR wait_kind = 'capacity'))) \
+           OR wait_kind = 'capacity') AND {PARKED_TERM_EXCLUSION})) \
          AND {req_expr} IS NOT NULL \
          AND {req_expr} > COALESCE(?, -1)){scope_sql}"
     )
@@ -935,7 +933,7 @@ pub(crate) fn no_claim_counts_sql(scope_sql: &str) -> String {
          COALESCE(SUM(CASE WHEN status = 'queued' AND attempts < max_attempts \
            AND not_before IS NOT NULL AND not_before > ? THEN 1 ELSE 0 END), 0) AS queued_not_yet_due, \
          COALESCE(SUM(CASE WHEN status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
-           OR wait_kind = 'capacity') THEN 1 ELSE 0 END), 0) AS parked_due \
+           OR wait_kind = 'capacity') AND {PARKED_TERM_EXCLUSION} THEN 1 ELSE 0 END), 0) AS parked_due \
          FROM tasks \
          WHERE payload IS NOT NULL AND payload <> '' AND payload <> '{{}}'{scope_sql}"
     )
@@ -1577,34 +1575,36 @@ pub(crate) fn verb_heartbeat(t: &TursoBackend, req: &Value) -> Value {
         &row.get("progress").cloned().unwrap_or(json!({})),
         &req.get("progress").cloned().unwrap_or(json!({})),
     );
-    let lease_until = after_iso(extend);
-    let work = (|| -> Result<Value, TErr> {
-        t.exec(
-            "UPDATE tasks SET lease_until = ?, progress = ?, updated_at = ? WHERE id = ?",
-            &[
-                Arg::Text(lease_until.clone()),
-                Arg::Text(progress.to_string()),
-                Arg::Text(now_iso()),
-                Arg::Int(task_id),
-            ],
-        )?;
-        t.exec(
-            "INSERT INTO leases (task_id, worker_id, lease_until, heartbeat_at) \
-             VALUES (?, ?, ?, ?) \
-             ON CONFLICT(task_id) DO UPDATE SET lease_until = excluded.lease_until, \
-               heartbeat_at = excluded.heartbeat_at",
-            &[
-                Arg::Int(task_id),
-                Arg::Text(worker.clone()),
-                Arg::Text(lease_until),
-                Arg::Text(now_iso()),
-            ],
-        )?;
-        touch_worker(t, &worker, Some(task_id))?;
-        get_task(t, task_id).map(|r| r.unwrap_or(Value::Null))
-    })();
-    match work {
-        Ok(row) => ok(json!({"row": row})),
+    // Compare against the deadline in the row at write time. The trigger
+    // installed with the schema mirrors the effective deadline in this same
+    // statement, including on an early heartbeat that only updates progress.
+    let sql = format!("{} RETURNING {TASK_COLS}", include_str!("heartbeat.sql"));
+    let result = t.query_objs(
+        &sql,
+        &[
+            Arg::Text(after_iso(extend)),
+            Arg::Text(progress.to_string()),
+            Arg::Text(now_iso()),
+            Arg::Int(task_id),
+            Arg::Text(worker.clone()),
+            arg_str(row["claimed_at"].as_str()),
+            arg_str(row["lane_id"].as_str()),
+            Arg::Int(row["attempts"].as_i64().unwrap_or(0)),
+        ],
+        &TASK_JSON_COLS,
+    );
+    let mut rows = match result {
+        Ok(rows) => rows,
+        Err(e) => return terr(e),
+    };
+    let Some(updated) = rows.pop() else {
+        return fail(
+            5,
+            format!("heartbeat_task: claim for task {task_id} changed"),
+        );
+    };
+    match touch_worker(t, &worker, Some(task_id)) {
+        Ok(()) => ok(json!({"row": updated})),
         Err(e) => terr(e),
     }
 }

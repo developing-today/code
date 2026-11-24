@@ -5,17 +5,11 @@ import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
 import { API, INIT_WORKFLOW, WORKER_NAME, verifySmokeEmptyTarget, verifySmokePostUpload } from './bootstrap-smoke.mjs';
 
 const REPOSITORY = 'developing-today/code';
-export const UPLOAD_WORKFLOW = '.github/workflows/private-laptop-bridge-smoke-upload.yml';
-// Pin the initializer and upload-side receipt contract, along with the exact validation/tool contract.
+// Compare only files executed by the initializer; upload-only changes do not invalidate its receipt.
 export const INIT_COMPAT_PATHS = [
   INIT_WORKFLOW,
-  UPLOAD_WORKFLOW,
   'pm-stack/private-laptop-bridge/bootstrap-smoke.mjs',
   'pm-stack/private-laptop-bridge/bootstrap-smoke.test.mjs',
-  'pm-stack/private-laptop-bridge/smoke-upload.mjs',
-  'pm-stack/private-laptop-bridge/smoke-upload.test.mjs',
-  'pm-stack/private-laptop-bridge/package.json',
-  'pm-stack/private-laptop-bridge/package-lock.json',
 ];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{40}$/;
@@ -161,12 +155,36 @@ export function assertNoTargetOverrides(environment = process.env) {
   return true;
 }
 
+function sanitizedBuildMetadata(buildConfig) {
+  const types = value => value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item === null ? 'null' : Array.isArray(item) ? 'array' : typeof item]))
+    : typeof value;
+  const context = buildConfig?.buildContext;
+  return JSON.stringify({
+    rootKeys: buildConfig && typeof buildConfig === 'object' && !Array.isArray(buildConfig) ? Object.keys(buildConfig).sort() : [],
+    rootTypes: types(buildConfig),
+    producerKeys: buildConfig?.producer && typeof buildConfig.producer === 'object' && !Array.isArray(buildConfig.producer) ? Object.keys(buildConfig.producer).sort() : [],
+    producerTypes: types(buildConfig?.producer),
+    producerName: buildConfig?.producer?.name === 'wrangler' ? 'wrangler' : '<other>',
+    producerVersion: buildConfig?.producer?.version === '4.166.0' ? '4.166.0' : '<other>',
+    buildContextKeys: context && typeof context === 'object' && !Array.isArray(context) ? Object.keys(context).sort() : [],
+    buildContextTypes: types(context),
+    isPreview: typeof context?.isPreview === 'boolean' ? context.isPreview : '<non-boolean>',
+    mode: context && Object.hasOwn(context, 'mode') ? (context.mode === '' ? '<empty>' : '<other>') : '<absent>',
+  });
+}
+
 export function assertPrebuiltSmokePayload({ buildConfig, workerConfig, workerNames, bundleFiles }) {
   const exactKeys = (value, expected) => value && typeof value === 'object' && !Array.isArray(value) && same(Object.keys(value).sort(), [...expected].sort());
+  const context = buildConfig?.buildContext;
+  // Pinned cf emits no mode locally when CF_MODE is unset, but an empty
+  // mode in the hosted workflow where CF_MODE is explicitly set to ''.
+  const knownContext = exactKeys(context, ['isPreview']) ||
+    (exactKeys(context, ['isPreview', 'mode']) && context.mode === '');
   if (!exactKeys(buildConfig, ['producer', 'buildContext']) || !exactKeys(buildConfig.producer, ['name', 'version']) ||
       buildConfig.producer.name !== 'wrangler' || buildConfig.producer.version !== '4.166.0' ||
-      !exactKeys(buildConfig.buildContext, ['isPreview']) || buildConfig.buildContext.isPreview !== false) {
-    fail('prebuilt Build Output producer or context is not the pinned non-preview build');
+      !knownContext || context.isPreview !== false) {
+    fail(`prebuilt Build Output producer or context is not the pinned non-preview build; sanitized metadata=${sanitizedBuildMetadata(buildConfig)}`);
   }
   if (!Array.isArray(workerNames) || workerNames.length !== 1 || workerNames[0] !== 'default') fail('prebuilt Build Output must contain only its default Worker');
   const expectedWorkerKeys = ['name','compatibilityDate','domains','triggers','limits','observability','workersDev','previewUrls','env','manifest'];
