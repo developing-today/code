@@ -125,6 +125,22 @@ class CensusSmokeTest(unittest.TestCase):
         self.assertFalse(absent.exists())
         self.assertFalse(list(self.root.glob("absent.db-*")))
 
+    def test_usage_error_names_offending_argument(self):
+        for arguments, offender in [
+            (["--seconds-per-store", "wrong"], "--seconds-per-store"),
+            (["--bogus-flag"], "--bogus-flag"),
+            (["--seconds-per-store"], "--seconds-per-store"),
+        ]:
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), *arguments],
+                capture_output=True, text=True, timeout=90, check=False,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertNotIn(str(self.root), result.stderr)
+            self.assertIn("Invalid census arguments", result.stderr)
+            if offender is not None:
+                self.assertIn(offender, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

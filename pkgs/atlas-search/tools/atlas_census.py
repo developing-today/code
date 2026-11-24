@@ -51,7 +51,16 @@ def utc_now():
 
 class SafeParser(argparse.ArgumentParser):
     def error(self, message):
-        self.exit(2, "Invalid census arguments. See --help.\n")
+        # Name the offending option (operator-script argument contract)
+        # without echoing values: a value may be a local path and this
+        # tool never prints paths.
+        offenders = []
+        for token in message.replace(":", " ").replace(",", " ").split():
+            token = token.split("=")[0].rstrip(".,;")
+            if token.startswith("-") and len(token) > 1 and token not in offenders:
+                offenders.append(token)
+        detail = " (" + ", ".join(sorted(offenders)) + ")" if offenders else ""
+        self.exit(2, f"Invalid census arguments{detail}. See --help.\n")
 
 
 def file_size(path):
