@@ -45,6 +45,7 @@
 - [Quick start](quick-start.md)
 - [Release runbook](release-runbook.md)
 - [Reaching a daemon on another machine](remote.md)
+- [The door Worker at mcpx.security.cab](worker.md)
 - [MCPX research and implementation plan](program/overview.md)
   - [Server onboarding and process ownership](program/lifecycle.md)
   - [Hosted servers, protocol revisions and release channels](program/hosted.md)
