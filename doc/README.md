@@ -57,6 +57,7 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 ## Dated records
 
+- [Nix cache as the content store](2026-11-24T05-12-27Z_design_nix_cache_content_store/2026-11-24T05-12-27Z_design_nix_cache_content_store.md) — design record for #9521 (slice 1 under #13873): derivation-per-item + flake-per-item hypothesis, version/resolution intent, benchmark-first gate with wash/fail exit, dependency-ordered slices; no benchmarks run, no implementation authorized.
 - [Free models & free tokens census](2026-11-24T01-21-58Z_research_free-census/2026-11-24T01-21-58Z_research_free-census.md) — dated record of the 2026-11-23 free-provider and free-token census; the evidence base for the free-first route order (tracking #13877).
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference`, `research` and `report`. A `report` record is the usual home for lane work product — a report or one-off with all of its gathered material in the folder; [`DOCUMENTATION_PROTOCOL.md`](DOCUMENTATION_PROTOCOL.md) gives the landing rules. Run `ls doc/` to list them all. Some starting points:
