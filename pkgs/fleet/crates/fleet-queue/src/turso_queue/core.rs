@@ -1015,7 +1015,7 @@ impl Clone for Arg {
     }
 }
 
-pub(crate) const SCHEMA: [&str; 27] = [
+pub(crate) const SCHEMA: [&str; 30] = [
     "CREATE TABLE IF NOT EXISTS tasks (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, \
         queue TEXT NOT NULL, title TEXT, body TEXT, \
@@ -1069,6 +1069,15 @@ pub(crate) const SCHEMA: [&str; 27] = [
     "CREATE INDEX IF NOT EXISTS events_task ON events(task_id, id)",
     "CREATE INDEX IF NOT EXISTS events_kind_ts ON events(kind, created_at)",
     "CREATE INDEX IF NOT EXISTS events_created ON events(created_at)",
+    "CREATE TABLE IF NOT EXISTS task_history (\
+        id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER UNIQUE, \
+        task_id INTEGER NOT NULL, kind TEXT NOT NULL, \
+        from_status TEXT, to_status TEXT, from_priority INTEGER, to_priority INTEGER, \
+        actor TEXT, session_id TEXT, model_provider TEXT, model_id TEXT, \
+        detail TEXT NOT NULL DEFAULT '{}', source TEXT NOT NULL DEFAULT 'live', \
+        created_at TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS task_history_task ON task_history(task_id, id)",
+    "CREATE INDEX IF NOT EXISTS task_history_created ON task_history(created_at)",
     "CREATE TABLE IF NOT EXISTS creation_outbox (\
         id TEXT PRIMARY KEY, repo TEXT NOT NULL, kind TEXT NOT NULL, \
         payload TEXT NOT NULL DEFAULT '{}', dedup_key TEXT NOT NULL, \
@@ -1210,6 +1219,51 @@ pub(crate) fn with_marks(detail: &Value, task: &Value) -> Value {
     merge_obj(&audit_marks(task), detail)
 }
 
+/// Status transition each lifecycle event kind records in
+/// task_history: (from_status, to_status). `None` means the
+/// transition's prior status is not known from the event alone
+/// (blocked/cancelled/failed/task_revived can come from several
+/// states), so from_status is left NULL rather than guessed.
+/// `reprioritized` changes priority, not status: its from/to are
+/// the priority values carried in the event detail. Kinds absent
+/// here (checkpoint, claim_refused, session_bound, lease_expired,
+/// ...) are not status transitions and get no history row.
+pub(crate) fn history_transition(kind: &str) -> Option<(Option<&'static str>, Option<&'static str>)> {
+    Some(match kind {
+        "enqueued" => (None, Some("queued")),
+        "task_revived" => (None, Some("queued")),
+        "claimed" => (Some("queued"), Some("claimed")),
+        "parked" => (Some("claimed"), Some("parked")),
+        "released" => (Some("claimed"), Some("queued")),
+        "woken" => (Some("parked"), Some("claimed")),
+        "blocked" => (None, Some("blocked")),
+        "unblocked" | "dep_unblocked" => (Some("blocked"), Some("queued")),
+        "completed" => (Some("claimed"), Some("done")),
+        "cancelled" => (None, Some("cancelled")),
+        "failed" => (None, Some("failed")),
+        "reprioritized" => (None, None),
+        _ => return None,
+    })
+}
+
+/// The history row for the event just inserted by the same
+/// transaction: it reads the newest events row, so it must run
+/// inside the BEGIN IMMEDIATE batch that inserted that event. Marks
+/// come from the event detail, which the transition wrote from its
+/// own context (with_marks), never from the task's current claim.
+const HISTORY_INSERT_SQL: &str = "INSERT OR IGNORE INTO task_history \
+    (event_id, task_id, kind, from_status, to_status, from_priority, to_priority, \
+     actor, session_id, model_provider, model_id, detail, source, created_at) \
+    SELECT e.id, e.task_id, e.kind, ?, ?, \
+        CASE WHEN e.kind = 'reprioritized' THEN json_extract(e.detail, '$.from') END, \
+        CASE WHEN e.kind = 'reprioritized' THEN json_extract(e.detail, '$.to') END, \
+        COALESCE(json_extract(e.detail, '$.actor'), e.worker_id), \
+        json_extract(e.detail, '$.session_id'), \
+        json_extract(e.detail, '$.model_provider'), \
+        json_extract(e.detail, '$.model_id'), \
+        e.detail, 'live', e.created_at \
+    FROM events e WHERE e.id = (SELECT max(id) FROM events)";
+
 pub(crate) fn event(
     t: &TursoBackend,
     worker: Option<&str>,
@@ -1217,17 +1271,40 @@ pub(crate) fn event(
     kind: &str,
     detail: &Value,
 ) -> Result<(), TErr> {
-    t.exec(
-        "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
-         VALUES (?, ?, ?, ?, ?)",
-        &[
-            arg_str(worker),
-            task_id.map(Arg::Int).unwrap_or(Arg::Null),
-            Arg::Text(kind.to_string()),
-            Arg::Text(detail.to_string()),
-            Arg::Text(now_iso()),
-        ],
-    )?;
+    let transition = history_transition(kind).filter(|_| task_id.is_some());
+    let Some((from, to)) = transition else {
+        t.exec(
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+            &[
+                arg_str(worker),
+                task_id.map(Arg::Int).unwrap_or(Arg::Null),
+                Arg::Text(kind.to_string()),
+                Arg::Text(detail.to_string()),
+                Arg::Text(now_iso()),
+            ],
+        )?;
+        return Ok(());
+    };
+    t.exec_batch(&[
+        ("BEGIN IMMEDIATE", vec![]),
+        (
+            "INSERT INTO events (worker_id, task_id, kind, detail, created_at) \
+             VALUES (?, ?, ?, ?, ?)",
+            vec![
+                arg_str(worker),
+                task_id.map(Arg::Int).unwrap_or(Arg::Null),
+                Arg::Text(kind.to_string()),
+                Arg::Text(detail.to_string()),
+                Arg::Text(now_iso()),
+            ],
+        ),
+        (
+            HISTORY_INSERT_SQL,
+            vec![arg_str(from), arg_str(to)],
+        ),
+        ("COMMIT", vec![]),
+    ])?;
     Ok(())
 }
 
