@@ -1423,11 +1423,14 @@ pub(crate) fn verb_meta(t: &TursoBackend, req: &Value) -> Value {
                     let key = req_str(req, "key")
                         .ok_or_else(|| "meta unset: key is required".to_string())?;
                     let mut object = Map::new();
-                    object.insert(key, Value::Null);
+                    object.insert(key.to_string(), Value::Null);
                     patch = Value::Object(object);
                 } else if let Some(key) = req_str(req, "key") {
                     let mut object = Map::new();
-                    object.insert(key, req.get("value").cloned().unwrap_or(Value::Null));
+                    object.insert(
+                        key.to_string(),
+                        req.get("value").cloned().unwrap_or(Value::Null),
+                    );
                     patch = Value::Object(object);
                 }
                 if !patch.is_object() {
