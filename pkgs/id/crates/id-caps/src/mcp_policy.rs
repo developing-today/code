@@ -59,7 +59,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, Verifying
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::agent_quota_ledger::{AgentQuotaLedger, QuotaLedgerStore};
+use crate::agent_quota_ledger::{AgentQuotaLedger, LedgerAlreadyOpen, QuotaLedgerStore};
 use crate::mcp_bridge::{BridgeError, BridgeSession, ToolAction, ToolDefinition};
 use crate::role_config::QuotaClass;
 
@@ -665,21 +665,31 @@ impl PolicySession {
     /// for an agent grants the role's budget; a rejoin reopens the
     /// persisted ledger with its spend intact, so rejoining never
     /// resets a budget (#8301).
+    ///
+    /// The store's single-outstanding-open contract applies: a
+    /// second live session for the same (agent, world) pair is
+    /// refused until the first session's ledger is handed back
+    /// with [`Self::close`] (#14526).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LedgerAlreadyOpen`] when the pair's ledger is
+    /// already checked out by a live session.
     pub fn open_stored(
         grant: RoleGrant,
         bridge: BridgeSession,
         host_key: SigningKey,
         store: &mut QuotaLedgerStore,
         now: u64,
-    ) -> Self {
+    ) -> Result<Self, LedgerAlreadyOpen> {
         let ledger = store.open(
             grant.agent_key,
             grant.world.clone(),
             grant.role.clone(),
             grant.quota_class,
             now,
-        );
-        Self {
+        )?;
+        Ok(Self {
             grant,
             bridge,
             audit: AuditLog::new(host_key),
@@ -687,7 +697,7 @@ impl PolicySession {
             parked: false,
             object_classes: BTreeMap::new(),
             admitted_at: BTreeMap::new(),
-        }
+        })
     }
 
     /// End the session, handing its quota ledger back to the host's
@@ -1560,7 +1570,8 @@ mod tests {
             host_key(),
             &mut store,
             TEST_NOW,
-        );
+        )
+        .unwrap();
         assert!(matches!(
             first.act("world.join", &json!({ "capability": "cap-1" }), TEST_NOW),
             PolicyOutcome::Executed(_)
@@ -1587,7 +1598,8 @@ mod tests {
             host_key(),
             &mut store,
             TEST_NOW + 1,
-        );
+        )
+        .unwrap();
         assert_eq!(second.spend(TEST_NOW + 1), spent_after_leave);
         second.act(
             "world.join",
@@ -1596,6 +1608,46 @@ mod tests {
         );
         second.act("screen.read", &json!({}), TEST_NOW + 1);
         assert!(second.spend(TEST_NOW + 1).tool_calls > spent_after_leave.tool_calls);
+    }
+
+    #[test]
+    fn stored_session_refuses_a_second_live_open_for_the_same_pair() {
+        let mut store = QuotaLedgerStore::new();
+        let first = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW,
+        )
+        .unwrap();
+
+        // A duplicate grant opening a second live session for the
+        // same (agent, world) pair is refused (#14526): two live
+        // sessions would each hold a clone of one ledger and
+        // double its budget.
+        let refusal = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW,
+        )
+        .err()
+        .expect("second live open must be refused");
+        assert_eq!(refusal.agent_key, grant().agent_key);
+        assert_eq!(refusal.world, grant().world);
+
+        // Once the first session is handed back, a rejoin opens.
+        first.close(&mut store);
+        let rejoined = PolicySession::open_stored(
+            grant(),
+            BridgeSession::start(&v1_tool_definitions()).unwrap(),
+            host_key(),
+            &mut store,
+            TEST_NOW + 1,
+        );
+        assert!(rejoined.is_ok());
     }
 
     /// The #8301 acceptance against the #1067 (F12.10) consumed
