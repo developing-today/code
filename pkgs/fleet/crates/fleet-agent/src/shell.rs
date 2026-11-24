@@ -452,7 +452,7 @@ for index, word in enumerate(words):
                     if [ -n "$worker_pid" ]; then
                       wait "$worker_pid" >/dev/null 2>&1 || :
                     fi
-                    while kill -0 "-$worker_pgid" 2>/dev/null; do sleep 0.05; done
+                    while group_has_live_processes "$worker_pgid"; do sleep 0.05; done
                     ;;
                 esac
               elif [ -n "$worker_pid" ]; then
@@ -461,6 +461,17 @@ for index, word in enumerate(words):
               if [ -n "$group_file" ]; then rm -f "$group_file"; fi
               "$broker" checkin --lease "$lease_id" >/dev/null 2>&1 || :
               exit "$status"
+            }
+            group_has_live_processes() {
+              pgid=$1
+              rows=$(ps -eo pgid=,stat= 2>/dev/null) || {
+                # If process inspection is unavailable, keep the conservative
+                # behavior rather than returning a target lease prematurely.
+                kill -0 "-$pgid" 2>/dev/null
+                return $?
+              }
+              printf '%s\n' "$rows" | awk -v pgid="$pgid" \
+                '$1 == pgid && $2 !~ /^Z/ { found = 1 } END { exit !found }'
             }
             interrupt_lane() {
               signal=$1
