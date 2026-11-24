@@ -41,7 +41,7 @@ members = [
 # feature graph joins the lock resolve — p2panda-sync's `test_utils` feature
 # forwards to `p2panda-store/test_utils`, whose `sqlite` feature pulls sqlx
 # into Cargo.lock even though no build here enables it (see vendor/README.md).
-exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption"]
+exclude = ["vendor/p2panda-sync", "vendor/p2panda-encryption", "vendor/kdl"]
 default-members = [
   ".",
   "crates/id-core",
