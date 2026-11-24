@@ -187,6 +187,32 @@ jobs:
           cp -rL result-id-docs site/id
           test -f site/id/index.html
 
+      # The Project Management book (#13900, pm-stack/book) shares
+      # this repository's single Pages site the same way: built with
+      # its own siteUrl and staged under pm/ here, in the same deploy
+      # — a separate pm-only deploy would wipe the mcpx, fleet, atlas
+      # and id books. Its build-only workflow is pm-docs.yml; see
+      # the book's "Deploying this book" chapter
+      # (pm-stack/book/operations/deploying-this-book.md).
+      - name: Nix build (PM book, siteUrl /code/pm/)
+        run: |
+          # Intentional: the single-quoted string in this block is a Nix expression
+          # evaluated by nix, not the shell -- ${builtins.currentSystem} in it is
+          # Nix's, and letting the shell expand it would break the build.
+          # shellcheck disable=SC2016
+          nix build --impure --print-build-logs --expr \
+            '(builtins.getFlake (toString ./.)).packages.${builtins.currentSystem}.pm-docs.override { siteUrl = "/code/pm/"; }' \
+            --out-link result-pm-docs
+
+      - name: Stage PM book into site/pm
+        run: |
+          rm -rf site/pm
+          # site/ is a copy of a Nix store path: its directories are
+          # read-only, so make the root writable before adding pm/.
+          chmod u+w site
+          cp -rL result-pm-docs site/pm
+          test -f site/pm/index.html
+
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
