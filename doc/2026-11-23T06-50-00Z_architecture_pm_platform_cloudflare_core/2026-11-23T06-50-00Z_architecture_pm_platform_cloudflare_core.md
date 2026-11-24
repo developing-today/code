@@ -1604,12 +1604,23 @@ address, so an unchanged answer is "not modified" and costs nothing.
 with rows written the way the fleet writes them: finished once, twice,
 taken up again, another queue's, older than the week, written by
 something older. GitHub's list is given as GitHub documents it. In the
-Worker's real runtime the document is read with no machine. Thirty-eight
+Worker's real runtime the document is read with no machine. Fifty
 faults planted one at a time across the read, the wiring and the app's
 words, all caught after three tests were tightened.
 
+**Seen on the machine,** drawn from the live queue and GitHub: 715
+tasks finished in a day (292 second passes over an issue, 142 feature
+slices, 140 small fixes, 130 triage), at least 46 pull requests merged
+and at least 39 issues closed. That look changed the screen. Of the
+forty latest finished tasks, thirty-seven were second passes with no
+record of what came of them, so the tasks tab now says the day by kind
+and lists the tasks with a result on record first. Every merged pull
+request said the same author (the owner's name, which his agents work
+under), so the author is said only where they differ. A lane the pool
+made up ran across two lines as forty letters, and is said as a pooled
+lane.
+
 **Not seen.** The screen as Cloudflare serves it to a signed-in owner.
-It was looked at on the machine, drawn from the live queue and GitHub.
 
 ## 2026-11-24T09:29Z Correction: whole numbers from the queue's store came as text
 
@@ -1631,4 +1642,5 @@ large stays the text it came as, and text that looks like a number
 stays text. The work tests' store now answers the way the real one
 does, so a read that mishandles it fails there. Checked against the
 store's own format, six faults planted and caught, and seen on the
-machine: the same 709 tasks, each with its issue.
+machine afterwards: each of the forty latest with its issue, where none
+had shown one.
