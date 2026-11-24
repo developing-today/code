@@ -19,8 +19,44 @@ updates:
         patterns: ["*"]
   - package-ecosystem: "npm"
     directories:
-      - "/"
-      - "/pkgs/supergateway"
+      - "/infra/github-backup/rehost/worker"
+      - "/infra/github-backup/worker"
+      - "/nixos/services/id-mail/worker"
+      - "/.opencode"
+      - "/.opencode/plugin/shell-strategy"
+      - "/pkgs/atlas-search/worker"
+      - "/pkgs/bedside-and-away"
+      - "/pkgs/cf-container-hello"
+      - "/pkgs/cold-store-reaper/worker"
+      - "/pkgs/desktop-commander/worker"
+      - "/pkgs/dot-bridge/site"
+      - "/pkgs/fleet/hosted-worker"
+      - "/pkgs/github-ci/worker"
+      - "/pkgs/id/browser"
+      - "/pkgs/id/e2e"
+      - "/pkgs/identity/web"
+      - "/pkgs/id/hosted-worker"
+      - "/pkgs/id/web"
+      - "/pkgs/id/worker-poc"
+      - "/pkgs/lab-ops-hub"
+      - "/pkgs/mcpx/plugin/opencode"
+      - "/pkgs/mcpx/worker"
+      - "/pkgs/message-bridge/worker"
+      - "/pkgs/pkarr-worker"
+      - "/pkgs/pkarr-worker/gha-toolchain"
+      - "/pkgs/queue-transport-alert/worker"
+      - "/pkgs/web-gen-api-axum/end2end"
+      - "/pkgs/web-gen-api/end2end"
+      - "/pm-stack/aggregator"
+      - "/pm-stack/console"
+      - "/pm-stack/console/edge"
+      - "/pm-stack/decision-events-worker"
+      - "/pm-stack/dispatch"
+      - "/pm-stack/notify-relay"
+      - "/pm-stack/pm-service"
+      - "/pm-stack/private-laptop-bridge"
+      - "/pm-stack/projector"
+      - "/scripts/muse/handoff/worker"
     schedule:
       interval: "weekly"
     # Tarball-built npm packages (#14164): the Nix build pins a fixed
@@ -30,12 +66,18 @@ updates:
     # each default.nix header (version + hash, regenerate lock,
     # refresh npmDepsHash). Must-exclude-if-manifest-vendored:
     # pkgs/wrangler, pkgs/command-code, pkgs/desktop-commander (same
-    # tarball + vendored-lock shape, no vendored manifest today, so
-    # Dependabot currently skips them).
+    # tarball + vendored-lock shape). Keep the explicitly enumerated npm
+    # directories below limited to tracked manifests; do not add "/" here,
+    # because Dependabot's security-update discovery can still select a
+    # lock-only directory and then fail fetching its absent package.json.
     exclude-paths:
       - "pkgs/cf/**"
       - "pkgs/grok-cli/**"
       - "pkgs/supergateway/**"
+      - "pkgs/wrangler/**"
+      - "pkgs/command-code/**"
+      - "pkgs/desktop-commander/package.json"
+      - "pkgs/desktop-commander/package-lock.json"
       - "pm-stack/voice-line-worker/**"
     groups:
       npm:
@@ -110,11 +152,4 @@ updates:
       interval: "weekly"
     groups:
       nuget:
-        patterns: ["*"]
-  - package-ecosystem: "npm"
-    directory: "/pkgs/grok-cli"
-    schedule:
-      interval: "weekly"
-    groups:
-      npm-grok-cli:
         patterns: ["*"]
