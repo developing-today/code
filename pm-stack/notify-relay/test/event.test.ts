@@ -9,8 +9,8 @@ function fixture() {
     storage: {
       get: async <T>(key: string) => values.get(key) as T | undefined,
       put: async (key: string, value: unknown) => void values.set(key, value),
+      setAlarm: async () => {},
     },
-    setAlarm: async () => {},
   };
   const relay = new PmNotify(durableState as never, {});
   const stub = { fetch: (request: Request) => relay.fetch(request) };
